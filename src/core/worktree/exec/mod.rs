@@ -297,17 +297,17 @@ pub fn resolve_targets(
 
         // 1. Exact branch match.
         for wt in worktrees {
-            if let Some(branch) = &wt.branch {
-                if branch == tok {
-                    matched = true;
-                    if seen_paths.insert(wt.path.clone()) {
-                        out.push(ResolvedTarget {
-                            worktree_path: wt.path.clone(),
-                            branch_name: branch.clone(),
-                        });
-                    }
-                    break;
+            if let Some(branch) = &wt.branch
+                && branch == tok
+            {
+                matched = true;
+                if seen_paths.insert(wt.path.clone()) {
+                    out.push(ResolvedTarget {
+                        worktree_path: wt.path.clone(),
+                        branch_name: branch.clone(),
+                    });
                 }
+                break;
             }
         }
         if matched {
@@ -317,17 +317,17 @@ pub fn resolve_targets(
         // 2. Exact directory-name match.
         for wt in worktrees {
             let dir_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if dir_name == tok {
-                if let Some(branch) = &wt.branch {
-                    matched = true;
-                    if seen_paths.insert(wt.path.clone()) {
-                        out.push(ResolvedTarget {
-                            worktree_path: wt.path.clone(),
-                            branch_name: branch.clone(),
-                        });
-                    }
-                    break;
+            if dir_name == tok
+                && let Some(branch) = &wt.branch
+            {
+                matched = true;
+                if seen_paths.insert(wt.path.clone()) {
+                    out.push(ResolvedTarget {
+                        worktree_path: wt.path.clone(),
+                        branch_name: branch.clone(),
+                    });
                 }
+                break;
             }
         }
 

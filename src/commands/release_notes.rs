@@ -7,8 +7,8 @@ use clap::Parser;
 use regex::Regex;
 use serde::Serialize;
 use std::io::{self, IsTerminal};
-use termimad::crossterm::style::Color;
 use termimad::MadSkin;
+use termimad::crossterm::style::Color;
 
 use crate::output::emit::{self, EmitArgs, EmitPayload, Format};
 

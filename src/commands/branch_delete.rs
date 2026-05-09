@@ -1,12 +1,12 @@
 use crate::{
-    core::{worktree::branch_delete, CommandBridge},
+    CD_FILE_ENV,
+    core::{CommandBridge, worktree::branch_delete},
     git::should_show_gitoxide_notice,
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -68,7 +68,9 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    eprintln!("warning: 'git worktree-branch-delete' is deprecated, use 'git worktree-branch -d/-D' instead.");
+    eprintln!(
+        "warning: 'git worktree-branch-delete' is deprecated, use 'git worktree-branch -d/-D' instead."
+    );
     let args = Args::parse_from(crate::get_clap_args("git-worktree-branch-delete"));
     init_logging(args.verbose);
 

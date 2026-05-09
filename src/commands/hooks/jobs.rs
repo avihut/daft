@@ -6,13 +6,13 @@ use std::path::Path;
 
 use crate::coordinator::client::CoordinatorClient;
 use crate::coordinator::log_store::{InvocationMeta, JobStatus, LogStore};
+use crate::output::Output;
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::{pad_to_visible_width, shorthand_from_seconds, visible_width};
 use crate::output::outline::{self, Body, Node, Outline, Section};
-use crate::output::Output;
 use crate::styles::{
-    blue, bold, dim, dim_underline, green, orange, red, yellow, BOLD, CURRENT_WORKTREE_SYMBOL,
-    CYAN, RESET,
+    BOLD, CURRENT_WORKTREE_SYMBOL, CYAN, RESET, blue, bold, dim, dim_underline, green, orange, red,
+    yellow,
 };
 use tabled::{builder::Builder, settings::Style};
 
@@ -599,12 +599,11 @@ fn list_all_repo_hashes() -> Result<Vec<String>> {
     let mut hashes = Vec::new();
     for entry in std::fs::read_dir(&jobs_dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                if uuid::Uuid::parse_str(name).is_ok() {
-                    hashes.push(name.to_string());
-                }
-            }
+        if entry.file_type()?.is_dir()
+            && let Some(name) = entry.file_name().to_str()
+            && uuid::Uuid::parse_str(name).is_ok()
+        {
+            hashes.push(name.to_string());
         }
     }
     Ok(hashes)
@@ -969,24 +968,21 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
 
     outline::render(&outline, |line| output.info(line));
 
-    if args.all {
-        if let Ok(cache_path) = crate::daft_config_dir().map(|p| p.join("log-clean.json")) {
-            if let Ok(text) = std::fs::read_to_string(&cache_path) {
-                if let Ok(cache) = serde_json::from_str::<crate::log_clean::LogCleanCache>(&text) {
-                    if let Some(s) = &cache.last_summary {
-                        let now = chrono::Utc::now().timestamp();
-                        let age = now - cache.cleaned_at;
-                        let ago = shorthand_from_seconds(age);
-                        output.info(&dim(&format!(
-                            "Last log cleanup {ago} ago: removed {} job log(s) ({} freed)",
-                            s.removed_jobs,
-                            format_bytes(s.freed_bytes),
-                        )));
-                        output.info("");
-                    }
-                }
-            }
-        }
+    if args.all
+        && let Ok(cache_path) = crate::daft_config_dir().map(|p| p.join("log-clean.json"))
+        && let Ok(text) = std::fs::read_to_string(&cache_path)
+        && let Ok(cache) = serde_json::from_str::<crate::log_clean::LogCleanCache>(&text)
+        && let Some(s) = &cache.last_summary
+    {
+        let now = chrono::Utc::now().timestamp();
+        let age = now - cache.cleaned_at;
+        let ago = shorthand_from_seconds(age);
+        output.info(&dim(&format!(
+            "Last log cleanup {ago} ago: removed {} job log(s) ({} freed)",
+            s.removed_jobs,
+            format_bytes(s.freed_bytes),
+        )));
+        output.info("");
     }
 
     Ok(())
@@ -1304,12 +1300,11 @@ fn resolve_retry_invocation(
             for inv in invocations.iter().rev() {
                 let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
                 for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir) {
-                        if meta.name == *name
-                            && matches!(meta.status, JobStatus::Failed | JobStatus::Cancelled)
-                        {
-                            return Ok(inv.clone());
-                        }
+                    if let Ok(meta) = store.read_meta(dir)
+                        && meta.name == *name
+                        && matches!(meta.status, JobStatus::Failed | JobStatus::Cancelled)
+                    {
+                        return Ok(inv.clone());
                     }
                 }
             }
@@ -1350,14 +1345,14 @@ fn retry_command(
             let addr = JobAddress::parse(name);
             if let Some(ref wt) = addr.worktree {
                 // Check for conflict between --worktree flag and composite address
-                if let Some(flag_wt) = worktree_flag {
-                    if flag_wt != wt.as_str() {
-                        anyhow::bail!(
-                            "Conflicting worktree: --worktree says '{}' but address says '{}'.",
-                            flag_wt,
-                            wt
-                        );
-                    }
+                if let Some(flag_wt) = worktree_flag
+                    && flag_wt != wt.as_str()
+                {
+                    anyhow::bail!(
+                        "Conflicting worktree: --worktree says '{}' but address says '{}'.",
+                        flag_wt,
+                        wt
+                    );
                 }
                 effective_worktree = wt.clone();
                 RetryTarget::JobName(addr.job_name)
@@ -1597,7 +1592,7 @@ fn prune_jobs(
     older_than: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
-    use crate::coordinator::clean_policy::{parse_duration_str, CleanPolicy, CleanSummary};
+    use crate::coordinator::clean_policy::{CleanPolicy, CleanSummary, parse_duration_str};
 
     let retention_override = match older_than {
         None => None,
@@ -2349,7 +2344,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // DAFT_STATE_DIR is process-global; lib.rs tests also mutate it.
         // The #[serial] attribute above prevents cross-test interference.
-        std::env::set_var("DAFT_STATE_DIR", tmp.path());
+        unsafe {
+            std::env::set_var("DAFT_STATE_DIR", tmp.path());
+        }
         let jobs_dir = tmp.path().join("jobs");
         std::fs::create_dir_all(&jobs_dir).unwrap();
 
@@ -2361,7 +2358,9 @@ mod tests {
         let hashes = list_all_repo_hashes().unwrap();
         assert_eq!(hashes, vec![uuid_name.to_string()]);
 
-        std::env::remove_var("DAFT_STATE_DIR");
+        unsafe {
+            std::env::remove_var("DAFT_STATE_DIR");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Command: `daft shared` — manage shared files across worktrees.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
@@ -9,8 +9,8 @@ use crate::core::layout;
 use crate::core::repo;
 use crate::core::shared;
 use crate::output::{
-    emit::{self, Cell, EmitArgs, EmitPayload, Matrix},
     CliOutput, Output,
+    emit::{self, Cell, EmitArgs, EmitPayload, Matrix},
 };
 
 #[derive(Parser)]
@@ -374,10 +374,10 @@ fn run_materialize(args: MaterializeArgs, output: &mut dyn Output) -> Result<()>
         }
     } else {
         // No file at all — copy from shared
-        if let Some(parent) = link.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = link.parent()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
         }
         if shared_target.is_dir() {
             shared::copy_dir_all(&shared_target, &link)?;
@@ -632,7 +632,7 @@ fn run_sync(output: &mut dyn Output) -> Result<()> {
             && std::env::var("DAFT_TESTING").is_err();
 
         if is_interactive {
-            use crate::output::tui::shared_picker::{run_collect_picker, PickerOutcome};
+            use crate::output::tui::shared_picker::{PickerOutcome, run_collect_picker};
 
             match run_collect_picker(uncollected)? {
                 PickerOutcome::Decisions(decisions) => {
@@ -720,7 +720,9 @@ fn run_manage(_output: &mut dyn Output) -> Result<()> {
         && std::env::var("DAFT_TESTING").is_err();
 
     if !is_interactive {
-        bail!("daft shared manage requires an interactive terminal. Use `daft shared status` for non-interactive output.");
+        bail!(
+            "daft shared manage requires an interactive terminal. Use `daft shared status` for non-interactive output."
+        );
     }
 
     let infos = shared::detect_shared_statuses(

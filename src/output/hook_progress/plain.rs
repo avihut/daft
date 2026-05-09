@@ -71,12 +71,12 @@ impl PlainHookRenderer {
             eprintln!("{desc_msg}");
             self.output_lines.push(desc_msg);
         }
-        if self.verbose {
-            if let Some(cmd) = command_preview {
-                let cmd_msg = format!("\u{2503}    {cmd}");
-                eprintln!("{cmd_msg}");
-                self.output_lines.push(cmd_msg);
-            }
+        if self.verbose
+            && let Some(cmd) = command_preview
+        {
+            let cmd_msg = format!("\u{2503}    {cmd}");
+            eprintln!("{cmd_msg}");
+            self.output_lines.push(cmd_msg);
         }
         if let Some(cmd) = command_preview {
             self.previews.insert(name.to_string(), cmd.to_string());

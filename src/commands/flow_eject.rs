@@ -1,5 +1,5 @@
 use crate::{
-    core::{worktree::flow_eject, CommandBridge},
+    core::{CommandBridge, worktree::flow_eject},
     get_git_common_dir,
     git::should_show_gitoxide_notice,
     hooks::{HookExecutor, TrustDatabase},

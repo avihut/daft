@@ -18,8 +18,9 @@ use crate::core::{
 use std::{
     path::PathBuf,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     thread::{self, JoinHandle},
 };
@@ -87,10 +88,10 @@ impl CollectorHandle {
         for h in self.handles.drain(..) {
             let _ = h.join();
         }
-        if let Some((tx, source)) = self.sentinel.take() {
-            if matches!(source, PatchSource::Collector) {
-                let _ = tx.send(DagEvent::WorktreeInfoCollectionDone);
-            }
+        if let Some((tx, source)) = self.sentinel.take()
+            && matches!(source, PatchSource::Collector)
+        {
+            let _ = tx.send(DagEvent::WorktreeInfoCollectionDone);
         }
     }
 }
@@ -167,171 +168,174 @@ fn run_worker(
     // 1. BASE_AHEAD_BEHIND (skip detached) — content-addressed cache by
     //    (base_sha, head_sha). Falls through to compute on key-resolution
     //    failure; the wrapper itself skips writing on a None compute result.
-    if fields.contains(FieldSet::BASE_AHEAD_BEHIND) && !target.is_detached {
-        if let Some(p) = path {
-            let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
-            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
-            let v = match (base_sha, head_sha) {
-                (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_ahead_behind(
-                    &ctx.git_common_dir,
-                    &b,
-                    &h,
-                    || get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
-                ),
-                _ => get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
-            };
-            emit!(P::BaseAheadBehind(v));
-        }
+    if fields.contains(FieldSet::BASE_AHEAD_BEHIND)
+        && !target.is_detached
+        && let Some(p) = path
+    {
+        let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
+        let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+        let v = match (base_sha, head_sha) {
+            (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_ahead_behind(
+                &ctx.git_common_dir,
+                &b,
+                &h,
+                || get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
+            ),
+            _ => get_ahead_behind(&ctx.base_branch, &target.branch_name, p),
+        };
+        emit!(P::BaseAheadBehind(v));
     }
 
     // 2. CHANGES
-    if fields.contains(FieldSet::CHANGES) {
-        if let Some(p) = path {
-            let c = count_changed_files(p);
-            emit!(P::Changes {
-                staged: c.staged,
-                unstaged: c.unstaged,
-                untracked: c.untracked
-            });
-        }
+    if fields.contains(FieldSet::CHANGES)
+        && let Some(p) = path
+    {
+        let c = count_changed_files(p);
+        emit!(P::Changes {
+            staged: c.staged,
+            unstaged: c.unstaged,
+            untracked: c.untracked
+        });
     }
 
     // 3. LAST_COMMIT — content-addressed cache by HEAD sha.
-    if fields.contains(FieldSet::LAST_COMMIT) {
-        if let Some(p) = path {
-            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
-            let (timestamp, hash, subject) = match head_sha {
-                Some(h) => crate::core::worktree::cell_cache::cached_last_commit(
-                    &ctx.git_common_dir,
-                    &h,
-                    || get_commit_metadata(p, &git),
-                ),
-                None => get_commit_metadata(p, &git),
-            };
-            emit!(P::LastCommit {
-                timestamp,
-                hash,
-                subject
-            });
-        }
+    if fields.contains(FieldSet::LAST_COMMIT)
+        && let Some(p) = path
+    {
+        let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+        let (timestamp, hash, subject) = match head_sha {
+            Some(h) => crate::core::worktree::cell_cache::cached_last_commit(
+                &ctx.git_common_dir,
+                &h,
+                || get_commit_metadata(p, &git),
+            ),
+            None => get_commit_metadata(p, &git),
+        };
+        emit!(P::LastCommit {
+            timestamp,
+            hash,
+            subject
+        });
     }
 
     // 4. BRANCH_AGE (skip detached)
-    if fields.contains(FieldSet::BRANCH_AGE) && !target.is_detached {
-        if let Some(p) = path {
-            let v = get_branch_creation_timestamp(&target.branch_name, p);
-            emit!(P::BranchAge(v));
-        }
+    if fields.contains(FieldSet::BRANCH_AGE)
+        && !target.is_detached
+        && let Some(p) = path
+    {
+        let v = get_branch_creation_timestamp(&target.branch_name, p);
+        emit!(P::BranchAge(v));
     }
 
     // 5. OWNER (skip detached)
-    if fields.contains(FieldSet::OWNER) && !target.is_detached {
-        if let Some(p) = path {
-            let owner = ownership::resolve_owner_with_fallbacks(
-                &ctx.base_branch,
-                &target.branch_name,
-                p,
-                ctx.ownership_strategy,
-                ctx.user_email.as_deref(),
-                Some(&ctx.remote_name),
-            );
-            emit!(P::Owner(owner));
-        }
+    if fields.contains(FieldSet::OWNER)
+        && !target.is_detached
+        && let Some(p) = path
+    {
+        let owner = ownership::resolve_owner_with_fallbacks(
+            &ctx.base_branch,
+            &target.branch_name,
+            p,
+            ctx.ownership_strategy,
+            ctx.user_email.as_deref(),
+            Some(&ctx.remote_name),
+        );
+        emit!(P::Owner(owner));
     }
 
     // 6. REMOTE_AHEAD_BEHIND (skip detached) — content-addressed cache by
     //    (head_sha, upstream_sha). The upstream refspec uses the
     //    `<branch>@{upstream}` form so git resolves the configured upstream.
-    if fields.contains(FieldSet::REMOTE_AHEAD_BEHIND) && !target.is_detached {
-        if let Some(p) = path {
+    if fields.contains(FieldSet::REMOTE_AHEAD_BEHIND)
+        && !target.is_detached
+        && let Some(p) = path
+    {
+        let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+        let upstream_sha = crate::core::worktree::cell_cache::resolve_ref_sha(
+            p,
+            &format!("{}@{{upstream}}", target.branch_name),
+        );
+        let v = match (head_sha, upstream_sha) {
+            (Some(h), Some(u)) => crate::core::worktree::cell_cache::cached_remote_ahead_behind(
+                &ctx.git_common_dir,
+                &h,
+                &u,
+                || get_upstream_ahead_behind(&target.branch_name, p),
+            ),
+            _ => get_upstream_ahead_behind(&target.branch_name, p),
+        };
+        emit!(P::RemoteAheadBehind(v));
+    }
+
+    // 7. Stat::Lines clusters
+    if matches!(stat, Stat::Lines) {
+        // BASE_LINES — content-addressed cache by (base_sha, head_sha).
+        if fields.contains(FieldSet::BASE_LINES)
+            && !target.is_detached
+            && let Some(p) = path
+        {
+            let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
+            let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
+            let v = match (base_sha, head_sha) {
+                (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_lines(
+                    &ctx.git_common_dir,
+                    &b,
+                    &h,
+                    || get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
+                ),
+                _ => get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
+            };
+            emit!(P::BaseLines(v));
+        }
+        if fields.contains(FieldSet::CHANGES_LINES)
+            && let Some(p) = path
+        {
+            let (s, u) = count_changed_lines(p);
+            emit!(P::ChangesLines {
+                staged: s,
+                unstaged: u
+            });
+        }
+        // REMOTE_LINES — content-addressed cache by (head_sha, upstream_sha).
+        if fields.contains(FieldSet::REMOTE_LINES)
+            && !target.is_detached
+            && let Some(p) = path
+        {
             let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
             let upstream_sha = crate::core::worktree::cell_cache::resolve_ref_sha(
                 p,
                 &format!("{}@{{upstream}}", target.branch_name),
             );
             let v = match (head_sha, upstream_sha) {
-                (Some(h), Some(u)) => {
-                    crate::core::worktree::cell_cache::cached_remote_ahead_behind(
-                        &ctx.git_common_dir,
-                        &h,
-                        &u,
-                        || get_upstream_ahead_behind(&target.branch_name, p),
-                    )
-                }
-                _ => get_upstream_ahead_behind(&target.branch_name, p),
+                (Some(h), Some(u)) => crate::core::worktree::cell_cache::cached_remote_lines(
+                    &ctx.git_common_dir,
+                    &h,
+                    &u,
+                    || get_remote_line_counts(&target.branch_name, p),
+                ),
+                _ => get_remote_line_counts(&target.branch_name, p),
             };
-            emit!(P::RemoteAheadBehind(v));
-        }
-    }
-
-    // 7. Stat::Lines clusters
-    if matches!(stat, Stat::Lines) {
-        // BASE_LINES — content-addressed cache by (base_sha, head_sha).
-        if fields.contains(FieldSet::BASE_LINES) && !target.is_detached {
-            if let Some(p) = path {
-                let base_sha =
-                    crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
-                let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
-                let v = match (base_sha, head_sha) {
-                    (Some(b), Some(h)) => crate::core::worktree::cell_cache::cached_base_lines(
-                        &ctx.git_common_dir,
-                        &b,
-                        &h,
-                        || get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
-                    ),
-                    _ => get_base_line_counts(&ctx.base_branch, &target.branch_name, p),
-                };
-                emit!(P::BaseLines(v));
-            }
-        }
-        if fields.contains(FieldSet::CHANGES_LINES) {
-            if let Some(p) = path {
-                let (s, u) = count_changed_lines(p);
-                emit!(P::ChangesLines {
-                    staged: s,
-                    unstaged: u
-                });
-            }
-        }
-        // REMOTE_LINES — content-addressed cache by (head_sha, upstream_sha).
-        if fields.contains(FieldSet::REMOTE_LINES) && !target.is_detached {
-            if let Some(p) = path {
-                let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
-                let upstream_sha = crate::core::worktree::cell_cache::resolve_ref_sha(
-                    p,
-                    &format!("{}@{{upstream}}", target.branch_name),
-                );
-                let v = match (head_sha, upstream_sha) {
-                    (Some(h), Some(u)) => crate::core::worktree::cell_cache::cached_remote_lines(
-                        &ctx.git_common_dir,
-                        &h,
-                        &u,
-                        || get_remote_line_counts(&target.branch_name, p),
-                    ),
-                    _ => get_remote_line_counts(&target.branch_name, p),
-                };
-                emit!(P::RemoteLines(v));
-            }
+            emit!(P::RemoteLines(v));
         }
     }
 
     // 8. SIZE (slowest cluster)
-    if fields.contains(FieldSet::SIZE) {
-        if let Some(p) = path {
-            emit!(P::Size(compute_directory_size(p)));
-        }
+    if fields.contains(FieldSet::SIZE)
+        && let Some(p) = path
+    {
+        emit!(P::Size(compute_directory_size(p)));
     }
 
     // 9. MTIME
-    if fields.contains(FieldSet::MTIME) {
-        if let Some(p) = path {
-            // Re-count just to get the path list — cheap relative to mtime walk.
-            let c = count_changed_files(p);
-            if !c.paths.is_empty() {
-                emit!(P::Mtime(max_mtime_of_files(p, &c.paths)));
-            } else {
-                emit!(P::Mtime(None));
-            }
+    if fields.contains(FieldSet::MTIME)
+        && let Some(p) = path
+    {
+        // Re-count just to get the path list — cheap relative to mtime walk.
+        let c = count_changed_files(p);
+        if !c.paths.is_empty() {
+            emit!(P::Mtime(max_mtime_of_files(p, &c.paths)));
+        } else {
+            emit!(P::Mtime(None));
         }
     }
 }

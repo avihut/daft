@@ -8,8 +8,8 @@
 
 use crate::{
     core::{
-        worktree::merge::{HookRunner, MergeHookContext},
         CommandBridge,
+        worktree::merge::{HookRunner, MergeHookContext},
     },
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
@@ -18,7 +18,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    settings::{load_hooks_config, DaftSettings, HookOutputConfig},
+    settings::{DaftSettings, HookOutputConfig, load_hooks_config},
 };
 use anyhow::Result;
 use clap::Parser;
@@ -668,17 +668,16 @@ pub fn run() -> Result<()> {
         // `worktree-post-create` so hook-installed environment setup
         // (direnv/mise/etc.) is available while the user resolves conflicts.
         // Best-effort: a hook failure must not replace the conflict report.
-        if outcome.ephemeral_promoted {
-            if let Some(branch) = into_branch.as_deref() {
-                if let Err(e) = fire_worktree_post_create_hook(
-                    &outcome.target_path,
-                    branch,
-                    &project_root,
-                    &settings,
-                ) {
-                    eprintln!("warning: worktree-post-create hook failed: {e}");
-                }
-            }
+        if outcome.ephemeral_promoted
+            && let Some(branch) = into_branch.as_deref()
+            && let Err(e) = fire_worktree_post_create_hook(
+                &outcome.target_path,
+                branch,
+                &project_root,
+                &settings,
+            )
+        {
+            eprintln!("warning: worktree-post-create hook failed: {e}");
         }
 
         // Print a daft-authored conflict report to stderr and exit non-zero.

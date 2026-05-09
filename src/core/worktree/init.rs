@@ -130,11 +130,12 @@ pub fn execute(
         ));
 
         // Ensure parent directory exists (for multi-remote mode)
-        if let Some(parent) = relative_worktree_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-            }
+        if let Some(parent) = relative_worktree_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         }
 
         if let Err(e) = git.worktree_add_orphan(&relative_worktree_path, &initial_branch) {

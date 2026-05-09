@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, emit_formats_for, get_command_for_name, get_flag_descriptions,
-    uses_fetch_on_miss, uses_rich_completions, VERB_ALIAS_GROUPS,
+    VERB_ALIAS_GROUPS, allows_path_completion, emit_formats_for, get_command_for_name,
+    get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 

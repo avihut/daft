@@ -11,7 +11,7 @@
 use super::log_store::{JobMeta, JobStatus, LogStore};
 #[cfg(unix)]
 use super::{
-    coordinator_pid_path, coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo,
+    CoordinatorRequest, CoordinatorResponse, JobInfo, coordinator_pid_path, coordinator_socket_path,
 };
 use crate::executor::command::run_command;
 use crate::executor::dag::DagGraph;

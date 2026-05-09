@@ -32,17 +32,17 @@ pub fn partition_foreground_background(jobs: &[JobSpec]) -> (Vec<JobSpec>, Vec<J
     let mut stack: Vec<usize> = must_fg
         .iter()
         .enumerate()
-        .filter(|(_, &is_fg)| is_fg)
+        .filter(|&(_, &is_fg)| is_fg)
         .map(|(i, _)| i)
         .collect();
 
     while let Some(idx) = stack.pop() {
         for dep_name in &jobs[idx].needs {
-            if let Some(&dep_idx) = name_to_idx.get(dep_name.as_str()) {
-                if !must_fg[dep_idx] {
-                    must_fg[dep_idx] = true;
-                    stack.push(dep_idx); // Recurse into this dep's deps
-                }
+            if let Some(&dep_idx) = name_to_idx.get(dep_name.as_str())
+                && !must_fg[dep_idx]
+            {
+                must_fg[dep_idx] = true;
+                stack.push(dep_idx); // Recurse into this dep's deps
             }
         }
     }

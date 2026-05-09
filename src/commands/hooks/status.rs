@@ -1,7 +1,7 @@
 use super::{find_project_hooks, styled_trust_level};
 use crate::hooks::{
-    yaml_config, yaml_config_loader, HookType, TrustDatabase, TrustLevel,
-    DEPRECATED_HOOK_REMOVAL_VERSION, PROJECT_HOOKS_DIR,
+    DEPRECATED_HOOK_REMOVAL_VERSION, HookType, PROJECT_HOOKS_DIR, TrustDatabase, TrustLevel,
+    yaml_config, yaml_config_loader,
 };
 use crate::output::Output;
 use crate::styles::{bold, cyan, dim, green, red, yellow};
@@ -276,10 +276,10 @@ fn find_yaml_config_for_status(
     git_dir: &Path,
     worktree_root: Option<&Path>,
 ) -> Result<Option<yaml_config::YamlConfig>> {
-    if let Some(wt) = worktree_root {
-        if let Ok(Some(config)) = yaml_config_loader::load_merged_config(wt) {
-            return Ok(Some(config));
-        }
+    if let Some(wt) = worktree_root
+        && let Ok(Some(config)) = yaml_config_loader::load_merged_config(wt)
+    {
+        return Ok(Some(config));
     }
 
     // Fall back: search worktree subdirectories of the project root
@@ -290,10 +290,11 @@ fn find_yaml_config_for_status(
         .flatten()
     {
         let path = entry.path();
-        if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
-            if let Ok(Some(config)) = yaml_config_loader::load_merged_config(&path) {
-                return Ok(Some(config));
-            }
+        if path.is_dir()
+            && path.file_name().map(|n| n != ".git").unwrap_or(false)
+            && let Ok(Some(config)) = yaml_config_loader::load_merged_config(&path)
+        {
+            return Ok(Some(config));
         }
     }
 

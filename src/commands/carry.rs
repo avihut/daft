@@ -1,12 +1,12 @@
 use crate::{
-    core::{worktree::carry, OutputSink},
+    WorktreeConfig,
+    core::{OutputSink, worktree::carry},
     get_project_root,
-    git::{should_show_gitoxide_notice, GitCommand},
+    git::{GitCommand, should_show_gitoxide_notice},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    WorktreeConfig,
 };
 use anyhow::Result;
 use clap::Parser;

@@ -146,12 +146,11 @@ pub fn match_templates(
         for wt in &linked_worktrees {
             let branch = wt.branch.as_deref().unwrap(); // safe: filtered above
             let ctx = build_template_context(project_root, branch);
-            if let Ok(rendered) = render(&layout.template, &ctx) {
-                if let Ok(expected_path) = resolve_path(&rendered, project_root) {
-                    if expected_path == wt.path {
-                        matched.push(*wt);
-                    }
-                }
+            if let Ok(rendered) = render(&layout.template, &ctx)
+                && let Ok(expected_path) = resolve_path(&rendered, project_root)
+                && expected_path == wt.path
+            {
+                matched.push(*wt);
             }
         }
         if !matched.is_empty() {
@@ -233,21 +232,19 @@ pub fn detect_structure_with_worktrees_dir(
     };
 
     // Step 2: ContainedClassic — non-bare, .git lives inside a branch subdir.
-    if !is_bare {
-        if let Some(branch) = &main.branch {
-            // git_common_dir is typically <project_root>/<branch>/.git
-            // Its parent is the branch subdir.
-            if let Some(git_parent) = git_common_dir.parent() {
-                // The git parent must be a direct child of project_root.
-                if let Ok(relative) = git_parent.strip_prefix(project_root) {
-                    let components: Vec<_> = relative.components().collect();
-                    if components.len() == 1 {
-                        let subdir_name = components[0].as_os_str().to_string_lossy();
-                        if subdir_name == branch.as_str() {
-                            return DetectionResult::Detected(
-                                BuiltinLayout::ContainedClassic.to_layout(),
-                            );
-                        }
+    if !is_bare && let Some(branch) = &main.branch {
+        // git_common_dir is typically <project_root>/<branch>/.git
+        // Its parent is the branch subdir.
+        if let Some(git_parent) = git_common_dir.parent() {
+            // The git parent must be a direct child of project_root.
+            if let Ok(relative) = git_parent.strip_prefix(project_root) {
+                let components: Vec<_> = relative.components().collect();
+                if components.len() == 1 {
+                    let subdir_name = components[0].as_os_str().to_string_lossy();
+                    if subdir_name == branch.as_str() {
+                        return DetectionResult::Detected(
+                            BuiltinLayout::ContainedClassic.to_layout(),
+                        );
                     }
                 }
             }
@@ -256,12 +253,10 @@ pub fn detect_structure_with_worktrees_dir(
 
     // Step 3: Contained (bare) — bare repo, main worktree is a child of project_root
     // named after the branch.
-    if is_bare {
-        if let Some(branch) = &main.branch {
-            let expected = project_root.join(branch.as_str());
-            if main.path == expected {
-                return DetectionResult::Detected(BuiltinLayout::Contained.to_layout());
-            }
+    if is_bare && let Some(branch) = &main.branch {
+        let expected = project_root.join(branch.as_str());
+        if main.path == expected {
+            return DetectionResult::Detected(BuiltinLayout::Contained.to_layout());
         }
     }
 
@@ -332,10 +327,10 @@ pub fn detect_layout(git_common_dir: &Path, global_config: &GlobalConfig) -> Det
 
     // Skip detection for multi-remote repos — template matching doesn't
     // account for the extra remote-name path component.
-    if let Ok(settings) = DaftSettings::load_global() {
-        if settings.multi_remote_enabled {
-            return DetectionResult::NoMatch;
-        }
+    if let Ok(settings) = DaftSettings::load_global()
+        && settings.multi_remote_enabled
+    {
+        return DetectionResult::NoMatch;
     }
 
     let git = GitCommand::new(true);
@@ -374,18 +369,17 @@ pub fn detect_layout(git_common_dir: &Path, global_config: &GlobalConfig) -> Det
             result,
             DetectionResult::NoWorktrees | DetectionResult::NoMatch
         )
+        && let Some(grandparent) = project_root.parent()
     {
-        if let Some(grandparent) = project_root.parent() {
-            let retry = detect_layout_from_porcelain(
-                &porcelain,
-                git_common_dir,
-                grandparent,
-                is_bare,
-                global_config,
-            );
-            if matches!(retry, DetectionResult::Detected(_)) {
-                return retry;
-            }
+        let retry = detect_layout_from_porcelain(
+            &porcelain,
+            git_common_dir,
+            grandparent,
+            is_bare,
+            global_config,
+        );
+        if matches!(retry, DetectionResult::Detected(_)) {
+            return retry;
         }
     }
 

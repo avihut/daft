@@ -108,10 +108,10 @@ impl LiveTable {
                     }
                     None => return,
                 };
-                if let Some(spec) = &self.cfg.sort_spec {
-                    if touched.intersects(spec.required_fields()) {
-                        self.pending_resort = true;
-                    }
+                if let Some(spec) = &self.cfg.sort_spec
+                    && touched.intersects(spec.required_fields())
+                {
+                    self.pending_resort = true;
                 }
                 if self.cfg.partition_by_owner && touched.contains(FieldSet::OWNER) {
                     self.pending_resort = true;

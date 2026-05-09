@@ -5,7 +5,7 @@
 //! shortcut symlinks, and shell wrappers.
 
 use crate::doctor::{CheckResult, FixAction};
-use crate::shortcuts::{shortcuts_for_style, ShortcutStyle};
+use crate::shortcuts::{ShortcutStyle, shortcuts_for_style};
 use std::path::{Path, PathBuf};
 
 /// Expected command symlinks that should point to the daft binary.
@@ -428,13 +428,13 @@ pub(crate) fn is_valid_symlink(path: &Path, install_dir: &Path) -> bool {
                 return true;
             }
             // Canonicalize for other target formats
-            if let Some(parent) = path.parent() {
-                if let (Ok(resolved), Ok(expected)) = (
+            if let Some(parent) = path.parent()
+                && let (Ok(resolved), Ok(expected)) = (
                     parent.join(&target).canonicalize(),
                     install_dir.join("daft").canonicalize(),
-                ) {
-                    return resolved == expected;
-                }
+                )
+            {
+                return resolved == expected;
             }
         }
         return false;
@@ -630,9 +630,11 @@ mod tests {
         // Should have actions for each missing shortcut (all git shortcuts minus gwtclone)
         assert!(!actions.is_empty());
         assert!(actions.iter().all(|a| a.would_succeed));
-        assert!(actions
-            .iter()
-            .all(|a| a.description.contains("Create symlink")));
+        assert!(
+            actions
+                .iter()
+                .all(|a| a.description.contains("Create symlink"))
+        );
     }
 
     #[test]
@@ -660,11 +662,13 @@ mod tests {
         let actions = dry_run_symlink_actions(&missing, install_dir);
         assert_eq!(actions.len(), 1);
         assert!(!actions[0].would_succeed);
-        assert!(actions[0]
-            .failure_reason
-            .as_ref()
-            .unwrap()
-            .contains("not a symlink"));
+        assert!(
+            actions[0]
+                .failure_reason
+                .as_ref()
+                .unwrap()
+                .contains("not a symlink")
+        );
     }
 
     #[test]

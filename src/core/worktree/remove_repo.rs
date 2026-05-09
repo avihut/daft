@@ -3,7 +3,7 @@
 //! Resolves a repo target from a path or cwd, enumerates its worktrees,
 //! and provides the per-task execution helpers used by the command.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
 pub use crate::core::worktree::prune::WorktreeEntry;
@@ -258,10 +258,10 @@ pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
     // Drop trust DB entry. Best-effort. Only re-write the file when something
     // actually changed; otherwise loading + saving on every remove pollutes
     // the user's real `repos.json` (and tests that don't sandbox it).
-    if let Ok(mut db) = crate::hooks::TrustDatabase::load() {
-        if db.reset_repo(&target.bare_git_dir) {
-            let _ = db.save();
-        }
+    if let Ok(mut db) = crate::hooks::TrustDatabase::load()
+        && db.reset_repo(&target.bare_git_dir)
+    {
+        let _ = db.save();
     }
     Ok(())
 }
@@ -315,15 +315,15 @@ fn parse_worktree_list_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
             is_detached = true;
         }
     }
-    if let Some(p) = path {
-        if !is_bare {
-            out.push(WorktreeEntry {
-                path: p,
-                branch,
-                is_bare,
-                is_detached,
-            });
-        }
+    if let Some(p) = path
+        && !is_bare
+    {
+        out.push(WorktreeEntry {
+            path: p,
+            branch,
+            is_bare,
+            is_detached,
+        });
     }
     out
 }

@@ -440,14 +440,13 @@ fn is_update_check_disabled() -> bool {
     if let Ok(output) = Command::new("git")
         .args(["config", "--global", "--get", keys::UPDATE_CHECK])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_lowercase();
-            if matches!(value.as_str(), "false" | "no" | "off" | "0") {
-                return true;
-            }
+        let value = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_lowercase();
+        if matches!(value.as_str(), "false" | "no" | "off" | "0") {
+            return true;
         }
     }
 

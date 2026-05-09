@@ -4,13 +4,13 @@ use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
-    layout::{Constraint, Layout, Position},
     Terminal, TerminalOptions, Viewport,
+    layout::{Constraint, Layout, Position},
 };
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Drives the inline TUI render loop, consuming `DagEvent`s and updating the
@@ -216,12 +216,12 @@ impl TuiRenderer {
             // Honor an externally-set cancel signal (e.g. flipped by a sibling
             // thread or a SIGINT handler) before we draw, so we exit promptly
             // and the final draw renders the cancelled-state UI.
-            if let Some(sig) = &self.cancel_signal {
-                if sig.load(Ordering::Relaxed) {
-                    self.state.live.mark_cancelled();
-                    self.state.done = true;
-                    final_draw_and_return!();
-                }
+            if let Some(sig) = &self.cancel_signal
+                && sig.load(Ordering::Relaxed)
+            {
+                self.state.live.mark_cancelled();
+                self.state.done = true;
+                final_draw_and_return!();
             }
 
             // Render current state.
@@ -259,19 +259,17 @@ impl TuiRenderer {
             // is observed, flip the optional cancel signal so the producer
             // exits cooperatively, mark state done and live as cancelled,
             // and emit a final draw.
-            if event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        if let Some(sig) = &self.cancel_signal {
-                            sig.store(true, Ordering::Relaxed);
-                        }
-                        self.state.live.mark_cancelled();
-                        self.state.done = true;
-                        final_draw_and_return!();
-                    }
+            if event::poll(Duration::from_millis(0)).unwrap_or(false)
+                && let Ok(Event::Key(key)) = event::read()
+                && key.code == KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                if let Some(sig) = &self.cancel_signal {
+                    sig.store(true, Ordering::Relaxed);
                 }
+                self.state.live.mark_cancelled();
+                self.state.done = true;
+                final_draw_and_return!();
             }
 
             // Tick spinner animation.
@@ -291,8 +289,8 @@ mod tests {
     use super::*;
     use crate::core::worktree::list::Stat;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn cancel_signal_can_be_set_externally() {
@@ -321,11 +319,13 @@ mod tests {
         // Flipping the external clone is observable through the renderer's
         // own clone (single source of truth).
         signal.store(true, Ordering::Relaxed);
-        assert!(renderer
-            .cancel_signal
-            .as_ref()
-            .unwrap()
-            .load(Ordering::Relaxed));
+        assert!(
+            renderer
+                .cancel_signal
+                .as_ref()
+                .unwrap()
+                .load(Ordering::Relaxed)
+        );
     }
 
     #[test]

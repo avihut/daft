@@ -9,8 +9,8 @@
 //! [`super::run_pipeline_streaming`](crate::core::worktree::exec::run_pipeline_streaming).
 
 use super::{
-    alias_cache::AliasCache, run_pipeline_streaming, CancelFlag, CommandSpec, ExecMode, ExecReport,
-    ResolvedTarget,
+    CancelFlag, CommandSpec, ExecMode, ExecReport, ResolvedTarget, alias_cache::AliasCache,
+    run_pipeline_streaming,
 };
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Context for resolving template variables.
 pub struct TemplateContext {
@@ -181,7 +181,9 @@ mod tests {
     #[test]
     #[serial]
     fn test_render_centralized_template() {
-        env::set_var("DAFT_DATA_DIR", "/tmp/daft-test-data");
+        unsafe {
+            env::set_var("DAFT_DATA_DIR", "/tmp/daft-test-data");
+        }
         let ctx = TemplateContext {
             repo_path: PathBuf::from("/home/user/myproject"),
             repo: "myproject".into(),
@@ -196,7 +198,9 @@ mod tests {
             rendered,
             "/tmp/daft-test-data/worktrees/myproject/feature-auth"
         );
-        env::remove_var("DAFT_DATA_DIR");
+        unsafe {
+            env::remove_var("DAFT_DATA_DIR");
+        }
     }
 
     #[test]

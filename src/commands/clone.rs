@@ -1,10 +1,11 @@
 use crate::{
     check_dependencies,
     core::{
+        HookRunner, NullSink, OutputSink, TuiBridge,
         global_config::GlobalConfig,
         layout::{
-            resolver::{resolve_layout, LayoutResolutionContext},
             Layout, TemplateContext,
+            resolver::{LayoutResolutionContext, resolve_layout},
         },
         ownership::OwnershipStrategy,
         worktree::{
@@ -15,22 +16,21 @@ use crate::{
             list_stream,
             sync_dag::{DagEvent, OperationPhase, PatchSource, TaskMessage, TaskStatus},
         },
-        HookRunner, NullSink, OutputSink, TuiBridge,
     },
     executor::cli_presenter::CliPresenter,
-    git::{should_show_gitoxide_notice, GitCommand},
-    hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
+    git::{GitCommand, should_show_gitoxide_notice},
+    hints::{LayoutPromptResult, maybe_prompt_layout_choice, maybe_show_shell_hint},
     hooks::{
-        get_remote_url_for_git_dir, yaml_config_loader, HookContext, HookExecutor, HookType,
-        TrustDatabase, TrustLevel,
+        HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel, get_remote_url_for_git_dir,
+        yaml_config_loader,
     },
     logging::init_logging,
     output::{
-        tui::{
-            operation_table::{OperationTable, TableConfig},
-            Column,
-        },
         CliOutput, Output, OutputConfig,
+        tui::{
+            Column,
+            operation_table::{OperationTable, TableConfig},
+        },
     },
     settings::{DaftSettings, HookOutputConfig},
     utils::*,
@@ -166,13 +166,19 @@ pub fn run() -> Result<()> {
 
 fn validate_arg_combinations(args: &Args) -> Result<()> {
     if args.no_checkout && args.all_branches {
-        anyhow::bail!("--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches.");
+        anyhow::bail!(
+            "--no-checkout and --all-branches cannot be used together.\nUse --no-checkout to create only the bare repository, or --all-branches to create worktrees for all branches."
+        );
     }
     if !args.branch.is_empty() && args.all_branches {
-        anyhow::bail!("--branch and --all-branches cannot be used together.\nUse --branch to checkout a specific branch, or --all-branches to create worktrees for all branches.");
+        anyhow::bail!(
+            "--branch and --all-branches cannot be used together.\nUse --branch to checkout a specific branch, or --all-branches to create worktrees for all branches."
+        );
     }
     if !args.branch.is_empty() && args.no_checkout {
-        anyhow::bail!("--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation.");
+        anyhow::bail!(
+            "--branch and --no-checkout cannot be used together.\nUse --branch to checkout a specific branch, or --no-checkout to skip worktree creation."
+        );
     }
     if args.remote.is_some() && args.branch.len() > 1 {
         anyhow::bail!("--remote cannot be used with multiple -b flags.");
@@ -591,42 +597,43 @@ fn create_satellite_worktrees(
         };
 
         // Run worktree-pre-create hook
-        if let Some(ref hooks_config) = shared_hooks_config {
-            if let Ok(mut executor) = HookExecutor::new(hooks_config.clone()) {
-                if trust_hooks {
-                    if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
-                        let _ = executor.trust_repository_with_fingerprint(
-                            &base_result.git_dir,
-                            TrustLevel::Allow,
-                            fp,
-                        );
-                    } else {
-                        let _ = executor.trust_repository(&base_result.git_dir, TrustLevel::Allow);
-                    }
+        if let Some(ref hooks_config) = shared_hooks_config
+            && let Ok(mut executor) = HookExecutor::new(hooks_config.clone())
+        {
+            if trust_hooks {
+                if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
+                    let _ = executor.trust_repository_with_fingerprint(
+                        &base_result.git_dir,
+                        TrustLevel::Allow,
+                        fp,
+                    );
+                } else {
+                    let _ = executor.trust_repository(&base_result.git_dir, TrustLevel::Allow);
                 }
+            }
 
-                let ctx = HookContext::new(
-                    HookType::PreCreate,
-                    "clone",
-                    &base_result.parent_dir,
-                    &base_result.git_dir,
-                    &base_result.remote_name,
-                    &abs_worktree_path,
-                    &abs_worktree_path,
-                    branch,
-                )
-                .with_new_branch(false);
+            let ctx = HookContext::new(
+                HookType::PreCreate,
+                "clone",
+                &base_result.parent_dir,
+                &base_result.git_dir,
+                &base_result.remote_name,
+                &abs_worktree_path,
+                &abs_worktree_path,
+                branch,
+            )
+            .with_new_branch(false);
 
-                let presenter = CliPresenter::auto(&HookOutputConfig::default());
-                if let Ok(outcome) = executor.execute(&ctx, output, presenter) {
-                    if !outcome.success && !outcome.skipped {
-                        output.warning(&format!(
-                            "pre-create hook failed for '{}', skipping",
-                            branch
-                        ));
-                        continue;
-                    }
-                }
+            let presenter = CliPresenter::auto(&HookOutputConfig::default());
+            if let Ok(outcome) = executor.execute(&ctx, output, presenter)
+                && !outcome.success
+                && !outcome.skipped
+            {
+                output.warning(&format!(
+                    "pre-create hook failed for '{}', skipping",
+                    branch
+                ));
+                continue;
             }
         }
 
@@ -906,46 +913,46 @@ fn create_satellite_worktrees_tui(
             });
 
             // Run worktree-post-create hook for the base worktree via TuiBridge
-            if let Some(ref hooks_cfg) = shared_hooks_config {
-                if let Ok(mut executor) = HookExecutor::new(hooks_cfg.clone()) {
-                    if shared_trust_hooks {
-                        if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
-                            let _ = executor.trust_repository_with_fingerprint(
-                                &shared_git_dir,
-                                TrustLevel::Allow,
-                                fp,
-                            );
-                        } else {
-                            let _ = executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
-                        }
+            if let Some(ref hooks_cfg) = shared_hooks_config
+                && let Ok(mut executor) = HookExecutor::new(hooks_cfg.clone())
+            {
+                if shared_trust_hooks {
+                    if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
+                        let _ = executor.trust_repository_with_fingerprint(
+                            &shared_git_dir,
+                            TrustLevel::Allow,
+                            fp,
+                        );
+                    } else {
+                        let _ = executor.trust_repository(&shared_git_dir, TrustLevel::Allow);
                     }
-                    let base_worktree_path = shared_base_path
-                        .as_ref()
-                        .expect("base path must exist when base branch is set");
-
-                    // Link shared files before post-create hooks
-                    crate::core::shared::link_shared_files_on_create(
-                        base_worktree_path,
-                        &shared_git_dir,
-                        &shared_parent_dir,
-                    );
-
-                    let mut bridge = TuiBridge::new(executor, tx.clone(), base.clone());
-
-                    let ctx = HookContext::new(
-                        HookType::PostCreate,
-                        "clone",
-                        &*shared_parent_dir,
-                        &*shared_git_dir,
-                        &*shared_remote_name_for_hooks,
-                        base_worktree_path,
-                        base_worktree_path,
-                        base,
-                    )
-                    .with_new_branch(false);
-
-                    let _ = bridge.run_hook(&ctx);
                 }
+                let base_worktree_path = shared_base_path
+                    .as_ref()
+                    .expect("base path must exist when base branch is set");
+
+                // Link shared files before post-create hooks
+                crate::core::shared::link_shared_files_on_create(
+                    base_worktree_path,
+                    &shared_git_dir,
+                    &shared_parent_dir,
+                );
+
+                let mut bridge = TuiBridge::new(executor, tx.clone(), base.clone());
+
+                let ctx = HookContext::new(
+                    HookType::PostCreate,
+                    "clone",
+                    &*shared_parent_dir,
+                    &*shared_git_dir,
+                    &*shared_remote_name_for_hooks,
+                    base_worktree_path,
+                    base_worktree_path,
+                    base,
+                )
+                .with_new_branch(false);
+
+                let _ = bridge.run_hook(&ctx);
             }
 
             // Refresh last_commit + branch_age cells via PostTask patches so
@@ -1025,10 +1032,11 @@ fn create_satellite_worktrees_tui(
                         )
                         .with_new_branch(false);
 
-                        if let Ok(outcome) = bridge.run_hook(&ctx) {
-                            if !outcome.success && !outcome.skipped {
-                                hook_failed = true;
-                            }
+                        if let Ok(outcome) = bridge.run_hook(&ctx)
+                            && !outcome.success
+                            && !outcome.skipped
+                        {
+                            hook_failed = true;
                         }
                     }
                 }
@@ -1356,12 +1364,11 @@ fn run_post_clone_hook(
     let presenter = CliPresenter::auto(&HookOutputConfig::default());
     let hook_result = executor.execute(&ctx, output, presenter)?;
 
-    if hook_result.skipped {
-        if let Some(reason) = &hook_result.skip_reason {
-            if reason == "Repository not trusted" {
-                executor.check_hooks_notice(worktree_path, &result.git_dir, output);
-            }
-        }
+    if hook_result.skipped
+        && let Some(reason) = &hook_result.skip_reason
+        && reason == "Repository not trusted"
+    {
+        executor.check_hooks_notice(worktree_path, &result.git_dir, output);
     }
 
     Ok(())

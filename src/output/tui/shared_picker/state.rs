@@ -200,11 +200,7 @@ impl PickerState {
 
                 let prev = if all_traversable {
                     // All entries traversable
-                    if current > 0 {
-                        Some(current - 1)
-                    } else {
-                        None
-                    }
+                    if current > 0 { Some(current - 1) } else { None }
                 } else {
                     // Skip entries without files
                     tab.entries[..current]

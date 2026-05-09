@@ -45,16 +45,15 @@ pub const STATE_DIR_ENV: &str = "DAFT_STATE_DIR";
 /// env var is ignored. Always falls back to `dirs::config_dir()/daft`.
 pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build) {
-        if let Ok(dir) = env::var(CONFIG_DIR_ENV) {
-            if !dir.is_empty() {
-                let path = PathBuf::from(&dir);
-                if path.is_relative() {
-                    anyhow::bail!("DAFT_CONFIG_DIR must be an absolute path, got: {dir}");
-                }
-                return Ok(path);
-            }
+    if cfg!(daft_dev_build)
+        && let Ok(dir) = env::var(CONFIG_DIR_ENV)
+        && !dir.is_empty()
+    {
+        let path = PathBuf::from(&dir);
+        if path.is_relative() {
+            anyhow::bail!("DAFT_CONFIG_DIR must be an absolute path, got: {dir}");
         }
+        return Ok(path);
     }
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
@@ -68,16 +67,15 @@ pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
 /// env var is ignored. Always falls back to `dirs::data_dir()/daft`.
 pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build) {
-        if let Ok(dir) = env::var(DATA_DIR_ENV) {
-            if !dir.is_empty() {
-                let path = PathBuf::from(&dir);
-                if path.is_relative() {
-                    anyhow::bail!("DAFT_DATA_DIR must be an absolute path, got: {dir}");
-                }
-                return Ok(path);
-            }
+    if cfg!(daft_dev_build)
+        && let Ok(dir) = env::var(DATA_DIR_ENV)
+        && !dir.is_empty()
+    {
+        let path = PathBuf::from(&dir);
+        if path.is_relative() {
+            anyhow::bail!("DAFT_DATA_DIR must be an absolute path, got: {dir}");
         }
+        return Ok(path);
     }
     let data_dir =
         dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
@@ -92,16 +90,15 @@ pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
 /// (macOS: `~/.local/state/daft`, Linux: `$XDG_STATE_HOME/daft`).
 pub fn daft_state_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build) {
-        if let Ok(dir) = env::var(STATE_DIR_ENV) {
-            if !dir.is_empty() {
-                let path = PathBuf::from(&dir);
-                if path.is_relative() {
-                    anyhow::bail!("DAFT_STATE_DIR must be an absolute path, got: {dir}");
-                }
-                return Ok(path);
-            }
+    if cfg!(daft_dev_build)
+        && let Ok(dir) = env::var(STATE_DIR_ENV)
+        && !dir.is_empty()
+    {
+        let path = PathBuf::from(&dir);
+        if path.is_relative() {
+            anyhow::bail!("DAFT_STATE_DIR must be an absolute path, got: {dir}");
         }
+        return Ok(path);
     }
     // dirs::state_dir() returns None on macOS (no native equivalent).
     // Fall back to ~/.local/state which is the XDG convention.
@@ -221,7 +218,9 @@ mod tests {
     #[test]
     #[serial]
     fn test_daft_config_dir_default() {
-        env::remove_var(CONFIG_DIR_ENV);
+        unsafe {
+            env::remove_var(CONFIG_DIR_ENV);
+        }
         let dir = daft_config_dir().unwrap();
         assert!(dir.ends_with("daft"));
     }
@@ -229,48 +228,68 @@ mod tests {
     #[test]
     #[serial]
     fn test_daft_config_dir_override() {
-        env::set_var(CONFIG_DIR_ENV, "/tmp/test-daft-config");
+        unsafe {
+            env::set_var(CONFIG_DIR_ENV, "/tmp/test-daft-config");
+        }
         let dir = daft_config_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/test-daft-config"));
-        env::remove_var(CONFIG_DIR_ENV);
+        unsafe {
+            env::remove_var(CONFIG_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_config_dir_override_no_suffix() {
-        env::set_var(CONFIG_DIR_ENV, "/tmp/my-custom-dir");
+        unsafe {
+            env::set_var(CONFIG_DIR_ENV, "/tmp/my-custom-dir");
+        }
         let dir = daft_config_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/my-custom-dir"));
         assert!(!dir.ends_with("daft"));
-        env::remove_var(CONFIG_DIR_ENV);
+        unsafe {
+            env::remove_var(CONFIG_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_config_dir_empty_falls_back() {
-        env::set_var(CONFIG_DIR_ENV, "");
+        unsafe {
+            env::set_var(CONFIG_DIR_ENV, "");
+        }
         let dir = daft_config_dir().unwrap();
         assert!(dir.ends_with("daft"));
-        env::remove_var(CONFIG_DIR_ENV);
+        unsafe {
+            env::remove_var(CONFIG_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_config_dir_rejects_relative_path() {
-        env::set_var(CONFIG_DIR_ENV, "relative/path");
+        unsafe {
+            env::set_var(CONFIG_DIR_ENV, "relative/path");
+        }
         let result = daft_config_dir();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be an absolute path"));
-        env::remove_var(CONFIG_DIR_ENV);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be an absolute path")
+        );
+        unsafe {
+            env::remove_var(CONFIG_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_data_dir_default() {
-        env::remove_var(DATA_DIR_ENV);
+        unsafe {
+            env::remove_var(DATA_DIR_ENV);
+        }
         let dir = daft_data_dir().unwrap();
         assert!(dir.ends_with("daft"));
     }
@@ -278,48 +297,68 @@ mod tests {
     #[test]
     #[serial]
     fn test_daft_data_dir_override() {
-        env::set_var(DATA_DIR_ENV, "/tmp/test-daft-data");
+        unsafe {
+            env::set_var(DATA_DIR_ENV, "/tmp/test-daft-data");
+        }
         let dir = daft_data_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/test-daft-data"));
-        env::remove_var(DATA_DIR_ENV);
+        unsafe {
+            env::remove_var(DATA_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_data_dir_override_no_suffix() {
-        env::set_var(DATA_DIR_ENV, "/tmp/my-custom-data");
+        unsafe {
+            env::set_var(DATA_DIR_ENV, "/tmp/my-custom-data");
+        }
         let dir = daft_data_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/my-custom-data"));
         assert!(!dir.ends_with("daft"));
-        env::remove_var(DATA_DIR_ENV);
+        unsafe {
+            env::remove_var(DATA_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_data_dir_empty_falls_back() {
-        env::set_var(DATA_DIR_ENV, "");
+        unsafe {
+            env::set_var(DATA_DIR_ENV, "");
+        }
         let dir = daft_data_dir().unwrap();
         assert!(dir.ends_with("daft"));
-        env::remove_var(DATA_DIR_ENV);
+        unsafe {
+            env::remove_var(DATA_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_data_dir_rejects_relative_path() {
-        env::set_var(DATA_DIR_ENV, "relative/path");
+        unsafe {
+            env::set_var(DATA_DIR_ENV, "relative/path");
+        }
         let result = daft_data_dir();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be an absolute path"));
-        env::remove_var(DATA_DIR_ENV);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be an absolute path")
+        );
+        unsafe {
+            env::remove_var(DATA_DIR_ENV);
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_state_dir_default() {
-        env::remove_var("DAFT_STATE_DIR");
+        unsafe {
+            env::remove_var("DAFT_STATE_DIR");
+        }
         let dir = daft_state_dir().unwrap();
         assert!(dir.ends_with("daft"));
     }
@@ -327,23 +366,33 @@ mod tests {
     #[test]
     #[serial]
     fn test_daft_state_dir_override() {
-        env::set_var("DAFT_STATE_DIR", "/tmp/test-daft-state");
+        unsafe {
+            env::set_var("DAFT_STATE_DIR", "/tmp/test-daft-state");
+        }
         let dir = daft_state_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/test-daft-state"));
-        env::remove_var("DAFT_STATE_DIR");
+        unsafe {
+            env::remove_var("DAFT_STATE_DIR");
+        }
     }
 
     #[test]
     #[serial]
     fn test_daft_state_dir_rejects_relative_path() {
-        env::set_var("DAFT_STATE_DIR", "relative/path");
+        unsafe {
+            env::set_var("DAFT_STATE_DIR", "relative/path");
+        }
         let result = daft_state_dir();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be an absolute path"));
-        env::remove_var("DAFT_STATE_DIR");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be an absolute path")
+        );
+        unsafe {
+            env::remove_var("DAFT_STATE_DIR");
+        }
     }
 
     fn args(parts: &[&str]) -> Vec<String> {

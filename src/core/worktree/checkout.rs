@@ -2,7 +2,7 @@
 //!
 //! Creates a worktree for an existing branch.
 
-use crate::core::layout::{auto_gitignore_if_needed, Layout};
+use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -349,10 +349,10 @@ fn find_existing_worktree_for_branch(
         if let Some(worktree_path) = line.strip_prefix("worktree ") {
             current_path = Some(PathBuf::from(worktree_path));
         } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if let Some(branch) = branch_ref.strip_prefix("refs/heads/") {
-                if branch == branch_name {
-                    return Ok(current_path.take());
-                }
+            if let Some(branch) = branch_ref.strip_prefix("refs/heads/")
+                && branch == branch_name
+            {
+                return Ok(current_path.take());
             }
             current_path = None;
         } else if line.is_empty() {
@@ -554,10 +554,10 @@ pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> 
                 continue;
             }
             // Strip the remote prefix to get just the branch name
-            if let Some(branch) = trimmed.strip_prefix(&format!("{remote_name}/")) {
-                if seen.insert(branch.to_string()) {
-                    names.push(branch.to_string());
-                }
+            if let Some(branch) = trimmed.strip_prefix(&format!("{remote_name}/"))
+                && seen.insert(branch.to_string())
+            {
+                names.push(branch.to_string());
             }
         }
     }

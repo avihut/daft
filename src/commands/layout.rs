@@ -1,20 +1,21 @@
 use crate::{
     core::{
+        CommandBridge,
         global_config::GlobalConfig,
         layout::{
+            BuiltinLayout, DEFAULT_LAYOUT, Layout,
             detect::detect_layout,
-            resolver::{resolve_layout, DetectionResult, LayoutResolutionContext, LayoutSource},
-            transform, BuiltinLayout, Layout, DEFAULT_LAYOUT,
+            resolver::{DetectionResult, LayoutResolutionContext, LayoutSource, resolve_layout},
+            transform,
         },
-        CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir,
     git::GitCommand,
-    hooks::{yaml_config_loader, HookExecutor, TrustDatabase},
+    hooks::{HookExecutor, TrustDatabase, yaml_config_loader},
     is_git_repository,
     output::{
-        emit::{self, Cell, EmitArgs, EmitPayload, Table},
         CliOutput, Output, OutputConfig,
+        emit::{self, Cell, EmitArgs, EmitPayload, Table},
     },
     settings::DaftSettings,
     styles::{self, bold, dim, dim_underline},
@@ -25,7 +26,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tabled::{
     builder::Builder,
-    settings::{object::Columns, Padding, Style},
+    settings::{Padding, Style, object::Columns},
 };
 
 #[derive(Parser)]
@@ -583,17 +584,13 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
     // read_source_state is the clone subdir (e.g., repo/master/). The actual
     // wrapper directory is one level up. Detect this by checking the current
     // layout stored in repos.json.
-    if let Ok(db) = TrustDatabase::load() {
-        if let Some(current_layout_name) = db.get_layout(&source.git_dir) {
-            if let Some(current_layout) = global_config.resolve_layout_by_name(current_layout_name)
-            {
-                if current_layout.needs_wrapper() {
-                    if let Some(wrapper) = source.project_root.parent() {
-                        source.project_root = wrapper.to_path_buf();
-                    }
-                }
-            }
-        }
+    if let Ok(db) = TrustDatabase::load()
+        && let Some(current_layout_name) = db.get_layout(&source.git_dir)
+        && let Some(current_layout) = global_config.resolve_layout_by_name(current_layout_name)
+        && current_layout.needs_wrapper()
+        && let Some(wrapper) = source.project_root.parent()
+    {
+        source.project_root = wrapper.to_path_buf();
     }
 
     // Compute target state using the (possibly adjusted) project root
@@ -753,10 +750,10 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         .context("Failed to save layout to repos.json")?;
 
     // CD to the worktree for the user's original branch (it may have moved)
-    if let Some(ref branch) = user_branch {
-        if let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch) {
-            output.cd_path(&wt_path);
-        }
+    if let Some(ref branch) = user_branch
+        && let Ok(Some(wt_path)) = git.find_worktree_for_branch(branch)
+    {
+        output.cd_path(&wt_path);
     }
 
     output.result(&format!("Transformed to layout '{}'.", target_layout.name));
@@ -793,12 +790,12 @@ fn has_real_uncommitted_changes(
         if wt.is_default {
             continue;
         }
-        if let Ok(rel) = wt.path.strip_prefix(&source.project_root) {
-            if let Some(first) = rel.components().next() {
-                let dir_name = first.as_os_str().to_string_lossy();
-                ignore_patterns.push(format!("{dir_name}/"));
-                ignore_patterns.push(dir_name.to_string());
-            }
+        if let Ok(rel) = wt.path.strip_prefix(&source.project_root)
+            && let Some(first) = rel.components().next()
+        {
+            let dir_name = first.as_os_str().to_string_lossy();
+            ignore_patterns.push(format!("{dir_name}/"));
+            ignore_patterns.push(dir_name.to_string());
         }
     }
 
@@ -927,12 +924,11 @@ fn relocate_worktrees(
             // Skip detached HEAD worktrees (sandboxes)
             current_path = None;
         } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if !is_bare {
-                if let (Some(path), Some(branch)) =
+            if !is_bare
+                && let (Some(path), Some(branch)) =
                     (current_path.take(), branch_ref.strip_prefix("refs/heads/"))
-                {
-                    worktrees.push((path, branch.to_string()));
-                }
+            {
+                worktrees.push((path, branch.to_string()));
             }
         } else if line.is_empty() {
             is_bare = false;

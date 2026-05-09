@@ -4,8 +4,8 @@
 //! ensuring backward compatibility during the migration.
 
 use super::{Output, OutputConfig};
-use crate::styles::{self, colors_enabled, colors_enabled_stderr};
 use crate::CD_FILE_ENV;
+use crate::styles::{self, colors_enabled, colors_enabled_stderr};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
 use std::path::Path;
@@ -266,14 +266,13 @@ impl Output for CliOutput {
     }
 
     fn cd_path(&mut self, path: &Path) {
-        if self.config.autocd {
-            if let Ok(cd_file) = env::var(CD_FILE_ENV) {
-                if let Err(e) = std::fs::write(&cd_file, path.display().to_string()) {
-                    self.stderr_line(&format!(
-                        "warning: failed to write cd path to {cd_file}: {e}"
-                    ));
-                }
-            }
+        if self.config.autocd
+            && let Ok(cd_file) = env::var(CD_FILE_ENV)
+            && let Err(e) = std::fs::write(&cd_file, path.display().to_string())
+        {
+            self.stderr_line(&format!(
+                "warning: failed to write cd path to {cd_file}: {e}"
+            ));
         }
     }
 

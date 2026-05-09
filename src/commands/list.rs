@@ -3,19 +3,19 @@ use crate::{
         columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns},
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
         sort::SortSpec,
-        worktree::list::{collect_branch_info, collect_worktree_info, EntryKind, Stat},
+        worktree::list::{EntryKind, Stat, collect_branch_info, collect_worktree_info},
     },
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
     output::{
+        CliOutput, Output, OutputConfig,
         emit::{self, Cell, EmitArgs, EmitPayload, Table},
         format::{
-            compute_column_values, format_ahead_behind, format_head_status, format_human_size,
-            format_remote_status, format_shorthand_age, relative_display_path,
-            shorthand_from_seconds, strip_ansi, ColumnContext,
+            ColumnContext, compute_column_values, format_ahead_behind, format_head_status,
+            format_human_size, format_remote_status, format_shorthand_age, relative_display_path,
+            shorthand_from_seconds, strip_ansi,
         },
-        CliOutput, Output, OutputConfig,
     },
     remote::get_default_branch_local,
     settings::DaftSettings,
@@ -27,9 +27,9 @@ use clap::Parser;
 use std::collections::HashSet;
 use tabled::{
     builder::Builder,
-    settings::{object::Columns, peaker::Priority, Padding, Style, Width},
+    settings::{Padding, Style, Width, object::Columns, peaker::Priority},
 };
-use terminal_size::{terminal_size, Width as TermWidth};
+use terminal_size::{Width as TermWidth, terminal_size};
 
 #[derive(Parser)]
 #[command(name = "git-worktree-list")]
@@ -1168,12 +1168,14 @@ mod dispatch_tests {
         // binary may run in parallel. We save/restore to avoid leaking state to
         // other tests that read DAFT_NO_LIVE.
         let prev = std::env::var_os("DAFT_NO_LIVE");
-        std::env::set_var("DAFT_NO_LIVE", "1");
+        unsafe {
+            std::env::set_var("DAFT_NO_LIVE", "1");
+        }
         let args = make_args(false);
         assert!(!should_use_live(&args));
         match prev {
-            Some(v) => std::env::set_var("DAFT_NO_LIVE", v),
-            None => std::env::remove_var("DAFT_NO_LIVE"),
+            Some(v) => unsafe { std::env::set_var("DAFT_NO_LIVE", v) },
+            None => unsafe { std::env::remove_var("DAFT_NO_LIVE") },
         }
     }
 }

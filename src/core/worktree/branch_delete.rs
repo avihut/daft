@@ -463,27 +463,25 @@ fn validate_branches(
         }
 
         // Check 3: No uncommitted changes (skip with --force)
-        if !force {
-            if let Some(ref path) = wt_path {
-                match ctx.git.has_uncommitted_changes_in(path) {
-                    Ok(true) => {
-                        errors.push(ValidationError {
-                            branch: branch.clone(),
-                            message: "has uncommitted changes in worktree (use -D to force)"
-                                .to_string(),
-                        });
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        errors.push(ValidationError {
-                            branch: branch.clone(),
-                            message: format!(
-                                "failed to check for uncommitted changes: {e} (use -D to force)"
-                            ),
-                        });
-                        continue;
-                    }
+        if !force && let Some(ref path) = wt_path {
+            match ctx.git.has_uncommitted_changes_in(path) {
+                Ok(true) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: "has uncommitted changes in worktree (use -D to force)"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: format!(
+                            "failed to check for uncommitted changes: {e} (use -D to force)"
+                        ),
+                    });
+                    continue;
                 }
             }
         }
@@ -518,32 +516,31 @@ fn validate_branches(
         let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
 
         // Check 5: Local/remote in sync (skip with --force or keep_local_branch)
-        if !force && !keep_local_branch {
-            if let Some(ref remote) = remote_name {
-                if let Some(ref remote_branch) = remote_branch_name {
-                    match check_local_remote_sync(ctx, branch, remote, remote_branch) {
-                        Ok(true) => {
-                            sink.on_step(&format!("Branch '{branch}' is in sync with remote"));
-                        }
-                        Ok(false) => {
-                            errors.push(ValidationError {
-                                branch: branch.clone(),
-                                message:
-                                    "local and remote branches are out of sync (use -D to force)"
-                                        .to_string(),
-                            });
-                            continue;
-                        }
-                        Err(e) => {
-                            errors.push(ValidationError {
-                                branch: branch.clone(),
-                                message: format!(
-                                    "failed to check local/remote sync: {e} (use -D to force)"
-                                ),
-                            });
-                            continue;
-                        }
-                    }
+        if !force
+            && !keep_local_branch
+            && let Some(ref remote) = remote_name
+            && let Some(ref remote_branch) = remote_branch_name
+        {
+            match check_local_remote_sync(ctx, branch, remote, remote_branch) {
+                Ok(true) => {
+                    sink.on_step(&format!("Branch '{branch}' is in sync with remote"));
+                }
+                Ok(false) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: "local and remote branches are out of sync (use -D to force)"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    errors.push(ValidationError {
+                        branch: branch.clone(),
+                        message: format!(
+                            "failed to check local/remote sync: {e} (use -D to force)"
+                        ),
+                    });
+                    continue;
                 }
             }
         }
@@ -845,27 +842,28 @@ fn delete_single_branch(
     // Step 2: Delete remote branch (hardest to recreate, do first)
     // Skipped for worktree-only removal (default branch), keep_local_branch mode,
     // or when remote deletion is disabled.
-    if !keep_local_branch && !branch.worktree_only && (delete_remote || remote_only) {
-        if let (Some(ref remote), Some(ref remote_branch)) =
+    if !keep_local_branch
+        && !branch.worktree_only
+        && (delete_remote || remote_only)
+        && let (Some(remote), Some(remote_branch)) =
             (&branch.remote_name, &branch.remote_branch_name)
-        {
-            sink.on_step(&format!(
-                "Deleting remote branch {}/{}...",
-                remote, remote_branch
-            ));
-            match ctx.git.push_delete(remote, remote_branch) {
-                Ok(()) => {
-                    result.remote_deleted = true;
-                    sink.on_step(&format!(
-                        "Remote branch {}/{} deleted",
-                        remote, remote_branch
-                    ));
-                }
-                Err(e) => {
-                    result.errors.push(format!(
-                        "Failed to delete remote branch {remote}/{remote_branch}: {e}"
-                    ));
-                }
+    {
+        sink.on_step(&format!(
+            "Deleting remote branch {}/{}...",
+            remote, remote_branch
+        ));
+        match ctx.git.push_delete(remote, remote_branch) {
+            Ok(()) => {
+                result.remote_deleted = true;
+                sink.on_step(&format!(
+                    "Remote branch {}/{} deleted",
+                    remote, remote_branch
+                ));
+            }
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to delete remote branch {remote}/{remote_branch}: {e}"
+                ));
             }
         }
     }
@@ -952,17 +950,15 @@ fn delete_single_branch(
     }
 
     // Step 5: Run post-remove hook (only if worktree existed)
-    if has_worktree {
-        if let Some(ref wt_path) = branch.worktree_path {
-            run_removal_hook(
-                HookType::PostRemove,
-                ctx,
-                wt_path,
-                &branch.name,
-                command_label,
-                sink,
-            );
-        }
+    if has_worktree && let Some(ref wt_path) = branch.worktree_path {
+        run_removal_hook(
+            HookType::PostRemove,
+            ctx,
+            wt_path,
+            &branch.name,
+            command_label,
+            sink,
+        );
     }
 
     result

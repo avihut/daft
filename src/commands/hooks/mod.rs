@@ -24,7 +24,7 @@ mod status;
 mod trust;
 mod validate;
 
-use crate::hooks::{TrustLevel, PROJECT_HOOKS_DIR};
+use crate::hooks::{PROJECT_HOOKS_DIR, TrustLevel};
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::styles::{bold, def, dim, green, red, yellow};
 use anyhow::{Context, Result};
@@ -586,15 +586,14 @@ pub(super) fn find_project_hooks(git_dir: &Path) -> Result<Vec<std::path::PathBu
                 let yaml_path = dir.join(name);
                 if yaml_path.exists() {
                     // Parse the YAML to find hook names
-                    if let Ok(contents) = std::fs::read_to_string(&yaml_path) {
-                        if let Ok(config) =
+                    if let Ok(contents) = std::fs::read_to_string(&yaml_path)
+                        && let Ok(config) =
                             serde_yaml::from_str::<crate::hooks::yaml_config::YamlConfig>(&contents)
-                        {
-                            for hook_name in config.hooks.keys() {
-                                hooks.push(std::path::PathBuf::from(hook_name));
-                            }
-                            found_yaml = true;
+                    {
+                        for hook_name in config.hooks.keys() {
+                            hooks.push(std::path::PathBuf::from(hook_name));
                         }
+                        found_yaml = true;
                     }
                     break;
                 }

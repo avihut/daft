@@ -1,6 +1,6 @@
 //! Cleanup policy types and string parsers shared by hook-fire and cleanup paths.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 /// What the cleanup pass should do on this run.
@@ -106,24 +106,22 @@ pub fn build_repo_policy(specs: &[crate::executor::JobSpec]) -> RepoPolicy {
             continue;
         };
 
-        if policy.max_total_size_bytes.is_none() {
-            if let Some(s) = lc.max_total_size.as_deref() {
-                if let Ok(n) = parse_size(s) {
-                    policy.max_total_size_bytes = Some(n);
-                }
-            }
+        if policy.max_total_size_bytes.is_none()
+            && let Some(s) = lc.max_total_size.as_deref()
+            && let Ok(n) = parse_size(s)
+        {
+            policy.max_total_size_bytes = Some(n);
         }
-        if policy.keep_last.is_none() {
-            if let Some(n) = lc.keep_last {
-                policy.keep_last = Some(n);
-            }
+        if policy.keep_last.is_none()
+            && let Some(n) = lc.keep_last
+        {
+            policy.keep_last = Some(n);
         }
-        if policy.stale_running_after_seconds.is_none() {
-            if let Some(s) = lc.stale_running_after.as_deref() {
-                if let Ok(n) = parse_duration_str(s) {
-                    policy.stale_running_after_seconds = Some(n as i64);
-                }
-            }
+        if policy.stale_running_after_seconds.is_none()
+            && let Some(s) = lc.stale_running_after.as_deref()
+            && let Ok(n) = parse_duration_str(s)
+        {
+            policy.stale_running_after_seconds = Some(n as i64);
         }
     }
 

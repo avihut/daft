@@ -959,7 +959,9 @@ mod tests {
         // to a path that's guaranteed not to exist (no coordinator running here).
         // DAFT_STATE_DIR is process-global; #[serial] prevents cross-test interference.
         let prev_state_dir = std::env::var("DAFT_STATE_DIR").ok();
-        std::env::set_var("DAFT_STATE_DIR", tmp.path());
+        unsafe {
+            std::env::set_var("DAFT_STATE_DIR", tmp.path());
+        }
 
         // Use a UUID-shaped base_dir component so coordinator_socket_path
         // produces a real-looking path (which won't exist on the test FS).
@@ -1027,8 +1029,8 @@ mod tests {
 
         // Restore env.
         match prev_state_dir {
-            Some(v) => std::env::set_var("DAFT_STATE_DIR", v),
-            None => std::env::remove_var("DAFT_STATE_DIR"),
+            Some(v) => unsafe { std::env::set_var("DAFT_STATE_DIR", v) },
+            None => unsafe { std::env::remove_var("DAFT_STATE_DIR") },
         }
     }
 

@@ -21,7 +21,7 @@
 //! - `clear_kind` propagates I/O errors so a future `daft cache clear`
 //!   command could report failures.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -39,10 +39,10 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
 /// Serialize and write a JSON cache entry, creating parent dirs as needed.
 /// Degrades silently on any failure.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) {
-    if let Some(parent) = path.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return;
     }
     let Ok(json) = serde_json::to_string(value) else {
         return;

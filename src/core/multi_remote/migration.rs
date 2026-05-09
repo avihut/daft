@@ -173,12 +173,12 @@ impl MigrationPlan {
                 }
                 MigrationOp::MoveWorktree { from, to } => {
                     // Ensure parent directory exists
-                    if let Some(parent) = to.parent() {
-                        if !parent.exists() {
-                            fs::create_dir_all(parent).with_context(|| {
-                                format!("Failed to create parent directory: {}", parent.display())
-                            })?;
-                        }
+                    if let Some(parent) = to.parent()
+                        && !parent.exists()
+                    {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("Failed to create parent directory: {}", parent.display())
+                        })?;
                     }
 
                     // Use git worktree move for proper bookkeeping
@@ -260,13 +260,13 @@ fn infer_remote_from_path(project_root: &Path, worktree_path: &Path) -> Option<S
     if let Ok(relative) = worktree_path.strip_prefix(project_root) {
         let components: Vec<_> = relative.components().collect();
         // If path has structure like remote/branch, extract remote
-        if components.len() >= 2 {
-            if let Some(first) = components.first() {
-                let name = first.as_os_str().to_str()?;
-                // Check if this looks like a remote name (not .git or common branch patterns)
-                if name != ".git" && !name.contains('/') {
-                    return Some(name.to_string());
-                }
+        if components.len() >= 2
+            && let Some(first) = components.first()
+        {
+            let name = first.as_os_str().to_str()?;
+            // Check if this looks like a remote name (not .git or common branch patterns)
+            if name != ".git" && !name.contains('/') {
+                return Some(name.to_string());
             }
         }
     }

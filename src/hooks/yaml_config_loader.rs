@@ -369,12 +369,11 @@ fn detect_default_branch(git_dir: &Path) -> Option<String> {
     let head_ref_file = git_dir.join("refs/remotes/origin/HEAD");
     if let Ok(content) = std::fs::read_to_string(&head_ref_file) {
         let content = content.trim();
-        if let Some(ref_path) = content.strip_prefix("ref: ") {
-            if let Some(branch) = ref_path.strip_prefix("refs/remotes/origin/") {
-                if !branch.is_empty() {
-                    return Some(branch.to_string());
-                }
-            }
+        if let Some(ref_path) = content.strip_prefix("ref: ")
+            && let Some(branch) = ref_path.strip_prefix("refs/remotes/origin/")
+            && !branch.is_empty()
+        {
+            return Some(branch.to_string());
         }
     }
 
@@ -453,21 +452,21 @@ pub fn load_config_from_branch(
     }
 
     // 2. Try the base branch if provided (and different from target)
-    if let Some(base) = base_branch {
-        if base != target_branch {
-            if let Some(config) = try_load_config_from_ref(git_dir, base)? {
-                return Ok(Some(config));
-            }
-        }
+    if let Some(base) = base_branch
+        && base != target_branch
+        && let Some(config) = try_load_config_from_ref(git_dir, base)?
+    {
+        return Ok(Some(config));
     }
 
     // 3. Try the default branch
     if let Some(default_branch) = detect_default_branch(git_dir) {
         // Avoid re-checking branches we already tried
-        if default_branch != target_branch && base_branch != Some(default_branch.as_str()) {
-            if let Some(config) = try_load_config_from_ref(git_dir, &default_branch)? {
-                return Ok(Some(config));
-            }
+        if default_branch != target_branch
+            && base_branch != Some(default_branch.as_str())
+            && let Some(config) = try_load_config_from_ref(git_dir, &default_branch)?
+        {
+            return Ok(Some(config));
         }
     }
 

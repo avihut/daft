@@ -1,19 +1,19 @@
-use super::{styled_trust_level, HooksRunArgs};
+use super::{HooksRunArgs, styled_trust_level};
 use crate::executor::cli_presenter::CliPresenter;
 use crate::hooks::yaml_executor::JobFilter;
 use crate::hooks::{
-    yaml_config, yaml_config_loader, HookExecutor, HookType, TrustDatabase, TrustLevel,
+    HookExecutor, HookType, TrustDatabase, TrustLevel, yaml_config, yaml_config_loader,
 };
-use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Section, Table};
 use crate::output::Output;
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Section, Table};
 use crate::styles::{bold, cyan, dim};
 use crate::{get_current_branch, get_current_worktree_path, get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
 
 /// Run a hook manually.
 pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()> {
-    use crate::hooks::yaml_config_loader::get_effective_jobs;
     use crate::hooks::HookContext;
+    use crate::hooks::yaml_config_loader::get_effective_jobs;
 
     // Resolve worktree context
     let worktree_path = get_current_worktree_path()
@@ -182,16 +182,16 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
                 output.info(&format!("     {}", dim("(group)")));
             }
 
-            if let Some(ref needs) = job.needs {
-                if !needs.is_empty() {
-                    output.info(&format!("     {}: [{}]", dim("needs"), needs.join(", ")));
-                }
+            if let Some(ref needs) = job.needs
+                && !needs.is_empty()
+            {
+                output.info(&format!("     {}: [{}]", dim("needs"), needs.join(", ")));
             }
 
-            if let Some(ref tags) = job.tags {
-                if !tags.is_empty() {
-                    output.info(&format!("     {}: [{}]", dim("tags"), tags.join(", ")));
-                }
+            if let Some(ref tags) = job.tags
+                && !tags.is_empty()
+            {
+                output.info(&format!("     {}: [{}]", dim("tags"), tags.join(", ")));
             }
 
             if i + 1 < job_count {

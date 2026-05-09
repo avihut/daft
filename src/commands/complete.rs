@@ -339,13 +339,13 @@ fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)
     let mut result = Vec::new();
 
     // Current worktree (main or linked — whichever we discovered from).
-    if let Some(workdir) = repo.workdir() {
-        if let Ok(Some(head_ref)) = repo.head_ref() {
-            let branch = head_ref.name().shorten().to_string();
-            result.push((branch, workdir.to_path_buf()));
-        }
-        // Detached HEAD → skip (no branch).
+    if let Some(workdir) = repo.workdir()
+        && let Ok(Some(head_ref)) = repo.head_ref()
+    {
+        let branch = head_ref.name().shorten().to_string();
+        result.push((branch, workdir.to_path_buf()));
     }
+    // Detached HEAD → skip (no branch).
 
     // When discovered from a linked worktree, the main worktree is not
     // listed by repo.worktrees() and repo.workdir() returns the linked
@@ -355,14 +355,12 @@ fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)
     let is_linked = repo.git_dir() != repo.common_dir();
     if is_linked {
         let common = std::fs::canonicalize(repo.common_dir()).ok();
-        if let Some(ref common) = common {
-            if let Some(main_workdir) = common.parent() {
-                let already = result.iter().any(|(_, p)| p == main_workdir);
-                if !already {
-                    if let Some(branch) = worktree_branch_from_gitdir(common) {
-                        result.push((branch, main_workdir.to_path_buf()));
-                    }
-                }
+        if let Some(ref common) = common
+            && let Some(main_workdir) = common.parent()
+        {
+            let already = result.iter().any(|(_, p)| p == main_workdir);
+            if !already && let Some(branch) = worktree_branch_from_gitdir(common) {
+                result.push((branch, main_workdir.to_path_buf()));
             }
         }
     }
@@ -836,22 +834,21 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     .list_jobs_in_invocation(&latest.invocation_id)
                     .unwrap_or_default();
                 for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir) {
-                        if meta.name.starts_with(prefix) {
-                            let short_id =
-                                &latest.invocation_id[..4.min(latest.invocation_id.len())];
-                            let ago = crate::output::format::shorthand_from_seconds(
-                                now.signed_duration_since(latest.created_at).num_seconds(),
-                            );
-                            job_rows.push((
-                                meta.name.clone(),
-                                vec![
-                                    job_status_icon(&meta.status).to_string(),
-                                    format!("-- {ago} ago"),
-                                    format!("[{short_id}]"),
-                                ],
-                            ));
-                        }
+                    if let Ok(meta) = store.read_meta(dir)
+                        && meta.name.starts_with(prefix)
+                    {
+                        let short_id = &latest.invocation_id[..4.min(latest.invocation_id.len())];
+                        let ago = crate::output::format::shorthand_from_seconds(
+                            now.signed_duration_since(latest.created_at).num_seconds(),
+                        );
+                        job_rows.push((
+                            meta.name.clone(),
+                            vec![
+                                job_status_icon(&meta.status).to_string(),
+                                format!("-- {ago} ago"),
+                                format!("[{short_id}]"),
+                            ],
+                        ));
                     }
                 }
             }
@@ -919,13 +916,13 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     .unwrap_or_default();
                 let mut rows: Vec<(String, Vec<String>)> = Vec::new();
                 for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir) {
-                        if meta.name.starts_with(after) {
-                            rows.push((
-                                format!("{short_id}:{}", meta.name),
-                                vec![job_status_icon(&meta.status).to_string()],
-                            ));
-                        }
+                    if let Ok(meta) = store.read_meta(dir)
+                        && meta.name.starts_with(after)
+                    {
+                        rows.push((
+                            format!("{short_id}:{}", meta.name),
+                            vec![job_status_icon(&meta.status).to_string()],
+                        ));
                     }
                 }
                 return Ok(format_section_rows("JOB", rows));
@@ -970,13 +967,13 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                 .unwrap_or_default();
             let mut rows: Vec<(String, Vec<String>)> = Vec::new();
             for dir in &job_dirs {
-                if let Ok(meta) = store.read_meta(dir) {
-                    if meta.name.starts_with(job_prefix) {
-                        rows.push((
-                            format!("{wt}:{short_id}:{}", meta.name),
-                            vec![job_status_icon(&meta.status).to_string()],
-                        ));
-                    }
+                if let Ok(meta) = store.read_meta(dir)
+                    && meta.name.starts_with(job_prefix)
+                {
+                    rows.push((
+                        format!("{wt}:{short_id}:{}", meta.name),
+                        vec![job_status_icon(&meta.status).to_string()],
+                    ));
                 }
             }
             Ok(format_section_rows("JOB", rows))
@@ -2364,9 +2361,11 @@ mod tests {
             .filter(|e| e.group == CompletionGroup::Worktree)
             .collect();
         assert_eq!(filtered.len(), 2);
-        assert!(filtered
-            .iter()
-            .all(|e| e.group == CompletionGroup::Worktree));
+        assert!(
+            filtered
+                .iter()
+                .all(|e| e.group == CompletionGroup::Worktree)
+        );
     }
 
     #[test]

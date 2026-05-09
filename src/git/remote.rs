@@ -1,5 +1,5 @@
-use super::oxide;
 use super::GitCommand;
+use super::oxide;
 use crate::styles;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -241,12 +241,12 @@ impl GitCommand {
     }
 
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
-        if self.use_gitoxide {
-            if let Ok(repo) = self.gix_repo() {
-                return oxide::ls_remote_heads(&repo, remote, branch);
-            }
-            // No local repo (e.g. during clone) — fall through to git CLI
+        if self.use_gitoxide
+            && let Ok(repo) = self.gix_repo()
+        {
+            return oxide::ls_remote_heads(&repo, remote, branch);
         }
+        // No local repo (e.g. during clone) — fall through to git CLI
         let mut cmd = Command::new("git");
         cmd.args(["ls-remote", "--heads", remote]);
 
@@ -268,12 +268,12 @@ impl GitCommand {
 
     /// Execute git ls-remote with symref to get remote HEAD
     pub fn ls_remote_symref(&self, remote_url: &str) -> Result<String> {
-        if self.use_gitoxide {
-            if let Ok(repo) = self.gix_repo() {
-                return oxide::ls_remote_symref(&repo, remote_url);
-            }
-            // No local repo (e.g. during clone) — fall through to git CLI
+        if self.use_gitoxide
+            && let Ok(repo) = self.gix_repo()
+        {
+            return oxide::ls_remote_symref(&repo, remote_url);
         }
+        // No local repo (e.g. during clone) — fall through to git CLI
         let output = Command::new("git")
             .args(["ls-remote", "--symref", remote_url, "HEAD"])
             .output()
@@ -289,12 +289,12 @@ impl GitCommand {
 
     /// Check if specific remote branch exists
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
-        if self.use_gitoxide {
-            if let Ok(repo) = self.gix_repo() {
-                return oxide::ls_remote_branch_exists(&repo, remote_name, branch);
-            }
-            // No local repo (e.g. during clone) — fall through to git CLI
+        if self.use_gitoxide
+            && let Ok(repo) = self.gix_repo()
+        {
+            return oxide::ls_remote_branch_exists(&repo, remote_name, branch);
         }
+        // No local repo (e.g. during clone) — fall through to git CLI
         let output = Command::new("git")
             .args([
                 "ls-remote",
@@ -451,16 +451,16 @@ impl GitCommand {
         remote_name: &str,
         branches: &[String],
     ) -> Result<Vec<(String, bool)>> {
-        if self.use_gitoxide {
-            if let Ok(repo) = self.gix_repo() {
-                return branches
-                    .iter()
-                    .map(|b| {
-                        oxide::validate_branch_in_remotes(&repo, remote_name, b)
-                            .map(|exists| (b.clone(), exists))
-                    })
-                    .collect();
-            }
+        if self.use_gitoxide
+            && let Ok(repo) = self.gix_repo()
+        {
+            return branches
+                .iter()
+                .map(|b| {
+                    oxide::validate_branch_in_remotes(&repo, remote_name, b)
+                        .map(|exists| (b.clone(), exists))
+                })
+                .collect();
         }
         branches
             .iter()
@@ -474,10 +474,10 @@ impl GitCommand {
     /// List all branches on a remote using local refs.
     /// Uses local refs when gitoxide is enabled (zero network), falls back to CLI.
     pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
-        if self.use_gitoxide {
-            if let Ok(repo) = self.gix_repo() {
-                return oxide::list_remote_branches_local(&repo, remote_name);
-            }
+        if self.use_gitoxide
+            && let Ok(repo) = self.gix_repo()
+        {
+            return oxide::list_remote_branches_local(&repo, remote_name);
         }
         let output = self.ls_remote_heads(remote_name, None)?;
         Ok(output

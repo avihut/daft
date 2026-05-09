@@ -12,7 +12,7 @@ use crate::{
         sort::SortSpec,
         worktree::{
             info_field::FieldSet,
-            list::{collect_branch_info, EntryKind, WorktreeInfo},
+            list::{EntryKind, WorktreeInfo, collect_branch_info},
             list_stream,
             sync_dag::{DagEvent, PatchSource},
         },
@@ -26,7 +26,7 @@ use anyhow::Result;
 use std::{
     collections::HashSet,
     path::PathBuf,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 
 /// Inline porcelain parsing — `core::worktree::list::parse_porcelain` is

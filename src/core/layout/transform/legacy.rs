@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
-use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::move_hooks::{MoveHookParams, run_setup_hooks, run_teardown_hooks};
 use crate::hooks::tracking::TrackedAttribute;
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_from_remote_head;
@@ -540,15 +540,15 @@ fn restructure_bare_to_dotgit(
 
 /// Check if the repository is in bare worktree layout (core.bare=true + worktrees).
 pub fn is_bare_worktree_layout(git: &GitCommand) -> Result<bool> {
-    if let Ok(Some(bare_value)) = git.config_get("core.bare") {
-        if bare_value.to_lowercase() == "true" {
-            let worktree_output = git.worktree_list_porcelain()?;
-            let worktree_count = worktree_output
-                .lines()
-                .filter(|line| line.starts_with("worktree "))
-                .count();
-            return Ok(worktree_count > 0);
-        }
+    if let Ok(Some(bare_value)) = git.config_get("core.bare")
+        && bare_value.to_lowercase() == "true"
+    {
+        let worktree_output = git.worktree_list_porcelain()?;
+        let worktree_count = worktree_output
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count();
+        return Ok(worktree_count > 0);
     }
     Ok(false)
 }
@@ -747,7 +747,7 @@ fn resolve_target_worktree(
             .map(|wt| (*wt).clone())
     };
 
-    if let Some(ref branch) = branch {
+    if let Some(branch) = &branch {
         match find_worktree(branch) {
             Some(wt) => Ok((branch.clone(), wt)),
             None => {
@@ -878,10 +878,10 @@ fn remove_worktrees(
                 e
             ));
             // Try to clean up directory manually
-            if wt.path.exists() {
-                if let Err(e) = fs::remove_dir_all(&wt.path) {
-                    sink.on_warning(&format!("Could not remove worktree directory: {e}"));
-                }
+            if wt.path.exists()
+                && let Err(e) = fs::remove_dir_all(&wt.path)
+            {
+                sink.on_warning(&format!("Could not remove worktree directory: {e}"));
             }
         } else {
             sink.on_step(&format!("Removed worktree '{branch}'"));

@@ -5,9 +5,9 @@
 //! is enabled.
 
 use anyhow::{Context, Result};
+use gix::Repository;
 use gix::bstr::ByteSlice;
 use gix::remote::Direction;
-use gix::Repository;
 use std::path::PathBuf;
 
 // --- Group 1: Repository Discovery & State ---
@@ -263,8 +263,8 @@ pub fn has_uncommitted_changes(repo: &Repository) -> Result<bool> {
 /// Opens the worktree as a fresh `gix::Repository` so it can be called
 /// from any thread (each thread gets its own repo instance).
 pub fn worktree_dirty_status(worktree_path: &std::path::Path) -> Result<(bool, bool)> {
-    use gix::status::index_worktree::iter::Summary;
     use gix::status::UntrackedFiles;
+    use gix::status::index_worktree::iter::Summary;
 
     let repo = gix::open(worktree_path)
         .with_context(|| format!("Failed to open repository at {}", worktree_path.display()))?;
@@ -543,10 +543,10 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) ->
             continue;
         }
 
-        if let Some(ref filter) = filter_ref {
-            if name != *filter {
-                continue;
-            }
+        if let Some(ref filter) = filter_ref
+            && name != *filter
+        {
+            continue;
         }
 
         output.push_str(&format!("{oid}\t{name}\n"));
@@ -591,10 +591,10 @@ pub fn list_remote_branches_local(repo: &Repository, remote_name: &str) -> Resul
         let reference =
             reference_result.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
         let full_name = reference.name().as_bstr().to_string();
-        if let Some(branch_name) = full_name.strip_prefix(&prefix) {
-            if branch_name != "HEAD" {
-                branches.push(branch_name.to_string());
-            }
+        if let Some(branch_name) = full_name.strip_prefix(&prefix)
+            && branch_name != "HEAD"
+        {
+            branches.push(branch_name.to_string());
         }
     }
 
@@ -638,7 +638,9 @@ mod tests {
     /// a parent git hook's environment. Only safe in `#[serial]` tests.
     fn strip_git_env() {
         for var in GIT_ENV_VARS {
-            std::env::remove_var(var);
+            unsafe {
+                std::env::remove_var(var);
+            }
         }
     }
 

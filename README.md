@@ -4,7 +4,7 @@
 [![CI](https://github.com/avihut/daft/actions/workflows/test.yml/badge.svg)](https://github.com/avihut/daft/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/avihut/daft?label=release)](https://github.com/avihut/daft/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org/)
 [![Homebrew](https://img.shields.io/badge/homebrew-avihut%2Ftap-blueviolet)](https://github.com/avihut/homebrew-tap)
 [![macOS](https://img.shields.io/badge/macOS-supported-success)](https://github.com/avihut/daft/releases)
 [![Linux](https://img.shields.io/badge/Linux-supported-success)](https://github.com/avihut/daft/releases)
@@ -211,7 +211,7 @@ manual installation options.
 ## Requirements
 
 - **Git** 2.5+ (for worktree support)
-- **Rust** 1.70+ (only for building from source)
+- **Rust** 1.91+ (only for building from source)
 
 ## Contributing
 

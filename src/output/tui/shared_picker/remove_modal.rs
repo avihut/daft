@@ -9,11 +9,11 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Terminal,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Terminal,
 };
 use std::io;
 use std::time::Duration;

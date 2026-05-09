@@ -4,6 +4,7 @@
 //! and footer rendering.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -11,12 +12,11 @@ use ratatui::{
         Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Tabs,
     },
-    Frame,
 };
 
+use super::PickerMode;
 use super::highlight::Highlighter;
 use super::state::{FileTabState, FocusPanel, PickerState};
-use super::PickerMode;
 
 /// Accent color matching the project's ACCENT_COLOR_INDEX (orange 208).
 const ACCENT: Color = Color::Indexed(208);
@@ -52,14 +52,14 @@ pub fn render(
         .split(area);
 
     render_tabs(state, mode, frame, chunks[0]);
-    if !state.is_virtual_tab() {
-        if let Some(msg) = mode.tab_warning(state.current_tab()) {
-            let line = Line::from(Span::styled(
-                format!(" {msg}"),
-                Style::default().fg(Color::Yellow),
-            ));
-            frame.render_widget(Paragraph::new(line), chunks[1]);
-        }
+    if !state.is_virtual_tab()
+        && let Some(msg) = mode.tab_warning(state.current_tab())
+    {
+        let line = Line::from(Span::styled(
+            format!(" {msg}"),
+            Style::default().fg(Color::Yellow),
+        ));
+        frame.render_widget(Paragraph::new(line), chunks[1]);
     }
     render_body(state, mode, highlighter, frame, chunks[2]);
     mode.render_footer(state, frame, chunks[3]);

@@ -3,8 +3,8 @@
 //! Used by `daft sync --push` to push all branches to their remote
 //! tracking branches after updating/rebasing.
 
-use crate::core::worktree::fetch;
 use crate::core::ProgressSink;
+use crate::core::worktree::fetch;
 use crate::git::GitCommand;
 use crate::utils::*;
 use anyhow::Result;

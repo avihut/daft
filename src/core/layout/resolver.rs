@@ -8,7 +8,7 @@
 //! 5. Detected (inferred from filesystem worktree layout)
 //! 6. Unresolved (nothing determined — caller applies built-in default)
 
-use super::{Layout, DEFAULT_LAYOUT};
+use super::{DEFAULT_LAYOUT, Layout};
 use crate::core::global_config::GlobalConfig;
 
 /// Result of filesystem-based layout detection.

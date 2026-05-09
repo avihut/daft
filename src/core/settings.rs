@@ -540,10 +540,10 @@ impl DaftSettings {
             settings.checkout_upstream = parse_bool(&value, defaults::CHECKOUT_UPSTREAM);
         }
 
-        if let Some(value) = git.config_get(keys::REMOTE)? {
-            if !value.is_empty() {
-                settings.remote = value;
-            }
+        if let Some(value) = git.config_get(keys::REMOTE)?
+            && !value.is_empty()
+        {
+            settings.remote = value;
         }
 
         if let Some(value) = git.config_get(keys::CHECKOUT_BRANCH_CARRY)? {
@@ -554,29 +554,29 @@ impl DaftSettings {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
         }
 
-        if let Some(value) = git.config_get(keys::PRUNE_CD_TARGET)? {
-            if let Some(target) = PruneCdTarget::parse(&value) {
-                settings.prune_cd_target = target;
-            }
+        if let Some(value) = git.config_get(keys::PRUNE_CD_TARGET)?
+            && let Some(target) = PruneCdTarget::parse(&value)
+        {
+            settings.prune_cd_target = target;
         }
 
         // Try new key first, fall back to deprecated key for migration
         let update_args_value = git.config_get(keys::UPDATE_ARGS)?;
         let update_args_value = update_args_value.or(git.config_get(keys::FETCH_ARGS_DEPRECATED)?);
-        if let Some(value) = update_args_value {
-            if !value.is_empty() {
-                settings.update_args = value;
-            }
+        if let Some(value) = update_args_value
+            && !value.is_empty()
+        {
+            settings.update_args = value;
         }
 
         if let Some(value) = git.config_get(keys::multi_remote::ENABLED)? {
             settings.multi_remote_enabled = parse_bool(&value, defaults::MULTI_REMOTE_ENABLED);
         }
 
-        if let Some(value) = git.config_get(keys::multi_remote::DEFAULT_REMOTE)? {
-            if !value.is_empty() {
-                settings.multi_remote_default = value;
-            }
+        if let Some(value) = git.config_get(keys::multi_remote::DEFAULT_REMOTE)?
+            && !value.is_empty()
+        {
+            settings.multi_remote_default = value;
         }
 
         if let Some(value) = git.config_get(keys::experimental::GITOXIDE)? {
@@ -591,74 +591,74 @@ impl DaftSettings {
             settings.go_fetch_on_miss = parse_bool(&value, defaults::GO_FETCH_ON_MISS);
         }
 
-        if let Some(value) = git.config_get(keys::LIST_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.list_stat = stat;
-            }
+        if let Some(value) = git.config_get(keys::LIST_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.list_stat = stat;
         }
 
-        if let Some(value) = git.config_get(keys::SYNC_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.sync_stat = stat;
-            }
+        if let Some(value) = git.config_get(keys::SYNC_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.sync_stat = stat;
         }
 
-        if let Some(value) = git.config_get(keys::PRUNE_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.prune_stat = stat;
-            }
+        if let Some(value) = git.config_get(keys::PRUNE_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.prune_stat = stat;
         }
 
-        if let Some(value) = git.config_get(keys::LIST_COLUMNS)? {
-            if !value.is_empty() {
-                settings.list_columns = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::LIST_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.list_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get(keys::SYNC_COLUMNS)? {
-            if !value.is_empty() {
-                settings.sync_columns = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::SYNC_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.sync_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get(keys::PRUNE_COLUMNS)? {
-            if !value.is_empty() {
-                settings.prune_columns = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::PRUNE_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.prune_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get(keys::LIST_SORT)? {
-            if !value.is_empty() {
-                settings.list_sort = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::LIST_SORT)?
+            && !value.is_empty()
+        {
+            settings.list_sort = Some(value);
         }
 
-        if let Some(value) = git.config_get(keys::SYNC_SORT)? {
-            if !value.is_empty() {
-                settings.sync_sort = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::SYNC_SORT)?
+            && !value.is_empty()
+        {
+            settings.sync_sort = Some(value);
         }
 
-        if let Some(value) = git.config_get(keys::PRUNE_SORT)? {
-            if !value.is_empty() {
-                settings.prune_sort = Some(value);
-            }
+        if let Some(value) = git.config_get(keys::PRUNE_SORT)?
+            && !value.is_empty()
+        {
+            settings.prune_sort = Some(value);
         }
 
         if let Some(value) = git.config_get(keys::BRANCH_DELETE_REMOTE)? {
             settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
         }
 
-        if let Some(value) = git.config_get(keys::OWNERSHIP_STRATEGY)? {
-            if !value.is_empty() {
-                match crate::core::ownership::OwnershipStrategy::parse(&value) {
-                    Some(strategy) => settings.ownership_strategy = strategy,
-                    None => eprintln!(
-                        "daft: unknown value for {}: {:?} — using default",
-                        keys::OWNERSHIP_STRATEGY,
-                        value
-                    ),
-                }
+        if let Some(value) = git.config_get(keys::OWNERSHIP_STRATEGY)?
+            && !value.is_empty()
+        {
+            match crate::core::ownership::OwnershipStrategy::parse(&value) {
+                Some(strategy) => settings.ownership_strategy = strategy,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::OWNERSHIP_STRATEGY,
+                    value
+                ),
             }
         }
 
@@ -692,10 +692,10 @@ impl DaftSettings {
             settings.checkout_upstream = parse_bool(&value, defaults::CHECKOUT_UPSTREAM);
         }
 
-        if let Some(value) = git.config_get_global(keys::REMOTE)? {
-            if !value.is_empty() {
-                settings.remote = value;
-            }
+        if let Some(value) = git.config_get_global(keys::REMOTE)?
+            && !value.is_empty()
+        {
+            settings.remote = value;
         }
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_BRANCH_CARRY)? {
@@ -706,30 +706,30 @@ impl DaftSettings {
             settings.checkout_carry = parse_bool(&value, defaults::CHECKOUT_CARRY);
         }
 
-        if let Some(value) = git.config_get_global(keys::PRUNE_CD_TARGET)? {
-            if let Some(target) = PruneCdTarget::parse(&value) {
-                settings.prune_cd_target = target;
-            }
+        if let Some(value) = git.config_get_global(keys::PRUNE_CD_TARGET)?
+            && let Some(target) = PruneCdTarget::parse(&value)
+        {
+            settings.prune_cd_target = target;
         }
 
         // Try new key first, fall back to deprecated key for migration
         let update_args_value = git.config_get_global(keys::UPDATE_ARGS)?;
         let update_args_value =
             update_args_value.or(git.config_get_global(keys::FETCH_ARGS_DEPRECATED)?);
-        if let Some(value) = update_args_value {
-            if !value.is_empty() {
-                settings.update_args = value;
-            }
+        if let Some(value) = update_args_value
+            && !value.is_empty()
+        {
+            settings.update_args = value;
         }
 
         if let Some(value) = git.config_get_global(keys::multi_remote::ENABLED)? {
             settings.multi_remote_enabled = parse_bool(&value, defaults::MULTI_REMOTE_ENABLED);
         }
 
-        if let Some(value) = git.config_get_global(keys::multi_remote::DEFAULT_REMOTE)? {
-            if !value.is_empty() {
-                settings.multi_remote_default = value;
-            }
+        if let Some(value) = git.config_get_global(keys::multi_remote::DEFAULT_REMOTE)?
+            && !value.is_empty()
+        {
+            settings.multi_remote_default = value;
         }
 
         if let Some(value) = git.config_get_global(keys::experimental::GITOXIDE)? {
@@ -744,74 +744,74 @@ impl DaftSettings {
             settings.go_fetch_on_miss = parse_bool(&value, defaults::GO_FETCH_ON_MISS);
         }
 
-        if let Some(value) = git.config_get_global(keys::LIST_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.list_stat = stat;
-            }
+        if let Some(value) = git.config_get_global(keys::LIST_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.list_stat = stat;
         }
 
-        if let Some(value) = git.config_get_global(keys::SYNC_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.sync_stat = stat;
-            }
+        if let Some(value) = git.config_get_global(keys::SYNC_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.sync_stat = stat;
         }
 
-        if let Some(value) = git.config_get_global(keys::PRUNE_STAT)? {
-            if let Some(stat) = Stat::parse(&value) {
-                settings.prune_stat = stat;
-            }
+        if let Some(value) = git.config_get_global(keys::PRUNE_STAT)?
+            && let Some(stat) = Stat::parse(&value)
+        {
+            settings.prune_stat = stat;
         }
 
-        if let Some(value) = git.config_get_global(keys::LIST_COLUMNS)? {
-            if !value.is_empty() {
-                settings.list_columns = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::LIST_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.list_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get_global(keys::SYNC_COLUMNS)? {
-            if !value.is_empty() {
-                settings.sync_columns = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::SYNC_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.sync_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get_global(keys::PRUNE_COLUMNS)? {
-            if !value.is_empty() {
-                settings.prune_columns = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::PRUNE_COLUMNS)?
+            && !value.is_empty()
+        {
+            settings.prune_columns = Some(value);
         }
 
-        if let Some(value) = git.config_get_global(keys::LIST_SORT)? {
-            if !value.is_empty() {
-                settings.list_sort = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::LIST_SORT)?
+            && !value.is_empty()
+        {
+            settings.list_sort = Some(value);
         }
 
-        if let Some(value) = git.config_get_global(keys::SYNC_SORT)? {
-            if !value.is_empty() {
-                settings.sync_sort = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::SYNC_SORT)?
+            && !value.is_empty()
+        {
+            settings.sync_sort = Some(value);
         }
 
-        if let Some(value) = git.config_get_global(keys::PRUNE_SORT)? {
-            if !value.is_empty() {
-                settings.prune_sort = Some(value);
-            }
+        if let Some(value) = git.config_get_global(keys::PRUNE_SORT)?
+            && !value.is_empty()
+        {
+            settings.prune_sort = Some(value);
         }
 
         if let Some(value) = git.config_get_global(keys::BRANCH_DELETE_REMOTE)? {
             settings.branch_delete_remote = parse_bool(&value, defaults::BRANCH_DELETE_REMOTE);
         }
 
-        if let Some(value) = git.config_get_global(keys::OWNERSHIP_STRATEGY)? {
-            if !value.is_empty() {
-                match crate::core::ownership::OwnershipStrategy::parse(&value) {
-                    Some(strategy) => settings.ownership_strategy = strategy,
-                    None => eprintln!(
-                        "daft: unknown value for {}: {:?} — using default",
-                        keys::OWNERSHIP_STRATEGY,
-                        value
-                    ),
-                }
+        if let Some(value) = git.config_get_global(keys::OWNERSHIP_STRATEGY)?
+            && !value.is_empty()
+        {
+            match crate::core::ownership::OwnershipStrategy::parse(&value) {
+                Some(strategy) => settings.ownership_strategy = strategy,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::OWNERSHIP_STRATEGY,
+                    value
+                ),
             }
         }
 
@@ -876,10 +876,10 @@ fn load_merge_settings(git: &GitCommand, settings: &mut DaftSettings) -> Result<
             parse_bool(&value, defaults::MERGE_ALLOW_UNRELATED_HISTORIES);
     }
 
-    if let Some(value) = git.config_get(keys::MERGE_STRATEGY)? {
-        if !value.is_empty() {
-            settings.merge_strategy = Some(value);
-        }
+    if let Some(value) = git.config_get(keys::MERGE_STRATEGY)?
+        && !value.is_empty()
+    {
+        settings.merge_strategy = Some(value);
     }
 
     if let Some(value) = git.config_get(keys::MERGE_STRATEGY_OPTION)? {
@@ -985,47 +985,47 @@ pub fn load_hooks_config() -> Result<HooksConfig> {
         config.enabled = parse_bool(&value, true);
     }
 
-    if let Some(value) = git.config_get(keys::hooks::DEFAULT_TRUST)? {
-        if let Some(level) = TrustLevel::parse(&value) {
-            config.default_trust = level;
-        }
+    if let Some(value) = git.config_get(keys::hooks::DEFAULT_TRUST)?
+        && let Some(level) = TrustLevel::parse(&value)
+    {
+        config.default_trust = level;
     }
 
-    if let Some(value) = git.config_get(keys::hooks::USER_DIRECTORY)? {
-        if !value.is_empty() {
-            // Expand ~ to home directory
-            let expanded = if let Some(stripped) = value.strip_prefix("~/") {
-                if let Some(home) = dirs::home_dir() {
-                    home.join(stripped)
-                } else {
-                    PathBuf::from(&value)
-                }
+    if let Some(value) = git.config_get(keys::hooks::USER_DIRECTORY)?
+        && !value.is_empty()
+    {
+        // Expand ~ to home directory
+        let expanded = if let Some(stripped) = value.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(stripped)
             } else {
                 PathBuf::from(&value)
-            };
-            config.user_directory = expanded;
-        }
+            }
+        } else {
+            PathBuf::from(&value)
+        };
+        config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)? {
-        if let Ok(timeout) = value.parse::<u32>() {
-            config.timeout_seconds = timeout;
-        }
+    if let Some(value) = git.config_get(keys::hooks::TIMEOUT)?
+        && let Ok(timeout) = value.parse::<u32>()
+    {
+        config.timeout_seconds = timeout;
     }
 
     // Load output settings
     if let Some(value) = git.config_get(keys::hooks::OUTPUT_QUIET)? {
         config.output.quiet = parse_bool(&value, false);
     }
-    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TIMER_DELAY)? {
-        if let Ok(delay) = value.parse::<u32>() {
-            config.output.timer_delay_secs = delay;
-        }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TIMER_DELAY)?
+        && let Ok(delay) = value.parse::<u32>()
+    {
+        config.output.timer_delay_secs = delay;
     }
-    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TAIL_LINES)? {
-        if let Ok(lines) = value.parse::<u32>() {
-            config.output.tail_lines = lines;
-        }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_TAIL_LINES)?
+        && let Ok(lines) = value.parse::<u32>()
+    {
+        config.output.tail_lines = lines;
     }
     if let Some(value) = git.config_get(keys::hooks::OUTPUT_VERBOSE)? {
         config.output.verbose = parse_bool(&value, false);
@@ -1052,46 +1052,46 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
         config.enabled = parse_bool(&value, true);
     }
 
-    if let Some(value) = git.config_get_global(keys::hooks::DEFAULT_TRUST)? {
-        if let Some(level) = TrustLevel::parse(&value) {
-            config.default_trust = level;
-        }
+    if let Some(value) = git.config_get_global(keys::hooks::DEFAULT_TRUST)?
+        && let Some(level) = TrustLevel::parse(&value)
+    {
+        config.default_trust = level;
     }
 
-    if let Some(value) = git.config_get_global(keys::hooks::USER_DIRECTORY)? {
-        if !value.is_empty() {
-            let expanded = if let Some(stripped) = value.strip_prefix("~/") {
-                if let Some(home) = dirs::home_dir() {
-                    home.join(stripped)
-                } else {
-                    PathBuf::from(&value)
-                }
+    if let Some(value) = git.config_get_global(keys::hooks::USER_DIRECTORY)?
+        && !value.is_empty()
+    {
+        let expanded = if let Some(stripped) = value.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(stripped)
             } else {
                 PathBuf::from(&value)
-            };
-            config.user_directory = expanded;
-        }
+            }
+        } else {
+            PathBuf::from(&value)
+        };
+        config.user_directory = expanded;
     }
 
-    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)? {
-        if let Ok(timeout) = value.parse::<u32>() {
-            config.timeout_seconds = timeout;
-        }
+    if let Some(value) = git.config_get_global(keys::hooks::TIMEOUT)?
+        && let Ok(timeout) = value.parse::<u32>()
+    {
+        config.timeout_seconds = timeout;
     }
 
     // Load output settings
     if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_QUIET)? {
         config.output.quiet = parse_bool(&value, false);
     }
-    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TIMER_DELAY)? {
-        if let Ok(delay) = value.parse::<u32>() {
-            config.output.timer_delay_secs = delay;
-        }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TIMER_DELAY)?
+        && let Ok(delay) = value.parse::<u32>()
+    {
+        config.output.timer_delay_secs = delay;
     }
-    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TAIL_LINES)? {
-        if let Ok(lines) = value.parse::<u32>() {
-            config.output.tail_lines = lines;
-        }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_TAIL_LINES)?
+        && let Ok(lines) = value.parse::<u32>()
+    {
+        config.output.tail_lines = lines;
     }
     if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_VERBOSE)? {
         config.output.verbose = parse_bool(&value, false);
@@ -1136,10 +1136,10 @@ fn load_hook_type_config(
         (None, Some(dep)) => git.config_get(&keys::hooks::hook_key(dep, "failMode"))?,
         (None, None) => None,
     };
-    if let Some(value) = fail_mode_value {
-        if let Some(mode) = FailMode::parse(&value) {
-            hook_config.fail_mode = mode;
-        }
+    if let Some(value) = fail_mode_value
+        && let Some(mode) = FailMode::parse(&value)
+    {
+        hook_config.fail_mode = mode;
     }
 
     Ok(())
@@ -1175,10 +1175,10 @@ fn load_hook_type_config_global(
         (None, Some(dep)) => git.config_get_global(&keys::hooks::hook_key(dep, "failMode"))?,
         (None, None) => None,
     };
-    if let Some(value) = fail_mode_value {
-        if let Some(mode) = FailMode::parse(&value) {
-            hook_config.fail_mode = mode;
-        }
+    if let Some(value) = fail_mode_value
+        && let Some(mode) = FailMode::parse(&value)
+    {
+        hook_config.fail_mode = mode;
     }
 
     Ok(())

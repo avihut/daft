@@ -249,10 +249,10 @@ impl TuiState {
             } => {
                 if *status == TaskStatus::PreconditionFailed {
                     // Restore the previous terminal status (saved by TaskStarted).
-                    if let Some(row) = self.find_row_mut(branch_name) {
-                        if let Some(prev) = row.prev_terminal_status.take() {
-                            row.status = prev;
-                        }
+                    if let Some(row) = self.find_row_mut(branch_name)
+                        && let Some(prev) = row.prev_terminal_status.take()
+                    {
+                        row.status = prev;
                     }
                     self.check_phase_completion(phase);
                 } else {
@@ -342,20 +342,19 @@ impl TuiState {
                         row.hook_failed = true;
                     }
                     // Update sub-row status
-                    if show_sub_rows {
-                        if let Some(sub) = row
+                    if show_sub_rows
+                        && let Some(sub) = row
                             .hook_sub_rows
                             .iter_mut()
                             .rfind(|s| s.hook_type == *hook_type)
-                        {
-                            sub.status = if *warned {
-                                HookSubStatus::Warned(*duration)
-                            } else if *success {
-                                HookSubStatus::Succeeded(*duration)
-                            } else {
-                                HookSubStatus::Failed(*duration)
-                            };
-                        }
+                    {
+                        sub.status = if *warned {
+                            HookSubStatus::Warned(*duration)
+                        } else if *success {
+                            HookSubStatus::Succeeded(*duration)
+                        } else {
+                            HookSubStatus::Failed(*duration)
+                        };
                     }
                 }
                 // Accumulate for post-TUI summary if non-success
@@ -376,19 +375,17 @@ impl TuiState {
                 hook_type,
                 job_name,
             } => {
-                if self.show_hook_sub_rows {
-                    if let Some(row) = self.find_row_mut(branch_name) {
-                        if let Some(hook_sub) = row
-                            .hook_sub_rows
-                            .iter_mut()
-                            .rfind(|s| s.hook_type == *hook_type)
-                        {
-                            hook_sub.job_sub_rows.push(JobSubRow {
-                                name: job_name.clone(),
-                                status: JobSubStatus::Running,
-                            });
-                        }
-                    }
+                if self.show_hook_sub_rows
+                    && let Some(row) = self.find_row_mut(branch_name)
+                    && let Some(hook_sub) = row
+                        .hook_sub_rows
+                        .iter_mut()
+                        .rfind(|s| s.hook_type == *hook_type)
+                {
+                    hook_sub.job_sub_rows.push(JobSubRow {
+                        name: job_name.clone(),
+                        status: JobSubStatus::Running,
+                    });
                 }
             }
             DagEvent::JobCompleted {
@@ -399,31 +396,25 @@ impl TuiState {
                 duration,
                 skip_reason,
             } => {
-                if self.show_hook_sub_rows {
-                    if let Some(row) = self.find_row_mut(branch_name) {
-                        if let Some(hook_sub) = row
-                            .hook_sub_rows
-                            .iter_mut()
-                            .rfind(|s| s.hook_type == *hook_type)
-                        {
-                            if let Some(job_sub) = hook_sub
-                                .job_sub_rows
-                                .iter_mut()
-                                .rfind(|j| j.name == *job_name)
-                            {
-                                job_sub.status = match status {
-                                    JobCompletionStatus::Succeeded => {
-                                        JobSubStatus::Succeeded(*duration)
-                                    }
-                                    JobCompletionStatus::Failed => JobSubStatus::Failed(*duration),
-                                    JobCompletionStatus::Skipped => JobSubStatus::Skipped {
-                                        duration: *duration,
-                                        reason: skip_reason.clone().unwrap_or_default(),
-                                    },
-                                };
-                            }
-                        }
-                    }
+                if self.show_hook_sub_rows
+                    && let Some(row) = self.find_row_mut(branch_name)
+                    && let Some(hook_sub) = row
+                        .hook_sub_rows
+                        .iter_mut()
+                        .rfind(|s| s.hook_type == *hook_type)
+                    && let Some(job_sub) = hook_sub
+                        .job_sub_rows
+                        .iter_mut()
+                        .rfind(|j| j.name == *job_name)
+                {
+                    job_sub.status = match status {
+                        JobCompletionStatus::Succeeded => JobSubStatus::Succeeded(*duration),
+                        JobCompletionStatus::Failed => JobSubStatus::Failed(*duration),
+                        JobCompletionStatus::Skipped => JobSubStatus::Skipped {
+                            duration: *duration,
+                            reason: skip_reason.clone().unwrap_or_default(),
+                        },
+                    };
                 }
             }
             DagEvent::WorktreeInfoUpdated { .. } | DagEvent::WorktreeInfoCollectionDone => {
@@ -438,10 +429,10 @@ impl TuiState {
     }
 
     fn activate_phase(&mut self, phase: &OperationPhase) {
-        if let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase) {
-            if ps.status == PhaseStatus::Pending {
-                ps.status = PhaseStatus::Active;
-            }
+        if let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase)
+            && ps.status == PhaseStatus::Pending
+        {
+            ps.status = PhaseStatus::Active;
         }
     }
 
@@ -460,12 +451,11 @@ impl TuiState {
         let any_active = self.live.rows.iter().any(
             |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
         );
-        if !any_active {
-            if let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase) {
-                if ps.status == PhaseStatus::Active {
-                    ps.status = PhaseStatus::Completed;
-                }
-            }
+        if !any_active
+            && let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase)
+            && ps.status == PhaseStatus::Active
+        {
+            ps.status = PhaseStatus::Completed;
         }
     }
 
@@ -645,15 +635,19 @@ mod tests {
     #[test]
     fn initial_state_all_pending() {
         let state = make_test_state();
-        assert!(state
-            .phases
-            .iter()
-            .all(|p| p.status == PhaseStatus::Pending));
-        assert!(state
-            .live
-            .rows
-            .iter()
-            .all(|w| w.status == WorktreeStatus::Idle));
+        assert!(
+            state
+                .phases
+                .iter()
+                .all(|p| p.status == PhaseStatus::Pending)
+        );
+        assert!(
+            state
+                .live
+                .rows
+                .iter()
+                .all(|w| w.status == WorktreeStatus::Idle)
+        );
         assert!(!state.done);
     }
 
@@ -834,18 +828,22 @@ mod tests {
     fn all_done_completes_remaining_phases() {
         let mut state = make_test_state();
         // All phases start as Pending
-        assert!(state
-            .phases
-            .iter()
-            .all(|p| p.status == PhaseStatus::Pending));
+        assert!(
+            state
+                .phases
+                .iter()
+                .all(|p| p.status == PhaseStatus::Pending)
+        );
 
         state.apply_event(&DagEvent::AllDone);
 
         // AllDone should mark all phases as Completed
-        assert!(state
-            .phases
-            .iter()
-            .all(|p| p.status == PhaseStatus::Completed));
+        assert!(
+            state
+                .phases
+                .iter()
+                .all(|p| p.status == PhaseStatus::Completed)
+        );
     }
 
     #[test]

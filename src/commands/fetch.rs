@@ -4,17 +4,18 @@
 //! to each target worktree and running `git pull` with configurable options.
 
 use crate::{
+    WorktreeConfig,
     core::{
-        worktree::fetch::{self, WorktreeFetchResult},
         OutputSink,
+        worktree::fetch::{self, WorktreeFetchResult},
     },
     get_project_root,
-    git::{should_show_gitoxide_notice, GitCommand},
+    git::{GitCommand, should_show_gitoxide_notice},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    styles, WorktreeConfig,
+    styles,
 };
 use anyhow::Result;
 use clap::Parser;

@@ -104,10 +104,10 @@ fn is_source_conforming(worktree_path: &Path, project_root: &Path) -> bool {
         return true;
     }
     // Sibling of the project root (sibling layout)
-    if let (Some(wt_parent), Some(root_parent)) = (worktree_path.parent(), project_root.parent()) {
-        if wt_parent == root_parent {
-            return true;
-        }
+    if let (Some(wt_parent), Some(root_parent)) = (worktree_path.parent(), project_root.parent())
+        && wt_parent == root_parent
+    {
+        return true;
     }
     false
 }
@@ -313,31 +313,31 @@ pub fn build_plan(
     //    Must be followed by InitWorktreeIndex to rebuild the index — the
     //    worktree was previously the main working tree of a non-bare repo
     //    and needs a fresh index as a linked worktree.
-    if bare_changed && target.is_bare {
-        if let Some(cw) = classified
+    if bare_changed
+        && target.is_bare
+        && let Some(cw) = classified
             .iter()
             .find(|cw| cw.disposition == WorktreeDisposition::DefaultBranch)
-        {
-            ops.push(TransformOp::RegisterWorktree {
-                branch: cw.branch.clone(),
-                path: cw.target_path.clone(),
-            });
-            ops.push(TransformOp::InitWorktreeIndex {
-                path: cw.target_path.clone(),
-            });
-        }
+    {
+        ops.push(TransformOp::RegisterWorktree {
+            branch: cw.branch.clone(),
+            path: cw.target_path.clone(),
+        });
+        ops.push(TransformOp::InitWorktreeIndex {
+            path: cw.target_path.clone(),
+        });
     }
 
     // g. UnregisterWorktree (if going non-bare, unregister the default branch)
-    if bare_changed && !target.is_bare {
-        if let Some(cw) = classified
+    if bare_changed
+        && !target.is_bare
+        && let Some(cw) = classified
             .iter()
             .find(|cw| cw.disposition == WorktreeDisposition::DefaultBranch)
-        {
-            ops.push(TransformOp::UnregisterWorktree {
-                branch: cw.branch.clone(),
-            });
-        }
+    {
+        ops.push(TransformOp::UnregisterWorktree {
+            branch: cw.branch.clone(),
+        });
     }
 
     // h. Regular move ops
@@ -484,9 +484,10 @@ mod tests {
         assert!(has_unregister, "Should unregister main worktree");
 
         // dev should NOT move (already at correct path)
-        let has_move_dev = plan.ops.iter().any(
-            |op| matches!(op, TransformOp::MoveWorktree { ref branch, .. } if branch == "dev"),
-        );
+        let has_move_dev = plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev"));
         assert!(!has_move_dev, "dev should not move");
     }
 
@@ -512,7 +513,7 @@ mod tests {
 
         // dev move should come BEFORE collapse
         let dev_move_idx = plan.ops.iter().position(
-            |op| matches!(op, TransformOp::MoveWorktree { ref branch, .. } if branch == "dev"),
+            |op| matches!(op, TransformOp::MoveWorktree { branch, .. } if branch == "dev"),
         );
         let collapse_idx = plan
             .ops

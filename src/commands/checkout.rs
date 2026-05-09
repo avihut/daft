@@ -1,23 +1,23 @@
 use crate::{
+    WorktreeConfig,
     core::{
+        CommandBridge,
         global_config::GlobalConfig,
         layout::{
-            resolver::{resolve_layout, LayoutResolutionContext, LayoutSource},
             BuiltinLayout, Layout,
+            resolver::{LayoutResolutionContext, LayoutSource, resolve_layout},
         },
         worktree::{checkout, checkout_branch, previous},
-        CommandBridge,
     },
     get_current_worktree_path, get_git_common_dir, get_project_root,
-    git::{should_show_gitoxide_notice, GitCommand},
+    git::{GitCommand, should_show_gitoxide_notice},
     hints::maybe_show_shell_hint,
-    hooks::{yaml_config_loader, HookExecutor, TrustDatabase},
+    hooks::{HookExecutor, TrustDatabase, yaml_config_loader},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
     utils::*,
-    WorktreeConfig,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -436,10 +436,10 @@ fn run_with_args(args: Args) -> Result<()> {
     }
 
     // Save the source worktree as previous (best-effort, after success)
-    if let Some(src) = source_worktree {
-        if let Ok(git_dir) = get_git_common_dir() {
-            let _ = previous::save(&git_dir, &src);
-        }
+    if let Some(src) = source_worktree
+        && let Ok(git_dir) = get_git_common_dir()
+    {
+        let _ = previous::save(&git_dir, &src);
     }
 
     Ok(())
@@ -695,12 +695,10 @@ fn run_checkout(
     let (resolved_layout, source) = resolve_checkout_layout(&git, output);
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
-    if should_persist {
-        if let Ok(git_dir) = get_git_common_dir() {
-            let mut trust_db = TrustDatabase::load().unwrap_or_default();
-            trust_db.set_layout(&git_dir, layout.name.clone());
-            let _ = trust_db.save();
-        }
+    if should_persist && let Ok(git_dir) = get_git_common_dir() {
+        let mut trust_db = TrustDatabase::load().unwrap_or_default();
+        trust_db.set_layout(&git_dir, layout.name.clone());
+        let _ = trust_db.save();
     }
 
     let params = checkout::CheckoutParams {
@@ -741,12 +739,11 @@ fn run_checkout(
     render_checkout_result(&result, output);
 
     // Show hooks notice if skipped due to trust
-    if result.post_hook_outcome.skipped {
-        if let Some(reason) = &result.post_hook_outcome.skip_reason {
-            if reason == "Repository not trusted" {
-                executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
-            }
-        }
+    if result.post_hook_outcome.skipped
+        && let Some(reason) = &result.post_hook_outcome.skip_reason
+        && reason == "Repository not trusted"
+    {
+        executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
     }
 
     // Run exec commands (after hooks, before cd_path)
@@ -772,12 +769,10 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     let (resolved_layout, source) = resolve_checkout_layout(&git, output);
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
-    if should_persist {
-        if let Ok(git_dir) = get_git_common_dir() {
-            let mut trust_db = TrustDatabase::load().unwrap_or_default();
-            trust_db.set_layout(&git_dir, layout.name.clone());
-            let _ = trust_db.save();
-        }
+    if should_persist && let Ok(git_dir) = get_git_common_dir() {
+        let mut trust_db = TrustDatabase::load().unwrap_or_default();
+        trust_db.set_layout(&git_dir, layout.name.clone());
+        let _ = trust_db.save();
     }
 
     let params = checkout_branch::CheckoutBranchParams {
@@ -823,12 +818,11 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     render_create_result(&result, output);
 
     // Show hooks notice if skipped due to trust
-    if result.post_hook_outcome.skipped {
-        if let Some(reason) = &result.post_hook_outcome.skip_reason {
-            if reason == "Repository not trusted" {
-                executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
-            }
-        }
+    if result.post_hook_outcome.skipped
+        && let Some(reason) = &result.post_hook_outcome.skip_reason
+        && reason == "Repository not trusted"
+    {
+        executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
     }
 
     // Run exec commands (after hooks, before cd_path)

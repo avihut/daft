@@ -1,13 +1,13 @@
 use crate::{
     check_dependencies,
     core::{
-        global_config::GlobalConfig,
-        layout::resolver::{resolve_layout, LayoutResolutionContext},
-        worktree::init,
         OutputSink,
+        global_config::GlobalConfig,
+        layout::resolver::{LayoutResolutionContext, resolve_layout},
+        worktree::init,
     },
-    git::{should_show_gitoxide_notice, GitCommand},
-    hints::{maybe_prompt_layout_choice, maybe_show_shell_hint, LayoutPromptResult},
+    git::{GitCommand, should_show_gitoxide_notice},
+    hints::{LayoutPromptResult, maybe_prompt_layout_choice, maybe_show_shell_hint},
     hooks::TrustDatabase,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -126,10 +126,10 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
 
     // Validate inputs early, before any interactive prompts.
     validate_repo_name(&args.repository_name)?;
-    if let Some(ref branch) = args.initial_branch {
-        if branch.is_empty() {
-            anyhow::bail!("Initial branch name cannot be empty");
-        }
+    if let Some(ref branch) = args.initial_branch
+        && branch.is_empty()
+    {
+        anyhow::bail!("Initial branch name cannot be empty");
     }
 
     // Load global settings to check for multi-remote preferences
@@ -253,7 +253,9 @@ mod tests {
             "GIT_COMMON_DIR",
             "GIT_CEILING_DIRECTORIES",
         ] {
-            env::remove_var(var);
+            unsafe {
+                env::remove_var(var);
+            }
         }
     }
 
@@ -354,10 +356,12 @@ mod tests {
         let result = run_with_output(&args, &mut output);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Repository name cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Repository name cannot be empty")
+        );
     }
 
     #[test]
@@ -378,10 +382,12 @@ mod tests {
         let result = run_with_output(&args, &mut output);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Initial branch name cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Initial branch name cannot be empty")
+        );
     }
 
     #[test]

@@ -306,23 +306,23 @@ fn run_tui(global: bool) -> Result<()> {
                 render_tui(&state, frame);
             })?;
 
-            if event::poll(std::time::Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
+            if event::poll(std::time::Duration::from_millis(100))?
+                && let Event::Key(key) = event::read()?
+            {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        return Ok(false); // cancelled
                     }
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(false); // cancelled
-                        }
-                        KeyCode::Enter => {
-                            return Ok(true); // save
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => state.move_up(),
-                        KeyCode::Down | KeyCode::Char('j') => state.move_down(),
-                        KeyCode::Char(' ') => state.toggle(),
-                        _ => {}
+                    KeyCode::Enter => {
+                        return Ok(true); // save
                     }
+                    KeyCode::Up | KeyCode::Char('k') => state.move_up(),
+                    KeyCode::Down | KeyCode::Char('j') => state.move_down(),
+                    KeyCode::Char(' ') => state.toggle(),
+                    _ => {}
                 }
             }
         }

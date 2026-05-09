@@ -143,6 +143,31 @@ jobs:
       - name: Run Rust unit tests
         run: mise run test:unit
 
+  # MSRV check — proves the source still compiles under the pinned floor
+  # declared in Cargo.toml's `rust-version`. `cargo check` is enough; the
+  # `lint` job above already runs full build+test on stable. Cheap minutes
+  # gate that prevents silent MSRV regressions when new code accidentally
+  # uses post-1.91 stdlib features.
+  msrv-check:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust 1.91 (MSRV)
+        uses: dtolnay/rust-toolchain@1.91.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.91
+
+      - name: Cargo check at MSRV
+        run: cargo check --all-targets
+
   # Windows compile check — ensures the codebase still builds for the
   # x86_64-pc-windows-msvc target that the release workflow ships. This
   # only runs `cargo check`, not a full build or test, so it stays fast

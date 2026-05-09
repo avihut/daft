@@ -245,5 +245,5 @@ url = "https://github.com/neovim/neovim/releases/download/stable/nvim-win64.zip"
 url = "https://github.com/neovim/neovim/releases/download/stable/nvim-win64.zip"
 
 [[tools.rust]]
-version = "stable"
+version = "1.88.0"
 backend = "core:rust"

@@ -43,10 +43,10 @@ pub fn resolve_remote_for_branch(
     }
 
     // 2. Try to get the branch's tracking remote
-    if let Ok(Some(tracking_remote)) = git.get_branch_tracking_remote(branch_name) {
-        if !tracking_remote.is_empty() {
-            return Ok(tracking_remote);
-        }
+    if let Ok(Some(tracking_remote)) = git.get_branch_tracking_remote(branch_name)
+        && !tracking_remote.is_empty()
+    {
+        return Ok(tracking_remote);
     }
 
     // 3. Fall back to default remote

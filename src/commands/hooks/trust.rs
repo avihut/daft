@@ -1,7 +1,7 @@
 use super::{find_project_hooks, styled_trust_level};
-use crate::hooks::{get_remote_url_for_git_dir, TrustDatabase, TrustLevel};
-use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
+use crate::hooks::{TrustDatabase, TrustLevel, get_remote_url_for_git_dir};
 use crate::output::Output;
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::styles::{bold, cyan, dim, green, red, yellow};
 use crate::{get_git_common_dir, is_git_repository};
 use anyhow::{Context, Result};

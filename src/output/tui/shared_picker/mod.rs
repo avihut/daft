@@ -22,7 +22,7 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen},
 };
-use ratatui::{layout::Rect, style::Color, text::Line, Frame, Terminal};
+use ratatui::{Frame, Terminal, layout::Rect, style::Color, text::Line};
 use std::io;
 use std::time::Duration;
 

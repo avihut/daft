@@ -172,16 +172,15 @@ impl AliasCache {
         let aliases_path = aliases_cache_path(kind)?;
         let functions_path = functions_cache_path(kind)?;
 
-        if !force_refresh {
-            if let Some(loaded) = Self::load(&aliases_path, &functions_path) {
-                if loaded.is_fresh(CACHE_TTL) {
-                    debug_log_capture(&format!(
-                        "using cached snapshot at {}",
-                        aliases_path.display()
-                    ));
-                    return Some(loaded);
-                }
-            }
+        if !force_refresh
+            && let Some(loaded) = Self::load(&aliases_path, &functions_path)
+            && loaded.is_fresh(CACHE_TTL)
+        {
+            debug_log_capture(&format!(
+                "using cached snapshot at {}",
+                aliases_path.display()
+            ));
+            return Some(loaded);
         }
 
         let (alias_lines, functions_body) = match Self::capture(shell_path, kind) {
@@ -542,9 +541,11 @@ mod tests {
 
     #[test]
     fn alias_expansion_prefix_is_shell_specific() {
-        assert!(ShellKind::Bash
-            .alias_expansion_prefix()
-            .contains("expand_aliases"));
+        assert!(
+            ShellKind::Bash
+                .alias_expansion_prefix()
+                .contains("expand_aliases")
+        );
         assert_eq!(ShellKind::Zsh.alias_expansion_prefix(), "");
     }
 

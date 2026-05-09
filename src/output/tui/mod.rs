@@ -12,7 +12,7 @@ mod render;
 pub mod shared_picker;
 mod state;
 
-pub use columns::{select_columns, Column};
+pub use columns::{Column, select_columns};
 pub use driver::TuiRenderer;
 pub use live_table::{LiveTable, LiveTableConfig};
 pub use operation_table::{CompletedTable, OperationTable, TableConfig};

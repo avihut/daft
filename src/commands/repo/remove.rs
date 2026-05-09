@@ -1,6 +1,6 @@
 //! `daft repo remove` — remove a Git repository and all its worktrees.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -363,7 +363,7 @@ fn build_tui_rows(
     worktrees: &[crate::core::worktree::remove_repo::WorktreeEntry],
 ) -> Vec<crate::core::worktree::list::WorktreeInfo> {
     use crate::core::worktree::list::{
-        get_branch_creation_timestamp, get_commit_metadata, WorktreeInfo,
+        WorktreeInfo, get_branch_creation_timestamp, get_commit_metadata,
     };
 
     // Subprocess backend is fine here: this runs once at TUI bootstrap for a

@@ -10,8 +10,8 @@
 //! [`CliPresenter`]: crate::executor::cli_presenter::CliPresenter
 
 use crate::core::worktree::sync_dag::{DagEvent, JobCompletionStatus};
-use crate::executor::presenter::JobPresenter;
 use crate::executor::JobResult;
+use crate::executor::presenter::JobPresenter;
 use crate::hooks::HookType;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
