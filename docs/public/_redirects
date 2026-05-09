@@ -33,3 +33,6 @@
 # Root meta → about
 /contributing                             /about/contributing                    301
 /changelog                                /about/changelog                       301
+
+# Retired: networking-roadmap stub page (content lived in #357 only)
+/about/networking-roadmap                 /about/why-daft                        301

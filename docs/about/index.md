@@ -10,7 +10,5 @@ description: Background, FAQ, troubleshooting, comparison, and project meta.
 - **[FAQ](/about/faq)** — common questions
 - **[Troubleshooting](/about/troubleshooting)** — symptom → fix
 - **[Comparison](/about/comparison)** — daft vs nearby tools
-- **[Networking roadmap](/about/networking-roadmap)** — the third pillar, in
-  design
 - **[Contributing](/about/contributing)** — how to help
 - **[Changelog](/about/changelog)** — release notes

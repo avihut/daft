@@ -546,7 +546,6 @@ export default defineConfig({
           { text: "FAQ", link: "/about/faq" },
           { text: "Troubleshooting", link: "/about/troubleshooting" },
           { text: "Comparison", link: "/about/comparison" },
-          { text: "Networking roadmap", link: "/about/networking-roadmap" },
           { text: "Contributing", link: "/about/contributing" },
           { text: "Changelog", link: "/about/changelog" },
         ],
