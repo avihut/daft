@@ -149,8 +149,9 @@ vars for `ps -e` to expose.
 
 ### For CI, use the CI secret store
 
-GitHub Actions: `${{ secrets.API_KEY }}` in the workflow `env:`, injected only
-into the steps that need it. GitLab: `variables` with "Mask" enabled. See
+GitHub Actions: <span v-pre>`${{ secrets.API_KEY }}`</span> in the workflow
+`env:`, injected only into the steps that need it. GitLab: `variables` with
+"Mask" enabled. See
 [CI parity](/recipes/ci-parity#ci-specific-env-vars-and-secrets).
 
 ## Composes well with
