@@ -154,6 +154,28 @@ inline references in prose). 10+ becomes furniture; the reader stops choosing.
 - **No bottom Anti-patterns bullet list.** It duplicates the inline warnings and
   pads cross-link density.
 
+### VitePress directive format — get this right
+
+The closing `:::` **must be on its own line.** A common mistake:
+
+```
+::: warning Title runs into the first sentence so the title bleeds.
+Content paragraph that ends with the closing on the same line. :::
+```
+
+This renders broken: the closing token doesn't terminate the block, so the next
+`## Heading` after it gets swallowed into the warning box. The fix:
+
+```
+::: warning Title on its own line
+Content paragraph or paragraphs.
+:::
+```
+
+Title on the opening line. Content on subsequent lines. Closing `:::` alone on
+its line. If you ever see "step N is missing from the TOC" or "the next section
+is rendered inside a warning box," check the previous `:::` block first.
+
 ## Style
 
 - Second person, active voice. "You have," "you're typing," "your README."
