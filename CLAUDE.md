@@ -18,6 +18,15 @@ IMPORTANT: These rules must NEVER be violated:
    `pull_request[_target]` trigger. Never reference `CLAUDE_CODE_OAUTH_TOKEN`
    from any other workflow. Never replace SHA pins with mutable refs (Dependabot
    keeps them current). Workflow changes are CODEOWNERS-gated to `@avihut`.
+4. **Don't reintroduce `unsafe` in production code paths** — `src/lib.rs` uses
+   `#![cfg_attr(not(test), forbid(unsafe_code))]` and `src/main.rs` uses
+   `#![forbid(unsafe_code)]`. Tests can wrap `env::set_var`/`remove_var` in
+   `unsafe { … }` (these became `unsafe fn` in edition 2024); production code
+   cannot. If you need a libc-style primitive, use the `nix` safe wrappers
+   (already a dep with `signal` + `term` features). `forbid` cannot be
+   `#[allow]`-overridden at any inner scope — that's the whole point — so adding
+   `#[allow(unsafe_code)]` to a function will fail to compile. If a genuine need
+   arises, refactor the design (e.g. fork→spawn) rather than weakening the lint.
 
 ## Safe Local Testing with Git
 
@@ -128,6 +137,40 @@ startup-time background work in `src/main.rs` (currently the update check and
 trust prune) must be gated through `daft::skip_startup_tasks_for`, which covers
 `shell-init`, `completions`, and `__*` background tasks. Add new commands with
 similar constraints to that helper rather than introducing a parallel gate.
+
+**Background processes (spawn pattern, not fork)**: Long-running daemon-like
+work uses the spawn-self pattern, not `fork()`. The coordinator
+(`src/coordinator/process.rs::spawn_coordinator`), `__check-update`,
+`__prune-trust`, and `__clean-logs` all share this contract:
+
+1. Parent serializes state to a 0600-perms tempfile via `tempfile::Builder` when
+   state passing is needed (trivial spawns skip this).
+2. Parent calls `std::env::current_exe()?.canonicalize()?` — the
+   `canonicalize()` is **load-bearing**. Without it, when the parent was invoked
+   via a symlink (e.g. `git-worktree-checkout-branch`), `current_exe` returns
+   the symlink path. Spawning that path means the new daft process dispatches
+   through the symlink's command arm (here: checkout-branch), and clap then
+   rejects `__<name> <state-file>` as positional args — the spawned child
+   silently fails to start. Canonicalize lands on the real `daft` binary so the
+   multicall arm dispatches correctly.
+3. Parent spawns `daft __<name> [<state-file>]` via `Command::new(canonical)`
+   with `Stdio::null()` for stdin/stdout/stderr and any required env vars set
+   via `Command::env(…)` — NOT `std::env::set_var` in the parent (that's
+   `unsafe fn` in edition 2024).
+4. Child reads + unlinks state on entry (best-effort: don't error on missing
+   tempfile; rely on bytes already in memory).
+5. Child calls `nix::unistd::setsid()` early to detach from the parent's
+   session/TTY.
+6. Child runs its work and `process::exit`s.
+
+`fork()` is **not** an option for new background work — `libc::fork()` is
+intrinsically `unsafe fn` (POSIX async-signal-safety rules) and conflicts with
+the `forbid(unsafe_code)` policy in Critical Rule #4. Spawn-self is the pattern.
+
+When debugging a spawned daemon's startup, `Stdio::null()` on stderr hides
+panics. Temporarily replace it with
+`Stdio::from(File::open("/tmp/daft-X-debug.log")?)`, run the failing test,
+revert before commit. Don't ship the debug redirect.
 
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
