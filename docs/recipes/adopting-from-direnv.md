@@ -1,8 +1,9 @@
 ---
 title: Adopting from direnv
 description:
-  Layer daft hooks underneath an existing direnv setup — keep what direnv does,
-  add what it doesn't (install, services, warmup, cleanup).
+  Layer daft hooks underneath an existing direnv setup — direnv keeps loading
+  env on cd; daft adds the install/services/cleanup rituals direnv was never
+  meant to handle.
 pillars: [worktrees, hooks]
 ---
 
@@ -10,20 +11,27 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-The team adopted direnv a while back. The repo has:
+The team adopted direnv a while back. The repo has an `.envrc` at the root and a
+README pointing new contributors at the manual rituals:
 
-- `.envrc` at the root with `use mise`, `dotenv_if_exists .env`, and
-  `PATH_add bin`
-- A `mise.toml` pinning Node 22, Python 3.13, Rust 1.84 — activated by direnv's
-  `use mise`
-- A README that says "first clone? `direnv allow`, then `pnpm install`,
-  `docker compose up -d`, and `scripts/codegen.sh`."
+```bash
+# .envrc
+dotenv_if_exists .env
+PATH_add bin
+```
+
+The README's "Getting started" section reads: _"first clone? `direnv allow`,
+then `pnpm install`, `docker compose up -d`, and `scripts/codegen.sh`."_
+
+Tool versions are managed externally — devs run whatever Node and Python they
+have installed locally. The README has a "Required versions" line that the team
+ignores half the time.
 
 The ritual: clone, see direnv's "blocked" message, `direnv allow`, then work
-through the rest of the README from memory. direnv solves the tools-and-env half
-of setup — `node` resolves to the right version, the `.env` secrets are
-exported, the project's `bin/` is on `PATH`. The other half — the slow stuff
-(deps install, services up, codegen) — still relies on muscle memory.
+through the rest of the README from memory. direnv solves the secrets-and-PATH
+half of setup — `.env` exports, the project's `bin/` on `PATH`. The other half —
+the slow stuff (deps install, services up, codegen) — still relies on muscle
+memory.
 
 That was tolerable for a single working tree. With daft worktrees, the slow
 rituals fire dozens of times a month. Sooner or later someone runs `pnpm test`
@@ -38,8 +46,7 @@ never meant to handle.
 
 A new `daft.yml` adds the install / services / cleanup work to
 `worktree-post-create` and `worktree-pre-remove`. **Nothing changes in
-`.envrc`.** mise activation, the `dotenv` line, the `PATH_add` — all stay where
-they are.
+`.envrc`.** The `dotenv` line and `PATH_add` stay where they are.
 
 Hooks run with the worktree as cwd. They do not run inside a direnv-loaded shell
 — `direnv exec` is not needed and is in fact counterproductive (see Idempotency
@@ -75,36 +82,21 @@ Existing `.envrc` stays as-is:
 
 ```bash
 # .envrc — unchanged
-use mise
 dotenv_if_exists .env
 PATH_add bin
 ```
 
 A fresh `daft start feature/x` now lands in a worktree with deps installed,
-services running, codegen warming up in the background — and direnv's "tools +
-env on cd" behavior intact when you actually `cd` in. The README's "after
-`direnv allow`, also run pnpm install / compose up" muscle memory is gone.
+services running, codegen warming up — and direnv's "`.env` + PATH on cd"
+behavior intact when you `cd` in. The README's "after `direnv allow`, also run
+pnpm install / compose up" muscle memory is gone.
 
 ## Variants
 
 By **what direnv is already managing** in your project. Each variant names a
 thing direnv covers and what — if anything — daft adds.
 
-### direnv pins tool versions (`use mise`, `use node`, `use python`)
-
-Skip an explicit `mise install` job. mise activation runs when the user `cd`s
-into the worktree; the binaries resolve via shell PATH. If a pinned version
-isn't on disk yet, mise prompts the user on the next cd — one-time, until
-installed.
-
-If you want eager install at worktree create (no surprise prompt later):
-
-```yaml
-- name: install-tool-versions
-  run: mise install
-```
-
-### direnv loads secrets via `dotenv` / `dotenv_if_exists`
+### direnv loads `.env` via `dotenv` / `dotenv_if_exists`
 
 Most hook jobs don't need secrets — install, services up, codegen typically use
 the build toolchain, not API keys. Leave secret loading to direnv at the shell
@@ -127,6 +119,34 @@ Don't seed secrets into `.envrc` from a hook — that round-trips through direnv
 trust prompt every worktree create. See
 [Env vars & secrets](/recipes/env-vars-and-secrets) for vault-fetched patterns
 where secrets shouldn't sit in a local file at all.
+
+### direnv creates a per-directory env (`layout python`, `layout ruby`)
+
+direnv's `layout` stanzas create a per-directory virtualenv (Python) or gemset
+(Ruby) and activate it on cd. The daft hook just needs to materialize the env
+and install dependencies; direnv's layout activates it on the next cd.
+
+For `layout python python3.11`:
+
+```yaml
+- name: install-python-deps
+  run: |
+    if [ ! -d .direnv/python-3.11 ]; then
+      python3.11 -m venv .direnv/python-3.11
+    fi
+    .direnv/python-3.11/bin/pip install -e .
+```
+
+The hook pre-creates the venv that direnv's `layout python` would otherwise
+create on the user's first cd, and pre-installs the dependencies. The next `cd`
+exports the already-activated venv — no install delay on first interactive use.
+
+For `layout ruby`:
+
+```yaml
+- name: install-ruby-deps
+  run: bundle install --path .direnv/ruby
+```
 
 ### direnv adds a project bin to PATH (`PATH_add bin`)
 
@@ -159,11 +179,10 @@ direnv's trust prompt during a `daft start`. Run daft binaries directly.
 
 ## Where to next
 
-- **[Declarative envs](/recipes/declarative-envs)** — if you're considering
-  migrating off direnv. mise's `[env]` block + `mise activate` covers the same
-  job with one less tool in the chain.
+- **[Adopting from mise](/recipes/adopting-from-mise)** — the companion recipe
+  for teams using mise instead of direnv.
 - **[Env vars & secrets](/recipes/env-vars-and-secrets)** — deeper on hook-time
-  vs shell-time env, especially when secrets need to come from a vault rather
+  vs shell-time env, especially for secrets that should come from a vault rather
   than a local `.env`.
 - **[Lifecycle hooks](/hooks/lifecycle)** — when `worktree-post-create` fires
-  relative to direnv's `cd`-time evaluation.
+  relative to direnv's cd-time evaluation.

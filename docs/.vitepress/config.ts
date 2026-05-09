@@ -322,6 +322,10 @@ export default defineConfig({
                 link: "/recipes/adopting-from-direnv",
               },
               {
+                text: "Adopting from mise",
+                link: "/recipes/adopting-from-mise",
+              },
+              {
                 text: "Editor integration",
                 link: "/recipes/editor-integration",
               },

@@ -58,7 +58,7 @@ Lifecycle stage: `worktree-post-create`. Get a fresh worktree from "empty
 checkout" to "ready to run a command."
 
 <ul>
-  <li v-for="r in patterns.filter(p => ['/recipes/toolchain-bootstrap', '/recipes/background-warmup', '/recipes/env-vars-and-secrets', '/recipes/services-with-ports', '/recipes/adopting-from-direnv', '/recipes/editor-integration'].includes(p.link))" :key="r.link">
+  <li v-for="r in patterns.filter(p => ['/recipes/toolchain-bootstrap', '/recipes/background-warmup', '/recipes/env-vars-and-secrets', '/recipes/services-with-ports', '/recipes/adopting-from-direnv', '/recipes/adopting-from-mise', '/recipes/editor-integration'].includes(p.link))" :key="r.link">
     <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
   </li>
 </ul>
