@@ -23,7 +23,7 @@ ml-pipeline/
 └── tests/
 ```
 
-Three engineers and a part-time data scientist. The current setup ritual:
+The current setup ritual:
 
 1. `mise install` — fine, everyone has mise.
 2. `uv sync` — works, but occasionally drifts the lockfile because nobody used
@@ -34,9 +34,8 @@ Three engineers and a part-time data scientist. The current setup ritual:
    laptop's empty Postgres; you spend 20 minutes wondering why a query returns
    zero rows.
 
-Last quarter the team rotated their DB password. Three people had to be told
-three times each, in DM. One of them forgot, kept committing notebook output
-that included the old password in a connection error stacktrace, and the team
+When the team last rotated their DB password, someone kept committing notebook
+output that included the old password in a connection error stacktrace; the team
 spent an hour scrubbing git history.
 
 The reach for daft: declarative tool versions and committed env defaults are
@@ -261,10 +260,10 @@ Before:
 
 - "Run this script with these env vars" — manual every time.
 - Secrets shared via Slack DMs and `.env` files passed around.
-- Quarterly password rotation = a thread in #engineering and a stack trace in
+- Each password rotation = a thread in #engineering and a stack trace in
   someone's notebook output that needed a history scrub.
-- New devs spent half a day getting onboarded, hitting different bugs per
-  machine because Python versions and env defaults drifted.
+- Onboarding meant hitting different bugs per machine because Python versions
+  and env defaults drifted.
 
 After:
 

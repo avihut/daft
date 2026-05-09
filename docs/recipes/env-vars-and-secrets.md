@@ -10,17 +10,16 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-Your team's "how do I get a working `.env`" process is verbal. The lead engineer
-keeps `.env.example` committed with placeholder values; new devs fill in the
-real ones from a 1Password note that gets shared during onboarding. Two months
-ago someone DM'd a working `.env` to a contractor in Slack; that channel is
-still in scrollback and the `DATABASE_URL` in it points at the (since-rotated)
-production read replica.
+Your team's "how do I get a working `.env`" process is verbal. Someone keeps
+`.env.example` committed with placeholder values; new devs fill in the real ones
+from a 1Password note that gets shared during onboarding. A working `.env` once
+got DM'd to a contractor in Slack; that channel is still in scrollback and the
+`DATABASE_URL` in it points at the (since-rotated) production read replica.
 
-Last month a dev edited `.envrc` to flip `DATABASE_URL` to their local Postgres,
-then committed it with a benign-sounding message. GitHub's secret scanner caught
-the staging password they didn't realize was in the surrounding lines. Rotation
-took an afternoon.
+A dev once edited `.envrc` to flip `DATABASE_URL` to their local Postgres, then
+committed it with a benign-sounding message. GitHub's secret scanner caught the
+staging password they didn't realize was in the surrounding lines. Rotation took
+an afternoon.
 
 The reach for daft: env vars and secrets should be **automatic per-worktree**.
 Populated when the worktree is created, gone when it's removed, never typed by

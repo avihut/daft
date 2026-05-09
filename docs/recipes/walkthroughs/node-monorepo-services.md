@@ -36,13 +36,12 @@ The setup ritual the README describes:
 5. `pnpm dev`
 
 Half the time someone forgets step 4 and the dev server crashes on first
-request. Twice a week someone hits **port 5432 already in use** because
+request. Sooner or later someone hits **port 5432 already in use** because
 `feature/auth`'s compose stack is up while they're trying to start
-`feature/billing`. Last month a contractor had to be told step 1 mattered three
-separate times before it stuck.
+`feature/billing`.
 
-Two engineers cannot meaningfully work on parallel features without a 30-minute
-coordination conversation about whose compose stack is on which port.
+Parallel worktrees can't coexist without a coordination conversation about whose
+compose stack is on which port.
 
 This walkthrough threads four patterns into one `daft.yml`:
 
@@ -302,16 +301,15 @@ Before:
   debugging.
 - "Two devs on parallel features" wasn't really possible without a 30-minute
   setup conversation.
-- The README's five steps had to be repeated to every contractor and half the
-  new hires.
+- The README's five steps had to be repeated to every newcomer.
 
 After:
 
 - `daft start feature/x` returns with the worktree fully wired: `node_modules`
   from the shared pnpm store, dedicated postgres / redis / minio on isolated
   ports, fresh migrations applied, ready for `pnpm dev`.
-- Two engineers on parallel features just work — no port coordination, no shared
-  dev DB, no merge conflicts in `compose.yaml`.
+- Parallel feature branches just work — no port coordination, no shared dev DB,
+  no merge conflicts in `compose.yaml`.
 - `daft remove feature/x` (or `daft prune`) leaves nothing on disk: no orphaned
   containers, no leaked volumes, no zombie ports.
 

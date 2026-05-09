@@ -22,9 +22,9 @@ may or may not pick them up. `.nvmrc` only matters if you remember `nvm use`.
 into your shell rc. The Rust version is _implicit_ until the Docker build —
 locally everyone runs whatever `rustc` they last installed.
 
-Two new devs in the past month each spent half a day chasing "only repros on
-Alex's machine" bugs. One was Node 20 vs 18, the other was Rust 1.79 vs 1.78.
-The `.nvmrc` file existed; nobody had run `nvm use` after `cd`-ing.
+Bugs that "only repro on Alex's machine" turn out to be version mismatches —
+Node 20 vs 18, Rust 1.79 vs 1.78. The `.nvmrc` file exists; nobody ran `nvm use`
+after `cd`-ing.
 
 The reach for daft: stop relying on muscle memory. Tool versions should
 _activate_ on cd, not when you remember to run a command.

@@ -10,9 +10,8 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-You've been using daft for two months. Your
-[Services with ports](/recipes/services-with-ports) recipe boots a compose stack
-per worktree — that part works fine. Worktrees come and go.
+Your [Services with ports](/recipes/services-with-ports) recipe boots a compose
+stack per worktree — that part works fine. Worktrees come and go.
 
 Today's housekeeping turn:
 
@@ -27,9 +26,9 @@ $ du -sh ~/Library/Containers/com.docker.docker/Data/vms/0/data
 
 Twenty-three stopped containers from worktrees that don't exist anymore.
 Fourteen volumes (postgres, redis, minio) that nobody owns. Twelve gigabytes on
-disk that nobody asked for. Add to that a half-released port from a Node dev
-server you backgrounded last week — `lsof -i :3000` finds a process from a
-feature branch you deleted ten days ago.
+disk that nobody asked for. Add to that a half-released port from a backgrounded
+Node dev server — `lsof -i :3000` finds a process from a feature branch that no
+longer exists.
 
 The create hook starts services. There's no symmetric pre-remove hook, so when
 the worktree directory got deleted, `docker compose` was never told. Containers

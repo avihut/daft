@@ -16,11 +16,9 @@ The repo has a `daft.yml` with six `worktree-post-create` jobs: `mise install`,
 a slightly different order, sometimes with subtly different commands. There's a
 comment near the top of test.yml: _"Keep in sync with daft.yml."_
 
-Last week someone added `protoc-gen-go` to the codegen job in `daft.yml`. They
-didn't update the workflow. CI broke for two days before anyone caught it; the
-failing job's logs pointed at a missing binary inside a generated module.
-
-Today there's a PR that bumps mise's pinned Node version, and reviewers are
+Someone adds `protoc-gen-go` to the codegen job in `daft.yml` and doesn't update
+the workflow. CI breaks; the failing job's logs point at a missing binary inside
+a generated module. Or a PR bumps mise's pinned Node version, and reviewers are
 arguing whether to "also update the CI matrix." Whether the workflow gets the
 right edit is a coin flip — and that's the part that scares you.
 
