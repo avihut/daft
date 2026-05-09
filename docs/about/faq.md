@@ -12,8 +12,9 @@ git operation. You can mix `git` and `daft` commands freely in the same repo.
 
 ## Does daft work with monorepos?
 
-Yes. See [Recipes → By scenario → Monorepo](/recipes/by-scenario/monorepo) for
-the recommended pattern.
+Yes. See
+[Recipes → Walkthroughs → Node monorepo with services](/recipes/walkthroughs/node-monorepo-services)
+for the recommended end-to-end pattern.
 
 ## Does daft work on Windows?
 

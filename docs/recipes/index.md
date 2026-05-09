@@ -1,67 +1,21 @@
 ---
 title: Recipes
 description:
-  Patterns for adopting daft alongside your existing tooling, language, or
-  scenario.
+  Patterns and walkthroughs for daft's lifecycle automation — toolchain
+  bootstrap, services per worktree, secrets, cleanup on remove.
 ---
 
 # Recipes
 
-Patterns for putting daft into practice. Each recipe is task-oriented (here's
-how to do X), tagged with which **pillar(s)** it touches and which **tooling** /
-**language** / **scenario** it's about.
+Recipes are how daft's idea — **lifecycle automation per worktree** — turns into
+real-world setup. Patterns are atomic problems each solved once; walkthroughs
+are real project shapes that thread patterns end-to-end. Pick the patterns you
+need, or read a walkthrough that matches your stack.
 
-## Find a recipe
+## Walkthroughs
 
-### By tooling
-
-How daft fits with the env-manager you already use.
-
-- **[mise](/recipes/by-tooling/mise)** — per-worktree tool versions and tasks
-  via `mise.toml`
-- **[direnv](/recipes/by-tooling/direnv)** — per-worktree env vars via `.envrc`
-- **[nvm](/recipes/by-tooling/nvm)** — per-worktree Node versions via `.nvmrc`
-- **[pyenv](/recipes/by-tooling/pyenv)** — per-worktree Python versions via
-  `.python-version`
-- **[asdf](/recipes/by-tooling/asdf)** — multi-language version management via
-  `.tool-versions`
-
-### By language
-
-Per-language patterns for daft adoption.
-
-- **[Node.js](/recipes/by-language/node)** — `package.json`, `node_modules`,
-  npm/pnpm/yarn
-- **[Python](/recipes/by-language/python)** — virtualenvs, requirements, `pip`
-  vs `uv`
-- **[Rust](/recipes/by-language/rust)** — `target/` per worktree, `cargo` caches
-- **[Go](/recipes/by-language/go)** — `GOPATH`, modules, build cache
-
-### By scenario
-
-Patterns for specific workflow shapes.
-
-- **[Monorepo](/recipes/by-scenario/monorepo)** — daft in a multi-package
-  monorepo
-- **[Fork workflow](/recipes/by-scenario/fork-workflow)** — daft + multi-remote
-  for forks
-- **[CI integration](/recipes/by-scenario/ci-integration)** — running daft hooks
-  in CI for parity
-
-## Pillar tags
-
-Every recipe lists the **pillar(s)** it touches in its frontmatter:
-
-- `pillars: [worktrees]` — worktree workflow only
-- `pillars: [worktrees, hooks]` — worktrees + automation via daft hooks
-- `pillars: [hooks]` — hooks-only (rare today; will be common once
-  [#468](https://github.com/avihut/daft/issues/468) ships)
-
-## Contributing a recipe
-
-Spot a missing recipe? See [Contributing](/about/contributing).
-
-## Filtered recipes
+End-to-end recipes for full project shapes. Read the one closest to what you're
+building, then drop into the patterns it cites for variants.
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
@@ -74,18 +28,84 @@ onMounted(() => {
   pillar.value = params.get('pillar')
 })
 
-const filtered = computed(() => {
-  if (!pillar.value) return []
+const visible = computed(() => {
+  if (!pillar.value) return recipes
   return recipes.filter(r => r.pillars.includes(pillar.value))
 })
+
+const walkthroughs = computed(() => visible.value.filter(r => r.kind === 'walkthrough'))
+const patterns = computed(() => visible.value.filter(r => r.kind === 'pattern'))
+const references = computed(() => visible.value.filter(r => r.kind === 'reference' || r.kind === 'anti-pattern'))
 </script>
 
 <template v-if="pillar">
   <p>Showing recipes tagged <code>{{ pillar }}</code>:</p>
-  <ul>
-    <li v-for="r in filtered" :key="r.link">
-      <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
-    </li>
-  </ul>
-  <p v-if="filtered.length === 0">No recipes yet for this pillar.</p>
 </template>
+
+<ul>
+  <li v-for="r in walkthroughs" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+## Patterns
+
+Atomic problems, one recipe per problem. Combine them as your project needs.
+
+### Setup
+
+Lifecycle stage: `worktree-post-create`. Get a fresh worktree from "empty
+checkout" to "ready to run a command."
+
+<ul>
+  <li v-for="r in patterns.filter(p => ['/recipes/toolchain-bootstrap', '/recipes/background-warmup', '/recipes/env-vars-and-secrets', '/recipes/services-with-ports'].includes(p.link))" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+### Steady state
+
+Patterns that span the worktree's full life — declarative env activation on
+`cd`, running the same hooks in CI for parity.
+
+<ul>
+  <li v-for="r in patterns.filter(p => ['/recipes/declarative-envs', '/recipes/ci-parity'].includes(p.link))" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+### Teardown
+
+Lifecycle stage: `worktree-pre-remove`. Anything the create hook brought into
+existence needs a way back out.
+
+<ul>
+  <li v-for="r in patterns.filter(p => p.link === '/recipes/cleanup-on-remove')" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+## References
+
+Background reading and what-not-to-do — useful alongside the patterns.
+
+<ul>
+  <li v-for="r in references" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+## Pillar tags
+
+Every recipe lists the **pillar(s)** it touches in its frontmatter. Filter this
+page with `?pillar=worktrees` or `?pillar=hooks` to see only recipes relevant to
+one pillar.
+
+- `pillars: [worktrees, hooks]` — the common case (most patterns combine
+  worktree-aware setup with hook-driven automation).
+- `pillars: [hooks]` — hook-shaped concerns that aren't worktree-specific (CI
+  parity).
+
+## Contributing a recipe
+
+Spot a missing recipe? See [Contributing](/about/contributing).

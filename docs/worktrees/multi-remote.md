@@ -86,4 +86,4 @@ daft clone git@github.com:user/project.git --remote origin
 ## Where to next
 
 - **CLI reference:** [`daft multi-remote`](/reference/cli/daft-multi-remote)
-- **Recipe:** [Fork workflow](/recipes/by-scenario/fork-workflow)
+- **Recipes:** [Recipes for Worktrees](/recipes/?pillar=worktrees)

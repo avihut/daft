@@ -292,4 +292,5 @@ prompts you to choose. The chosen layout is applied as if you had passed
 ## Where to next
 
 - **CLI reference:** [`daft layout`](/reference/cli/daft-layout)
-- **Real-world usage:** [Recipes → Monorepo](/recipes/by-scenario/monorepo)
+- **Real-world usage:**
+  [Recipes → Walkthroughs → Node monorepo with services](/recipes/walkthroughs/node-monorepo-services)

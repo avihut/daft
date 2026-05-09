@@ -18,6 +18,18 @@
 # CLI ref → reference/cli (also handled by vitepress rewrites; this catches direct hits)
 /cli/*                                    /reference/cli/:splat                  301
 
+# Recipes restructure — by-* taxonomy retired in favor of patterns + walkthroughs
+/recipes/by-scenario/monorepo             /recipes/walkthroughs/node-monorepo-services  301
+/recipes/by-scenario/ci-integration       /recipes/ci-parity                            301
+/recipes/by-tooling/mise                  /recipes/declarative-envs                     301
+/recipes/by-tooling/asdf                  /recipes/declarative-envs                     301
+/recipes/by-tooling/nvm                   /recipes/declarative-envs                     301
+/recipes/by-tooling/pyenv                 /recipes/declarative-envs                     301
+/recipes/by-tooling/direnv                /recipes/env-vars-and-secrets                 301
+/recipes/by-tooling/*                     /recipes/                                     301
+/recipes/by-language/*                    /recipes/                                     301
+/recipes/by-scenario/*                    /recipes/                                     301
+
 # Root meta → about
 /contributing                             /about/contributing                    301
 /changelog                                /about/changelog                       301

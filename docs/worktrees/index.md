@@ -21,8 +21,9 @@ value; each stage stands on its own.
    swapping.
 2. **Environment isolation.** Different branches often need different runtime
    versions, env vars, or secrets. With per-worktree env management
-   ([mise](/recipes/by-tooling/mise), [direnv](/recipes/by-tooling/direnv), nvm,
-   pyenv), each worktree boots with the right environment.
+   ([declarative envs](/recipes/declarative-envs) via mise/asdf/nvm/pyenv, plus
+   [env vars & secrets](/recipes/env-vars-and-secrets) via direnv/sops), each
+   worktree boots with the right environment.
 3. **Automation.** Setting up env per worktree gets repetitive. The
    [Hooks pillar](/hooks/) automates it: declarative jobs that run when
    worktrees are created, removed, or merged.

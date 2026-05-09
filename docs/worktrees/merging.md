@@ -99,4 +99,4 @@ env vars, fail modes, and config.
   [`git worktree-merge`](/reference/cli/git-worktree-merge)
 - **Configuration:** [Merge Settings](/reference/configuration#merge-settings)
 - **Hooks:** [Merge hooks](/hooks/lifecycle#merge-hooks)
-- **Recipe:** [Fork workflow](/recipes/by-scenario/fork-workflow)
+- **Recipes:** [Recipes for Worktrees](/recipes/?pillar=worktrees)

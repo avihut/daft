@@ -146,9 +146,13 @@ That's stage 1: every branch in its own directory, no stashing, no swapping.
 Worktrees give you code isolation. Real-world branches usually need different
 runtime versions, env vars, or running services. Add a tool to handle that:
 
-- **Tool versions**: see the [mise recipe](/recipes/by-tooling/mise).
-- **Env vars / secrets**: see the [direnv recipe](/recipes/by-tooling/direnv).
-- **Both**: combine the two recipes.
+- **Tool versions**: see [Declarative envs](/recipes/declarative-envs) (mise,
+  asdf, nvm, pyenv).
+- **Env vars / secrets**: see
+  [Env vars & secrets](/recipes/env-vars-and-secrets) (direnv, sops, vault
+  lookups).
+- **Both layered**: see the
+  [Python/uv with mise + sops walkthrough](/recipes/walkthroughs/python-uv-secrets).
 
 Each worktree boots with the right env on `cd`.
 
