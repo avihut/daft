@@ -287,6 +287,10 @@ export default defineConfig({
                 text: "Python/uv with mise + sops",
                 link: "/recipes/walkthroughs/python-uv-secrets",
               },
+              {
+                text: "Migrating from a bin/setup.sh ritual",
+                link: "/recipes/walkthroughs/migrating-from-setup-sh",
+              },
             ],
           },
           {
