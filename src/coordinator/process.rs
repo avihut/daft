@@ -778,7 +778,15 @@ pub fn spawn_coordinator(
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let exe = std::env::current_exe().context("Could not determine current executable")?;
+    // Resolve symlinks: when invoked via `git-worktree-checkout-branch` etc.,
+    // `current_exe()` returns the symlink path; spawning that path would route
+    // multicall dispatch to the symlink command (which then rejects
+    // `__coordinator` as an unknown clap arg). Canonicalize to land on the
+    // real `daft` binary so the spawned child dispatches correctly.
+    let exe = std::env::current_exe()
+        .context("Could not determine current executable")?
+        .canonicalize()
+        .context("Could not canonicalize executable path")?;
 
     let payload = CoordinatorPayload {
         state,
