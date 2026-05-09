@@ -22,6 +22,41 @@ use ratatui::{
 
 use crate::core::shared::{self, WorktreeStatus};
 
+/// Whether edtui's `From<crossterm::event::KeyCode>` impl can convert this
+/// key code without panicking.
+///
+/// edtui (as of 0.11.x) implements the conversion as an explicit `match` with
+/// a final `_ => unimplemented!()` arm. Any code outside the cases listed in
+/// edtui's source crashes the process on the first keypress. Mirror that
+/// whitelist here and drop everything else upstream of the handler.
+///
+/// `Esc` is intentionally omitted: `handle_key` returns before reaching this
+/// filter on Esc, so listing it here would only mislead readers.
+///
+/// Source of truth: `events/key/input.rs` in the `edtui` crate. When upgrading
+/// the dependency, re-audit that file and update this whitelist (see the
+/// `SYNC WITH EDTUI` marker on the `edtui` line in `Cargo.toml`).
+#[inline]
+fn is_edtui_supported(code: crossterm::event::KeyCode) -> bool {
+    use crossterm::event::KeyCode::*;
+    matches!(
+        code,
+        Char(_)
+            | Enter
+            | Backspace
+            | Delete
+            | Tab
+            | Left
+            | Right
+            | Up
+            | Down
+            | Home
+            | End
+            | PageUp
+            | PageDown
+    )
+}
+
 /// An active inline editing session for a shared file.
 pub struct EditSession {
     /// The edtui editor state (text buffer, cursor, mode, etc.).
@@ -91,6 +126,14 @@ impl EditSession {
                 return false;
             }
             return true;
+        }
+
+        // edtui's `From<crossterm::KeyCode>` impl panics with `unimplemented!()`
+        // on any key code outside the whitelist below (see daft#345 — Shift+Tab
+        // arrives as `BackTab+SHIFT`, which would otherwise crash the process).
+        // Drop unsupported keys silently rather than forwarding them.
+        if !is_edtui_supported(key.code) {
+            return false;
         }
 
         self.handler.on_key_event(key, &mut self.state);
@@ -274,5 +317,81 @@ mod tests {
         let lines = Lines::from(original);
         let result = lines_to_string(&lines);
         assert_eq!(result, original);
+    }
+
+    /// Regression for daft#345: Shift+Tab arrives from crossterm as
+    /// `KeyCode::BackTab`, which edtui's `From` impl turns into
+    /// `unimplemented!()`. The filter must reject it.
+    #[test]
+    fn back_tab_is_filtered_before_edtui() {
+        assert!(!is_edtui_supported(crossterm::event::KeyCode::BackTab));
+    }
+
+    /// Other crossterm key codes that edtui doesn't handle must also be
+    /// filtered — otherwise users hit the same panic via different keys
+    /// (function keys, Insert, media keys, etc.).
+    #[test]
+    fn other_unsupported_codes_are_filtered() {
+        use crossterm::event::KeyCode;
+        for code in [
+            KeyCode::F(1),
+            KeyCode::F(12),
+            KeyCode::Insert,
+            KeyCode::CapsLock,
+            KeyCode::ScrollLock,
+            KeyCode::NumLock,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+            KeyCode::Menu,
+            KeyCode::Null,
+        ] {
+            assert!(
+                !is_edtui_supported(code),
+                "expected {code:?} to be filtered"
+            );
+        }
+    }
+
+    /// The whitelist must keep the codes edtui *does* handle — a typo here
+    /// would break ordinary editing. `Esc` is excluded because `handle_key`
+    /// short-circuits before the filter; see `is_edtui_supported`'s docs.
+    #[test]
+    fn supported_codes_pass_the_filter() {
+        use crossterm::event::KeyCode;
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Tab,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert!(is_edtui_supported(code), "expected {code:?} to be allowed");
+        }
+    }
+
+    /// End-to-end regression for daft#345: pressing Shift+Tab while the inline
+    /// editor is active must NOT panic the process and must NOT signal an exit.
+    /// Exercises the full `handle_key` path so a future refactor that drops the
+    /// filter guard would be caught here even if `is_edtui_supported` is intact.
+    #[test]
+    fn handle_key_shift_tab_does_not_panic_or_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, "hello").unwrap();
+        let mut session = EditSession::new(path, false, "test".into(), "txt".into()).unwrap();
+        let event = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::BackTab,
+            crossterm::event::KeyModifiers::SHIFT,
+        );
+        let exit = session.handle_key(event);
+        assert!(!exit, "BackTab must not signal an editor exit");
     }
 }
