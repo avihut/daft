@@ -291,6 +291,10 @@ export default defineConfig({
                 text: "Migrating from a bin/setup.sh ritual",
                 link: "/recipes/walkthroughs/migrating-from-setup-sh",
               },
+              {
+                text: "GitHub Actions with daft hooks",
+                link: "/recipes/walkthroughs/github-actions",
+              },
             ],
           },
           {
