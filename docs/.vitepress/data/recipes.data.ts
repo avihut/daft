@@ -9,9 +9,8 @@ export interface Data {
   title: string;
   description: string;
   link: string;
+  kind: "pattern" | "walkthrough" | "anti-pattern" | "reference";
   pillars: string[];
-  tooling: string[];
-  languages: string[];
 }
 
 declare const data: Data[];

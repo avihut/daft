@@ -272,38 +272,75 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/recipes/" },
           {
-            text: "By tooling",
+            text: "Walkthroughs",
             collapsed: false,
             items: [
-              { text: "mise", link: "/recipes/by-tooling/mise" },
-              { text: "direnv", link: "/recipes/by-tooling/direnv" },
-              { text: "nvm", link: "/recipes/by-tooling/nvm" },
-              { text: "pyenv", link: "/recipes/by-tooling/pyenv" },
-              { text: "asdf", link: "/recipes/by-tooling/asdf" },
-            ],
-          },
-          {
-            text: "By language",
-            collapsed: false,
-            items: [
-              { text: "Node.js", link: "/recipes/by-language/node" },
-              { text: "Python", link: "/recipes/by-language/python" },
-              { text: "Rust", link: "/recipes/by-language/rust" },
-              { text: "Go", link: "/recipes/by-language/go" },
-            ],
-          },
-          {
-            text: "By scenario",
-            collapsed: false,
-            items: [
-              { text: "Monorepo", link: "/recipes/by-scenario/monorepo" },
               {
-                text: "Fork workflow",
-                link: "/recipes/by-scenario/fork-workflow",
+                text: "Rust binary with debug warmup",
+                link: "/recipes/walkthroughs/rust-binary",
               },
               {
-                text: "CI integration",
-                link: "/recipes/by-scenario/ci-integration",
+                text: "Node monorepo with services",
+                link: "/recipes/walkthroughs/node-monorepo-services",
+              },
+              {
+                text: "Python/uv with mise + sops",
+                link: "/recipes/walkthroughs/python-uv-secrets",
+              },
+            ],
+          },
+          {
+            text: "Patterns: Setup",
+            collapsed: false,
+            items: [
+              {
+                text: "Toolchain bootstrap",
+                link: "/recipes/toolchain-bootstrap",
+              },
+              {
+                text: "Background warmup",
+                link: "/recipes/background-warmup",
+              },
+              {
+                text: "Env vars & secrets",
+                link: "/recipes/env-vars-and-secrets",
+              },
+              {
+                text: "Services with ports",
+                link: "/recipes/services-with-ports",
+              },
+            ],
+          },
+          {
+            text: "Patterns: Steady state",
+            collapsed: false,
+            items: [
+              { text: "Declarative envs", link: "/recipes/declarative-envs" },
+              { text: "CI parity", link: "/recipes/ci-parity" },
+            ],
+          },
+          {
+            text: "Patterns: Teardown",
+            collapsed: false,
+            items: [
+              {
+                text: "Cleanup on remove",
+                link: "/recipes/cleanup-on-remove",
+              },
+            ],
+          },
+          {
+            text: "References",
+            collapsed: true,
+            items: [
+              { text: "Sharing caches", link: "/recipes/sharing-caches" },
+              {
+                text: "Anti-pattern: shared mutable state",
+                link: "/recipes/anti-patterns/shared-mutable-state",
+              },
+              {
+                text: "Anti-pattern: secrets in hooks",
+                link: "/recipes/anti-patterns/secrets-in-hooks",
               },
             ],
           },
