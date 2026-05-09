@@ -295,6 +295,14 @@ export default defineConfig({
                 text: "GitHub Actions with daft hooks",
                 link: "/recipes/walkthroughs/github-actions",
               },
+              {
+                text: "Migrating from direnv to mise",
+                link: "/recipes/walkthroughs/migrating-from-direnv-to-mise",
+              },
+              {
+                text: "Migrating from mise to direnv",
+                link: "/recipes/walkthroughs/migrating-from-mise-to-direnv",
+              },
             ],
           },
           {
