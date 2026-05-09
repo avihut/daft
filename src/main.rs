@@ -1,7 +1,10 @@
-/// daft - Git Extensions Toolkit
-///
-/// A multicall binary that provides Git extensions through symlinks.
-/// Detects how it was invoked (via argv[0]) and routes to the appropriate command.
+//! daft - Git Extensions Toolkit
+//!
+//! A multicall binary that provides Git extensions through symlinks.
+//! Detects how it was invoked (via argv[0]) and routes to the appropriate command.
+
+#![forbid(unsafe_code)]
+
 use anyhow::Result;
 use daft::commands;
 use daft::shortcuts;

@@ -1,3 +1,10 @@
+// Forbid unsafe in production code. Tests are exempt because they need
+// `unsafe { env::set_var/remove_var }` for process-wide env mutations
+// (became `unsafe fn` in edition 2024). The forbid lint can't be
+// `#[allow]`-overridden by inner attributes, so this `cfg_attr` is the
+// canonical pattern for "no unsafe in production, but tests may have it."
+#![cfg_attr(not(test), forbid(unsafe_code))]
+
 use std::env;
 use std::path::Path;
 
