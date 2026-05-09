@@ -321,6 +321,10 @@ export default defineConfig({
                 text: "Adopting from direnv",
                 link: "/recipes/adopting-from-direnv",
               },
+              {
+                text: "Editor integration",
+                link: "/recipes/editor-integration",
+              },
             ],
           },
           {
