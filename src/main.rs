@@ -145,7 +145,15 @@ fn main() -> Result<()> {
                             std::process::exit(2);
                         };
                         let path = std::path::PathBuf::from(state_file);
-                        let _ = daft::coordinator::process::run_coordinator(&path);
+                        // Surface startup errors with a non-zero exit code.
+                        // The parent's spawn redirects stderr to /dev/null,
+                        // so the eprintln only matters for direct debugging
+                        // (`daft __coordinator <path>`); the exit code is
+                        // observable to anyone wrapping this command.
+                        if let Err(e) = daft::coordinator::process::run_coordinator(&path) {
+                            eprintln!("daft coordinator: startup failed: {e:#}");
+                            std::process::exit(1);
+                        }
                         return Ok(());
                     }
                     "config" => commands::config::run(),
