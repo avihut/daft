@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.0](https://github.com/avihut/daft/compare/v1.11.1...v1.12.0) - 2026-05-09
+
+### Bug Fixes
+
+- prevent panic on Shift+Tab in shared manage editor ([#479](https://github.com/avihut/daft/pull/479))
+- *(hooks)* stop yaml_executor unit tests from leaking into ~/.local/state/daft ([#480](https://github.com/avihut/daft/pull/480))
+
+### Features
+
+- redesign merge with rebase styles and PR-style hook gates ([#471](https://github.com/avihut/daft/pull/471))
+
+### Miscellaneous
+
+- Rust ecosystem alignment — edition 2024, MSRV policy, forbid unsafe, dual-license ([#481](https://github.com/avihut/daft/pull/481))
+
 ## [1.11.1](https://github.com/avihut/daft/compare/v1.11.0...v1.11.1) - 2026-05-02
 
 ### Bug Fixes
