@@ -25,12 +25,12 @@ myapp/
     └── src/lib.rs      # types both binaries import
 ```
 
-~200 transitive crate dependencies. From a fresh clone, `cargo fetch` takes 30
-seconds and `cargo build --workspace` takes about 4 minutes. The team rule today
-is "after `git checkout`, run `cargo fetch && cargo build --workspace` and go
-get coffee." Most worktrees get the fetch (they need to type a command soon, and
-a missing-crate error is annoying). Fewer get the build, so the first
-`cargo run` after coding still hits the slow path. Every. Single. Worktree.
+From a fresh clone, `cargo fetch` takes 30 seconds and `cargo build --workspace`
+takes about 4 minutes. The team rule today is "after `git checkout`, run
+`cargo fetch && cargo build --workspace` and go get coffee." Most worktrees get
+the fetch (they need to type a command soon, and a missing-crate error is
+annoying). Fewer get the build, so the first `cargo run` after coding still hits
+the slow path. Every. Single. Worktree.
 
 This walkthrough threads two patterns into one `daft.yml`:
 
@@ -128,8 +128,7 @@ brew install sccache
 ```
 
 The first warmup populates the cache. Every subsequent warmup, in any worktree,
-pulls cached artifacts. The bigger your dep tree, the more this pays off — and
-at 200 deps it pays off measurably.
+pulls cached artifacts. The bigger your dep tree, the more this pays off.
 
 To make sccache the default for _all_ your `cargo` invocations (not just hooks),
 add to your shell rc:

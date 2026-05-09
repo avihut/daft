@@ -10,11 +10,11 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-A Rust workspace — three crates, ~200 transitive dependencies. From a fresh
-`cargo fetch`, the first `cargo build --workspace` on your laptop takes about 4
-minutes. You've already adopted
-[Toolchain bootstrap](/recipes/toolchain-bootstrap), so `daft start feature/x`
-populates the registry cache before returning. That part's good.
+A Rust workspace — three crates. From a fresh `cargo fetch`, the first
+`cargo build --workspace` on your laptop takes about 4 minutes. You've already
+adopted [Toolchain bootstrap](/recipes/toolchain-bootstrap), so
+`daft start feature/x` populates the registry cache before returning. That
+part's good.
 
 What's still bad: the _first_ `cargo run` (or `cargo test`) in a fresh worktree
 still pays those 4 minutes. Every worktree. You started the worktree because you
