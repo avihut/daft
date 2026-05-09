@@ -36,6 +36,7 @@ use crate::core::shared::{self, WorktreeStatus};
 /// Source of truth: `events/key/input.rs` in the `edtui` crate. When upgrading
 /// the dependency, re-audit that file and update this whitelist (see the
 /// `SYNC WITH EDTUI` marker on the `edtui` line in `Cargo.toml`).
+#[inline]
 fn is_edtui_supported(code: crossterm::event::KeyCode) -> bool {
     use crossterm::event::KeyCode::*;
     matches!(
