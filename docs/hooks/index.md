@@ -57,3 +57,5 @@ Two distinctions:
   trust and how the model works
 - **Status:** [Roadmap](/hooks/roadmap) — what's coming for commit-stage hooks
 - **Recipes:** [Recipes for Hooks](/recipes/?pillar=hooks)
+- **CI parity:** [Recipes → CI parity](/recipes/ci-parity) — run the same
+  `daft.yml` locally and in CI

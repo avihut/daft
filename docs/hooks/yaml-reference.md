@@ -402,3 +402,11 @@ hooks:
         run: rm -f .env.branch
         tracks: [branch]
 ```
+
+## Running these in CI
+
+The same `daft.yml` runs locally and in CI — that's the parity story. See
+[Recipes → CI parity](/recipes/ci-parity) for invoking
+`daft hooks run worktree-post-create` from GitHub Actions, GitLab CI, or a
+generic shell-based runner, plus how to skip local-only steps in CI via
+`skip: { env: { CI: "true" } }`.
