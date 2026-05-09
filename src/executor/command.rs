@@ -66,20 +66,21 @@ pub fn run_command(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
-    // Move the child into its own session/process-group so cancelling can
-    // signal every descendant. Without this, on shells that fork+wait (e.g.
-    // dash with certain command shapes) signalling the bare PID kills only
-    // the wrapping `sh` and orphans the actual workload (e.g. `sleep 30`).
+    // Move the child into its own process group so cancelling can signal
+    // every descendant. Without this, on shells that fork+wait (e.g. dash
+    // with certain command shapes) signalling the bare PID kills only the
+    // wrapping `sh` and orphans the actual workload (e.g. `sleep 30`).
+    //
+    // `process_group(0)` calls setpgid(0, 0) post-fork pre-exec, giving
+    // PID == PGID. Previously we used `pre_exec(setsid)`, which also detached
+    // from the controlling TTY — but no caller of `run_command` relies on
+    // that side effect (the coordinator detaches once at startup;
+    // non-coordinator callers run synchronously). The PGID-equals-PID
+    // invariant that `killpg` cancellation depends on is preserved.
     #[cfg(unix)]
-    unsafe {
+    {
         use std::os::unix::process::CommandExt;
-        let setsid_hook = || -> std::io::Result<()> {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        };
-        command.pre_exec(setsid_hook);
+        command.process_group(0);
     }
 
     let mut child = command
@@ -406,6 +407,39 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("pid not sent");
         assert!(pid > 0, "pid should be a positive integer");
+    }
+
+    /// Regression test for #412: replacing `pre_exec(setsid)` with
+    /// `Command::process_group(0)` must preserve the cancel-by-PGID
+    /// invariant — the spawned shell must be a process-group leader
+    /// (PID == PGID).
+    #[test]
+    #[cfg(unix)]
+    fn run_command_child_is_process_group_leader() {
+        let (line_tx, line_rx) = mpsc::channel::<String>();
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        // Both BSD and GNU `ps` accept this form; print the shell's own pid
+        // and its pgid on a single line.
+        run_command(
+            "ps -o pid=,pgid= -p $$ | tr -s ' '",
+            &env,
+            &dir,
+            Duration::from_secs(5),
+            Some(line_tx),
+            None,
+        )
+        .unwrap();
+        let line = line_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ps output");
+        let mut parts = line.split_whitespace();
+        let pid: i32 = parts.next().unwrap().parse().unwrap();
+        let pgid: i32 = parts.next().unwrap().parse().unwrap();
+        assert_eq!(
+            pid, pgid,
+            "child must be process-group leader for cancel-by-PGID (got pid={pid}, pgid={pgid})"
+        );
     }
 
     // ── run_command_interactive ─────────────────────────────────────────
