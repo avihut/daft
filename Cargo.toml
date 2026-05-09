@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.91"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 homepage = "https://github.com/avihut/daft"
 repository = "https://github.com/avihut/daft"
 readme = "README.md"
@@ -29,7 +29,7 @@ eula = false
 [package.metadata.deb]
 maintainer = "avihu <avihu@users.noreply.github.com>"
 copyright = "2024, avihu <avihu@users.noreply.github.com>"
-license-file = ["LICENSE", "4"]
+license-file = ["LICENSE-MIT", "4"]
 extended-description = """\
 daft is a Git extensions toolkit that enhances developer workflows \
 with powerful worktree management. Run `daft setup` after installing \
