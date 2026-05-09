@@ -306,9 +306,16 @@ branch: feat/progressive-adoption
 adding or changing user-facing features.
 
 - `docs/getting-started/` — installation, quick start, shell integration
-- `docs/guide/` — in-depth guides (hooks, configuration, workflow, shortcuts)
-- `docs/cli/` — one reference page per command, follow `docs/cli/daft-doctor.md`
-  as template
+- `docs/worktrees/` — Worktrees pillar (Overview + How-tos + per-pillar
+  Reference)
+- `docs/hooks/` — Hooks pillar (Overview + How-tos + per-pillar Reference)
+- `docs/recipes/` — Cookbook (patterns, walkthroughs, adoption recipes,
+  references); see `.claude/skills/writing-recipes/SKILL.md` for shape rules
+- `docs/reference/` — CLI ref, configuration, output formats, agent skill
+  (consolidated); follow `docs/reference/cli/daft-doctor.md` as a CLI-page
+  template
+- `docs/about/` — meta (why-daft, glossary, FAQ, troubleshooting, comparison,
+  contributing, changelog)
 - Every page needs `title` and `description` YAML frontmatter
 - No emoji in docs
 - **Update `SKILL.md`** when changes affect how an agent should interact with
