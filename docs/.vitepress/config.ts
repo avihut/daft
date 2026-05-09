@@ -350,6 +350,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: "Sharing caches", link: "/recipes/sharing-caches" },
+              { text: "Troubleshooting", link: "/recipes/troubleshooting" },
               {
                 text: "Anti-pattern: shared mutable state",
                 link: "/recipes/anti-patterns/shared-mutable-state",

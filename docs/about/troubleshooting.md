@@ -5,6 +5,11 @@ description: Common issues and how to fix them.
 
 # Troubleshooting
 
+This page covers general daft issues — install, layout, basic shell integration.
+For symptoms specific to hooks and recipes (warmup hangs, trust-prompt loops,
+env vars not propagating), see
+[Troubleshooting recipes](/recipes/troubleshooting).
+
 If your problem isn't listed here, run `daft doctor` first — it diagnoses common
 configuration issues automatically.
 

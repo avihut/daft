@@ -16,7 +16,7 @@ export type Recipe = {
   pillars: string[];
 };
 
-const REFERENCE_FILES = new Set(["sharing-caches.md"]);
+const REFERENCE_FILES = new Set(["sharing-caches.md", "troubleshooting.md"]);
 
 function readMarkdownFiles(
   dir: string,
