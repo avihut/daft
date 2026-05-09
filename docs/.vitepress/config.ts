@@ -272,6 +272,24 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/recipes/" },
           {
+            text: "Adoption",
+            collapsed: false,
+            items: [
+              {
+                text: "Adopting from direnv",
+                link: "/recipes/adopting-from-direnv",
+              },
+              {
+                text: "Adopting from mise",
+                link: "/recipes/adopting-from-mise",
+              },
+              {
+                text: "Migrating from a bin/setup.sh ritual",
+                link: "/recipes/walkthroughs/migrating-from-setup-sh",
+              },
+            ],
+          },
+          {
             text: "Walkthroughs",
             collapsed: false,
             items: [
@@ -286,10 +304,6 @@ export default defineConfig({
               {
                 text: "Python/uv with mise + sops",
                 link: "/recipes/walkthroughs/python-uv-secrets",
-              },
-              {
-                text: "Migrating from a bin/setup.sh ritual",
-                link: "/recipes/walkthroughs/migrating-from-setup-sh",
               },
               {
                 text: "GitHub Actions with daft hooks",
@@ -316,14 +330,6 @@ export default defineConfig({
               {
                 text: "Services with ports",
                 link: "/recipes/services-with-ports",
-              },
-              {
-                text: "Adopting from direnv",
-                link: "/recipes/adopting-from-direnv",
-              },
-              {
-                text: "Adopting from mise",
-                link: "/recipes/adopting-from-mise",
               },
               {
                 text: "Editor integration",

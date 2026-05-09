@@ -7,19 +7,23 @@ description:
 
 # Recipes
 
-Recipes are how daft's idea — **lifecycle automation per worktree** — turns into
-real-world setup. Patterns are atomic problems each solved once; walkthroughs
-are real project shapes that thread patterns end-to-end. Pick the patterns you
-need, or read a walkthrough that matches your stack.
+Recipes turn daft's idea — **lifecycle automation per worktree** — into
+real-world setup. Three kinds of pages here:
 
-## Walkthroughs
-
-End-to-end recipes for full project shapes. Read the one closest to what you're
-building, then drop into the patterns it cites for variants.
+- **Adoption recipes** — introducing daft into an existing project setup, or
+  migrating off the manual rituals you have today.
+- **Walkthroughs** — full project shapes threading patterns end-to-end.
+- **Patterns** — atomic problems each solved once; combine as needed.
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { data as recipes } from '../.vitepress/data/recipes.data.ts'
+
+const ADOPTION_LINKS = [
+  '/recipes/adopting-from-direnv',
+  '/recipes/adopting-from-mise',
+  '/recipes/walkthroughs/migrating-from-setup-sh',
+]
 
 const pillar = ref(null)
 
@@ -33,14 +37,31 @@ const visible = computed(() => {
   return recipes.filter(r => r.pillars.includes(pillar.value))
 })
 
-const walkthroughs = computed(() => visible.value.filter(r => r.kind === 'walkthrough'))
-const patterns = computed(() => visible.value.filter(r => r.kind === 'pattern'))
+const adoption = computed(() => visible.value.filter(r => ADOPTION_LINKS.includes(r.link)))
+const walkthroughs = computed(() => visible.value.filter(r => r.kind === 'walkthrough' && !ADOPTION_LINKS.includes(r.link)))
+const patterns = computed(() => visible.value.filter(r => r.kind === 'pattern' && !ADOPTION_LINKS.includes(r.link)))
 const references = computed(() => visible.value.filter(r => r.kind === 'reference' || r.kind === 'anti-pattern'))
 </script>
 
 <template v-if="pillar">
   <p>Showing recipes tagged <code>{{ pillar }}</code>:</p>
 </template>
+
+## Adoption
+
+Recipes for introducing daft into an existing setup, or for moving off the
+manual rituals you have today. Start here if you're new to daft.
+
+<ul>
+  <li v-for="r in adoption" :key="r.link">
+    <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
+  </li>
+</ul>
+
+## Walkthroughs
+
+End-to-end recipes for full project shapes. Read the one closest to what you're
+building, then drop into the patterns it cites for variants.
 
 <ul>
   <li v-for="r in walkthroughs" :key="r.link">
@@ -58,7 +79,7 @@ Lifecycle stage: `worktree-post-create`. Get a fresh worktree from "empty
 checkout" to "ready to run a command."
 
 <ul>
-  <li v-for="r in patterns.filter(p => ['/recipes/toolchain-bootstrap', '/recipes/background-warmup', '/recipes/env-vars-and-secrets', '/recipes/services-with-ports', '/recipes/adopting-from-direnv', '/recipes/adopting-from-mise', '/recipes/editor-integration'].includes(p.link))" :key="r.link">
+  <li v-for="r in patterns.filter(p => ['/recipes/toolchain-bootstrap', '/recipes/background-warmup', '/recipes/env-vars-and-secrets', '/recipes/services-with-ports', '/recipes/editor-integration'].includes(p.link))" :key="r.link">
     <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
   </li>
 </ul>
