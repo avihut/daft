@@ -914,7 +914,7 @@ fn structured_output_section(command_name: &str) -> Option<String> {
     };
     let mut section = String::from("## Structured Output\n\n");
     section.push_str(body);
-    section.push_str("\nSee the [Output Formats guide](../guide/output-formats.md) for format details\nand Tera syntax.\n\n");
+    section.push_str("\nSee the [Output Formats guide](/reference/output-formats) for format details\nand Tera syntax.\n\n");
     Some(section)
 }
 
