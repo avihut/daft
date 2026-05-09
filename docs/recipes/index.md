@@ -23,6 +23,8 @@ const ADOPTION_LINKS = [
   '/recipes/adopting-from-direnv',
   '/recipes/adopting-from-mise',
   '/recipes/walkthroughs/migrating-from-setup-sh',
+  '/recipes/layering-direnv',
+  '/recipes/layering-mise',
 ]
 
 const pillar = ref(null)

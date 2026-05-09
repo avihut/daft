@@ -287,6 +287,14 @@ export default defineConfig({
                 text: "Migrating from a bin/setup.sh ritual",
                 link: "/recipes/walkthroughs/migrating-from-setup-sh",
               },
+              {
+                text: "Layering direnv on daft",
+                link: "/recipes/layering-direnv",
+              },
+              {
+                text: "Layering mise on daft",
+                link: "/recipes/layering-mise",
+              },
             ],
           },
           {
