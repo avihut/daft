@@ -1,63 +1,106 @@
 ---
 title: Python/uv with mise + sops secrets
 description:
-  End-to-end daft setup for a Python project using uv for deps, mise for tool
-  versions, and sops for secrets — declarative env layered with imperative
-  hooks.
+  Threading declarative-envs, toolchain-bootstrap, and env-vars-&-secrets into a
+  real Python project — mise for tool versions, uv for deps, sops for secrets,
+  layered via direnv.
 pillars: [worktrees, hooks]
 ---
 
 # Python/uv with mise + sops secrets
 
-This walkthrough sets up a modern Python project where each daft worktree gets:
+## Starting state
 
-1. The exact Python version and tool versions declared in `mise.toml`.
-2. A per-worktree `.venv` populated by `uv sync --frozen`.
-3. Sensitive env vars (API keys, DB credentials) decrypted from a committed sops
-   file using the team's age keys.
-4. Non-secret defaults declared in `mise.toml` `[env]`, layered with the
-   sops-decrypted secrets via direnv.
-
-This walkthrough is the middle ground between the two extremes: the heavy
-infrastructure of
-[Node monorepo with services](/recipes/walkthroughs/node-monorepo-services)
-isn't here, but it's more involved than the
-[Rust binary](/recipes/walkthroughs/rust-binary). The interesting bit is the
-**layering**: declarative tool config and committed env defaults co-exist with
-hook-fetched secrets.
-
-## What you're building
-
-A Python project with shape:
+An ML pipeline project:
 
 ```
 ml-pipeline/
-├── pyproject.toml         # uv, drives `uv sync`
+├── pyproject.toml         # uv-driven
 ├── uv.lock
-├── mise.toml              # Python version + committed env defaults
-├── secrets.enc.env        # encrypted with sops
-├── .sops.yaml             # routes encryption rules
+├── mise.toml              # python = "3.11" pin (just the one tool)
 ├── src/ml_pipeline/
+├── notebooks/             # exploratory work, hits the same dev DB
 └── tests/
 ```
 
-The team uses sops with [age](https://github.com/FiloSottile/age) keys — each
-developer adds their public key to `.sops.yaml`, the encrypted file is
-re-encrypted, and from then on every dev's worktrees can decrypt the secrets
-locally.
+Three engineers and a part-time data scientist. The current setup ritual:
 
-## Patterns used
+1. `mise install` — fine, everyone has mise.
+2. `uv sync` — works, but occasionally drifts the lockfile because nobody used
+   `--frozen` in the README's setup line.
+3. `cp .env.example .env`, then ask in Slack who has the staging DB password
+   this week.
+4. Tomorrow you forget you exported anything; your notebook talks to your
+   laptop's empty Postgres; you spend 20 minutes wondering why a query returns
+   zero rows.
 
-- **[Declarative envs](/recipes/declarative-envs)** — mise pins Python and ruff
-  versions, and provides committed env defaults.
+Last quarter the team rotated their DB password. Three people had to be told
+three times each, in DM. One of them forgot, kept committing notebook output
+that included the old password in a connection error stacktrace, and the team
+spent an hour scrubbing git history.
+
+The reach for daft: declarative tool versions and committed env defaults are
+half-solved by mise already. The other half — the secrets — needs an automatic,
+per-worktree fetch. Add sops + age, layer it underneath direnv, and "what
+password is this week's" stops being a Slack question.
+
+This walkthrough threads three patterns:
+
+- **[Declarative envs](/recipes/declarative-envs)** — mise pins Python, ruff, uv
+  versions and ships non-secret env defaults via `[env]`.
 - **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — `uv sync --frozen`
-  per worktree creates `.venv` with locked deps.
+  per worktree creates `.venv` from `uv.lock`.
 - **[Env vars & secrets](/recipes/env-vars-and-secrets)** — sops decrypts to
-  `.env`, direnv loads it into the shell.
+  `.env`, direnv loads it on cd.
+
+The interesting bit is the **layering**: declarative tool config and committed
+env defaults co-exist with hook-fetched secrets, all loaded the moment you cd
+into a worktree.
+
+## Prerequisite: team sops + age setup (one-time)
+
+sops is a per-team configuration, not a per-worktree daft step. Do it once
+during onboarding; the daft hooks below assume it's done.
+
+Each developer generates an age key and shares the public half:
+
+```bash
+brew install sops age
+mkdir -p ~/.config/sops/age
+age-keygen -o ~/.config/sops/age/keys.txt
+grep 'public key' ~/.config/sops/age/keys.txt
+# → public key: age1abc...
+```
+
+Whoever maintains the secret store collects everyone's public keys and writes
+`.sops.yaml`:
+
+```yaml
+# .sops.yaml  (committed)
+creation_rules:
+  - path_regex: secrets\.enc\.env$
+    age: >-
+      age1abc..., age1def..., age1ghi...
+```
+
+…then re-encrypts `secrets.enc.env` with all current recipients:
+
+```bash
+echo 'API_KEY=real-key-here' > secrets.env
+echo 'DATABASE_URL=postgres://prod-readonly:hunter2@db/app' >> secrets.env
+sops --encrypt secrets.env > secrets.enc.env
+rm secrets.env
+git add .sops.yaml secrets.enc.env
+git commit -m "chore: rotate secrets, add new dev"
+```
+
+The encrypted file is committed; the plaintext never is. From here on, the daft
+hooks below decrypt automatically per-worktree.
 
 ## Step 1: declarative tool versions
 
-In the default-branch worktree, pin Python and any other CLI tools you need:
+Apply [Declarative envs](/recipes/declarative-envs) — pin Python, ruff, and uv
+via mise, and add committed non-secret defaults:
 
 ```toml
 # mise.toml
@@ -72,23 +115,19 @@ PYTHONDONTWRITEBYTECODE = "1"
 ML_DATA_DIR = "{{ config_root }}/data"
 ```
 
-Commit:
-
 ```bash
 git add mise.toml
-git commit -m "chore: pin python, ruff, uv via mise"
+git commit -m "chore: pin python, ruff, uv via mise; add env defaults"
 ```
 
-mise's shell hook (`eval "$(mise activate zsh)"` in your shell rc) takes care of
-activating these on `cd`. No daft involvement is needed for activation — only
-for the install step in step 2.
-
-The `[env]` block adds non-secret defaults: things you want every dev to have,
-no need to encrypt or hide.
+mise's shell hook handles the cd-time activation; no daft involvement needed for
+that. The `[env]` block exports non-secret defaults (buffering flags, the data
+directory) — anything that's fine to commit. Real secrets stay out of
+`mise.toml` entirely.
 
 ## Step 2: install Python deps with uv
 
-Add the install hook:
+Apply [Toolchain bootstrap](/recipes/toolchain-bootstrap):
 
 ```yaml
 # daft.yml
@@ -103,71 +142,27 @@ hooks:
         needs: [install-mise-versions]
 ```
 
-`mise install` materializes any missing Python/uv/ruff versions for the worktree
-(idempotent — already-installed versions are skipped). `uv sync --frozen` then
-creates `.venv/` inside the worktree and installs deps from `uv.lock`.
-`--frozen` refuses to update the lockfile, so worktrees can't drift.
+`mise install` materializes any missing Python/uv/ruff versions for this
+worktree (idempotent — already-installed versions are skipped).
+`uv sync --frozen` then creates `.venv/` inside the worktree and installs deps
+from `uv.lock`. `--frozen` refuses to update the lockfile, which is exactly what
+stops the lockfile drift the team had been hitting.
 
 ```bash
 git add daft.yml
-git commit -m "chore(daft): install Python deps on worktree create"
+git commit -m "chore(daft): install python deps on worktree create"
 git daft-hooks trust
-```
 
-Verify:
-
-```bash
 daft start feature/scratch
-# In the new worktree:
-python --version              # 3.13.x
+python --version              # 3.13.x — mise activated it
 .venv/bin/python -c "import sys; print(sys.path)"
 ```
 
-## Step 3: encrypt the team's shared secrets with sops
+## Step 3: decrypt secrets at hook time
 
-Install sops and age (one-time per dev):
-
-```bash
-brew install sops age
-```
-
-Generate a personal age key (one-time per dev):
-
-```bash
-mkdir -p ~/.config/sops/age
-age-keygen -o ~/.config/sops/age/keys.txt
-# Print your public key to share with the team:
-grep 'public key' ~/.config/sops/age/keys.txt
-# → public key: age1...
-```
-
-Each dev sends their public key to whoever holds the secret store. That person
-updates `.sops.yaml`:
-
-```yaml
-# .sops.yaml
-creation_rules:
-  - path_regex: secrets\.enc\.env$
-    age: >-
-      age1abc..., age1def..., age1ghi...
-```
-
-And re-encrypts the secrets file with all current age recipients:
-
-```bash
-echo 'API_KEY=real-key-here' > secrets.env
-echo 'DATABASE_URL=postgres://prod-readonly:hunter2@db/app' >> secrets.env
-sops --encrypt secrets.env > secrets.enc.env
-rm secrets.env
-git add .sops.yaml secrets.enc.env
-git commit -m "chore: rotate secrets, add new dev"
-```
-
-The encrypted file is committed; the plaintext never is.
-
-## Step 4: decrypt at hook time
-
-Add the decryption job:
+Apply
+[Env vars & secrets → sops + age](/recipes/env-vars-and-secrets#sops-age-encrypted-secrets-in-the-repo).
+Add a decrypt job:
 
 ```yaml
 # daft.yml — add to worktree-post-create
@@ -180,24 +175,24 @@ Add the decryption job:
     SOPS_AGE_KEY_FILE: ${HOME}/.config/sops/age/keys.txt
 ```
 
-`chmod 600` restricts `.env` to the owner — visible to the local user only. Add
-`.env` to `.gitignore` (never commit decrypted secrets).
+`chmod 600` restricts `.env` to the owning user. Add `.env` to `.gitignore` once
+(never commit decrypted secrets).
 
-Each worktree decrypts independently. If you rotate secrets, re-creating the
-worktree (or re-running the hook with `daft hooks run worktree-post-create`)
-picks up the new values.
+Each worktree decrypts independently. Rotating secrets is "re-encrypt
+`secrets.enc.env`, commit." Existing worktrees pick up the new values on the
+next `daft hooks run worktree-post-create`; new worktrees get them
+automatically.
 
 ::: warning Don't decrypt to a file readable by other users `chmod 600` is not
-optional. Without it, anyone else on the machine can read the worktree's
+optional. Without it, anyone else on a shared machine can read the worktree's
 secrets. See
 [Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks)
 for the broader security story. :::
 
-## Step 5: load secrets into the shell with direnv
+## Step 4: load `.env` into the shell with direnv
 
-The decrypted `.env` is sitting on disk; you want its contents loaded into the
-shell whenever you `cd` into the worktree. Add a final hook job that wires
-direnv:
+The decrypted `.env` is sitting on disk; you want its contents exported when you
+cd into the worktree. Add a final hook job that wires direnv:
 
 ```yaml
 - name: setup-direnv
@@ -212,36 +207,16 @@ direnv:
   needs: [decrypt-secrets]
 ```
 
-direnv's `dotenv` directive loads `.env` into the shell environment. Combined
-with mise's `[env]` block, the layered result is:
+`dotenv .env` is a direnv directive that loads the file into the shell
+environment. Combined with mise's `[env]`, the layered result on cd is:
 
-| Source                                 | Contents                                            |
-| -------------------------------------- | --------------------------------------------------- |
-| `mise.toml` `[env]`                    | Non-secret defaults (PYTHONUNBUFFERED, ML_DATA_DIR) |
-| `.env` (sops-decrypted, dotenv-loaded) | Real secrets                                        |
+| Source                                 | Contents                                  |
+| -------------------------------------- | ----------------------------------------- |
+| `mise.toml` `[env]`                    | Non-secret defaults (PYTHONUNBUFFERED, …) |
+| `.env` (sops-decrypted, dotenv-loaded) | Real secrets (API_KEY, DATABASE_URL)      |
 
-When you `cd` in:
-
-1. mise activates Python 3.13 and exports the `[env]` defaults.
-2. direnv loads `.env`, exporting the secrets.
-
-Order is fine — `[env]` defaults are non-secret, and `.env` doesn't override
-them.
-
-## Step 6: verify it works
-
-```bash
-daft start feature/measure-secrets
-
-# In the new worktree:
-python --version              # 3.13.x — mise
-echo $PYTHONUNBUFFERED        # 1 — mise [env]
-echo $API_KEY                 # real-key-here — sops + direnv
-ls -la .env                   # -rw------- (owner-only)
-
-# Confirm Python sees the API key:
-python -c "import os; print(os.environ['API_KEY'])"
-```
+mise activates first (PATH + tool-version env), then direnv loads `.env`. The
+two don't compete for the same keys, so order is fine.
 
 ## Final `daft.yml`
 
@@ -276,9 +251,9 @@ hooks:
         needs: [decrypt-secrets]
 ```
 
-Plus `mise.toml` for tool versions and committed env defaults; plus `.sops.yaml`
-and `secrets.enc.env` for encrypted secrets. All four files are committed; only
-the decrypted `.env` is per-worktree and gitignored.
+Plus `mise.toml` for tool versions and committed defaults; plus `.sops.yaml` and
+`secrets.enc.env` for encrypted secrets. All four files are committed; only the
+decrypted `.env` is per-worktree and gitignored.
 
 ## What you got
 
@@ -286,26 +261,27 @@ Before:
 
 - "Run this script with these env vars" — manual every time.
 - Secrets shared via Slack DMs and `.env` files passed around.
+- Quarterly password rotation = a thread in #engineering and a stack trace in
+  someone's notebook output that needed a history scrub.
 - New devs spent half a day getting onboarded, hitting different bugs per
-  machine because Python versions or env defaults were slightly different.
+  machine because Python versions and env defaults drifted.
 
 After:
 
-- New dev sends their age public key, gets added to `.sops.yaml`. The next
-  `daft start` materializes a fully-configured worktree with the right Python,
-  the right deps, and the right secrets.
-- Secrets are committed (encrypted) — no separate dropbox to keep in sync.
-- Rotating a secret is `sops --encrypt` and a commit, not a Slack thread.
-- The same `daft.yml` applies to every worktree, every dev.
+- New dev sends their age public key, gets added to `.sops.yaml`, re-encrypts.
+  The next `daft start` materializes a fully-configured worktree with the right
+  Python, the right deps, and the right secrets — automatically.
+- Rotating a secret is `sops --encrypt` and a commit. Existing worktrees re-run
+  the hook to pick up; new ones get them on creation.
+- "Only repros on Alex's machine" stops being a Python or env-default mismatch.
 
 ## Where to next
 
-- **[Declarative envs](/recipes/declarative-envs)** — full reference for mise,
-  asdf, nvm, pyenv and the division-of-labor table.
 - **[Env vars & secrets](/recipes/env-vars-and-secrets)** — variants for vault
-  lookups (1Password, Bitwarden), per-job env, and alternative secret stores.
+  lookups (1Password, Bitwarden), per-job env, and the derived-value pattern.
 - **[Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks)**
-  — how secrets accidentally end up in repos, and how to avoid it.
+  — the failure modes when this pattern gets wired wrong (committed decrypts,
+  secrets in `ps -e ww`, baked-into-image env vars).
 - **[CI parity](/recipes/ci-parity)** — running these same hooks in CI, with
-  CI-side secret injection (CI doesn't have age keys; secrets come from the CI
-  provider's secret store).
+  CI-side secret injection (CI doesn't have age keys; the decrypt step gets
+  skipped, secrets come from the CI provider's store).
