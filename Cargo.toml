@@ -109,6 +109,11 @@ syntect = { version = "5.2", default-features = false, features = ["default-synt
 similar = "3.0"
 nucleo-matcher = "0.3"
 ignore = "0.4"
+# SYNC WITH EDTUI: when bumping this version, audit `events/key/input.rs`
+# in the upgraded crate and reconcile `is_edtui_supported` in
+# `src/output/tui/shared_picker/editor.rs` with edtui's `From<KeyCode>` arms
+# (the impl ends in `_ => unimplemented!()`, so missing entries panic at
+# runtime — see daft#345).
 edtui = { version = "0.11", features = ["syntax-highlighting"] }
 filetime = "0.2"
 csv = "1.3"

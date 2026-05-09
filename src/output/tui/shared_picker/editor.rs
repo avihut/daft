@@ -30,14 +30,18 @@ use crate::core::shared::{self, WorktreeStatus};
 /// edtui's source crashes the process on the first keypress. Mirror that
 /// whitelist here and drop everything else upstream of the handler.
 ///
-/// Source of truth: `events/key/input.rs` in the `edtui` crate.
+/// `Esc` is intentionally omitted: `handle_key` returns before reaching this
+/// filter on Esc, so listing it here would only mislead readers.
+///
+/// Source of truth: `events/key/input.rs` in the `edtui` crate. When upgrading
+/// the dependency, re-audit that file and update this whitelist (see the
+/// `SYNC WITH EDTUI` marker on the `edtui` line in `Cargo.toml`).
 fn is_edtui_supported(code: crossterm::event::KeyCode) -> bool {
     use crossterm::event::KeyCode::*;
     matches!(
         code,
         Char(_)
             | Enter
-            | Esc
             | Backspace
             | Delete
             | Tab
@@ -348,14 +352,14 @@ mod tests {
     }
 
     /// The whitelist must keep the codes edtui *does* handle — a typo here
-    /// would break ordinary editing.
+    /// would break ordinary editing. `Esc` is excluded because `handle_key`
+    /// short-circuits before the filter; see `is_edtui_supported`'s docs.
     #[test]
     fn supported_codes_pass_the_filter() {
         use crossterm::event::KeyCode;
         for code in [
             KeyCode::Char('a'),
             KeyCode::Enter,
-            KeyCode::Esc,
             KeyCode::Backspace,
             KeyCode::Delete,
             KeyCode::Tab,
@@ -370,5 +374,23 @@ mod tests {
         ] {
             assert!(is_edtui_supported(code), "expected {code:?} to be allowed");
         }
+    }
+
+    /// End-to-end regression for daft#345: pressing Shift+Tab while the inline
+    /// editor is active must NOT panic the process and must NOT signal an exit.
+    /// Exercises the full `handle_key` path so a future refactor that drops the
+    /// filter guard would be caught here even if `is_edtui_supported` is intact.
+    #[test]
+    fn handle_key_shift_tab_does_not_panic_or_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, "hello").unwrap();
+        let mut session = EditSession::new(path, false, "test".into(), "txt".into()).unwrap();
+        let event = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::BackTab,
+            crossterm::event::KeyModifiers::SHIFT,
+        );
+        let exit = session.handle_key(event);
+        assert!(!exit, "BackTab must not signal an editor exit");
     }
 }
