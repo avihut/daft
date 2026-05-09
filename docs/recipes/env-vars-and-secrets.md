@@ -1,32 +1,49 @@
 ---
 title: Env vars & secrets
 description:
-  Provision env vars and secrets per worktree — direnv, sops, mise env, vault
-  lookups — and how daft hooks compose with them.
+  Per-worktree env vars and secrets — vault lookups, sops, per-job env —
+  populated automatically on worktree create.
 pillars: [worktrees, hooks]
 ---
 
 # Env vars & secrets
 
-> Different worktrees often need different env vars: a different `DATABASE_URL`
-> per feature branch, a different `API_KEY` for staging vs prod scratch, ports
-> that don't collide. Some of these are values that belong in version control;
-> some are secrets that absolutely don't. Either way, you want them set
-> automatically when you `cd` into a fresh worktree.
+## Starting state
 
-## When to reach for this
+Your team's "how do I get a working `.env`" process is verbal. The lead engineer
+keeps `.env.example` committed with placeholder values; new devs fill in the
+real ones from a 1Password note that gets shared during onboarding. Two months
+ago someone DM'd a working `.env` to a contractor in Slack; that channel is
+still in scrollback and the `DATABASE_URL` in it points at the (since-rotated)
+production read replica.
 
-- Each worktree should run against its own DB, queue, or external service (so
-  feature-A and feature-B don't fight over a shared dev environment).
-- You have secrets (API keys, tokens) that need to be available to local
-  processes but **never** committed to git.
-- You want `cd ../feature-x` to "just work" — no manual export step, no
-  forgotten variables.
+Last month a dev edited `.envrc` to flip `DATABASE_URL` to their local Postgres,
+then committed it with a benign-sounding message. GitHub's secret scanner caught
+the staging password they didn't realize was in the surrounding lines. Rotation
+took an afternoon.
 
-## Minimal recipe
+The reach for daft: env vars and secrets should be **automatic per-worktree**.
+Populated when the worktree is created, gone when it's removed, never typed by
+hand, never committed.
 
-Seed an ignored `.envrc` from a committed template, then let
-[direnv](https://direnv.net) auto-load it on `cd`:
+## What changes
+
+A `worktree-post-create` job seeds the worktree's `.env` (or `.envrc`) from a
+trusted source — a vault, a sops-encrypted file in the repo, or a committed
+template that contains nothing sensitive. The on-disk artifact is per-worktree,
+gitignored, and never touched manually.
+
+What this page is **not** about: non-secret env defaults (a placeholder
+`DATABASE_URL`, `LOG_LEVEL`, `NODE_ENV`). Those belong in
+[Declarative envs → mise `[env]`](/recipes/declarative-envs#committed-env-defaults-mise-toml-env).
+This page covers what you can't commit, plus per-worktree dynamic values.
+
+## Recipe
+
+The simplest case: a committed `.envrc.example` with **placeholder** values,
+seeded into a per-worktree `.envrc` and trusted via direnv. This is the right
+starting point when most of your env vars are non-secret defaults the dev edits
+locally.
 
 ```yaml
 # daft.yml
@@ -35,7 +52,7 @@ hooks:
     jobs:
       - name: seed-envrc
         run: |
-          if [ ! -f .envrc ] && [ -f .envrc.example ]; then
+          if [ ! -f .envrc ]; then
             cp .envrc.example .envrc
             direnv allow .
           fi
@@ -44,54 +61,69 @@ hooks:
 Repository setup:
 
 ```bash
-# .envrc.example  (committed)
+# .envrc.example  (committed — placeholders only, no real secrets)
 export DATABASE_URL="postgres://localhost/myapp_dev"
 export API_KEY="set-me"
+```
 
+```
 # .gitignore  (add)
 .envrc
 ```
 
-What happens: a fresh worktree gets a `.envrc` copied from the template, direnv
-is told to trust it, and the next time you `cd` into the worktree the vars
-export. You edit `.envrc` if you need per-worktree overrides; those edits stay
-local to that worktree.
+What happens: a fresh worktree gets `.envrc` copied from the template, direnv is
+told to trust it, and the next `cd` into the worktree exports the vars. The
+`[ -f .envrc ]` guard makes the job idempotent — re-running the hook never
+overwrites local edits.
 
-Prerequisites: direnv installed and its shell hook loaded
-(`eval "$(direnv hook zsh)"` or equivalent in your shell rc).
+Prerequisites: [direnv](https://direnv.net) installed and its shell hook loaded
+(`eval "$(direnv hook zsh)"` or your shell's equivalent).
 
 ## Variants
 
-### direnv with a vault lookup
+By **source** — where the secret value comes from. The hook shape stays the
+same; only how it gets the bytes differs.
 
-For real secrets, don't put them in `.envrc.example`. Have the hook fetch them
-at create-time from a vault you trust:
+### Vault lookup at hook time (1Password, Vault, Bitwarden)
+
+For real secrets, don't put them in `.envrc.example`. Fetch them at
+worktree-create time from a vault you trust:
 
 ```yaml
-- name: seed-envrc-from-1password
+- name: seed-envrc
   run: |
     op inject -i .envrc.tpl -o .envrc
     direnv allow .
 ```
 
-`.envrc.tpl` is committed and contains `op://` references; `op inject` resolves
-them. Same idea works with Bitwarden CLI (`bw`), AWS Secrets Manager
-(`aws secretsmanager`), HashiCorp Vault, etc.
+`.envrc.tpl` is the committed template — it contains `op://` references that
+`op inject` resolves, so the vault path is in version control but the secret
+value is not:
 
-The advantage over committing encrypted secrets: revocation is centralized
-(rotate in the vault, every new worktree gets the new value), and there's no
-decryption key to manage locally.
+```bash
+# .envrc.tpl  (committed)
+export DATABASE_URL="$(op read 'op://daft-dev/staging-db/url')"
+export API_KEY="$(op read 'op://daft-dev/staging-api/key')"
+```
+
+The same shape works with HashiCorp Vault (`vault kv get`), Bitwarden
+(`bw get`), AWS Secrets Manager — anything with a CLI that reads a named secret.
+
+The advantage over committing encrypted files: revocation is centralized. Rotate
+in the vault, every new worktree picks up the new value automatically. Old
+worktrees can re-run the hook to refresh.
 
 ### sops + age — encrypted secrets in the repo
 
-[sops](https://github.com/getsops/sops) encrypts files with
-[age](https://github.com/FiloSottile/age) or KMS keys. The encrypted file is
+[sops](https://github.com/getsops/sops) encrypts a file with
+[age](https://github.com/FiloSottile/age) (or KMS) keys. The encrypted file is
 committed; decryption happens per-worktree at create time:
 
 ```yaml
 - name: decrypt-secrets
   run: |
-    sops -d secrets.enc.env > .env
+    sops --decrypt secrets.enc.env > .env
+    chmod 600 .env
   env:
     SOPS_AGE_KEY_FILE: ${HOME}/.config/sops/age/keys.txt
 ```
@@ -104,36 +136,17 @@ secrets.enc.env       # committed, encrypted
 .sops.yaml            # routes encryption rules
 ```
 
-This works well when the team shares an age recipient list — onboarding a new
-dev means adding their public key to `.sops.yaml` and re-encrypting, not handing
-over a vault token.
+`chmod 600` restricts the decrypted file to the owning user — a basic mitigation
+against shared-machine readers.
 
-### mise's `[env]` section — declarative, no hook
+This works well when the team shares an age recipient list. Onboarding a new dev
+is "add their public key to `.sops.yaml`, re-encrypt, commit" — no separate
+vault token to hand over.
 
-mise (and asdf with the mise-compatible plugin) has a built-in env-var mechanism
-that doesn't need a daft hook at all:
+### Per-job `env:` — no shell loading
 
-```toml
-# mise.toml  (committed)
-[env]
-DATABASE_URL = "postgres://localhost/myapp_dev"
-NODE_ENV = "development"
-
-[env.development.SOPS_FILE]
-file = ".env.sops"
-```
-
-When mise's shell hook activates the worktree, the env exports automatically.
-The trade-off: `[env]` values are committed, so they're fine for non-secret
-defaults but not for actual secrets. Combine with sops for the secret half.
-
-See [Declarative envs](/recipes/declarative-envs) for the broader mise/direnv
-comparison.
-
-### Per-job env (no shell loading)
-
-Sometimes you don't want vars in your shell — only in a specific hook job. Use
-the job's `env:` field:
+Sometimes you don't want vars in your shell at all — only available to a
+specific hook job. Use the job's `env:` field:
 
 ```yaml
 - name: migrate
@@ -143,18 +156,26 @@ the job's `env:` field:
     LOG_LEVEL: debug
 ```
 
-Variables in `env:` are exported only for that job's process, never to the
-parent shell. Useful when a hook needs ad-hoc context that shouldn't leak.
+`env:` values export only to that job's process. They never reach the parent
+shell, never appear in `.envrc`, never persist past the hook run. Useful when a
+hook needs ad-hoc context that shouldn't leak to your interactive shell.
 
-### Per-worktree port via the branch name
+::: warning Don't expose secrets via `env:` on backgrounded jobs A long-running
+background job has its env vars visible in `ps -e ww` to anyone on the machine.
+Read-only env files (`chmod 600`) are fine; env vars on a backgrounded process
+aren't. See
+[Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks).
+:::
 
-Need every worktree to pick its own port without a config file? Derive it
-deterministically from the branch:
+## Per-worktree derived values
+
+Some "env vars" aren't fetched, they're **computed** — per-worktree ports,
+branch-derived database names, run IDs. The pattern is the same as the
+seed-from-template recipe, but the source is `bash`, not a vault:
 
 ```yaml
-- name: seed-port
+- name: allocate-port
   run: |
-    # Hash the branch name to a port in 30000-39999
     PORT=$((30000 + $(echo -n "$DAFT_BRANCH_NAME" | cksum | cut -d' ' -f1) % 10000))
     echo "export PORT=$PORT" >> .envrc
     direnv allow .
@@ -162,66 +183,39 @@ deterministically from the branch:
 
 `$DAFT_BRANCH_NAME` is set by the lifecycle env (see
 [Lifecycle hooks → Worktree](/hooks/lifecycle#worktree-creation-and-removal-hooks)).
-This gives every worktree a stable, collision-free port without a central
-registry.
+Hashing it gives every branch a stable, collision-free port — no central
+registry, no race conditions, and the same branch always lands on the same port.
 
 For full service orchestration with port allocation and host wiring, see
-[Services with ports](/recipes/services-with-ports).
+[Services with ports](/recipes/services-with-ports), which builds on this
+pattern.
 
 ## Idempotency & safety
 
-The seed-from-template and decrypt-from-sops patterns are idempotent because
-they check for the destination file before writing. Be careful with patterns
-that **don't** check:
+Idempotent seeding requires a guard against overwriting local edits:
 
 ```yaml
-# Bad: will overwrite per-worktree edits on every hook run
+# Wrong — overwrites .envrc on every hook run, destroys per-worktree edits
 - name: seed-envrc
   run: cp .envrc.example .envrc
-```
 
-```yaml
-# Better: only seed if missing
+# Right — only seed if missing
 - name: seed-envrc
   run: |
     [ -f .envrc ] || cp .envrc.example .envrc
 ```
 
-For vault-fetched secrets, decide whether to refresh on every hook run or only
-when missing. Usually missing-only is right — secrets don't change frequently,
-and a network call on every worktree create is slow.
+For vault-fetched secrets, the same applies: refresh-on-every-run is slow (a
+network call per worktree), and overwrites local debugging tweaks. Default to
+seed-if-missing; force-refresh only when you deliberately want to pick up
+rotated values (`daft hooks run worktree-post-create`).
 
-## Composes well with
+## Where to next
 
-- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — install comes first,
-  env vars follow. Some installers (poetry, uv) read env vars themselves, so
-  order matters: seed env, then install.
-- **[Services with ports](/recipes/services-with-ports)** — port allocation
-  lives here when it's the only env-var concern; in services with ports it's
-  part of a richer compose-aware story.
-- **[Declarative envs](/recipes/declarative-envs)** — the alternative or
-  complement: mise/asdf for tool versions and committed env defaults, daft hooks
-  for installs and secret fetching.
-- **[CI parity](/recipes/ci-parity)** — running the same `daft.yml` in CI
-  requires CI-side secret injection (different vault, different keys).
-
-## Anti-patterns
-
-- **[Secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks)**
-  — committing API keys to `daft.yml`, embedding tokens in a `.envrc.example`,
-  or echoing secrets in hook output. Secrets get into the repo via easy
-  mistakes; this page lists them.
-- **`cp .envrc.example .envrc`** without a `[ -f .envrc ] ||` guard — destroys
-  per-worktree edits on the next hook run.
-- **Exposing secrets in `env:`** of a long-running background job — visible in
-  `ps`, leaks into child processes. Decrypt to a file with restrictive
-  permissions instead.
-
-## See also
-
-- **[Lifecycle hooks](/hooks/lifecycle)** — env vars passed to hooks, including
-  `DAFT_BRANCH_NAME`, `DAFT_WORKTREE_PATH`
-- **[Job orchestration](/hooks/job-orchestration)** — `env:`, `tags`, `only` /
-  `skip` for conditional env-var work
-- **[Trust & security](/hooks/trust-and-security)** — why `daft.yml` needs trust
-  before secrets-touching jobs run
+- **[Declarative envs](/recipes/declarative-envs)** — for **non-secret**
+  defaults (mise `[env]`), which is the half of "what gets exported on cd" that
+  doesn't belong in this recipe.
+- **[Services with ports](/recipes/services-with-ports)** — the next step when
+  "per-worktree env" includes booting compose stacks on derived ports.
+- **[Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks)**
+  — the failure modes when a recipe like this gets wired wrong.
