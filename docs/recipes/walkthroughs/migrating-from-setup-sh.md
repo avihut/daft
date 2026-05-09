@@ -74,10 +74,10 @@ runs the setup; worktree removal runs the teardown setup.sh never had.
 
 The five sections of `setup.sh` map to four patterns:
 
-- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — `mise install`
-  - `pnpm install` (Step 1).
-- **[Services with ports](/recipes/services-with-ports)** —
-  `docker compose up` + `pnpm migrate` (Step 2).
+- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — `mise install` and
+  `pnpm install` (Step 1).
+- **[Services with ports](/recipes/services-with-ports)** — `docker compose up`
+  and `pnpm migrate` (Step 2).
 - **[Background warmup](/recipes/background-warmup)** — `scripts/codegen.sh`
   (Step 3).
 - **[Cleanup on remove](/recipes/cleanup-on-remove)** — the symmetric teardown
@@ -202,27 +202,15 @@ still makes sense.
 git rm bin/setup.sh
 ```
 
-Update the README:
-
-````markdown
-## Getting started
-
-```bash
-daft start feature/yours
-pnpm dev
-```
-````
-
-````
-
-Two lines. The "First time? Run bin/setup.sh" instruction is gone — the
-`daft start` command runs it.
+Update the README's "Getting started" section to two lines:
+`daft start feature/yours` followed by `pnpm dev`. The "First time? Run
+`bin/setup.sh`" instruction is gone — `daft start` runs it.
 
 ## Step 4: cleanup on remove
 
-The reverse, applying [Cleanup on remove](/recipes/cleanup-on-remove).
-When a worktree goes away, the compose stack and its volumes go with it.
-`setup.sh` never had a counterpart for this:
+The reverse, applying [Cleanup on remove](/recipes/cleanup-on-remove). When a
+worktree goes away, the compose stack and its volumes go with it. `setup.sh`
+never had a counterpart for this:
 
 ```yaml
 # daft.yml — new top-level hook
@@ -232,7 +220,7 @@ worktree-pre-remove:
       run: docker compose down -v --remove-orphans
       env:
         COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
-````
+```
 
 `-v` deletes the worktree's named volumes (`pgdata`, etc.). `--remove-orphans`
 catches any container the team added later that the running stack doesn't know
