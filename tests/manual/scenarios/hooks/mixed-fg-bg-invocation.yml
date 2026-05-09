@@ -68,10 +68,25 @@ steps:
         - "bg-cache"
         - "bg-index"
 
-  - name: Wait for background jobs, then list jobs
+  - name: Wait for background jobs to reach terminal state, then list jobs
+    # Earlier versions of this loop just grep'd for the bg job name in
+    # `daft hooks jobs` output. That's racy: the coordinator writes the
+    # initial `Running` meta entry *before* invoking `run_command`, so
+    # the entry appears in the listing while `sleep 1` is still pending —
+    # subsequent steps (which inspect logs and expect "COMPLETED") then
+    # see the entry mid-flight. With fork() the gap between meta-write
+    # and subprocess-finish was small enough to mostly hide the race;
+    # spawn-self adds ~200ms of binary-load latency that pushes step 7
+    # past the cliff. Wait for the specific bg jobs to reach a terminal
+    # status instead — that's what the next steps actually need.
     run: |
-      for i in $(seq 1 20); do
-        if daft hooks jobs 2>&1 | grep -q "warm-index"; then
+      for i in $(seq 1 30); do
+        done=$(daft hooks jobs --format json 2>/dev/null | jq -r '
+          [.[] | select(.name == "warm-cache" or .name == "warm-index") | .status]
+          | if length == 2 and all(. == "completed" or . == "failed" or . == "cancelled")
+            then "yes" else "no" end
+        ' 2>/dev/null)
+        if [ "$done" = "yes" ]; then
           daft hooks jobs 2>&1
           exit 0
         fi
