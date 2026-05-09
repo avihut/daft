@@ -89,6 +89,52 @@ like:
 It names what the user is reaching for and frames the recipe as the answer.
 One sentence; resist the urge to summarize the whole recipe here.
 
+## Show files; don't describe them
+
+When the recipe references a project file (`.envrc`, `mise.toml`, `daft.yml`,
+`compose.yaml`, a setup script), show its content as a code block, not a
+verbal description. Verbal descriptions of structured content are hard to
+follow — the reader has to mentally reconstruct the file from prose.
+
+**Wrong:**
+
+> The repo has a `.envrc` at the root with `dotenv_if_exists .env` and
+> `PATH_add bin`, plus a `mise.toml` pinning Node 22, Python 3.13, Rust 1.84.
+
+**Right:**
+
+> The repo has these files at the root:
+>
+> ```bash
+> # .envrc
+> dotenv_if_exists .env
+> PATH_add bin
+> ```
+>
+> ```toml
+> # mise.toml
+> [tools]
+> node = "22"
+> python = "3.13"
+> rust = "1.84"
+> ```
+
+Place the code block(s) **after** a sentence or two of intro so the reader
+has a frame before they hit the content. Don't lead with the block (no
+context), and don't narrate it line-by-line afterward (the reader can read
+it). One short labeled block per file beats one big describe-the-whole-thing
+paragraph.
+
+This applies to:
+
+- Starting-state file listings (after the tree diagram or one-line intro)
+- Walkthrough step diffs — show the file's new state, don't describe it
+- Recipe outputs — `daft.yml` itself, not "the daft.yml gains a job that…"
+
+The exception: trees showing _layout_ (which directories exist) stay as
+trees. Trees describe shape; code blocks describe content. Use both, with
+the tree first.
+
 ## The Recipe section is self-contained
 
 The reader should be able to copy the Recipe section's `daft.yml` plus its
@@ -214,6 +260,7 @@ Before committing a recipe rewrite or new page, walk this list:
 - [ ] Vignette satisfies the three properties (filesystem / ritual / pain)
 - [ ] Vignette has no team-size, repo-age, dep-count, or specific-timing
       details
+- [ ] Files are shown as code blocks, not described in prose
 - [ ] Recipe section is self-contained (no forward references to subsections
       that complete it)
 - [ ] Variants share a single named axis

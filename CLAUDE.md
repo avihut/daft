@@ -316,6 +316,11 @@ adding or changing user-facing features.
   changes (e.g., hooks moving from shell scripts to YAML), renamed hook types,
   new template variables, etc. The skill is what teaches AI coding agents to use
   daft correctly.
+- **Update `.claude/skills/writing-recipes/SKILL.md`** when making structural
+  changes to how recipes are written — new sections, new conventions, changed
+  shape requirements, new style rules. The skill is what guides future recipe
+  authors (human or agent), and divergence between the skill and the recipes is
+  the silent way the conventions rot.
 
 ### Docs Site (VitePress)
 
