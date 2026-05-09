@@ -9,6 +9,17 @@ pillars: [worktrees, hooks]
 
 # Adopting from direnv
 
+::: tip daft pairs with direnv
+
+For environment management, daft recommends pairing with direnv or mise rather
+than trying to cover env management with daft alone — both are more
+comprehensive than vanilla daft's per-job `env:` blocks. This guide is the
+direnv side of that pairing (you already have direnv; you're adding daft). If
+you're going the other direction — adding direnv to a daft-only setup — see
+[Layering direnv on daft](/recipes/layering-direnv).
+
+:::
+
 ## Starting state
 
 The team adopted direnv a while back. The repo has an `.envrc` at the root and a

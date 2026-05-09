@@ -9,6 +9,17 @@ pillars: [worktrees, hooks]
 
 # Adopting from mise
 
+::: tip daft pairs with mise
+
+For environment management, daft recommends pairing with mise or direnv rather
+than trying to cover env management with daft alone — both are more
+comprehensive than vanilla daft's per-job `env:` blocks. This guide is the mise
+side of that pairing (you already have mise; you're adding daft). If you're
+going the other direction — adding mise to a daft-only setup — see
+[Layering mise on daft](/recipes/layering-mise).
+
+:::
+
 ## Starting state
 
 The team adopted mise a while back. The repo's `mise.toml` pins tool versions
