@@ -1,33 +1,51 @@
 ---
 title: Declarative envs
 description:
-  mise / asdf / nvm / pyenv as the declarative alternative to imperative hooks.
-  Layering, when to pick which, and division of labor with daft hooks.
+  mise / asdf / nvm / pyenv as the declarative half of worktree setup — tool
+  versions, committed env defaults, and what daft hooks add on top.
 pillars: [worktrees, hooks]
 ---
 
 # Declarative envs
 
-> Imperative hooks ("run `pnpm install`") describe steps. Declarative env tools
-> (mise, asdf, nvm, pyenv) describe a target state — "this worktree uses Node 22
-> and Python 3.13" — and let the tool figure out how to get there. They activate
-> on `cd`, no daft involvement needed for activation. The two compose well:
-> declarative for tool versions and committed env defaults, imperative hooks for
-> installs and per-worktree dynamism.
+## Starting state
 
-## When to reach for this
+A polyglot service. The repo has:
 
-- You want tool versions pinned per worktree, and you want them to work without
-  anyone running an explicit "activate this env" command.
-- Your team has a mix of OSes/architectures and a single "install Node 22" line
-  in a hook isn't enough — different developers need different install paths.
-- You'd rather declare versions in a TOML/YAML/text file than maintain an
-  install script.
+- `apps/api` — Node 18, with a committed `.nvmrc` saying `18`
+- `apps/etl` — Python 3.11, with a `.python-version` file
+- `apps/auth` — Rust 1.78, pinned only inside `Dockerfile`'s `FROM rust:1.78`
 
-## Minimal recipe — mise
+Three pinning files, three different mechanisms, three different runtimes that
+may or may not pick them up. `.nvmrc` only matters if you remember `nvm use`.
+`.python-version` only matters if pyenv is installed and `pyenv shell` is wired
+into your shell rc. The Rust version is _implicit_ until the Docker build —
+locally everyone runs whatever `rustc` they last installed.
+
+Two new devs in the past month each spent half a day chasing "only repros on
+Alex's machine" bugs. One was Node 20 vs 18, the other was Rust 1.79 vs 1.78.
+The `.nvmrc` file existed; nobody had run `nvm use` after `cd`-ing.
+
+The reach for daft: stop relying on muscle memory. Tool versions should
+_activate_ on cd, not when you remember to run a command.
+
+## What changes
+
+One `mise.toml` (committed) replaces the three pinning files. mise's shell hook
+reads it on `cd` and prepends the right binaries to `PATH`, so `node`, `python`,
+and `cargo` resolve to the pinned versions the moment you enter a worktree.
+
+A daft hook handles the install half — making sure those pinned versions are
+actually present on disk before the worktree is "ready."
+
+What this gets you: every dev's `node --version` matches every other dev's,
+every worktree, every time. "Only repros on my machine" stops being a Node
+version mismatch.
+
+## Recipe
 
 ```toml
-# mise.toml  (committed at repo root)
+# mise.toml
 [tools]
 node = "22"
 python = "3.13"
@@ -43,21 +61,49 @@ hooks:
         run: mise install
 ```
 
-What happens: a fresh worktree triggers `mise install`, which materializes any
-missing versions into `~/.local/share/mise/installs/...`. mise's shell hook
-(`eval "$(mise activate zsh)"` in your shell rc) detects `mise.toml` on `cd` and
-prepends the right binaries to `PATH`. By the time you're typing in the
-worktree, `node --version` reports 22.
-
-The daft hook does only the install half. Activation is mise's job, not daft's —
-the parent shell's hook handles that on `cd`.
+Activation is mise's job, not daft's. The parent shell's hook
+(`eval "$(mise activate zsh)"` in your `~/.zshrc` or equivalent) detects
+`mise.toml` on `cd` and switches versions for you. The daft hook only does the
+install half — materializing missing versions into
+`~/.local/share/mise/installs/` so activation can find them.
 
 Prerequisites: [mise](https://mise.jdx.dev) installed (`brew install mise` on
 macOS) and its shell activation loaded.
 
+## Committed env defaults — `mise.toml` `[env]`
+
+Tool versions are one half of "what every dev has when they cd into a worktree."
+Non-secret env defaults are the other. mise's `[env]` block does both in one
+file:
+
+```toml
+# mise.toml
+[tools]
+node = "22"
+python = "3.13"
+
+[env]
+NODE_ENV = "development"
+DATABASE_URL = "postgres://localhost/myapp_dev"
+LOG_LEVEL = "debug"
+```
+
+When mise activates the worktree, the `[env]` values export. No daft hook needed
+— `[env]` activation is part of the same shell-hook flow that switches tool
+versions.
+
+The trade-off: `mise.toml` is committed, so its `[env]` block is fine for
+**non-secret defaults** (a placeholder DATABASE_URL, NODE_ENV, log levels) but
+never for actual secrets. Anything that shouldn't be in git stays out of
+`mise.toml`. For real secrets, see
+[Env vars & secrets](/recipes/env-vars-and-secrets).
+
 ## Variants
 
-### asdf — the precursor
+By tool. mise is the recommended choice for new projects; the others are
+documented for teams already using them.
+
+### asdf
 
 ```yaml
 # daft.yml
@@ -74,12 +120,14 @@ nodejs 22.11.0
 python 3.13.0
 ```
 
-asdf is the elder cousin of mise. The plugin ecosystem is broader (more obscure
-tools have asdf plugins), but version resolution and install speed are slower
-than mise. If you don't have a reason to use asdf specifically, prefer mise.
+asdf needs per-language plugins (`asdf plugin add nodejs`,
+`asdf plugin add python`) installed once per machine. Plugin install isn't part
+of `asdf install`; document it in your README or wire it into a one-time
+`bin/setup-asdf.sh` for new contributors.
 
-mise can read `.tool-versions` directly, so a slow migration off asdf is
-straightforward: install mise, leave the file in place, mise picks it up.
+mise can read `.tool-versions` as a fallback, so a slow migration off asdf is
+straightforward: install mise, leave the file in place, activate mise's shell
+hook. The `mise.toml` migration follows when ready.
 
 ### nvm — Node only
 
@@ -96,11 +144,10 @@ straightforward: install mise, leave the file in place, mise picks it up.
 22
 ```
 
-nvm is single-language. Use it if Node is your only versioned tool and you don't
-want the larger mise/asdf surface. The shell-source dance in the hook is awkward
-but unavoidable — nvm is bash-functions, not a binary.
-
-If you also need a Python or Rust version, switch to mise.
+nvm is bash-functions, not a binary, so the hook has to source `nvm.sh` before
+calling `nvm`. Use it if Node is your only versioned tool. If you also need
+Python or Rust, switching to mise is cleaner than running three single-language
+tools.
 
 ### pyenv — Python only
 
@@ -114,101 +161,41 @@ If you also need a Python or Rust version, switch to mise.
 3.13.0
 ```
 
-Like nvm, single-language. mise reads `.python-version` files too, so the
-upgrade path is painless if you outgrow pyenv.
-
-### mise's `[env]` for committed defaults
-
-mise also handles env vars (see
-[Env vars & secrets → mise's `[env]`](/recipes/env-vars-and-secrets#mise-s-env-section-declarative-no-hook)).
-Combining tool versions and env in one declarative file is the closest to "the
-worktree's whole config is visible at a glance":
-
-```toml
-# mise.toml
-[tools]
-node = "22"
-
-[env]
-DATABASE_URL = "postgres://localhost/myapp_dev"
-NODE_ENV = "development"
-
-[tasks.dev]
-description = "Run the dev server"
-run = "pnpm dev"
-```
-
-`mise.toml` even has a `[tasks]` block that's an mini-task-runner. That overlaps
-with `daft.yml`'s job system — see the division-of-labor section below.
-
-### devbox / nix-direnv — heavier declarative envs
-
-For projects that need OS-level tools (databases, image libraries, build
-toolchains), [devbox](https://www.jetify.com/devbox) and
-[nix-direnv](https://github.com/nix-community/nix-direnv) provide Nix-based
-declarative environments. The daft hook becomes a `devbox install` or
-`direnv allow` step:
-
-```yaml
-- name: install-devbox
-  run: devbox install
-```
-
-These are heavier than mise (Nix store, longer first install) but genuinely
-reproducible across machines.
+`--skip-existing` makes the hook idempotent (already-installed versions are
+silently skipped). Like nvm, single-language only — mise reads `.python-version`
+as a fallback if you migrate later.
 
 ## Division of labor: declarative vs imperative
 
-Use the declarative tool for what it's good at; use daft hooks for the rest:
+| Concern                                     | Where it goes                                                   |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| Tool versions (Node, Python, Rust)          | `mise.toml` / `.tool-versions`                                  |
+| Committed env-var defaults (non-secret)     | `mise.toml` `[env]`                                             |
+| Secret env vars                             | daft hook ([Env vars & secrets](/recipes/env-vars-and-secrets)) |
+| Install dependencies (`pnpm install`, etc.) | daft hook ([Toolchain bootstrap](/recipes/toolchain-bootstrap)) |
+| Background warmup (`cargo build`, …)        | daft hook ([Background warmup](/recipes/background-warmup))     |
+| Service orchestration (compose up)          | daft hook ([Services with ports](/recipes/services-with-ports)) |
+| Cleanup on remove                           | daft hook ([Cleanup on remove](/recipes/cleanup-on-remove))     |
+| Ad-hoc developer task ("run dev server")    | mise `[tasks]` _or_ `package.json` scripts                      |
 
-| Concern                                              | Where it goes                                                                          |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Tool versions (Node, Python, Rust)                   | `mise.toml` / `.tool-versions`                                                         |
-| Committed env-var defaults                           | `mise.toml` `[env]`                                                                    |
-| Secret env vars                                      | daft hook (vault/sops fetch — see [Env vars & secrets](/recipes/env-vars-and-secrets)) |
-| Install dependencies (`pnpm install`, `cargo fetch`) | daft hook (`worktree-post-create`)                                                     |
-| Background warmup (cargo build, vite optimize)       | daft hook with `background: true`                                                      |
-| Service orchestration (compose up)                   | daft hook                                                                              |
-| Cleanup on remove                                    | daft hook (`worktree-pre-remove`)                                                      |
-| Ad-hoc developer task ("run dev server")             | mise `[tasks]` _or_ `package.json` scripts — outside daft                              |
-
-The declarative tool **describes** what's there; daft hooks **do** what needs
-doing on lifecycle events.
+The declarative tool **describes** what should be there; daft hooks **do** what
+needs doing on lifecycle events.
 
 ::: warning Don't put long-running setup in `mise.toml` `[tasks]` mise's
-`[tasks]` block is a developer convenience, not a hook system. It doesn't run on
-worktree create. Putting `pnpm install` there as a "setup task" means the user
-has to remember to run `mise run setup` after creating a worktree — which is
-exactly what you're trying to avoid by adopting daft hooks. :::
+`[tasks]` is a developer-convenience task runner, not a hook system. It doesn't
+run on worktree create. Putting `pnpm install` in `[tasks.setup]` means the user
+has to remember `mise run setup` after every worktree create — which is exactly
+what you adopted daft to stop doing. Use `worktree-post-create` for setup;
+reserve `[tasks]` for on-demand workflows like "start the dev server" or "run
+the full test suite." :::
 
-## Composes well with
+## Where to next
 
 - **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — the typical flow is
-  mise installs the **toolchain** (Node, Python), then a daft hook runs the
-  **dependency install** (`pnpm install`). `needs:` makes the order explicit.
-- **[Env vars & secrets](/recipes/env-vars-and-secrets)** — committed defaults
-  in `mise.toml` `[env]`; secrets via a daft hook.
-- **[CI parity](/recipes/ci-parity)** — both mise and daft.yml run in CI; the
-  same `mise install && pnpm install --frozen-lockfile` pattern works locally
-  and in CI.
-
-## Anti-patterns
-
-- **Duplicating tool installs** — `mise.toml` lists Node 22 _and_ `daft.yml`
-  runs `nvm install 22`. Pick one source of truth. (mise wins for new projects.)
-- **Imperative installs disguised as declarative** —
-  `[tasks.setup] run = "pnpm install"`. Tasks aren't hooks; this still requires
-  the user to know to run them.
-- **Per-worktree mise overrides committed to a feature branch** — fine if the
-  version bump is part of the feature, problematic if it's only for one
-  developer's machine. For machine-specific overrides, use `mise.local.toml` and
-  gitignore it.
-
-## See also
-
-- **[Lifecycle hooks](/hooks/lifecycle)** — `worktree-post-create` is the
-  primary surface declarative envs interact with
-- **[Job orchestration](/hooks/job-orchestration)** — `needs:` for ordering
-  install-tools before install-deps
-- **[mise documentation](https://mise.jdx.dev)** — the canonical reference for
-  the tool itself
+  `mise install` (this page) before `pnpm install` (that one). `needs:` between
+  them makes the order explicit.
+- **[Env vars & secrets](/recipes/env-vars-and-secrets)** — for the secret half
+  of "what gets exported when you cd into a worktree."
+- **[CI parity](/recipes/ci-parity)** — both `mise install` and `daft hooks run`
+  work the same locally and in CI; one source of truth for "how this project
+  sets up."
