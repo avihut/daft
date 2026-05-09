@@ -156,25 +156,39 @@ inline references in prose). 10+ becomes furniture; the reader stops choosing.
 
 ### VitePress directive format — get this right
 
-The closing `:::` **must be on its own line.** A common mistake:
+Two interacting rules:
 
-```
-::: warning Title runs into the first sentence so the title bleeds.
-Content paragraph that ends with the closing on the same line. :::
-```
+1. The closing `:::` **must be on its own line.** Otherwise the directive
+   doesn't terminate, and the next `## Heading` gets swallowed into the
+   warning/tip box.
+2. Prettier (`proseWrap: always`) joins consecutive non-blank lines into one
+   paragraph — so without blank-line separators, prettier will rejoin the title
+   with the first content line and pull the closing `:::` back onto the last
+   content line. The fix is **blank lines** around the content block. Prettier
+   respects them; the renderer respects them.
 
-This renders broken: the closing token doesn't terminate the block, so the next
-`## Heading` after it gets swallowed into the warning box. The fix:
+The format that survives both VitePress and prettier:
 
 ```
 ::: warning Title on its own line
-Content paragraph or paragraphs.
+
+Content paragraph. Multiple paragraphs are fine; just keep them inside
+the block.
+
 :::
 ```
 
-Title on the opening line. Content on subsequent lines. Closing `:::` alone on
-its line. If you ever see "step N is missing from the TOC" or "the next section
-is rendered inside a warning box," check the previous `:::` block first.
+Wrong (will be silently broken by prettier):
+
+```
+::: warning Title bleeds into the first line of content
+Content paragraph. ←── prettier joins this with the closing
+:::
+```
+
+If you ever see "step N is missing from the TOC" or "the next section is
+rendered inside a warning box," check the previous `:::` block first — prettier
+almost certainly rejoined a closing onto a content line.
 
 ## Style
 

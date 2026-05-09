@@ -89,10 +89,12 @@ ls node_modules        # populated, hardlink-fast
 pnpm test              # works against this worktree's deps
 ```
 
-::: tip Don't share `node_modules/` directly Sharing the pnpm **store** is safe
-(content-addressed, immutable). Sharing `node_modules/` itself is a corruption
-hazard — see
+::: tip Don't share `node_modules/` directly
+
+Sharing the pnpm **store** is safe (content-addressed, immutable). Sharing
+`node_modules/` itself is a corruption hazard — see
 [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
+
 :::
 
 ## Step 2: allocate ports + DATABASE_URL

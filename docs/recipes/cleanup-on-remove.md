@@ -172,12 +172,15 @@ The hard rule: **`worktree-pre-remove`, never `worktree-post-remove`, for
 anything that needs the worktree's files**.
 
 ::: warning Cleanup goes in `pre-remove`, not `post-remove`
+
 `worktree-post-remove` runs **after** the worktree directory is gone. By that
 point `compose.yaml`, `.envrc`, PID files — all unreachable. Pre-remove is the
 last chance to read worktree-local state. Post-remove is for genuinely global
 cleanup that doesn't need the worktree's files (an external log shipper, a
 metrics flush). If your cleanup touches _anything_ inside the worktree, it
-belongs in pre-remove. :::
+belongs in pre-remove.
+
+:::
 
 Pre-remove jobs run in parallel by default — most teardowns are independent
 (containers, registry entries, log shipping). If teardown ordering matters (must

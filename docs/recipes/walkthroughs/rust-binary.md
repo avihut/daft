@@ -96,9 +96,12 @@ returns as soon as `fetch-deps` finishes, and `cargo build` keeps running. By
 the time you've opened your editor, the debug binary is built; your first edit
 triggers a fast incremental compile.
 
-::: tip Verify the warmup is actually running After
-`daft start feature/scratch`, run `daft hooks log show` from the new worktree.
-The backgrounded `warmup-build` shows as `running` until it completes. :::
+::: tip Verify the warmup is actually running
+
+After `daft start feature/scratch`, run `daft hooks log show` from the new
+worktree. The backgrounded `warmup-build` shows as `running` until it completes.
+
+:::
 
 The trade-off — and where this walkthrough's choice diverges from the pattern's
 other variants — is `--workspace` vs scoped (`-p server -p worker`). The pattern

@@ -240,11 +240,14 @@ runners trust once during provisioning.
 instead of prompting. Always set it. A daft waiting on stdin in CI is a daft
 that times out 6 minutes later.
 
-::: warning Don't run pre-remove hooks in CI CI runners create a worktree
-implicitly via `actions/checkout`; they don't `daft remove` it. If you've wired
-pre-remove cleanup that destroys real state (a production database snapshot, an
-external registry entry), **never** fire it from CI. Pre-remove is for
-developer-machine teardown, not build-server cleanup. :::
+::: warning Don't run pre-remove hooks in CI
+
+CI runners create a worktree implicitly via `actions/checkout`; they don't
+`daft remove` it. If you've wired pre-remove cleanup that destroys real state (a
+production database snapshot, an external registry entry), **never** fire it
+from CI. Pre-remove is for developer-machine teardown, not build-server cleanup.
+
+:::
 
 ## Where to next
 

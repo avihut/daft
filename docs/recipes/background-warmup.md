@@ -171,10 +171,14 @@ synchronously. The `background: true` job can fail, get cancelled, or finish
 late — depending on it for correctness produces flaky worktrees. The most common
 mistake is putting code generation here.
 
-::: warning Don't run code generation in a warmup If your project generates
-source files at build time (proto, GraphQL schema, OpenAPI client), code that
-imports the generated module breaks if the codegen isn't done. Run codegen
-synchronously as part of the install, not as a backgrounded warmup. :::
+::: warning Don't run code generation in a warmup
+
+If your project generates source files at build time (proto, GraphQL schema,
+OpenAPI client), code that imports the generated module breaks if the codegen
+isn't done. Run codegen synchronously as part of the install, not as a
+backgrounded warmup.
+
+:::
 
 ## Where to next
 

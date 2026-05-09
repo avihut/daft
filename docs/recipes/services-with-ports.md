@@ -213,11 +213,13 @@ behind), and **wrong** anywhere that re-runs during normal worktree life. Don't
 put `down -v` in `worktree-post-create` or in any hook that fires more than
 once.
 
-::: warning Don't share volumes across worktrees `COMPOSE_PROJECT_NAME` solves
-naming collisions. But if a volume is declared `external: true` with a fixed
-name, two worktrees can both mount it — and corrupt each other's data. Postgres
-won't recover from that gracefully. See
+::: warning Don't share volumes across worktrees
+
+`COMPOSE_PROJECT_NAME` solves naming collisions. But if a volume is declared
+`external: true` with a fixed name, two worktrees can both mount it — and
+corrupt each other's data. Postgres won't recover from that gracefully. See
 [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
+
 :::
 
 ## Where to next

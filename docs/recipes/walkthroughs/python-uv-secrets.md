@@ -182,11 +182,14 @@ Each worktree decrypts independently. Rotating secrets is "re-encrypt
 next `daft hooks run worktree-post-create`; new worktrees get them
 automatically.
 
-::: warning Don't decrypt to a file readable by other users `chmod 600` is not
-optional. Without it, anyone else on a shared machine can read the worktree's
-secrets. See
+::: warning Don't decrypt to a file readable by other users
+
+`chmod 600` is not optional. Without it, anyone else on a shared machine can
+read the worktree's secrets. See
 [Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks)
-for the broader security story. :::
+for the broader security story.
+
+:::
 
 ## Step 4: load `.env` into the shell with direnv
 

@@ -181,13 +181,16 @@ as a fallback if you migrate later.
 The declarative tool **describes** what should be there; daft hooks **do** what
 needs doing on lifecycle events.
 
-::: warning Don't put long-running setup in `mise.toml` `[tasks]` mise's
-`[tasks]` is a developer-convenience task runner, not a hook system. It doesn't
-run on worktree create. Putting `pnpm install` in `[tasks.setup]` means the user
-has to remember `mise run setup` after every worktree create — which is exactly
-what you adopted daft to stop doing. Use `worktree-post-create` for setup;
-reserve `[tasks]` for on-demand workflows like "start the dev server" or "run
-the full test suite." :::
+::: warning Don't put long-running setup in `mise.toml` `[tasks]`
+
+mise's `[tasks]` is a developer-convenience task runner, not a hook system. It
+doesn't run on worktree create. Putting `pnpm install` in `[tasks.setup]` means
+the user has to remember `mise run setup` after every worktree create — which is
+exactly what you adopted daft to stop doing. Use `worktree-post-create` for
+setup; reserve `[tasks]` for on-demand workflows like "start the dev server" or
+"run the full test suite."
+
+:::
 
 ## Where to next
 

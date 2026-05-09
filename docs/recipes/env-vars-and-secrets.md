@@ -159,11 +159,13 @@ specific hook job. Use the job's `env:` field:
 shell, never appear in `.envrc`, never persist past the hook run. Useful when a
 hook needs ad-hoc context that shouldn't leak to your interactive shell.
 
-::: warning Don't expose secrets via `env:` on backgrounded jobs A long-running
-background job has its env vars visible in `ps -e ww` to anyone on the machine.
-Read-only env files (`chmod 600`) are fine; env vars on a backgrounded process
-aren't. See
+::: warning Don't expose secrets via `env:` on backgrounded jobs
+
+A long-running background job has its env vars visible in `ps -e ww` to anyone
+on the machine. Read-only env files (`chmod 600`) are fine; env vars on a
+backgrounded process aren't. See
 [Anti-pattern: secrets in version-controlled hooks](/recipes/anti-patterns/secrets-in-hooks).
+
 :::
 
 ## Per-worktree derived values
