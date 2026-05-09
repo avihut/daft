@@ -309,6 +309,10 @@ export default defineConfig({
                 text: "Services with ports",
                 link: "/recipes/services-with-ports",
               },
+              {
+                text: "Adopting from direnv",
+                link: "/recipes/adopting-from-direnv",
+              },
             ],
           },
           {
