@@ -813,17 +813,29 @@ pub fn spawn_coordinator(
         .context("sync coordinator state to disk")?;
     let (_file, state_path) = tmp.keep().context("persist coordinator state tempfile")?;
 
-    Command::new(&exe)
+    // If `spawn()` fails the child never runs, so nothing will read or unlink
+    // the state file — clean it up here rather than stranding a 0600 tempfile
+    // until the next tmpfs sweep. The `keep()` above transferred ownership
+    // away from `tempfile::Drop`, so the cleanup is on us.
+    let spawn_result = Command::new(&exe)
         .arg("__coordinator")
         .arg(&state_path)
         .env("DAFT_IS_COORDINATOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("Could not spawn coordinator process from {}", exe.display()))?;
+        .spawn();
 
-    Ok(None)
+    match spawn_result {
+        Ok(_) => Ok(None),
+        Err(e) => {
+            std::fs::remove_file(&state_path).ok();
+            Err(anyhow::Error::from(e).context(format!(
+                "Could not spawn coordinator process from {}",
+                exe.display()
+            )))
+        }
+    }
 }
 
 /// Backwards-compatible alias for callers still using the old name.
