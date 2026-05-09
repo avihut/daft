@@ -56,8 +56,8 @@ This walkthrough threads four patterns into one `daft.yml`:
   the worktree goes away.
 
 By the end: `daft start feature/x` returns with a fully-set-up worktree —
-`node_modules/`, dedicated services, fresh-migrated DB. Two engineers on
-parallel features just work.
+`node_modules/`, dedicated services, fresh-migrated DB. Parallel feature
+branches just work.
 
 ## Step 1: install deps
 
