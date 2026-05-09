@@ -1,32 +1,45 @@
 ---
 title: Toolchain bootstrap
 description:
-  Install dependencies idempotently when a worktree is created — Node, Python,
-  Rust, Go.
+  Replace the bin/setup.sh ritual with a worktree-post-create hook that installs
+  deps automatically — every worktree, every time.
 pillars: [worktrees, hooks]
 ---
 
 # Toolchain bootstrap
 
-> A new worktree starts empty. No `node_modules`, no `.venv`, no fetched crates.
-> Toolchain bootstrap is the `worktree-post-create` job that gets your worktree
-> from "fresh checkout" to "ready to run a command" — every time, on every
-> worktree, without you having to remember.
+## Starting state
 
-## When to reach for this
+A Node monorepo, two months old, three engineers. The repo has:
 
-- Your project has a dependency manifest (`package.json`, `pyproject.toml`,
-  `Cargo.toml`, `go.mod`) and lockfile, and the install step is the same every
-  time.
-- You want `daft start feature/x` to land you in a worktree where the next
-  command (`pnpm test`, `cargo run`, `python -m mypkg`) just works.
-- You're tired of typos in install commands and version drift between worktrees
-  that "almost" set themselves up.
+- `package.json` and `pnpm-lock.yaml` at the root
+- `bin/setup.sh` that runs `pnpm install --frozen-lockfile` and copies
+  `.env.example` to `.env` if one isn't there yet
+- A README that opens with **"First time? Run `bin/setup.sh`."**
 
-This is usually the first hook anyone writes. It pays for itself on the second
-worktree.
+The ritual: `git checkout feature/x`, then `bin/setup.sh`. Three worktrees a
+week is three setup runs. At least one ends with someone forgetting and hitting
+a confusing missing-module error from a transitive dep that yesterday's lockfile
+bump pulled in.
 
-## Minimal recipe
+The reach for daft: stop having a setup ritual at all. **Worktree creation
+should be the setup ritual.**
+
+## What changes
+
+- `bin/setup.sh` shrinks (most of its body moves into `daft.yml`) or deletes
+  outright.
+- `daft.yml` gains a `worktree-post-create` hook that does the install.
+- The README loses its "first time, run setup.sh" line.
+
+What you get for it:
+
+- `daft start feature/x` lands you in a worktree where `pnpm test` works as the
+  next command you type.
+- One canonical description of "how this project sets up", in `daft.yml`, used
+  by every dev and (later) by CI.
+
+## Recipe
 
 ```yaml
 # daft.yml
@@ -37,25 +50,27 @@ hooks:
         run: pnpm install --frozen-lockfile
 ```
 
-`worktree-post-create` runs from inside the new worktree, so `pnpm install`
-finds the project's `package.json` automatically. With `--frozen-lockfile`, the
-install fails fast if the lockfile is out of date — exactly the behavior you
-want when bootstrapping a worktree from a known-good ref.
-
-The default fail mode for `worktree-post-create` is `warn` (the worktree gets
-created even if install fails); to make a failed install abort creation,
-override per-hook:
+Commit and trust:
 
 ```bash
-git config daft.hooks.worktreePostCreate.failMode abort
+git add daft.yml
+git commit -m "chore(daft): install deps on worktree create"
+git daft-hooks trust
 ```
 
+A fresh `daft start feature/x` now lands in a worktree with `node_modules/`
+populated, `pnpm-lock.yaml` honored, and `pnpm test` ready to run. The README's
+setup line — and the muscle-memory it required — is gone.
+
 ## Variants
+
+By language and package manager. Each is a drop-in replacement for the
+`install-deps` job's `run:` line.
 
 ### Node — pnpm / npm / yarn / bun
 
 ```yaml
-# pnpm — fast, content-addressable store shared across worktrees by default
+# pnpm — content-addressable store shared across worktrees by default
 - name: install-deps
   run: pnpm install --frozen-lockfile
 
@@ -63,7 +78,7 @@ git config daft.hooks.worktreePostCreate.failMode abort
 - name: install-deps
   run: npm ci
 
-# yarn (classic / berry) — `--immutable` is the v3+ name
+# yarn (v3+) — `--immutable` is the modern name for frozen-lockfile
 - name: install-deps
   run: yarn install --immutable
 
@@ -73,7 +88,8 @@ git config daft.hooks.worktreePostCreate.failMode abort
 ```
 
 pnpm and bun share their package store across worktrees by default — no extra
-wiring. npm and yarn copy `node_modules/` per worktree (the right default; see
+wiring. npm and yarn copy `node_modules/` per worktree, which is the right
+default (the alternative is a corruption hazard — see
 [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state)).
 
 ### Python — uv / pip / poetry
@@ -83,7 +99,7 @@ wiring. npm and yarn copy `node_modules/` per worktree (the right default; see
 - name: install-deps
   run: uv sync --frozen
 
-# pip with venv — explicit venv creation
+# pip — explicit venv creation, then install from a lockfile
 - name: install-deps
   run: |
     python -m venv .venv
@@ -94,23 +110,19 @@ wiring. npm and yarn copy `node_modules/` per worktree (the right default; see
   run: poetry install --no-root --sync
 ```
 
-For pip-based setups, prefer storing the venv inside the worktree (`./.venv/`)
-so worktrees don't fight over a shared environment. uv does this automatically.
+For pip-based setups, store the venv inside the worktree (`./.venv/`) so
+worktrees don't fight over a shared environment. uv does this automatically.
 
 ### Rust — cargo
 
 ```yaml
-# Just fetch dependencies; don't build (that's a warmup job)
 - name: fetch-deps
   run: cargo fetch --locked
 ```
 
-`cargo fetch` populates the local registry cache with crates the workspace
-needs. It does **not** build anything — that's
-[Background warmup](/recipes/background-warmup)'s job. Mixing them makes
-worktree creation feel slow.
-
-`--locked` enforces `Cargo.lock` integrity, the analog of `--frozen-lockfile`.
+`cargo fetch` populates the local registry cache. It does **not** build anything
+— that's [Background warmup](/recipes/background-warmup)'s job. Mixing them
+makes worktree creation feel slow without need.
 
 ### Go — modules
 
@@ -119,62 +131,49 @@ worktree creation feel slow.
   run: go mod download
 ```
 
-`go mod download` fetches modules into the module cache (shared across worktrees
-by default at `$GOPATH/pkg/mod`). Like Rust, this is fetch-only; build warmup is
-a separate concern.
+Like Rust, this is fetch-only. Build warmup is a separate concern.
 
 ## Idempotency & safety
 
-Most package managers are idempotent by design — running `pnpm install` twice
-with the same lockfile is a near-no-op. But idempotency comes from **using the
-lockfile-honoring command**, not the dev-friendly variant:
+Most package managers are idempotent — running install twice with the same
+lockfile is a near-no-op. But idempotency comes from the **lockfile-honoring**
+command, not the dev-friendly variant:
 
 | Command                          | Idempotent? | Why                                          |
 | -------------------------------- | ----------- | -------------------------------------------- |
-| `pnpm install --frozen-lockfile` | ✓           | Refuses to mutate the lockfile               |
-| `pnpm install`                   | ✗           | May rewrite lockfile, drift across worktrees |
-| `npm ci`                         | ✓           | Wipes `node_modules`, installs from lockfile |
-| `npm install`                    | ✗           | Mutates `package.json` if deps are missing   |
-| `uv sync --frozen`               | ✓           | Refuses to update lockfile                   |
-| `cargo fetch --locked`           | ✓           | Errors if `Cargo.lock` would change          |
-| `go mod download`                | ✓           | Module cache is content-addressed            |
+| `pnpm install --frozen-lockfile` | yes         | Refuses to mutate the lockfile               |
+| `pnpm install`                   | no          | May rewrite lockfile, drift across worktrees |
+| `npm ci`                         | yes         | Wipes `node_modules`, installs from lockfile |
+| `npm install`                    | no          | Mutates `package.json` if deps are missing   |
+| `uv sync --frozen`               | yes         | Refuses to update lockfile                   |
+| `cargo fetch --locked`           | yes         | Errors if `Cargo.lock` would change          |
+| `go mod download`                | yes         | Module cache is content-addressed            |
 
-Always use the strict variants in hooks. Worktree creation should never silently
-rewrite a lockfile.
+In hooks, always reach for the strict variants. A worktree create that silently
+rewrites a lockfile is a worktree create that destroys reproducibility — exactly
+the thing daft hooks are meant to give you.
 
-::: warning Don't run `pnpm install` (without `--frozen-lockfile`) in a hook If
-two worktrees create at roughly the same time and one has a slightly stale
-lockfile, you can end up with divergent `pnpm-lock.yaml` states across
-worktrees. Always pin to lockfile-strict mode in hooks. :::
+## Tuning the failure mode
 
-## Composes well with
+By default, `worktree-post-create` failures **warn**: the worktree is created
+even if install fails, leaving you with a half-set-up worktree to retry from. To
+make a failed install abort creation instead:
+
+```bash
+git config daft.hooks.worktreePostCreate.failMode abort
+```
+
+The default is `warn` because flaky installs (registry timeouts, slow mirrors)
+are usually recoverable by re-running, and you'd rather have a worktree to retry
+from than no worktree at all.
+
+## Where to next
 
 - **[Background warmup](/recipes/background-warmup)** — once deps are installed,
-  kick off a warmup job (`cargo build`, Vite optimizer, Gradle daemon) in the
-  background so the first user command is fast.
-- **[Declarative envs](/recipes/declarative-envs)** — let mise/asdf install the
-  toolchain itself (Node, Python, Rust versions) declaratively, then run
-  `pnpm install` / `cargo fetch` from a daft hook. The two are complementary,
-  not alternatives.
-- **[Cleanup on remove](/recipes/cleanup-on-remove)** — if your install step
-  touches state outside the worktree (a global lockfile, a registry daemon), the
-  matching pre-remove cleanup goes there.
-
-## Anti-patterns
-
-- **[Shared `node_modules` across worktrees](/recipes/anti-patterns/shared-mutable-state)**
-  — tempting (saves disk + time), breaks badly. Each worktree gets its own
-  `node_modules`; share the package store instead (pnpm, bun do this natively).
-- **`run: pnpm install`** without `--frozen-lockfile` — see the warning above.
-- **`run: cargo build`** as the only post-create step — that's not a bootstrap,
-  it's a warmup. Keep them separate so worktree creation doesn't block on a
-  3-minute compile.
-
-## See also
-
-- **[Lifecycle hooks](/hooks/lifecycle)** — `worktree-post-create` reference,
-  env vars, exit-code semantics
-- **[Job orchestration](/hooks/job-orchestration)** — running install + warmup
-  jobs in parallel, dependencies between them
-- **[Sharing caches across worktrees](/recipes/sharing-caches)** — what's safe
-  to share (package stores, build caches) vs not (`node_modules`, `target/`)
+  kick off a build (`cargo build`, `vite optimize`) in the background so the
+  first command is fast.
+- **[Declarative envs](/recipes/declarative-envs)** — when tool versions (Node
+  22, Python 3.13, Rust 1.84) also need to be pinned per-worktree.
+- **[Sharing caches across worktrees](/recipes/sharing-caches)** — the per-tool
+  answer for what's safe to share (pnpm store, cargo registry) vs not
+  (`node_modules/`, `target/`).
