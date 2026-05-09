@@ -93,4 +93,4 @@ state-specific suffix:
 
 - [daft exec](../cli/daft-exec.md) /
   [git worktree-exec](../cli/git-worktree-exec.md) — CLI reference
-- [Hooks](./hooks.md) — recurring per-worktree automation via `daft.yml`
+- [Hooks](/hooks/) — recurring per-worktree automation via `daft.yml`

@@ -3,7 +3,7 @@ title: Changelog
 description: Release history and notable changes
 ---
 
-<!--@include: ../CHANGELOG.md-->
+<!--@include: ../../CHANGELOG.md-->
 
 You can also view release notes from the command line:
 

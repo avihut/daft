@@ -192,7 +192,7 @@ git daft hooks trust
 ```
 
 Hooks require explicit trust for security. See the
-[hooks guide](https://avihu.dev/daft/guide/hooks) for details.
+[Hooks pillar](https://daft.avihu.dev/hooks/) for details.
 
 ## AI Agent Skill
 
@@ -205,8 +205,8 @@ Git operations.
 npx skills add avihut/daft
 ```
 
-See the [Agent Skill guide](https://avihu.dev/daft/guide/claude-skill) for
-manual installation options.
+See the [Agent Skill reference](https://daft.avihu.dev/reference/agent-skill)
+for manual installation options.
 
 ## Requirements
 

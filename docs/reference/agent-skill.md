@@ -121,10 +121,9 @@ relevant sections into your project's instructions file.
 
 ## See Also
 
-- [Worktree Workflow](./worktree-workflow.md) -- understanding the worktree
-  development approach
-- [Hooks](./hooks.md) -- full `daft.yml` reference and hook system documentation
+- [Worktrees](/worktrees/) -- understanding the worktree development approach
+- [Hooks](/hooks/) -- full `daft.yml` reference and hook system documentation
 - [Configuration](./configuration.md) -- all daft configuration options
 - [Shell Integration](../getting-started/shell-integration.md) -- setting up
   shell wrappers
-- [Shortcuts](./shortcuts.md) -- command alias management
+- [Shortcuts](/worktrees/shortcuts) -- command alias management

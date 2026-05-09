@@ -34,7 +34,8 @@ git config --global daft.autocd false
 Layout configuration uses `~/.config/daft/config.toml` (TOML format), not
 `git config`. This is different from the other settings on this page.
 
-See the [Layouts guide](./layouts.md) for detailed explanations of each layout.
+See the [Layouts guide](/worktrees/layouts) for detailed explanations of each
+layout.
 
 | Key                | File                 | Description                                 |
 | ------------------ | -------------------- | ------------------------------------------- |
@@ -148,34 +149,37 @@ branch).
 ## Merge Settings
 
 Defaults for `daft merge` flags. Each key can be set globally, locally, or
-system-wide; CLI flag arguments always override the configured default.
+system-wide; CLI flag arguments always override the configured default. The
+canonical reference for these keys is the
+[`daft merge` CLI page](/reference/cli/daft-merge#configuration).
 
-| Key                                           | Default    | Description                                                                                            |
-| --------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------ |
-| `daft.merge.ff`                               | `"true"`   | Default fast-forward mode (`true` for FF when possible, `false` for `--no-ff`, `only` for `--ff-only`) |
-| `daft.merge.squash`                           | `false`    | Default for `--squash`                                                                                 |
-| `daft.merge.commit`                           | `true`     | Whether to commit the merge automatically (`false` is equivalent to `--no-commit`)                     |
-| `daft.merge.edit`                             |            | Default for the merge-message editor on a TTY (`true`/`false`); unset = git's behavior                 |
-| `daft.merge.signoff`                          | `false`    | Default for `--signoff`                                                                                |
-| `daft.merge.gpgSign`                          |            | Default for `--gpg-sign` (`true`, `false`, or a `<keyid>` to pass through)                             |
-| `daft.merge.verifySignatures`                 | `false`    | Default for `--verify-signatures`                                                                      |
-| `daft.merge.allowUnrelatedHistories`          | `false`    | Default for `--allow-unrelated-histories`                                                              |
-| `daft.merge.strategy`                         |            | Default merge strategy (`-s`/`--strategy`)                                                             |
-| `daft.merge.strategyOption`                   |            | Default strategy option (`-X`/`--strategy-option`); repeatable via multi-value config                  |
-| `daft.merge.adoptTargetOnDemand`              | `"prompt"` | How to handle merging into a branch that has no worktree: `prompt`, `yes`, or `no`                     |
-| `daft.merge.requireCleanTarget`               | `true`     | Refuse to start the merge when the target worktree has uncommitted changes                             |
-| `daft.merge.postMerge.removeSourceWorktree`   | `false`    | Default for `-r`: remove the source worktree on success                                                |
-| `daft.merge.postMerge.alsoRemoveSourceBranch` | `false`    | Default for `-b`: also delete the source branch (requires `-r`; uses safe `branch -d` semantics)       |
+| Key                                  | Default           | Description                                                                             |
+| ------------------------------------ | ----------------- | --------------------------------------------------------------------------------------- |
+| `daft.merge.style`                   | `merge`           | Default merge style: `merge`, `squash`, `rebase`, or `rebase-merge`                     |
+| `daft.merge.cleanup`                 | `keep`            | Default post-merge cleanup: `keep` or `remove-branch`                                   |
+| `daft.merge.edit`                    | _(git's default)_ | Default for the merge-message editor on a TTY (`true`/`false`)                          |
+| `daft.merge.commit`                  | `true`            | Default commit-after-squash behavior (`false` is equivalent to `--no-commit`)           |
+| `daft.merge.signoff`                 | `false`           | Default for `--signoff`                                                                 |
+| `daft.merge.gpgSign`                 | _(unset)_         | Default for `--gpg-sign` (`true`, `false`, or `<keyid>`)                                |
+| `daft.merge.verifySignatures`        | `false`           | Default for `--verify-signatures`                                                       |
+| `daft.merge.allowUnrelatedHistories` | `false`           | Default for `--allow-unrelated-histories`                                               |
+| `daft.merge.strategy`                | _(unset)_         | Default merge strategy (`-s` / `--strategy`)                                            |
+| `daft.merge.strategyOption`          | _(unset)_         | Default strategy option (`-X` / `--strategy-option`); repeatable via multi-value config |
+| `daft.merge.adoptTargetOnDemand`     | `prompt`          | How to handle merging into a branch with no worktree: `prompt`, `yes`, or `no`          |
+| `daft.merge.requireCleanTarget`      | `true`            | Refuse to start the merge when the target worktree has uncommitted changes              |
+
+`--set-default` writes `daft.merge.style` and `daft.merge.cleanup` after a
+successful merge, so a failed or conflicted merge never silently changes your
+defaults.
 
 ### Default squash + cleanup recipe
 
-To make `daft merge <source>` always squash, commit, and remove the source
-worktree + branch by default:
+To make `daft merge <source>` always squash and remove the source branch on
+success:
 
 ```bash
-git config daft.merge.squash true
-git config daft.merge.postMerge.removeSourceWorktree true
-git config daft.merge.postMerge.alsoRemoveSourceBranch true
+git config daft.merge.style squash
+git config daft.merge.cleanup remove-branch
 ```
 
 For non-interactive or CI use, also suppress the editor so the auto-generated
@@ -185,19 +189,14 @@ squash message is used verbatim:
 git config daft.merge.edit false
 ```
 
-With these settings, `daft merge feature/done` becomes a one-shot squash +
-commit + full cleanup. Run `daft merge feature/done --no-edit` explicitly, or
-rely on `daft.merge.edit = false`, to skip the editor in scripts.
+`daft merge feature/done` then becomes a one-shot squash + commit + branch
+cleanup. The migration table in the
+[`daft merge` reference](/reference/cli/daft-merge#migration-from-the-old-flag-set)
+covers the v1.9 → v1.10 key renames if you're migrating an older config.
 
-**Contradictory combination:** setting both `daft.merge.commit = false` and
-`daft.merge.postMerge.alsoRemoveSourceBranch = true` is rejected at startup with
-a clear error. Branch cleanup requires a commit to justify the force delete;
-staging without committing and then deleting the branch would silently discard
-unmerged work.
-
-See the [`daft merge` reference](/cli/daft-merge) for flag-level details and the
-[hooks guide](/guide/hooks#merge-hooks) for `pre-merge` / `post-merge` hook
-configuration.
+See the [`daft merge` reference](/reference/cli/daft-merge) for flag-level
+details and the [Lifecycle hooks reference](/hooks/lifecycle#merge-hooks) for
+`pre-merge` / `post-merge` hook configuration.
 
 ## Ownership Settings
 
@@ -275,7 +274,7 @@ Hooks can also be configured through a `daft.yml` file for richer features
 including multiple jobs, execution modes, job dependencies, and conditional
 execution.
 
-See the [Hooks guide](./hooks.md#yaml-configuration) for the complete `daft.yml`
+See the [Hooks guide](/hooks/yaml-reference) for the complete `daft.yml`
 reference.
 
 ## Examples
@@ -347,6 +346,5 @@ warning is shown with the manual recovery command.
 Use `--local` on any worktree command to skip all remote operations for that
 invocation, regardless of config.
 
-::: tip This only applies to git's own hooks. daft's
-[lifecycle hooks](./hooks.md) (configured in `daft.yml` or `.daft/hooks/`) are
-always executed normally. :::
+::: tip This only applies to git's own hooks. daft's [lifecycle hooks](/hooks/)
+(configured in `daft.yml` or `.daft/hooks/`) are always executed normally. :::

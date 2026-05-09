@@ -35,7 +35,7 @@ my-project/
 
 ::: tip `daft adopt` converts to the **contained** layout. To use a different
 layout, run `daft layout transform <layout>` afterward, or clone fresh with
-`daft clone --layout <layout>`. See [Layouts](/guide/layouts). :::
+`daft clone --layout <layout>`. See [Layouts](/worktrees/layouts). :::
 
 ## Running It
 
@@ -121,4 +121,4 @@ unless you pass `--force`.
 - Starting fresh from a remote repository
 - Setting up a new development environment
 - The repository has no local-only work to preserve
-- You want to choose a specific [layout](/guide/layouts) with `--layout`
+- You want to choose a specific [layout](/worktrees/layouts) with `--layout`

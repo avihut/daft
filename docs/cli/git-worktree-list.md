@@ -113,7 +113,7 @@ daft list --template '{% for r in items %}{{ r.name }} -> {{ r.path }}
 {% endfor %}'
 ```
 
-See the [Output Formats guide](../guide/output-formats.md) for format details
+See the [Output Formats guide](/reference/output-formats) for format details
 and Tera syntax.
 
 ## See Also

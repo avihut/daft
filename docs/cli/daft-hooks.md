@@ -337,6 +337,6 @@ daft hooks trust list --format tsv
 daft hooks run --format json
 ```
 
-See the [Output Formats guide](../guide/output-formats.md) for format details
+See the [Output Formats guide](/reference/output-formats) for format details
 and Tera syntax.
 

@@ -3,7 +3,8 @@
   "files": {
     "includes": [
       ".vitepress/config.ts",
-      ".vitepress/theme/**/*.{ts,js,json,css}"
+      ".vitepress/theme/**/*.{ts,js,json,css}",
+      ".vitepress/data/**/*.{ts,js}"
     ]
   },
   "assist": {

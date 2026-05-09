@@ -6,38 +6,38 @@ description:
 layout: home
 hero:
   name: daft
-  text: Git Extensions Toolkit
+  text: Parallel dev, by default
   tagline:
-    Give each Git branch its own directory. No more stashing, no more context
-    switching.
+    Each branch in its own directory. Hooks at every code-evolution boundary.
+    Coordinate across repos. (One of these is still in design.)
   actions:
     - theme: brand
       text: Get Started
-      link: /getting-started/installation
+      link: /getting-started/quick-start
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/avihut/daft
+      text: Why daft
+      link: /about/why-daft
 features:
-  - title: One Branch, One Directory
+  - title: Worktrees
     details:
-      Each branch lives in its own directory. Run different branches in
-      different terminals with full isolation.
-  - title: Zero Context Switching
+      Every branch gets its own directory. Run feature-A and feature-B in
+      different terminals at the same time — no stashing, no context switching.
+      Merge across worktrees from anywhere with `daft merge`.
+    link: /worktrees/
+    linkText: Worktrees pillar
+  - title: Hooks
     details:
-      No stashing, no rebuilding, no lost IDE state. Switch branches by
-      switching directories.
-  - title: Seamless Git Integration
+      Boundaries at every code-evolution stage — the local-parallel-to-CI
+      surface. Worktree lifecycle and PR-style merge gates today; the full
+      git-hooks lifecycle is on the roadmap.
+    link: /hooks/
+    linkText: Hooks pillar
+  - title: Recipes
     details:
-      Works as native Git subcommands. Your existing Git knowledge applies -
-      just add worktree power.
-  - title: Lifecycle Hooks
-    details:
-      YAML-configured hooks automate setup for each new worktree — parallel
-      jobs, dependencies, skip conditions, and more.
-  - title: Cross-Worktree Merging
-    details:
-      Merge any branch into any worktree from wherever you are — no checkout, no
-      cd. Octopus merges, ephemeral targets, and pre/post-merge hooks built in.
+      Patterns for adopting daft alongside your existing tooling — mise, direnv,
+      asdf, monorepos, fork workflows, CI integration.
+    link: /recipes/
+    linkText: Recipes
 ---
 
 # daft - Git Extensions Toolkit
@@ -109,5 +109,4 @@ Terminal 1 (feature-a/)     Terminal 2 (feature-b/)
   minutes
 - [Shell Integration](./getting-started/shell-integration.md) - Enable auto-cd
   into worktrees
-- [Worktree Workflow Guide](./guide/worktree-workflow.md) - Understand the
-  worktree-centric approach
+- [Worktrees](./worktrees/index.md) - Understand the worktree-centric approach
