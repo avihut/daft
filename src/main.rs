@@ -133,6 +133,18 @@ fn main() -> Result<()> {
                         let _ = daft::log_clean::run_clean_logs();
                         return Ok(());
                     }
+                    #[cfg(unix)]
+                    "__coordinator" => {
+                        // Internal: spawned by `spawn_coordinator()`. argv[2]
+                        // is the path to a JSON-serialized CoordinatorPayload.
+                        let Some(state_file) = args.get(2) else {
+                            eprintln!("daft: __coordinator requires a state file path");
+                            std::process::exit(2);
+                        };
+                        let path = std::path::PathBuf::from(state_file);
+                        let _ = daft::coordinator::process::run_coordinator(&path);
+                        return Ok(());
+                    }
                     "config" => commands::config::run(),
                     "hooks" => commands::hooks::run(),
                     "layout" => commands::layout::run(),
