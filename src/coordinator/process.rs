@@ -624,13 +624,13 @@ fn handle_client_connection(
 
             let mut count = 0;
             for (name, pid) in &pids {
-                // SAFETY: Sending SIGTERM to a process group we own. The bg
-                // child was spawned with setsid(), so its PID equals its PGID
-                // and the negative-PID form reaches every descendant (e.g. a
-                // `sleep` grandchild of the wrapping `sh`).
-                unsafe {
-                    libc::kill(-(*pid as libc::pid_t), libc::SIGTERM);
-                }
+                // Bg children are process-group leaders (PID == PGID via
+                // setpgid). killpg reaches every descendant — e.g. a `sleep`
+                // grandchild of the wrapping `sh`.
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(*pid as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
                 count += 1;
                 let _ = name; // used for counting
             }
@@ -646,9 +646,10 @@ fn handle_client_connection(
             // Kill all running children (via their process groups).
             let pids: Vec<u32> = child_pids.lock().unwrap().values().copied().collect();
             for pid in pids {
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-                }
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
             }
 
             CoordinatorResponse::Ack {
@@ -707,12 +708,12 @@ fn cancel_single_job(
     let pids = child_pids.lock().unwrap();
     if let Some(&pid) = pids.get(name) {
         cancelled_jobs.lock().unwrap().insert(name.to_string());
-        // SAFETY: Sending SIGTERM to a process group we own. The bg child was
-        // spawned with setsid(), so its PID equals its PGID and the
-        // negative-PID form reaches every descendant.
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-        }
+        // The bg child is a process-group leader (PID == PGID via setpgid),
+        // so killpg reaches every descendant.
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
         CoordinatorResponse::Ack {
             message: format!("Cancelled job: {name}"),
         }

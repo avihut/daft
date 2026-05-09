@@ -60,12 +60,12 @@ impl Default for CancelFlag {
 
 #[cfg(unix)]
 fn terminate_child(child: &std::process::Child) {
-    // Safety: `kill(2)` is signal-safe. Passing a PID of an already-reaped
-    // child returns ESRCH, which we ignore — callers loop and `try_wait`
-    // independently to detect exit.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
+    // Send SIGTERM to the child. ESRCH (already-reaped) is silently ignored
+    // — callers loop on `try_wait` independently to detect exit.
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
 }
 
 #[cfg(not(unix))]

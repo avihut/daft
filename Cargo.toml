@@ -129,7 +129,7 @@ walkdir = "2.5"
 # libc is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-nix = { version = "0.31", features = ["signal"] }
+nix = { version = "0.31", features = ["signal", "term"] }
 
 [dev-dependencies]
 tempfile = "3.8"
