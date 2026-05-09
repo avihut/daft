@@ -51,12 +51,12 @@ pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<SkipInf
         }
         SkipCondition::Platform(map) => {
             let current_os = resolve_current_target_os();
-            if let Some(os) = current_os {
-                if let Some(rules) = map.get(&os) {
-                    for rule in rules {
-                        if let Some(info) = eval_skip_rule(rule, worktree) {
-                            return Some(info);
-                        }
+            if let Some(os) = current_os
+                && let Some(rules) = map.get(&os)
+            {
+                for rule in rules {
+                    if let Some(info) = eval_skip_rule(rule, worktree) {
+                        return Some(info);
                     }
                 }
             }
@@ -96,12 +96,12 @@ pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<Sk
         }
         OnlyCondition::Platform(map) => {
             let current_os = resolve_current_target_os();
-            if let Some(os) = current_os {
-                if let Some(rules) = map.get(&os) {
-                    for rule in rules {
-                        if let Some(info) = eval_only_rule(rule, worktree) {
-                            return Some(info);
-                        }
+            if let Some(os) = current_os
+                && let Some(rules) = map.get(&os)
+            {
+                for rule in rules {
+                    if let Some(info) = eval_only_rule(rule, worktree) {
+                        return Some(info);
                     }
                 }
             }
@@ -175,42 +175,41 @@ fn eval_named_condition(name: &str, worktree: &Path) -> Option<String> {
 
 /// Evaluate structured skip rule (ref, env, run).
 fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<SkipInfo> {
-    if let Some(ref pattern) = rule.ref_pattern {
-        if let Some(branch) = current_ref(worktree) {
-            if branch_matches_pattern(&branch, pattern) {
-                return Some(SkipInfo {
-                    reason: rule
-                        .desc
-                        .clone()
-                        .unwrap_or_else(|| format!("skip: ref matches '{pattern}'")),
-                    ran_command: false,
-                });
-            }
-        }
+    if let Some(ref pattern) = rule.ref_pattern
+        && let Some(branch) = current_ref(worktree)
+        && branch_matches_pattern(&branch, pattern)
+    {
+        return Some(SkipInfo {
+            reason: rule
+                .desc
+                .clone()
+                .unwrap_or_else(|| format!("skip: ref matches '{pattern}'")),
+            ran_command: false,
+        });
     }
 
-    if let Some(ref var) = rule.env {
-        if is_env_truthy(var) {
-            return Some(SkipInfo {
-                reason: rule
-                    .desc
-                    .clone()
-                    .unwrap_or_else(|| format!("skip: env ${var} is set")),
-                ran_command: false,
-            });
-        }
+    if let Some(ref var) = rule.env
+        && is_env_truthy(var)
+    {
+        return Some(SkipInfo {
+            reason: rule
+                .desc
+                .clone()
+                .unwrap_or_else(|| format!("skip: env ${var} is set")),
+            ran_command: false,
+        });
     }
 
-    if let Some(ref cmd) = rule.run {
-        if run_check_command(cmd, worktree) {
-            return Some(SkipInfo {
-                reason: rule
-                    .desc
-                    .clone()
-                    .unwrap_or_else(|| format!("skip: command succeeded: {cmd}")),
-                ran_command: true,
-            });
-        }
+    if let Some(ref cmd) = rule.run
+        && run_check_command(cmd, worktree)
+    {
+        return Some(SkipInfo {
+            reason: rule
+                .desc
+                .clone()
+                .unwrap_or_else(|| format!("skip: command succeeded: {cmd}")),
+            ran_command: true,
+        });
     }
 
     None
@@ -233,28 +232,28 @@ fn eval_structured_only(rule: &OnlyRuleStructured, worktree: &Path) -> Option<Sk
         }
     }
 
-    if let Some(ref var) = rule.env {
-        if !is_env_truthy(var) {
-            return Some(SkipInfo {
-                reason: rule
-                    .desc
-                    .clone()
-                    .unwrap_or_else(|| format!("only: env ${var} is not set")),
-                ran_command: false,
-            });
-        }
+    if let Some(ref var) = rule.env
+        && !is_env_truthy(var)
+    {
+        return Some(SkipInfo {
+            reason: rule
+                .desc
+                .clone()
+                .unwrap_or_else(|| format!("only: env ${var} is not set")),
+            ran_command: false,
+        });
     }
 
-    if let Some(ref cmd) = rule.run {
-        if !run_check_command(cmd, worktree) {
-            return Some(SkipInfo {
-                reason: rule
-                    .desc
-                    .clone()
-                    .unwrap_or_else(|| format!("only: command failed: {cmd}")),
-                ran_command: true,
-            });
-        }
+    if let Some(ref cmd) = rule.run
+        && !run_check_command(cmd, worktree)
+    {
+        return Some(SkipInfo {
+            reason: rule
+                .desc
+                .clone()
+                .unwrap_or_else(|| format!("only: command failed: {cmd}")),
+            ran_command: true,
+        });
     }
 
     None
@@ -383,15 +382,21 @@ mod tests {
 
     #[test]
     fn test_skip_env_var_set() {
-        std::env::set_var("DAFT_TEST_SKIP_VAR", "1");
+        unsafe {
+            std::env::set_var("DAFT_TEST_SKIP_VAR", "1");
+        }
         let cond = SkipCondition::EnvVar("DAFT_TEST_SKIP_VAR".to_string());
         assert!(should_skip(&cond, Path::new(".")).is_some());
-        std::env::remove_var("DAFT_TEST_SKIP_VAR");
+        unsafe {
+            std::env::remove_var("DAFT_TEST_SKIP_VAR");
+        }
     }
 
     #[test]
     fn test_skip_env_var_unset() {
-        std::env::remove_var("DAFT_TEST_SKIP_NONEXIST");
+        unsafe {
+            std::env::remove_var("DAFT_TEST_SKIP_NONEXIST");
+        }
         let cond = SkipCondition::EnvVar("DAFT_TEST_SKIP_NONEXIST".to_string());
         assert!(should_skip(&cond, Path::new(".")).is_none());
     }
@@ -445,19 +450,29 @@ mod tests {
 
     #[test]
     fn test_is_env_truthy() {
-        std::env::set_var("DAFT_TRUTHY_TEST", "1");
+        unsafe {
+            std::env::set_var("DAFT_TRUTHY_TEST", "1");
+        }
         assert!(is_env_truthy("DAFT_TRUTHY_TEST"));
 
-        std::env::set_var("DAFT_TRUTHY_TEST", "0");
+        unsafe {
+            std::env::set_var("DAFT_TRUTHY_TEST", "0");
+        }
         assert!(!is_env_truthy("DAFT_TRUTHY_TEST"));
 
-        std::env::set_var("DAFT_TRUTHY_TEST", "false");
+        unsafe {
+            std::env::set_var("DAFT_TRUTHY_TEST", "false");
+        }
         assert!(!is_env_truthy("DAFT_TRUTHY_TEST"));
 
-        std::env::set_var("DAFT_TRUTHY_TEST", "");
+        unsafe {
+            std::env::set_var("DAFT_TRUTHY_TEST", "");
+        }
         assert!(!is_env_truthy("DAFT_TRUTHY_TEST"));
 
-        std::env::remove_var("DAFT_TRUTHY_TEST");
+        unsafe {
+            std::env::remove_var("DAFT_TRUTHY_TEST");
+        }
         assert!(!is_env_truthy("DAFT_TRUTHY_TEST"));
     }
 

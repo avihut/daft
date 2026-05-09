@@ -1,7 +1,10 @@
-/// daft - Git Extensions Toolkit
-///
-/// A multicall binary that provides Git extensions through symlinks.
-/// Detects how it was invoked (via argv[0]) and routes to the appropriate command.
+//! daft - Git Extensions Toolkit
+//!
+//! A multicall binary that provides Git extensions through symlinks.
+//! Detects how it was invoked (via argv[0]) and routes to the appropriate command.
+
+#![forbid(unsafe_code)]
+
 use anyhow::Result;
 use daft::commands;
 use daft::shortcuts;
@@ -55,13 +58,13 @@ fn main() -> Result<()> {
 
     // Warn if config directory is overridden (security measure against trust DB hijacking).
     // Only in dev builds — release builds ignore DAFT_CONFIG_DIR entirely.
-    if cfg!(daft_dev_build) {
-        if let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV) {
-            if !dir.is_empty() && !skip_background {
-                eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
-                eprintln!("  -> {dir}");
-            }
-        }
+    if cfg!(daft_dev_build)
+        && let Ok(dir) = std::env::var(daft::CONFIG_DIR_ENV)
+        && !dir.is_empty()
+        && !skip_background
+    {
+        eprintln!("warning: config directory overridden via DAFT_CONFIG_DIR");
+        eprintln!("  -> {dir}");
     }
 
     // Check for updates (reads cache, spawns background check if stale)
@@ -131,6 +134,26 @@ fn main() -> Result<()> {
                     }
                     "__clean-logs" => {
                         let _ = daft::log_clean::run_clean_logs();
+                        return Ok(());
+                    }
+                    #[cfg(unix)]
+                    "__coordinator" => {
+                        // Internal: spawned by `spawn_coordinator()`. argv[2]
+                        // is the path to a JSON-serialized CoordinatorPayload.
+                        let Some(state_file) = args.get(2) else {
+                            eprintln!("daft: __coordinator requires a state file path");
+                            std::process::exit(2);
+                        };
+                        let path = std::path::PathBuf::from(state_file);
+                        // Surface startup errors with a non-zero exit code.
+                        // The parent's spawn redirects stderr to /dev/null,
+                        // so the eprintln only matters for direct debugging
+                        // (`daft __coordinator <path>`); the exit code is
+                        // observable to anyone wrapping this command.
+                        if let Err(e) = daft::coordinator::process::run_coordinator(&path) {
+                            eprintln!("daft coordinator: startup failed: {e:#}");
+                            std::process::exit(1);
+                        }
                         return Ok(());
                     }
                     "config" => commands::config::run(),

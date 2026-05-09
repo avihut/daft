@@ -1,10 +1,10 @@
 use crate::{
-    core::{worktree::flow_adopt, CommandBridge},
+    core::{CommandBridge, worktree::flow_adopt},
     executor::cli_presenter::CliPresenter,
     get_git_common_dir,
     git::should_show_gitoxide_notice,
     hooks::{
-        get_remote_url_for_git_dir, HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel,
+        HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel, get_remote_url_for_git_dir,
     },
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -231,12 +231,11 @@ fn run_post_adopt_hook(
     let presenter = CliPresenter::auto(&HookOutputConfig::default());
     let hook_result = executor.execute(&ctx, output, presenter)?;
 
-    if hook_result.skipped {
-        if let Some(reason) = &hook_result.skip_reason {
-            if reason == "Repository not trusted" {
-                executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
-            }
-        }
+    if hook_result.skipped
+        && let Some(reason) = &hook_result.skip_reason
+        && reason == "Repository not trusted"
+    {
+        executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
     }
 
     Ok(())

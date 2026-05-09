@@ -13,8 +13,8 @@ use crate::{
         sort::SortSpec,
         worktree::{list::WorktreeInfo, sync_dag::DagEvent},
     },
-    output::tui::state::HookSummaryEntry,
     output::tui::WorktreeRow,
+    output::tui::state::HookSummaryEntry,
 };
 use std::{path::PathBuf, sync::mpsc};
 

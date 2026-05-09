@@ -11,7 +11,7 @@
 
 use super::JobInfo;
 #[cfg(unix)]
-use super::{coordinator_socket_path, CoordinatorRequest, CoordinatorResponse};
+use super::{CoordinatorRequest, CoordinatorResponse, coordinator_socket_path};
 #[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;

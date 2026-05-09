@@ -65,13 +65,13 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
     let mut result = ValidationResult::default();
 
     // Check min_version
-    if let Some(ref min_ver) = config.min_version {
-        if !version_satisfies(VERSION, min_ver) {
-            result.error(
-                "min_version",
-                format!("Config requires daft >= {min_ver}, but current version is {VERSION}"),
-            );
-        }
+    if let Some(ref min_ver) = config.min_version
+        && !version_satisfies(VERSION, min_ver)
+    {
+        result.error(
+            "min_version",
+            format!("Config requires daft >= {min_ver}, but current version is {VERSION}"),
+        );
     }
 
     // Validate each hook definition
@@ -312,7 +312,7 @@ fn validate_job_dependencies(path: &str, jobs: &[JobDef], result: &mut Validatio
     // Build adjacency list: job name -> list of names it depends on
     let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
     for job in jobs {
-        if let (Some(ref name), Some(ref needs)) = (&job.name, &job.needs) {
+        if let (Some(name), Some(needs)) = (&job.name, &job.needs) {
             deps.insert(name.as_str(), needs.iter().map(|s| s.as_str()).collect());
         }
     }
@@ -382,10 +382,10 @@ fn check_dependency_cycles(deps: &std::collections::HashMap<&str, Vec<&str>>) ->
     let nodes: HashSet<&str> = colors.keys().copied().collect();
     let mut path = Vec::new();
     for node in &nodes {
-        if colors.get(node) == Some(&Color::White) {
-            if let Some(cycle) = dfs(node, deps, &mut colors, &mut path) {
-                return Some(cycle);
-            }
+        if colors.get(node) == Some(&Color::White)
+            && let Some(cycle) = dfs(node, deps, &mut colors, &mut path)
+        {
+            return Some(cycle);
         }
     }
 
@@ -824,10 +824,12 @@ hooks:
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let result = validate_config(&config).unwrap();
         assert!(!result.warnings.is_empty());
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("promoted to foreground")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("promoted to foreground"))
+        );
     }
 
     #[test]
@@ -844,10 +846,12 @@ hooks:
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let result = validate_config(&config).unwrap();
         assert!(!result.warnings.is_empty());
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("interactive") && w.message.contains("background")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("interactive") && w.message.contains("background"))
+        );
     }
 
     #[test]
@@ -882,10 +886,11 @@ hooks:
 "#;
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let result = validate_config(&config).unwrap();
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("background_output") && w.message.contains("foreground")));
+        assert!(
+            result.warnings.iter().any(
+                |w| w.message.contains("background_output") && w.message.contains("foreground")
+            )
+        );
     }
 
     #[test]

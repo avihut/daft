@@ -4,7 +4,7 @@
 //! and configuration sources (daft.yml and shell hooks).
 
 use crate::doctor::{CheckResult, FixAction};
-use crate::hooks::{HookType, TrustDatabase, TrustLevel, PROJECT_HOOKS_DIR};
+use crate::hooks::{HookType, PROJECT_HOOKS_DIR, TrustDatabase, TrustLevel};
 use std::path::{Path, PathBuf};
 
 /// Find the hooks directory by scanning worktrees under the project root.
@@ -115,10 +115,10 @@ pub fn check_hooks_executable(project_root: &Path) -> CheckResult {
     let mut non_executable = Vec::new();
 
     for file in &files {
-        if !is_executable(file) {
-            if let Some(name) = file.file_name() {
-                non_executable.push(name.to_string_lossy().to_string());
-            }
+        if !is_executable(file)
+            && let Some(name) = file.file_name()
+        {
+            non_executable.push(name.to_string_lossy().to_string());
         }
     }
 
@@ -173,14 +173,12 @@ pub fn check_deprecated_names(project_root: &Path) -> CheckResult {
     let mut deprecated = Vec::new();
 
     for file in &files {
-        if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
-            if let Some(hook_type) = HookType::from_filename(name) {
-                if let Some(old_name) = hook_type.deprecated_filename() {
-                    if name == old_name {
-                        deprecated.push((old_name, hook_type.filename()));
-                    }
-                }
-            }
+        if let Some(name) = file.file_name().and_then(|n| n.to_str())
+            && let Some(hook_type) = HookType::from_filename(name)
+            && let Some(old_name) = hook_type.deprecated_filename()
+            && name == old_name
+        {
+            deprecated.push((old_name, hook_type.filename()));
         }
     }
 
@@ -213,17 +211,15 @@ pub fn fix_deprecated_names(project_root: &Path) -> Result<(), String> {
 
     let files = list_hook_files(&hooks_dir);
     for file in &files {
-        if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
-            if let Some(hook_type) = HookType::from_filename(name) {
-                if let Some(old_name) = hook_type.deprecated_filename() {
-                    if name == old_name {
-                        let new_path = hooks_dir.join(hook_type.filename());
-                        if !new_path.exists() {
-                            std::fs::rename(file, &new_path)
-                                .map_err(|e| format!("Failed to rename {old_name}: {e}"))?;
-                        }
-                    }
-                }
+        if let Some(name) = file.file_name().and_then(|n| n.to_str())
+            && let Some(hook_type) = HookType::from_filename(name)
+            && let Some(old_name) = hook_type.deprecated_filename()
+            && name == old_name
+        {
+            let new_path = hooks_dir.join(hook_type.filename());
+            if !new_path.exists() {
+                std::fs::rename(file, &new_path)
+                    .map_err(|e| format!("Failed to rename {old_name}: {e}"))?;
             }
         }
     }
@@ -264,25 +260,23 @@ pub fn dry_run_deprecated_names(project_root: &Path) -> Vec<FixAction> {
     let mut actions = Vec::new();
 
     for file in &files {
-        if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
-            if let Some(hook_type) = HookType::from_filename(name) {
-                if let Some(old_name) = hook_type.deprecated_filename() {
-                    if name == old_name {
-                        let new_name = hook_type.filename();
-                        let new_path = hooks_dir.join(new_name);
-                        let would_succeed = !new_path.exists();
-                        actions.push(FixAction {
-                            description: format!("Rename {old_name} -> {new_name}"),
-                            would_succeed,
-                            failure_reason: if would_succeed {
-                                None
-                            } else {
-                                Some(format!("{new_name} already exists"))
-                            },
-                        });
-                    }
-                }
-            }
+        if let Some(name) = file.file_name().and_then(|n| n.to_str())
+            && let Some(hook_type) = HookType::from_filename(name)
+            && let Some(old_name) = hook_type.deprecated_filename()
+            && name == old_name
+        {
+            let new_name = hook_type.filename();
+            let new_path = hooks_dir.join(new_name);
+            let would_succeed = !new_path.exists();
+            actions.push(FixAction {
+                description: format!("Rename {old_name} -> {new_name}"),
+                would_succeed,
+                failure_reason: if would_succeed {
+                    None
+                } else {
+                    Some(format!("{new_name} already exists"))
+                },
+            });
         }
     }
 
@@ -517,10 +511,12 @@ mod tests {
         let actions = dry_run_deprecated_names(temp.path());
         assert_eq!(actions.len(), 1);
         assert!(!actions[0].would_succeed);
-        assert!(actions[0]
-            .failure_reason
-            .as_ref()
-            .unwrap()
-            .contains("already exists"));
+        assert!(
+            actions[0]
+                .failure_reason
+                .as_ref()
+                .unwrap()
+                .contains("already exists")
+        );
     }
 }

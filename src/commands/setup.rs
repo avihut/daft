@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use std::env;
 use std::fs;
@@ -168,11 +168,11 @@ pub fn run() -> Result<()> {
     }
 
     // Ensure parent directory exists (for fish)
-    if let Some(parent) = config_file.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-        }
+    if let Some(parent) = config_file.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
 
     // Append the init line

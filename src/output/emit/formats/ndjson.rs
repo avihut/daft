@@ -79,9 +79,11 @@ mod tests {
         let out = render(&fixture_matrix());
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 4, "2 paths × 2 worktrees = 4 cells");
-        assert!(lines
-            .iter()
-            .any(|l| l.contains(r#""path":"shared/foo.txt""#)));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(r#""path":"shared/foo.txt""#))
+        );
         assert!(lines.iter().any(|l| l.contains(r#""state":"missing""#)));
     }
 }

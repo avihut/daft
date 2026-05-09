@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use super::plan::{TransformOp, TransformPlan};
 use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
-use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::move_hooks::{MoveHookParams, run_setup_hooks, run_teardown_hooks};
 use crate::hooks::tracking::TrackedAttribute;
 
 // ── Execution context ────────────────────────────────────────────────────
@@ -500,36 +500,30 @@ fn exec_validate_integrity(progress: &mut dyn ProgressSink) -> Result<()> {
                     is_bare = true;
                 } else if line.is_empty() {
                     // Check non-bare worktrees for dirty state
-                    if let Some(ref path) = current_path {
-                        if !is_bare {
-                            if let Ok(status) = Command::new("git")
-                                .args(["status", "--porcelain"])
-                                .current_dir(path)
-                                .output()
-                            {
-                                if status.status.success() {
-                                    let out = String::from_utf8_lossy(&status.stdout);
-                                    // Filter out layout artifacts (.gitignore,
-                                    // .worktrees/) that are cleaned up after the
-                                    // transform completes.
-                                    let real_changes = out
-                                        .lines()
-                                        .filter(|l| !l.is_empty())
-                                        .filter(|l| {
-                                            let path_part = if l.len() > 3 { &l[3..] } else { l };
-                                            !path_part.starts_with(".gitignore")
-                                                && !path_part.starts_with(".worktrees/")
-                                                && !path_part.starts_with(".worktrees")
-                                        })
-                                        .count();
-                                    if real_changes > 0 {
-                                        errors.push(format!(
-                                            "Worktree at {} has unexpected dirty state",
-                                            path
-                                        ));
-                                    }
-                                }
-                            }
+                    if let Some(ref path) = current_path
+                        && !is_bare
+                        && let Ok(status) = Command::new("git")
+                            .args(["status", "--porcelain"])
+                            .current_dir(path)
+                            .output()
+                        && status.status.success()
+                    {
+                        let out = String::from_utf8_lossy(&status.stdout);
+                        // Filter out layout artifacts (.gitignore,
+                        // .worktrees/) that are cleaned up after the
+                        // transform completes.
+                        let real_changes = out
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .filter(|l| {
+                                let path_part = if l.len() > 3 { &l[3..] } else { l };
+                                !path_part.starts_with(".gitignore")
+                                    && !path_part.starts_with(".worktrees/")
+                                    && !path_part.starts_with(".worktrees")
+                            })
+                            .count();
+                        if real_changes > 0 {
+                            errors.push(format!("Worktree at {} has unexpected dirty state", path));
                         }
                     }
                     current_path = None;

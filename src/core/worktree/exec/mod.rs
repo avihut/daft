@@ -60,12 +60,12 @@ impl Default for CancelFlag {
 
 #[cfg(unix)]
 fn terminate_child(child: &std::process::Child) {
-    // Safety: `kill(2)` is signal-safe. Passing a PID of an already-reaped
-    // child returns ESRCH, which we ignore — callers loop and `try_wait`
-    // independently to detect exit.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
+    // Send SIGTERM to the child. ESRCH (already-reaped) is silently ignored
+    // — callers loop on `try_wait` independently to detect exit.
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
 }
 
 #[cfg(not(unix))]
@@ -297,17 +297,17 @@ pub fn resolve_targets(
 
         // 1. Exact branch match.
         for wt in worktrees {
-            if let Some(branch) = &wt.branch {
-                if branch == tok {
-                    matched = true;
-                    if seen_paths.insert(wt.path.clone()) {
-                        out.push(ResolvedTarget {
-                            worktree_path: wt.path.clone(),
-                            branch_name: branch.clone(),
-                        });
-                    }
-                    break;
+            if let Some(branch) = &wt.branch
+                && branch == tok
+            {
+                matched = true;
+                if seen_paths.insert(wt.path.clone()) {
+                    out.push(ResolvedTarget {
+                        worktree_path: wt.path.clone(),
+                        branch_name: branch.clone(),
+                    });
                 }
+                break;
             }
         }
         if matched {
@@ -317,17 +317,17 @@ pub fn resolve_targets(
         // 2. Exact directory-name match.
         for wt in worktrees {
             let dir_name = wt.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if dir_name == tok {
-                if let Some(branch) = &wt.branch {
-                    matched = true;
-                    if seen_paths.insert(wt.path.clone()) {
-                        out.push(ResolvedTarget {
-                            worktree_path: wt.path.clone(),
-                            branch_name: branch.clone(),
-                        });
-                    }
-                    break;
+            if dir_name == tok
+                && let Some(branch) = &wt.branch
+            {
+                matched = true;
+                if seen_paths.insert(wt.path.clone()) {
+                    out.push(ResolvedTarget {
+                        worktree_path: wt.path.clone(),
+                        branch_name: branch.clone(),
+                    });
                 }
+                break;
             }
         }
 

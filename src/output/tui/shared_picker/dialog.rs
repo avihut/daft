@@ -3,11 +3,11 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame, Terminal,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame, Terminal,
 };
 use std::io;
 use std::time::Duration;

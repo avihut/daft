@@ -13,11 +13,11 @@ use edtui::{
     EditorEventHandler, EditorState, EditorTheme, EditorView, LineNumbers, Lines, SyntaxHighlighter,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Widget,
-    Frame,
 };
 
 use crate::core::shared::{self, WorktreeStatus};

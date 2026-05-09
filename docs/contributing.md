@@ -197,5 +197,9 @@ daft-15/branch-search
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the
-MIT License.
+daft is dual-licensed under MIT (LICENSE-MIT) and Apache-2.0 (LICENSE-APACHE) to
+match Rust-ecosystem norms (Apache-2.0 carries an explicit patent grant).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the project by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.

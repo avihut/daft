@@ -219,7 +219,7 @@ export default defineConfig({
     ],
     footer: {
       message:
-        'Released under the <a href="https://github.com/avihut/daft/blob/master/LICENSE">MIT License</a>.',
+        'Released under <a href="https://github.com/avihut/daft/blob/master/LICENSE-MIT">MIT</a> or <a href="https://github.com/avihut/daft/blob/master/LICENSE-APACHE">Apache-2.0</a>.',
       copyright: "Copyright © 2025-present Avihu Turzion",
     },
     sidebar: [

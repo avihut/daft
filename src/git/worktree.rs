@@ -133,10 +133,10 @@ impl GitCommand {
             if let Some(worktree_path) = line.strip_prefix("worktree ") {
                 current_path = Some(std::path::PathBuf::from(worktree_path));
             } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-                if let Some(branch) = branch_ref.strip_prefix("refs/heads/") {
-                    if branch == branch_name {
-                        return Ok(current_path.take());
-                    }
+                if let Some(branch) = branch_ref.strip_prefix("refs/heads/")
+                    && branch == branch_name
+                {
+                    return Ok(current_path.take());
                 }
                 current_path = None;
             } else if line.is_empty() {
@@ -194,19 +194,19 @@ impl GitCommand {
 
         // Second, check if target matches a branch name
         for (path, branch) in &worktrees {
-            if let Some(branch_name) = branch {
-                if branch_name == target {
-                    return Ok(path.clone());
-                }
+            if let Some(branch_name) = branch
+                && branch_name == target
+            {
+                return Ok(path.clone());
             }
         }
 
         // Third, check if target matches a worktree directory name (convenience shorthand)
         for (path, _) in &worktrees {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == target {
-                    return Ok(path.clone());
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name == target
+            {
+                return Ok(path.clone());
             }
         }
 

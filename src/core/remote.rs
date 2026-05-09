@@ -92,10 +92,10 @@ pub fn get_default_branch_local(
 
         if let Some(ref_path) = content.strip_prefix("ref: ") {
             let prefix = format!("refs/remotes/{remote_name}/");
-            if let Some(branch) = ref_path.strip_prefix(&prefix) {
-                if !branch.is_empty() {
-                    return Ok(branch.to_string());
-                }
+            if let Some(branch) = ref_path.strip_prefix(&prefix)
+                && !branch.is_empty()
+            {
+                return Ok(branch.to_string());
             }
         }
     }

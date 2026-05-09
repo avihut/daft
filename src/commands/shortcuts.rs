@@ -3,13 +3,13 @@
 //! This module provides the `daft setup shortcuts` command for managing
 //! command shortcut symlinks.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::output::{CliOutput, Output, OutputConfig};
-use crate::shortcuts::{shortcuts_for_style, ShortcutStyle, SHORTCUTS};
+use crate::shortcuts::{SHORTCUTS, ShortcutStyle, shortcuts_for_style};
 
 #[derive(Parser)]
 #[command(name = "shortcuts")]

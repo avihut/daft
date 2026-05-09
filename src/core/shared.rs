@@ -140,10 +140,10 @@ pub fn list_worktree_paths() -> Result<Vec<PathBuf>> {
     for line in porcelain.lines() {
         if let Some(path_str) = line.strip_prefix("worktree ") {
             // Flush previous entry if it wasn't bare
-            if let Some(prev) = current_path.take() {
-                if !is_bare {
-                    paths.push(PathBuf::from(prev));
-                }
+            if let Some(prev) = current_path.take()
+                && !is_bare
+            {
+                paths.push(PathBuf::from(prev));
             }
             current_path = Some(path_str.to_string());
             is_bare = false;
@@ -153,10 +153,10 @@ pub fn list_worktree_paths() -> Result<Vec<PathBuf>> {
     }
 
     // Flush last entry
-    if let Some(prev) = current_path {
-        if !is_bare {
-            paths.push(PathBuf::from(prev));
-        }
+    if let Some(prev) = current_path
+        && !is_bare
+    {
+        paths.push(PathBuf::from(prev));
     }
 
     Ok(paths)
@@ -233,12 +233,12 @@ pub fn create_shared_symlink(
     }
 
     // Create intermediate directories if needed (e.g., `.vscode/` for `.vscode/settings.json`)
-    if let Some(parent) = link_path.parent() {
-        if parent != worktree_path && !parent.exists() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create parent directory {}", parent.display())
-            })?;
-        }
+    if let Some(parent) = link_path.parent()
+        && parent != worktree_path
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
     }
 
     // Create relative symlink
@@ -286,12 +286,12 @@ pub fn resolve_config_root(worktree_root: &Path) -> PathBuf {
     if find_daft_yml(worktree_root).is_some() {
         return worktree_root.to_path_buf();
     }
-    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
-        if let Some(project_root) = git_common_dir.parent() {
-            // In contained layout, project_root is the container dir
-            // In sibling layout, project_root is the common parent
-            return project_root.to_path_buf();
-        }
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir()
+        && let Some(project_root) = git_common_dir.parent()
+    {
+        // In contained layout, project_root is the container dir
+        // In sibling layout, project_root is the common parent
+        return project_root.to_path_buf();
     }
     worktree_root.to_path_buf()
 }
@@ -367,16 +367,16 @@ pub fn remove_from_daft_yml(root: &Path, paths: &[&str]) -> Result<()> {
     };
 
     let shared_key = serde_yaml::Value::String("shared".to_string());
-    if let Some(shared_val) = mapping.get_mut(&shared_key) {
-        if let Some(seq) = shared_val.as_sequence_mut() {
-            for path in paths {
-                let val = serde_yaml::Value::String(path.to_string());
-                seq.retain(|v| v != &val);
-            }
-            // Remove the key entirely if the list is now empty
-            if seq.is_empty() {
-                mapping.remove(&shared_key);
-            }
+    if let Some(shared_val) = mapping.get_mut(&shared_key)
+        && let Some(seq) = shared_val.as_sequence_mut()
+    {
+        for path in paths {
+            let val = serde_yaml::Value::String(path.to_string());
+            seq.retain(|v| v != &val);
+        }
+        // Remove the key entirely if the list is now empty
+        if seq.is_empty() {
+            mapping.remove(&shared_key);
         }
     }
 
@@ -428,12 +428,11 @@ fn load_yaml_config_with_fallback(
     }
 
     // Fall back to project root (contained layout: daft.yml at repo container level)
-    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir() {
-        if let Some(project_root) = git_common_dir.parent() {
-            if project_root != worktree_root {
-                return load_yaml_config(project_root);
-            }
-        }
+    if let Ok(git_common_dir) = crate::core::repo::get_git_common_dir()
+        && let Some(project_root) = git_common_dir.parent()
+        && project_root != worktree_root
+    {
+        return load_yaml_config(project_root);
     }
 
     Ok(None)
@@ -816,10 +815,11 @@ pub fn execute_collect(
                 materialized.add(rel_path, wt);
             } else {
                 // Copy shared file into this worktree as a materialized copy
-                if let Some(parent) = file_path.parent() {
-                    if parent != wt.as_path() && !parent.exists() {
-                        fs::create_dir_all(parent)?;
-                    }
+                if let Some(parent) = file_path.parent()
+                    && parent != wt.as_path()
+                    && !parent.exists()
+                {
+                    fs::create_dir_all(parent)?;
                 }
                 if shared_target.is_dir() {
                     copy_dir_all(&shared_target, &file_path)?;

@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::core::{HookRunner, ProgressSink};
+use crate::hooks::HookType;
 use crate::hooks::environment::HookContext;
 use crate::hooks::tracking::TrackedAttribute;
-use crate::hooks::HookType;
 
 /// Parameters describing a worktree move for hook purposes.
 pub struct MoveHookParams {

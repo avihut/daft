@@ -65,7 +65,7 @@ pub struct LogConfig {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Format-agnostic definition of a job to execute.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct JobSpec {
     /// Unique name identifying this job within a phase.
     pub name: String,
@@ -83,7 +83,10 @@ pub struct JobSpec {
     pub interactive: bool,
     /// Text to display on failure (e.g., a hint for the user).
     pub fail_text: Option<String>,
-    /// Maximum time the job is allowed to run.
+    /// Maximum time the job is allowed to run, in seconds. Custom adapter
+    /// because `Duration` has no built-in serde and we don't want to pull
+    /// in `humantime_serde` solely for the coordinator-payload tempfile.
+    #[serde(with = "duration_secs")]
     pub timeout: Duration,
     /// Whether this job should run in the background.
     pub background: bool,
@@ -91,6 +94,19 @@ pub struct JobSpec {
     pub background_output: Option<BackgroundOutput>,
     /// Log configuration for this job.
     pub log_config: Option<LogConfig>,
+}
+
+/// `Duration <-> u64 seconds` serde adapter for `JobSpec.timeout`.
+mod duration_secs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        d.as_secs().serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        Ok(Duration::from_secs(u64::deserialize(d)?))
+    }
 }
 
 impl JobSpec {

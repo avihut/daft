@@ -1,7 +1,8 @@
 use crate::{
+    CD_FILE_ENV,
     core::{
-        worktree::{branch_delete, rename},
         CommandBridge,
+        worktree::{branch_delete, rename},
     },
     git::should_show_gitoxide_notice,
     hooks::HookExecutor,
@@ -9,7 +10,6 @@ use crate::{
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
-    CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -607,10 +607,10 @@ fn run_rename_inner(
     }
 
     // Handle cd_target via DAFT_CD_FILE
-    if let Some(ref cd_target) = result.cd_target {
-        if let Ok(cd_file) = std::env::var(CD_FILE_ENV) {
-            std::fs::write(&cd_file, cd_target.to_string_lossy().as_bytes()).ok();
-        }
+    if let Some(ref cd_target) = result.cd_target
+        && let Ok(cd_file) = std::env::var(CD_FILE_ENV)
+    {
+        std::fs::write(&cd_file, cd_target.to_string_lossy().as_bytes()).ok();
     }
 
     Ok(())

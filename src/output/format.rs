@@ -12,25 +12,25 @@ use std::path::Path;
 pub fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_color: bool) -> String {
     let mut parts = Vec::new();
 
-    if let Some(a) = ahead {
-        if a > 0 {
-            let text = format!("+{a}");
-            if use_color {
-                parts.push(styles::green(&text));
-            } else {
-                parts.push(text);
-            }
+    if let Some(a) = ahead
+        && a > 0
+    {
+        let text = format!("+{a}");
+        if use_color {
+            parts.push(styles::green(&text));
+        } else {
+            parts.push(text);
         }
     }
 
-    if let Some(b) = behind {
-        if b > 0 {
-            let text = format!("-{b}");
-            if use_color {
-                parts.push(styles::red(&text));
-            } else {
-                parts.push(text);
-            }
+    if let Some(b) = behind
+        && b > 0
+    {
+        let text = format!("-{b}");
+        if use_color {
+            parts.push(styles::red(&text));
+        } else {
+            parts.push(text);
         }
     }
 
@@ -84,25 +84,25 @@ pub fn format_remote_status(
 ) -> String {
     let mut parts = Vec::new();
 
-    if let Some(a) = ahead {
-        if a > 0 {
-            let text = format!("\u{21E1}{a}");
-            if use_color {
-                parts.push(styles::green(&text));
-            } else {
-                parts.push(text);
-            }
+    if let Some(a) = ahead
+        && a > 0
+    {
+        let text = format!("\u{21E1}{a}");
+        if use_color {
+            parts.push(styles::green(&text));
+        } else {
+            parts.push(text);
         }
     }
 
-    if let Some(b) = behind {
-        if b > 0 {
-            let text = format!("\u{21E3}{b}");
-            if use_color {
-                parts.push(styles::red(&text));
-            } else {
-                parts.push(text);
-            }
+    if let Some(b) = behind
+        && b > 0
+    {
+        let text = format!("\u{21E3}{b}");
+        if use_color {
+            parts.push(styles::red(&text));
+        } else {
+            parts.push(text);
         }
     }
 

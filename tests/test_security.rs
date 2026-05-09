@@ -15,23 +15,18 @@ fn test_malicious_repository_urls() {
         "https://github.com/user/../../../etc/passwd.git",
         "git@github.com:user/../../../etc/passwd.git",
         "https://github.com/user/repo/../../../etc/passwd.git",
-
         // Null byte injection
         "https://github.com/user/repo\0.git",
         "git@github.com:user/repo\0.git",
-
         // Command injection attempts in repository names
         "https://github.com/user/repo;rm -rf /.git",
         "https://github.com/user/repo&&whoami.git",
         "https://github.com/user/repo|cat /etc/passwd.git",
-
         // Unicode normalization attacks
         "https://github.com/user/rep\u{200B}o.git", // Zero-width space
         "https://github.com/user/rep\u{FEFF}o.git", // Byte order mark
-
         // Extremely long names that could cause buffer overflows
         "https://github.com/user/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.git",
-
         // Invalid characters that should be rejected
         "https://github.com/user/repo with spaces.git",
         "https://github.com/user/repo:with:colons.git",
@@ -106,33 +101,27 @@ fn test_malicious_branch_names() {
         "../../../etc/passwd",
         "../../.ssh/id_rsa",
         "../.git/config",
-
         // Command injection
         "branch; rm -rf /",
         "branch && cat /etc/passwd",
         "branch | whoami",
         "branch $(whoami)",
         "branch `ls -la`",
-
         // Git reference vulnerabilities
         ".git/hooks/pre-commit",
         "refs/../config",
         "HEAD~1",
-
         // Null bytes and control characters
         "branch\0",
         "branch\x00",
         "branch\x01\x02\x03",
         "branch\n\r",
-
         // Unicode attacks
         "branch\u{200B}", // Zero-width space
         "branch\u{FEFF}", // BOM
         "branch\u{2028}", // Line separator
-
         // Extremely long names
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // Very long but not dynamic
-
         // Hidden/system files
         ".hidden",
         "..hidden",
@@ -162,41 +151,34 @@ fn test_malicious_repo_names() {
         "../../../etc",
         "../../passwd",
         "../.ssh",
-
         // Absolute paths
         "/etc/passwd",
         "/home/user/.ssh/id_rsa",
         "C:\\Windows\\System32",
-
         // Command injection
         "repo; rm -rf /",
         "repo && whoami",
         "repo | cat /etc/passwd",
-
         // Special directories
         ".",
         "..",
         "...",
         ".git",
         ".ssh",
-
         // Control characters
         "repo\0name",
         "repo\nname",
         "repo\rname",
         "repo\tname",
-
         // Path separators
         "repo/name",
         "repo\\name",
         "repo:name",
-
         // Empty or whitespace
         "",
         " ",
         "\t",
         "\n",
-
         // Very long names
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     ];
@@ -307,22 +289,18 @@ fn test_input_sanitization_edge_cases() {
         "valid-name/../invalid",
         "good_start; rm -rf /",
         "normal-repo\0hidden",
-
         // Borderline length inputs
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", // Very long (255 chars)
         "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy", // Just over (256 chars)
-
         // Unicode edge cases
-        "café", // Accented characters
-        "项目", // Non-Latin scripts
+        "café",      // Accented characters
+        "项目",      // Non-Latin scripts
         "🚀project", // Emoji
-
         // Whitespace variations
         " leading-space",
         "trailing-space ",
         "  double-space  ",
         "\tpwn\t",
-
         // Case variations of dangerous patterns
         "BRANCH; RM -RF /",
         "Branch && WhoAmI",

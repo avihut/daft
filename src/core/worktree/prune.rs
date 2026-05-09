@@ -397,10 +397,10 @@ pub fn identify_gone_branches(
                 Some(&"*") | Some(&"+") => parts.get(1).copied(),
                 _ => parts.first().copied(),
             };
-            if let Some(name) = branch_name {
-                if !name.is_empty() {
-                    gone_branches.push(name.to_string());
-                }
+            if let Some(name) = branch_name
+                && !name.is_empty()
+            {
+                gone_branches.push(name.to_string());
             }
         }
     }
@@ -990,8 +990,8 @@ fn cleanup_empty_parent_dirs(
 mod tests {
     #[test]
     fn cancel_helper_matches_on_branch_slug_not_filesystem_path() {
-        use crate::coordinator::log_store::JobStatus;
         use crate::coordinator::JobInfo;
+        use crate::coordinator::log_store::JobStatus;
         let job = JobInfo {
             name: "warm-build".into(),
             hook_type: "worktree-post-create".into(),

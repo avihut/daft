@@ -893,11 +893,7 @@ pub fn resolve_worktree_git_dir(worktree: &Path) -> Result<PathBuf> {
         let p = PathBuf::from(rel);
         // Path::join replaces when its argument is absolute, so this is
         // correct whether the pointer is absolute or relative.
-        if p.is_absolute() {
-            p
-        } else {
-            worktree.join(p)
-        }
+        if p.is_absolute() { p } else { worktree.join(p) }
     } else {
         git_entry
     };
@@ -1702,11 +1698,7 @@ fn read_head_sha(worktree: &Path) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Count the number of parents of the current HEAD in the given worktree.
@@ -2194,7 +2186,7 @@ pub fn promote_ephemeral_to_layout(
     project_root: &Path,
 ) -> Result<PathBuf> {
     use crate::core::global_config::GlobalConfig;
-    use crate::core::layout::resolver::{resolve_layout, LayoutResolutionContext};
+    use crate::core::layout::resolver::{LayoutResolutionContext, resolve_layout};
     use crate::core::multi_remote::path::build_template_context;
     use crate::hooks::TrustDatabase;
 
@@ -2500,10 +2492,10 @@ pub fn execute_finish(
     } else {
         git.get_current_worktree_path().ok()
     };
-    if let Some(ref p) = rebase_path {
-        if let Some(InProgressState::Rebase) = detect_in_progress_state(p) {
-            return execute_finish_rebase(params.mode, p);
-        }
+    if let Some(ref p) = rebase_path
+        && let Some(InProgressState::Rebase) = detect_in_progress_state(p)
+    {
+        return execute_finish_rebase(params.mode, p);
     }
 
     let resolved = resolve_target(params.worktree.as_deref(), git, project_root)?;
@@ -5030,9 +5022,15 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         // Stub editor: exits 0 without modifying the file. Git pre-populates
         // COMMIT_EDITMSG so the commit proceeds with the auto-generated message.
-        std::env::set_var("GIT_EDITOR", "/usr/bin/true");
-        std::env::set_var("VISUAL", "/usr/bin/true");
-        std::env::set_var("EDITOR", "/usr/bin/true");
+        unsafe {
+            std::env::set_var("GIT_EDITOR", "/usr/bin/true");
+        }
+        unsafe {
+            std::env::set_var("VISUAL", "/usr/bin/true");
+        }
+        unsafe {
+            std::env::set_var("EDITOR", "/usr/bin/true");
+        }
 
         let git = GitCommand::new(false);
         let mut runner = PauseTrackingRunner::default();
@@ -5103,9 +5101,15 @@ mod tests {
 
         // Stub editor: exits 0 without modifying the file. Git uses SQUASH_MSG
         // as the commit-message template so the commit proceeds successfully.
-        std::env::set_var("GIT_EDITOR", "/usr/bin/true");
-        std::env::set_var("VISUAL", "/usr/bin/true");
-        std::env::set_var("EDITOR", "/usr/bin/true");
+        unsafe {
+            std::env::set_var("GIT_EDITOR", "/usr/bin/true");
+        }
+        unsafe {
+            std::env::set_var("VISUAL", "/usr/bin/true");
+        }
+        unsafe {
+            std::env::set_var("EDITOR", "/usr/bin/true");
+        }
 
         let git = GitCommand::new(false);
         let mut runner = PauseTrackingRunner::default();

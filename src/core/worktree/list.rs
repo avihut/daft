@@ -418,11 +418,10 @@ pub(crate) fn get_commit_metadata(
     worktree_path: &Path,
     git: &GitCommand,
 ) -> (Option<i64>, Option<String>, String) {
-    if git.use_gitoxide {
-        if let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(worktree_path)
-        {
-            return (Some(ts), Some(hash), subj);
-        }
+    if git.use_gitoxide
+        && let Ok((ts, hash, subj)) = crate::git::oxide::get_commit_metadata_for_head(worktree_path)
+    {
+        return (Some(ts), Some(hash), subj);
     }
     get_last_commit_info(worktree_path)
 }
@@ -434,21 +433,21 @@ fn get_commit_metadata_for_ref_dispatched(
     cwd: &Path,
     git: &GitCommand,
 ) -> (Option<i64>, Option<String>, String) {
-    if git.use_gitoxide {
-        if let Ok(repo) = git.gix_repo() {
-            let full_ref = if branch_ref.starts_with("refs/") {
-                branch_ref.to_string()
-            } else if branch_ref.contains('/') {
-                // Remote branch like "origin/feature-x"
-                format!("refs/remotes/{branch_ref}")
-            } else {
-                format!("refs/heads/{branch_ref}")
-            };
-            if let Ok((ts, hash, subj)) =
-                crate::git::oxide::get_commit_metadata_for_ref(&repo, &full_ref)
-            {
-                return (Some(ts), Some(hash), subj);
-            }
+    if git.use_gitoxide
+        && let Ok(repo) = git.gix_repo()
+    {
+        let full_ref = if branch_ref.starts_with("refs/") {
+            branch_ref.to_string()
+        } else if branch_ref.contains('/') {
+            // Remote branch like "origin/feature-x"
+            format!("refs/remotes/{branch_ref}")
+        } else {
+            format!("refs/heads/{branch_ref}")
+        };
+        if let Ok((ts, hash, subj)) =
+            crate::git::oxide::get_commit_metadata_for_ref(&repo, &full_ref)
+        {
+            return (Some(ts), Some(hash), subj);
         }
     }
     get_last_commit_info_for_ref(branch_ref, cwd)
@@ -540,10 +539,10 @@ pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) 
     if reflog_output.status.success() {
         let stdout = String::from_utf8_lossy(&reflog_output.stdout);
         // Last line is the oldest reflog entry
-        if let Some(last_line) = stdout.trim().lines().last() {
-            if let Ok(ts) = last_line.trim().parse::<i64>() {
-                return Some(ts);
-            }
+        if let Some(last_line) = stdout.trim().lines().last()
+            && let Ok(ts) = last_line.trim().parse::<i64>()
+        {
+            return Some(ts);
         }
     }
 
@@ -556,10 +555,10 @@ pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) 
 
     if log_output.status.success() {
         let stdout = String::from_utf8_lossy(&log_output.stdout);
-        if let Some(first_line) = stdout.trim().lines().next() {
-            if let Ok(ts) = first_line.trim().parse::<i64>() {
-                return Some(ts);
-            }
+        if let Some(first_line) = stdout.trim().lines().next()
+            && let Ok(ts) = first_line.trim().parse::<i64>()
+        {
+            return Some(ts);
         }
     }
 
@@ -814,14 +813,14 @@ pub(crate) fn max_mtime_of_files(worktree_path: &Path, relative_paths: &[String]
     let mut max_mtime: Option<i64> = None;
     for rel in relative_paths {
         let full = worktree_path.join(rel);
-        if let Ok(meta) = std::fs::symlink_metadata(&full) {
-            if let Ok(modified) = meta.modified() {
-                let ts = modified
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                max_mtime = Some(max_mtime.map_or(ts, |cur| cur.max(ts)));
-            }
+        if let Ok(meta) = std::fs::symlink_metadata(&full)
+            && let Ok(modified) = meta.modified()
+        {
+            let ts = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            max_mtime = Some(max_mtime.map_or(ts, |cur| cur.max(ts)));
         }
     }
     max_mtime

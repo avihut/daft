@@ -72,12 +72,10 @@ fn is_common_dir_bare(git_common_dir: &Path) -> bool {
             let trimmed = line.trim();
             if trimmed.starts_with('[') {
                 in_core = trimmed.starts_with("[core]");
-            } else if in_core {
-                if let Some(value) = trimmed.strip_prefix("bare") {
-                    let value = value.trim().strip_prefix('=').map(|v| v.trim());
-                    if value == Some("true") {
-                        return true;
-                    }
+            } else if in_core && let Some(value) = trimmed.strip_prefix("bare") {
+                let value = value.trim().strip_prefix('=').map(|v| v.trim());
+                if value == Some("true") {
+                    return true;
                 }
             }
         }

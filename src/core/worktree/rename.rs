@@ -8,7 +8,7 @@ use crate::core::multi_remote::path::{
 };
 use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
-use crate::hooks::move_hooks::{run_setup_hooks, run_teardown_hooks, MoveHookParams};
+use crate::hooks::move_hooks::{MoveHookParams, run_setup_hooks, run_teardown_hooks};
 use crate::hooks::tracking::TrackedAttribute;
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
@@ -146,16 +146,15 @@ pub fn execute(
         if !params.no_remote {
             let remote_info =
                 resolve_remote_for_branch(&git, &old_branch, None, &params.remote_name);
-            if let Ok(remote) = remote_info {
-                if git
+            if let Ok(remote) = remote_info
+                && git
                     .show_ref_exists(&format!("refs/remotes/{remote}/{old_branch}"))
                     .unwrap_or(false)
-                {
-                    sink.on_step(&format!(
-                        "Would push '{}/{}' and delete '{}/{}'",
-                        remote, params.new_branch, remote, old_branch
-                    ));
-                }
+            {
+                sink.on_step(&format!(
+                    "Would push '{}/{}' and delete '{}/{}'",
+                    remote, params.new_branch, remote, old_branch
+                ));
             }
         }
 
@@ -221,11 +220,11 @@ pub fn execute(
         })?;
 
     // Step 7: Create parent dirs if needed, then move the worktree.
-    if let Some(parent) = new_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory '{}'", parent.display()))?;
-        }
+    if let Some(parent) = new_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory '{}'", parent.display()))?;
     }
 
     sink.on_step(&format!(

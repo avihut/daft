@@ -80,26 +80,26 @@ pub fn yaml_jobs_to_specs(
             continue;
         }
 
-        if let Some(ref skip) = job.skip {
-            if let Some(info) = super::conditions::should_skip(skip, working_dir) {
-                skipped.push(SkippedJob {
-                    name,
-                    background: declared_background,
-                    reason: info.reason,
-                });
-                continue;
-            }
+        if let Some(ref skip) = job.skip
+            && let Some(info) = super::conditions::should_skip(skip, working_dir)
+        {
+            skipped.push(SkippedJob {
+                name,
+                background: declared_background,
+                reason: info.reason,
+            });
+            continue;
         }
 
-        if let Some(ref only) = job.only {
-            if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
-                skipped.push(SkippedJob {
-                    name,
-                    background: declared_background,
-                    reason: info.reason,
-                });
-                continue;
-            }
+        if let Some(ref only) = job.only
+            && let Some(info) = super::conditions::should_only_skip(only, working_dir)
+        {
+            skipped.push(SkippedJob {
+                name,
+                background: declared_background,
+                reason: info.reason,
+            });
+            continue;
         }
 
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
@@ -195,8 +195,8 @@ fn merge_job_log(per_job: Option<LogConfig>, repo: Option<&LogConfig>) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::yaml_config::{GroupDef, RunCommand};
     use crate::hooks::HookType;
+    use crate::hooks::yaml_config::{GroupDef, RunCommand};
     use std::collections::HashMap;
 
     fn make_ctx() -> HookContext {

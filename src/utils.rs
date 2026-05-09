@@ -108,7 +108,9 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
 
     // Security: Check for path separators and absolute paths
     if repo_name.contains('/') || repo_name.contains('\\') || repo_name.contains(':') {
-        anyhow::bail!("Repository name cannot contain path separators. Use a simple name like 'my-project', not 'path/to/my-project'");
+        anyhow::bail!(
+            "Repository name cannot contain path separators. Use a simple name like 'my-project', not 'path/to/my-project'"
+        );
     }
 
     // Security: Check for command injection attempts

@@ -77,10 +77,10 @@ pub fn resolve_initial_branch(branch: &Option<String>) -> String {
 
     // Query git config for init.defaultBranch
     let git = GitCommand::new(true); // quiet mode for config query
-    if let Ok(Some(configured_branch)) = git.config_get_global("init.defaultBranch") {
-        if !configured_branch.is_empty() {
-            return configured_branch;
-        }
+    if let Ok(Some(configured_branch)) = git.config_get_global("init.defaultBranch")
+        && !configured_branch.is_empty()
+    {
+        return configured_branch;
     }
 
     // Fallback to "master"

@@ -9,12 +9,12 @@ use crate::{
     is_git_repository,
     multi_remote::{
         config::{set_multi_remote_default, set_multi_remote_enabled},
-        migration::{list_worktrees, MigrationPlan},
+        migration::{MigrationPlan, list_worktrees},
         path::calculate_worktree_path,
     },
     output::{
-        emit::{self, Cell, EmitArgs, EmitPayload, Section, Table},
         CliOutput, Output, OutputConfig,
+        emit::{self, Cell, EmitArgs, EmitPayload, Section, Table},
     },
     settings::DaftSettings,
 };
@@ -603,13 +603,11 @@ fn cmd_move(
         output.step(&format!("  3. Push to remote: {}", to_remote));
     }
 
-    if delete_old {
-        if let Some(ref old_remote) = current_remote {
-            output.step(&format!(
-                "  4. Delete from old remote: {}/{}",
-                old_remote, branch_name
-            ));
-        }
+    if delete_old && let Some(ref old_remote) = current_remote {
+        output.step(&format!(
+            "  4. Delete from old remote: {}/{}",
+            old_remote, branch_name
+        ));
     }
 
     if dry_run {
@@ -635,11 +633,11 @@ fn cmd_move(
     output.step("Moving worktree...");
 
     // Ensure parent directory exists
-    if let Some(parent) = new_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
+    if let Some(parent) = new_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
 
     git.worktree_move(&worktree_path, &new_path)
@@ -683,17 +681,15 @@ fn cmd_move(
     }
 
     // Delete from old remote if requested
-    if delete_old {
-        if let Some(old_remote) = current_remote {
-            output.step(&format!(
-                "Deleting from old remote {}/{}...",
-                old_remote, branch_name
-            ));
+    if delete_old && let Some(old_remote) = current_remote {
+        output.step(&format!(
+            "Deleting from old remote {}/{}...",
+            old_remote, branch_name
+        ));
 
-            let result = delete_remote_branch(&git, &old_remote, &branch_name);
-            if let Err(e) = result {
-                output.warning(&format!("Failed to delete from old remote: {}", e));
-            }
+        let result = delete_remote_branch(&git, &old_remote, &branch_name);
+        if let Err(e) = result {
+            output.warning(&format!("Failed to delete from old remote: {}", e));
         }
     }
 
@@ -705,13 +701,12 @@ fn cmd_move(
         .and_then(|c| c.as_os_str().to_str())
     {
         let old_remote_dir = project_root.join(old_remote);
-        if old_remote_dir.exists() {
-            if let Ok(mut entries) = std::fs::read_dir(&old_remote_dir) {
-                if entries.next().is_none() {
-                    // Directory is empty, remove it
-                    let _ = std::fs::remove_dir(&old_remote_dir);
-                }
-            }
+        if old_remote_dir.exists()
+            && let Ok(mut entries) = std::fs::read_dir(&old_remote_dir)
+            && entries.next().is_none()
+        {
+            // Directory is empty, remove it
+            let _ = std::fs::remove_dir(&old_remote_dir);
         }
     }
 
@@ -731,17 +726,17 @@ fn get_branch_name_for_worktree(
 
     for line in porcelain_output.lines() {
         if let Some(path_str) = line.strip_prefix("worktree ") {
-            if let Some(prev_path) = current_path.take() {
-                if prev_path == worktree_path {
-                    // We've moved past this worktree without finding a branch
-                    return Ok(None);
-                }
+            if let Some(prev_path) = current_path.take()
+                && prev_path == worktree_path
+            {
+                // We've moved past this worktree without finding a branch
+                return Ok(None);
             }
             current_path = Some(std::path::PathBuf::from(path_str));
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if current_path.as_ref() == Some(&worktree_path.to_path_buf()) {
-                return Ok(branch_ref.strip_prefix("refs/heads/").map(String::from));
-            }
+        } else if let Some(branch_ref) = line.strip_prefix("branch ")
+            && current_path.as_ref() == Some(&worktree_path.to_path_buf())
+        {
+            return Ok(branch_ref.strip_prefix("refs/heads/").map(String::from));
         }
     }
 

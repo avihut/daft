@@ -7,8 +7,8 @@
 use crate::core::worktree::sync_dag::DagEvent;
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::hooks::{HookContext, HookExecutor};
-use crate::output::tui::TuiPresenter;
 use crate::output::BufferingOutput;
+use crate::output::tui::TuiPresenter;
 use anyhow::Result;
 use std::sync::mpsc;
 

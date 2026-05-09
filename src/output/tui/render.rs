@@ -1,19 +1,19 @@
 use super::columns::{
-    column_content_width, fit_widths_to_available, select_columns, truncate_with_ellipsis, Column,
-    ALL_COLUMNS,
+    ALL_COLUMNS, Column, column_content_width, fit_widths_to_available, select_columns,
+    truncate_with_ellipsis,
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
-use crate::output::format::{self, format_human_size, ColumnContext, ColumnValues};
+use crate::output::format::{self, ColumnContext, ColumnValues, format_human_size};
 use crate::styles;
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
-    Frame,
 };
 
 const SPINNER_FRAMES: &[&str] = &[
@@ -501,24 +501,24 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
 /// Render ahead/behind counts as colored spans: green for `+N`, red for `-N`.
 fn render_ahead_behind_spans(ahead: Option<usize>, behind: Option<usize>) -> Line<'static> {
     let mut spans = Vec::new();
-    if let Some(a) = ahead {
-        if a > 0 {
-            spans.push(Span::styled(
-                format!("+{a}"),
-                Style::default().fg(Color::Green),
-            ));
-        }
+    if let Some(a) = ahead
+        && a > 0
+    {
+        spans.push(Span::styled(
+            format!("+{a}"),
+            Style::default().fg(Color::Green),
+        ));
     }
-    if let Some(b) = behind {
-        if b > 0 {
-            if !spans.is_empty() {
-                spans.push(Span::raw(" "));
-            }
-            spans.push(Span::styled(
-                format!("-{b}"),
-                Style::default().fg(Color::Red),
-            ));
+    if let Some(b) = behind
+        && b > 0
+    {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
         }
+        spans.push(Span::styled(
+            format!("-{b}"),
+            Style::default().fg(Color::Red),
+        ));
     }
     Line::from(spans)
 }
@@ -595,24 +595,24 @@ fn render_remote_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
         ))
     } else {
         let mut spans = Vec::new();
-        if let Some(a) = info.remote_ahead {
-            if a > 0 {
-                spans.push(Span::styled(
-                    format!("\u{21E1}{a}"),
-                    Style::default().fg(Color::Green),
-                ));
-            }
+        if let Some(a) = info.remote_ahead
+            && a > 0
+        {
+            spans.push(Span::styled(
+                format!("\u{21E1}{a}"),
+                Style::default().fg(Color::Green),
+            ));
         }
-        if let Some(b) = info.remote_behind {
-            if b > 0 {
-                if !spans.is_empty() {
-                    spans.push(Span::raw(" "));
-                }
-                spans.push(Span::styled(
-                    format!("\u{21E3}{b}"),
-                    Style::default().fg(Color::Red),
-                ));
+        if let Some(b) = info.remote_behind
+            && b > 0
+        {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
             }
+            spans.push(Span::styled(
+                format!("\u{21E3}{b}"),
+                Style::default().fg(Color::Red),
+            ));
         }
         Cell::from(Line::from(spans))
     }
@@ -1124,8 +1124,8 @@ mod tests {
     use crate::core::sort::SortSpec;
     use crate::core::worktree::list::{Stat, WorktreeInfo};
     use crate::core::worktree::sync_dag::OperationPhase;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::path::PathBuf;
 
     fn make_test_state(verbose: u8) -> TuiState {
@@ -1341,7 +1341,7 @@ mod tests {
         // the cell should render the dim em-dash, not the shimmer bar and
         // not an empty cell.
         use crate::core::worktree::info_field::FieldSet;
-        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::format::{ColumnContext, compute_column_values};
         use crate::output::tui::state::WorktreeRow;
 
         let info = WorktreeInfo::empty("a");
@@ -1400,7 +1400,7 @@ mod tests {
         // If the cell value is non-empty (received), is_cell_unloaded should
         // be false and the value should render. Guards against rendering
         // "—" over real data.
-        use crate::output::format::{compute_column_values, ColumnContext};
+        use crate::output::format::{ColumnContext, compute_column_values};
         use crate::output::tui::state::WorktreeRow;
 
         let mut info = WorktreeInfo::empty("a");

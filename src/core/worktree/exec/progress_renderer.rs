@@ -9,8 +9,8 @@
 //! [`super::run_pipeline_streaming`](crate::core::worktree::exec::run_pipeline_streaming).
 
 use super::{
-    alias_cache::AliasCache, run_pipeline_streaming, CancelFlag, CommandSpec, ExecMode, ExecReport,
-    ResolvedTarget,
+    CancelFlag, CommandSpec, ExecMode, ExecReport, ResolvedTarget, alias_cache::AliasCache,
+    run_pipeline_streaming,
 };
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;
@@ -28,36 +28,44 @@ use std::thread;
 /// lifetime of this guard; the original termios is restored on drop.
 #[cfg(unix)]
 struct EchoCtlGuard {
-    fd: libc::c_int,
-    original: Option<libc::termios>,
+    /// Held by-value so the guard owns a valid fd for its lifetime; the
+    /// `BorrowedFd` we hand to `tcsetattr` borrows from it.
+    stderr: std::io::Stderr,
+    original: Option<nix::sys::termios::Termios>,
 }
 
 #[cfg(unix)]
 impl EchoCtlGuard {
     fn new() -> Self {
+        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
         use std::io::IsTerminal;
-        use std::os::unix::io::AsRawFd;
+        use std::os::fd::AsFd;
 
         let stderr = std::io::stderr();
-        let fd = stderr.as_raw_fd();
         if !stderr.is_terminal() {
-            return Self { fd, original: None };
+            return Self {
+                stderr,
+                original: None,
+            };
         }
 
-        // SAFETY: `fd` is a valid stderr file descriptor confirmed to be a
-        // TTY. `tcgetattr` fills in a zeroed termios on success.
-        let mut current: libc::termios = unsafe { std::mem::zeroed() };
-        if unsafe { libc::tcgetattr(fd, &mut current) } != 0 {
-            return Self { fd, original: None };
-        }
+        let Ok(current) = tcgetattr(stderr.as_fd()) else {
+            return Self {
+                stderr,
+                original: None,
+            };
+        };
 
-        let mut modified = current;
-        modified.c_lflag &= !libc::ECHOCTL;
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &modified) } != 0 {
-            return Self { fd, original: None };
+        let mut modified = current.clone();
+        modified.local_flags.remove(LocalFlags::ECHOCTL);
+        if tcsetattr(stderr.as_fd(), SetArg::TCSANOW, &modified).is_err() {
+            return Self {
+                stderr,
+                original: None,
+            };
         }
         Self {
-            fd,
+            stderr,
             original: Some(current),
         }
     }
@@ -66,10 +74,15 @@ impl EchoCtlGuard {
 #[cfg(unix)]
 impl Drop for EchoCtlGuard {
     fn drop(&mut self) {
-        if let Some(ref original) = self.original {
+        use std::os::fd::AsFd;
+        if let Some(original) = self.original.as_ref() {
             // Best-effort restore; if the fd is gone (process torn down),
             // there's nothing useful we can do.
-            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, original) };
+            let _ = nix::sys::termios::tcsetattr(
+                self.stderr.as_fd(),
+                nix::sys::termios::SetArg::TCSANOW,
+                original,
+            );
         }
     }
 }

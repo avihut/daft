@@ -1,6 +1,8 @@
 use super::sync_shared;
 use crate::{
+    CD_FILE_ENV,
     core::{
+        CommandBridge, NullBridge,
         sort::SortSpec,
         worktree::{
             info_field::FieldSet,
@@ -12,20 +14,18 @@ use crate::{
                 TaskMessage, TaskStatus,
             },
         },
-        CommandBridge, NullBridge,
     },
     get_git_common_dir, get_project_root,
-    git::{should_show_gitoxide_notice, GitCommand},
+    git::{GitCommand, should_show_gitoxide_notice},
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
     output::{
-        tui::operation_table::{OperationTable, TableConfig},
         CliOutput, Output, OutputConfig,
+        tui::operation_table::{OperationTable, TableConfig},
     },
     remote::get_default_branch_local,
     settings::DaftSettings,
-    CD_FILE_ENV,
 };
 use anyhow::Result;
 use clap::Parser;

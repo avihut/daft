@@ -7,8 +7,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use crate::doctor::{
-    hooks_checks, installation, repository, status_symbol, CheckCategory, CheckStatus,
-    DoctorSummary,
+    CheckCategory, CheckStatus, DoctorSummary, hooks_checks, installation, repository,
+    status_symbol,
 };
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::styles::{bold, dim, green, red, yellow};
@@ -334,10 +334,10 @@ fn print_results(
             }
 
             // Show suggestion for warnings and failures
-            if let Some(ref suggestion) = result.suggestion {
-                if matches!(result.status, CheckStatus::Warning | CheckStatus::Fail) {
-                    output.info(&format!("        {}", dim(suggestion)));
-                }
+            if let Some(ref suggestion) = result.suggestion
+                && matches!(result.status, CheckStatus::Warning | CheckStatus::Fail)
+            {
+                output.info(&format!("        {}", dim(suggestion)));
             }
 
             // Show details in verbose mode for passing checks

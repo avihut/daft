@@ -1,9 +1,10 @@
 //! Coordinator process for running background hook jobs.
 //!
-//! The coordinator is a single forked child process that runs background
-//! hook jobs as threads. When background jobs exist, the parent daft
-//! process forks once. The parent prints a summary and exits. The child
-//! (coordinator) runs the background jobs, writes logs, and exits when done.
+//! When a hook declares any background jobs, the parent daft process spawns
+//! a fresh `daft __coordinator <state-file>` child via `spawn_coordinator`,
+//! prints a summary, and returns. The child reads + unlinks the state file,
+//! detaches via `setsid()`, runs the background jobs as threads, and exits
+//! when done.
 //!
 //! A Unix socket listener runs in a separate thread alongside job execution,
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
@@ -11,12 +12,12 @@
 use super::log_store::{JobMeta, JobStatus, LogStore};
 #[cfg(unix)]
 use super::{
-    coordinator_pid_path, coordinator_socket_path, CoordinatorRequest, CoordinatorResponse, JobInfo,
+    CoordinatorRequest, CoordinatorResponse, JobInfo, coordinator_pid_path, coordinator_socket_path,
 };
 use crate::executor::command::run_command;
 use crate::executor::dag::DagGraph;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -35,6 +36,7 @@ type ChildPidMap = Arc<Mutex<HashMap<String, u32>>>;
 type CancelledJobs = Arc<Mutex<HashSet<String>>>;
 
 /// State for a coordinator process managing background jobs.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CoordinatorState {
     pub repo_hash: String,
     pub invocation_id: String,
@@ -42,6 +44,16 @@ pub struct CoordinatorState {
     pub trigger_command: String,
     pub hook_type: String,
     pub worktree: String,
+}
+
+/// Wire format for state passed from parent to spawned `__coordinator`
+/// child via a serde-JSON tempfile (see `spawn_coordinator` /
+/// `run_coordinator`). Bundles `LogStore.base_dir` because the spawned
+/// child does not share the parent's address space.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CoordinatorPayload {
+    pub state: CoordinatorState,
+    pub log_store_base: std::path::PathBuf,
 }
 
 impl CoordinatorState {
@@ -109,28 +121,31 @@ impl CoordinatorState {
 
         let results = Arc::new(Mutex::new(Vec::<JobResult>::new()));
 
-        // Wave-based scheduler. We use DagGraph for cycle/missing-dep
-        // detection and dependent lookups, but execute each wave with bare
-        // `std::thread::spawn` (matching master's per-job spawn pattern)
-        // rather than `DagGraph::run_parallel`. The reason is platform-
-        // specific: `run_parallel` uses `std::thread::scope`, which can
-        // deadlock post-`libc::fork()` on macOS due to malloc-arena state
-        // inherited from the parent. Bare `thread::spawn` does not exhibit
-        // this — the buggy pre-fix coordinator used the same primitive.
+        // Wave-based scheduler. DagGraph is used for cycle/missing-dep
+        // detection and dependents lookup, but each wave is executed with
+        // bare `std::thread::spawn` rather than `DagGraph::run_parallel`.
+        // Reason: every job in a wave must reach a terminal state before
+        // any dependent's wave starts — that's the contract `run_all_with_cancel`
+        // exposes to callers (see `next_ready` computation below). A
+        // free-running scheduler would advance dependents the moment their
+        // own predecessors finish, which violates this barrier and would
+        // race with the cancel/skip cascade that fans out from per-wave
+        // outcomes. The wave shape costs concurrency in heterogeneous DAGs
+        // but is the simplest expression of "outcomes settle before the
+        // next layer dispatches"; the previous comment cited a fork-era
+        // malloc-arena constraint, which is moot post-spawn.
         let n = graph.len();
         let mut statuses = vec![NodeStatus::Pending; n];
         let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
         let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
 
-        // Each iteration of this loop is one wave: every ready node is spawned
-        // in parallel and the loop blocks until ALL of them finish before
-        // computing the next wave. This is intentionally less concurrent than
-        // a free-running scheduler — an independent fast chain can be held up
-        // behind a slow one in the same wave — but it is the simplest shape
-        // that is provably safe across `libc::fork()` on macOS without
-        // touching `std::thread::scope`. Do not "optimize" this into per-node
-        // free-running advancement without re-checking the post-fork
-        // constraint described above.
+        // Each iteration of this loop is one wave: every ready node is
+        // spawned in parallel and the loop blocks until ALL of them finish
+        // before computing the next wave. Less concurrent than a free-running
+        // scheduler (a fast independent chain can be held up behind a slow
+        // sibling in the same wave), but the dependency-cascade and cancel
+        // bookkeeping above relies on per-wave settlement — see the
+        // top-of-function comment.
         while !ready.is_empty() {
             // Spawn one worker per ready node. Inputs are cloned per-spawn,
             // matching the pre-fix per-thread cloning pattern.
@@ -624,13 +639,13 @@ fn handle_client_connection(
 
             let mut count = 0;
             for (name, pid) in &pids {
-                // SAFETY: Sending SIGTERM to a process group we own. The bg
-                // child was spawned with setsid(), so its PID equals its PGID
-                // and the negative-PID form reaches every descendant (e.g. a
-                // `sleep` grandchild of the wrapping `sh`).
-                unsafe {
-                    libc::kill(-(*pid as libc::pid_t), libc::SIGTERM);
-                }
+                // Bg children are process-group leaders (PID == PGID via
+                // setpgid). killpg reaches every descendant — e.g. a `sleep`
+                // grandchild of the wrapping `sh`.
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(*pid as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
                 count += 1;
                 let _ = name; // used for counting
             }
@@ -646,9 +661,10 @@ fn handle_client_connection(
             // Kill all running children (via their process groups).
             let pids: Vec<u32> = child_pids.lock().unwrap().values().copied().collect();
             for pid in pids {
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-                }
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
             }
 
             CoordinatorResponse::Ack {
@@ -707,12 +723,12 @@ fn cancel_single_job(
     let pids = child_pids.lock().unwrap();
     if let Some(&pid) = pids.get(name) {
         cancelled_jobs.lock().unwrap().insert(name.to_string());
-        // SAFETY: Sending SIGTERM to a process group we own. The bg child was
-        // spawned with setsid(), so its PID equals its PGID and the
-        // negative-PID form reaches every descendant.
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-        }
+        // The bg child is a process-group leader (PID == PGID via setpgid),
+        // so killpg reaches every descendant.
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
         CoordinatorResponse::Ack {
             message: format!("Cancelled job: {name}"),
         }
@@ -747,106 +763,161 @@ fn write_pid_file(repo_hash: &str) -> Result<std::path::PathBuf> {
     Ok(pid_path)
 }
 
-/// Fork the current process into a coordinator that runs background jobs.
+/// Spawn a detached coordinator child process to run background jobs.
 ///
-/// The parent process returns `Ok(None)` immediately.
-/// The child process runs all jobs, then exits via `process::exit(0)`.
+/// The parent serializes `state + log_store_base` into a 0600-perms
+/// tempfile, then spawns `daft __coordinator <state-file>` with
+/// stdio routed to /dev/null and `DAFT_IS_COORDINATOR=1` injected via
+/// the parent-side `Command::env(...)` (avoids edition-2024's
+/// unsafe `std::env::set_var`). The parent returns `Ok(None)` immediately.
 ///
-/// # Safety
-/// Uses `libc::fork()`. Call after all foreground work is complete.
+/// The child process reads + unlinks the state file, calls `setsid()` to
+/// detach from the parent's session/TTY, then runs the jobs to completion.
+/// See `run_coordinator`.
+#[cfg(unix)]
+pub fn spawn_coordinator(
+    state: CoordinatorState,
+    store: LogStore,
+) -> Result<Option<Vec<JobResult>>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Resolve symlinks: when invoked via `git-worktree-checkout-branch` etc.,
+    // `current_exe()` returns the symlink path; spawning that path would route
+    // multicall dispatch to the symlink command (which then rejects
+    // `__coordinator` as an unknown clap arg). Canonicalize to land on the
+    // real `daft` binary so the spawned child dispatches correctly.
+    let exe = std::env::current_exe()
+        .context("Could not determine current executable")?
+        .canonicalize()
+        .context("Could not canonicalize executable path")?;
+
+    let payload = CoordinatorPayload {
+        state,
+        log_store_base: store.base_dir.clone(),
+    };
+    let json = serde_json::to_vec(&payload).context("serialize coordinator state")?;
+
+    // tempfile defaults to 0600 perms — no leak risk on shared hosts.
+    // We `keep()` the path past Drop because the spawned child unlinks it.
+    let tmp = tempfile::Builder::new()
+        .prefix("daft-coord-")
+        .suffix(".json")
+        .tempfile()
+        .context("create coordinator state tempfile")?;
+    tmp.as_file()
+        .write_all(&json)
+        .context("write coordinator state")?;
+    tmp.as_file()
+        .sync_all()
+        .context("sync coordinator state to disk")?;
+    let (_file, state_path) = tmp.keep().context("persist coordinator state tempfile")?;
+
+    // If `spawn()` fails the child never runs, so nothing will read or unlink
+    // the state file — clean it up here rather than stranding a 0600 tempfile
+    // until the next tmpfs sweep. The `keep()` above transferred ownership
+    // away from `tempfile::Drop`, so the cleanup is on us.
+    let spawn_result = Command::new(&exe)
+        .arg("__coordinator")
+        .arg(&state_path)
+        .env("DAFT_IS_COORDINATOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    match spawn_result {
+        Ok(_) => Ok(None),
+        Err(e) => {
+            std::fs::remove_file(&state_path).ok();
+            Err(anyhow::Error::from(e).context(format!(
+                "Could not spawn coordinator process from {}",
+                exe.display()
+            )))
+        }
+    }
+}
+
+/// Backwards-compatible alias for callers still using the old name.
+/// Functionally identical to [`spawn_coordinator`]; kept thin so the
+/// rename across `src/hooks/yaml_executor/mod.rs` and
+/// `src/commands/hooks/jobs.rs` can land in a follow-up.
 #[cfg(unix)]
 pub fn fork_coordinator(
     state: CoordinatorState,
     store: LogStore,
 ) -> Result<Option<Vec<JobResult>>> {
+    spawn_coordinator(state, store)
+}
+
+/// Entry point for the spawned `daft __coordinator <state-file>` process.
+///
+/// Reads + unlinks the serialized [`CoordinatorPayload`], detaches via
+/// `setsid()`, runs the job DAG, then `process::exit`s. Returns `Err` only
+/// for fatal startup errors before the listener is up; runtime failures
+/// inside `run_all_with_cancel` are handled internally and exit with code 1.
+#[cfg(unix)]
+pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
     use std::process;
 
-    // SAFETY: fork() is called after all foreground work is complete.
-    // The child process runs background jobs as threads and exits.
-    let pid = unsafe { libc::fork() };
+    let bytes = std::fs::read(state_file)
+        .with_context(|| format!("read coordinator state file {}", state_file.display()))?;
+    // Best-effort unlink. Even if it fails (e.g. tmpfs already swept), we
+    // already have the bytes in memory; don't error out.
+    let _ = std::fs::remove_file(state_file);
+    let payload: CoordinatorPayload =
+        serde_json::from_slice(&bytes).context("deserialize coordinator state")?;
 
-    match pid {
-        -1 => anyhow::bail!("fork() failed: {}", std::io::Error::last_os_error()),
-        0 => {
-            // Child: become the coordinator
+    // Detach from the parent's session/controlling TTY. Tiny race window
+    // exists between `Command::spawn` returning in the parent and this call
+    // — the parent is exiting toward the user shell; SIGINT can't fire
+    // until that shell prompt redraws.
+    nix::unistd::setsid().ok();
 
-            // SAFETY: setsid() creates a new session so the coordinator
-            // survives the parent's terminal exit.
-            unsafe {
-                libc::setsid();
+    let store = LogStore::new(payload.log_store_base);
+    let state = payload.state;
+
+    // Write PID file (best-effort).
+    let pid_path = write_pid_file(&state.repo_hash).ok();
+
+    // Shared state for cancellation.
+    let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
+    let cancel_all = Arc::new(AtomicBool::new(false));
+    let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    let listener_handle = start_socket_listener(
+        &state.repo_hash,
+        store.base_dir.clone(),
+        Arc::clone(&child_pids),
+        Arc::clone(&cancel_all),
+        Arc::clone(&cancelled_jobs),
+        Arc::clone(&shutdown),
+    )
+    .ok();
+
+    let exit_code =
+        match state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("daft: coordinator error: {e}");
+                1
             }
+        };
 
-            // Set the guard env var to prevent recursive background spawning.
-            // SAFETY: This is called in the forked child before spawning any
-            // threads, so there is no concurrent access to the environment.
-            unsafe {
-                std::env::set_var("DAFT_IS_COORDINATOR", "1");
-            }
-
-            // Write PID file (best-effort).
-            let pid_path = write_pid_file(&state.repo_hash).ok();
-
-            // Shared state for cancellation.
-            let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
-            let cancel_all = Arc::new(AtomicBool::new(false));
-            let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
-            let shutdown = Arc::new(AtomicBool::new(false));
-
-            // Start the socket listener thread.
-            let listener_handle = start_socket_listener(
-                &state.repo_hash,
-                store.base_dir.clone(),
-                Arc::clone(&child_pids),
-                Arc::clone(&cancel_all),
-                Arc::clone(&cancelled_jobs),
-                Arc::clone(&shutdown),
-            )
-            .ok();
-
-            // Run all jobs (blocking).
-            let _results = match state.run_all_with_cancel(
-                &store,
-                &child_pids,
-                &cancel_all,
-                &cancelled_jobs,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("daft: coordinator error: {e}");
-                    // Best-effort cleanup of the listener and PID file before exiting.
-                    shutdown.store(true, Ordering::Relaxed);
-                    if let Some((handle, socket_path)) = listener_handle {
-                        std::fs::remove_file(&socket_path).ok();
-                        handle.join().ok();
-                    }
-                    if let Some(path) = pid_path {
-                        std::fs::remove_file(&path).ok();
-                    }
-                    process::exit(1);
-                }
-            };
-
-            // Signal the listener to stop and wait for it.
-            shutdown.store(true, Ordering::Relaxed);
-            if let Some((handle, socket_path)) = listener_handle {
-                // Clean up the socket file to unblock the listener if it's
-                // in accept().
-                std::fs::remove_file(&socket_path).ok();
-                handle.join().ok();
-            }
-
-            // Clean up PID file.
-            if let Some(path) = pid_path {
-                std::fs::remove_file(&path).ok();
-            }
-
-            process::exit(0);
-        }
-        _child_pid => {
-            // Parent: return immediately
-            Ok(None)
-        }
+    // Tear down listener + PID file before exiting.
+    shutdown.store(true, Ordering::Relaxed);
+    if let Some((handle, socket_path)) = listener_handle {
+        // Clean up the socket file to unblock the listener if it's blocked
+        // in accept().
+        std::fs::remove_file(&socket_path).ok();
+        handle.join().ok();
     }
+    if let Some(path) = pid_path {
+        std::fs::remove_file(&path).ok();
+    }
+
+    process::exit(exit_code);
 }
 
 #[cfg(all(test, unix))]
@@ -890,6 +961,72 @@ mod tests {
         state.add_job(test_job("job-a"));
         state.add_job(test_job("job-b"));
         assert_eq!(state.jobs.len(), 2);
+    }
+
+    /// Regression test for #412: the spawn refactor depends on
+    /// `CoordinatorPayload` round-tripping cleanly through serde JSON
+    /// (parent serializes to tempfile -> spawned child deserializes).
+    /// Asserts the structurally important fields survive — including the
+    /// `Duration` adapter on `JobSpec.timeout`.
+    #[test]
+    fn coordinator_payload_round_trips_through_serde_json() {
+        use std::path::PathBuf;
+        use std::time::Duration;
+        let mut state = CoordinatorState::new("repo-x", "inv-y").with_metadata(
+            "worktree-post-create",
+            "worktree-post-create",
+            "feat/x",
+        );
+        state.add_job(JobSpec {
+            name: "j".to_string(),
+            command: "echo ok".to_string(),
+            working_dir: std::env::temp_dir(),
+            timeout: Duration::from_secs(120),
+            background: true,
+            needs: vec!["dep".to_string()],
+            ..Default::default()
+        });
+        let payload = CoordinatorPayload {
+            state,
+            log_store_base: PathBuf::from("/tmp/daft-store"),
+        };
+
+        let bytes = serde_json::to_vec(&payload).expect("serialize payload");
+        let back: CoordinatorPayload = serde_json::from_slice(&bytes).expect("deserialize payload");
+        assert_eq!(back.state.repo_hash, "repo-x");
+        assert_eq!(back.state.invocation_id, "inv-y");
+        assert_eq!(back.state.worktree, "feat/x");
+        assert_eq!(back.state.jobs.len(), 1);
+        let job = &back.state.jobs[0];
+        assert_eq!(job.command, "echo ok");
+        assert_eq!(job.timeout, Duration::from_secs(120));
+        assert_eq!(job.needs, vec!["dep".to_string()]);
+        assert_eq!(back.log_store_base, PathBuf::from("/tmp/daft-store"));
+    }
+
+    /// Mirrors `run_coordinator`'s read+unlink half (we can't call the full
+    /// function from a unit test because it ends with `process::exit`).
+    /// Verifies the state file is gone after the child consumes it.
+    #[test]
+    fn coordinator_state_file_is_unlinked_after_read() {
+        let tmp = TempDir::new().unwrap();
+        let state_file = tmp.path().join("payload.json");
+        let payload = CoordinatorPayload {
+            state: CoordinatorState::new("repo-x", "inv-1"),
+            log_store_base: tmp.path().join("store"),
+        };
+        std::fs::write(&state_file, serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert!(state_file.exists());
+
+        let bytes = std::fs::read(&state_file).unwrap();
+        std::fs::remove_file(&state_file).ok();
+        let back: CoordinatorPayload = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(back.state.repo_hash, "repo-x");
+        assert!(
+            !state_file.exists(),
+            "state file must be unlinked after the child reads it"
+        );
     }
 
     #[test]

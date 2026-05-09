@@ -14,9 +14,9 @@ use super::executor::HookResult;
 use super::template;
 use super::yaml_config::{GroupDef, HookDef, JobDef};
 use super::yaml_config_loader::get_effective_jobs;
-use crate::executor::presenter::JobPresenter;
 use crate::executor::LogConfig;
-use crate::hooks::tracking::{effective_tracks, TrackedAttribute};
+use crate::executor::presenter::JobPresenter;
+use crate::hooks::tracking::{TrackedAttribute, effective_tracks};
 use crate::output::Output;
 use crate::settings::HookOutputConfig;
 use anyhow::Result;
@@ -118,25 +118,25 @@ pub fn execute_yaml_hook_with_rc(
     repo_log: Option<&LogConfig>,
 ) -> Result<HookResult> {
     // Check hook-level skip/only conditions
-    if let Some(ref skip) = hook_def.skip {
-        if let Some(info) = super::conditions::should_skip(skip, working_dir) {
-            output.debug(&format!("Skipping {hook_name}: {}", info.reason));
-            return Ok(if info.ran_command {
-                HookResult::skipped_after_command(info.reason)
-            } else {
-                HookResult::skipped(info.reason)
-            });
-        }
+    if let Some(ref skip) = hook_def.skip
+        && let Some(info) = super::conditions::should_skip(skip, working_dir)
+    {
+        output.debug(&format!("Skipping {hook_name}: {}", info.reason));
+        return Ok(if info.ran_command {
+            HookResult::skipped_after_command(info.reason)
+        } else {
+            HookResult::skipped(info.reason)
+        });
     }
-    if let Some(ref only) = hook_def.only {
-        if let Some(info) = super::conditions::should_only_skip(only, working_dir) {
-            output.debug(&format!("Skipping {hook_name}: {}", info.reason));
-            return Ok(if info.ran_command {
-                HookResult::skipped_after_command(info.reason)
-            } else {
-                HookResult::skipped(info.reason)
-            });
-        }
+    if let Some(ref only) = hook_def.only
+        && let Some(info) = super::conditions::should_only_skip(only, working_dir)
+    {
+        output.debug(&format!("Skipping {hook_name}: {}", info.reason));
+        return Ok(if info.ran_command {
+            HookResult::skipped_after_command(info.reason)
+        } else {
+            HookResult::skipped(info.reason)
+        });
     }
 
     // Build hook environment early so we can write an invocation record
@@ -426,10 +426,10 @@ pub fn filter_tracked_jobs(jobs: &[JobDef], changed: &HashSet<TrackedAttribute>)
     let mut selected_names: HashSet<String> = HashSet::new();
     for job in jobs {
         let tracks = effective_tracks(job);
-        if !tracks.is_disjoint(changed) {
-            if let Some(ref name) = job.name {
-                selected_names.insert(name.clone());
-            }
+        if !tracks.is_disjoint(changed)
+            && let Some(ref name) = job.name
+        {
+            selected_names.insert(name.clone());
         }
     }
 
@@ -438,14 +438,13 @@ pub fn filter_tracked_jobs(jobs: &[JobDef], changed: &HashSet<TrackedAttribute>)
     while made_progress {
         made_progress = false;
         for job in jobs {
-            if let Some(ref name) = job.name {
-                if selected_names.contains(name) {
-                    if let Some(ref needs) = job.needs {
-                        for dep in needs {
-                            if selected_names.insert(dep.clone()) {
-                                made_progress = true;
-                            }
-                        }
+            if let Some(ref name) = job.name
+                && selected_names.contains(name)
+                && let Some(ref needs) = job.needs
+            {
+                for dep in needs {
+                    if selected_names.insert(dep.clone()) {
+                        made_progress = true;
                     }
                 }
             }
@@ -518,8 +517,8 @@ pub(crate) fn resolve_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::yaml_config::RunCommand;
     use crate::hooks::HookType;
+    use crate::hooks::yaml_config::RunCommand;
     use crate::output::TestOutput;
     use std::collections::HashMap;
     use tempfile::TempDir;

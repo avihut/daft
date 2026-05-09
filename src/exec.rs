@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::core::worktree::exec::{build_command, AliasCache, CommandSpec};
+use crate::core::worktree::exec::{AliasCache, CommandSpec, build_command};
 use crate::output::Output;
 
 /// Run a sequence of `-x` shell commands as part of worktree creation

@@ -1,5 +1,5 @@
 use super::{
-    emit_formats_for, get_command_for_name, get_flag_descriptions, uses_rich_completions, COMMANDS,
+    COMMANDS, emit_formats_for, get_command_for_name, get_flag_descriptions, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 use clap::Command;

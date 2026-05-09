@@ -1,5 +1,5 @@
-use super::oxide;
 use super::GitCommand;
+use super::oxide;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;

@@ -252,12 +252,11 @@ pub fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf,
 
     for line in porcelain_output.lines() {
         if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_worktree.take() {
-                if !is_bare {
-                    if let Some(branch) = current_branch.take() {
-                        worktrees.push((path, branch));
-                    }
-                }
+            if let Some(path) = current_worktree.take()
+                && !is_bare
+                && let Some(branch) = current_branch.take()
+            {
+                worktrees.push((path, branch));
             }
             current_worktree = Some(PathBuf::from(worktree_path));
             current_branch = None;
@@ -275,12 +274,11 @@ pub fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf,
         }
     }
 
-    if let Some(path) = current_worktree {
-        if !is_bare {
-            if let Some(branch) = current_branch {
-                worktrees.push((path, branch));
-            }
-        }
+    if let Some(path) = current_worktree
+        && !is_bare
+        && let Some(branch) = current_branch
+    {
+        worktrees.push((path, branch));
     }
 
     Ok(worktrees)

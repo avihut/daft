@@ -4,8 +4,8 @@
 //! who may not have completed setup for optional features like shell
 //! integration.
 
-use crate::output::Output;
 use crate::CD_FILE_ENV;
+use crate::output::Output;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

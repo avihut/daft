@@ -46,10 +46,20 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Wait for bg job to finish then list
+  - name: Wait for bg-fail to reach terminal state, then list
+    # The old loop exited as soon as ANY job had status "failed", which
+    # `fg-fail` (synchronous, runs first) trips before the coordinator's
+    # `bg-fail` even starts. The next step (`daft hooks jobs retry`)
+    # then errors with "Cannot retry: 1 job(s) still running (bg-fail)".
+    # Wait specifically for `bg-fail` to reach terminal status.
     run: |
-      for i in $(seq 1 20); do
-        if daft hooks jobs --format json 2>/dev/null | jq -e 'map(.status) | any(. == "failed")' >/dev/null; then
+      for i in $(seq 1 30); do
+        bg_done=$(daft hooks jobs --format json 2>/dev/null | jq -r '
+          [.[] | select(.name == "bg-fail") | .status]
+          | if length == 1 and (.[0] == "completed" or .[0] == "failed" or .[0] == "cancelled")
+            then "yes" else "no" end
+        ' 2>/dev/null)
+        if [ "$bg_done" = "yes" ]; then
           break
         fi
         sleep 0.5

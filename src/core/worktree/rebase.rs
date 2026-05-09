@@ -3,8 +3,8 @@
 //! Used by `daft sync --rebase <BRANCH>` to rebase all worktree branches
 //! onto a common base after updating from remote.
 
-use crate::core::worktree::{fetch, temp_worktree};
 use crate::core::ProgressSink;
+use crate::core::worktree::{fetch, temp_worktree};
 use crate::git::GitCommand;
 use crate::utils::*;
 use anyhow::Result;
@@ -89,10 +89,10 @@ pub fn execute(
         }
 
         // Skip branches not in the include filter
-        if let Some(included) = included_branches {
-            if !included.contains(branch.as_str()) {
-                continue;
-            }
+        if let Some(included) = included_branches
+            && !included.contains(branch.as_str())
+        {
+            continue;
         }
 
         let worktree_name = path
@@ -132,10 +132,10 @@ pub fn execute(
             continue;
         }
         // Skip branches not in the include filter
-        if let Some(included) = included_branches {
-            if !included.contains(branch) {
-                continue;
-            }
+        if let Some(included) = included_branches
+            && !included.contains(branch)
+        {
+            continue;
         }
 
         progress.on_step(&format!(

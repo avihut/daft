@@ -2,8 +2,8 @@
 //!
 //! Clones a repository into a worktree-based directory structure.
 
-use crate::core::layout::Layout;
 use crate::core::ProgressSink;
+use crate::core::layout::Layout;
 use crate::git::GitCommand;
 use crate::hooks::TrustDatabase;
 use crate::remote::{get_default_branch_remote, get_remote_branches, is_remote_empty};
@@ -280,13 +280,13 @@ fn create_all_worktrees(
             worktree_path.display()
         ));
 
-        if let Some(parent) = worktree_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    progress.on_warning(&format!("creating directory '{}': {e}", parent.display()));
-                    continue;
-                }
-            }
+        if let Some(parent) = worktree_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            progress.on_warning(&format!("creating directory '{}': {e}", parent.display()));
+            continue;
         }
 
         if let Err(e) = git.worktree_add(&worktree_path, branch) {
@@ -300,11 +300,12 @@ fn create_all_worktrees(
 
 /// Ensure parent directory exists (for multi-remote mode).
 fn ensure_parent_dir(worktree_path: &Path) -> Result<()> {
-    if let Some(parent) = worktree_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
+    if let Some(parent) = worktree_path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
     Ok(())
 }
@@ -660,10 +661,8 @@ pub fn create_satellite_worktree(
         .with_context(|| format!("Failed to create worktree for branch '{branch}'"))?;
 
     // Set up upstream tracking
-    if checkout_upstream {
-        if let Err(e) = git.set_upstream(remote_name, branch) {
-            progress.on_warning(&format!("Could not set upstream for '{}': {e}", branch));
-        }
+    if checkout_upstream && let Err(e) = git.set_upstream(remote_name, branch) {
+        progress.on_warning(&format!("Could not set upstream for '{}': {e}", branch));
     }
 
     Ok(worktree_path.to_path_buf())

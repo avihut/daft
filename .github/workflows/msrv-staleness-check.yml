@@ -1,0 +1,107 @@
+name: MSRV staleness check
+
+# Monthly check that Cargo.toml's `rust-version` is no more than 2 minor
+# versions behind the current Rust stable. The policy is `latest_stable - 2`
+# (see "MSRV Policy" in CLAUDE.md). Beyond that, this workflow opens a
+# tracking issue; once the gap is back ≤ 2 (after a manual bump PR), the
+# issue auto-closes.
+#
+# Deliberately DOES NOT auto-bump. Bumping MSRV can surface clippy-lint
+# escalations, transitive-dep version conflicts, or edition-related warnings
+# that need human attention to resolve.
+#
+# Security note: this workflow only consumes `schedule` and
+# `workflow_dispatch` triggers (no `pull_request[_target]`, no issue/PR
+# bodies, no commit-author fields). The only external input is the
+# checked-in `Cargo.toml` and the canonical Rust dist channel URL — no
+# user-controlled GitHub-event fields are interpolated into shell.
+
+on:
+  schedule:
+    # 1st of each month at 06:00 UTC (= 09:00 Asia/Jerusalem) — aligns with
+    # the daily mise-tool-updates window so dependency PRs and MSRV nudges
+    # arrive in the same morning batch.
+    - cron: "0 6 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute MSRV gap and surface issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Read the declared MSRV from Cargo.toml. The grep + sed pair is
+          # intentionally narrow — `rust-version` only appears once in the
+          # workspace's package metadata.
+          CURRENT=$(grep -E '^rust-version *=' Cargo.toml | head -1 \
+            | sed -E 's/^rust-version *= *"([0-9.]+)".*/\1/')
+
+          # Fetch the canonical current stable Rust version. The `[pkg.rust]`
+          # block's `version` field carries the form
+          #   version = "1.95.0 (59807616e 2026-04-14)"
+          # — extract the leading semver triple.
+          LATEST=$(curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml \
+            | awk '/^\[pkg\.rust\]$/{f=1; next} f && /^version *=/{
+                match($0, /[0-9]+\.[0-9]+\.[0-9]+/);
+                print substr($0, RSTART, RLENGTH); exit
+              }')
+
+          if [ -z "$CURRENT" ] || [ -z "$LATEST" ]; then
+            echo "::error::Failed to parse MSRV (current=$CURRENT, latest=$LATEST)"
+            exit 1
+          fi
+
+          CURRENT_MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          LATEST_MINOR=$(echo "$LATEST" | cut -d. -f2)
+          GAP=$((LATEST_MINOR - CURRENT_MINOR))
+          echo "Declared MSRV: $CURRENT  Current stable: $LATEST  Gap: $GAP"
+
+          # Title is stable across runs so the dedup search matches.
+          TITLE="MSRV is more than 2 minor versions behind latest stable Rust"
+          existing=$(gh issue list \
+            --state open \
+            --search "in:title \"$TITLE\"" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ "$GAP" -gt 2 ]; then
+            BODY=$(cat <<EOF
+          The project's MSRV is **\`$CURRENT\`**; the current stable Rust is **\`$LATEST\`** — a gap of **$GAP** minor versions.
+
+          Per the MSRV policy in \`CLAUDE.md\` (\`latest_stable - 2\`), this is now stale.
+
+          ## Action
+
+          1. Pick the new MSRV target — typically \`$LATEST\` minus 2.
+          2. Update all five sync-points listed under "Where MSRV is recorded" in \`CLAUDE.md\` (\`Cargo.toml\`, \`mise.toml\`, \`.github/workflows/test.yml\`, \`README.md\`, \`docs/getting-started/installation.md\`).
+          3. Verify locally: \`rustup run <new-msrv> cargo check --all-targets\`.
+          4. Open a PR titled \`chore: bump MSRV $CURRENT → <new>\`.
+
+          This issue was opened automatically by \`.github/workflows/msrv-staleness-check.yml\` and will close itself once the gap is back to ≤ 2.
+          EOF
+          )
+            if [ -n "$existing" ]; then
+              echo "Updating existing issue #$existing"
+              gh issue edit "$existing" --body "$BODY"
+            else
+              echo "Opening new tracking issue"
+              gh issue create --title "$TITLE" --body "$BODY" --label chore
+            fi
+          else
+            echo "Gap of $GAP is within policy (≤ 2)."
+            if [ -n "$existing" ]; then
+              echo "Closing previously-opened issue #$existing"
+              gh issue close "$existing" \
+                --comment "MSRV gap is now $GAP (≤ 2). Closing automatically."
+            fi
+          fi

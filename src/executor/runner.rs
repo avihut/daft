@@ -4,15 +4,15 @@
 //! execution mode to dispatch to the appropriate strategy: sequential,
 //! piped (stop-on-failure sequential), parallel, or DAG-ordered.
 
-use super::command::{run_command, run_command_interactive, CommandResult};
+use super::command::{CommandResult, run_command, run_command_interactive};
 use super::dag::DagGraph;
 use super::log_sink::LogSink;
 use super::presenter::JobPresenter;
 use super::{ExecutionMode, JobResult, JobSpec, NodeStatus};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -925,9 +925,11 @@ mod tests {
 
         let events = recorder.events();
         assert!(events.iter().any(|e| e == "job_failure:broken"));
-        assert!(events
-            .iter()
-            .any(|e| e.contains("Job 'broken' failed (exit code: 42)")));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("Job 'broken' failed (exit code: 42)"))
+        );
     }
 
     #[test]
@@ -945,9 +947,11 @@ mod tests {
         run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
 
         let events = recorder.events();
-        assert!(events
-            .iter()
-            .any(|e| e == "message:Try running: npm install"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e == "message:Try running: npm install")
+        );
     }
 
     #[test]
@@ -987,9 +991,11 @@ mod tests {
         run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
 
         let events = recorder.events();
-        assert!(events
-            .iter()
-            .any(|e| e == "job_start:install:Install dependencies"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e == "job_start:install:Install dependencies")
+        );
     }
 
     #[test]
@@ -1193,9 +1199,11 @@ mod tests {
         let _ = run_jobs(&jobs, ExecutionMode::Piped, &presenter, Some(&sink_arc)).unwrap();
 
         let events = concrete.events();
-        assert!(events
-            .iter()
-            .any(|e| e == "runner_skipped:after:previous job failed"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e == "runner_skipped:after:previous job failed")
+        );
     }
 
     #[test]

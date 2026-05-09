@@ -7,11 +7,11 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame, Terminal,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame, Terminal,
 };
 use similar::{ChangeTag, TextDiff};
 use std::fs;
@@ -21,9 +21,9 @@ use std::path::PathBuf;
 use crate::core::layout;
 use crate::core::shared::{self, MaterializedState, SharedFileInfo, WorktreeStatus};
 
-use super::add_modal::{show_add_modal, AddResult};
+use super::add_modal::{AddResult, show_add_modal};
 use super::dialog::show_confirm_dialog;
-use super::remove_modal::{show_remove_modal, RemoveDecision};
+use super::remove_modal::{RemoveDecision, show_remove_modal};
 use super::state::{FileTabState, FocusPanel, PickerState, WorktreeEntry};
 use super::{EntryDecoration, LoopAction, PickerMode};
 
@@ -170,10 +170,10 @@ impl ManageMode {
             }
             WorktreeStatus::Missing => {
                 // Missing -> Materialized: copy from shared into worktree
-                if let Some(parent) = file_path.parent() {
-                    if !parent.exists() {
-                        let _ = fs::create_dir_all(parent);
-                    }
+                if let Some(parent) = file_path.parent()
+                    && !parent.exists()
+                {
+                    let _ = fs::create_dir_all(parent);
                 }
                 let copy_result = if shared_target.is_dir() {
                     shared::copy_dir_all(&shared_target, &file_path)
@@ -542,10 +542,10 @@ impl ManageMode {
                         }
                     } else if !file_path.exists() {
                         // Missing — copy from shared
-                        if let Some(parent) = file_path.parent() {
-                            if !parent.exists() {
-                                let _ = fs::create_dir_all(parent);
-                            }
+                        if let Some(parent) = file_path.parent()
+                            && !parent.exists()
+                        {
+                            let _ = fs::create_dir_all(parent);
                         }
                         if shared_target.is_dir() {
                             let _ = shared::copy_dir_all(&shared_target, &file_path);
@@ -782,10 +782,11 @@ impl ManageMode {
                     }
                 }
                 if !file_path.exists() {
-                    if let Some(parent) = file_path.parent() {
-                        if parent != wt.as_path() && !parent.exists() {
-                            fs::create_dir_all(parent)?;
-                        }
+                    if let Some(parent) = file_path.parent()
+                        && parent != wt.as_path()
+                        && !parent.exists()
+                    {
+                        fs::create_dir_all(parent)?;
                     }
                     shared::create_shared_symlink(wt, rel_path, &self.git_common_dir)?;
                 }

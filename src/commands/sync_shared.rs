@@ -3,27 +3,28 @@
 //! Extracted to avoid code duplication between the two modules.
 
 use crate::{
+    CD_FILE_ENV,
     core::{
+        CommandBridge, TuiBridge,
         worktree::{
             info_field::FieldSet,
             list::{EntryKind, Stat},
             list_stream, prune,
             sync_dag::{DagEvent, OperationPhase, PatchSource, TaskMessage, TaskStatus},
         },
-        CommandBridge, TuiBridge,
     },
     git::GitCommand,
     hooks::{HookExecutor, HooksConfig},
     output::{
-        tui::{FinalStatus, WorktreeRow, WorktreeStatus},
         CliOutput, Output, OutputConfig,
+        tui::{FinalStatus, WorktreeRow, WorktreeStatus},
     },
     settings::DaftSettings,
-    styles, CD_FILE_ENV,
+    styles,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 /// Execute a single prune task for a DAG worker.
 #[allow(clippy::too_many_arguments)]
@@ -380,8 +381,8 @@ pub fn render_prune_result(result: &prune::PruneResult, output: &mut dyn Output)
 
 use crate::core::worktree::remove_repo::{self, RepoTarget, WorktreeEntry};
 use crate::hooks::{HookContext, HookType, RemovalReason};
-use crate::output::tui::TuiPresenter;
 use crate::output::BufferingOutput;
+use crate::output::tui::TuiPresenter;
 
 /// Execute one `RemoveWorktree` task.
 ///

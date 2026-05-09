@@ -6,8 +6,8 @@
 use super::yaml_config_loader;
 use super::yaml_executor::{self, JobFilter};
 use super::{
-    find_hooks, list_hooks, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
-    HooksConfig, TrustDatabase, TrustLevel, DEPRECATED_HOOK_REMOVAL_VERSION,
+    DEPRECATED_HOOK_REMOVAL_VERSION, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
+    HooksConfig, TrustDatabase, TrustLevel, find_hooks, list_hooks,
 };
 use crate::executor::presenter::JobPresenter;
 use crate::output::Output;

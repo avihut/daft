@@ -4,7 +4,7 @@
 /// hook names bold+yellow, sub-keys cyan, quoted strings green, and
 /// booleans/numbers yellow. Uses the shared [`SYNTAX`] palette.
 pub(super) fn colorize_yaml_dump(yaml: &str) -> String {
-    use crate::styles::{colors_enabled, RESET, SYNTAX};
+    use crate::styles::{RESET, SYNTAX, colors_enabled};
 
     let use_colors = colors_enabled();
     let mut in_hooks = false;

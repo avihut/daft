@@ -15,7 +15,7 @@ mod formats;
 mod test_fixtures;
 
 pub use args::EmitArgs;
-pub use dispatch::{emit, is_broken_pipe, EmitError};
+pub use dispatch::{EmitError, emit, is_broken_pipe};
 pub use format::Format;
 pub use payload::{Cell, EmitPayload, Matrix, Section, Shape, Table};
 

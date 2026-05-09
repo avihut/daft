@@ -3,8 +3,8 @@
 //! Color constants, duration formatting, and header/summary box drawing
 //! used by both the interactive and plain renderers.
 
-use crate::styles;
 use crate::VERSION;
+use crate::styles;
 use std::time::Duration;
 
 // ANSI color codes for hook output (256-color palette)
@@ -57,7 +57,9 @@ pub(super) fn format_header_lines(
             format!("{GREY}\u{250c}{border_h}\u{2510}{}", styles::RESET),
             format!(
                 "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
-                styles::BOLD, styles::RESET, styles::RESET
+                styles::BOLD,
+                styles::RESET,
+                styles::RESET
             ),
             format!("{GREY}\u{2514}{border_h}\u{2518}{}", styles::RESET),
         ]

@@ -3,7 +3,7 @@
 //! Creates a worktree with a new branch.
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
-use crate::core::layout::{auto_gitignore_if_needed, Layout};
+use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
