@@ -10,11 +10,14 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-A polyglot service. The repo has:
+A polyglot service. Tool versions are pinned in three different files in three
+different parts of the repo:
 
-- `apps/api` — Node 18, with a committed `.nvmrc` saying `18`
-- `apps/etl` — Python 3.11, with a `.python-version` file
-- `apps/auth` — Rust 1.78, pinned only inside `Dockerfile`'s `FROM rust:1.78`
+```
+apps/api/.nvmrc                18
+apps/etl/.python-version       3.11
+apps/auth/Dockerfile           FROM rust:1.78  (the only place rust is pinned)
+```
 
 Three pinning files, three different mechanisms, three different runtimes that
 may or may not pick them up. `.nvmrc` only matters if you remember `nvm use`.

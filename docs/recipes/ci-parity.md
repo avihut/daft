@@ -10,11 +10,49 @@ pillars: [hooks]
 
 ## Starting state
 
-The repo has a `daft.yml` with six `worktree-post-create` jobs: `mise install`,
-`pnpm install`, codegen, `services-up`, `migrate`, warmup. It also has
-`.github/workflows/test.yml` with five steps that do roughly the same thing — in
-a slightly different order, sometimes with subtly different commands. There's a
-comment near the top of test.yml: _"Keep in sync with daft.yml."_
+The repo has a `daft.yml` driving worktree creation, plus a
+`.github/workflows/test.yml` doing roughly the same operations — in a slightly
+different order, sometimes with subtly different commands.
+
+```yaml
+# daft.yml — abridged
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-tools
+        run: mise install
+      - name: install-deps
+        run: pnpm install --frozen-lockfile
+        needs: [install-tools]
+      - name: codegen
+        run: ./scripts/codegen.sh
+        needs: [install-deps]
+      - name: services-up
+        run: docker compose up -d --wait
+        needs: [install-deps]
+      - name: migrate
+        run: pnpm db:migrate
+        needs: [services-up]
+      - name: warmup
+        run: cargo build --workspace
+        background: true
+        needs: [install-deps]
+```
+
+```yaml
+# .github/workflows/test.yml — abridged
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pnpm install --frozen-lockfile
+      - run: ./scripts/codegen.sh
+      - run: pnpm test
+```
+
+A comment near the top of `test.yml`: _"Keep in sync with daft.yml."_
 
 Someone adds `protoc-gen-go` to the codegen job in `daft.yml` and doesn't update
 the workflow. CI breaks; the failing job's logs point at a missing binary inside

@@ -10,12 +10,18 @@ pillars: [worktrees, hooks]
 
 ## Starting state
 
-A Node monorepo. The repo has:
+A Node monorepo. The repo has `package.json` + `pnpm-lock.yaml` at the root,
+plus a setup script the README points new contributors at:
 
-- `package.json` and `pnpm-lock.yaml` at the root
-- `bin/setup.sh` that runs `pnpm install --frozen-lockfile` and copies
-  `.env.example` to `.env` if one isn't there yet
-- A README that opens with **"First time? Run `bin/setup.sh`."**
+```bash
+# bin/setup.sh
+#!/usr/bin/env bash
+set -e
+pnpm install --frozen-lockfile
+[ ! -f .env ] && cp .env.example .env
+```
+
+The README opens with **"First time? Run `bin/setup.sh`."**
 
 The ritual: `git checkout feature/x`, then `bin/setup.sh`. Sooner or later
 someone forgets and hits a confusing missing-module error from a transitive dep
