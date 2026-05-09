@@ -5,6 +5,7 @@ description:
   env on cd; daft adds the install/services/cleanup rituals direnv was never
   meant to handle.
 pillars: [worktrees, hooks]
+kind: adoption
 ---
 
 # Adopting from direnv

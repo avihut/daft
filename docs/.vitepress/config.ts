@@ -541,6 +541,7 @@ export default defineConfig({
       {
         text: "About",
         items: [
+          { text: "Overview", link: "/about/" },
           { text: "Why daft", link: "/about/why-daft" },
           { text: "Glossary", link: "/about/glossary" },
           { text: "FAQ", link: "/about/faq" },

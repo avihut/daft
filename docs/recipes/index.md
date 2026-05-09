@@ -19,14 +19,6 @@ real-world setup. Three kinds of pages here:
 import { ref, computed, onMounted } from 'vue'
 import { data as recipes } from '../.vitepress/data/recipes.data.ts'
 
-const ADOPTION_LINKS = [
-  '/recipes/adopting-from-direnv',
-  '/recipes/adopting-from-mise',
-  '/recipes/walkthroughs/migrating-from-setup-sh',
-  '/recipes/layering-direnv',
-  '/recipes/layering-mise',
-]
-
 const pillar = ref(null)
 
 onMounted(() => {
@@ -39,9 +31,9 @@ const visible = computed(() => {
   return recipes.filter(r => r.pillars.includes(pillar.value))
 })
 
-const adoption = computed(() => visible.value.filter(r => ADOPTION_LINKS.includes(r.link)))
-const walkthroughs = computed(() => visible.value.filter(r => r.kind === 'walkthrough' && !ADOPTION_LINKS.includes(r.link)))
-const patterns = computed(() => visible.value.filter(r => r.kind === 'pattern' && !ADOPTION_LINKS.includes(r.link)))
+const adoption = computed(() => visible.value.filter(r => r.kind === 'adoption'))
+const walkthroughs = computed(() => visible.value.filter(r => r.kind === 'walkthrough'))
+const patterns = computed(() => visible.value.filter(r => r.kind === 'pattern'))
 const references = computed(() => visible.value.filter(r => r.kind === 'reference' || r.kind === 'anti-pattern'))
 </script>
 

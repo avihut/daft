@@ -2,11 +2,17 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import matter from "gray-matter";
 
-export type RecipeKind =
-  | "pattern"
-  | "walkthrough"
-  | "anti-pattern"
-  | "reference";
+const RECIPE_KINDS = [
+  "pattern",
+  "walkthrough",
+  "anti-pattern",
+  "reference",
+  "adoption",
+] as const;
+
+export type RecipeKind = (typeof RECIPE_KINDS)[number];
+
+const RECIPE_KIND_SET: ReadonlySet<string> = new Set(RECIPE_KINDS);
 
 export type Recipe = {
   title: string;
@@ -35,8 +41,12 @@ function toRecipe(
   file: string,
   data: matter.GrayMatterFile<string>["data"],
   link: string,
-  kind: RecipeKind,
+  defaultKind: RecipeKind,
 ): Recipe {
+  const kind: RecipeKind =
+    typeof data.kind === "string" && RECIPE_KIND_SET.has(data.kind)
+      ? (data.kind as RecipeKind)
+      : defaultKind;
   return {
     title: data.title ?? file.replace(/\.md$/, ""),
     description: data.description ?? "",

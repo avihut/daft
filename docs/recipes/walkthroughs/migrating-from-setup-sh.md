@@ -4,6 +4,7 @@ description:
   Move a project's first-time setup script into per-worktree daft hooks — same
   operations, no manual run, with cleanup on remove that setup.sh never had.
 pillars: [worktrees, hooks]
+kind: adoption
 ---
 
 # Migrating from a bin/setup.sh ritual

@@ -5,6 +5,7 @@ description:
   non-secret env on cd; daft.yml's existing hooks pick up the consistent
   toolchain.
 pillars: [worktrees, hooks]
+kind: adoption
 ---
 
 # Layering mise on daft

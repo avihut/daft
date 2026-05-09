@@ -4,6 +4,7 @@ description:
   Add direnv to a daft-only project. direnv loads .env and any layout stanzas on
   cd; daft.yml's existing hooks remain unchanged.
 pillars: [worktrees, hooks]
+kind: adoption
 ---
 
 # Layering direnv on daft

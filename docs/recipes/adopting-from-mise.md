@@ -5,6 +5,7 @@ description:
   versions and env defaults; daft adds the install/services/cleanup rituals mise
   was never meant to handle.
 pillars: [worktrees, hooks]
+kind: adoption
 ---
 
 # Adopting from mise
