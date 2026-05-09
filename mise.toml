@@ -11,7 +11,7 @@
 minimum_release_age = "7d"
 
 [tools]
-rust = "1.91"
+rust = "1.93"
 lefthook = "latest"
 cocogitto = "latest"
 bun = "latest"

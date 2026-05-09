@@ -195,4 +195,4 @@ See [Shell Integration](./shell-integration.md) for full details.
 ## Requirements
 
 - **Git** 2.5+ (for worktree support)
-- **Rust** 1.91+ (only needed when building from source)
+- **Rust** 1.93+ (only needed when building from source)
