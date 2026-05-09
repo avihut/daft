@@ -1,9 +1,10 @@
 //! Coordinator process for running background hook jobs.
 //!
-//! The coordinator is a single forked child process that runs background
-//! hook jobs as threads. When background jobs exist, the parent daft
-//! process forks once. The parent prints a summary and exits. The child
-//! (coordinator) runs the background jobs, writes logs, and exits when done.
+//! When a hook declares any background jobs, the parent daft process spawns
+//! a fresh `daft __coordinator <state-file>` child via `spawn_coordinator`,
+//! prints a summary, and returns. The child reads + unlinks the state file,
+//! detaches via `setsid()`, runs the background jobs as threads, and exits
+//! when done.
 //!
 //! A Unix socket listener runs in a separate thread alongside job execution,
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
@@ -47,8 +48,8 @@ pub struct CoordinatorState {
 
 /// Wire format for state passed from parent to spawned `__coordinator`
 /// child via a serde-JSON tempfile (see `spawn_coordinator` /
-/// `run_coordinator`). Bundles `LogStore.base_dir` because the new
-/// coordinator process can no longer inherit it via fork CoW.
+/// `run_coordinator`). Bundles `LogStore.base_dir` because the spawned
+/// child does not share the parent's address space.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CoordinatorPayload {
     pub state: CoordinatorState,
@@ -120,28 +121,31 @@ impl CoordinatorState {
 
         let results = Arc::new(Mutex::new(Vec::<JobResult>::new()));
 
-        // Wave-based scheduler. We use DagGraph for cycle/missing-dep
-        // detection and dependent lookups, but execute each wave with bare
-        // `std::thread::spawn` (matching master's per-job spawn pattern)
-        // rather than `DagGraph::run_parallel`. The reason is platform-
-        // specific: `run_parallel` uses `std::thread::scope`, which can
-        // deadlock post-`libc::fork()` on macOS due to malloc-arena state
-        // inherited from the parent. Bare `thread::spawn` does not exhibit
-        // this — the buggy pre-fix coordinator used the same primitive.
+        // Wave-based scheduler. DagGraph is used for cycle/missing-dep
+        // detection and dependents lookup, but each wave is executed with
+        // bare `std::thread::spawn` rather than `DagGraph::run_parallel`.
+        // Reason: every job in a wave must reach a terminal state before
+        // any dependent's wave starts — that's the contract `run_all_with_cancel`
+        // exposes to callers (see `next_ready` computation below). A
+        // free-running scheduler would advance dependents the moment their
+        // own predecessors finish, which violates this barrier and would
+        // race with the cancel/skip cascade that fans out from per-wave
+        // outcomes. The wave shape costs concurrency in heterogeneous DAGs
+        // but is the simplest expression of "outcomes settle before the
+        // next layer dispatches"; the previous comment cited a fork-era
+        // malloc-arena constraint, which is moot post-spawn.
         let n = graph.len();
         let mut statuses = vec![NodeStatus::Pending; n];
         let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
         let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
 
-        // Each iteration of this loop is one wave: every ready node is spawned
-        // in parallel and the loop blocks until ALL of them finish before
-        // computing the next wave. This is intentionally less concurrent than
-        // a free-running scheduler — an independent fast chain can be held up
-        // behind a slow one in the same wave — but it is the simplest shape
-        // that is provably safe across `libc::fork()` on macOS without
-        // touching `std::thread::scope`. Do not "optimize" this into per-node
-        // free-running advancement without re-checking the post-fork
-        // constraint described above.
+        // Each iteration of this loop is one wave: every ready node is
+        // spawned in parallel and the loop blocks until ALL of them finish
+        // before computing the next wave. Less concurrent than a free-running
+        // scheduler (a fast independent chain can be held up behind a slow
+        // sibling in the same wave), but the dependency-cascade and cancel
+        // bookkeeping above relies on per-wave settlement — see the
+        // top-of-function comment.
         while !ready.is_empty() {
             // Spawn one worker per ready node. Inputs are cloned per-spawn,
             // matching the pre-fix per-thread cloning pattern.
