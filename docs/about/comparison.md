@@ -60,8 +60,8 @@ better than daft, or you don't need worktrees at all.
 ## vs GitHub Actions PR checks
 
 (Speculative — fully realized once
-[#330](https://github.com/avihut/daft/issues/330) and
-[#468](https://github.com/avihut/daft/issues/468) ship.)
+[#468](https://github.com/avihut/daft/issues/468) (commit-stage hooks) ships.
+Worktree and merge hooks already cover the boundaries they own.)
 
 GitHub Actions runs PR checks **after** code reaches the central repo. daft
 hooks (when the full set is shipped) run **before** code leaves your machine.
