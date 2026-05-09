@@ -68,6 +68,13 @@ pub struct HookContext {
     /// command injects `DAFT_MERGE_*` here). Ordering is kept stable
     /// (`BTreeMap`) so overriding/appending is deterministic in tests.
     pub extra_env: BTreeMap<String, String>,
+
+    /// Override for the daft state directory used when writing hook
+    /// invocation/job records. `None` (the production default) routes through
+    /// `daft_state_dir()` (XDG state home, modulo `DAFT_STATE_DIR` in dev
+    /// builds). Tests set this to a tempdir so their LogStore writes never
+    /// touch the user's real `~/.local/state/daft`.
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Reason why a worktree is being removed.
@@ -124,6 +131,7 @@ impl HookContext {
             old_branch_name: None,
             changed_attributes: None,
             extra_env: BTreeMap::new(),
+            state_dir: None,
         }
     }
 
@@ -133,6 +141,13 @@ impl HookContext {
     /// `new()` starts with an empty map.
     pub fn with_extra_env(mut self, extra: BTreeMap<String, String>) -> Self {
         self.extra_env = extra;
+        self
+    }
+
+    /// Override the daft state directory used for LogStore writes. Test-only
+    /// in practice: production hooks always go through `daft_state_dir()`.
+    pub fn with_state_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.state_dir = Some(dir.into());
         self
     }
 
@@ -470,6 +485,7 @@ mod tests {
             old_branch_name: Some("feat/old-name".to_string()),
             changed_attributes: None,
             extra_env: BTreeMap::new(),
+            state_dir: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
@@ -504,6 +520,7 @@ mod tests {
             old_branch_name: None,
             changed_attributes: None,
             extra_env: BTreeMap::new(),
+            state_dir: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert!(!env.vars.contains_key("DAFT_IS_MOVE"));

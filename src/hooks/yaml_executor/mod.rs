@@ -157,8 +157,16 @@ pub fn execute_yaml_hook_with_rc(
     // for daft.yml-only repos), and the hook silently never fires.
     let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(&ctx.git_dir)?;
     let invocation_id = crate::coordinator::log_store::generate_invocation_id();
-    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo(
+    // Honor `ctx.state_dir` so unit tests route LogStore writes into a
+    // tempdir; production callers leave it `None` and fall through to
+    // `daft_state_dir()` (XDG state home).
+    let state_base = match &ctx.state_dir {
+        Some(p) => p.clone(),
+        None => crate::daft_state_dir()?,
+    };
+    let store = std::sync::Arc::new(crate::coordinator::log_store::LogStore::for_repo_in(
         &repo_hash,
+        &state_base,
     )?);
 
     let trigger_command = if ctx.command == "hooks-run" {
@@ -516,14 +524,19 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::TempDir;
 
-    /// Build a `HookContext` whose `git_dir` is a real temp directory.
+    /// Build a `HookContext` whose `git_dir` is a real temp directory and
+    /// whose `state_dir` is the same temp directory.
     ///
     /// `execute_yaml_hook_with_rc` writes a `daft-id` file into `ctx.git_dir`
-    /// to compute the repo hash; pre-fix it called `compute_repo_id()`
+    /// to compute the repo hash; pre-fix (#448) it called `compute_repo_id()`
     /// (cwd-based) and silently picked up whatever git repo the test runner
-    /// was sitting in. The fix moves that to `ctx.git_dir`, so tests need a
-    /// real directory there or they trip on `try_create_new` failing on
-    /// `/project/.git`.
+    /// was sitting in. The fix moved that to `ctx.git_dir`, so tests need a
+    /// real directory there.
+    ///
+    /// Setting `state_dir` to the same tempdir routes the LogStore writes for
+    /// the resulting invocation/job records into the tempdir as well — pre
+    /// `#478` they fell through to `daft_state_dir()` and accumulated as
+    /// orphan UUID directories under the user's `~/.local/state/daft/jobs/`.
     ///
     /// Tests that need the context together with the keep-alive guard call
     /// `make_ctx_with_dir`. Tests that only need the context (and don't mind
@@ -540,7 +553,8 @@ mod tests {
             "/project/main",
             "/project/feature/new",
             "feature/new",
-        );
+        )
+        .with_state_dir(dir.path());
         (ctx, dir)
     }
 
@@ -639,6 +653,57 @@ mod tests {
         .unwrap();
 
         assert!(result.skipped);
+    }
+
+    /// Regression for #478: `execute_yaml_hook_with_rc` must honor
+    /// `ctx.state_dir` and route LogStore writes into the supplied base, not
+    /// fall through to `daft_state_dir()` and leak orphan UUID directories
+    /// into the user's real `~/.local/state/daft/jobs/`.
+    #[test]
+    fn test_execute_yaml_hook_honors_state_dir_override() {
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("noop".to_string()),
+                run: Some(RunCommand::Simple("true".to_string())),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+
+        execute_yaml_hook(
+            "test-hook",
+            &hook_def,
+            &ctx,
+            &mut output,
+            ".daft",
+            Path::new("/tmp"),
+            &HookOutputConfig::default(),
+        )
+        .unwrap();
+
+        // The executor stamps a `daft-id` UUID into `ctx.git_dir` and then
+        // writes invocation/job records under `<state_dir>/jobs/<uuid>/`. Read
+        // the UUID it picked, then verify both halves of the contract: writes
+        // landed under our tempdir, and nothing leaked into the real state
+        // dir. The latter is the actual regression: pre-fix every test run
+        // created a fresh orphan there.
+        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(dir.path())
+            .expect("daft-id should have been written into ctx.git_dir");
+        assert!(
+            dir.path().join("jobs").join(&repo_hash).exists(),
+            "LogStore writes should have landed under the tempdir state base"
+        );
+        let leaked = crate::daft_state_dir()
+            .expect("daft_state_dir resolves")
+            .join("jobs")
+            .join(&repo_hash);
+        assert!(
+            !leaked.exists(),
+            "must not leak a UUID dir into the real state dir: {}",
+            leaked.display()
+        );
     }
 
     #[test]

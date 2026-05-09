@@ -145,6 +145,7 @@ mod tests {
             old_branch_name: Some("feat/old".to_string()),
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
+            state_dir: None,
         };
         let result = substitute(
             "from {old_worktree_path} to {worktree_path} branch {old_branch}",
@@ -179,6 +180,7 @@ mod tests {
             old_branch_name: None,
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
+            state_dir: None,
         };
         let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
         assert_eq!(result, "old= branch=");

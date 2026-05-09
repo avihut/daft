@@ -135,9 +135,18 @@ impl LogStore {
         Self { base_dir }
     }
 
-    /// Returns the log store for a specific repository.
+    /// Returns the log store for a specific repository, rooted under the
+    /// daft state directory.
     pub fn for_repo(repo_hash: &str) -> Result<Self> {
-        let base = crate::daft_state_dir()?.join("jobs").join(repo_hash);
+        Self::for_repo_in(repo_hash, &crate::daft_state_dir()?)
+    }
+
+    /// Returns the log store for a specific repository, rooted under an
+    /// explicit state directory base. Tests use this to redirect writes to a
+    /// tempdir; production callers go through `for_repo`. The on-disk shape
+    /// (`<state_base>/jobs/<repo_hash>/...`) is identical either way.
+    pub fn for_repo_in(repo_hash: &str, state_base: &Path) -> Result<Self> {
+        let base = state_base.join("jobs").join(repo_hash);
         Ok(Self::new(base))
     }
 
