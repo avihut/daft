@@ -118,7 +118,75 @@ Two parallel worktrees now coexist. `daft start feature/billing` while
 feature/auth is up gets a different port range, a different project name, and a
 different set of volumes — no collisions, no manual overrides.
 
-## Variants
+## Variants by starting state
+
+By **starting state** — what your `compose.yaml` looks like before adopting
+daft. The Recipe above is the green-field shape; here's what changes if you're
+adopting an existing stack.
+
+### Green-field
+
+The Recipe above is the full shape. `compose.yaml` is yours; you control the
+port surface; you write `${PORT_POSTGRES}:5432` from the ground up; and the
+hook's `allocate-ports` job populates `.envrc`. Two parallel worktrees coexist
+with disjoint ports and disjoint container names.
+
+### Adopt-existing
+
+Your team has been running `compose.yaml` for months. You don't want to
+coordinate a "pull and re-up" with everyone today just to add daft. You can
+layer the hook on top without editing the file — but how much isolation you get
+depends on what `compose.yaml` already looks like.
+
+**Case 1 — `compose.yaml` already uses env-var ports.** Common in projects that
+did the right thing early. The existing `compose.yaml` has
+`${PORT_POSTGRES:-5432}:5432` (a default, with override). Drop in the
+green-field Recipe as-is — the existing defaults stay correct for
+one-worktree-at-a-time, and the hook's per-worktree port allocation takes over
+for parallel worktrees.
+
+**Case 2 — `compose.yaml` hardcodes ports.** `5432:5432` everywhere. You get
+container, network, and volume isolation via `COMPOSE_PROJECT_NAME`, but
+host-side ports still collide: two worktrees can't both have Postgres up; the
+second `docker compose up` fails with "port already in use." This is still a
+worthwhile adoption — a single worktree at a time gets clean isolation (no `dev`
+containers polluting `master`), and the team can port-variable-ize the file
+later as a smaller, separate PR. The minimum hook for this case:
+
+```yaml
+# daft.yml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: services-up
+        run: docker compose up -d --wait
+        env:
+          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
+
+  worktree-pre-remove:
+    jobs:
+      - name: services-down
+        run: docker compose down -v --remove-orphans
+        env:
+          COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
+```
+
+Two `env:` blocks carry the same `COMPOSE_PROJECT_NAME` value, derived from the
+branch. No edits to `compose.yaml`.
+
+For interactive `docker compose` commands from the worktree shell — so
+`docker compose ps` shows that worktree's containers — also seed the var into
+`.envrc`:
+
+```bash
+# .envrc — written by hand or seeded by an allocate-ports job
+export COMPOSE_PROJECT_NAME="myapp-${DAFT_BRANCH_NAME//\//-}"
+```
+
+When the team is ready, port-variable-ize `compose.yaml` (`5432:5432` →
+`${PORT_POSTGRES}:5432`) and graduate to the green-field Recipe.
+
+## Variants by runtime
 
 By **runtime** — different ways to boot the same shape of stack.
 
@@ -184,18 +252,6 @@ services, `compose.dev.yaml` for dev-only overrides):
 Setting `COMPOSE_FILE=compose.yaml:compose.dev.yaml` in `.envrc` is an
 alternative — bare `docker compose` commands from your shell pick up the same
 files without needing `-f` every time.
-
-### Adopting an existing stack
-
-If your team already has `compose.yaml` without `COMPOSE_PROJECT_NAME`, adopt it
-without changing the file: set the var in the hook's `env:` (as the Recipe does)
-and additionally seed it into `.envrc` so interactive `docker compose` commands
-pick it up too:
-
-```bash
-# .envrc — seeded by allocate-ports
-export COMPOSE_PROJECT_NAME="myapp-${DAFT_BRANCH_NAME//\//-}"
-```
 
 ## Idempotency & safety
 
