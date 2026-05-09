@@ -1,82 +1,102 @@
 ---
 title: Background warmup
 description:
-  Detached prebuild work — Rust dev binary, Vite optimizer, Gradle daemon — that
-  makes your first incremental command fast.
+  A detached prebuild job that finishes while you're still opening the editor —
+  so the first incremental compile after your edit is fast.
 pillars: [worktrees, hooks]
 ---
 
 # Background warmup
 
-> Installing dependencies isn't enough. The first `cargo run`, `vite dev`, or
-> `./gradlew test` in a fresh worktree is still slow — nothing is compiled, no
-> caches are warm. Background warmup is a detached job that does the heavy work
-> _while_ you start coding, so when you actually run the command, it's fast.
+## Starting state
 
-## When to reach for this
+A Rust workspace — three crates, ~200 transitive dependencies. From a fresh
+`cargo fetch`, the first `cargo build --workspace` on your laptop takes about 4
+minutes. You've already adopted
+[Toolchain bootstrap](/recipes/toolchain-bootstrap), so `daft start feature/x`
+populates the registry cache before returning. That part's good.
 
-- Your project has a real build step (compiled languages, bundlers, long-warming
-  daemons) and the first build after a fresh install takes meaningful time.
-- You want `daft start feature/x` to feel instant, but you also want `cargo run`
-  (or equivalent) to be fast when you get to it.
-- You have CPU and battery to spare. Warmups consume both — they're a trade-off,
-  not a free win.
+What's still bad: the _first_ `cargo run` (or `cargo test`) in a fresh worktree
+still pays those 4 minutes. Every worktree. You started the worktree because you
+wanted to context-switch fast, and now you're watching the cursor blink for as
+long as it would have taken to deal with the original task. By the time it's
+done, you've already lost the thread.
 
-If your first build is already fast (interpreted languages, tiny codebases,
-projects with hot caches), skip this pattern.
+The reach for daft: do the slow work _while_ you're still opening the editor. By
+the time your first edit is ready, the cache is warm and the incremental compile
+is a few seconds.
 
-## Minimal recipe
+## What changes
+
+`daft.yml` gains a second job — backgrounded, downstream of the install.
+Worktree creation still returns as soon as the install finishes; `cargo build`
+keeps running, detached, after the daft command exits. You drop into the new
+worktree right away.
+
+What you don't get: a guarantee. Background warmups are an optimization, not a
+correctness contract. The job can fail, get cancelled, or simply be slower than
+your first edit. None of that breaks anything; the worst case is that the first
+build still pays the slow path. Background warmup is the kind of automation you
+can add and forget about.
+
+## Recipe
 
 ```yaml
 # daft.yml
 hooks:
   worktree-post-create:
     jobs:
-      - name: install-deps
+      - name: fetch-deps
         run: cargo fetch --locked
 
       - name: warmup-build
-        run: cargo build
+        run: cargo build --workspace
         background: true
-        needs: [install-deps]
+        needs: [fetch-deps]
 ```
 
 `background: true` detaches the job from worktree creation. The hook returns as
-soon as `install-deps` is done; `warmup-build` keeps running. You drop into the
-new worktree immediately and the build progresses behind you.
+soon as `fetch-deps` finishes; `warmup-build` keeps running. You're typing in
+the new worktree while the compiler grinds.
 
-`needs: [install-deps]` ensures the warmup waits for crates to be fetched.
-Without that, you'd race.
+`needs: [fetch-deps]` ensures the build doesn't race the fetch. Without it,
+`cargo build` would try to download crates that the parallel fetch is already
+pulling.
 
 The default fail mode for `worktree-post-create` is `warn`, so a failed warmup
 never blocks worktree creation. That's the right default — a warmup is an
-optimization, not a correctness step.
+optimization, and an optimization that occasionally fails is still a net win.
 
 ## Variants
 
-### Rust — debug binary prebuild
+By tool. The shape is the same — `background: true`, `needs:` the install — only
+the `run:` line changes.
+
+### Rust — debug binary, scoped or workspace
 
 ```yaml
+# Whole workspace — simplest, slowest
 - name: warmup-build
-  run: cargo build # debug profile, default workspace
+  run: cargo build --workspace
   background: true
-  needs: [install-deps]
-```
+  needs: [fetch-deps]
 
-Builds the debug binary into `target/debug/`. When you later run `cargo run` or
-`cargo test`, only your delta is compiled — minutes turn into seconds. The
-warmup is per-worktree; **don't** share `target/` across worktrees (see
-[Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state)).
-
-For multi-package workspaces, scope the warmup to the package(s) you work on
-most:
-
-```yaml
+# Scoped to packages you work on most — faster, less complete
 - name: warmup-build
   run: cargo build -p server -p worker
   background: true
-  needs: [install-deps]
+  needs: [fetch-deps]
 ```
+
+`--workspace` is the right default for small/medium repos. For a big multi-crate
+workspace where each developer focuses on a couple of packages, scoping pays off
+— it cuts CPU time and battery drain at the cost of cold-compiling whatever you
+didn't pre-build.
+
+The build cache (`target/`) is per-worktree by design — sharing it silently
+corrupts artifacts. For sharing **compiled** output, use `sccache` (next
+variant), not `CARGO_TARGET_DIR`. The full failure modes are at
+[Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
 
 ### Go — build cache priming
 
@@ -87,11 +107,11 @@ most:
   needs: [fetch-modules]
 ```
 
-`go build ./...` populates the build cache (`$GOCACHE`, shared across worktrees
-by default). The compiled artifacts are content-addressed, so the cache survives
-across worktrees and gives every worktree a head start.
+Go's build cache (`$GOCACHE`) is shared across worktrees by default and
+content-addressed, so a warmup in one worktree pre-compiles for every other one
+too. The cleanest cache model of any major toolchain.
 
-### Vite / Next.js — dep optimizer warmup
+### Vite / Next.js — dep optimizer prime
 
 ```yaml
 - name: warmup-vite
@@ -101,12 +121,12 @@ across worktrees and gives every worktree a head start.
   root: apps/web
 ```
 
-Vite's dep optimizer is the slowest part of the first `vite dev`. Running
+Vite's dep optimizer is the slow part of the first `vite dev`. Running
 `vite optimize` ahead of time means the dev server starts hot. `root:` is a
 per-job working directory — useful when the warmup target is a single app inside
 a monorepo.
 
-### Gradle — daemon + dep download
+### Gradle — daemon spin-up
 
 ```yaml
 - name: warmup-gradle
@@ -115,74 +135,53 @@ a monorepo.
   needs: [install-deps]
 ```
 
-Gradle's biggest cold-start cost is dep resolution and the daemon spin-up.
+Gradle's biggest cold-start cost is dep resolution and configuration.
 `./gradlew dependencies` resolves the full graph and primes the configuration
 cache.
 
-### sccache / ccache — distributed cache prime
+### sccache — share the compile work, not the artifacts
 
 ```yaml
-- name: prime-cache
-  run: |
-    SCCACHE_DIR=$HOME/.cache/sccache cargo build
+- name: warmup-build
+  run: cargo build --workspace
   background: true
-  needs: [install-deps]
+  needs: [fetch-deps]
   env:
     RUSTC_WRAPPER: sccache
+    SCCACHE_DIR: ${HOME}/.cache/sccache
 ```
 
-If you use sccache or ccache, the cache is shared across worktrees by design.
-Priming it from a warmup means subsequent builds in **any** worktree benefit,
-not just the current one.
+`sccache` is content-addressed by source-and-flags, so a warmup in worktree A
+primes the cache for worktree B. The `target/` directories stay per-worktree
+(correct), but the actual compile work runs once. The bigger your workspace, the
+more this pays off.
 
 ## Idempotency & safety
 
-Warmup jobs are usually idempotent — building twice is a no-op (the build system
-sees no changes). But two concerns are worth being explicit about:
+Warmups are idempotent by construction — building twice with no source changes
+is a near-no-op. Two specific concerns are worth being explicit about:
 
-**Cancellation.** If you remove the worktree while a warmup is running, daft
-sends `SIGTERM` to the job's process group. Most build tools handle this cleanly
-(cargo, go, gradle all unwind partial work). If your warmup script holds
-long-lived locks (a custom daemon, a database connection), trap the signal and
-clean up explicitly.
+**Cancellation.** Removing the worktree while a warmup is running sends SIGTERM
+to the job's process group. cargo, go, and gradle all unwind partial work
+cleanly. If your warmup is a custom script that holds long-lived locks (a
+daemon, a database connection), trap the signal and clean up explicitly.
 
-**No critical work.** Anything truly required for correctness must run
-synchronously, **not** in a warmup. The `background: true` job can fail, get
-cancelled, or finish late; depending on it for correctness produces flaky
-worktrees.
+**No critical work in a warmup.** Anything required for correctness must run
+synchronously. The `background: true` job can fail, get cancelled, or finish
+late — depending on it for correctness produces flaky worktrees. The most common
+mistake is putting code generation here.
 
 ::: warning Don't run code generation in a warmup If your project generates
-source files at build time (proto, GraphQL schema, OpenAPI client), that codegen
-is **not** a warmup — code that imports the generated module breaks if it isn't
-there. Run codegen synchronously in toolchain-bootstrap, or as a sequential step
-after install. :::
+source files at build time (proto, GraphQL schema, OpenAPI client), code that
+imports the generated module breaks if the codegen isn't done. Run codegen
+synchronously as part of the install, not as a backgrounded warmup. :::
 
-## Composes well with
+## Where to next
 
-- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — the install step a
-  warmup `needs:`. Always upstream from warmup.
-- **[Job orchestration](/hooks/job-orchestration)** — `parallel`, `needs`,
-  `priority` are how you compose multi-step setups. Use `parallel: true` (the
-  default) to let warmups run alongside other background work.
-- **[Sharing caches across worktrees](/recipes/sharing-caches)** — warmups pay
-  for themselves more when their cached output is shared (sccache, Go build
-  cache, Vite dep cache directory).
-
-## Anti-patterns
-
-- **Codegen as a warmup** — see the warning above. Codegen is a correctness
-  step.
-- **Blocking install steps disguised as warmups** — if your warmup is required
-  before the next user command can run, it isn't really a warmup. Move it back
-  to a synchronous job.
-- **Sharing `target/` across worktrees** to "make warmup faster" — this corrupts
-  cache. See
-  [Anti-pattern: shared mutable state](/recipes/anti-patterns/shared-mutable-state).
-  Use sccache instead, which is designed for the sharing case.
-
-## See also
-
-- **[Lifecycle hooks](/hooks/lifecycle)** — `worktree-post-create` reference,
-  exit-code semantics, env vars
-- **[Job orchestration](/hooks/job-orchestration)** — full reference for
-  `background`, `needs`, `parallel`, `priority`
+- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — the install job a
+  warmup `needs:`. Always upstream from warmup; can't skip it.
+- **[Sharing caches across worktrees](/recipes/sharing-caches)** — sccache,
+  ccache, the Go build cache, and what makes them safe to share when `target/`
+  and `node_modules/` aren't.
+- **[Job orchestration](/hooks/job-orchestration)** — `background`, `needs`,
+  `parallel`, `priority` reference for composing multi-step hooks.
