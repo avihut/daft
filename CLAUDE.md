@@ -89,6 +89,24 @@ or `bun add foo@<version>`. To bypass, add an entry (with `# why:` rationale) to
 `.dep-age-allowlist`, `bunfig.toml` `minimumReleaseAgeExcludes`, or
 `cooldown.toml`; emergency CI override is `ALLOW_FRESH_DEPS=1`.
 
+## MSRV Policy
+
+MSRV = **`latest_stable - 2`**. Wide enough to keep distro and corporate
+installs working, narrow enough that we can adopt new stdlib/language features
+~3 months after stabilization.
+
+The version is declared in `Cargo.toml` `rust-version`; other places that
+mention it (`mise.toml`, `.github/workflows/test.yml`, `README.md`,
+`docs/getting-started/installation.md`) must match — `rg '1\.\d+'` after a bump
+finds the stragglers.
+
+`.github/workflows/msrv-staleness-check.yml` runs monthly and opens a tracking
+issue when the gap exceeds 2 minor versions; it auto-closes when a bump PR
+lands. **It does not auto-bump.** Bumps surface clippy-lint escalations and
+transitive-dep MSRV conflicts that need human triage, so always run
+`rustup run <new> cargo check --all-targets` and `mise run clippy` before
+landing.
+
 ## Architecture
 
 **Multicall binary**: All commands route through a single `daft` binary
