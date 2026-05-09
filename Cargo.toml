@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "daft"
-version = "1.11.1"
+version = "1.12.0"
 edition = "2024"
 rust-version = "1.93"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
