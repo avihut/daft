@@ -22,6 +22,36 @@ use ratatui::{
 
 use crate::core::shared::{self, WorktreeStatus};
 
+/// Whether edtui's `From<crossterm::event::KeyCode>` impl can convert this
+/// key code without panicking.
+///
+/// edtui (as of 0.11.x) implements the conversion as an explicit `match` with
+/// a final `_ => unimplemented!()` arm. Any code outside the cases listed in
+/// edtui's source crashes the process on the first keypress. Mirror that
+/// whitelist here and drop everything else upstream of the handler.
+///
+/// Source of truth: `events/key/input.rs` in the `edtui` crate.
+fn is_edtui_supported(code: crossterm::event::KeyCode) -> bool {
+    use crossterm::event::KeyCode::*;
+    matches!(
+        code,
+        Char(_)
+            | Enter
+            | Esc
+            | Backspace
+            | Delete
+            | Tab
+            | Left
+            | Right
+            | Up
+            | Down
+            | Home
+            | End
+            | PageUp
+            | PageDown
+    )
+}
+
 /// An active inline editing session for a shared file.
 pub struct EditSession {
     /// The edtui editor state (text buffer, cursor, mode, etc.).
@@ -91,6 +121,14 @@ impl EditSession {
                 return false;
             }
             return true;
+        }
+
+        // edtui's `From<crossterm::KeyCode>` impl panics with `unimplemented!()`
+        // on any key code outside the whitelist below (see daft#345 — Shift+Tab
+        // arrives as `BackTab+SHIFT`, which would otherwise crash the process).
+        // Drop unsupported keys silently rather than forwarding them.
+        if !is_edtui_supported(key.code) {
+            return false;
         }
 
         self.handler.on_key_event(key, &mut self.state);
@@ -274,5 +312,63 @@ mod tests {
         let lines = Lines::from(original);
         let result = lines_to_string(&lines);
         assert_eq!(result, original);
+    }
+
+    /// Regression for daft#345: Shift+Tab arrives from crossterm as
+    /// `KeyCode::BackTab`, which edtui's `From` impl turns into
+    /// `unimplemented!()`. The filter must reject it.
+    #[test]
+    fn back_tab_is_filtered_before_edtui() {
+        assert!(!is_edtui_supported(crossterm::event::KeyCode::BackTab));
+    }
+
+    /// Other crossterm key codes that edtui doesn't handle must also be
+    /// filtered — otherwise users hit the same panic via different keys
+    /// (function keys, Insert, media keys, etc.).
+    #[test]
+    fn other_unsupported_codes_are_filtered() {
+        use crossterm::event::KeyCode;
+        for code in [
+            KeyCode::F(1),
+            KeyCode::F(12),
+            KeyCode::Insert,
+            KeyCode::CapsLock,
+            KeyCode::ScrollLock,
+            KeyCode::NumLock,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+            KeyCode::Menu,
+            KeyCode::Null,
+        ] {
+            assert!(
+                !is_edtui_supported(code),
+                "expected {code:?} to be filtered"
+            );
+        }
+    }
+
+    /// The whitelist must keep the codes edtui *does* handle — a typo here
+    /// would break ordinary editing.
+    #[test]
+    fn supported_codes_pass_the_filter() {
+        use crossterm::event::KeyCode;
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Tab,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert!(is_edtui_supported(code), "expected {code:?} to be allowed");
+        }
     }
 }
