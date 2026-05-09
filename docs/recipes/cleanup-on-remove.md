@@ -1,33 +1,59 @@
 ---
 title: Cleanup on remove
 description:
-  Tear down state symmetrically when a worktree is removed — volumes,
-  registries, ports, daemons.
+  The symmetric mirror of worktree-post-create — tear down services, release
+  ports, deregister state when a worktree goes away.
 pillars: [worktrees, hooks]
 ---
 
 # Cleanup on remove
 
-> Every resource a worktree creates needs a path back out. Containers, volumes,
-> named processes, registry entries, cache directories — all of these accumulate
-> if nothing tears them down. `worktree-pre-remove` is the symmetric mirror of
-> `worktree-post-create`: whatever the create hook brought into existence, the
-> pre-remove hook puts back.
+## Starting state
 
-## When to reach for this
+You've been using daft for two months. Your
+[Services with ports](/recipes/services-with-ports) recipe boots a compose stack
+per worktree — that part works fine. Worktrees come and go.
 
-- Your `worktree-post-create` hook starts services, allocates resources, or
-  registers the worktree somewhere.
-- Stale containers, half-released ports, or orphaned volumes have ever surprised
-  you a week after deleting a branch.
-- You want `daft prune` (or `daft remove`) to leave nothing behind on disk or in
-  any external system.
+Today's housekeeping turn:
 
-If your post-create hook only does `pnpm install` and `cargo fetch` — work
-that's confined to the worktree directory itself — you can skip this pattern.
-The worktree directory deletion is the cleanup.
+```bash
+$ docker ps -a | wc -l
+      23
+$ docker volume ls | wc -l
+      14
+$ du -sh ~/Library/Containers/com.docker.docker/Data/vms/0/data
+12G
+```
 
-## Minimal recipe
+Twenty-three stopped containers from worktrees that don't exist anymore.
+Fourteen volumes (postgres, redis, minio) that nobody owns. Twelve gigabytes on
+disk that nobody asked for. Add to that a half-released port from a Node dev
+server you backgrounded last week — `lsof -i :3000` finds a process from a
+feature branch you deleted ten days ago.
+
+The create hook starts services. There's no symmetric pre-remove hook, so when
+the worktree directory got deleted, `docker compose` was never told. Containers
+stop but stay around. Volumes hang on. Ports leak.
+
+The reach for daft: **every resource a worktree creates needs a path back out.**
+If your post-create starts a service, registers a webhook, allocates a port, or
+writes to a global registry, the pre-remove hook puts each of those back.
+
+## What changes
+
+A `worktree-pre-remove` hook becomes the symmetric mirror of
+`worktree-post-create`. It runs **before** the worktree directory is deleted,
+while the hook still has access to `compose.yaml`, `.envrc`, and any
+per-worktree files. Whatever the create hook brought into existence, this hook
+unmakes.
+
+If your post-create only does work confined to the worktree directory
+(`pnpm install`, `cargo fetch`), you can skip this pattern. The directory delete
+is the cleanup.
+
+## Recipe
+
+The pairing for `services-with-ports`:
 
 ```yaml
 # daft.yml
@@ -35,47 +61,36 @@ hooks:
   worktree-pre-remove:
     jobs:
       - name: services-down
-        run: docker compose down -v
+        run: docker compose down -v --remove-orphans
         env:
           COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME:-app}-${DAFT_BRANCH_NAME//\//-}
 ```
 
-`worktree-pre-remove` runs **before** the worktree directory is deleted, so the
-hook still has access to the worktree's files (compose.yaml, .envrc, etc.). Its
-env includes `DAFT_REMOVAL_REASON` (`manual`, `remote-deleted`, or `ejecting`) —
-useful when you want different behavior for a `daft prune` cleanup vs a
-`daft repo remove`.
+`-v` deletes the worktree's volumes (postgres data, redis dump, MinIO buckets).
+`--remove-orphans` catches containers from compose files that were edited or
+removed while the stack was up.
 
-The default fail mode is `warn`: a failed teardown logs but does not block
+The default fail mode is `warn`: a failed teardown logs but doesn't block
 worktree removal. That's the right default — a stuck container shouldn't prevent
-you from cleaning up.
+the directory from being deleted, because next time you'd just have a stuck
+container _and_ a half-removed worktree.
+
+`DAFT_REMOVAL_REASON` is set by the runtime to `manual`, `remote-deleted`, or
+`ejecting` — useful when you want different behavior for an auto-prune cleanup
+vs an explicit `daft remove`. See the per-removal-reason variant below.
 
 ## Variants
 
-### Compose teardown with volumes
-
-The pairing for [Services with ports](/recipes/services-with-ports). The `-v`
-flag is critical:
-
-```yaml
-- name: services-down
-  run: docker compose down -v --remove-orphans
-  env:
-    COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME}-${DAFT_BRANCH_NAME//\//-}
-```
-
-Without `-v`, named volumes survive. With it, the worktree's state-bearing
-volumes (postgres data, redis dump, MinIO buckets) get destroyed along with the
-containers. `--remove-orphans` catches containers from compose files that were
-edited or removed while the stack was up.
+By **resource type** — what specifically needs cleanup.
 
 ### Native processes by PID file
 
-If `worktree-post-create` started long-lived processes outside compose, track
-them via a PID file in the worktree:
+If `worktree-post-create` started a long-lived process outside compose (a
+backgrounded Node dev server, a Go binary), track it via a PID file inside the
+worktree:
 
 ```yaml
-# In post-create:
+# In worktree-post-create:
 - name: dev-server
   run: |
     ./bin/myserver --port "$PORT_APP" &
@@ -84,7 +99,7 @@ them via a PID file in the worktree:
 ```
 
 ```yaml
-# In pre-remove:
+# In worktree-pre-remove:
 - name: stop-dev-server
   run: |
     if [ -f .daft/dev-server.pid ]; then
@@ -92,11 +107,12 @@ them via a PID file in the worktree:
     fi
 ```
 
-`|| true` keeps the hook from failing if the process already died.
+The `|| true` keeps the hook from failing if the process already died (the
+common case — most teardowns find the process already gone).
 
 ### Cleanup by port
 
-If you can't get a PID, fall back to killing by port:
+If you can't get a PID, fall back to killing whoever holds the port:
 
 ```yaml
 - name: free-port
@@ -104,29 +120,29 @@ If you can't get a PID, fall back to killing by port:
     lsof -ti tcp:"$PORT_APP" | xargs -r kill 2>/dev/null || true
 ```
 
-`lsof -ti` lists PIDs holding the port; `xargs -r` skips if empty. Works on
-macOS and Linux.
+`lsof -ti` lists PIDs holding the port; `xargs -r` skips the kill if the list is
+empty. Works on macOS and Linux.
 
 ### External registry deregistration
 
 If `worktree-post-create` registered the worktree somewhere external — a Consul
-KV entry, an OAuth callback URL, a CDN purge config — deregister it on remove:
+KV entry, a webhook URL, a CDN purge config — deregister it on remove:
 
 ```yaml
 - name: consul-deregister
-  run: |
-    consul kv delete "dev/$DAFT_BRANCH_NAME"
+  run: consul kv delete "dev/$DAFT_BRANCH_NAME" || true
+
 - name: cdn-purge
-  run: |
-    curl -X DELETE "$CDN_API/zones/dev-${DAFT_BRANCH_NAME//\//-}"
+  run: curl -X DELETE "$CDN_API/zones/dev-${DAFT_BRANCH_NAME//\//-}" || true
 ```
 
-These can fail safely (the entry might already be gone) — the default `warn`
-fail mode is the right behavior.
+The trailing `|| true` matters — the entry might already be gone (a prior
+cleanup attempt, an external sync), and you'd rather have a failed-but-completed
+cleanup than a half-removed worktree blocked on a stale 404.
 
 ### Per-removal-reason logic
 
-`DAFT_REMOVAL_REASON` lets you handle different removal contexts:
+`DAFT_REMOVAL_REASON` lets you handle different removal contexts differently:
 
 ```yaml
 - name: archive-state
@@ -137,71 +153,52 @@ fail mode is the right behavior.
         tar czf "$HOME/daft-archives/$(basename "$DAFT_WORKTREE_PATH").tar.gz" .
         ;;
       manual|ejecting)
-        # User-driven removal — assume they know what they're doing, skip archive
+        # User-driven removal — skip archive (they meant it)
         ;;
     esac
-- name: services-down
-  run: docker compose down -v
-  env:
-    COMPOSE_PROJECT_NAME: ${DAFT_REPO_NAME}-${DAFT_BRANCH_NAME//\//-}
 ```
 
-Reason values: `remote-deleted` (auto-detected by `daft prune` / `daft sync`),
-`manual` (explicit `daft remove`), `ejecting` (the worktree is being un-managed
-by daft, not removed from disk). See
-[Lifecycle hooks → Removal](/hooks/lifecycle#removal-remove-hooks-only).
+Reason values:
 
-### Run pre-remove jobs in parallel
+- `remote-deleted` — auto-detected by `daft prune` / `daft sync`
+- `manual` — explicit `daft remove`
+- `ejecting` — the worktree is being un-managed by daft, not deleted
 
-Pre-remove jobs default to parallel — most teardowns are independent
-(containers, registry entries, log shipping):
-
-```yaml
-worktree-pre-remove:
-  parallel: true # default
-  jobs:
-    - name: services-down
-      run: docker compose down -v
-    - name: cdn-purge
-      run: ...
-    - name: consul-deregister
-      run: ...
-```
-
-If teardown ordering matters (e.g., must shut down the app server before the
-database), use `piped: true` or `needs:`.
+See [Lifecycle hooks → Removal](/hooks/lifecycle#removal-remove-hooks-only) for
+the full table.
 
 ## Idempotency & safety
 
-Pre-remove hooks should tolerate already-clean state:
+The hard rule: **`worktree-pre-remove`, never `worktree-post-remove`, for
+anything that needs the worktree's files**.
 
-| Pattern                                                  | Idempotent?        |
-| -------------------------------------------------------- | ------------------ |
-| `docker compose down` (containers don't exist)           | ✓ — exits 0        |
-| `kill $(cat .daft/dev-server.pid)` (PID gone)            | ✗ — failing kill   |
-| `kill $(cat .daft/dev-server.pid) 2>/dev/null \|\| true` | ✓                  |
-| `consul kv delete` (entry gone)                          | ✗ — exits non-zero |
-| `consul kv delete ... \|\| true`                         | ✓                  |
+::: warning Cleanup goes in `pre-remove`, not `post-remove`
+`worktree-post-remove` runs **after** the worktree directory is gone. By that
+point `compose.yaml`, `.envrc`, PID files — all unreachable. Pre-remove is the
+last chance to read worktree-local state. Post-remove is for genuinely global
+cleanup that doesn't need the worktree's files (an external log shipper, a
+metrics flush). If your cleanup touches _anything_ inside the worktree, it
+belongs in pre-remove. :::
 
-The pattern: every cleanup command gets `|| true` (or equivalent suppression),
-unless the failure genuinely indicates a real problem worth surfacing.
+Pre-remove jobs run in parallel by default — most teardowns are independent
+(containers, registry entries, log shipping). If teardown ordering matters (must
+shut down the app server before the database), use `piped: true` or `needs:`.
 
-::: warning Don't put cleanup in `worktree-post-remove` instead
-`worktree-post-remove` runs **after** the worktree directory is gone. Compose
-files, PID files, .envrc — all unreachable. Pre-remove is the last chance to
-read worktree-local state. Post-remove is for global cleanup that doesn't need
-the worktree's files. :::
+Cleanup commands should tolerate already-clean state:
 
-## Composes well with
+| Pattern                                        | Idempotent?        |
+| ---------------------------------------------- | ------------------ |
+| `docker compose down` (containers don't exist) | yes — exits 0      |
+| `kill $(cat .pid)` (PID gone)                  | no — non-zero exit |
+| `kill $(cat .pid) 2>/dev/null \|\| true`       | yes                |
+| `consul kv delete` (entry gone)                | no — non-zero exit |
+| `consul kv delete ... \|\| true`               | yes                |
 
-- **[Services with ports](/recipes/services-with-ports)** — the paired
-  create-side. Always together; never just one.
-- **[Toolchain bootstrap](/recipes/toolchain-bootstrap)** — usually doesn't need
-  cleanup (deps are inside the worktree dir, removed with it). The exception is
-  global side effects like a schema-registered database — clean those up here.
-- **[Lifecycle hooks → Move hooks](/hooks/lifecycle#move-move-hooks-only)** —
-  `daft rename` triggers move hooks, not remove hooks. If your cleanup deletes
-  data that should survive a rename, gate it with `DAFT_IS_MOVE`:
+The shape: every cleanup command gets `|| true` (or stderr suppression), unless
+a non-zero exit _genuinely_ indicates a real problem worth surfacing.
+
+`daft rename` triggers move hooks, not remove hooks. If your cleanup deletes
+data that should survive a rename, gate it explicitly:
 
 ```yaml
 - name: services-down
@@ -210,24 +207,14 @@ the worktree's files. :::
     env: { DAFT_IS_MOVE: "true" }
 ```
 
-## Anti-patterns
+See [Lifecycle hooks → Move](/hooks/lifecycle#move-move-hooks-only).
 
-- **No pre-remove at all** — orphaned containers and ports accumulate.
-  `docker system df` slowly grows; ports randomly fail; eventually you reset
-  Docker Desktop in frustration.
-- **Cleanup in `worktree-post-remove`** — too late; the worktree is gone. See
-  the warning above.
-- **Pre-remove that aborts on failure** — overriding the `warn` default to
-  `abort` means a stuck container or unreachable registry blocks worktree
-  removal. Don't do this; the worktree directory cleanup is more important than
-  perfect external cleanup.
+## Where to next
 
-## See also
-
+- **[Services with ports](/recipes/services-with-ports)** — the paired
+  create-side. The two are always written together; never just one.
 - **[Lifecycle hooks → Removal](/hooks/lifecycle#removal-remove-hooks-only)** —
-  `worktree-pre-remove` and `worktree-post-remove` env vars,
-  `DAFT_REMOVAL_REASON` semantics
-- **[Lifecycle hooks → Move](/hooks/lifecycle#move-move-hooks-only)** — why
-  renames don't fire remove hooks, and how to gate cleanup
+  full reference for `DAFT_REMOVAL_REASON`, `DAFT_IS_MOVE`, and the difference
+  between pre-remove and post-remove.
 - **[Job orchestration](/hooks/job-orchestration)** — `parallel`, `piped`,
-  `needs` for ordered teardowns
+  `needs` for ordered teardowns when sequence matters.
