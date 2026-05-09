@@ -17,7 +17,12 @@ export default defineConfig({
   },
   title: "daft",
   description: "Git Extensions Toolkit",
-  srcExclude: ["WEBSITE-BOOTSTRAP.md", "HISTORY.md", "superpowers/**"],
+  srcExclude: [
+    "WEBSITE-BOOTSTRAP.md",
+    "HISTORY.md",
+    "WRITING-RECIPES.md",
+    "superpowers/**",
+  ],
   ignoreDeadLinks: false,
   cleanUrls: true,
   rewrites: {
