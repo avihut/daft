@@ -9,8 +9,8 @@ description:
 
 daft is built on one thesis:
 
-> **Parallelize development through isolation; coordinate across repos via
-> networking.**
+> **Parallelize development through isolation; coordinate across the repo
+> graph.**
 
 The first half — parallelize through isolation — is what daft does today. The
 second half — coordinate across repos — is in design
@@ -41,8 +41,8 @@ Three pillars, each idempotent — you can adopt one without the others.
 - **[Hooks](/hooks/)**: declarative automation at every code-evolution boundary.
   Local equivalent of GitHub Actions, but enforced before code leaves your
   machine.
-- **Networking** ([#357](https://github.com/avihut/daft/issues/357)): coordinate
-  changes across repos. A repo catalog plus a manifest of cross-repo
+- **Graph** ([#357](https://github.com/avihut/daft/issues/357)): coordinate
+  changes across the repo graph. A repo catalog plus a manifest of cross-repo
   relationships, so a change that touches three services can be propagated
   coherently.
 
