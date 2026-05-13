@@ -50,6 +50,12 @@ updates:
       github-actions:
         patterns:
           - "*"
+    # dtolnay/rust-toolchain tags name the Rust toolchain version they install
+    # (e.g. @1.93.0 installs Rust 1.93.0), not a version of the action itself.
+    # Dependabot can't see this — bumping the tag would request a non-existent
+    # toolchain. The MSRV value is owned by Cargo.toml's rust-version field.
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
     labels:
       - "dependencies"
       - "github-actions"
