@@ -648,19 +648,23 @@ fn print_hook_summary(entries: &[HookSummary]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     fn make_repo_with_worktree(tmp: &std::path::Path) -> std::path::PathBuf {
         Command::new("git")
             .arg("init")
             .arg("-q")
             .arg(tmp)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         std::fs::write(tmp.join("README"), b"hi").unwrap();
         Command::new("git")
             .current_dir(tmp)
             .args(["add", "."])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
@@ -670,12 +674,16 @@ mod tests {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t.com")
             .args(["commit", "-q", "-m", "init"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let wt = tmp.join("wt-feat");
         Command::new("git")
             .current_dir(tmp)
             .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         wt

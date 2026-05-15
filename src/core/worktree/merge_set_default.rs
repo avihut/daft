@@ -39,21 +39,28 @@ fn run_config_set(project_root: &Path, key: &str, value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     fn init_repo(path: &Path) {
         Command::new("git")
             .args(["init", "-q", "-b", "main"])
             .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
             .args(["config", "--local", "user.name", "Test"])
             .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
             .args(["config", "--local", "user.email", "test@test.com"])
             .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
     }
@@ -98,6 +105,8 @@ mod tests {
         Command::new("git")
             .args(["config", "--local", "daft.merge.style", "rebase"])
             .current_dir(tmp.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 

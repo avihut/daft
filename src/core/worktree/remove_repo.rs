@@ -220,10 +220,17 @@ pub fn remove_worktree_filesystem(
         std::fs::remove_dir_all(worktree_path)
             .with_context(|| format!("rm -rf {} failed", worktree_path.display()))?;
     }
+    // `worktree prune` runs after we've already removed the bare git dir in
+    // some flows (e.g. `daft repo remove --force` removes worktrees then the
+    // bare dir). The binary then errors with "fatal: not a git repository"
+    // on stderr — harmless, since this is a best-effort `_ = …` call, but
+    // noisy in test logs. Redirect both streams so the cleanup is silent.
     let _ = std::process::Command::new("git")
         .arg("--git-dir")
         .arg(&target.bare_git_dir)
         .args(["worktree", "prune"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     Ok(RemoveWorktreeOutcome::RemovedViaFallback)
 }
@@ -331,13 +338,15 @@ fn parse_worktree_list_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     fn init_repo(dir: &Path) {
         Command::new("git")
             .arg("init")
             .arg("-q")
             .arg(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
     }
@@ -440,6 +449,8 @@ mod tests {
         Command::new("git")
             .current_dir(dir)
             .args(["add", "."])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
@@ -449,6 +460,8 @@ mod tests {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t.com")
             .args(["commit", "-q", "-m", "init"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
     }
@@ -475,6 +488,8 @@ mod tests {
             Command::new("git")
                 .current_dir(tmp.path())
                 .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .unwrap();
 
@@ -507,6 +522,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -541,6 +558,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -573,6 +592,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -598,6 +619,8 @@ mod tests {
         Command::new("git")
             .current_dir(tmp.path())
             .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         assert!(wt.exists(), "worktree was not created");

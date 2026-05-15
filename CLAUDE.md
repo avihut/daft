@@ -85,6 +85,22 @@ skill (`.claude/skills/profiling-daft/`): it covers the macOS toolchain
 `DAFT_BINARY_DIR` A/B trick, and a baseline map of the suite's runtime. Build
 for a profiler with `cargo build --profile profiling`.
 
+## Test Hygiene
+
+**Run `git` subprocesses through `crate::utils::git_command_at(dir)`.**
+Inherited `GIT_DIR` silently overrides `-C <dir>` for repo discovery, so a query
+like "is this file tracked in _this_ dir's repo?" retargets the parent's repo
+when daft runs inside a git hook (pre-push, pre-commit, post-checkout) — and
+`mise run test:unit` from a hook inherits the same vars. The helper clears the
+relevant `GIT_*` vars so `-C` is authoritative.
+
+**Redirect both pipes on every `git` `.status()` invocation — including in
+tests.** Use `.stdout(Stdio::null()).stderr(Stdio::null())` or `.output()`. `-q`
+only silences stdout for some subcommands and never touches stderr, so it is not
+a substitute. Production two-stage probes that expect
+`fatal: not a git repository` as a negative signal must suppress the stderr at
+the call site.
+
 ## XDG Conventions
 
 This project follows the XDG Base Directory Specification. Use the `dirs` crate

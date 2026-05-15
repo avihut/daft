@@ -1358,6 +1358,19 @@ mod tests {
 
     use serial_test::serial;
     use std::process::Command as ShellCommand;
+    use std::process::Stdio;
+
+    /// Test-only helper: run `git` quietly so subprocess output doesn't leak
+    /// into the test log. Returns the exit status, panics on spawn failure.
+    fn git_quiet(path: &std::path::Path, args: &[&str]) -> std::process::ExitStatus {
+        ShellCommand::new("git")
+            .args(args)
+            .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+    }
 
     /// RAII helper: saves cwd on construction and restores on drop.
     struct CwdGuard {
@@ -1386,6 +1399,8 @@ mod tests {
             .current_dir(path)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         ShellCommand::new("git")
@@ -1395,6 +1410,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // Create a fake origin/HEAD so get_default_branch_local() can resolve
@@ -1405,18 +1422,17 @@ mod tests {
     }
 
     fn setup_worktree(root: &std::path::Path, branch: &str, wt_path: &std::path::Path) {
-        ShellCommand::new("git")
-            .args([
+        git_quiet(
+            root,
+            &[
                 "worktree",
                 "add",
                 "-q",
                 &wt_path.display().to_string(),
                 "-b",
                 branch,
-            ])
-            .current_dir(root)
-            .status()
-            .unwrap();
+            ],
+        );
     }
 
     #[test]
@@ -1490,6 +1506,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -1625,11 +1643,7 @@ mod tests {
         // that Check 3 (uncommitted changes) does not fire before Check 6.
         // Commit the .gitignore so it is tracked and doesn't itself appear dirty.
         std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
-        ShellCommand::new("git")
-            .args(["add", ".gitignore"])
-            .current_dir(&feat_wt)
-            .status()
-            .unwrap();
+        git_quiet(&feat_wt, &["add", ".gitignore"]);
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
             .current_dir(&feat_wt)
@@ -1637,6 +1651,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // Merge feature into main so Check 4 (not merged) passes. The .gitignore
@@ -1649,6 +1665,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -1713,11 +1731,7 @@ mod tests {
 
         // Same setup as the "refuses" test: gitignore daft.local.yml to isolate Check 6.
         std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
-        ShellCommand::new("git")
-            .args(["add", ".gitignore"])
-            .current_dir(&feat_wt)
-            .status()
-            .unwrap();
+        git_quiet(&feat_wt, &["add", ".gitignore"]);
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
             .current_dir(&feat_wt)
@@ -1725,6 +1739,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         ShellCommand::new("git")
@@ -1734,6 +1750,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 

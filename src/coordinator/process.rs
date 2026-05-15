@@ -692,8 +692,9 @@ fn run_single_background_job(
     }
 
     // 9. On failure, print a one-line notification to stderr (best-effort,
-    //    catches EPIPE). Suppressed for silent background_output.
-    if node_status == NodeStatus::Failed && !is_silent {
+    //    catches EPIPE). Suppressed for silent background_output, and under
+    //    cfg!(test) so the banner doesn't bleed into unit-test logs.
+    if node_status == NodeStatus::Failed && !is_silent && !cfg!(test) {
         let msg = match &cmd_result {
             Ok(cr) => format!(
                 "daft: background job '{}' failed (exit code: {})",
