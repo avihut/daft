@@ -106,6 +106,24 @@ enum JobsCommand {
         /// Invocation ID prefix (overrides inline prefix).
         #[arg(long)]
         inv: Option<String>,
+        /// Only show stdout lines.
+        #[arg(long, conflicts_with_all = ["stderr", "status"])]
+        stdout: bool,
+        /// Only show stderr lines.
+        #[arg(long, conflicts_with_all = ["stdout", "status"])]
+        stderr: bool,
+        /// Only show lifecycle status records (started, finished, signaled).
+        #[arg(long, conflicts_with_all = ["stdout", "stderr"])]
+        status: bool,
+        /// Prefix each line with its `seq` number.
+        #[arg(long)]
+        seq: bool,
+        /// Skip records with `seq < N`.
+        #[arg(long = "since-seq")]
+        since_seq: Option<u64>,
+        /// Skip records older than this duration (`5s`, `2m`, `1h`).
+        #[arg(long = "since")]
+        since: Option<String>,
     },
     /// Cancel a running background job.
     Cancel {
@@ -566,8 +584,34 @@ fn build_retry_set(
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
-        Some(JobsCommand::Logs { ref job, ref inv }) => {
-            show_logs(job, inv.as_deref(), &args, path, output)
+        Some(JobsCommand::Logs {
+            ref job,
+            ref inv,
+            stdout,
+            stderr,
+            status,
+            seq,
+            since_seq,
+            ref since,
+        }) => {
+            let since_ms = match since {
+                Some(s) => Some(
+                    crate::coordinator::clean_policy::parse_duration_str(s)
+                        .with_context(|| format!("Failed to parse --since duration '{s}'"))?
+                        as i64
+                        * 1000,
+                ),
+                None => None,
+            };
+            let filter = LogsFilter {
+                stdout_only: stdout,
+                stderr_only: stderr,
+                status_only: status,
+                show_seq: seq,
+                since_seq,
+                since_ms_ago: since_ms,
+            };
+            show_logs(job, inv.as_deref(), &filter, &args, path, output)
         }
         Some(JobsCommand::Cancel {
             ref job,
@@ -1028,10 +1072,134 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     Ok(())
 }
 
+/// Predicates for the `daft hooks jobs logs` reader. Filters and rendering
+/// flags applied to each `LogRecord` read from `output.jsonl`.
+#[derive(Debug, Clone, Default)]
+struct LogsFilter {
+    stdout_only: bool,
+    stderr_only: bool,
+    status_only: bool,
+    show_seq: bool,
+    since_seq: Option<u64>,
+    /// Lower bound on `LogRecord.ts` (unix ms). Records older than this are
+    /// dropped.
+    since_ms_ago: Option<i64>,
+}
+
+impl LogsFilter {
+    fn accepts(&self, record: &crate::coordinator::log_record::LogRecord) -> bool {
+        use crate::coordinator::log_record::LogRecordKind;
+        if let Some(min_seq) = self.since_seq
+            && record.seq < min_seq
+        {
+            return false;
+        }
+        if let Some(ago_ms) = self.since_ms_ago {
+            let cutoff = chrono::Utc::now().timestamp_millis() - ago_ms;
+            if record.ts < cutoff {
+                return false;
+            }
+        }
+        match &record.kind {
+            LogRecordKind::Stdout(_) => !(self.stderr_only || self.status_only),
+            LogRecordKind::Stderr(_) => !(self.stdout_only || self.status_only),
+            LogRecordKind::Status(_) => !(self.stdout_only || self.stderr_only),
+        }
+    }
+
+    fn format(&self, record: &crate::coordinator::log_record::LogRecord) -> String {
+        use crate::coordinator::log_record::{LogRecordKind, StatusEvent};
+        let body = match &record.kind {
+            LogRecordKind::Stdout(s) => s.clone(),
+            LogRecordKind::Stderr(s) => s.clone(),
+            LogRecordKind::Status(event) => match event {
+                StatusEvent::Started { pid } => format!("[status] started pid={pid}"),
+                StatusEvent::Finished { exit_code } => {
+                    let code = exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".into());
+                    format!("[status] finished exit_code={code}")
+                }
+                StatusEvent::Signaled { signal } => format!("[status] signaled signal={signal}"),
+                StatusEvent::Crashed { message } => format!("[status] crashed message={message}"),
+            },
+        };
+        if self.show_seq {
+            format!("{:>6}\t{body}", record.seq)
+        } else {
+            body
+        }
+    }
+}
+
+/// Render a job's log file into `buf` with `filter` applied.
+///
+/// Tries `output.jsonl` first (the new structured format). Falls back to
+/// `output.log` if jsonl is absent — pre-upgrade data, treated as
+/// `Stdout`-only synthetic records with `seq = line_number` and
+/// `ts = mtime` (best-effort).
+fn render_job_log(
+    job_dir: &std::path::Path,
+    filter: &LogsFilter,
+    buf: &mut String,
+) -> Result<bool> {
+    use crate::coordinator::log_record::{LogRecord, LogRecordKind};
+
+    let jsonl_path = LogStore::jsonl_path(job_dir);
+    if jsonl_path.exists() {
+        let file = std::fs::File::open(&jsonl_path)
+            .with_context(|| format!("Failed to open log file: {}", jsonl_path.display()))?;
+        let reader = std::io::BufReader::new(file);
+        let mut wrote_any = false;
+        for line in std::io::BufRead::lines(reader) {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+            let record: LogRecord =
+                serde_json::from_str(&line).with_context(|| "Failed to parse JSONL log record")?;
+            if !filter.accepts(&record) {
+                continue;
+            }
+            buf.push_str(&filter.format(&record));
+            buf.push('\n');
+            wrote_any = true;
+        }
+        return Ok(wrote_any);
+    }
+
+    // Legacy fallback: read `output.log` as raw stdout-only records.
+    // No timestamps, so `--since` cannot filter (we treat all lines as
+    // "now"); `seq` is the line index.
+    let legacy = LogStore::log_path(job_dir);
+    if !legacy.exists() {
+        return Ok(false);
+    }
+    let contents = std::fs::read_to_string(&legacy)
+        .with_context(|| format!("Failed to read legacy log: {}", legacy.display()))?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut wrote_any = false;
+    for (idx, line) in contents.lines().enumerate() {
+        let record = LogRecord {
+            seq: idx as u64,
+            ts: now_ms,
+            kind: LogRecordKind::Stdout(line.to_string()),
+        };
+        if !filter.accepts(&record) {
+            continue;
+        }
+        buf.push_str(&filter.format(&record));
+        buf.push('\n');
+        wrote_any = true;
+    }
+    Ok(wrote_any)
+}
+
 /// Show the output log for a job, resolved via address.
 fn show_logs(
     job: &str,
     inv: Option<&str>,
+    filter: &LogsFilter,
     _args: &JobsArgs,
     _path: &Path,
     _output: &mut dyn Output,
@@ -1067,10 +1235,10 @@ fn show_logs(
     let mut buf = String::new();
 
     if let Some(invocation_id) = invocation_only {
-        render_invocation_logs(&store, &invocation_id, &mut buf)?;
+        render_invocation_logs(&store, &invocation_id, filter, &mut buf)?;
     } else {
         let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-        render_single_job_log(&store, &resolved, &mut buf)?;
+        render_single_job_log(&store, &resolved, filter, &mut buf)?;
     }
 
     crate::output::pager::display_with_pager(&buf);
@@ -1087,12 +1255,12 @@ fn is_hex_prefix(s: &str) -> bool {
 fn render_single_job_log(
     store: &LogStore,
     resolved: &ResolvedAddress,
+    filter: &LogsFilter,
     buf: &mut String,
 ) -> Result<()> {
     use std::fmt::Write;
 
     let meta = store.read_meta(&resolved.job_dir)?;
-    let log_path = LogStore::log_path(&resolved.job_dir);
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
     let now = chrono::Utc::now();
@@ -1147,27 +1315,29 @@ fn render_single_job_log(
         writeln!(buf, "command:   {}", meta.command)?;
     }
 
-    if log_path.exists() {
-        writeln!(buf)?;
-        writeln!(buf, "{}", dim("--- output ---"))?;
-        let contents = std::fs::read_to_string(&log_path)
-            .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-        buf.push_str(&contents);
-        if !contents.ends_with('\n') {
-            buf.push('\n');
-        }
-        writeln!(buf)?;
-        writeln!(buf, "Full log: {}", log_path.display())?;
+    writeln!(buf)?;
+    writeln!(buf, "{}", dim("--- output ---"))?;
+    let wrote = render_job_log(&resolved.job_dir, filter, buf)?;
+    if !wrote {
+        writeln!(buf, "{}", dim("(no output)"))?;
     } else {
-        writeln!(buf)?;
-        writeln!(buf, "{}", dim("(no output log)"))?;
+        let jsonl = LogStore::jsonl_path(&resolved.job_dir);
+        if jsonl.exists() {
+            writeln!(buf)?;
+            writeln!(buf, "Full log: {}", jsonl.display())?;
+        }
     }
 
     Ok(())
 }
 
 /// Render all job logs for a single invocation into `buf`.
-fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut String) -> Result<()> {
+fn render_invocation_logs(
+    store: &LogStore,
+    invocation_id: &str,
+    filter: &LogsFilter,
+    buf: &mut String,
+) -> Result<()> {
     use std::fmt::Write;
 
     let inv_meta = store.read_invocation_meta(invocation_id)?;
@@ -1230,20 +1400,9 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
             dim(&format!("({duration_str})")),
         )?;
 
-        let log_path = LogStore::log_path(dir);
-        if log_path.exists() {
-            let contents = std::fs::read_to_string(&log_path)
-                .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-            if contents.is_empty() {
-                writeln!(buf, "{}", dim("(empty)"))?;
-            } else {
-                buf.push_str(&contents);
-                if !contents.ends_with('\n') {
-                    buf.push('\n');
-                }
-            }
-        } else {
-            writeln!(buf, "{}", dim("(no output log)"))?;
+        let wrote = render_job_log(dir, filter, buf)?;
+        if !wrote {
+            writeln!(buf, "{}", dim("(empty)"))?;
         }
         writeln!(buf)?;
     }

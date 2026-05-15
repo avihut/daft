@@ -9,7 +9,7 @@
 //! A Unix socket listener runs in a separate thread alongside job execution,
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
 
-use super::log_record::OutputKind;
+use super::log_record::{LogRecord, OutputKind, StatusEvent, record_from, write_log_record};
 use super::log_store::{JobMeta, JobStatus, LogStore};
 use super::store::{JobRow, JobStore, schema as store_schema};
 #[cfg(unix)]
@@ -513,30 +513,41 @@ fn run_single_background_job(
     // 3. Set up an mpsc channel for output streaming.
     let (tx, rx) = std::sync::mpsc::channel::<(OutputKind, String)>();
 
-    // 4. Spawn a log writer thread that reads from the channel and writes
-    //    to output.log.
-    //
-    // TODO(#476 Tier-2): switch to `output.jsonl` with one structured
-    // `LogRecord` per line so the `kind` carried on the channel is
-    // preserved. For now, drop `kind` so the flat-file shape is
-    // unchanged — the JSONL migration lands in a focused commit.
-    let log_path = LogStore::log_path(&job_dir);
-    let log_path_for_writer = log_path.clone();
-    let log_writer_handle = std::thread::spawn(move || {
+    // 4. Spawn a log writer thread that reads from the channel and live-
+    //    appends structured `LogRecord` entries to `output.jsonl`. Sampling
+    //    (`log_config.sampling_every_nth`) drops a record but always
+    //    advances the `seq` counter so consumers can detect the gap.
+    // The thread returns the next `seq` so the post-run path can emit a
+    // terminal `Status::Finished` record with the correct sequence number.
+    let jsonl_path = LogStore::jsonl_path(&job_dir);
+    let jsonl_path_for_writer = jsonl_path.clone();
+    let sampling_every_nth = job.log_config.as_ref().and_then(|lc| lc.sampling_every_nth);
+    let log_writer_handle = std::thread::spawn(move || -> u64 {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_path_for_writer);
+            .open(&jsonl_path_for_writer);
         match file {
             Ok(mut f) => {
-                for (_kind, line) in rx {
-                    let _ = writeln!(f, "{line}");
+                let mut next_seq: u64 = 0;
+                for (kind, line) in rx {
+                    let seq = next_seq;
+                    next_seq += 1;
+                    if let Some(n) = sampling_every_nth
+                        && n > 1
+                        && !seq.is_multiple_of(n as u64)
+                    {
+                        continue;
+                    }
+                    let record = record_from(seq, kind, line);
+                    let _ = write_log_record(&mut f, &record);
                 }
+                next_seq
             }
             Err(e) => {
-                // Drain the channel even if we cannot write.
                 eprintln!("daft: failed to open log file: {e}");
                 for _ in rx {}
+                0
             }
         }
     });
@@ -576,8 +587,9 @@ fn run_single_background_job(
     // the PGID that `killpg` would target.
     let child_pid = child_pids.lock().unwrap().remove(&job.name);
 
-    // Wait for the log writer thread to finish.
-    log_writer_handle.join().ok();
+    // Wait for the log writer thread to finish; recover the next seq for
+    // the terminal Status record.
+    let next_seq = log_writer_handle.join().unwrap_or(0);
 
     let duration = start.elapsed();
 
@@ -602,10 +614,25 @@ fn run_single_background_job(
         }
     };
 
+    // Append the terminal `Status` record so JSONL readers see lifecycle
+    // signals even when the writer thread had already exited.
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&jsonl_path)
+    {
+        let event = if was_cancelled {
+            StatusEvent::Signaled { signal: 15 } // SIGTERM
+        } else {
+            StatusEvent::Finished { exit_code }
+        };
+        let _ = write_log_record(&mut f, &LogRecord::status(next_seq, event));
+    }
+
     // Silent mode: only retain the log file if the job did not succeed
     // (failed or cancelled). On success, the log is best-effort deleted.
     if is_silent && node_status == NodeStatus::Succeeded {
-        let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_file(&jsonl_path);
     }
 
     // 8. Write updated meta with the final status, exit code, and finish time.
@@ -2048,7 +2075,7 @@ mod tests {
         );
 
         let job_dir = store.base_dir.join(&inv_id).join("silent-ok");
-        let log_path = LogStore::log_path(&job_dir);
+        let log_path = LogStore::jsonl_path(&job_dir);
         assert!(
             !log_path.exists(),
             "silent + success should leave no log file"
@@ -2081,7 +2108,7 @@ mod tests {
         );
 
         let job_dir = store.base_dir.join(&inv_id).join("silent-fail");
-        let log_path = LogStore::log_path(&job_dir);
+        let log_path = LogStore::jsonl_path(&job_dir);
         assert!(
             log_path.exists(),
             "silent + failure should preserve log file"
@@ -2115,7 +2142,7 @@ mod tests {
         );
 
         let job_dir = store.base_dir.join(&inv_id).join("loud-ok");
-        let log_path = LogStore::log_path(&job_dir);
+        let log_path = LogStore::jsonl_path(&job_dir);
         assert!(log_path.exists(), "non-silent should always retain log");
     }
 
@@ -2154,7 +2181,7 @@ mod tests {
         );
 
         let job_dir = store.base_dir.join(&inv_id).join("pre-cancelled");
-        let log_path = LogStore::log_path(&job_dir);
+        let log_path = LogStore::jsonl_path(&job_dir);
         assert!(
             log_path.exists(),
             "silent + cancelled (even when cmd succeeded) should preserve log"

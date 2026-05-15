@@ -186,6 +186,13 @@ impl LogStore {
         job_dir.join("output.log")
     }
 
+    /// Structured per-line log file. One [`crate::coordinator::log_record::LogRecord`]
+    /// per `\n`-terminated line. Replaces `output.log` for newly-written jobs;
+    /// the old path remains as a one-cycle legacy fallback for readers.
+    pub fn jsonl_path(job_dir: &Path) -> PathBuf {
+        job_dir.join("output.jsonl")
+    }
+
     /// Write `meta.json` and `output.log` for a completed job atomically.
     ///
     /// Creates the job directory if needed. Used by `BufferingLogSink` (for
@@ -200,6 +207,27 @@ impl LogStore {
         self.write_meta(&job_dir, meta)?;
         fs::write(Self::log_path(&job_dir), log_bytes)
             .with_context(|| format!("Failed to write log file for job: {}", meta.name))?;
+        Ok(job_dir)
+    }
+
+    /// Write `meta.json` and `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
+    /// per line) atomically. The new structured log format — used by the
+    /// foreground `BufferingLogSink` and by `on_job_runner_skipped`.
+    pub fn write_job_record_jsonl(
+        &self,
+        invocation_id: &str,
+        meta: &JobMeta,
+        records: &[crate::coordinator::log_record::LogRecord],
+    ) -> Result<PathBuf> {
+        let job_dir = self.create_job_dir(invocation_id, &meta.name)?;
+        self.write_meta(&job_dir, meta)?;
+        let mut buf = Vec::with_capacity(records.len().saturating_mul(64));
+        for record in records {
+            crate::coordinator::log_record::write_log_record(&mut buf, record)
+                .with_context(|| format!("Failed to encode log record for job: {}", meta.name))?;
+        }
+        fs::write(Self::jsonl_path(&job_dir), buf)
+            .with_context(|| format!("Failed to write JSONL log file for job: {}", meta.name))?;
         Ok(job_dir)
     }
 

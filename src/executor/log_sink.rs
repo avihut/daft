@@ -8,7 +8,7 @@
 //! `None`.
 
 use super::{JobResult, JobSpec};
-use crate::coordinator::log_record::OutputKind;
+use crate::coordinator::log_record::{LogRecord, OutputKind, StatusEvent, record_from};
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
 use crate::executor::NodeStatus;
 use std::collections::HashMap;
@@ -52,7 +52,14 @@ pub struct BufferingLogSink {
 
 struct JobBuffer {
     started_at: chrono::DateTime<chrono::Utc>,
-    output: Vec<u8>,
+    /// Structured log records — written to `output.jsonl` at `on_job_complete`.
+    records: Vec<LogRecord>,
+    /// Per-job sequence counter. Advances on every `on_job_output` call
+    /// whether or not the record is retained (so sampling produces visible
+    /// gaps consumers can detect).
+    next_seq: u64,
+    /// Sampled-down stream rate. `None` = emit every record.
+    sampling_every_nth: Option<u32>,
 }
 
 impl BufferingLogSink {
@@ -85,25 +92,39 @@ impl BufferingLogSink {
 
 impl LogSink for BufferingLogSink {
     fn on_job_start(&self, spec: &JobSpec) {
+        let sampling = spec
+            .log_config
+            .as_ref()
+            .and_then(|lc| lc.sampling_every_nth);
         let mut buffers = self.buffers.lock().unwrap();
         buffers.insert(
             spec.name.clone(),
             JobBuffer {
                 started_at: chrono::Utc::now(),
-                output: Vec::new(),
+                records: Vec::new(),
+                next_seq: 0,
+                sampling_every_nth: sampling,
             },
         );
     }
 
-    fn on_job_output(&self, spec: &JobSpec, _kind: OutputKind, line: &str) {
-        // TODO(#476 Tier-2): switch to structured `output.jsonl` records that
-        // preserve `kind`. For now, keep the flat-file shape so the JSONL
-        // migration lands in one focused commit.
+    fn on_job_output(&self, spec: &JobSpec, kind: OutputKind, line: &str) {
         let mut buffers = self.buffers.lock().unwrap();
-        if let Some(buf) = buffers.get_mut(&spec.name) {
-            buf.output.extend_from_slice(line.as_bytes());
-            buf.output.push(b'\n');
+        let Some(buf) = buffers.get_mut(&spec.name) else {
+            return;
+        };
+        let seq = buf.next_seq;
+        buf.next_seq += 1;
+        // Sampling drops the record but `seq` still advances so consumers
+        // can detect gaps. `Status` records (only written on completion)
+        // are never sampled.
+        if let Some(n) = buf.sampling_every_nth
+            && n > 1
+            && seq % (n as u64) != 0
+        {
+            return;
         }
+        buf.records.push(record_from(seq, kind, line));
     }
 
     fn on_job_complete(&self, spec: &JobSpec, result: &JobResult) {
@@ -145,9 +166,19 @@ impl LogSink for BufferingLogSink {
             original_size_bytes: None,
         };
 
+        // Append a terminal Status record so JSONL readers see lifecycle
+        // signals alongside stdout/stderr.
+        let mut records = buf.records;
+        records.push(LogRecord::status(
+            buf.next_seq,
+            StatusEvent::Finished {
+                exit_code: result.exit_code,
+            },
+        ));
+
         if let Err(e) = self
             .store
-            .write_job_record(&self.invocation_id, &meta, &buf.output)
+            .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
             eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
@@ -169,9 +200,13 @@ impl LogSink for BufferingLogSink {
             spec.needs.clone(),
         );
 
+        // Skipped jobs still get a JSONL log: a single Stdout record carrying
+        // the reason so consumers don't have to special-case missing files.
+        let records = vec![LogRecord::stdout(0, reason)];
+
         if let Err(e) = self
             .store
-            .write_job_record(&self.invocation_id, &meta, reason.as_bytes())
+            .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
             eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
@@ -234,10 +269,11 @@ mod tests {
         assert!(loaded.finished_at.is_some());
         assert_eq!(loaded.needs, vec!["db-migrate".to_string()]);
 
-        let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
-        let log_text = String::from_utf8(log_bytes).unwrap();
-        assert!(log_text.contains("installing..."));
-        assert!(log_text.contains("done"));
+        let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+        assert!(log_text.contains(r#""data":"installing...""#));
+        assert!(log_text.contains(r#""data":"done""#));
+        // Terminal Status record present.
+        assert!(log_text.contains(r#""kind":"status""#));
     }
 
     #[test]
@@ -307,7 +343,90 @@ mod tests {
         let loaded = store.read_meta(&job_dir).unwrap();
         assert_eq!(loaded.status, JobStatus::Skipped);
 
-        let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
-        assert_eq!(log_bytes, b"previous job failed");
+        let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+        assert!(log_text.contains(r#""data":"previous job failed""#));
+    }
+
+    /// With `sampling_every_nth = 10`, exactly one of every 10 `Stdout`
+    /// records survives, and the terminal `Status` is always present.
+    /// The `seq` field advances on every dropped record so consumers
+    /// see the gap.
+    #[test]
+    fn sampling_every_nth_drops_records_but_advances_seq() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(LogStore::new(tmp.path().to_path_buf()));
+
+        let sink = BufferingLogSink::new(
+            Arc::clone(&store),
+            "inv-sample".to_string(),
+            "worktree-post-create".to_string(),
+            "feature/x".to_string(),
+        );
+
+        let mut spec = make_spec("noisy", false);
+        spec.log_config = Some(crate::executor::LogConfig {
+            sampling_every_nth: Some(10),
+            ..Default::default()
+        });
+
+        sink.on_job_start(&spec);
+        for i in 0..100 {
+            sink.on_job_output(&spec, OutputKind::Stdout, &format!("line {i}"));
+        }
+        sink.on_job_complete(&spec, &make_result("noisy", NodeStatus::Succeeded));
+
+        let job_dir = tmp.path().join("inv-sample").join("noisy");
+        let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+
+        // Count Stdout records: should be 10 (seqs 0, 10, 20, …, 90).
+        let stdout_count = log_text
+            .lines()
+            .filter(|l| l.contains(r#""kind":"stdout""#))
+            .count();
+        assert_eq!(stdout_count, 10, "expected exactly 10 sampled records");
+
+        // Seqs of surviving records: 0, 10, 20, ..., 90.
+        for retained in [0u64, 10, 20, 50, 90] {
+            assert!(
+                log_text.contains(&format!(r#""seq":{retained}"#)),
+                "missing retained seq {retained}"
+            );
+        }
+        // Sampled-out records DO NOT appear (e.g. seq 5).
+        assert!(!log_text.contains(r#""seq":5,"#));
+
+        // Terminal Status record uses the final seq (100 — the next
+        // unused seq after 100 lines).
+        assert!(log_text.contains(r#""seq":100"#));
+        assert!(log_text.contains(r#""kind":"status""#));
+    }
+
+    /// With no `sampling_every_nth`, every record is emitted.
+    #[test]
+    fn no_sampling_emits_every_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(LogStore::new(tmp.path().to_path_buf()));
+
+        let sink = BufferingLogSink::new(
+            Arc::clone(&store),
+            "inv-all".to_string(),
+            "worktree-post-create".to_string(),
+            "feature/x".to_string(),
+        );
+
+        let spec = make_spec("dense", false);
+        sink.on_job_start(&spec);
+        for i in 0..5 {
+            sink.on_job_output(&spec, OutputKind::Stdout, &format!("line {i}"));
+        }
+        sink.on_job_complete(&spec, &make_result("dense", NodeStatus::Succeeded));
+
+        let job_dir = tmp.path().join("inv-all").join("dense");
+        let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+        let stdout_count = log_text
+            .lines()
+            .filter(|l| l.contains(r#""kind":"stdout""#))
+            .count();
+        assert_eq!(stdout_count, 5);
     }
 }

@@ -58,6 +58,13 @@ pub struct LogConfig {
     /// only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_running_after: Option<String>,
+
+    /// Drop all but every Nth `stdout`/`stderr` line at log-record write time
+    /// (lifecycle `Status` records are never sampled). `seq` advances on every
+    /// emitted line whether or not the record is written, so consumers can
+    /// detect gaps. Default `None` = no sampling. Per-job only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_every_nth: Option<u32>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────
