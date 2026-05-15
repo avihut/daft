@@ -1,0 +1,30 @@
+name: Install refuses on existing daft.yml
+description:
+  daft install exits non-zero and leaves daft.yml untouched when it already
+  exists
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Pre-create daft.yml with distinctive content
+    run: echo "# pre-existing content" > $WORK_DIR/test-repo/master/daft.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+
+  - name: Run daft install and expect refusal
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "already exists"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "# pre-existing content"
