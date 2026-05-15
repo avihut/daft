@@ -24,6 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_worktree_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_visitor_propagation.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_daft_merge_visitor_rollback.sh"
 
 # Test framework self-tests
 test_integration_framework_assertions() {
@@ -327,6 +328,7 @@ run_all_integration_tests() {
     run_test "integration_real_world_scenarios" "test_integration_real_world_scenarios"
 
     run_visitor_propagation_tests
+    run_daft_merge_visitor_rollback_tests
 }
 
 # Main execution
