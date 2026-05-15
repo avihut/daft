@@ -1,0 +1,26 @@
+# daft.yml — daft configuration for this clone.
+#
+# Status:
+#   - This file is your local visitor configuration unless committed to git.
+#   - Once tracked, it becomes the team baseline and applies to all clones.
+#   - For personal overrides on top of a tracked daft.yml, create daft.local.yml
+#     (must remain untracked; doctor will flag it as a smell if tracked).
+#
+# Sections below are commented placeholders. Uncomment and edit to enable.
+
+# layout: sibling
+# Layouts: sibling | nested | contained | centralized | <custom>
+
+# shared: []
+# Files/directories shared across worktrees via symlink (e.g. ".env").
+
+# hooks:
+#   post-clone:
+#     jobs:
+#       - name: example
+#         run: echo "hello from daft"
+#
+#   worktree-post-create:
+#     jobs:
+#       - name: example
+#         run: echo "new worktree created"

@@ -18,6 +18,7 @@ pub mod flow_adopt;
 pub mod flow_eject;
 pub mod hooks;
 pub mod init;
+pub mod install;
 pub mod layout;
 pub mod list;
 pub mod list_empty;
