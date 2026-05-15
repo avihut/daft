@@ -12,16 +12,21 @@ minimum_release_age = "7d"
 
 [tools]
 rust = "1.93"
-lefthook = "latest"
-cocogitto = "latest"
-bun = "latest"
-bat = "latest"
+lefthook = "2.1.6"
+cocogitto = "7.0.0"
+bun = "1.3.13"
+bat = "0.26.1"
+# neovim: the vfox:mise-plugins/vfox-neovim backend does not record a
+# concrete version in mise.lock — it stays "stable". Leave the tag-based
+# selector. Weekly mise-tool-updates.yml refreshes the install.
 neovim = "stable"
 # cargo-cooldown: optional supply-chain guard. Wraps `cargo
 # build|check|test|run|update` to refuse package versions younger than the
 # window in cooldown.toml. Doesn't gate `cargo add` directly — pair it with
-# the lockfile-age CI check (scripts/check-lockfile-age.sh).
-"cargo:cargo-cooldown" = "latest"
+# the lockfile-age CI check (scripts/check-lockfile-age.sh). Disabled in CI
+# (see MISE_DISABLE_TOOLS in .github/workflows/test.yml lint job) because
+# scripts/check-lockfile-age.sh enforces the same policy at PR boundary.
+"cargo:cargo-cooldown" = "0.3.0"
 
 [env]
 _.path = ["./target/release"]
