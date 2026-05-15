@@ -27,6 +27,12 @@ neovim = "stable"
 # (see MISE_DISABLE_TOOLS in .github/workflows/test.yml lint job) because
 # scripts/check-lockfile-age.sh enforces the same policy at PR boundary.
 "cargo:cargo-cooldown" = "0.3.0"
+# cargo-deny: license / advisory / source policy gate. Run via `mise run
+# deny`; enforced in CI on every PR that touches Cargo.toml, Cargo.lock, or
+# deny.toml. Pinned to lockfile version (matches the post-#498 convention
+# of pinning over "latest" to avoid per-install registry resolution and
+# trim a CI flake surface).
+"cargo:cargo-deny" = "0.19.4"
 
 [env]
 _.path = ["./target/release"]

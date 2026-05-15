@@ -203,3 +203,17 @@ match Rust-ecosystem norms (Apache-2.0 carries an explicit patent grant).
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the project by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
+
+### Dependency licenses
+
+daft enforces a permissive-license allowlist on every transitive crate via
+[`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny). The policy lives in
+[`deny.toml`](https://github.com/avihut/daft/blob/master/deny.toml) at the repo
+root and is gated in CI (`.github/workflows/test.yml`) on every PR that touches
+`Cargo.toml`, `Cargo.lock`, or `deny.toml`. The same check also fails the PR on
+any open RustSec advisory or a dep sourced from an unexpected registry.
+
+If a new dependency carries a license not on the allowlist (or you need to
+ignore an advisory), add a `[licenses.exceptions]` or `advisories.ignore` entry
+to `deny.toml` with a `# why:` comment explaining the rationale. Run
+`mise run deny` locally to verify before pushing.

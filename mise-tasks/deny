@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run cargo-deny license/advisory/source policy check"
+set -euo pipefail
+
+cargo deny check

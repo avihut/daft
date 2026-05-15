@@ -76,7 +76,7 @@ jobs:
           if echo "$files" | grep -qE '^(man/|docs/cli/)'; then
             man=true
           fi
-          if echo "$files" | grep -qxE '(Cargo\.lock|bun\.lock|\.dep-age-allowlist|cooldown\.toml|bunfig\.toml)'; then
+          if echo "$files" | grep -qxE '(Cargo\.lock|bun\.lock|\.dep-age-allowlist|cooldown\.toml|bunfig\.toml|deny\.toml)'; then
             lockfile=true
           fi
 
@@ -105,6 +105,30 @@ jobs:
           # interpolating it into the shell command directly.
           PR_BASE_REF: ${{ github.base_ref }}
         run: BASE_REF="origin/${PR_BASE_REF}" scripts/check-lockfile-age.sh
+
+  # Supply-chain gate: enforce the dependency license/advisory/source policy
+  # in deny.toml. Fails the PR if a transitive crate carries an unapproved
+  # license, an open RustSec advisory, or comes from an unexpected source.
+  dep-license-check:
+    needs: changes
+    if:
+      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.lockfile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Run cargo-deny
+        run: mise run deny
 
   # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
   lint:
