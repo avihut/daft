@@ -142,11 +142,16 @@ pub(super) fn status_display_width(status: &WorktreeStatus) -> u16 {
 }
 
 /// Compute the maximum content width a column needs across all rows.
+///
+/// `extra_width` lets callers contribute a non-row width that must also fit —
+/// today it's the TOTAL summary cell for the Size column (#501). Callers that
+/// don't have a summary pass `0`.
 pub(super) fn column_content_width(
     col: Column,
     worktrees: &[WorktreeRow],
     vals: &[ColumnValues],
     sort_spec: Option<&SortSpec>,
+    extra_width: u16,
 ) -> u16 {
     // Account for sort indicator (" ↓" / " ↑" = 2 visible chars) in header width.
     let sort_extra: u16 = col
@@ -157,8 +162,8 @@ pub(super) fn column_content_width(
     let header_width = col.label().len() as u16 + sort_extra;
     if worktrees.is_empty() {
         return match col {
-            Column::Status => header_width.max(STATUS_MAX_WIDTH),
-            _ => header_width,
+            Column::Status => header_width.max(STATUS_MAX_WIDTH).max(extra_width),
+            _ => header_width.max(extra_width),
         };
     }
     let max_data = worktrees
@@ -194,7 +199,7 @@ pub(super) fn column_content_width(
         })
         .max()
         .unwrap_or(0);
-    header_width.max(max_data)
+    header_width.max(max_data).max(extra_width)
 }
 
 /// Minimum widths for shrinkable columns. Below these the column would lose
@@ -286,6 +291,34 @@ mod tests {
             !ALL_COLUMNS.contains(&Column::Size),
             "Size requires --columns +size; it must not appear in the default set"
         );
+    }
+
+    /// `extra_width` lets the caller inject a baseline (e.g. the TOTAL summary
+    /// cell width for the Size column, which isn't represented in `worktrees`).
+    /// Regression: #501 — without this, the size column was sized to data only
+    /// and the TOTAL cell got truncated.
+    #[test]
+    fn column_content_width_honors_extra_width_when_wider() {
+        let w = column_content_width(Column::Size, &[], &[], None, /* extra_width */ 6);
+        assert_eq!(
+            w, 6,
+            "extra_width must dominate when wider than header/data"
+        );
+    }
+
+    #[test]
+    fn column_content_width_ignores_extra_width_when_narrower() {
+        // "Size" header is 4 chars; extra_width=2 should not shrink the column.
+        let w = column_content_width(Column::Size, &[], &[], None, 2);
+        assert_eq!(w, 4, "extra_width must not shrink below header width");
+    }
+
+    #[test]
+    fn column_content_width_status_keeps_minimum_with_extra_width() {
+        // Status has a hard floor (STATUS_MAX_WIDTH); extra_width below it
+        // shouldn't shrink the column.
+        let w = column_content_width(Column::Status, &[], &[], None, 3);
+        assert_eq!(w, STATUS_MAX_WIDTH);
     }
 
     #[test]
