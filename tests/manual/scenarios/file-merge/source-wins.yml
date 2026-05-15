@@ -1,0 +1,39 @@
+name: daft file merge source wins on conflict
+description: >
+  When both files define the same named job, the source file's definition wins
+  and the target's version is replaced.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write target daft.yml with a lint job
+    run: >
+      printf 'hooks:\n  post-clone:\n    jobs:\n      - name: lint\n        run:
+      echo from-target\n' > $WORK_DIR/test-repo/master/target.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/target.yml"
+
+  - name: Write source daft.yml with the same lint job
+    run: >
+      printf 'hooks:\n  post-clone:\n    jobs:\n      - name: lint\n        run:
+      echo from-source\n' > $WORK_DIR/test-repo/master/source.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"
+
+  - name: Run daft file merge and verify source wins
+    run: daft file merge target.yml source.yml --keep-source --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "from-source"

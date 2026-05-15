@@ -1,0 +1,44 @@
+name: daft file merge collapsed form
+description: >
+  daft file merge SOURCE (single-argument form) uses daft.yml in the current
+  directory as the implied target.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write daft.yml as the implied target
+    run: >
+      printf 'hooks:\n  post-clone:\n    jobs:\n      - name:
+      existing\n        run: echo existing\n' >
+      $WORK_DIR/test-repo/master/daft.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+
+  - name: Write local.yml as the source
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      new\n        run: echo new\n' > $WORK_DIR/test-repo/master/local.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/local.yml"
+
+  - name: Run daft file merge in collapsed form
+    run: daft file merge local.yml --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "post-clone"
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "worktree-post-create"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/master/local.yml"
