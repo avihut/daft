@@ -555,6 +555,30 @@ mod tests {
         assert_eq!(back2, legacy);
     }
 
+    /// redb v4 enforces a single-writer-and-single-reader file lock at open
+    /// time — a second `JobStore::open` on the same file fails while the
+    /// first handle is alive. This shapes the CLI reader path: while a
+    /// coordinator is alive holding the file, `load_redb_job_meta_index`
+    /// returns `None` and `list_jobs()` / `show_logs` fall back to
+    /// `meta.json`. The fallback covers the common case (cancel/complete
+    /// updates write to both stores) but leaves `Crashed` reconciliation
+    /// invisible until the live coordinator drains. Documented as a
+    /// known limitation; fixing it would require open-and-close-per-op on
+    /// the coordinator side, a different DB, or a coordinator IPC for
+    /// metadata reads.
+    #[test]
+    fn concurrent_open_is_rejected_by_redb_lock() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("concurrent.redb");
+        let _first = JobStore::open(&p).unwrap();
+        let second = JobStore::open(&p);
+        assert!(
+            second.is_err(),
+            "redb's process-level lock should reject a concurrent open; if this assertion ever \
+             fires, the load_redb_job_meta_index fallback rationale needs revisiting"
+        );
+    }
+
     #[test]
     fn repo_policy_migration_skips_when_redb_row_present() {
         use crate::coordinator::clean_policy::RepoPolicy;

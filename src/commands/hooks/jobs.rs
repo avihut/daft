@@ -631,6 +631,15 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 /// Returns `None` when the redb file is unreadable — callers fall back to
 /// the legacy `meta.json` reader so pre-upgrade data and pre-redb test
 /// fixtures still render.
+///
+/// Known limitation: redb takes a process-level lock on open
+/// (`coordinator::store::tests::concurrent_open_is_rejected_by_redb_lock`).
+/// While a coordinator is alive holding the same `coordinator.redb`,
+/// this open fails and the caller falls back to `meta.json`. For
+/// terminal status (Completed/Failed/Cancelled) that's a no-op — the
+/// dual-write reaches both stores. For `Crashed` (only written to redb
+/// by `reconcile_active_jobs`), it means the new status is invisible
+/// until the live coordinator drains.
 fn load_redb_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
