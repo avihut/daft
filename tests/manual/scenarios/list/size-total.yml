@@ -1,0 +1,46 @@
+name: List size column with TOTAL summary
+description: |
+  --columns +size renders the Size column and a summary row with the total
+  size in a unit suffix (K/M/G/T). The blocking renderer leaves the summary
+  row's other cells blank — there is no literal "TOTAL" label (that's only
+  in the structured-emit path's `path` cell). Smoke coverage for the
+  wire-up touched by #501. The runner pipes stdio so terminal_size() returns
+  None, meaning Width::truncate doesn't fire — true truncation regression
+  coverage lives in unit + TestBackend tests (PriorityMaxExcept tests in
+  src/commands/list.rs and render_table_size_column_total_fits_when_wider_than_data
+  in src/output/tui/render.rs).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Checkout develop
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: List with --columns +size shows Size column
+    run: NO_COLOR=1 git-worktree-list --columns +size 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Size"
+        # Standard fixture worktrees are tiny — the per-row and TOTAL cells
+        # all render as "<1K". The string appearing N+1 times (N data rows
+        # plus the summary row) is implicit since `output_contains` only
+        # checks substring presence; the TestBackend test covers the bug.
+        - "<1K"

@@ -201,13 +201,45 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
     };
 
+    // Pre-compute the Size column's formatted TOTAL once and reuse for both
+    // (a) the natural-width hint passed to `column_content_width` (so the
+    // column is sized to fit the summary cell that's appended later) and
+    // (b) the summary footer row build below. The summary row otherwise
+    // doesn't participate in width sizing — regression: #501.
+    // If a future column also gets a summary row, thread its width through
+    // the same way; `column_content_width`'s `extra_width` is single-valued.
+    let total_size: Option<String> = if columns.contains(&Column::Size) {
+        let total_bytes: u64 = state
+            .live
+            .rows
+            .iter()
+            .filter(|wt| wt.info.kind == EntryKind::Worktree)
+            .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
+            .filter_map(|wt| wt.info.size_bytes)
+            .sum();
+        Some(format_human_size(total_bytes))
+    } else {
+        None
+    };
+    let size_total_width: u16 = total_size
+        .as_ref()
+        .map(|s| s.chars().count() as u16)
+        .unwrap_or(0);
+
     // Compute natural column widths, then shrink Branch/Path so the table fits
     // in the available area. Without this step a single long path or branch
     // name in `live.rows` (often off-screen) blows out those columns and
     // squeezes `LastCommit` (Fill(1)) down to nearly zero width.
     let natural_widths: Vec<u16> = columns
         .iter()
-        .map(|col| column_content_width(*col, &state.live.rows, &row_vals, sort_ref))
+        .map(|col| {
+            let extra = if matches!(col, Column::Size) {
+                size_total_width
+            } else {
+                0
+            };
+            column_content_width(*col, &state.live.rows, &row_vals, sort_ref, extra)
+        })
         .collect();
     let assigned_widths = fit_widths_to_available(&columns, &natural_widths, table_area.width);
 
@@ -410,23 +442,13 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         }
     }
 
-    // Summary footer row for the Size column
-    let has_size_column = columns.contains(&Column::Size);
-    if has_size_column {
+    // Summary footer row for the Size column. `total_size` is computed once
+    // above so the natural-width hint and the rendered cell stay in lockstep.
+    if let Some(total_size) = &total_size {
         // Empty separator row
         let empty_cells: Vec<Cell> = (0..num_columns).map(|_| Cell::from("")).collect();
         all_rows.push(Row::new(empty_cells));
 
-        // Summary row with total size (excludes pruned worktrees)
-        let total_bytes: u64 = state
-            .live
-            .rows
-            .iter()
-            .filter(|wt| wt.info.kind == EntryKind::Worktree)
-            .filter(|wt| !matches!(wt.status, WorktreeStatus::Done(FinalStatus::Pruned)))
-            .filter_map(|wt| wt.info.size_bytes)
-            .sum();
-        let total_size = format_human_size(total_bytes);
         let summary_cells: Vec<Cell> = columns
             .iter()
             .map(|col| {
@@ -1574,5 +1596,70 @@ mod tests {
                 "header at width 100 should contain {label:?}; got: {header:?}"
             );
         }
+    }
+
+    /// Regression for #501. Three worktrees of 5 GiB each give a TOTAL of
+    /// 15 GiB → "15.0G" (5 chars), wider than each per-row "5.0G" (4 chars).
+    /// Pre-fix, `column_content_width` only saw data rows, so the column was
+    /// allocated 4 chars and the TOTAL summary cell rendered as "15.0" — the
+    /// unit suffix was silently truncated. This test pins that the full
+    /// "15.0G" string appears in the rendered buffer.
+    #[test]
+    fn render_table_size_column_total_fits_when_wider_than_data() {
+        let mut wts: Vec<WorktreeInfo> = (0..3)
+            .map(|i| {
+                let mut info = WorktreeInfo::empty(&format!("feat/branch{i}"));
+                info.size_bytes = Some(5 * 1024 * 1024 * 1024); // 5 GiB
+                info
+            })
+            .collect();
+        // First worktree is the current one (so it gets a path).
+        wts[0].path = Some(PathBuf::from("/tmp/test/feat/branch0"));
+
+        let state = TuiState::new(
+            Vec::<OperationPhase>::new(),
+            wts,
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+            Some(vec![Column::Branch, Column::Path, Column::Size]),
+            true,
+            None,
+            None::<SortSpec>,
+            true,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        );
+
+        // 80 cols is plenty wide — no shrinking forced. The bug being tested
+        // is about natural-width sizing, not about narrow-terminal behavior.
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_table(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // Sweep all rows for "15.0G" — the summary row position depends on
+        // header + 3 data rows + separator, but pinning the row index would
+        // be brittle. The full string only ever appears in the TOTAL cell.
+        let full_buffer: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+        assert!(
+            full_buffer.contains("15.0G"),
+            "TOTAL summary should render full \"15.0G\" — got buffer:\n{full_buffer}"
+        );
+        assert!(
+            !full_buffer.contains("15.0 ") && !full_buffer.contains("15.0\n"),
+            "TOTAL must not render as truncated \"15.0\" — got buffer:\n{full_buffer}"
+        );
     }
 }

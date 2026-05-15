@@ -27,7 +27,11 @@ use clap::Parser;
 use std::collections::HashSet;
 use tabled::{
     builder::Builder,
-    settings::{Padding, Style, Width, object::Columns, peaker::Priority},
+    settings::{
+        Padding, Style, Width,
+        object::Columns,
+        peaker::{Peaker, Priority},
+    },
 };
 use terminal_size::{Width as TermWidth, terminal_size};
 
@@ -631,6 +635,42 @@ fn build_emit_table(
     table
 }
 
+/// Like `Priority::max(true)` but never picks the excluded column indices.
+///
+/// `Priority::max(true)` shrinks the widest column first when `Width::truncate`
+/// runs. That's fine for descriptive columns (Branch/Path/LastCommit) but the
+/// Size column's TOTAL summary cell (`"10.2G"`, `"127.4G"`) gets truncated mid-
+/// suffix when it becomes a shrink candidate (#501). `Width::increase`/MinWidth
+/// doesn't help — `Width::truncate` derives its per-column floors from
+/// `EmptyRecords` (padding only), so MinWidth pads cells but doesn't pin a
+/// shrink floor. Excluding the column from the candidate set is the only
+/// surgical fix.
+///
+/// Honors `mins` so the shrink loop terminates cleanly when every non-excluded
+/// column has hit its floor.
+///
+/// Note: the other fixed-width metric columns (`Hash`, `Changes`, `Base`,
+/// `Remote`, `Age`, `Owner`) have the same class of bug under `Priority::max`
+/// in very narrow terminals — the TUI's `fit_widths_to_available` only
+/// shrinks `{Branch, Path, LastCommit}`. Excluding more columns here would
+/// be a separate scope.
+struct PriorityMaxExcept {
+    excluded: Vec<usize>,
+}
+
+impl Peaker for PriorityMaxExcept {
+    fn peak(&mut self, mins: &[usize], values: &[usize]) -> Option<usize> {
+        values
+            .iter()
+            .zip(mins.iter())
+            .enumerate()
+            .filter(|(i, _)| !self.excluded.contains(i))
+            .filter(|(_, (w, m))| **w > **m)
+            .max_by_key(|(_, (w, _))| **w)
+            .map(|(i, _)| i)
+    }
+}
+
 fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
@@ -1024,14 +1064,36 @@ fn print_table(
     table.modify(Columns::first(), Padding::new(1, 0, 0, 0));
 
     if let Some((TermWidth(width), _)) = terminal_size() {
-        table.with(
-            Width::truncate(width as usize)
-                .suffix("...")
-                .priority(Priority::max(true)),
-        );
+        let width = width as usize;
+        // When the Size column is shown, exclude it from the shrink candidate
+        // set — its TOTAL summary cell can be wider than any data cell and
+        // gets truncated otherwise (#501). See `PriorityMaxExcept`.
+        match size_column_index(selected_columns, show_annotations) {
+            Some(idx) => table.with(Width::truncate(width).suffix("...").priority(
+                PriorityMaxExcept {
+                    excluded: vec![idx],
+                },
+            )),
+            None => table.with(
+                Width::truncate(width)
+                    .suffix("...")
+                    .priority(Priority::max(true)),
+            ),
+        };
     }
 
     println!("{table}");
+}
+
+/// The visible column index of `Size` in the rendered blocking table, or `None`
+/// if the user didn't select it. Accounts for the leading annotation column
+/// when annotations are shown.
+fn size_column_index(selected_columns: &[ListColumn], show_annotations: bool) -> Option<usize> {
+    let pos = selected_columns
+        .iter()
+        .filter(|c| **c != ListColumn::Annotation)
+        .position(|c| *c == ListColumn::Size)?;
+    Some(if show_annotations { pos + 1 } else { pos })
 }
 
 #[cfg(test)]
@@ -1121,6 +1183,80 @@ mod tests {
             .position(|h| h == "size_bytes")
             .unwrap();
         assert_eq!(total_row[size_bytes_idx], Cell::Int(1024));
+    }
+
+    #[test]
+    fn size_column_index_returns_position_among_visible_columns() {
+        // Annotation is filtered out before col_headers, so the index for Size
+        // is computed against the post-filter column list, then offset by 1
+        // when the annotation column is shown.
+        let cols = &[
+            ListColumn::Branch,
+            ListColumn::Path,
+            ListColumn::Size,
+            ListColumn::Age,
+        ];
+        assert_eq!(size_column_index(cols, false), Some(2));
+        assert_eq!(size_column_index(cols, true), Some(3));
+    }
+
+    #[test]
+    fn size_column_index_is_none_when_size_unselected() {
+        let cols = &[ListColumn::Branch, ListColumn::Path];
+        assert_eq!(size_column_index(cols, false), None);
+        assert_eq!(size_column_index(cols, true), None);
+    }
+
+    #[test]
+    fn size_column_index_skips_annotation_in_position_count() {
+        // Annotation in selected_columns is filtered out before col_headers
+        // is built, so the visible position of Size shifts down by one when
+        // Annotation appears earlier in the list.
+        let cols = &[ListColumn::Annotation, ListColumn::Branch, ListColumn::Size];
+        // show_annotations=false: annotation column not shown, Size is at 1.
+        assert_eq!(size_column_index(cols, false), Some(1));
+        // show_annotations=true: leading annotation column adds 1.
+        assert_eq!(size_column_index(cols, true), Some(2));
+    }
+
+    /// `PriorityMaxExcept` underpins the #501 fix: pick the widest column to
+    /// shrink, but skip excluded indices and stop when every non-excluded
+    /// column has hit its floor.
+    #[test]
+    fn priority_max_except_picks_widest_non_excluded() {
+        let mut p = PriorityMaxExcept { excluded: vec![1] };
+        // values=[10, 20, 15], col 1 (widest) is excluded → pick col 2 (15).
+        assert_eq!(p.peak(&[0, 0, 0], &[10, 20, 15]), Some(2));
+    }
+
+    #[test]
+    fn priority_max_except_returns_none_when_all_at_min() {
+        let mut p = PriorityMaxExcept { excluded: vec![1] };
+        // Non-excluded columns 0,2 are at their mins → terminate.
+        assert_eq!(p.peak(&[5, 0, 5], &[5, 30, 5]), None);
+    }
+
+    #[test]
+    fn priority_max_except_skips_excluded_even_when_widest() {
+        let mut p = PriorityMaxExcept { excluded: vec![0] };
+        // Excluded col 0 is by far the widest; must still pick col 2.
+        assert_eq!(p.peak(&[0, 0, 0], &[100, 5, 8]), Some(2));
+    }
+
+    /// The TUI's natural-width computation passes
+    /// `format_human_size(total).chars().count()` as the Size column's extra
+    /// width (#501). Internal whitespace would split the cell across the
+    /// column boundary, so pin the contract: the formatted total has no
+    /// spaces.
+    #[test]
+    fn format_human_size_has_no_internal_whitespace() {
+        for bytes in [0, 1024, 1024u64.pow(2), 11 * 1024u64.pow(3)] {
+            let s = format_human_size(bytes);
+            assert!(
+                !s.contains(char::is_whitespace),
+                "format_human_size({bytes}) = {s:?} must not contain whitespace"
+            );
+        }
     }
 
     #[test]
