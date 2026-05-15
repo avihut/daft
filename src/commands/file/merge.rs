@@ -183,9 +183,7 @@ fn is_target_untracked(target: &Path) -> Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("target has no filename"))?;
 
     // Stage 1: are we even inside a git work tree?
-    let probe = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let probe = crate::utils::git_command_at(dir)
         .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -197,9 +195,7 @@ fn is_target_untracked(target: &Path) -> Result<bool> {
     }
 
     // Stage 2: is the file tracked?
-    let ls = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let ls = crate::utils::git_command_at(dir)
         .args(["ls-files", "--error-unmatch"])
         .arg(basename)
         .stdout(std::process::Stdio::null())

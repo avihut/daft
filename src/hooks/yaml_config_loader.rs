@@ -378,9 +378,7 @@ pub fn classify_main_config(worktree_root: &Path) -> ConfigStatus {
     // Conservative fallback: if we can't confirm we're inside a git repo,
     // treat the file as tracked. This handles the case where git is installed
     // but the directory is not a git repository (git exits with code 128).
-    let in_repo = Command::new("git")
-        .arg("-C")
-        .arg(worktree_root)
+    let in_repo = crate::utils::git_command_at(worktree_root)
         .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -390,9 +388,7 @@ pub fn classify_main_config(worktree_root: &Path) -> ConfigStatus {
         return ConfigStatus::Tracked;
     }
 
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(worktree_root)
+    let status = crate::utils::git_command_at(worktree_root)
         .args(["ls-files", "--error-unmatch"])
         .arg(relative)
         .stdout(std::process::Stdio::null())

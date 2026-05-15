@@ -322,9 +322,7 @@ pub fn check_tracked_local_smell(worktree_root: &Path) -> CheckResult {
         if !path.is_file() {
             continue;
         }
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(worktree_root)
+        let status = crate::utils::git_command_at(worktree_root)
             .args(["ls-files", "--error-unmatch", name])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
