@@ -157,10 +157,20 @@ fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
 fn run_hooks_checks(ctx: &repository::RepoContext) -> CheckCategory {
     let mut results = Vec::new();
 
-    // Always check config source
+    // Always check config source (includes tracking classification per check 8.3)
     results.push(hooks_checks::check_hooks_config(
         &ctx.current_worktree,
         &ctx.project_root,
+    ));
+
+    // Check 8.1: warn when daft.local.yml (or alias) is tracked in git.
+    results.push(hooks_checks::check_tracked_local_smell(
+        &ctx.current_worktree,
+    ));
+
+    // Check 8.2: notice when a deprecated dash-infix alias exists.
+    results.push(hooks_checks::check_deprecated_local_alias(
+        &ctx.current_worktree,
     ));
 
     // Shell hook checks (only when .daft/hooks/ exists)
