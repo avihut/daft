@@ -23,6 +23,7 @@ use super::state::WorktreeRow;
 pub struct LiveTableConfig {
     pub stat: Stat,
     pub columns: Option<Vec<Column>>,
+    // Unused by render after #494; pending removal in a follow-up.
     pub columns_explicit: bool,
     pub sort_spec: Option<SortSpec>,
     /// `true` for prune/sync, `false` for `daft list`.
