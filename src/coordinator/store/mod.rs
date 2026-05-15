@@ -18,7 +18,7 @@ use crate::coordinator::log_store::JobStatus;
 pub mod schema;
 pub mod types;
 
-pub use types::{InvocationRow, JobRow};
+pub use types::{InvocationRow, JobRow, RepoPolicyRow};
 
 /// Durable coordinator state. Cheap to clone — wraps the redb `Database`
 /// in an `Arc`. redb itself serializes concurrent writes.
@@ -88,9 +88,33 @@ impl JobStore {
                         .context("write schema_version")?;
                 }
             }
+            // Touch the other tables so subsequent read-only transactions
+            // (e.g. `read_repo_policy` on a fresh db) don't fail with
+            // "Table 'X' does not exist". `open_table` on a WriteTransaction
+            // creates the table if absent.
+            let _ = write_txn
+                .open_table(schema::INVOCATIONS)
+                .context("ensure invocations table exists")?;
+            let _ = write_txn
+                .open_table(schema::JOBS)
+                .context("ensure jobs table exists")?;
+            let _ = write_txn
+                .open_table(schema::REPO_POLICY)
+                .context("ensure repo_policy table exists")?;
         }
         write_txn.commit().context("commit schema-version txn")?;
         Ok(())
+    }
+
+    /// Convenience: open the redb file inside `<base>/coordinator.redb` for a
+    /// `LogStore` base directory, then run the one-shot legacy
+    /// `repo-policy.json` migration. Callers outside the coordinator path
+    /// (foreground hooks, `daft hooks jobs prune`, cleanup) use this so they
+    /// don't have to know the redb filename or the legacy sidecar layout.
+    pub fn open_for_repo_base(repo_hash: &str, base: &Path) -> Result<Self> {
+        let store = Self::open(&base.join("coordinator.redb"))?;
+        store.migrate_repo_policy_from_json(repo_hash, &base.join("repo-policy.json"));
+        Ok(store)
     }
 
     pub fn upsert_invocation(&self, row: &InvocationRow) -> Result<()> {
@@ -180,6 +204,115 @@ impl JobStore {
         let read_txn = self.db.begin_read()?;
         let t = read_txn.open_table(schema::JOBS)?;
         Ok(t.len()?)
+    }
+
+    /// Read the per-repo cleanup policy. Returns `defaults()` when no row
+    /// exists — matches the previous JSON sidecar behavior.
+    pub fn read_repo_policy(
+        &self,
+        repo_hash: &str,
+    ) -> Result<crate::coordinator::clean_policy::RepoPolicy> {
+        let key = types::repo_policy_key(repo_hash);
+        let read_txn = self.db.begin_read()?;
+        let t = read_txn.open_table(schema::REPO_POLICY)?;
+        let Some(v) = t.get(key.as_str())? else {
+            return Ok(crate::coordinator::clean_policy::RepoPolicy::defaults());
+        };
+        let row: RepoPolicyRow = bincode::deserialize(v.value()).context("decode RepoPolicyRow")?;
+        Ok(row.to_policy())
+    }
+
+    /// Persist the per-repo cleanup policy. Field-merges with the on-disk
+    /// values: explicit `Some(_)` in `policy` wins; `None` preserves the
+    /// stored value. Mirrors the previous JSON-sidecar behavior so hooks
+    /// without a `log:` block (which produce an all-`None` policy) don't
+    /// silently wipe persisted tuning.
+    pub fn write_repo_policy(
+        &self,
+        repo_hash: &str,
+        policy: &crate::coordinator::clean_policy::RepoPolicy,
+    ) -> Result<()> {
+        let on_disk = self.read_repo_policy(repo_hash)?;
+        let merged = crate::coordinator::clean_policy::RepoPolicy {
+            version: policy.version,
+            max_total_size_bytes: policy.max_total_size_bytes.or(on_disk.max_total_size_bytes),
+            keep_last: policy.keep_last.or(on_disk.keep_last),
+            stale_running_after_seconds: policy
+                .stale_running_after_seconds
+                .or(on_disk.stale_running_after_seconds),
+        };
+        let row = RepoPolicyRow::from_policy(&merged);
+        let bytes = bincode::serialize(&row).context("serialize RepoPolicyRow")?;
+        let key = types::repo_policy_key(repo_hash);
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut t = write_txn.open_table(schema::REPO_POLICY)?;
+            t.insert(key.as_str(), bytes.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// One-shot migration of a legacy `repo-policy.json` sidecar into redb.
+    /// Safe to call repeatedly: skips when the file is gone or the redb row
+    /// already exists. After successful ingest the sidecar is deleted.
+    ///
+    /// Errors during parse, write, or delete are reported via `eprintln!` and
+    /// swallowed — migration is best-effort, the next hook fire will rewrite
+    /// the policy anyway.
+    pub fn migrate_repo_policy_from_json(&self, repo_hash: &str, json_path: &Path) {
+        if !json_path.exists() {
+            return;
+        }
+        // If redb already has a row, don't overwrite it with stale JSON.
+        let has_row = match self.read_repo_policy(repo_hash) {
+            Ok(p) => p != crate::coordinator::clean_policy::RepoPolicy::defaults(),
+            Err(e) => {
+                eprintln!(
+                    "daft: warning: probing redb repo policy during migration of {}: {e}",
+                    json_path.display()
+                );
+                return;
+            }
+        };
+        if !has_row {
+            let json = match std::fs::read_to_string(json_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "daft: warning: failed to read legacy repo policy {}: {e}",
+                        json_path.display()
+                    );
+                    return;
+                }
+            };
+            let policy: crate::coordinator::clean_policy::RepoPolicy =
+                match serde_json::from_str(&json) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!(
+                            "daft: warning: failed to parse legacy repo policy {}: {e}",
+                            json_path.display()
+                        );
+                        return;
+                    }
+                };
+            if let Err(e) = self.write_repo_policy(repo_hash, &policy) {
+                eprintln!(
+                    "daft: warning: failed to migrate repo policy {} into redb: {e}",
+                    json_path.display()
+                );
+                return;
+            }
+        }
+        // File ingested (or skipped because redb already authoritative);
+        // delete the sidecar so we never re-ingest it on a later open.
+        if let Err(e) = std::fs::remove_file(json_path) {
+            eprintln!(
+                "daft: warning: failed to remove migrated repo policy {} : {e}",
+                json_path.display()
+            );
+        }
     }
 }
 
@@ -315,5 +448,146 @@ mod tests {
         store.upsert_invocation(&row).unwrap();
         let back = store.read_invocation("rh", "abc123").unwrap().unwrap();
         assert_eq!(back, row);
+    }
+
+    #[test]
+    fn repo_policy_round_trips_through_redb() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = JobStore::open(&tmp.path().join("coordinator.redb")).unwrap();
+
+        let policy = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(7),
+            stale_running_after_seconds: Some(120),
+        };
+        store.write_repo_policy("repoA", &policy).unwrap();
+        let back = store.read_repo_policy("repoA").unwrap();
+        assert_eq!(back, policy);
+    }
+
+    #[test]
+    fn repo_policy_missing_returns_defaults() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = JobStore::open(&tmp.path().join("coordinator.redb")).unwrap();
+        let p = store.read_repo_policy("repoX").unwrap();
+        assert_eq!(p, RepoPolicy::defaults());
+    }
+
+    #[test]
+    fn write_repo_policy_preserves_unset_fields_from_on_disk() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = JobStore::open(&tmp.path().join("coordinator.redb")).unwrap();
+
+        let first = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(5),
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy("r", &first).unwrap();
+
+        // Second write with all-None values (hook without a log: block) must
+        // not clobber the persisted tuning.
+        let second = RepoPolicy::defaults();
+        store.write_repo_policy("r", &second).unwrap();
+
+        let read = store.read_repo_policy("r").unwrap();
+        assert_eq!(read.max_total_size_bytes, Some(100 * 1024 * 1024));
+        assert_eq!(read.keep_last, Some(5));
+    }
+
+    #[test]
+    fn write_repo_policy_overrides_explicitly_set_fields() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let store = JobStore::open(&tmp.path().join("coordinator.redb")).unwrap();
+
+        let first = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(100 * 1024 * 1024),
+            keep_last: Some(5),
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy("r", &first).unwrap();
+
+        let second = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(200 * 1024 * 1024),
+            keep_last: None,
+            stale_running_after_seconds: None,
+        };
+        store.write_repo_policy("r", &second).unwrap();
+
+        let read = store.read_repo_policy("r").unwrap();
+        assert_eq!(read.max_total_size_bytes, Some(200 * 1024 * 1024));
+        assert_eq!(read.keep_last, Some(5), "unset preserves on-disk");
+    }
+
+    #[test]
+    fn repo_policy_migration_imports_json_once_and_deletes_file() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let json_path = base.join("repo-policy.json");
+
+        let legacy = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(50 * 1024 * 1024),
+            keep_last: Some(11),
+            stale_running_after_seconds: Some(7200),
+        };
+        std::fs::write(&json_path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        {
+            let store = JobStore::open_for_repo_base("repohash", base).unwrap();
+            assert!(!json_path.exists(), "migration should delete sidecar");
+            let back = store.read_repo_policy("repohash").unwrap();
+            assert_eq!(back, legacy);
+        }
+
+        // Second open with no file is a no-op.
+        let store2 = JobStore::open_for_repo_base("repohash", base).unwrap();
+        let back2 = store2.read_repo_policy("repohash").unwrap();
+        assert_eq!(back2, legacy);
+    }
+
+    #[test]
+    fn repo_policy_migration_skips_when_redb_row_present() {
+        use crate::coordinator::clean_policy::RepoPolicy;
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        // Seed redb with one policy.
+        let redb_policy = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(300 * 1024 * 1024),
+            keep_last: Some(9),
+            stale_running_after_seconds: None,
+        };
+        {
+            let store = JobStore::open(&base.join("coordinator.redb")).unwrap();
+            store.write_repo_policy("repohash", &redb_policy).unwrap();
+        }
+
+        // Also drop a (stale) sidecar with different values.
+        let json_path = base.join("repo-policy.json");
+        let legacy = RepoPolicy {
+            version: RepoPolicy::VERSION,
+            max_total_size_bytes: Some(1024),
+            keep_last: Some(1),
+            stale_running_after_seconds: None,
+        };
+        std::fs::write(&json_path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        // Migration via open_for_repo_base must not overwrite redb's row.
+        let store = JobStore::open_for_repo_base("repohash", base).unwrap();
+        // The sidecar is still removed (we never want to re-ingest it later).
+        assert!(!json_path.exists());
+        let back = store.read_repo_policy("repohash").unwrap();
+        assert_eq!(back, redb_policy, "redb wins over stale sidecar");
     }
 }

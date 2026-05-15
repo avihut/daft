@@ -245,16 +245,12 @@ impl CoordinatorState {
                         hook_type: &hook_type,
                         worktree: &worktree,
                         job_store: job_store_clone,
+                        results: results_clone,
+                        child_pids: child_pids_clone,
+                        cancel_all: cancel_all_clone,
+                        cancelled_jobs: cancelled_jobs_clone,
                     };
-                    run_single_background_job(
-                        &job,
-                        &ctx,
-                        &local_store,
-                        &results_clone,
-                        &child_pids_clone,
-                        &cancel_all_clone,
-                        &cancelled_jobs_clone,
-                    )
+                    run_single_background_job(&job, &ctx, &local_store)
                 });
                 handles.push((idx, handle));
             }
@@ -355,7 +351,12 @@ impl CoordinatorState {
     }
 }
 
-/// Metadata propagated from the coordinator into each job execution.
+/// Per-invocation context bundle threaded into every background job spawn.
+///
+/// Replaces a multi-arg signature (#476 Tier-3 API surface). Holds the
+/// invocation identifiers as borrowed references and the per-invocation
+/// shared state as `Arc` handles so each spawn thread can keep its own
+/// reference alive without re-cloning at every call site.
 struct JobInvocationContext<'a> {
     repo_hash: &'a str,
     invocation_id: &'a str,
@@ -364,6 +365,18 @@ struct JobInvocationContext<'a> {
     /// Optional dual-write target for the redb-backed `JobRow` lifecycle
     /// records. `None` from test paths that don't exercise persistence.
     job_store: Option<JobStore>,
+    /// Per-invocation completion records appended by every job as it
+    /// terminates. Read at end of `run_all_with_cancel`.
+    results: Arc<Mutex<Vec<JobResult>>>,
+    /// Map of `job_name -> shell PID` for inflight jobs. Used to fan out
+    /// SIGTERM via `killpg` when a cancel arrives over IPC.
+    child_pids: ChildPidMap,
+    /// Hot signal: when any job sets this, subsequent jobs short-circuit
+    /// with `Skipped`/`Cancelled` instead of starting.
+    cancel_all: Arc<AtomicBool>,
+    /// Set of job names already targeted by a cancel — used to label the
+    /// per-job terminal status correctly (Cancelled vs Failed).
+    cancelled_jobs: CancelledJobs,
 }
 
 /// Project a `JobMeta` into a redb `JobRow`. `repo_hash`/`invocation_id`/
@@ -410,11 +423,11 @@ fn run_single_background_job(
     job: &JobSpec,
     ctx: &JobInvocationContext<'_>,
     store: &LogStore,
-    results: &Arc<Mutex<Vec<JobResult>>>,
-    child_pids: &ChildPidMap,
-    cancel_all: &Arc<AtomicBool>,
-    cancelled_jobs: &CancelledJobs,
 ) -> NodeStatus {
+    let results = &ctx.results;
+    let child_pids = &ctx.child_pids;
+    let cancel_all = &ctx.cancel_all;
+    let cancelled_jobs = &ctx.cancelled_jobs;
     let start = Instant::now();
 
     let is_silent = matches!(
@@ -2126,13 +2139,23 @@ mod tests {
         handle.join().unwrap();
     }
 
-    fn make_ctx(inv: &str) -> JobInvocationContext<'_> {
+    fn make_ctx<'a>(
+        inv: &'a str,
+        child_pids: &ChildPidMap,
+        cancel_all: &Arc<AtomicBool>,
+        cancelled_jobs: &CancelledJobs,
+        results: &Arc<Mutex<Vec<JobResult>>>,
+    ) -> JobInvocationContext<'a> {
         JobInvocationContext {
             repo_hash: "test-repo",
             invocation_id: inv,
             hook_type: "worktree-post-create",
             worktree: "feat/x",
             job_store: None,
+            results: Arc::clone(results),
+            child_pids: Arc::clone(child_pids),
+            cancel_all: Arc::clone(cancel_all),
+            cancelled_jobs: Arc::clone(cancelled_jobs),
         }
     }
 
@@ -2164,7 +2187,13 @@ mod tests {
             background: true,
             ..Default::default()
         };
-        let ctx = make_ctx("00000000-0000-0000-0000-000000000001");
+        let ctx = make_ctx(
+            "00000000-0000-0000-0000-000000000001",
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+        );
 
         let pids_probe = Arc::clone(&child_pids);
         let probe = std::thread::spawn(move || {
@@ -2172,15 +2201,7 @@ mod tests {
             pids_probe.lock().unwrap().clone()
         });
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
 
         let mid = probe.join().unwrap();
         assert!(
@@ -2205,7 +2226,7 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000002".to_string();
-        let ctx = make_ctx(&inv_id);
+        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
 
         let killer = {
             let pids = Arc::clone(&child_pids);
@@ -2220,15 +2241,7 @@ mod tests {
             })
         };
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
         killer.join().unwrap();
 
         let job_dir = store.base_dir.join(&inv_id).join("long-job");
@@ -2253,17 +2266,9 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000003".to_string();
-        let ctx = make_ctx(&inv_id);
+        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
 
         let job_dir = store.base_dir.join(&inv_id).join("silent-ok");
         let log_path = LogStore::jsonl_path(&job_dir);
@@ -2286,17 +2291,9 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000004".to_string();
-        let ctx = make_ctx(&inv_id);
+        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
 
         let job_dir = store.base_dir.join(&inv_id).join("silent-fail");
         let log_path = LogStore::jsonl_path(&job_dir);
@@ -2320,17 +2317,9 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000005".to_string();
-        let ctx = make_ctx(&inv_id);
+        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
 
         let job_dir = store.base_dir.join(&inv_id).join("loud-ok");
         let log_path = LogStore::jsonl_path(&job_dir);
@@ -2359,17 +2348,9 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000006".to_string();
-        let ctx = make_ctx(&inv_id);
+        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
 
-        let _ = run_single_background_job(
-            &job,
-            &ctx,
-            &store,
-            &results,
-            &child_pids,
-            &cancel_all,
-            &cancelled_jobs,
-        );
+        let _ = run_single_background_job(&job, &ctx, &store);
 
         let job_dir = store.base_dir.join(&inv_id).join("pre-cancelled");
         let log_path = LogStore::jsonl_path(&job_dir);

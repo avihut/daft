@@ -692,59 +692,6 @@ impl LogStore {
         }
         Ok(seen.into_iter().collect())
     }
-
-    /// Path to the repo-level cleanup policy sidecar.
-    pub fn repo_policy_path(&self) -> PathBuf {
-        self.base_dir.join("repo-policy.json")
-    }
-
-    /// Persist the repo-level cleanup policy. Field-merges with the on-disk
-    /// values: explicit `Some(_)` in the new policy wins; `None` preserves the
-    /// on-disk value. This prevents hooks without a `log:` block (which
-    /// produce an all-`None` policy) from silently wiping persisted tuning.
-    pub fn write_repo_policy(
-        &self,
-        policy: &crate::coordinator::clean_policy::RepoPolicy,
-    ) -> Result<()> {
-        fs::create_dir_all(&self.base_dir)
-            .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
-
-        let on_disk = self.read_repo_policy();
-        let merged = crate::coordinator::clean_policy::RepoPolicy {
-            version: policy.version,
-            max_total_size_bytes: policy.max_total_size_bytes.or(on_disk.max_total_size_bytes),
-            keep_last: policy.keep_last.or(on_disk.keep_last),
-            stale_running_after_seconds: policy
-                .stale_running_after_seconds
-                .or(on_disk.stale_running_after_seconds),
-        };
-
-        let json = serde_json::to_string_pretty(&merged)?;
-        let path = self.repo_policy_path();
-        fs::write(&path, json)
-            .with_context(|| format!("Failed to write repo policy: {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Read the repo-level cleanup policy, falling back to defaults if the
-    /// sidecar is missing or unreadable.
-    pub fn read_repo_policy(&self) -> crate::coordinator::clean_policy::RepoPolicy {
-        let path = self.repo_policy_path();
-        match fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str(&json) {
-                Ok(policy) => policy,
-                Err(err) => {
-                    eprintln!(
-                        "daft: warning: failed to parse repo policy at {}: {}; using defaults",
-                        path.display(),
-                        err
-                    );
-                    crate::coordinator::clean_policy::RepoPolicy::defaults()
-                }
-            },
-            Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
-        }
-    }
 }
 
 fn log_file_size(job_dir: &Path) -> u64 {
@@ -1529,32 +1476,6 @@ mod tests {
     }
 
     #[test]
-    fn repo_policy_round_trip_via_log_store() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-
-        let policy = RepoPolicy {
-            version: 1,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(7),
-            stale_running_after_seconds: Some(120),
-        };
-        store.write_repo_policy(&policy).unwrap();
-        let back = store.read_repo_policy();
-        assert_eq!(back, policy);
-    }
-
-    #[test]
-    fn repo_policy_missing_returns_defaults() {
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let p = store.read_repo_policy();
-        assert_eq!(p.max_total_size_resolved(), 500 * 1024 * 1024);
-        assert_eq!(p.keep_last_resolved(), 3);
-    }
-
-    #[test]
     fn invocation_id_prefixes_discriminate_across_many_draws() {
         // 30 close-spaced timestamps, same pid. With the old impl these
         // would all share the same leading prefix. The hash-based impl
@@ -1815,62 +1736,6 @@ mod tests {
         // Should be ~1024 (the real log only); orphan must be excluded.
         assert!(total <= 1100, "orphan inflated total: {total}");
         assert!(total >= 1024, "real log undercounted: {total}");
-    }
-
-    #[test]
-    fn write_repo_policy_preserves_unset_fields_from_on_disk() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().join("store"));
-
-        // First write: user sets max_total_size + keep_last.
-        let first = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(5),
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&first).unwrap();
-
-        // Second write: a hook with no log block submits all-None.
-        let second = RepoPolicy::defaults();
-        store.write_repo_policy(&second).unwrap();
-
-        // The on-disk policy should still have the user's values.
-        let read = store.read_repo_policy();
-        assert_eq!(read.max_total_size_bytes, Some(100 * 1024 * 1024));
-        assert_eq!(read.keep_last, Some(5));
-    }
-
-    #[test]
-    fn write_repo_policy_overrides_explicitly_set_fields() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().join("store"));
-
-        let first = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(5),
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&first).unwrap();
-
-        let second = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(200 * 1024 * 1024),
-            keep_last: None,
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&second).unwrap();
-
-        let read = store.read_repo_policy();
-        assert_eq!(
-            read.max_total_size_bytes,
-            Some(200 * 1024 * 1024),
-            "explicit set wins"
-        );
-        assert_eq!(read.keep_last, Some(5), "unset preserves on-disk");
     }
 
     #[test]

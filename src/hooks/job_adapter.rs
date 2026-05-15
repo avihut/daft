@@ -24,6 +24,25 @@ pub struct SkippedJob {
     pub reason: String,
 }
 
+/// Passthrough context for [`yaml_jobs_to_specs`]: values sourced from the
+/// outer hook execution but threaded unchanged into every job spec.
+///
+/// Tests pass `&JobAdapterContext::default()` since they exercise spec
+/// translation in isolation; production wraps the relevant hook-level
+/// values from `execute_yaml_hook_with_rc`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct JobAdapterContext<'a> {
+    /// Path to an RC file whose `source` command is prepended to every job
+    /// command — opt-in shell setup like `~/.bashrc`.
+    pub rc: Option<&'a str>,
+    /// Hook-level `background:` default applied when a job doesn't set its
+    /// own.
+    pub hook_background: Option<bool>,
+    /// Top-level `log:` config from `daft.yml`, merged into each job's
+    /// `log_config` so cleanup policies inherit repo-wide defaults.
+    pub repo_log: Option<&'a LogConfig>,
+}
+
 /// Convert YAML job definitions into format-agnostic [`JobSpec`] values.
 ///
 /// Each [`JobDef`] is resolved into a concrete command string, merged
@@ -40,17 +59,17 @@ pub struct SkippedJob {
 /// **Note:** Group jobs (`job.group.is_some()`) are skipped in this
 /// initial implementation. They will be handled when the yaml_executor
 /// is fully migrated to the generic executor.
-#[allow(clippy::too_many_arguments)]
 pub fn yaml_jobs_to_specs(
     jobs: &[JobDef],
     ctx: &HookContext,
     hook_env: &HashMap<String, String>,
     source_dir: &str,
     working_dir: &Path,
-    rc: Option<&str>,
-    hook_background: Option<bool>,
-    repo_log: Option<&LogConfig>,
+    adapter: &JobAdapterContext<'_>,
 ) -> (Vec<JobSpec>, Vec<SkippedJob>) {
+    let rc = adapter.rc;
+    let hook_background = adapter.hook_background;
+    let repo_log = adapter.repo_log;
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
 
@@ -240,9 +259,7 @@ mod tests {
             &hook_env,
             ".daft",
             Path::new("/project"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(specs.len(), 1);
@@ -292,9 +309,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
         assert!(
             kept.is_empty(),
@@ -320,9 +335,10 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
-            Some("~/.bashrc"),
-            None,
-            None,
+            &JobAdapterContext {
+                rc: Some("~/.bashrc"),
+                ..Default::default()
+            },
         );
 
         assert_eq!(specs.len(), 1);
@@ -345,9 +361,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/project"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(specs.len(), 1);
@@ -381,9 +395,7 @@ mod tests {
             &hook_env,
             ".daft",
             Path::new("/project"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(specs.len(), 1);
@@ -416,9 +428,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(specs.len(), 2);
@@ -440,9 +450,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(specs.len(), 1);
@@ -479,9 +487,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(kept.len(), 1, "group job should be excluded");
@@ -516,9 +522,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert!(kept.is_empty());
@@ -543,9 +547,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert!(kept.is_empty());
@@ -574,9 +576,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert!(kept.is_empty());
@@ -605,9 +605,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(kept.len(), 1);
@@ -644,9 +642,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(kept.len(), 1);
@@ -680,9 +676,7 @@ mod tests {
             &env,
             "/src",
             std::path::Path::new("/work"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert!(kept.is_empty());
@@ -715,9 +709,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
         assert_eq!(specs.len(), 1);
         assert!(specs[0].background);
@@ -833,9 +825,10 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            Some(&repo_log),
+            &JobAdapterContext {
+                repo_log: Some(&repo_log),
+                ..Default::default()
+            },
         );
 
         assert_eq!(kept.len(), 1);
@@ -877,9 +870,10 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            Some(&repo_log),
+            &JobAdapterContext {
+                repo_log: Some(&repo_log),
+                ..Default::default()
+            },
         );
 
         assert_eq!(kept.len(), 1);
@@ -921,9 +915,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(kept.len(), 1);
@@ -948,9 +940,7 @@ mod tests {
             &HashMap::new(),
             ".daft",
             Path::new("/tmp"),
-            None,
-            None,
-            None,
+            &JobAdapterContext::default(),
         );
 
         assert_eq!(kept.len(), 1);

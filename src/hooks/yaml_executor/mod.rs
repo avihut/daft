@@ -74,6 +74,28 @@ pub struct JobFilter {
     pub only_tags: Vec<String>,
 }
 
+/// Bundle of configuration values threaded into `execute_yaml_hook_with_rc`.
+///
+/// Replaces a long passthrough arg list (#476 Tier-3 API surface). Holds
+/// non-per-hook values that previously lived as separate parameters.
+pub struct HookExecutionContext<'a> {
+    /// Directory under the working tree where hook YAML lives (typically
+    /// `.daft`).
+    pub source_dir: &'a str,
+    /// Resolved working directory for the hook fire.
+    pub working_dir: &'a Path,
+    /// Optional shell RC file to source before every job command.
+    pub rc: Option<&'a str>,
+    /// Job filter from CLI args (`hooks run --job` / `--tag`).
+    pub filter: &'a JobFilter,
+    /// Presenter for live progress updates. Owned via `Arc` so spawned job
+    /// threads can clone cheaply.
+    pub presenter: &'a Arc<dyn JobPresenter>,
+    /// Top-level `log:` section from the YAML config — propagated into each
+    /// job's effective `LogConfig`.
+    pub repo_log: Option<&'a LogConfig>,
+}
+
 /// Execute a YAML-defined hook.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook(
@@ -87,36 +109,32 @@ pub fn execute_yaml_hook(
 ) -> Result<HookResult> {
     let presenter: Arc<dyn JobPresenter> =
         crate::executor::cli_presenter::CliPresenter::auto(output_config);
-    execute_yaml_hook_with_rc(
-        hook_name,
-        hook_def,
-        ctx,
-        output,
+    let filter = JobFilter::default();
+    let cfg = HookExecutionContext {
         source_dir,
         working_dir,
-        None,
-        output_config,
-        &JobFilter::default(),
-        &presenter,
-        None,
-    )
+        rc: None,
+        filter: &filter,
+        presenter: &presenter,
+        repo_log: None,
+    };
+    execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
 }
 
 /// Execute a YAML-defined hook with optional RC file.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook_with_rc(
     hook_name: &str,
     hook_def: &HookDef,
     ctx: &HookContext,
     output: &mut dyn Output,
-    source_dir: &str,
-    working_dir: &Path,
-    rc: Option<&str>,
-    _output_config: &HookOutputConfig,
-    filter: &JobFilter,
-    presenter: &Arc<dyn JobPresenter>,
-    repo_log: Option<&LogConfig>,
+    cfg: &HookExecutionContext<'_>,
 ) -> Result<HookResult> {
+    let source_dir = cfg.source_dir;
+    let working_dir = cfg.working_dir;
+    let rc = cfg.rc;
+    let filter = cfg.filter;
+    let presenter = cfg.presenter;
+    let repo_log = cfg.repo_log;
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip
         && let Some(info) = super::conditions::should_skip(skip, working_dir)
@@ -252,15 +270,18 @@ pub fn execute_yaml_hook_with_rc(
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
+    let adapter = crate::hooks::job_adapter::JobAdapterContext {
+        rc,
+        hook_background: hook_def.background,
+        repo_log,
+    };
     let (specs, skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
         source_dir,
         working_dir,
-        rc,
-        hook_def.background,
-        repo_log,
+        &adapter,
     );
 
     // Write sparse records for jobs that were filtered out before execution.
@@ -293,8 +314,17 @@ pub fn execute_yaml_hook_with_rc(
     // the next non-fully-filtered fire. Best-effort: a failed write should
     // not break the hook fire.
     let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
-    if let Err(e) = store.write_repo_policy(&repo_policy) {
-        eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+    match crate::coordinator::store::JobStore::open_for_repo_base(&repo_hash, &store.base_dir) {
+        Ok(job_store) => {
+            if let Err(e) = job_store.write_repo_policy(&repo_hash, &repo_policy) {
+                eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "daft: failed to open redb store while writing repo policy for '{hook_name}': {e}"
+            );
+        }
     }
 
     if specs.is_empty() {

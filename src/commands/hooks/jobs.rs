@@ -624,6 +624,48 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
     }
 }
 
+/// Index a repo's redb `JobRow`s by `(invocation_id, job_name)` so meta
+/// readers can look up Tier-1 status (including `Crashed`, which legacy
+/// `meta.json` never sees) without scanning the table per directory.
+///
+/// Returns `None` when the redb file is unreadable — callers fall back to
+/// the legacy `meta.json` reader so pre-upgrade data and pre-redb test
+/// fixtures still render.
+fn load_redb_job_meta_index(
+    repo_hash: &str,
+    log_store_base: &Path,
+) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
+    let store =
+        crate::coordinator::store::JobStore::open_for_repo_base(repo_hash, log_store_base).ok()?;
+    let rows = store.list_jobs_for_repo(repo_hash).ok()?;
+    Some(
+        rows.into_iter()
+            .map(|r| ((r.invocation_id.clone(), r.name.clone()), r.to_job_meta()))
+            .collect(),
+    )
+}
+
+/// Look up the meta for a single job directory, preferring the redb row
+/// when present. Falls back to the legacy `meta.json` reader so
+/// pre-upgrade data still renders and the new `Crashed` reconciliation
+/// status is visible to users.
+fn read_job_meta_redb_first(
+    redb_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
+    store: &LogStore,
+    invocation_id: &str,
+    job_dir: &Path,
+) -> Result<crate::coordinator::log_store::JobMeta> {
+    if let Some(idx) = redb_index
+        && let Some(name) = job_dir.file_name().and_then(|s| s.to_str())
+        && let Some(m) = idx.get(&(invocation_id.to_string(), name.to_string()))
+    {
+        return Ok(m.clone());
+    }
+    store.read_meta(job_dir)
+}
+
 /// Build a flat `Tabular` payload with one row per (invocation, job).
 ///
 /// Each row carries its invocation context (id, short id, worktree, hook type,
@@ -632,6 +674,9 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
+    redb_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     coordinator_alive: bool,
 ) -> Result<EmitPayload> {
     let now = chrono::Utc::now();
@@ -659,7 +704,7 @@ fn build_jobs_payload(
         let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
 
         for dir in &job_dirs {
-            let meta = match store.read_meta(dir) {
+            let meta = match read_job_meta_redb_first(redb_index, store, &inv.invocation_id, dir) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -792,6 +837,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
+    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
     let invocations = if args.all {
         store.list_invocations()?
     } else if let Some(ref wt) = args.worktree {
@@ -831,10 +877,14 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     .unwrap_or_default()
                     .iter()
                     .any(|dir| {
-                        store
-                            .read_meta(dir)
-                            .map(|m| m.status == target_status)
-                            .unwrap_or(false)
+                        read_job_meta_redb_first(
+                            redb_index.as_ref(),
+                            &store,
+                            &inv.invocation_id,
+                            dir,
+                        )
+                        .map(|m| m.status == target_status)
+                        .unwrap_or(false)
                     })
             })
             .collect()
@@ -848,7 +898,8 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     }
 
     if args.emit.is_structured() {
-        let payload = build_jobs_payload(&invocations, &store, coordinator_alive)?;
+        let payload =
+            build_jobs_payload(&invocations, &store, redb_index.as_ref(), coordinator_alive)?;
         return emit::emit_and_handle("hooks jobs", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
@@ -878,7 +929,9 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
             for dir in &job_dirs {
-                let Ok(meta) = store.read_meta(dir) else {
+                let Ok(meta) =
+                    read_job_meta_redb_first(redb_index.as_ref(), &store, &inv.invocation_id, dir)
+                else {
                     continue;
                 };
                 let icon = if meta.background {
@@ -1176,6 +1229,7 @@ fn show_logs(
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let addr = JobAddress::parse(job).with_inv_override(inv);
@@ -1205,10 +1259,16 @@ fn show_logs(
     let mut buf = String::new();
 
     if let Some(invocation_id) = invocation_only {
-        render_invocation_logs(&store, &invocation_id, filter, &mut buf)?;
+        render_invocation_logs(
+            &store,
+            redb_index.as_ref(),
+            &invocation_id,
+            filter,
+            &mut buf,
+        )?;
     } else {
         let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-        render_single_job_log(&store, &resolved, filter, &mut buf)?;
+        render_single_job_log(&store, redb_index.as_ref(), &resolved, filter, &mut buf)?;
     }
 
     crate::output::pager::display_with_pager(&buf);
@@ -1224,13 +1284,21 @@ fn is_hex_prefix(s: &str) -> bool {
 /// Render a single job's metadata and log into `buf`.
 fn render_single_job_log(
     store: &LogStore,
+    redb_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     resolved: &ResolvedAddress,
     filter: &LogsFilter,
     buf: &mut String,
 ) -> Result<()> {
     use std::fmt::Write;
 
-    let meta = store.read_meta(&resolved.job_dir)?;
+    let meta = read_job_meta_redb_first(
+        redb_index,
+        store,
+        &resolved.invocation_id,
+        &resolved.job_dir,
+    )?;
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
     let now = chrono::Utc::now();
@@ -1304,6 +1372,9 @@ fn render_single_job_log(
 /// Render all job logs for a single invocation into `buf`.
 fn render_invocation_logs(
     store: &LogStore,
+    redb_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     invocation_id: &str,
     filter: &LogsFilter,
     buf: &mut String,
@@ -1318,7 +1389,11 @@ fn render_invocation_logs(
     let job_dirs = store.list_jobs_in_invocation(invocation_id)?;
     let mut jobs: Vec<(std::path::PathBuf, crate::coordinator::log_store::JobMeta)> = job_dirs
         .into_iter()
-        .filter_map(|dir| store.read_meta(&dir).ok().map(|m| (dir, m)))
+        .filter_map(|dir| {
+            read_job_meta_redb_first(redb_index, store, invocation_id, &dir)
+                .ok()
+                .map(|m| (dir, m))
+        })
         .collect();
     jobs.sort_by_key(|a| a.1.started_at);
 
@@ -1824,8 +1899,16 @@ fn prune_jobs(
         }
     };
 
-    let process_one = |store: &LogStore| -> Result<CleanSummary> {
-        let repo_policy = store.read_repo_policy();
+    let process_one = |repo_hash: &str, store: &LogStore| -> Result<CleanSummary> {
+        let repo_policy = match crate::coordinator::store::JobStore::open_for_repo_base(
+            repo_hash,
+            &store.base_dir,
+        ) {
+            Ok(js) => js
+                .read_repo_policy(repo_hash)
+                .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
+            Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
+        };
         let policy = CleanPolicy {
             retention_override,
             dry_run,
@@ -1866,7 +1949,7 @@ fn prune_jobs(
         let mut all_candidates: Vec<(String, String, String)> = Vec::new();
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
-            let s = process_one(&store)?;
+            let s = process_one(hash, &store)?;
             total_jobs += s.removed_jobs;
             total_invs += s.removed_invocations;
             total_bytes += s.freed_bytes;
@@ -1894,7 +1977,7 @@ fn prune_jobs(
     } else {
         let repo_hash = crate::core::repo_identity::compute_repo_id()?;
         let store = LogStore::for_repo(&repo_hash)?;
-        let s = process_one(&store)?;
+        let s = process_one(&repo_hash, &store)?;
         if dry_run {
             print_dry_run_summary(
                 output,
@@ -1929,7 +2012,7 @@ fn print_dry_run_summary(
     bytes: u64,
     candidates: &[(String, String, String)],
 ) {
-    if jobs == 0 {
+    if jobs == 0 && invs == 0 {
         output.info("No candidates for removal.");
         return;
     }
@@ -2001,6 +2084,80 @@ mod tests {
     fn format_duration_negative_clamps_to_zero() {
         assert_eq!(format_duration(chrono::Duration::seconds(-5)), "0ms");
         assert_eq!(format_duration(chrono::Duration::milliseconds(-1)), "0ms");
+    }
+
+    #[test]
+    fn read_job_meta_redb_first_prefers_redb_when_index_has_row() {
+        use crate::coordinator::log_store::{JobMeta, JobStatus};
+        use std::collections::HashMap;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let inv = "inv1";
+        let name = "build";
+        let job_dir = store.create_job_dir(inv, name).unwrap();
+
+        // Seed a stale meta.json claiming "Running".
+        let stale = JobMeta::skipped(name, "worktree-post-create", "feat/test", "", true, vec![]);
+        let stale = JobMeta {
+            status: JobStatus::Running,
+            ..stale
+        };
+        store.write_meta(&job_dir, &stale).unwrap();
+
+        // The redb index reports Crashed (the post-reconciliation state).
+        let mut idx = HashMap::new();
+        let redb_meta = JobMeta {
+            status: JobStatus::Crashed,
+            ..stale.clone()
+        };
+        idx.insert((inv.to_string(), name.to_string()), redb_meta);
+
+        let got =
+            read_job_meta_redb_first(Some(&idx), &store, inv, &job_dir).expect("read meta ok");
+        assert!(matches!(got.status, JobStatus::Crashed));
+    }
+
+    #[test]
+    fn read_job_meta_redb_first_falls_back_to_meta_json_when_redb_silent() {
+        use crate::coordinator::log_store::{JobMeta, JobStatus};
+        use std::collections::HashMap;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let inv = "inv1";
+        let name = "build";
+        let job_dir = store.create_job_dir(inv, name).unwrap();
+
+        let meta = JobMeta {
+            status: JobStatus::Completed,
+            ..JobMeta::skipped(name, "worktree-post-create", "feat/x", "", true, vec![])
+        };
+        store.write_meta(&job_dir, &meta).unwrap();
+
+        let empty_idx: HashMap<(String, String), JobMeta> = HashMap::new();
+        let got = read_job_meta_redb_first(Some(&empty_idx), &store, inv, &job_dir).unwrap();
+        assert!(matches!(got.status, JobStatus::Completed));
+
+        // None index (redb file missing entirely) also falls back.
+        let got2 = read_job_meta_redb_first(None, &store, inv, &job_dir).unwrap();
+        assert!(matches!(got2.status, JobStatus::Completed));
+    }
+
+    #[test]
+    fn print_dry_run_summary_emits_with_invs_only() {
+        let mut output = crate::output::TestOutput::new();
+        print_dry_run_summary(&mut output, 2, 0, 0, &[]);
+        assert!(
+            output.has_info("Would remove 0 job(s) across 2 invocation(s)"),
+            "expected summary when invs > 0 even if jobs == 0; got infos: {:?}",
+            output.infos(),
+        );
+    }
+
+    #[test]
+    fn print_dry_run_summary_silent_when_both_zero() {
+        let mut output = crate::output::TestOutput::new();
+        print_dry_run_summary(&mut output, 0, 0, 0, &[]);
+        assert!(output.has_info("No candidates for removal."));
     }
 
     #[test]

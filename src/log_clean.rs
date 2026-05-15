@@ -61,6 +61,7 @@ fn maybe_clean_logs_inner() {
 
 pub fn run_clean_logs() -> Result<()> {
     use crate::coordinator::log_store::LogStore;
+    use crate::coordinator::store::JobStore;
 
     // Single-flight lock.
     let lock_path = cache_path()?.with_extension("lock");
@@ -104,7 +105,11 @@ pub fn run_clean_logs() -> Result<()> {
         }
 
         let store = LogStore::for_repo(&name)?;
-        let repo_policy = store.read_repo_policy();
+        let job_store = JobStore::open_for_repo_base(&name, &store.base_dir).ok();
+        let repo_policy = job_store
+            .as_ref()
+            .and_then(|js| js.read_repo_policy(&name).ok())
+            .unwrap_or_else(crate::coordinator::clean_policy::RepoPolicy::defaults);
 
         // 1. Truncation pre-pass.
         let truncated = store.truncate_oversized_logs(None).unwrap_or(0);

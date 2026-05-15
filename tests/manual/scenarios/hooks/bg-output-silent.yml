@@ -98,7 +98,7 @@ steps:
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.log' 2>/dev/null)
+      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.jsonl' 2>/dev/null)
       echo "ok_logs_found:"
       printf '%s\n' "$LOGS"
       [ -z "$LOGS" ] || { echo "ASSERTION_FAILED: silent-ok-job log was not deleted: $LOGS"; exit 1; }
@@ -115,7 +115,7 @@ steps:
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.log' 2>/dev/null | head -1)
+      LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.jsonl' 2>/dev/null | head -1)
       echo "fail_log: $LOG"
       [ -n "$LOG" ] && [ -f "$LOG" ] || { echo "ASSERTION_FAILED: silent-fail-job log missing"; exit 1; }
       grep -q "whoops" "$LOG" || { echo "ASSERTION_FAILED: silent-fail-job log missing 'whoops'"; cat "$LOG"; exit 1; }
