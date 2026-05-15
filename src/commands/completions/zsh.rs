@@ -888,7 +888,7 @@ _daft() {
             compadd -- --version -V --help -h -C
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config repo clone init go start carry exec update list prune rename sync remove \
+                    config repo clone init install go start carry exec update list prune rename sync remove \
                     merge worktree-merge adopt eject
         fi
         return
