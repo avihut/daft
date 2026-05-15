@@ -436,8 +436,10 @@ hooks:
 `daft.yml`, `daft.yaml`, `.daft.yml`, `.daft.yaml`, `.config/daft.yml`,
 `.config/daft.yaml`
 
-Additionally: `daft-local.yml` for machine-specific overrides (not committed),
-and per-hook files like `worktree-post-create.yml`.
+Additionally: `daft.local.yml` for machine-specific overrides (not committed),
+and per-hook files like `worktree-post-create.yml`. The deprecated name
+`daft-local.yml` is still accepted for one release cycle but generates a warning
+and a doctor notice; prefer `daft.local.yml`.
 
 ### Execution Modes
 
@@ -869,9 +871,67 @@ root (containing `.git/`) is at `..` relative to any top-level worktree. Use
 
 ### Modifying Shared Files
 
-Files like `daft.yml`, `.gitignore`, and CI configuration live in each worktree
-independently (they are part of the Git-tracked content). Changes to these files
-in one worktree must be committed and merged to propagate to other worktrees.
+`.gitignore` and CI configuration live in each worktree independently (they are
+part of the Git-tracked content). Changes to these files in one worktree must be
+committed and merged to propagate to other worktrees.
+
+`daft.yml` is different: its propagation behavior depends on its git tracking
+status. When `daft.yml` is tracked (committed), changes propagate via git like
+any other file. When `daft.yml` is untracked — a **visitor configuration** —
+daft propagates it automatically through the three events below, so git is never
+involved.
+
+#### Visitor configuration (untracked `daft.yml`)
+
+`classify_main_config(worktree_root)` distinguishes three states: `Tracked`,
+`Visitor` (untracked), and `Missing`. The classification runs
+`git ls-files --error-unmatch` against the resolved config path; if git cannot
+answer (not a repo, binary missing), the fallback is `Tracked` to avoid
+surprising the user with implicit visitor behavior.
+
+**Propagation contract.** When `daft.yml` is a visitor, daft copies it (and
+`daft.local.yml`) between worktrees at three moments:
+
+1. **Branch-out** (worktree create). Before `worktree-post-create` hooks fire,
+   daft copies in-scope untracked daft files from the source worktree into the
+   new worktree. The copy uses recursive `merge_configs` so the new worktree's
+   pre-existing content (if any) wins on conflicts.
+
+2. **`daft merge`**. Atomic write-merge-restore: daft resolves source and target
+   configs into the target worktree before the git merge, then restores the
+   original if the merge fails or is aborted. Both pre-merge and post-merge
+   hooks see the resolved config.
+
+3. **Remote-merge detection** (during worktree removal / prune). When daft
+   detects that a source branch was merged into a target branch via the remote,
+   it propagates the source worktree's untracked daft files into the target
+   worktree. If the source worktree's untracked files differ from the target's,
+   daft refuses removal and suggests `daft file merge` to consolidate (`--force`
+   overrides for scripted use).
+
+**Collision (visitor `daft.yml` meets an incoming tracked `daft.yml`)** is
+deferred to the `daft pull` command (issue #493). Doctor surfaces the
+classification status as informational so the user can act before a collision
+occurs.
+
+#### `daft file merge` — on-disk config merge
+
+`daft file merge <TARGET> <SOURCE>` (or collapsed: `daft file merge <SOURCE>`)
+performs a recursive YAML merge using the same `merge_configs` engine used at
+load time. Source wins on conflicts; structured nodes (hooks, jobs) merge by
+name rather than replacing. After a successful merge, the source file is deleted
+unless `--keep-source` is passed. When the target is untracked (visitor), daft
+prompts for confirmation before writing; `--yes`/`--force` bypasses the prompt.
+Use `daft file merge` to consolidate visitor configs before removing a worktree
+or to promote a visitor config to a team baseline.
+
+#### `daft install` — bootstrap a visitor configuration
+
+`daft install` creates a starter `daft.yml` at the current worktree root
+(commented skeleton with `hooks:`, `shared:`, `layout:` sections). It refuses if
+`daft.yml` already exists, pointing the user at `$EDITOR daft.yml`. No ignore
+rules are written — users are responsible for adding `daft.yml` to
+`.git/info/exclude` or `.gitignore`.
 
 ## Shortcuts
 
