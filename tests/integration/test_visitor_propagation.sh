@@ -23,8 +23,10 @@ hooks:
         run: echo "from-visitor"
 EOF
 
-    # Create a new worktree from master.
-    git-worktree-checkout -b feat/foo || return 1
+    # Create a new worktree from master using --no-carry so that propagation
+    # is the sole mechanism delivering the visitor daft.yml to the new worktree
+    # (without --no-carry, carry/stash moves it, making propagation a no-op).
+    git-worktree-checkout --no-carry -b feat/foo || return 1
 
     # The new worktree must have a propagated daft.yml.
     local repo_root
@@ -68,9 +70,14 @@ EOF
     local target="$repo_root/feat/bar/daft.yml"
 
     # The file should NOT be in the new worktree as a propagated copy —
-    # git checkout already places the tracked version there, but propagation
-    # itself should not have written it as an overlay.
-    # We just assert the binary didn't error out (exit 0 from the checkout).
+    # git checkout places the tracked version there, but propagation must not
+    # have written it as an overlay (there is no visitor source to propagate).
+    # Assert the tracked content is present (git checkout put it there) and the
+    # file was not silently duplicated or merged with a non-existent visitor.
+    assert_file_exists "$target" "tracked daft.yml should be placed by git checkout" || return 1
+    assert_file_contains "$target" "name: tracked" \
+        "tracked daft.yml should contain the committed content" || return 1
+
     return 0
 }
 
@@ -92,7 +99,7 @@ hooks:
         run: echo "local-overlay"
 EOF
 
-    git-worktree-checkout -b feat/baz || return 1
+    git-worktree-checkout --no-carry -b feat/baz || return 1
 
     local repo_root
     repo_root="$(dirname "$(pwd)")"
