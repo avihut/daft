@@ -114,6 +114,17 @@ jobs:
       'true' || needs.changes.outputs.tests == 'true' ||
       needs.changes.outputs.xtask == 'true'
     runs-on: ubuntu-latest
+    env:
+      # cargo-cooldown is a local-dev supply-chain guard that wraps `cargo
+      # build|check|test|run|update` against cooldown.toml. CI enforces the
+      # same policy at PR boundary via scripts/check-lockfile-age.sh, so
+      # installing it here only adds a from-source cargo build (~2 min, ~125
+      # transitive crates from crates.io) with no behavioral payoff — and a
+      # crates.io network-flake surface that the policy doesn't require.
+      # Disabled for this job only; mise.toml stays the source of truth for
+      # local dev. Backend prefix (`cargo:`) is required — mise matches the
+      # full short name and bare `cargo-cooldown` silently no-ops.
+      MISE_DISABLE_TOOLS: cargo:cargo-cooldown
     steps:
       - uses: actions/checkout@v6
 
