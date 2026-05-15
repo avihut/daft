@@ -545,6 +545,56 @@ fn validate_branches(
             }
         }
 
+        // Check 6: Divergence guard — refuse removal when in-scope untracked daft
+        // files in this worktree differ from the merge target's. Gated BEFORE
+        // propagation (Task 6.1) so that a failed/skipped propagation doesn't
+        // silently lose visitor-config refinements. --force (-D) bypasses.
+        //
+        // Gate conditions mirror Task 6.1's propagation block: only applies when
+        // (a) the source worktree exists on disk, (b) the merge-target worktree
+        // (default branch) is also checked out somewhere, and (c) the branch has
+        // at least one in-scope file (has_local or has_visitor_daft_yml). The
+        // divergence check is the second gate: it only refuses when those files
+        // actually differ from the target's.
+        if !force
+            && !keep_local_branch
+            && let Some(ref wt) = wt_path
+            && wt.is_dir()
+        {
+            let has_local = wt.join("daft.local.yml").is_file();
+            let has_visitor_daft_yml = wt.join("daft.yml").is_file()
+                && matches!(
+                    crate::hooks::yaml_config_loader::classify_main_config(wt),
+                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+                );
+            if (has_local || has_visitor_daft_yml)
+                && let Some(target_wt) = worktree_map.get(ctx.default_branch.as_str())
+            {
+                match crate::hooks::visitor_propagation::has_inscope_divergence(wt, target_wt) {
+                    Ok(true) => {
+                        errors.push(ValidationError {
+                            branch: branch.clone(),
+                            message: format!(
+                                "untracked daft files in {} differ from the merge \
+                                 target {}. Consolidate first with `daft file merge` \
+                                 or pass -D/--force to remove anyway.",
+                                wt.display(),
+                                target_wt.display(),
+                            ),
+                        });
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        sink.on_step(&format!(
+                            "Warning: divergence check failed for '{branch}': {e}; \
+                             proceeding with removal"
+                        ));
+                    }
+                }
+            }
+        }
+
         // All checks passed — detect if this is the worktree the user is inside.
         // Use both path comparison and branch name as fallback: path comparison
         // can fail when symlinks cause git commands to report different strings
@@ -1547,5 +1597,186 @@ mod tests {
             "merge",
             "DAFT_COMMAND must reflect command_label='merge', not the hardcoded 'branch-delete'"
         );
+    }
+
+    // ── Divergence guard tests ─────────────────────────────────────────────
+
+    /// Regression test: divergence guard refuses branch-delete when daft.local.yml
+    /// in the feature worktree differs from the default branch worktree.
+    ///
+    /// To isolate Check 6 (divergence) from Check 3 (uncommitted changes), we
+    /// add daft.local.yml to .gitignore so git does not see it as dirty. This
+    /// mirrors real usage: daft.local.yml is a personal overlay that should be
+    /// gitignored in the repository.
+    #[test]
+    #[serial]
+    fn divergence_guard_refuses_delete_when_local_yml_differs() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // Add .gitignore in the feature worktree that ignores daft.local.yml so
+        // that Check 3 (uncommitted changes) does not fire before Check 6.
+        // Commit the .gitignore so it is tracked and doesn't itself appear dirty.
+        std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
+        ShellCommand::new("git")
+            .args(["add", ".gitignore"])
+            .current_dir(&feat_wt)
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        // Merge feature into main so Check 4 (not merged) passes. The .gitignore
+        // commit makes the branches diverge from HEAD but squash-merge passes
+        // git-cherry, so use fast-forward merge instead.
+        ShellCommand::new("git")
+            .args(["merge", "--ff-only", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        // Write a daft.local.yml in the feature worktree that doesn't exist in main.
+        // Because it's gitignored, Check 3 will not flag it as dirty.
+        std::fs::write(
+            feat_wt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo personal\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            !result.validation_errors.is_empty(),
+            "should have a validation error when daft.local.yml diverges"
+        );
+        assert!(
+            result.validation_errors[0]
+                .message
+                .contains("untracked daft files"),
+            "error message must mention untracked daft files, got: {}",
+            result.validation_errors[0].message
+        );
+        // Feature worktree must NOT have been removed.
+        assert!(
+            feat_wt.exists(),
+            "feature worktree must still exist after refusal"
+        );
+    }
+
+    /// Regression test: --force bypasses the divergence guard.
+    #[test]
+    #[serial]
+    fn divergence_guard_bypassed_with_force() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // Same setup as the "refuses" test: gitignore daft.local.yml to isolate Check 6.
+        std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
+        ShellCommand::new("git")
+            .args(["add", ".gitignore"])
+            .current_dir(&feat_wt)
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["merge", "--ff-only", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+
+        // Write a daft.local.yml in the feature worktree that doesn't exist in main.
+        std::fs::write(
+            feat_wt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo personal\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: true, // --force bypasses divergence guard
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "force should bypass divergence guard, got: {:?}",
+            result
+                .validation_errors
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.deletions.len(), 1);
+        assert!(
+            result.deletions[0].worktree_removed,
+            "worktree must be removed with --force"
+        );
+        assert!(!feat_wt.exists(), "feature worktree directory must be gone");
     }
 }

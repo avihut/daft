@@ -684,6 +684,53 @@ fn remove_worktree(
     force: bool,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> RemoveOutcome {
+    // Divergence guard — refuse removal when in-scope untracked daft files in
+    // this worktree differ from the merge target's. This catches cases where
+    // remote-merge propagation (Task 6.1) failed or didn't run, preventing
+    // visitor-config refinements from being silently lost when a worktree is
+    // removed by prune. --force bypasses.
+    //
+    // Prune only fires when the remote branch was deleted (i.e. already merged),
+    // so the default-branch worktree IS the merge target. Skip if the default
+    // branch has no checked-out worktree.
+    if wt_path.exists() && !force {
+        let default_branch_result = get_default_branch_local(&ctx.git_dir, &ctx.remote_name, false);
+        if let Ok(ref default_branch) = default_branch_result {
+            let has_local = wt_path.join("daft.local.yml").is_file();
+            let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
+                && matches!(
+                    crate::hooks::yaml_config_loader::classify_main_config(wt_path),
+                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+                );
+            if has_local || has_visitor_daft_yml {
+                let target_wt = ctx.project_root.join(default_branch);
+                if target_wt.is_dir() {
+                    match crate::hooks::visitor_propagation::has_inscope_divergence(
+                        wt_path, &target_wt,
+                    ) {
+                        Ok(true) => {
+                            sink.on_warning(&format!(
+                                "Skipping {branch_name}: untracked daft files in {} differ \
+                                 from the merge target {}. Consolidate first with \
+                                 `daft file merge` or pass --force to remove anyway.",
+                                wt_path.display(),
+                                target_wt.display(),
+                            ));
+                            return RemoveOutcome::SkippedDirty;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            sink.on_step(&format!(
+                                "Warning: divergence check failed for '{branch_name}': {e}; \
+                                 proceeding with removal"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Check for uncommitted changes
     if wt_path.exists() && !force {
         match ctx.git.has_uncommitted_changes_in(wt_path) {
