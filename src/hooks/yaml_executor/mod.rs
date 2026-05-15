@@ -285,10 +285,10 @@ pub fn execute_yaml_hook_with_rc(
     );
 
     // Write sparse records for jobs that were filtered out before execution.
-    // Each skipped job gets a meta.json + log file containing the reason so
-    // the user can investigate via `daft hooks jobs logs <name>`. This runs
-    // BEFORE the `specs.is_empty()` early return so fully-filtered hooks still
-    // produce skipped-job records.
+    // Each skipped job gets a meta.json + output.jsonl record containing the
+    // reason so the user can investigate via `daft hooks jobs logs <name>`.
+    // Runs BEFORE the `specs.is_empty()` early return so fully-filtered
+    // hooks still produce skipped-job records.
     for sj in &skipped_jobs {
         let meta = crate::coordinator::log_store::JobMeta::skipped(
             &sj.name,
@@ -298,7 +298,11 @@ pub fn execute_yaml_hook_with_rc(
             sj.background,
             vec![],
         );
-        if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
+        let records = vec![crate::coordinator::log_record::LogRecord::stdout(
+            0,
+            sj.reason.as_str(),
+        )];
+        if let Err(e) = store.write_job_record_jsonl(&invocation_id, &meta, &records) {
             eprintln!(
                 "daft: failed to write skipped job record for '{}': {e}",
                 sj.name

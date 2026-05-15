@@ -111,11 +111,7 @@ pub fn run_clean_logs() -> Result<()> {
             .and_then(|js| js.read_repo_policy(&name).ok())
             .unwrap_or_else(crate::coordinator::clean_policy::RepoPolicy::defaults);
 
-        // 1. Truncation pre-pass.
-        let truncated = store.truncate_oversized_logs(None).unwrap_or(0);
-        total_summary.truncated_logs += truncated;
-
-        // 2. Retention sweep.
+        // 1. Retention sweep.
         let policy = CleanPolicy {
             repo_policy: repo_policy.clone(),
             ..CleanPolicy::default()
@@ -126,7 +122,7 @@ pub fn run_clean_logs() -> Result<()> {
         total_summary.freed_bytes += s.freed_bytes;
         total_summary.stale_running_marked += s.stale_running_marked;
 
-        // 3. Budget post-pass.
+        // 2. Budget post-pass.
         let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
         total_summary.removed_invocations += bo.evicted_invocations;
         total_summary.removed_jobs += bo.freed_jobs;

@@ -46,12 +46,6 @@ pub struct JobMeta {
     /// Per-log size cap captured at hook-fire time. None = use repo default.
     #[serde(default)]
     pub max_log_size_bytes: Option<u64>,
-    /// True if `output.log` has been truncated by a cleanup pass.
-    #[serde(default)]
-    pub log_truncated: bool,
-    /// Original size in bytes before truncation, if `log_truncated == true`.
-    #[serde(default)]
-    pub original_size_bytes: Option<u64>,
 }
 
 impl JobMeta {
@@ -79,8 +73,6 @@ impl JobMeta {
             needs,
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         }
     }
 }
@@ -133,7 +125,7 @@ pub fn generate_invocation_id() -> String {
 ///   <invocation-id>/
 ///     <job-name>/
 ///       meta.json
-///       output.log
+///       output.jsonl
 /// ```
 #[derive(Clone)]
 pub struct LogStore {
@@ -182,37 +174,15 @@ impl LogStore {
         Ok(meta)
     }
 
-    pub fn log_path(job_dir: &Path) -> PathBuf {
-        job_dir.join("output.log")
-    }
-
     /// Structured per-line log file. One [`crate::coordinator::log_record::LogRecord`]
-    /// per `\n`-terminated line. Replaces `output.log` for newly-written jobs;
-    /// the old path remains as a one-cycle legacy fallback for readers.
+    /// per `\n`-terminated line — the canonical (and only) on-disk log format.
     pub fn jsonl_path(job_dir: &Path) -> PathBuf {
         job_dir.join("output.jsonl")
     }
 
-    /// Write `meta.json` and `output.log` for a completed job atomically.
-    ///
-    /// Creates the job directory if needed. Used by `BufferingLogSink` (for
-    /// foreground jobs) and by `yaml_executor` (for skipped job records).
-    pub fn write_job_record(
-        &self,
-        invocation_id: &str,
-        meta: &JobMeta,
-        log_bytes: &[u8],
-    ) -> Result<PathBuf> {
-        let job_dir = self.create_job_dir(invocation_id, &meta.name)?;
-        self.write_meta(&job_dir, meta)?;
-        fs::write(Self::log_path(&job_dir), log_bytes)
-            .with_context(|| format!("Failed to write log file for job: {}", meta.name))?;
-        Ok(job_dir)
-    }
-
     /// Write `meta.json` and `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
-    /// per line) atomically. The new structured log format — used by the
-    /// foreground `BufferingLogSink` and by `on_job_runner_skipped`.
+    /// per line) atomically. Used by the foreground `BufferingLogSink` and
+    /// by `on_job_runner_skipped`.
     pub fn write_job_record_jsonl(
         &self,
         invocation_id: &str,
@@ -428,86 +398,6 @@ impl LogStore {
         Ok(summary)
     }
 
-    /// Truncate any terminal-status log file that exceeds its
-    /// `max_log_size_bytes`. Append a footer recording the original size.
-    /// Skips Running jobs (truncating a live writer invites corruption).
-    ///
-    /// `default_cap` is used when JobMeta.max_log_size_bytes is None.
-    /// Pass None to use the built-in 10 MB default.
-    pub fn truncate_oversized_logs(&self, default_cap: Option<u64>) -> Result<usize> {
-        const BUILTIN_DEFAULT_CAP: u64 = 10 * 1024 * 1024;
-        const MIN_CAP: u64 = 1024; // Floor: cap below this is treated as 1KB.
-
-        let mut truncated = 0;
-        for job_dir in self.list_job_dirs()? {
-            let mut meta = match self.read_meta(&job_dir) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if matches!(meta.status, JobStatus::Running) {
-                continue;
-            }
-            if meta.log_truncated {
-                continue; // already handled
-            }
-
-            let cap = meta
-                .max_log_size_bytes
-                .or(default_cap)
-                .unwrap_or(BUILTIN_DEFAULT_CAP)
-                .max(MIN_CAP);
-
-            let log_path = LogStore::log_path(&job_dir);
-            let log_size = match log_path.metadata() {
-                Ok(m) => m.len(),
-                Err(_) => continue,
-            };
-            if log_size <= cap {
-                continue;
-            }
-
-            // Build footer
-            let footer = format!("\n[output truncated at {log_size} bytes]\n");
-            let footer_bytes = footer.as_bytes();
-            let head_len = cap.saturating_sub(footer_bytes.len() as u64);
-
-            // Read [0..head_len), write [head][footer] atomically via tmpfile-and-rename.
-            let mut head = vec![0u8; head_len as usize];
-            {
-                use std::io::Read;
-                let mut f = fs::File::open(&log_path)?;
-                f.read_exact(&mut head)?;
-            }
-
-            // Atomic replacement: write head + footer to a sibling tmpfile, then rename.
-            // File is renamed before meta is updated; if meta.write fails, the on-disk
-            // file is correctly truncated but `log_truncated` stays false. The subsequent
-            // `log_size <= cap` short-circuit prevents re-truncation, at the cost of
-            // permanently losing `original_size_bytes`. Single-flight protection is
-            // added in T6 (currently best-effort under concurrent calls).
-            let tmp_path = log_path.with_extension("log.truncating");
-            let result = (|| -> Result<()> {
-                use std::io::Write;
-                let mut tmp = fs::File::create(&tmp_path)?;
-                tmp.write_all(&head)?;
-                tmp.write_all(footer_bytes)?;
-                drop(tmp);
-                fs::rename(&tmp_path, &log_path)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&tmp_path); // best-effort cleanup
-            }
-            result?;
-
-            meta.log_truncated = true;
-            meta.original_size_bytes = Some(log_size);
-            self.write_meta(&job_dir, &meta)?;
-            truncated += 1;
-        }
-        Ok(truncated)
-    }
-
     /// Total bytes consumed under base_dir (recursive).
     pub fn total_size_bytes(&self) -> Result<u64> {
         if !self.base_dir.exists() {
@@ -695,7 +585,7 @@ impl LogStore {
 }
 
 fn log_file_size(job_dir: &Path) -> u64 {
-    LogStore::log_path(job_dir)
+    LogStore::jsonl_path(job_dir)
         .metadata()
         .map(|m| m.len())
         .unwrap_or(0)
@@ -759,8 +649,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -800,8 +688,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let policy = crate::coordinator::clean_policy::CleanPolicy {
@@ -855,8 +741,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: Some(*retention_secs),
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -916,8 +800,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: Some(86_400 * 7),
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -1005,8 +887,6 @@ mod tests {
             needs: vec![],
             retention_seconds: Some(60), // 1 minute, well exceeded
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -1152,8 +1032,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -1191,8 +1069,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&job_dir, &meta).unwrap();
 
@@ -1223,7 +1099,9 @@ mod tests {
     }
 
     #[test]
-    fn write_job_record_creates_meta_and_log_atomically() {
+    fn write_job_record_jsonl_creates_meta_and_jsonl_atomically() {
+        use crate::coordinator::log_record::LogRecord;
+
         let dir = tempfile::tempdir().unwrap();
         let store = LogStore::new(dir.path().to_path_buf());
 
@@ -1243,19 +1121,23 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
 
+        let records = vec![
+            LogRecord::stdout(0, "installing..."),
+            LogRecord::stdout(1, "done"),
+        ];
         let job_dir = store
-            .write_job_record("inv42", &meta, b"installing...\ndone\n")
+            .write_job_record_jsonl("inv42", &meta, &records)
             .unwrap();
 
         let loaded_meta = store.read_meta(&job_dir).unwrap();
         assert_eq!(loaded_meta.name, "pnpm-install");
 
-        let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
-        assert_eq!(log_bytes, b"installing...\ndone\n");
+        let jsonl = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+        assert_eq!(jsonl.lines().count(), 2);
+        assert!(jsonl.contains("\"data\":\"installing...\""));
+        assert!(jsonl.contains("\"data\":\"done\""));
     }
 
     #[test]
@@ -1279,8 +1161,6 @@ mod tests {
             needs: vec!["migrator".to_string()],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -1450,14 +1330,11 @@ mod tests {
             needs: vec![],
             retention_seconds: Some(86_400 * 14),
             max_log_size_bytes: Some(20 * 1024 * 1024),
-            log_truncated: false,
-            original_size_bytes: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: JobMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back.retention_seconds, Some(86_400 * 14));
         assert_eq!(back.max_log_size_bytes, Some(20 * 1024 * 1024));
-        assert!(!back.log_truncated);
     }
 
     #[test]
@@ -1472,7 +1349,6 @@ mod tests {
         let meta: JobMeta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.retention_seconds, None);
         assert_eq!(meta.max_log_size_bytes, None);
-        assert!(!meta.log_truncated);
     }
 
     #[test]
@@ -1533,11 +1409,9 @@ mod tests {
                 needs: Vec::new(),
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&job_dir, &meta).unwrap();
-            let log_path = LogStore::log_path(&job_dir);
+            let log_path = LogStore::jsonl_path(&job_dir);
             std::fs::write(&log_path, vec![b'x'; log_bytes]).unwrap();
         }
     }
@@ -1613,11 +1487,9 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
-            let mut f = std::fs::File::create(LogStore::log_path(&dir)).unwrap();
+            let mut f = std::fs::File::create(LogStore::jsonl_path(&dir)).unwrap();
             f.write_all(&vec![b'.'; 200 * 1024]).unwrap();
         }
 
@@ -1648,69 +1520,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_caps_oversized_log_with_footer() {
-        use std::collections::HashMap;
-        use std::io::Write;
-        use tempfile::TempDir;
-
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let now = chrono::Utc::now();
-
-        let inv_id = "0001";
-        let inv_meta = InvocationMeta {
-            invocation_id: inv_id.into(),
-            trigger_command: "post-create".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "main".into(),
-            created_at: now,
-        };
-        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
-
-        let dir = store.create_job_dir(inv_id, "spam").unwrap();
-        let meta = JobMeta {
-            name: "spam".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "main".into(),
-            command: "yes".into(),
-            working_dir: "/tmp".into(),
-            env: HashMap::new(),
-            started_at: now,
-            status: JobStatus::Completed,
-            exit_code: Some(0),
-            pid: None,
-            background: false,
-            finished_at: Some(now),
-            needs: vec![],
-            retention_seconds: None,
-            max_log_size_bytes: Some(1024),
-            log_truncated: false,
-            original_size_bytes: None,
-        };
-        store.write_meta(&dir, &meta).unwrap();
-
-        // Write a 4KB log file
-        let log_path = LogStore::log_path(&dir);
-        let mut f = std::fs::File::create(&log_path).unwrap();
-        f.write_all(&vec![b'x'; 4096]).unwrap();
-
-        // Truncate with 1KB cap (from meta.max_log_size_bytes)
-        let truncated = store.truncate_oversized_logs(None).unwrap();
-        assert_eq!(truncated, 1);
-
-        // File should be approximately 1KB (cap), with footer
-        let len = log_path.metadata().unwrap().len();
-        assert!(len <= 1024, "expected <=1024, got {len}");
-        let contents = std::fs::read_to_string(&log_path).unwrap();
-        assert!(contents.ends_with("[output truncated at 4096 bytes]\n"));
-
-        // Meta should be updated
-        let updated = store.read_meta(&dir).unwrap();
-        assert!(updated.log_truncated);
-        assert_eq!(updated.original_size_bytes, Some(4096));
-    }
-
-    #[test]
     fn total_size_bytes_skips_deleting_orphans() {
         use std::io::Write;
         use tempfile::TempDir;
@@ -1720,7 +1529,7 @@ mod tests {
 
         // Real invocation dir with a 1KB log
         let dir = store.create_job_dir("0001", "build").unwrap();
-        let log = LogStore::log_path(&dir);
+        let log = LogStore::jsonl_path(&dir);
         let mut f = std::fs::File::create(&log).unwrap();
         f.write_all(&[b'.'; 1024]).unwrap();
         drop(f);
@@ -1728,7 +1537,7 @@ mod tests {
         // Orphan trash dir with 5KB of garbage
         let trash = tmp.path().join(".deleting-orphan-001");
         std::fs::create_dir(&trash).unwrap();
-        let mut f = std::fs::File::create(trash.join("output.log")).unwrap();
+        let mut f = std::fs::File::create(trash.join("output.jsonl")).unwrap();
         f.write_all(&[b'.'; 5 * 1024]).unwrap();
         drop(f);
 

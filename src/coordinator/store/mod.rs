@@ -337,8 +337,6 @@ mod tests {
             tags: vec!["slow".into()],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         }
     }
 

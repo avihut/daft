@@ -424,8 +424,6 @@ fn job_row_from_meta(
         tags: tags.to_vec(),
         retention_seconds: meta.retention_seconds,
         max_log_size_bytes: meta.max_log_size_bytes,
-        log_truncated: meta.log_truncated,
-        original_size_bytes: meta.original_size_bytes,
     }
 }
 
@@ -512,8 +510,6 @@ fn run_single_background_job(
         needs: job.needs.clone(),
         retention_seconds,
         max_log_size_bytes,
-        log_truncated: false,
-        original_size_bytes: None,
     };
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);
@@ -1650,8 +1646,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -1687,8 +1681,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -1795,8 +1787,6 @@ mod tests {
             tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         job_store.upsert_job(&row).unwrap();
 
@@ -1837,8 +1827,6 @@ mod tests {
             tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         job_store.upsert_job(&row).unwrap();
 
@@ -1875,8 +1863,6 @@ mod tests {
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             }
         }
 
@@ -1974,8 +1960,6 @@ mod tests {
             tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         let mut young = old.clone();
         young.name = "young".into();
@@ -2063,8 +2047,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 

@@ -758,7 +758,7 @@ fn build_jobs_payload(
                 _ => None,
             };
 
-            let size = LogStore::log_path(dir).metadata().map(|m| m.len()).ok();
+            let size = LogStore::jsonl_path(dir).metadata().map(|m| m.len()).ok();
             let size_cell = size.map(|s| Cell::int(s as i64)).unwrap_or(Cell::Null);
 
             table = table.row([
@@ -980,7 +980,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     ),
                     _ => "\u{2014}".to_string(),
                 };
-                let size = LogStore::log_path(dir)
+                let size = LogStore::jsonl_path(dir)
                     .metadata()
                     .map(|m| m.len())
                     .unwrap_or(0);
@@ -1122,59 +1122,29 @@ impl LogsFilter {
     }
 }
 
-/// Render a job's log file into `buf` with `filter` applied.
-///
-/// Tries `output.jsonl` first (the new structured format). Falls back to
-/// `output.log` if jsonl is absent — pre-upgrade data, treated as
-/// `Stdout`-only synthetic records with `seq = line_number` and
-/// `ts = mtime` (best-effort).
+/// Render a job's `output.jsonl` log into `buf` with `filter` applied.
 fn render_job_log(
     job_dir: &std::path::Path,
     filter: &LogsFilter,
     buf: &mut String,
 ) -> Result<bool> {
-    use crate::coordinator::log_record::{LogRecord, LogRecordKind};
+    use crate::coordinator::log_record::LogRecord;
 
     let jsonl_path = LogStore::jsonl_path(job_dir);
-    if jsonl_path.exists() {
-        let file = std::fs::File::open(&jsonl_path)
-            .with_context(|| format!("Failed to open log file: {}", jsonl_path.display()))?;
-        let reader = std::io::BufReader::new(file);
-        let mut wrote_any = false;
-        for line in std::io::BufRead::lines(reader) {
-            let line = line?;
-            if line.is_empty() {
-                continue;
-            }
-            let record: LogRecord =
-                serde_json::from_str(&line).with_context(|| "Failed to parse JSONL log record")?;
-            if !filter.accepts(&record) {
-                continue;
-            }
-            buf.push_str(&filter.format(&record));
-            buf.push('\n');
-            wrote_any = true;
-        }
-        return Ok(wrote_any);
-    }
-
-    // Legacy fallback: read `output.log` as raw stdout-only records.
-    // No timestamps, so `--since` cannot filter (we treat all lines as
-    // "now"); `seq` is the line index.
-    let legacy = LogStore::log_path(job_dir);
-    if !legacy.exists() {
+    if !jsonl_path.exists() {
         return Ok(false);
     }
-    let contents = std::fs::read_to_string(&legacy)
-        .with_context(|| format!("Failed to read legacy log: {}", legacy.display()))?;
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let file = std::fs::File::open(&jsonl_path)
+        .with_context(|| format!("Failed to open log file: {}", jsonl_path.display()))?;
+    let reader = std::io::BufReader::new(file);
     let mut wrote_any = false;
-    for (idx, line) in contents.lines().enumerate() {
-        let record = LogRecord {
-            seq: idx as u64,
-            ts: now_ms,
-            kind: LogRecordKind::Stdout(line.to_string()),
-        };
+    for line in std::io::BufRead::lines(reader) {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let record: LogRecord =
+            serde_json::from_str(&line).with_context(|| "Failed to parse JSONL log record")?;
         if !filter.accepts(&record) {
             continue;
         }
@@ -1949,20 +1919,10 @@ fn prune_jobs(
             ..CleanPolicy::default()
         };
 
-        // Pass 1: truncation pre-pass (skipped in dry-run since the spec
-        // describes truncation as side-effecting; dry-run mode shouldn't
-        // touch disk for any pass).
-        let truncated = if dry_run {
-            0
-        } else {
-            store.truncate_oversized_logs(None).unwrap_or(0)
-        };
-
-        // Pass 2: retention sweep.
+        // Pass 1: retention sweep.
         let mut summary = store.clean(&policy)?;
-        summary.truncated_logs += truncated;
 
-        // Pass 3: budget post-pass (also skipped in dry-run).
+        // Pass 2: budget post-pass (also skipped in dry-run).
         if !dry_run {
             let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
             summary.removed_invocations += bo.evicted_invocations;
@@ -1978,7 +1938,6 @@ fn prune_jobs(
         let mut total_jobs = 0;
         let mut total_invs = 0;
         let mut total_bytes = 0u64;
-        let mut total_truncated = 0u64;
         let mut all_candidates: Vec<(String, String, String)> = Vec::new();
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
@@ -1986,7 +1945,6 @@ fn prune_jobs(
             total_jobs += s.removed_jobs;
             total_invs += s.removed_invocations;
             total_bytes += s.freed_bytes;
-            total_truncated += s.truncated_logs as u64;
             let short_repo = &hash[..8.min(hash.len())];
             for (wt, inv, name) in s.candidates {
                 all_candidates.push((format!("{short_repo}/{wt}"), inv, name));
@@ -1994,16 +1952,11 @@ fn prune_jobs(
         }
         if dry_run {
             print_dry_run_summary(output, total_invs, total_jobs, total_bytes, &all_candidates);
-        } else if total_jobs > 0 || total_truncated > 0 {
-            let mut msg = format!(
-                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos",
+        } else if total_jobs > 0 {
+            output.success(&format!(
+                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos.",
                 format_bytes(total_bytes),
-            );
-            if total_truncated > 0 {
-                msg.push_str(&format!(", truncated {total_truncated} log(s)"));
-            }
-            msg.push('.');
-            output.success(&msg);
+            ));
         } else {
             output.info("No old logs to clean.");
         }
@@ -2019,17 +1972,12 @@ fn prune_jobs(
                 s.freed_bytes,
                 &s.candidates,
             );
-        } else if s.removed_jobs > 0 || s.truncated_logs > 0 {
-            let mut msg = format!(
-                "Removed {} job(s) ({} freed)",
+        } else if s.removed_jobs > 0 {
+            output.success(&format!(
+                "Removed {} job(s) ({} freed).",
                 s.removed_jobs,
                 format_bytes(s.freed_bytes),
-            );
-            if s.truncated_logs > 0 {
-                msg.push_str(&format!(", truncated {} log(s)", s.truncated_logs));
-            }
-            msg.push('.');
-            output.success(&msg);
+            ));
         } else {
             output.info("No old logs to clean.");
         }
@@ -2371,8 +2319,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -2423,8 +2369,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2476,8 +2420,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2540,8 +2482,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2590,8 +2530,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -2695,8 +2633,6 @@ mod tests {
             needs,
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         }
     }
 

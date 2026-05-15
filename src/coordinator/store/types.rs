@@ -45,8 +45,6 @@ pub struct JobRow {
     pub tags: Vec<String>,
     pub retention_seconds: Option<i64>,
     pub max_log_size_bytes: Option<u64>,
-    pub log_truncated: bool,
-    pub original_size_bytes: Option<u64>,
 }
 
 impl JobRow {
@@ -70,8 +68,6 @@ impl JobRow {
             needs: self.needs.clone(),
             retention_seconds: self.retention_seconds,
             max_log_size_bytes: self.max_log_size_bytes,
-            log_truncated: self.log_truncated,
-            original_size_bytes: self.original_size_bytes,
         }
     }
 }

@@ -3,14 +3,12 @@
 //!
 //! The runner drives job execution and streams output via a presenter for
 //! live display. A `LogSink`, if provided, also receives output chunks and
-//! completion notifications so it can write `meta.json` + `output.log`
-//! entries into a `LogStore`. Callers that don't need persistence pass
-//! `None`.
+//! completion notifications so it can write the per-job `output.jsonl`
+//! record stream into a `LogStore`. Callers that don't need persistence
+//! pass `None`.
 
 use super::{JobResult, JobSpec};
-use crate::coordinator::log_record::{
-    LogRecord, LogRecordKind, OutputKind, StatusEvent, record_from,
-};
+use crate::coordinator::log_record::{LogRecord, OutputKind, StatusEvent, record_from};
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
 use crate::executor::NodeStatus;
 use std::collections::HashMap;
@@ -38,7 +36,7 @@ pub trait LogSink: Send + Sync {
 }
 
 /// A `LogSink` that buffers output per job and writes `meta.json` +
-/// `output.log` atomically at `on_job_complete`.
+/// `output.jsonl` atomically at `on_job_complete`.
 ///
 /// If a job is in flight when the sink is dropped (e.g., the main process
 /// crashes mid-run), its buffered output is discarded and no record is
@@ -164,8 +162,6 @@ impl LogSink for BufferingLogSink {
             needs: spec.needs.clone(),
             retention_seconds,
             max_log_size_bytes,
-            log_truncated: false,
-            original_size_bytes: None,
         };
 
         // Append a terminal Status record so JSONL readers see lifecycle
@@ -178,27 +174,11 @@ impl LogSink for BufferingLogSink {
             },
         ));
 
-        match self
+        if let Err(e) = self
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            Ok(job_dir) => {
-                // Dual-write the legacy `output.log` so the per-file
-                // truncator and other readers that still target the raw
-                // byte stream keep working. Tier-2's reader fallback
-                // already accepts `output.log`; keeping the writer path
-                // matches the same one-cycle posture. Output is
-                // reconstructed from the post-sampling records so both
-                // files reflect the same view of the job's output.
-                let raw = raw_log_bytes_from_records(&records);
-                if let Err(e) = std::fs::write(LogStore::log_path(&job_dir), &raw) {
-                    eprintln!(
-                        "daft: failed to write legacy output.log for '{}': {e}",
-                        spec.name
-                    );
-                }
-            }
-            Err(e) => eprintln!("daft: failed to write job record for '{}': {e}", spec.name),
+            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
     }
 
@@ -222,43 +202,13 @@ impl LogSink for BufferingLogSink {
         // the reason so consumers don't have to special-case missing files.
         let records = vec![LogRecord::stdout(0, reason)];
 
-        match self
+        if let Err(e) = self
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            Ok(job_dir) => {
-                let raw = raw_log_bytes_from_records(&records);
-                if let Err(e) = std::fs::write(LogStore::log_path(&job_dir), &raw) {
-                    eprintln!(
-                        "daft: failed to write legacy output.log for '{}': {e}",
-                        spec.name
-                    );
-                }
-            }
-            Err(e) => eprintln!("daft: failed to write job record for '{}': {e}", spec.name),
+            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
     }
-}
-
-/// Reconstruct the raw concatenated stdout/stderr byte stream from a slice
-/// of structured records. `Status` lifecycle records are skipped — they
-/// were never present in the legacy single-file format. Each emitted line
-/// is newline-terminated to mirror the line-oriented format the runner
-/// produces.
-fn raw_log_bytes_from_records(records: &[LogRecord]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    for record in records {
-        match &record.kind {
-            LogRecordKind::Stdout(s) | LogRecordKind::Stderr(s) => {
-                buf.extend_from_slice(s.as_bytes());
-                if !s.ends_with('\n') {
-                    buf.push(b'\n');
-                }
-            }
-            LogRecordKind::Status(_) => {}
-        }
-    }
-    buf
 }
 
 #[cfg(test)]
