@@ -1039,8 +1039,11 @@ fn job_status_icon(status: &crate::coordinator::log_store::JobStatus) -> &'stati
         JobStatus::Completed => "\u{2713} completed",
         JobStatus::Failed => "\u{2717} failed",
         JobStatus::Running => "\u{27f3} running",
+        JobStatus::Cancelling => "\u{27f3} cancelling",
         JobStatus::Cancelled => "\u{2014} cancelled",
+        JobStatus::Crashed => "\u{2717} crashed",
         JobStatus::Skipped => "\u{2014} skipped",
+        JobStatus::Unknown => "\u{2717} unknown",
     }
 }
 

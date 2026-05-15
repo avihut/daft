@@ -9,7 +9,9 @@
 //! A Unix socket listener runs in a separate thread alongside job execution,
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
 
+use super::log_record::OutputKind;
 use super::log_store::{JobMeta, JobStatus, LogStore};
+use super::store::{JobRow, JobStore, schema as store_schema};
 #[cfg(unix)]
 use super::{
     CoordinatorRequest, CoordinatorResponse, JobInfo, coordinator_pid_path, coordinator_socket_path,
@@ -24,6 +26,70 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Returns the on-disk path of the coordinator's redb file for a given
+/// `<state_base>/jobs/<repo_hash>` log root.
+pub fn job_store_path(log_store_base: &std::path::Path) -> std::path::PathBuf {
+    log_store_base.join("coordinator.redb")
+}
+
+/// Reconcile `Running`/`Cancelling` rows that this repo's redb still holds
+/// by probing each row's recorded PGID. If the process group no longer
+/// exists, the prior coordinator crashed before it could record a terminal
+/// state — mark the row `Crashed` with `finished_at = now()`.
+///
+/// Best-effort: errors writing the updated row are reported via stderr but
+/// don't abort the boot.
+#[cfg(unix)]
+fn reconcile_active_jobs(store: &JobStore, repo_hash: &str) -> Result<()> {
+    use nix::sys::signal;
+    use nix::unistd::Pid;
+
+    let active = store.list_active_jobs(repo_hash)?;
+    if active.is_empty() {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now();
+    let mut marked = 0usize;
+    for mut row in active {
+        // Without a recorded pgid we have nothing to probe; treat the row
+        // as crashed (it was written `Running` but we can't confirm).
+        let alive = match row.pgid {
+            Some(pgid) if pgid > 0 => {
+                // `signal::kill` with `None` is the POSIX existence probe:
+                // returns Ok(()) if the process group exists (regardless of
+                // permission), Err(ESRCH) if it doesn't.
+                let pid = Pid::from_raw(pgid as i32);
+                matches!(signal::kill(pid, None), Ok(()))
+            }
+            _ => false,
+        };
+        if alive {
+            continue;
+        }
+        row.status = JobStatus::Crashed;
+        row.finished_at = Some(now);
+        match store.upsert_job(&row) {
+            Ok(()) => marked += 1,
+            Err(e) => eprintln!(
+                "daft: reconcile failed to mark '{}' as crashed: {e}",
+                row.name
+            ),
+        }
+    }
+    if marked > 0 {
+        eprintln!("daft: reconcile marked {marked} crashed job(s) from a previous coordinator");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn reconcile_active_jobs(_store: &JobStore, _repo_hash: &str) -> Result<()> {
+    // Non-Unix coordinators don't spawn background jobs (see yaml_executor
+    // fallback). Nothing to reconcile.
+    Ok(())
+}
 
 /// Shared state for tracking running child processes.
 /// Maps job name to the child process PID, allowing cancellation.
@@ -87,6 +153,7 @@ impl CoordinatorState {
             &ChildPidMap::default(),
             &Arc::new(AtomicBool::new(false)),
             &CancelledJobs::default(),
+            None,
         )
     }
 
@@ -98,12 +165,16 @@ impl CoordinatorState {
     /// `cancelled_jobs` is a per-job cancellation set: when a job's name
     /// appears here, the post-run classifier records it as
     /// `JobStatus::Cancelled` rather than `JobStatus::Failed`.
+    /// `job_store`, when present, receives a `JobRow` dual-write at job
+    /// start and completion — enables crash-recovery by the next coordinator
+    /// invocation and richer cancel filtering (#476 Tier-1).
     fn run_all_with_cancel(
         &self,
         store: &LogStore,
         child_pids: &ChildPidMap,
         cancel_all: &Arc<AtomicBool>,
         cancelled_jobs: &CancelledJobs,
+        job_store: Option<&JobStore>,
     ) -> Result<Vec<JobResult>> {
         if self.jobs.is_empty() {
             return Ok(Vec::new());
@@ -155,6 +226,7 @@ impl CoordinatorState {
 
                 let job = self.jobs[idx].clone();
                 let inv_id = self.invocation_id.clone();
+                let repo_hash = self.repo_hash.clone();
                 let store_base = store.base_dir.clone();
                 let hook_type = self.hook_type.clone();
                 let worktree = self.worktree.clone();
@@ -162,13 +234,16 @@ impl CoordinatorState {
                 let child_pids_clone = Arc::clone(child_pids);
                 let cancel_all_clone = Arc::clone(cancel_all);
                 let cancelled_jobs_clone = Arc::clone(cancelled_jobs);
+                let job_store_clone = job_store.cloned();
 
                 let handle = std::thread::spawn(move || {
                     let local_store = LogStore::new(store_base);
                     let ctx = JobInvocationContext {
+                        repo_hash: &repo_hash,
                         invocation_id: &inv_id,
                         hook_type: &hook_type,
                         worktree: &worktree,
+                        job_store: job_store_clone,
                     };
                     run_single_background_job(
                         &job,
@@ -281,9 +356,50 @@ impl CoordinatorState {
 
 /// Metadata propagated from the coordinator into each job execution.
 struct JobInvocationContext<'a> {
+    repo_hash: &'a str,
     invocation_id: &'a str,
     hook_type: &'a str,
     worktree: &'a str,
+    /// Optional dual-write target for the redb-backed `JobRow` lifecycle
+    /// records. `None` from test paths that don't exercise persistence.
+    job_store: Option<JobStore>,
+}
+
+/// Project a `JobMeta` into a redb `JobRow`. `repo_hash`/`invocation_id`/
+/// `tags` come from outside `JobMeta` (the coordinator's invocation context),
+/// and `child_pid` is the spawned shell's PID — equal to its PGID because
+/// `run_command` calls `process_group(0)`.
+fn job_row_from_meta(
+    meta: &JobMeta,
+    repo_hash: &str,
+    invocation_id: &str,
+    tags: &[String],
+    child_pid: Option<u32>,
+) -> JobRow {
+    JobRow {
+        schema_version: store_schema::SCHEMA_VERSION,
+        repo_hash: repo_hash.to_string(),
+        invocation_id: invocation_id.to_string(),
+        name: meta.name.clone(),
+        hook_type: meta.hook_type.clone(),
+        worktree: meta.worktree.clone(),
+        command: meta.command.clone(),
+        working_dir: meta.working_dir.clone(),
+        env: meta.env.clone(),
+        started_at: meta.started_at,
+        finished_at: meta.finished_at,
+        status: meta.status.clone(),
+        exit_code: meta.exit_code,
+        pid: child_pid,
+        pgid: child_pid, // PID == PGID via process_group(0)
+        background: meta.background,
+        needs: meta.needs.clone(),
+        tags: tags.to_vec(),
+        retention_seconds: meta.retention_seconds,
+        max_log_size_bytes: meta.max_log_size_bytes,
+        log_truncated: meta.log_truncated,
+        original_size_bytes: meta.original_size_bytes,
+    }
 }
 
 /// Run a single background job: create log directory, write metadata,
@@ -376,11 +492,34 @@ fn run_single_background_job(
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);
     }
 
+    // Dual-write the initial JobRow into the redb store. The child PID/PGID
+    // aren't known yet — `run_command` spawns the shell — so they're
+    // populated alongside the terminal write below.
+    if let Some(js) = ctx.job_store.as_ref()
+        && let Err(e) = js.upsert_job(&job_row_from_meta(
+            &meta,
+            ctx.repo_hash,
+            ctx.invocation_id,
+            &job.tags,
+            None,
+        ))
+    {
+        eprintln!(
+            "daft: failed to write initial JobRow for '{}': {e}",
+            job.name
+        );
+    }
+
     // 3. Set up an mpsc channel for output streaming.
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let (tx, rx) = std::sync::mpsc::channel::<(OutputKind, String)>();
 
     // 4. Spawn a log writer thread that reads from the channel and writes
     //    to output.log.
+    //
+    // TODO(#476 Tier-2): switch to `output.jsonl` with one structured
+    // `LogRecord` per line so the `kind` carried on the channel is
+    // preserved. For now, drop `kind` so the flat-file shape is
+    // unchanged — the JSONL migration lands in a focused commit.
     let log_path = LogStore::log_path(&job_dir);
     let log_path_for_writer = log_path.clone();
     let log_writer_handle = std::thread::spawn(move || {
@@ -390,14 +529,14 @@ fn run_single_background_job(
             .open(&log_path_for_writer);
         match file {
             Ok(mut f) => {
-                for line in rx {
+                for (_kind, line) in rx {
                     let _ = writeln!(f, "{line}");
                 }
             }
             Err(e) => {
                 // Drain the channel even if we cannot write.
                 eprintln!("daft: failed to open log file: {e}");
-                for _line in rx {}
+                for _ in rx {}
             }
         }
     });
@@ -431,8 +570,11 @@ fn run_single_background_job(
     // closes and recv() returns Err — registrar exits cleanly either way).
     let _ = registrar.join();
 
-    // Remove from the child PID map now that the command has finished.
-    child_pids.lock().unwrap().remove(&job.name);
+    // Remove from the child PID map and capture the spawned child's PID
+    // so the terminal JobRow write can record it. `process_group(0)` makes
+    // pid == pgid for every spawned hook job, so the same value is also
+    // the PGID that `killpg` would target.
+    let child_pid = child_pids.lock().unwrap().remove(&job.name);
 
     // Wait for the log writer thread to finish.
     log_writer_handle.join().ok();
@@ -467,11 +609,27 @@ fn run_single_background_job(
     }
 
     // 8. Write updated meta with the final status, exit code, and finish time.
-    meta.status = status;
+    meta.status = status.clone();
     meta.exit_code = exit_code;
     meta.finished_at = Some(chrono::Utc::now());
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to update meta for '{}': {e}", job.name);
+    }
+
+    // Dual-write the terminal JobRow with the captured child PID/PGID.
+    if let Some(js) = ctx.job_store.as_ref()
+        && let Err(e) = js.upsert_job(&job_row_from_meta(
+            &meta,
+            ctx.repo_hash,
+            ctx.invocation_id,
+            &job.tags,
+            child_pid,
+        ))
+    {
+        eprintln!(
+            "daft: failed to write terminal JobRow for '{}': {e}",
+            job.name
+        );
     }
 
     // 9. On failure, print a one-line notification to stderr (best-effort,
@@ -532,6 +690,7 @@ fn start_socket_listener(
     cancel_all: Arc<AtomicBool>,
     cancelled_jobs: CancelledJobs,
     shutdown: Arc<AtomicBool>,
+    job_store: Option<JobStore>,
 ) -> Result<(std::thread::JoinHandle<()>, std::path::PathBuf)> {
     let socket_path = coordinator_socket_path(repo_hash)?;
 
@@ -547,6 +706,7 @@ fn start_socket_listener(
     listener.set_nonblocking(true)?;
 
     let socket_path_clone = socket_path.clone();
+    let repo_hash = repo_hash.to_string();
     let handle = std::thread::spawn(move || {
         let store = LogStore::new(store_base);
         loop {
@@ -563,6 +723,8 @@ fn start_socket_listener(
                         &cancel_all,
                         &cancelled_jobs,
                         &shutdown,
+                        job_store.as_ref(),
+                        &repo_hash,
                     );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -585,6 +747,7 @@ fn start_socket_listener(
 
 /// Handle a single client connection: read a request, process it, send a response.
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn handle_client_connection(
     stream: std::os::unix::net::UnixStream,
     store: &LogStore,
@@ -592,6 +755,8 @@ fn handle_client_connection(
     cancel_all: &Arc<AtomicBool>,
     cancelled_jobs: &CancelledJobs,
     shutdown: &Arc<AtomicBool>,
+    job_store: Option<&JobStore>,
+    repo_hash: &str,
 ) {
     use std::io::{BufRead, BufReader};
 
@@ -671,6 +836,25 @@ fn handle_client_connection(
                 message: "Coordinator shutting down".to_string(),
             }
         }
+        CoordinatorRequest::CancelMatching {
+            hook,
+            worktree,
+            tag,
+            invocation_prefix,
+            older_than_secs,
+        } => cancel_matching(
+            CancelMatchingArgs {
+                hook: hook.as_deref(),
+                worktree: worktree.as_deref(),
+                tag: tag.as_deref(),
+                invocation_prefix: invocation_prefix.as_deref(),
+                older_than_secs,
+            },
+            child_pids,
+            cancelled_jobs,
+            job_store,
+            repo_hash,
+        ),
     };
 
     send_response(&stream, &response);
@@ -736,6 +920,101 @@ fn cancel_single_job(
         CoordinatorResponse::Error {
             message: format!("Job not found or not running: {name}"),
         }
+    }
+}
+
+/// Predicates for `CancelMatching`. Grouped into a struct so the helper
+/// signature stays under clippy's `too_many_arguments` lint without an
+/// allow attribute.
+struct CancelMatchingArgs<'a> {
+    hook: Option<&'a str>,
+    worktree: Option<&'a str>,
+    tag: Option<&'a str>,
+    invocation_prefix: Option<&'a str>,
+    older_than_secs: Option<u64>,
+}
+
+/// Pure filter for `CancelMatching`: returns rows whose fields satisfy
+/// every supplied predicate. `now` is parameterized so unit tests can
+/// pin time and exercise `older_than_secs` deterministically.
+fn filter_matching_jobs(
+    rows: Vec<JobRow>,
+    args: &CancelMatchingArgs<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<JobRow> {
+    rows.into_iter()
+        .filter(|r| args.hook.is_none_or(|h| r.hook_type == h))
+        .filter(|r| args.worktree.is_none_or(|w| r.worktree == w))
+        .filter(|r| args.tag.is_none_or(|t| r.tags.iter().any(|x| x == t)))
+        .filter(|r| {
+            args.invocation_prefix
+                .is_none_or(|p| r.invocation_id.starts_with(p))
+        })
+        .filter(|r| {
+            args.older_than_secs.is_none_or(|secs| {
+                let elapsed = now.signed_duration_since(r.started_at).num_seconds();
+                elapsed >= 0 && (elapsed as u64) >= secs
+            })
+        })
+        .collect()
+}
+
+/// Cancel every active job whose redb `JobRow` matches *all* supplied
+/// predicates (AND, missing-is-wildcard). Looks up the runtime PID via
+/// `child_pids` so we signal exactly the process group that's still alive.
+///
+/// Rows the coordinator never wrote (e.g. legacy pre-redb invocations) can't
+/// be filtered by the redb schema, so they fall through unmatched — the
+/// existing per-name `CancelJob` path remains for those.
+#[cfg(unix)]
+fn cancel_matching(
+    args: CancelMatchingArgs<'_>,
+    child_pids: &ChildPidMap,
+    cancelled_jobs: &CancelledJobs,
+    job_store: Option<&JobStore>,
+    repo_hash: &str,
+) -> CoordinatorResponse {
+    let Some(js) = job_store else {
+        return CoordinatorResponse::Error {
+            message: "CancelMatching requires the redb job store; not available on this build"
+                .into(),
+        };
+    };
+
+    let active = match js.list_active_jobs(repo_hash) {
+        Ok(rows) => rows,
+        Err(e) => {
+            return CoordinatorResponse::Error {
+                message: format!("Failed to list active jobs: {e}"),
+            };
+        }
+    };
+
+    let matched = filter_matching_jobs(active, &args, chrono::Utc::now());
+
+    // Best-effort signal each match. We use `child_pids` (the in-memory
+    // PID map this coordinator maintains for its own jobs) — rows whose
+    // PID isn't in this map belong to a different coordinator and we
+    // shouldn't touch them.
+    let pids_snapshot = {
+        let g = child_pids.lock().unwrap();
+        g.clone()
+    };
+    let mut names: Vec<String> = Vec::new();
+    for row in &matched {
+        if let Some(&pid) = pids_snapshot.get(&row.name) {
+            cancelled_jobs.lock().unwrap().insert(row.name.clone());
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pid as i32),
+                nix::sys::signal::Signal::SIGTERM,
+            );
+            names.push(row.name.clone());
+        }
+    }
+
+    CoordinatorResponse::Cancelled {
+        count: names.len(),
+        names,
     }
 }
 
@@ -880,6 +1159,24 @@ pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
     // Write PID file (best-effort).
     let pid_path = write_pid_file(&state.repo_hash).ok();
 
+    // Open the redb-backed job store and reconcile any rows left
+    // `Running`/`Cancelling` by a previous coordinator that crashed before
+    // it could record terminal states. Best-effort: if the store fails to
+    // open we proceed without it — the legacy `meta.json` lifecycle still
+    // works.
+    let job_store = match JobStore::open(&job_store_path(&store.base_dir)) {
+        Ok(js) => {
+            if let Err(e) = reconcile_active_jobs(&js, &state.repo_hash) {
+                eprintln!("daft: coordinator reconciliation failed: {e}");
+            }
+            Some(js)
+        }
+        Err(e) => {
+            eprintln!("daft: failed to open coordinator job store: {e}");
+            None
+        }
+    };
+
     // Shared state for cancellation.
     let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
     let cancel_all = Arc::new(AtomicBool::new(false));
@@ -893,17 +1190,23 @@ pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
         Arc::clone(&cancel_all),
         Arc::clone(&cancelled_jobs),
         Arc::clone(&shutdown),
+        job_store.clone(),
     )
     .ok();
 
-    let exit_code =
-        match state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs) {
-            Ok(_) => 0,
-            Err(e) => {
-                eprintln!("daft: coordinator error: {e}");
-                1
-            }
-        };
+    let exit_code = match state.run_all_with_cancel(
+        &store,
+        &child_pids,
+        &cancel_all,
+        &cancelled_jobs,
+        job_store.as_ref(),
+    ) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("daft: coordinator error: {e}");
+            1
+        }
+    };
 
     // Tear down listener + PID file before exiting.
     shutdown.store(true, Ordering::Relaxed);
@@ -1162,7 +1465,7 @@ mod tests {
         let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
 
         let results = state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, NodeStatus::Skipped);
@@ -1194,6 +1497,281 @@ mod tests {
         assert_eq!(meta.worktree, "feature/y");
         assert!(meta.background);
         assert!(meta.finished_at.is_some());
+    }
+
+    /// A row left `Running` whose pgid no longer exists must be marked
+    /// `Crashed` by the reconciliation pass. This is the gate for #476
+    /// Tier-1 crash recovery.
+    #[test]
+    fn reconcile_marks_dead_running_as_crashed() {
+        let tmp = TempDir::new().unwrap();
+        let log_base = tmp.path().to_path_buf();
+        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
+
+        // Spawn-and-reap a short-lived child so we know a PID that is
+        // *definitely* gone — won't collide with anything that races us.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let row = JobRow {
+            schema_version: store_schema::SCHEMA_VERSION,
+            repo_hash: "rh".into(),
+            invocation_id: "inv1".into(),
+            name: "ghost".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "feat/x".into(),
+            command: "sleep 9999".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            status: JobStatus::Running,
+            exit_code: None,
+            pid: Some(dead_pid),
+            pgid: Some(dead_pid),
+            background: true,
+            needs: vec![],
+            tags: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        job_store.upsert_job(&row).unwrap();
+
+        reconcile_active_jobs(&job_store, "rh").unwrap();
+
+        let back = job_store.get_job("rh", "inv1", "ghost").unwrap().unwrap();
+        assert_eq!(back.status, JobStatus::Crashed);
+        assert!(back.finished_at.is_some());
+    }
+
+    /// A row left `Running` whose pgid IS still alive must stay `Running`.
+    /// Reconciliation only touches rows whose process has actually exited.
+    #[test]
+    fn reconcile_leaves_alive_running_intact() {
+        let tmp = TempDir::new().unwrap();
+        let log_base = tmp.path().to_path_buf();
+        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
+
+        let row = JobRow {
+            schema_version: store_schema::SCHEMA_VERSION,
+            repo_hash: "rh".into(),
+            invocation_id: "inv1".into(),
+            name: "alive".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "feat/x".into(),
+            command: "sleep 9999".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            status: JobStatus::Running,
+            // Our own PID — guaranteed to exist (we're it).
+            pid: Some(std::process::id()),
+            pgid: Some(std::process::id()),
+            exit_code: None,
+            background: true,
+            needs: vec![],
+            tags: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        job_store.upsert_job(&row).unwrap();
+
+        reconcile_active_jobs(&job_store, "rh").unwrap();
+
+        let back = job_store.get_job("rh", "inv1", "alive").unwrap().unwrap();
+        assert_eq!(back.status, JobStatus::Running);
+        assert!(back.finished_at.is_none());
+    }
+
+    /// Filter predicates AND together; missing predicates wildcard. Tag
+    /// matching is "contains" against the JobRow's `tags` vector.
+    #[test]
+    fn filter_matching_jobs_combines_predicates_and() {
+        fn row(name: &str, hook: &str, wt: &str, inv: &str, tags: &[&str]) -> JobRow {
+            JobRow {
+                schema_version: store_schema::SCHEMA_VERSION,
+                repo_hash: "rh".into(),
+                invocation_id: inv.into(),
+                name: name.into(),
+                hook_type: hook.into(),
+                worktree: wt.into(),
+                command: "x".into(),
+                working_dir: "/tmp".into(),
+                env: HashMap::new(),
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                status: JobStatus::Running,
+                exit_code: None,
+                pid: Some(1),
+                pgid: Some(1),
+                background: true,
+                needs: vec![],
+                tags: tags.iter().map(|s| s.to_string()).collect(),
+                retention_seconds: None,
+                max_log_size_bytes: None,
+                log_truncated: false,
+                original_size_bytes: None,
+            }
+        }
+
+        let rows = vec![
+            row("a", "post-create", "feat/x", "abc123", &["slow"]),
+            row("b", "post-create", "feat/y", "abc456", &["fast"]),
+            row("c", "pre-remove", "feat/x", "def789", &["slow", "build"]),
+        ];
+
+        let now = chrono::Utc::now();
+
+        // hook=post-create AND tag=slow → only `a`
+        let args = CancelMatchingArgs {
+            hook: Some("post-create"),
+            worktree: None,
+            tag: Some("slow"),
+            invocation_prefix: None,
+            older_than_secs: None,
+        };
+        let matched: Vec<_> = filter_matching_jobs(rows.clone(), &args, now)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(matched, vec!["a"]);
+
+        // worktree=feat/x → `a` + `c`
+        let args = CancelMatchingArgs {
+            hook: None,
+            worktree: Some("feat/x"),
+            tag: None,
+            invocation_prefix: None,
+            older_than_secs: None,
+        };
+        let mut matched: Vec<_> = filter_matching_jobs(rows.clone(), &args, now)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        matched.sort();
+        assert_eq!(matched, vec!["a", "c"]);
+
+        // invocation_prefix=abc → `a` + `b`
+        let args = CancelMatchingArgs {
+            hook: None,
+            worktree: None,
+            tag: None,
+            invocation_prefix: Some("abc"),
+            older_than_secs: None,
+        };
+        let mut matched: Vec<_> = filter_matching_jobs(rows.clone(), &args, now)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        matched.sort();
+        assert_eq!(matched, vec!["a", "b"]);
+
+        // tag=build → only `c`
+        let args = CancelMatchingArgs {
+            hook: None,
+            worktree: None,
+            tag: Some("build"),
+            invocation_prefix: None,
+            older_than_secs: None,
+        };
+        let matched: Vec<_> = filter_matching_jobs(rows, &args, now)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(matched, vec!["c"]);
+    }
+
+    /// `older_than_secs` matches rows whose elapsed runtime (now − started_at)
+    /// is at least the threshold. Rows that haven't existed long enough are
+    /// filtered out.
+    #[test]
+    fn filter_matching_jobs_older_than_uses_elapsed_runtime() {
+        let now = chrono::Utc::now();
+        let old = JobRow {
+            schema_version: store_schema::SCHEMA_VERSION,
+            repo_hash: "rh".into(),
+            invocation_id: "old".into(),
+            name: "old".into(),
+            hook_type: "h".into(),
+            worktree: "w".into(),
+            command: "x".into(),
+            working_dir: "/tmp".into(),
+            env: HashMap::new(),
+            started_at: now - chrono::Duration::seconds(60),
+            finished_at: None,
+            status: JobStatus::Running,
+            exit_code: None,
+            pid: None,
+            pgid: None,
+            background: true,
+            needs: vec![],
+            tags: vec![],
+            retention_seconds: None,
+            max_log_size_bytes: None,
+            log_truncated: false,
+            original_size_bytes: None,
+        };
+        let mut young = old.clone();
+        young.name = "young".into();
+        young.invocation_id = "young".into();
+        young.started_at = now - chrono::Duration::seconds(5);
+
+        let args = CancelMatchingArgs {
+            hook: None,
+            worktree: None,
+            tag: None,
+            invocation_prefix: None,
+            older_than_secs: Some(30),
+        };
+        let matched: Vec<_> = filter_matching_jobs(vec![old, young], &args, now)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(matched, vec!["old"]);
+    }
+
+    /// End-to-end: a real coordinator run with `Some(job_store)` writes
+    /// terminal JobRows containing the captured tags and child PGID.
+    #[test]
+    fn dual_write_persists_terminal_job_row_with_tags() {
+        let tmp = TempDir::new().unwrap();
+        let log_base = tmp.path().to_path_buf();
+        let store = LogStore::new(log_base.clone());
+        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
+
+        let mut state = CoordinatorState::new("rh", "inv-dual").with_metadata(
+            "trigger",
+            "worktree-post-create",
+            "feat/x",
+        );
+        let mut job = test_job("dual-job");
+        job.tags = vec!["fast".into(), "build".into()];
+        state.add_job(job);
+
+        state
+            .run_all_with_cancel(
+                &store,
+                &ChildPidMap::default(),
+                &Arc::new(AtomicBool::new(false)),
+                &CancelledJobs::default(),
+                Some(&job_store),
+            )
+            .unwrap();
+
+        let row = job_store
+            .get_job("rh", "inv-dual", "dual-job")
+            .unwrap()
+            .expect("terminal JobRow must be written");
+        assert_eq!(row.status, JobStatus::Completed);
+        assert_eq!(row.tags, vec!["fast", "build"]);
+        assert!(row.pid.is_some(), "terminal write must record child pid");
+        assert!(row.finished_at.is_some());
     }
 
     #[test]
@@ -1256,6 +1834,8 @@ mod tests {
                             &cancel_all,
                             &cancelled_jobs,
                             &shutdown_clone,
+                            None,
+                            "",
                         );
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1330,9 +1910,11 @@ mod tests {
 
     fn make_ctx(inv: &str) -> JobInvocationContext<'_> {
         JobInvocationContext {
+            repo_hash: "test-repo",
             invocation_id: inv,
             hook_type: "worktree-post-create",
             worktree: "feat/x",
+            job_store: None,
         }
     }
 
@@ -1615,7 +2197,7 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
             .unwrap();
 
         let dir_a = store.base_dir.join("inv-needs-1").join("dep-a");
@@ -1665,7 +2247,7 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
             .unwrap();
 
         let meta_fails = store
@@ -1734,7 +2316,7 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs)
+            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
             .unwrap();
         killer.join().unwrap();
 
@@ -1792,7 +2374,8 @@ mod tests {
             ..Default::default()
         });
 
-        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        let result =
+            state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None);
         assert!(result.is_err(), "cycle should be reported as an error");
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1819,7 +2402,8 @@ mod tests {
             ..Default::default()
         });
 
-        let result = state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs);
+        let result =
+            state.run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None);
         assert!(
             result.is_err(),
             "missing dep should be reported as an error"

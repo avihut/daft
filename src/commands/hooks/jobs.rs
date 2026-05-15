@@ -109,14 +109,28 @@ enum JobsCommand {
     },
     /// Cancel a running background job.
     Cancel {
-        /// Job address (omit for --all).
+        /// Job address (omit for --all or a filter flag).
         job: Option<String>,
-        /// Cancel all running jobs.
+        /// Cancel all running jobs in this repo.
         #[arg(long)]
         all: bool,
         /// Invocation ID prefix.
         #[arg(long)]
         inv: Option<String>,
+        /// Match jobs whose `hook_type` equals this value (e.g.
+        /// `worktree-post-create`).
+        #[arg(long)]
+        hook: Option<String>,
+        /// Match jobs in the given worktree (branch slug).
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Match jobs whose `tags:` (from YAML) contain this label.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Match jobs whose elapsed runtime is at least this duration
+        /// (`30s`, `5m`, `1h`, `2d`).
+        #[arg(long = "older-than")]
+        older_than: Option<String>,
     },
     /// Re-run failed jobs from an invocation.
     Retry {
@@ -559,11 +573,31 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             ref job,
             all,
             ref inv,
+            ref hook,
+            ref worktree,
+            ref tag,
+            ref older_than,
         }) => {
-            if all || job.is_none() {
+            let has_filter =
+                hook.is_some() || worktree.is_some() || tag.is_some() || older_than.is_some();
+            if has_filter {
+                cancel_matching(
+                    hook.as_deref(),
+                    worktree.as_deref(),
+                    tag.as_deref(),
+                    inv.as_deref(),
+                    older_than.as_deref(),
+                    output,
+                )
+            } else if all {
                 cancel_all(path, output)
+            } else if let Some(j) = job {
+                cancel_job(j, inv.as_deref(), path, output)
             } else {
-                cancel_job(job.as_ref().unwrap(), inv.as_deref(), path, output)
+                anyhow::bail!(
+                    "cancel requires a job address, --all, or at least one filter \
+                     (--hook/--worktree/--tag/--older-than)"
+                );
             }
         }
         Some(JobsCommand::Retry {
@@ -626,8 +660,11 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
                 yellow("\u{27f3} running (stale)")
             }
         }
+        JobStatus::Cancelling => yellow("\u{27f3} cancelling"),
         JobStatus::Cancelled => dim("\u{2014} cancelled"),
+        JobStatus::Crashed => red("\u{2717} crashed"),
         JobStatus::Skipped => dim("\u{2014} skipped"),
+        JobStatus::Unknown => red("\u{2717} unknown"),
     }
 }
 
@@ -676,8 +713,11 @@ fn build_jobs_payload(
                 JobStatus::Running => "running",
                 JobStatus::Completed => "completed",
                 JobStatus::Failed => "failed",
+                JobStatus::Cancelling => "cancelling",
                 JobStatus::Cancelled => "cancelled",
+                JobStatus::Crashed => "crashed",
                 JobStatus::Skipped => "skipped",
+                JobStatus::Unknown => "unknown",
             };
 
             let duration_secs = match (&meta.status, meta.finished_at) {
@@ -1062,8 +1102,11 @@ fn render_single_job_log(
         JobStatus::Completed => green("COMPLETED"),
         JobStatus::Failed => red("FAILED"),
         JobStatus::Running => yellow("RUNNING"),
+        JobStatus::Cancelling => yellow("CANCELLING"),
         JobStatus::Cancelled => dim("CANCELLED"),
+        JobStatus::Crashed => red("CRASHED"),
         JobStatus::Skipped => dim("SKIPPED"),
+        JobStatus::Unknown => red("UNKNOWN"),
     };
     writeln!(
         buf,
@@ -1166,8 +1209,11 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
             JobStatus::Completed => green("COMPLETED"),
             JobStatus::Failed => red("FAILED"),
             JobStatus::Running => yellow("RUNNING"),
+            JobStatus::Cancelling => yellow("CANCELLING"),
             JobStatus::Cancelled => dim("CANCELLED"),
+            JobStatus::Crashed => red("CRASHED"),
             JobStatus::Skipped => dim("SKIPPED"),
+            JobStatus::Unknown => red("UNKNOWN"),
         };
 
         let duration_str = match meta.finished_at {
@@ -1235,6 +1281,49 @@ fn cancel_all(_path: &Path, output: &mut dyn Output) -> Result<()> {
         Some(mut client) => {
             let msg = client.cancel_all()?;
             output.success(&msg);
+        }
+        None => {
+            output.info("No coordinator running for this repository.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Cancel every active job matching the supplied predicates. AND-combined;
+/// requires the running coordinator (the signaling side). Returns the list
+/// of cancelled job names.
+fn cancel_matching(
+    hook: Option<&str>,
+    worktree: Option<&str>,
+    tag: Option<&str>,
+    invocation_prefix: Option<&str>,
+    older_than: Option<&str>,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+
+    let older_than_secs = match older_than {
+        Some(s) => Some(
+            crate::coordinator::clean_policy::parse_duration_str(s)
+                .with_context(|| format!("Failed to parse --older-than duration '{s}'"))?,
+        ),
+        None => None,
+    };
+
+    match CoordinatorClient::connect(&repo_hash)? {
+        Some(mut client) => {
+            let names =
+                client.cancel_matching(hook, worktree, tag, invocation_prefix, older_than_secs)?;
+            if names.is_empty() {
+                output.info("No active jobs matched the filter.");
+            } else {
+                output.success(&format!(
+                    "Cancelled {} job(s): {}",
+                    names.len(),
+                    names.join(", ")
+                ));
+            }
         }
         None => {
             output.info("No coordinator running for this repository.");

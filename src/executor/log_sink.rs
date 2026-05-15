@@ -8,6 +8,7 @@
 //! `None`.
 
 use super::{JobResult, JobSpec};
+use crate::coordinator::log_record::OutputKind;
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
 use crate::executor::NodeStatus;
 use std::collections::HashMap;
@@ -21,9 +22,10 @@ pub trait LogSink: Send + Sync {
     /// Called exactly once per job, just before the command runs.
     fn on_job_start(&self, spec: &JobSpec);
 
-    /// Called for every output line (stdout+stderr merged) the runner
-    /// reads from the child process.
-    fn on_job_output(&self, spec: &JobSpec, line: &str);
+    /// Called for every output line the runner reads from the child
+    /// process. `kind` discriminates stdout vs stderr so structured log
+    /// capture (`output.jsonl`) can record each line's source stream.
+    fn on_job_output(&self, spec: &JobSpec, kind: OutputKind, line: &str);
 
     /// Called exactly once per job, after the command terminates.
     fn on_job_complete(&self, spec: &JobSpec, result: &JobResult);
@@ -93,7 +95,10 @@ impl LogSink for BufferingLogSink {
         );
     }
 
-    fn on_job_output(&self, spec: &JobSpec, line: &str) {
+    fn on_job_output(&self, spec: &JobSpec, _kind: OutputKind, line: &str) {
+        // TODO(#476 Tier-2): switch to structured `output.jsonl` records that
+        // preserve `kind`. For now, keep the flat-file shape so the JSONL
+        // migration lands in one focused commit.
         let mut buffers = self.buffers.lock().unwrap();
         if let Some(buf) = buffers.get_mut(&spec.name) {
             buf.output.extend_from_slice(line.as_bytes());
@@ -216,8 +221,8 @@ mod tests {
         let mut spec = make_spec("pnpm-install", false);
         spec.needs = vec!["db-migrate".to_string()];
         sink.on_job_start(&spec);
-        sink.on_job_output(&spec, "installing...");
-        sink.on_job_output(&spec, "done");
+        sink.on_job_output(&spec, OutputKind::Stdout, "installing...");
+        sink.on_job_output(&spec, OutputKind::Stdout, "done");
         sink.on_job_complete(&spec, &make_result("pnpm-install", NodeStatus::Succeeded));
 
         let job_dir = tmp.path().join("inv1").join("pnpm-install");
@@ -249,7 +254,7 @@ mod tests {
 
         let spec = make_spec("broken", false);
         sink.on_job_start(&spec);
-        sink.on_job_output(&spec, "error: oops");
+        sink.on_job_output(&spec, OutputKind::Stderr, "error: oops");
         let mut result = make_result("broken", NodeStatus::Failed);
         result.exit_code = Some(2);
         sink.on_job_complete(&spec, &result);
@@ -273,7 +278,7 @@ mod tests {
             );
             let spec = make_spec("never-finishes", false);
             sink.on_job_start(&spec);
-            sink.on_job_output(&spec, "working...");
+            sink.on_job_output(&spec, OutputKind::Stdout, "working...");
             // Sink dropped here without calling on_job_complete.
         }
         let job_dir = tmp.path().join("inv3").join("never-finishes");

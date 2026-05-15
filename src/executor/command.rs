@@ -5,6 +5,7 @@
 //! This module does **not** depend on the hooks system; callers are
 //! responsible for building the full set of environment variables.
 
+use crate::coordinator::log_record::OutputKind;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -52,7 +53,7 @@ pub fn run_command(
     env: &HashMap<String, String>,
     working_dir: &Path,
     timeout: Duration,
-    line_sender: Option<std::sync::mpsc::Sender<String>>,
+    line_sender: Option<std::sync::mpsc::Sender<(OutputKind, String)>>,
     pid_sender: Option<std::sync::mpsc::Sender<u32>>,
 ) -> Result<CommandResult> {
     let mut command = Command::new("sh");
@@ -107,7 +108,7 @@ pub fn run_command(
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
                 if let Some(ref tx) = tx_stdout {
-                    tx.send(line.clone()).ok();
+                    tx.send((OutputKind::Stdout, line.clone())).ok();
                 }
                 content.push_str(&line);
                 content.push('\n');
@@ -122,7 +123,7 @@ pub fn run_command(
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
                 if let Some(ref tx) = tx_stderr {
-                    tx.send(line.clone()).ok();
+                    tx.send((OutputKind::Stderr, line.clone())).ok();
                 }
                 content.push_str(&line);
                 content.push('\n');
@@ -349,7 +350,7 @@ mod tests {
 
     #[test]
     fn run_command_line_sender() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
         let env = HashMap::new();
         let dir = std::env::temp_dir();
         let result = run_command(
@@ -363,9 +364,54 @@ mod tests {
         .unwrap();
         assert!(result.success);
 
-        let lines: Vec<String> = rx.try_iter().collect();
-        assert!(lines.contains(&"line1".to_string()));
-        assert!(lines.contains(&"line2".to_string()));
+        let received: Vec<(OutputKind, String)> = rx.try_iter().collect();
+        let stdout_lines: Vec<&str> = received
+            .iter()
+            .filter(|(k, _)| *k == OutputKind::Stdout)
+            .map(|(_, l)| l.as_str())
+            .collect();
+        assert!(stdout_lines.contains(&"line1"));
+        assert!(stdout_lines.contains(&"line2"));
+    }
+
+    #[test]
+    fn run_command_stderr_lines_are_tagged_stderr() {
+        let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let result = run_command(
+            "echo on-stderr 1>&2; echo on-stdout",
+            &env,
+            &dir,
+            Duration::from_secs(5),
+            Some(tx),
+            None,
+        )
+        .unwrap();
+        assert!(result.success);
+
+        let received: Vec<(OutputKind, String)> = rx.try_iter().collect();
+        let by_kind: HashMap<&str, Vec<&str>> =
+            received.iter().fold(HashMap::new(), |mut acc, (k, line)| {
+                let tag = match k {
+                    OutputKind::Stdout => "stdout",
+                    OutputKind::Stderr => "stderr",
+                };
+                acc.entry(tag).or_default().push(line.as_str());
+                acc
+            });
+        assert!(
+            by_kind
+                .get("stdout")
+                .is_some_and(|v| v.contains(&"on-stdout")),
+            "stdout missing: {by_kind:?}"
+        );
+        assert!(
+            by_kind
+                .get("stderr")
+                .is_some_and(|v| v.contains(&"on-stderr")),
+            "stderr missing: {by_kind:?}"
+        );
     }
 
     #[test]
@@ -416,7 +462,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn run_command_child_is_process_group_leader() {
-        let (line_tx, line_rx) = mpsc::channel::<String>();
+        let (line_tx, line_rx) = mpsc::channel::<(OutputKind, String)>();
         let env = HashMap::new();
         let dir = std::env::temp_dir();
         // Both BSD and GNU `ps` accept this form; print the shell's own pid
@@ -430,7 +476,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let line = line_rx
+        let (_kind, line) = line_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("ps output");
         let mut parts = line.split_whitespace();

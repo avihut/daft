@@ -133,6 +133,7 @@ pub fn yaml_jobs_to_specs(
             background: declared_background,
             background_output: job.background_output.clone(),
             log_config: merge_job_log(job.log.clone(), repo_log),
+            tags: job.tags.clone().unwrap_or_default(),
         });
     }
 

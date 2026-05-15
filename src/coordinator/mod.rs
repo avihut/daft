@@ -1,7 +1,10 @@
 pub mod clean_policy;
 pub mod client;
+pub mod framing;
+pub mod log_record;
 pub mod log_store;
 pub mod process;
+pub mod store;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +19,20 @@ pub enum CoordinatorRequest {
     CancelAll,
     /// Graceful shutdown of the coordinator.
     Shutdown,
+    /// Cancel every active job matching the supplied predicates.
+    ///
+    /// All present predicates AND together. The coordinator filters its
+    /// redb-recorded `Running`/`Cancelling` rows and signals SIGTERM to each
+    /// match's process group. Use `None` for predicates you don't want to
+    /// constrain. At least one predicate is required (validated client-side
+    /// in `Cancel` subcommand handler).
+    CancelMatching {
+        hook: Option<String>,
+        worktree: Option<String>,
+        tag: Option<String>,
+        invocation_prefix: Option<String>,
+        older_than_secs: Option<u64>,
+    },
 }
 
 /// Response from coordinator to CLI.
@@ -25,6 +42,8 @@ pub enum CoordinatorResponse {
     Jobs(Vec<JobInfo>),
     /// Acknowledgement with optional message.
     Ack { message: String },
+    /// Result of a `CancelMatching` — count of jobs signaled + their names.
+    Cancelled { count: usize, names: Vec<String> },
     /// Error response.
     Error { message: String },
 }

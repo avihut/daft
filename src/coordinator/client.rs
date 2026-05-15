@@ -53,6 +53,17 @@ impl CoordinatorClient {
     pub fn cancel_all(&mut self) -> Result<String> {
         match self.0 {}
     }
+
+    pub fn cancel_matching(
+        &mut self,
+        _hook: Option<&str>,
+        _worktree: Option<&str>,
+        _tag: Option<&str>,
+        _invocation_prefix: Option<&str>,
+        _older_than_secs: Option<u64>,
+    ) -> Result<Vec<String>> {
+        match self.0 {}
+    }
 }
 
 #[cfg(unix)]
@@ -127,6 +138,30 @@ impl CoordinatorClient {
     pub fn cancel_all(&mut self) -> Result<String> {
         match self.send(&CoordinatorRequest::CancelAll)? {
             CoordinatorResponse::Ack { message } => Ok(message),
+            CoordinatorResponse::Error { message } => anyhow::bail!(message),
+            _ => anyhow::bail!("Unexpected response from coordinator"),
+        }
+    }
+
+    /// Cancel every active job matching the predicate set. Returns the
+    /// names of the jobs that were signaled.
+    pub fn cancel_matching(
+        &mut self,
+        hook: Option<&str>,
+        worktree: Option<&str>,
+        tag: Option<&str>,
+        invocation_prefix: Option<&str>,
+        older_than_secs: Option<u64>,
+    ) -> Result<Vec<String>> {
+        let req = CoordinatorRequest::CancelMatching {
+            hook: hook.map(str::to_string),
+            worktree: worktree.map(str::to_string),
+            tag: tag.map(str::to_string),
+            invocation_prefix: invocation_prefix.map(str::to_string),
+            older_than_secs,
+        };
+        match self.send(&req)? {
+            CoordinatorResponse::Cancelled { names, .. } => Ok(names),
             CoordinatorResponse::Error { message } => anyhow::bail!(message),
             _ => anyhow::bail!("Unexpected response from coordinator"),
         }

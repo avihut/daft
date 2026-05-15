@@ -827,60 +827,36 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 /// `JobInfo.worktree` carries the branch slug (e.g. "feat/x") set from
 /// `ctx.branch_name` at job-launch time, NOT the filesystem path. Comparing
 /// against a path here would never match.
-fn worktree_matches_job(job: &crate::coordinator::JobInfo, branch_slug: &str) -> bool {
-    job.worktree == branch_slug
-}
-
 /// Cancel any running background jobs for a specific worktree.
 ///
-/// This is best-effort: if no coordinator is running, or if the coordinator
-/// cannot be reached, the error is silently ignored so removal proceeds.
+/// Best-effort: if no coordinator is running or unreachable, errors are
+/// silently dropped so the worktree-removal flow proceeds. Implemented as
+/// a single `CancelMatching { worktree: ... }` IPC call so the coordinator
+/// filters its redb-recorded active jobs in one round trip rather than the
+/// previous list-then-cancel-per-name dance.
 pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
     use crate::coordinator::client::CoordinatorClient;
-    use crate::coordinator::log_store::JobStatus;
 
-    // Compute repo hash using the centralized repo_identity module.
     let repo_hash = match crate::core::repo_identity::compute_repo_id() {
         Ok(id) => id,
-        Err(_) => return, // Unable to compute repo ID — nothing to cancel.
-    };
-
-    // The coordinator's `handle_client_connection` services exactly one
-    // request per stream, so we open a fresh client for `list_jobs` and for
-    // each `cancel_job` call. Reusing a single client across multiple sends
-    // yields a Broken-pipe error on the second send.
-    let mut list_client = match CoordinatorClient::connect(&repo_hash) {
-        Ok(Some(c)) => c,
-        _ => return, // No coordinator running or unreachable — nothing to cancel.
-    };
-
-    let jobs = match list_client.list_jobs() {
-        Ok(j) => j,
         Err(_) => return,
     };
-    drop(list_client);
 
-    for job in jobs {
-        if matches!(job.status, JobStatus::Running) && worktree_matches_job(&job, branch_slug) {
-            sink.on_step(&format!("Stopping background job '{}'...", job.name));
-            let mut cancel_client = match CoordinatorClient::connect(&repo_hash) {
-                Ok(Some(c)) => c,
-                _ => {
-                    sink.on_warning(&format!(
-                        "Failed to cancel background job '{}': coordinator no longer reachable",
-                        job.name
-                    ));
-                    continue;
-                }
-            };
-            match cancel_client.cancel_job(&job.name) {
-                Ok(_) => sink.on_step(&format!("Stopped background job '{}'", job.name)),
-                Err(e) => sink.on_warning(&format!(
-                    "Failed to cancel background job '{}': {e}",
-                    job.name
-                )),
+    let mut client = match CoordinatorClient::connect(&repo_hash) {
+        Ok(Some(c)) => c,
+        _ => return,
+    };
+
+    match client.cancel_matching(None, Some(branch_slug), None, None, None) {
+        Ok(names) if names.is_empty() => {}
+        Ok(names) => {
+            for name in names {
+                sink.on_step(&format!("Stopped background job '{name}'"));
             }
         }
+        Err(e) => sink.on_warning(&format!(
+            "Failed to cancel background jobs for '{branch_slug}': {e}"
+        )),
     }
 }
 
@@ -986,21 +962,9 @@ fn cleanup_empty_parent_dirs(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn cancel_helper_matches_on_branch_slug_not_filesystem_path() {
-        use crate::coordinator::JobInfo;
-        use crate::coordinator::log_store::JobStatus;
-        let job = JobInfo {
-            name: "warm-build".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "feat/x".into(),
-            status: JobStatus::Running,
-            elapsed_secs: Some(5),
-            exit_code: None,
-        };
-        assert!(super::worktree_matches_job(&job, "feat/x"));
-        assert!(!super::worktree_matches_job(&job, "/repo/feat/x"));
-    }
-}
+// Worktree-scoped cancel is now expressed as a single
+// `CancelMatching { worktree: branch_slug, .. }` IPC call. The matching
+// logic — that we filter on the JobRow's `worktree` field (branch slug),
+// not the filesystem path — lives in
+// `coordinator::process::filter_matching_jobs` and is covered by tests
+// in that module (`filter_matching_jobs_combines_predicates_and`).

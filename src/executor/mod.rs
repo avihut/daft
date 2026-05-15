@@ -94,6 +94,11 @@ pub struct JobSpec {
     pub background_output: Option<BackgroundOutput>,
     /// Log configuration for this job.
     pub log_config: Option<LogConfig>,
+    /// User-supplied labels (from `JobDef.tags` in YAML). Persisted into the
+    /// coordinator's redb `JobRow` and used by richer cancel semantics
+    /// (`daft hooks jobs cancel --tag <tag>`). Default empty.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// `Duration <-> u64 seconds` serde adapter for `JobSpec.timeout`.
@@ -129,6 +134,7 @@ impl Default for JobSpec {
             background: false,
             background_output: None,
             log_config: None,
+            tags: Vec::new(),
         }
     }
 }
@@ -242,6 +248,7 @@ mod tests {
             background: false,
             background_output: None,
             log_config: None,
+            tags: vec!["slow".into()],
         };
 
         assert_eq!(spec.name, "install");

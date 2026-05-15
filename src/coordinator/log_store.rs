@@ -12,6 +12,16 @@ pub enum JobStatus {
     Failed,
     Cancelled,
     Skipped,
+    /// SIGTERM sent, process not yet confirmed dead.
+    Cancelling,
+    /// Reconciliation found a `Running` row whose process is gone. Distinct
+    /// from `Cancelled` so retry-on-crash policies can react differently.
+    Crashed,
+    /// Forward-compat fallback for older binaries reading newer data: any
+    /// unknown variant deserializes here instead of panicking. CLI rendering
+    /// treats this as terminal/not-success.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,6 +731,28 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn job_status_unknown_round_trips_via_serde_other() {
+        // An older binary reading data written by a newer one (with a status
+        // variant it doesn't recognize) must fall back to Unknown, not panic.
+        let payload = r#"{"status":"futurething"}"#;
+        #[derive(Deserialize)]
+        struct Wrap {
+            status: JobStatus,
+        }
+        let w: Wrap = serde_json::from_str(payload).expect("must deserialize");
+        assert!(matches!(w.status, JobStatus::Unknown));
+    }
+
+    #[test]
+    fn job_status_new_variants_round_trip() {
+        for s in [JobStatus::Cancelling, JobStatus::Crashed] {
+            let ser = serde_json::to_string(&s).unwrap();
+            let back: JobStatus = serde_json::from_str(&ser).unwrap();
+            assert_eq!(back, s);
+        }
+    }
 
     #[test]
     fn test_create_job_log_dir() {

@@ -697,6 +697,7 @@ version = "1.12.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "bincode",
  "chrono",
  "clap",
  "clap_complete",
@@ -719,6 +720,7 @@ dependencies = [
  "pathdiff",
  "predicates",
  "ratatui",
+ "redb",
  "regex",
  "serde",
  "serde_json",
@@ -3592,6 +3594,15 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
