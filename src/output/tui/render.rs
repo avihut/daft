@@ -1486,6 +1486,11 @@ mod tests {
     /// would have dropped LastCommit / Hash / Owner here; post-fix,
     /// `fit_widths_to_available` shrinks Branch instead and every column
     /// header is visible.
+    ///
+    /// At width=100 with all 11 columns at their minimum widths the table
+    /// technically overflows by a few characters. That is the spec
+    /// ("accept overflow rather than dropping data"). We verify header
+    /// *presence* via substring match, not pixel-level fit.
     #[test]
     fn render_table_phased_keeps_all_default_columns_at_constrained_width() {
         let state = TuiState::new(

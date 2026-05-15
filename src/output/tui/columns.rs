@@ -3,32 +3,33 @@ use crate::core::columns::ListColumn;
 use crate::core::sort::SortSpec;
 use crate::output::format::ColumnValues;
 
-/// Columns available in the worktree table, ordered by display priority.
+/// Columns available in the worktree table, in canonical display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
-    /// Sync/prune status indicator. Priority 0 (always shown).
+    /// Sync/prune status indicator.
     Status,
-    /// Current/default branch annotation. Priority 1 (always shown).
+    /// Current/default branch annotation.
     Annotation,
-    /// Branch name. Priority 2 (always shown).
+    /// Branch name.
     Branch,
-    /// Worktree path. Priority 3.
+    /// Worktree path.
     Path,
-    /// Disk size of worktree. Priority 4.
+    /// Disk size of worktree. Opt-in only (requires `--columns +size`); not in
+    /// `ALL_COLUMNS` because the size computation triggers a filesystem walk.
     Size,
-    /// Commits ahead/behind base branch. Priority 5.
+    /// Commits ahead/behind base branch.
     Base,
-    /// Commits ahead/behind remote. Priority 5.
+    /// Commits ahead/behind remote.
     Remote,
-    /// Local changes (staged/unstaged/untracked). Priority 6.
+    /// Local changes (staged/unstaged/untracked).
     Changes,
-    /// Branch age. Priority 7.
+    /// Branch age.
     Age,
-    /// Branch owner (from git author email). Priority 8.
+    /// Branch owner (from git author email).
     Owner,
-    /// Abbreviated commit hash (7 chars). Priority 9.
+    /// Abbreviated commit hash (7 chars).
     Hash,
-    /// Last commit subject. Priority 10.
+    /// Last commit subject.
     LastCommit,
 }
 
@@ -275,6 +276,17 @@ pub(super) fn truncate_with_ellipsis(s: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Column::Size` triggers a filesystem walk to total bytes on disk and
+    /// is opt-in only via `--columns +size`. Pin that it never sneaks into
+    /// the default set.
+    #[test]
+    fn all_columns_never_includes_size() {
+        assert!(
+            !ALL_COLUMNS.contains(&Column::Size),
+            "Size requires --columns +size; it must not appear in the default set"
+        );
+    }
 
     #[test]
     fn fit_widths_passthrough_when_total_fits() {
