@@ -575,7 +575,7 @@ pub fn run() -> Result<()> {
     } else {
         None
     };
-    let params = crate::core::worktree::merge::StartParams {
+    let mut params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
         flags,
@@ -672,6 +672,17 @@ pub fn run() -> Result<()> {
                 //   5. On failure (conflict, pre-merge hook abort, etc.), the target's
                 //      daft files are restored to their pre-merge snapshot.
                 //
+                // Pre-flight: run the clean-target check NOW, before propagation
+                // writes untracked files into the target. If we let execute_start
+                // run the check AFTER propagation, it would always see the freshly-
+                // written daft.yml as "dirty" and refuse the merge, even though that
+                // file is ours. We therefore run the check here and disable it inside
+                // StartParams so execute_start doesn't duplicate it.
+                if params.require_clean_target {
+                    crate::core::worktree::merge::validate_clean_target(&git, prop_tgt)?;
+                    params.require_clean_target = false;
+                }
+
                 // `propagate_atomic` takes a `FnOnce() -> Result<()>` closure.
                 // We capture `StartOutcome` via an outer Option and any Err from
                 // `execute_start` itself via a separate Option, then convert both

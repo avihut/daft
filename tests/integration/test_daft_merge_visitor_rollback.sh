@@ -10,6 +10,14 @@
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
 # Test that a conflicting daft merge rolls back daft.yml in the target worktree.
+#
+# Setup:
+#   master  : has visitor daft.yml ("master-original" marker) + shared.txt ("v2-from-master")
+#   feat/conflict: has visitor daft.yml ("feat-conflict" marker) + shared.txt ("v2-from-feat")
+#
+# The merge of feat/conflict into master will conflict on shared.txt.
+# propagate_atomic must overlay feat/conflict's daft.yml onto master's before the
+# merge runs, then restore master's original daft.yml when the merge fails.
 test_daft_merge_visitor_rollback_on_conflict() {
     git-worktree-init --layout contained merge-rollback-repo || return 1
     cd "merge-rollback-repo/master"
@@ -25,10 +33,19 @@ test_daft_merge_visitor_rollback_on_conflict() {
     local repo_root
     repo_root="$(dirname "$(pwd)")"
 
-    # Commit a diverging change in feat/conflict.
+    # Commit a diverging change in feat/conflict AND place a visitor daft.yml there.
     cd "$repo_root/feat/conflict"
     echo "v2-from-feat" > shared.txt
     git commit -am "feat/conflict: v2" >/dev/null 2>&1
+
+    # Place a visitor daft.yml in feat/conflict (untracked = visitor).
+    # This is the SOURCE of propagation; its content will be overlaid onto master.
+    cat > daft.yml <<'EOF'
+hooks:
+  post-clone:
+    jobs:
+      - run: echo feat-conflict
+EOF
 
     # Back to master — commit a different change to force a merge conflict.
     cd "$repo_root/master"
@@ -36,7 +53,7 @@ test_daft_merge_visitor_rollback_on_conflict() {
     git commit -am "master: conflict-v2" >/dev/null 2>&1
 
     # Place a visitor daft.yml in master with a distinctive marker.
-    # This file is untracked, so it is treated as a visitor.
+    # This is the TARGET's pre-existing daft.yml; it must be restored on rollback.
     cat > daft.yml <<'EOF'
 hooks:
   post-clone:
@@ -47,15 +64,15 @@ EOF
     original_content="$(cat daft.yml)"
 
     # Attempt to merge feat/conflict into master (no --into = current branch is target).
-    # This should fail with a conflict.
+    # This should fail with a conflict on shared.txt.
+    # Pass --no-edit to avoid hanging on editor in non-TTY test environment.
     set +e
-    daft merge feat/conflict >/dev/null 2>&1
+    daft merge feat/conflict --no-edit >/dev/null 2>&1
     local merge_exit=$?
     set -e
 
     if [[ "$merge_exit" -eq 0 ]]; then
         log_error "daft merge unexpectedly succeeded — expected a conflict"
-        # Clean up in-progress merge so git doesn't leave the repo in a bad state.
         git merge --abort 2>/dev/null || true
         return 1
     fi
@@ -71,7 +88,7 @@ EOF
     now_content="$(cat daft.yml)"
     if [[ "$original_content" != "$now_content" ]]; then
         log_error "daft.yml was not restored after failed merge"
-        log_error "--- expected:"
+        log_error "--- expected (master-original):"
         log_error "$original_content"
         log_error "--- actual:"
         log_error "$now_content"
@@ -87,21 +104,22 @@ EOF
 }
 
 # Test that a successful daft merge propagates and persists visitor daft.yml.
+#
+# Setup:
+#   master  : NO visitor daft.yml (clean target — passes pre-flight clean check)
+#   feat/add: visitor daft.yml ("from-feat-add" marker) + non-conflicting feature.txt
+#
+# After a successful merge, master should have the propagated daft.yml from feat/add.
+# requireCleanTarget is left at its default (true) — the fix ensures the clean check
+# fires BEFORE propagation writes daft.yml into the target, so there is no false positive.
 test_daft_merge_visitor_propagates_on_success() {
     git-worktree-init --layout contained merge-propagate-repo || return 1
     cd "merge-propagate-repo/master"
 
-    # Initial commit on master.
+    # Initial commit on master — no daft.yml (clean target).
     echo "hello" > README.md
     git add README.md
     git commit -m "init" >/dev/null 2>&1
-
-    # Disable requireCleanTarget so that the propagated daft.yml (written into the
-    # target by propagate_atomic before the merge runs) does not trip the clean
-    # target pre-flight check. In real usage, if the target already has a visitor
-    # daft.yml the check would fire on that too; this config key lets tests bypass
-    # that without changing user-facing defaults.
-    git config daft.merge.requireCleanTarget false
 
     # Create feat/add and add a commit that does NOT conflict with master.
     git-worktree-checkout -b feat/add >/dev/null 2>&1
@@ -125,6 +143,8 @@ hooks:
 EOF
 
     # Back to master — merge feat/add (should succeed cleanly).
+    # requireCleanTarget is at its default (true); the pre-flight check runs
+    # before propagation, so master's clean state is verified correctly.
     cd "$repo_root/master"
     daft merge feat/add --no-edit >/dev/null 2>&1 || {
         log_error "daft merge feat/add failed unexpectedly"
