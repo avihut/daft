@@ -1,0 +1,33 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-install 1  "daft-install 1.12.0" 
+.SH NAME
+daft\-install \- Install a starter daft.yml in the current worktree
+.SH SYNOPSIS
+\fBdaft\-install\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Creates a starter daft.yml at the current worktree root with a commented
+skeleton covering the major sections (hooks, shared, layout). Modeled on
+`lefthook install`.
+.PP
+If daft.yml already exists, the command refuses without modifying anything;
+edit the existing file with your editor or a future `daft config` TUI.
+.PP
+No git side effects: daft does not write to .gitignore or .git/info/exclude.
+Ignore rules are the user\*(Aqs responsibility.
+.SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.12.0

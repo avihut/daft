@@ -161,6 +161,7 @@ fn main() -> Result<()> {
                     }
                     "config" => commands::config::run(),
                     "hooks" => commands::hooks::run(),
+                    "install" => commands::install::run(),
                     "layout" => commands::layout::run(),
                     "multi-remote" => commands::multi_remote::run(),
                     "shared" => commands::shared::run(),

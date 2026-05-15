@@ -32,7 +32,11 @@ pub struct Args {
 const STARTER_TEMPLATE: &str = include_str!("install/starter.yml");
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("daft-install"));
+    // Skip argv[0] (binary name). When invoked as `daft install <flags>`,
+    // env::args() is ["daft", "install", ...] and skip(1) gives ["install", ...]
+    // so clap sees "install" as the program name and parses the rest correctly.
+    let args_raw: Vec<String> = std::env::args().skip(1).collect();
+    let args = Args::parse_from(args_raw);
     let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);
     run_with_output(&mut output)

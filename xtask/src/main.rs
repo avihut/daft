@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "daft-config",
     "daft-doctor",
     "daft-hooks",
+    "daft-install",
     "daft-layout",
     "daft-multi-remote",
     "daft-release-notes",
@@ -179,6 +180,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
         "daft-start" => Some(daft::commands::checkout::StartArgs::command()),
         "daft-hooks" => Some(daft::commands::hooks::Args::command()),
+        "daft-install" => Some(daft::commands::install::Args::command()),
         "daft-multi-remote" => Some(daft::commands::multi_remote::Args::command()),
         "daft-setup" => Some(daft::commands::setup::Args::command()),
         "daft-shell-init" => Some(daft::commands::shell_init::Args::command()),
@@ -728,6 +730,7 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::layout::LayoutArgs::command().name("layout"))
         .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
         .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
+        .subcommand(daft::commands::install::Args::command().name("install"))
         .subcommand(daft::commands::doctor::Args::command().name("doctor"))
         .subcommand(daft::commands::shell_init::Args::command().name("shell-init"))
         .subcommand(daft::commands::setup::Args::command().name("setup"))

@@ -15,6 +15,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "go",
     "hooks",
     "init",
+    "install",
     "layout",
     "list",
     "merge",
