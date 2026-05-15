@@ -306,6 +306,22 @@ pub fn execute(
     // Link shared files before hooks so hooks can depend on .env etc.
     crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
 
+    // Propagate in-scope untracked daft files from source worktree to the new
+    // worktree, so that user post-create hooks can read them.
+    // Propagation entry point: this site creates a new worktree from an
+    // existing source worktree. See checkout_branch.rs for the canonical audit
+    // comment covering all worktree-creating entry points.
+    match crate::hooks::visitor_propagation::propagate(&source_worktree, &worktree_path) {
+        Ok(result) => {
+            for filename in &result.files_propagated {
+                crate::log_debug!("propagated {} to new worktree", filename);
+            }
+        }
+        Err(e) => {
+            sink.on_warning(&format!("visitor-config propagation failed: {}", e));
+        }
+    }
+
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
         HookType::PostCreate,

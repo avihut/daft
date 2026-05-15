@@ -84,6 +84,53 @@ fn propagate_one(
     Ok(())
 }
 
+/// Save target's in-scope daft files, propagate from source, run `action`,
+/// and restore the saved content if `action` returns an error.
+///
+/// Used by `daft merge` (Task 5.2) so that a failed git merge leaves the
+/// target worktree's untracked daft files in their pre-merge state.
+pub fn propagate_atomic<F>(source: &Path, target: &Path, action: F) -> Result<PropagationResult>
+where
+    F: FnOnce() -> Result<()>,
+{
+    // Snapshot the pre-existing content of each in-scope file in the target.
+    // `None` means the file didn't exist before.
+    let saved: Vec<(std::path::PathBuf, Option<String>)> =
+        [VISITOR_DAFT_YML, VISITOR_DAFT_LOCAL_YML]
+            .iter()
+            .map(|f| {
+                let p = target.join(f);
+                let content = if p.is_file() {
+                    fs::read_to_string(&p).ok()
+                } else {
+                    None
+                };
+                (p, content)
+            })
+            .collect();
+
+    let result = propagate(source, target)?;
+
+    match action() {
+        Ok(()) => Ok(result),
+        Err(e) => {
+            // Restore on failure.
+            for (path, original) in &saved {
+                match original {
+                    Some(content) => {
+                        let _ = fs::write(path, content);
+                    }
+                    None => {
+                        // File didn't exist originally — remove it if propagation created it.
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +258,97 @@ mod tests {
         let merged = fs::read_to_string(tgt.join("daft.yml")).unwrap();
         assert!(merged.contains("post-clone"));
         assert!(merged.contains("worktree-post-create"));
+    }
+
+    #[test]
+    fn test_propagate_atomic_restores_on_failure() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(
+            src.join("daft.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo src\n",
+        )
+        .unwrap();
+        fs::write(
+            tgt.join("daft.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo tgt-original\n",
+        )
+        .unwrap();
+
+        let tgt_original = fs::read_to_string(tgt.join("daft.yml")).unwrap();
+
+        // Run an atomic propagation that fails inside the action callback.
+        let result = propagate_atomic(&src, &tgt, || anyhow::bail!("simulated merge failure"));
+
+        assert!(result.is_err());
+
+        // Target file should be restored to its original content.
+        let tgt_now = fs::read_to_string(tgt.join("daft.yml")).unwrap();
+        assert_eq!(
+            tgt_now, tgt_original,
+            "target file should be restored on failure"
+        );
+    }
+
+    #[test]
+    fn test_propagate_atomic_persists_on_success() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(
+            src.join("daft.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo src\n",
+        )
+        .unwrap();
+        fs::write(
+            tgt.join("daft.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo tgt\n",
+        )
+        .unwrap();
+
+        propagate_atomic(&src, &tgt, || Ok(())).unwrap();
+
+        let merged = fs::read_to_string(tgt.join("daft.yml")).unwrap();
+        assert!(merged.contains("worktree-post-create"));
+        assert!(merged.contains("post-clone"));
+    }
+
+    #[test]
+    fn test_propagate_atomic_removes_files_created_by_propagation_on_failure() {
+        // When target didn't have a file before propagation, and propagation
+        // creates one, but the action then fails — the created file should
+        // be removed (returning to "didn't exist" state).
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(
+            src.join("daft.local.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo src\n",
+        )
+        .unwrap();
+        // Target has no daft.local.yml originally.
+
+        let _ = propagate_atomic(&src, &tgt, || anyhow::bail!("fail"));
+
+        assert!(
+            !tgt.join("daft.local.yml").is_file(),
+            "file created only by propagation should be removed on rollback"
+        );
     }
 }

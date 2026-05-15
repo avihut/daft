@@ -186,6 +186,19 @@ pub fn execute(
 
     // Propagate in-scope untracked daft files from source worktree to the new
     // worktree, so that user post-create hooks can read them.
+    //
+    // Propagation entry points audit (Task 4.3):
+    //   - checkout_branch (this site): creates a worktree with a NEW branch from an
+    //     existing source worktree — propagates here.
+    //   - checkout (checkout.rs execute): creates a worktree for an EXISTING branch
+    //     from an existing source worktree — also propagates (same pattern).
+    //   - clone (clone.rs): starts from a remote URL with no source worktree — no
+    //     propagation needed (fresh repo with no visitor-config context to carry).
+    //   - init (init.rs): creates a brand-new empty repo — no source worktree, no
+    //     propagation needed.
+    //   - checkout's early-return paths (existing worktree for branch / existing dir
+    //     on disk): navigate to an already-materialized worktree — no new worktree
+    //     is created, no propagation step.
     match crate::hooks::visitor_propagation::propagate(&source_worktree, &worktree_path) {
         Ok(result) => {
             for filename in &result.files_propagated {
