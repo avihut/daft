@@ -33,24 +33,6 @@ pub enum Column {
 }
 
 impl Column {
-    /// Display priority (lower = higher priority, always shown first).
-    pub(super) fn priority(self) -> u8 {
-        match self {
-            Self::Status => 0,
-            Self::Annotation => 1,
-            Self::Branch => 2,
-            Self::Path => 3,
-            Self::Size => 4,
-            Self::Base => 5,
-            Self::Changes => 6,
-            Self::Remote => 7,
-            Self::Age => 8,
-            Self::Owner => 9,
-            Self::Hash => 10,
-            Self::LastCommit => 11,
-        }
-    }
-
     /// Column header label.
     pub(super) fn label(self) -> &'static str {
         match self {
@@ -214,38 +196,6 @@ pub(super) fn column_content_width(
     header_width.max(max_data)
 }
 
-/// Select which columns fit in the given terminal width using content-based widths.
-///
-/// Always keeps columns with priority <= 2 (Status, Annotation, Branch).
-/// Drops lowest-priority columns first when the terminal is too narrow.
-pub fn select_columns(
-    width: u16,
-    worktrees: &[WorktreeRow],
-    vals: &[ColumnValues],
-    sort_spec: Option<&SortSpec>,
-) -> Vec<Column> {
-    let mut cols: Vec<Column> = ALL_COLUMNS.to_vec();
-
-    loop {
-        // Total = sum of content widths + inter-column spacing (1 char each gap).
-        let content: u16 = cols
-            .iter()
-            .map(|c| column_content_width(*c, worktrees, vals, sort_spec))
-            .sum();
-        let spacing = cols.len().saturating_sub(1) as u16 * 2;
-        if content + spacing <= width {
-            break;
-        }
-        if let Some(pos) = cols.iter().rposition(|c| c.priority() > 2) {
-            cols.remove(pos);
-        } else {
-            break;
-        }
-    }
-
-    cols
-}
-
 /// Minimum widths for shrinkable columns. Below these the column would lose
 /// most of its meaning, so we stop shrinking and accept overflow instead.
 const BRANCH_MIN_WIDTH: u16 = 12;
@@ -325,36 +275,6 @@ pub(super) fn truncate_with_ellipsis(s: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn column_selection_wide_terminal() {
-        let cols = select_columns(200, &[], &[], None);
-        assert_eq!(cols.len(), ALL_COLUMNS.len());
-    }
-
-    #[test]
-    fn column_selection_narrow_drops_last_commit() {
-        let cols = select_columns(60, &[], &[], None);
-        assert!(!cols.iter().any(|c| matches!(c, Column::LastCommit)));
-    }
-
-    #[test]
-    fn column_selection_very_narrow_keeps_essentials() {
-        let cols = select_columns(30, &[], &[], None);
-        assert!(cols.iter().any(|c| matches!(c, Column::Status)));
-        assert!(cols.iter().any(|c| matches!(c, Column::Branch)));
-    }
-
-    /// Regression: Size must never appear in the default responsive set.
-    /// It is an opt-in column that requires `--columns +size`.
-    #[test]
-    fn size_excluded_from_default_responsive_columns() {
-        let cols = select_columns(500, &[], &[], None);
-        assert!(
-            !cols.iter().any(|c| matches!(c, Column::Size)),
-            "Size should not appear in responsive defaults even on a wide terminal"
-        );
-    }
 
     #[test]
     fn fit_widths_passthrough_when_total_fits() {

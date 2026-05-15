@@ -20,10 +20,9 @@ use std::{path::PathBuf, sync::mpsc};
 
 /// Configuration for a TUI table operation.
 pub struct TableConfig {
-    /// User-selected columns (`None` = use responsive selection).
+    /// User-selected columns (`None` = use `ALL_COLUMNS` defaults).
     pub columns: Option<Vec<Column>>,
-    /// If `true`, the user explicitly chose columns (replace mode) — disables
-    /// responsive dropping.
+    // Unused by render after #494; pending removal in a follow-up.
     pub columns_explicit: bool,
     /// User-specified sort order (`None` = default alphabetical).
     pub sort_spec: Option<SortSpec>,

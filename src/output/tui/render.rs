@@ -1,6 +1,5 @@
 use super::columns::{
-    ALL_COLUMNS, Column, column_content_width, fit_widths_to_available, select_columns,
-    truncate_with_ellipsis,
+    ALL_COLUMNS, Column, column_content_width, fit_widths_to_available, truncate_with_ellipsis,
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
@@ -176,36 +175,29 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .collect()
         })
     } else {
-        let columns = match (&state.live.cfg.columns, state.live.cfg.columns_explicit) {
-            // Replace mode: user explicitly chose columns, don't responsively drop.
-            (Some(user_cols), true) => user_cols.clone(),
-            // Modifier mode: user tweaked defaults, responsive dropping still applies.
-            // Opt-in columns (not in ALL_COLUMNS, e.g. Size) that the user explicitly
-            // added are always included — they bypass responsive dropping.
-            (Some(user_cols), false) => {
-                let responsive =
-                    select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref);
-                let mut cols: Vec<Column> = responsive
-                    .into_iter()
-                    .filter(|c| matches!(c, Column::Status) || user_cols.contains(c))
-                    .collect();
-                for col in user_cols {
-                    if !ALL_COLUMNS.contains(col) && !cols.contains(col) {
-                        cols.push(*col);
-                    }
-                }
-                cols
-            }
-            // No column selection: fully responsive.
-            (None, _) => select_columns(table_area.width, &state.live.rows, &row_vals, sort_ref),
-        };
+        // Phased commands: render the user's columns (already resolved by
+        // ColumnSelection::parse — replace mode is the user's list verbatim,
+        // modifier mode is defaults +/- the user's adjustments) or fall back
+        // to ALL_COLUMNS. No width-based dropping: fit_widths_to_available
+        // shrinks Branch/Path/LastCommit for narrow terminals, then accepts
+        // overflow rather than removing data columns. See #494.
+        //
+        // Asymmetry preserved: the no-flag fallback is ALL_COLUMNS (includes
+        // Hash), while modifier mode's base set comes from
+        // ListColumn::tui_defaults() (no Hash). A follow-up may reconcile.
+        let columns = state
+            .live
+            .cfg
+            .columns
+            .clone()
+            .unwrap_or_else(|| ALL_COLUMNS.to_vec());
         // Status is always prepended for TUI commands with phases.
-        if !columns.contains(&Column::Status) {
+        if columns.contains(&Column::Status) {
+            columns
+        } else {
             let mut with_status = vec![Column::Status];
             with_status.extend(columns);
             with_status
-        } else {
-            columns
         }
     };
 
@@ -1485,5 +1477,97 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         assert!(!row.contains("cancelled"), "row was: {row:?}");
+    }
+
+    /// Regression for #494: phased commands (sync/clone/prune/repo-remove)
+    /// must render the full default column set at any terminal width that
+    /// admits the minimum shrunk widths. A long branch name pushes the
+    /// natural total over the constrained width — pre-fix, `select_columns`
+    /// would have dropped LastCommit / Hash / Owner here; post-fix,
+    /// `fit_widths_to_available` shrinks Branch instead and every column
+    /// header is visible.
+    #[test]
+    fn render_table_phased_keeps_all_default_columns_at_constrained_width() {
+        let state = TuiState::new(
+            vec![OperationPhase::Fetch],
+            vec![WorktreeInfo::empty(
+                "feature/long-branch-name-to-force-shrinking",
+            )],
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None::<SortSpec>,
+            true,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        );
+        let backend = TestBackend::new(100, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_table(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        for label in [
+            "Status", "Branch", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Hash",
+            "Commit",
+        ] {
+            assert!(
+                header.contains(label),
+                "header at width 100 should contain {label:?}; got: {header:?}"
+            );
+        }
+    }
+
+    /// Contract for #494: phaseless (`daft list`) was never affected by
+    /// `select_columns`, but pin the behavior. With `columns: None` the
+    /// `ListColumn::list_defaults()` fallback should yield every default
+    /// header — Branch through Commit — at a constrained width.
+    #[test]
+    fn render_table_phaseless_keeps_all_default_columns_at_constrained_width() {
+        let state = TuiState::new(
+            Vec::<OperationPhase>::new(),
+            vec![WorktreeInfo::empty(
+                "feature/long-branch-name-to-force-shrinking",
+            )],
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None::<SortSpec>,
+            true,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        );
+        let backend = TestBackend::new(100, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_table(&state, frame, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        for label in [
+            "Branch", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Commit",
+        ] {
+            assert!(
+                header.contains(label),
+                "header at width 100 should contain {label:?}; got: {header:?}"
+            );
+        }
     }
 }
