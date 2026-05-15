@@ -94,7 +94,7 @@ pub enum ErrorCode {
 }
 
 /// Response from coordinator to CLI. Tagged `#[serde(tag = "kind", content = "payload")]`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload")]
 pub enum CoordinatorResponse {
     /// List of job statuses.
@@ -114,7 +114,7 @@ pub enum CoordinatorResponse {
 }
 
 /// Summary info about a background job.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobInfo {
     pub name: String,
     pub hook_type: String,

@@ -9,7 +9,7 @@
 //! Tables and key shape live in [`schema`]; values in [`types`].
 
 use anyhow::{Context, Result, anyhow};
-use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata};
+use redb::{Database, ReadableDatabase, ReadableTable};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -196,14 +196,6 @@ impl JobStore {
             .into_iter()
             .filter(|r| matches!(r.status, JobStatus::Running | JobStatus::Cancelling))
             .collect())
-    }
-
-    /// Returns the count of rows in the `JOBS` table. Test/diagnostic helper.
-    #[allow(dead_code)]
-    pub fn job_count(&self) -> Result<u64> {
-        let read_txn = self.db.begin_read()?;
-        let t = read_txn.open_table(schema::JOBS)?;
-        Ok(t.len()?)
     }
 
     /// Read the per-repo cleanup policy. Returns `defaults()` when no row

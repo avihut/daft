@@ -534,9 +534,13 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             ref tag,
             ref older_than,
         }) => {
-            let has_filter =
-                hook.is_some() || worktree.is_some() || tag.is_some() || older_than.is_some();
-            if has_filter {
+            if cancel_has_filter(
+                hook.as_deref(),
+                worktree.as_deref(),
+                tag.as_deref(),
+                older_than.as_deref(),
+                inv.as_deref(),
+            ) {
                 cancel_matching(
                     hook.as_deref(),
                     worktree.as_deref(),
@@ -552,7 +556,7 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             } else {
                 anyhow::bail!(
                     "cancel requires a job address, --all, or at least one filter \
-                     (--hook/--worktree/--tag/--older-than)"
+                     (--hook/--worktree/--tag/--older-than/--inv)"
                 );
             }
         }
@@ -578,6 +582,18 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             dry_run,
         }) => prune_jobs(&args, path, output, older_than.as_deref(), dry_run),
     }
+}
+
+/// Whether any of the cancel-filter predicates is set. Extracted so the
+/// `--inv`-respects-filter invariant has a dedicated regression test.
+fn cancel_has_filter(
+    hook: Option<&str>,
+    worktree: Option<&str>,
+    tag: Option<&str>,
+    older_than: Option<&str>,
+    inv: Option<&str>,
+) -> bool {
+    hook.is_some() || worktree.is_some() || tag.is_some() || older_than.is_some() || inv.is_some()
 }
 
 /// List all repo hashes that have job directories under the state dir.
@@ -1187,44 +1203,52 @@ fn follow_logs(
     filter: &LogsFilter,
     output: &mut dyn Output,
 ) -> Result<()> {
-    use crate::coordinator::log_record::LogRecord;
-
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let addr = JobAddress::parse(job).with_inv_override(inv);
 
-    match CoordinatorClient::connect(&repo_hash)? {
-        Some(mut client) => {
-            let stream = client.tail_logs(addr, true, filter.since_seq)?;
-            for frame in stream {
-                let resp = frame?;
-                match resp {
-                    crate::coordinator::CoordinatorResponse::StreamFrame(value) => {
-                        let record: LogRecord = serde_json::from_value(value)?;
-                        if !filter.accepts(&record) {
-                            continue;
-                        }
-                        println!("{}", filter.format(&record));
-                    }
-                    crate::coordinator::CoordinatorResponse::Error { message, .. } => {
-                        anyhow::bail!(message);
-                    }
-                    _ => break,
+    #[cfg(unix)]
+    if let Some(mut client) = CoordinatorClient::connect(&repo_hash)? {
+        return follow_logs_via_coordinator(&mut client, addr, filter);
+    }
+
+    // Coordinator unreachable (or non-Unix where there is no IPC) → the
+    // job is final. Read once and exit.
+    output.info("No coordinator running for this repository; reading log file once.");
+    let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+    let mut buf = String::new();
+    render_job_log(&resolved.job_dir, filter, &mut buf)?;
+    print!("{buf}");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn follow_logs_via_coordinator(
+    client: &mut CoordinatorClient,
+    addr: JobAddress,
+    filter: &LogsFilter,
+) -> Result<()> {
+    use crate::coordinator::log_record::LogRecord;
+
+    let stream = client.tail_logs(addr, true, filter.since_seq)?;
+    for frame in stream {
+        let resp = frame?;
+        match resp {
+            crate::coordinator::CoordinatorResponse::StreamFrame(value) => {
+                let record: LogRecord = serde_json::from_value(value)?;
+                if !filter.accepts(&record) {
+                    continue;
                 }
+                println!("{}", filter.format(&record));
             }
-            Ok(())
-        }
-        None => {
-            // Coordinator gone → job is final. Read once and exit.
-            output.info("No coordinator running for this repository; reading log file once.");
-            let store = LogStore::for_repo(&repo_hash)?;
-            let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
-            let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-            let mut buf = String::new();
-            render_job_log(&resolved.job_dir, filter, &mut buf)?;
-            print!("{buf}");
-            Ok(())
+            crate::coordinator::CoordinatorResponse::Error { message, .. } => {
+                anyhow::bail!(message);
+            }
+            _ => break,
         }
     }
+    Ok(())
 }
 
 /// Show the output log for a job, resolved via address.
@@ -1847,7 +1871,7 @@ fn retry_command(
             for spec in bg_specs {
                 coord_state.add_job(spec);
             }
-            crate::coordinator::process::fork_coordinator(coord_state, bg_store)?;
+            crate::coordinator::process::spawn_coordinator(coord_state, bg_store)?;
         }
 
         #[cfg(not(unix))]
@@ -2050,6 +2074,33 @@ fn format_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_inv_alone_counts_as_filter() {
+        // Regression: `daft hooks jobs cancel --inv abc123` previously fell
+        // through to the bail! because `--inv` wasn't included in the
+        // has_filter set. It should now drive cancel_matching.
+        assert!(cancel_has_filter(None, None, None, None, Some("abc123")));
+    }
+
+    #[test]
+    fn cancel_no_predicates_is_not_a_filter() {
+        assert!(!cancel_has_filter(None, None, None, None, None));
+    }
+
+    #[test]
+    fn cancel_other_predicates_still_count() {
+        assert!(cancel_has_filter(
+            Some("worktree-post-create"),
+            None,
+            None,
+            None,
+            None
+        ));
+        assert!(cancel_has_filter(None, Some("feat/x"), None, None, None));
+        assert!(cancel_has_filter(None, None, Some("build"), None, None));
+        assert!(cancel_has_filter(None, None, None, Some("5m"), None));
+    }
 
     #[test]
     fn format_duration_sub_second_uses_milliseconds() {

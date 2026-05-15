@@ -20,7 +20,9 @@ use super::{
 use crate::executor::command::run_command;
 use crate::executor::dag::DagGraph;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -58,9 +60,20 @@ fn reconcile_active_jobs(store: &JobStore, repo_hash: &str) -> Result<()> {
         // as crashed (it was written `Running` but we can't confirm).
         let alive = match row.pgid {
             Some(pgid) if pgid > 0 => {
-                // `signal::kill` with `None` is the POSIX existence probe:
-                // returns Ok(()) if the process group exists (regardless of
-                // permission), Err(ESRCH) if it doesn't.
+                // POSIX existence probe via signal 0: `signal::kill(pid, None)`
+                // sends nothing but returns Ok(()) if a process with this PID
+                // exists (regardless of permission), Err(ESRCH) otherwise.
+                //
+                // We probe the *process-group leader's PID* — which is
+                // identical to the PGID because background jobs are launched
+                // with `process_group(0)` (see `run_single_background_job`),
+                // making each job its own session leader. Best-effort:
+                // (a) PID reuse can satisfy the probe even after the original
+                //     leader exited; this is the standard pid-tracking caveat
+                //     and would require waitpid-style accounting to close.
+                // (b) Surviving children re-parented to init keep the PGID
+                //     alive at the kernel level, but the leader's PID is gone,
+                //     so the probe correctly reports "not alive" here.
                 let pid = Pid::from_raw(pgid as i32);
                 matches!(signal::kill(pid, None), Ok(()))
             }
@@ -1094,20 +1107,33 @@ fn cancel_matching(
 }
 
 /// Send one [`ResponseEnvelope`] as a length-prefixed frame.
+///
+/// Serialization of a well-formed `CoordinatorResponse` shouldn't fail
+/// in practice, but if it does we emit a sentinel `Error{Internal}` frame
+/// so the client's blocking `read_frame` doesn't hang waiting for a
+/// response that will never arrive.
 #[cfg(unix)]
 fn send_response(stream: &std::os::unix::net::UnixStream, response: &CoordinatorResponse) {
     let env = ResponseEnvelope {
         v: PROTOCOL_VERSION,
-        // serde_json::to_value-then-from_value avoids needing
-        // CoordinatorResponse: Clone for the StreamFrame(Value) variant.
-        body: match serde_json::to_value(response).and_then(serde_json::from_value) {
-            Ok(b) => b,
-            Err(_) => return,
-        },
+        body: response.clone(),
     };
     let bytes = match serde_json::to_vec(&env) {
         Ok(b) => b,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("daft coordinator: response serialization failed: {e}");
+            let fallback = ResponseEnvelope {
+                v: PROTOCOL_VERSION,
+                body: CoordinatorResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: format!("response serialization failed: {e}"),
+                },
+            };
+            match serde_json::to_vec(&fallback) {
+                Ok(b) => b,
+                Err(_) => return,
+            }
+        }
     };
     let mut writer = stream;
     let _ = framing::write_frame(&mut writer, &bytes);
@@ -1189,6 +1215,17 @@ fn handle_tail_logs(
             // EOF while following — wait a beat for new data. The reader
             // already buffered EOF; reset our position to the actual end
             // before sleeping so the next read picks up appends.
+            //
+            // Known limitation: if the writer thread panics before
+            // emitting a terminal `Status::Finished/Signaled/Crashed`
+            // record, this loop spins at 200ms/cycle indefinitely (the
+            // connection read-timeout was cleared for follow=true in
+            // `handle_client_connection`). Closing this requires either
+            // (a) a wall-clock idle deadline gated on "row status no
+            // longer Running + mtime stale", or (b) a writer-liveness
+            // channel surfaced to the tail handler. Tracked as a
+            // follow-up; not load-bearing for the typical case where the
+            // writer reliably emits a terminal Status before exiting.
             let pos = match file.stream_position() {
                 Ok(p) => p,
                 Err(_) => break,
@@ -1350,18 +1387,6 @@ pub fn spawn_coordinator(
             )))
         }
     }
-}
-
-/// Backwards-compatible alias for callers still using the old name.
-/// Functionally identical to [`spawn_coordinator`]; kept thin so the
-/// rename across `src/hooks/yaml_executor/mod.rs` and
-/// `src/commands/hooks/jobs.rs` can land in a follow-up.
-#[cfg(unix)]
-pub fn fork_coordinator(
-    state: CoordinatorState,
-    store: LogStore,
-) -> Result<Option<Vec<JobResult>>> {
-    spawn_coordinator(state, store)
 }
 
 /// Entry point for the spawned `daft __coordinator <state-file>` process.

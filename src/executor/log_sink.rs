@@ -120,7 +120,7 @@ impl LogSink for BufferingLogSink {
         // are never sampled.
         if let Some(n) = buf.sampling_every_nth
             && n > 1
-            && seq % (n as u64) != 0
+            && !seq.is_multiple_of(n as u64)
         {
             return;
         }

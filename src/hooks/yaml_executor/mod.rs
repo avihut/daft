@@ -402,7 +402,7 @@ pub fn execute_yaml_hook_with_rc(
         }
 
         let bg_count = coord_state.jobs.len();
-        crate::coordinator::process::fork_coordinator(coord_state, (*store).clone())?;
+        crate::coordinator::process::spawn_coordinator(coord_state, (*store).clone())?;
 
         presenter.on_message(&format!(
             "⟳ {} background job{} running — daft hooks jobs to manage",

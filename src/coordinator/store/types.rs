@@ -113,6 +113,18 @@ pub fn invocation_key(repo_hash: &str, invocation_id: &str) -> String {
     format!("{repo_hash}:{invocation_id}")
 }
 
+/// Builds the redb key for a job row.
+///
+/// `repo_hash` is a UUID and `invocation_id` is 16 hex characters, so both
+/// are guaranteed `:`-free. `job_name` is the only user-controlled
+/// component (set in YAML `name:`). In practice job names containing `:`
+/// still round-trip correctly because `JobAddress::parse` uses
+/// `rsplitn(3, ':')`, and `list_jobs_for_repo` range-scans
+/// `{repo_hash}:` .. `{repo_hash};` which sits above any `:`-containing
+/// suffix in lexicographic order. The key format therefore has no
+/// validation site, but the safe-by-construction reasoning is recorded
+/// here so callers know not to introduce a key parser that would split
+/// naively on `:`.
 pub fn job_key(repo_hash: &str, invocation_id: &str, job_name: &str) -> String {
     format!("{repo_hash}:{invocation_id}:{job_name}")
 }
