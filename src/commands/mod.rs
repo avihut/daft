@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod dump_store;
 pub mod exec;
 pub mod fetch;
+pub mod file;
 pub mod flow_adopt;
 pub mod flow_eject;
 pub mod hooks;
