@@ -73,18 +73,19 @@ pub fn find_local_config(main_config: &Path) -> Option<PathBuf> {
         return None;
     };
 
-    let preferred = parent.join(format!("{stem}.local{ext}"));
+    let preferred_name = format!("{stem}.local{ext}");
+    let preferred = parent.join(&preferred_name);
     if preferred.is_file() {
         return Some(preferred);
     }
 
-    let deprecated = parent.join(format!("{stem}-local{ext}"));
+    let deprecated_name = format!("{stem}-local{ext}");
+    let deprecated = parent.join(&deprecated_name);
     if deprecated.is_file() {
-        eprintln!(
-            "warning: deprecated local config name '{}' — rename to '{}.local{}'",
-            deprecated.display(),
-            stem,
-            ext
+        crate::log_warning!(
+            "deprecated local config name '{}' — rename to '{}'",
+            deprecated_name,
+            preferred_name
         );
         return Some(deprecated);
     }
@@ -547,6 +548,8 @@ mod tests {
 
     #[test]
     fn test_find_local_config() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
         let dir = tempdir().unwrap();
         let main_config = dir.path().join("daft.yml");
         write_file(dir.path(), "daft.yml", "hooks: {}");
@@ -559,6 +562,8 @@ mod tests {
 
     #[test]
     fn test_find_local_config_dot_prefix() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
         let dir = tempdir().unwrap();
         let main_config = dir.path().join(".daft.yml");
         write_file(dir.path(), ".daft.yml", "hooks: {}");
@@ -592,6 +597,8 @@ mod tests {
 
     #[test]
     fn test_find_local_config_falls_back_to_dash_infix() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
         let dir = tempdir().unwrap();
         let main_config = dir.path().join("daft.yml");
         write_file(dir.path(), "daft.yml", "hooks: {}");
