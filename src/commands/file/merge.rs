@@ -161,12 +161,14 @@ pub fn merge_files(target: &Path, source: &Path, opts: MergeOptions) -> Result<(
     Ok(())
 }
 
-/// Check whether `target` is untracked in its git repository.
+/// Returns true when the target file is currently untracked by git.
 ///
-/// Runs `git -C <parent> ls-files --error-unmatch <basename>`.
-/// Returns `true` when the file is NOT tracked (non-success exit or git error).
+/// Conservative: if git cannot definitively answer (no git binary, parent
+/// directory not inside a git repo), returns `false` so the prompt is
+/// skipped. Mirrors the two-stage probe pattern from
+/// `classify_main_config` in yaml_config_loader.rs.
 fn is_target_untracked(target: &Path) -> Result<bool> {
-    let parent = target
+    let dir = target
         .parent()
         .and_then(|p| {
             if p.as_os_str().is_empty() {
@@ -176,20 +178,38 @@ fn is_target_untracked(target: &Path) -> Result<bool> {
             }
         })
         .unwrap_or(Path::new("."));
-    let basename = target.file_name().context("Target path has no filename")?;
+    let basename = target
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("target has no filename"))?;
 
-    let status = std::process::Command::new("git")
+    // Stage 1: are we even inside a git work tree?
+    let probe = std::process::Command::new("git")
         .arg("-C")
-        .arg(parent)
+        .arg(dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    let inside_repo = matches!(probe, Ok(s) if s.success());
+    if !inside_repo {
+        return Ok(false);
+    }
+
+    // Stage 2: is the file tracked?
+    let ls = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
         .args(["ls-files", "--error-unmatch"])
         .arg(basename)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
 
-    // Non-success exit (including git not found, not a repo, or file untracked)
-    // → file is considered untracked, so we prompt.
-    Ok(status.map(|s| !s.success()).unwrap_or(true))
+    match ls {
+        Ok(s) => Ok(!s.success()),
+        Err(_) => Ok(false), // git vanished mid-run — conservative
+    }
 }
 
 #[cfg(test)]
@@ -284,5 +304,35 @@ mod tests {
         let merged = fs::read_to_string(dir.path().join("target.yml")).unwrap();
         assert!(merged.contains("echo source"));
         assert!(!merged.contains("echo target"));
+    }
+
+    #[test]
+    fn test_merge_outside_git_repo_does_not_prompt() {
+        // When called from a non-git directory, the function should NOT
+        // require --yes/--force. The merge proceeds without prompting.
+        let dir = tempdir().unwrap();
+        // No git init — pure filesystem dir.
+        write(dir.path(), "target.yml", "hooks: {}");
+        write(
+            dir.path(),
+            "source.yml",
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo s\n",
+        );
+
+        // yes: false — yet should succeed without a prompt, because the
+        // target is not in a git repo, so it's not "untracked" in the
+        // visitor sense.
+        merge_files(
+            &dir.path().join("target.yml"),
+            &dir.path().join("source.yml"),
+            MergeOptions {
+                keep_source: false,
+                yes: false,
+            },
+        )
+        .unwrap();
+
+        let merged = fs::read_to_string(dir.path().join("target.yml")).unwrap();
+        assert!(merged.contains("post-clone"));
     }
 }
