@@ -53,26 +53,43 @@ pub fn find_config_file(root: &Path) -> Option<(PathBuf, ConfigLocation)> {
 
 /// Find the local override config file for the given main config.
 ///
+/// Searches in priority order:
+///   1. Preferred dot-infix name (e.g. `daft.local.yml`)
+///   2. Deprecated dash-infix alias (e.g. `daft-local.yml`)
+///
+/// When the deprecated alias is used, emits a warning to stderr so users see
+/// the rename suggestion at load time.
+///
 /// Returns the path if found.
 pub fn find_local_config(main_config: &Path) -> Option<PathBuf> {
     let parent = main_config.parent()?;
     let filename = main_config.file_name()?.to_str()?;
 
-    // Build local filename: daft.yml → daft-local.yml, .daft.yml → .daft-local.yml
-    let local_filename = if let Some(stem) = filename.strip_suffix(".yaml") {
-        format!("{stem}-local.yaml")
-    } else if let Some(stem) = filename.strip_suffix(".yml") {
-        format!("{stem}-local.yml")
+    let (stem, ext) = if let Some(s) = filename.strip_suffix(".yaml") {
+        (s, ".yaml")
+    } else if let Some(s) = filename.strip_suffix(".yml") {
+        (s, ".yml")
     } else {
         return None;
     };
 
-    let local_path = parent.join(&local_filename);
-    if local_path.is_file() {
-        Some(local_path)
-    } else {
-        None
+    let preferred = parent.join(format!("{stem}.local{ext}"));
+    if preferred.is_file() {
+        return Some(preferred);
     }
+
+    let deprecated = parent.join(format!("{stem}-local{ext}"));
+    if deprecated.is_file() {
+        eprintln!(
+            "warning: deprecated local config name '{}' — rename to '{}.local{}'",
+            deprecated.display(),
+            stem,
+            ext
+        );
+        return Some(deprecated);
+    }
+
+    None
 }
 
 /// Find per-hook YAML config files based on the main config location.
@@ -559,6 +576,51 @@ mod tests {
         write_file(dir.path(), "daft.yml", "hooks: {}");
 
         assert!(find_local_config(&main_config).is_none());
+    }
+
+    #[test]
+    fn test_find_local_config_prefers_dot_infix() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yml");
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        write_file(dir.path(), "daft.local.yml", "hooks: {}");
+        write_file(dir.path(), "daft-local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft.local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_falls_back_to_dash_infix() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yml");
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        write_file(dir.path(), "daft-local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft-local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_dot_prefix_main_dot_infix_local() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join(".daft.yml");
+        write_file(dir.path(), ".daft.yml", "hooks: {}");
+        write_file(dir.path(), ".daft.local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join(".daft.local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_yaml_extension_dot_infix() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yaml");
+        write_file(dir.path(), "daft.yaml", "hooks: {}");
+        write_file(dir.path(), "daft.local.yaml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft.local.yaml"));
     }
 
     #[test]
