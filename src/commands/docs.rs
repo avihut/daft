@@ -9,7 +9,7 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
+    carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
     install, layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init,
     shortcuts, sync, worktree_branch,
 };
@@ -154,6 +154,10 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: install::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "file merge",
+                    command: file::merge::Args::command(),
+                },
+                CommandEntry {
                     display_name: "config",
                     command: config::remote_sync::Args::command(),
                 },
@@ -295,6 +299,10 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "daft install",
                     command: install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft file merge",
+                    command: file::merge::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft hooks",

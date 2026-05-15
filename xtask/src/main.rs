@@ -33,6 +33,7 @@ const COMMANDS: &[&str] = &[
     "git-daft-repo-remove",
     "daft-config",
     "daft-doctor",
+    "daft-file",
     "daft-hooks",
     "daft-install",
     "daft-layout",
@@ -172,6 +173,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-daft-repo-remove" => Some(daft::commands::repo::remove::Args::command()),
         "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
+        "daft-file" => Some(daft::commands::file::merge::Args::command()),
         "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-shared" => Some(daft::commands::shared::Args::command()),
@@ -731,6 +733,11 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
         .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
         .subcommand(daft::commands::install::Args::command().name("install"))
+        .subcommand(
+            clap::Command::new("file")
+                .about("Manage YAML config files")
+                .subcommand(daft::commands::file::merge::Args::command().name("merge")),
+        )
         .subcommand(daft::commands::doctor::Args::command().name("doctor"))
         .subcommand(daft::commands::shell_init::Args::command().name("shell-init"))
         .subcommand(daft::commands::setup::Args::command().name("setup"))

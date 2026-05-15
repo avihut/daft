@@ -35,7 +35,7 @@ When TARGET is omitted, daft.yml in the current directory is used.\n\
 By default the source file is deleted after a successful merge.\n\
 When TARGET is untracked (visitor file) you are prompted for confirmation\n\
 unless --yes / --force is passed.")]
-struct Args {
+pub struct Args {
     /// Target file to merge INTO, or source file when TARGET is omitted
     first: PathBuf,
 

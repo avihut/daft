@@ -533,6 +533,25 @@ _daft() {
         return 0
     fi
 
+    # file: complete subcommands and arguments
+    if [[ "${words[1]}" == "file" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "merge" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            merge)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--keep-source -y --yes -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -f -- "$cur") )
+                return 0
+                ;;
+        esac
+        return 0
+    fi
+
     # shared: complete subcommands and their arguments
     if [[ "${words[1]}" == "shared" ]]; then
         if [[ $cword -eq 2 ]]; then
@@ -700,7 +719,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config file repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

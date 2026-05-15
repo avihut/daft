@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "daft file merge" 1  "daft file merge " 
+.SH NAME
+daft file merge \- Merge a source daft.yml into a target daft.yml
+.SH SYNOPSIS
+\fBdaft file merge\fR [\fB\-\-keep\-source\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFIRST\fR> [\fISECOND\fR] 
+.SH DESCRIPTION
+Merge SOURCE into TARGET using the same recursive YAML merge that daft uses
+at load time: source wins on conflicts, new hook sections are added wholesale.
+.PP
+When TARGET is omitted, daft.yml in the current directory is used.
+.PP
+By default the source file is deleted after a successful merge.
+When TARGET is untracked (visitor file) you are prompted for confirmation
+unless \-\-yes / \-\-force is passed.
+.SH OPTIONS
+.TP
+\fB\-\-keep\-source\fR
+Keep the source file after merging (do not delete it)
+.TP
+\fB\-y\fR, \fB\-\-yes\fR
+Skip confirmation prompt when the target is untracked
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIFIRST\fR>
+Target file to merge INTO, or source file when TARGET is omitted
+.TP
+[\fISECOND\fR]
+Source file to merge FROM (optional; when omitted, FIRST is the source and the target defaults to daft.yml in the current directory)

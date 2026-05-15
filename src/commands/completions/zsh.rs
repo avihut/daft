@@ -706,6 +706,23 @@ _daft() {
         return
     fi
 
+    # file: complete subcommands and arguments
+    if [[ "$words[2]" == "file" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd merge
+            return
+        fi
+        if [[ "$words[3]" == "merge" ]]; then
+            if [[ "$curword" == -* ]]; then
+                compadd -- --keep-source -y --yes -h --help
+            else
+                _files
+            fi
+            return
+        fi
+        return
+    fi
+
     # shared: complete subcommands and their arguments
     if [[ "$words[2]" == "shared" ]]; then
         if (( CURRENT == 3 )); then
@@ -888,7 +905,7 @@ _daft() {
             compadd -- --version -V --help -h -C
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config repo clone init install go start carry exec update list prune rename sync remove \
+                    config file repo clone init install go start carry exec update list prune rename sync remove \
                     merge worktree-merge adopt eject
         fi
         return

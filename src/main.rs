@@ -192,6 +192,7 @@ fn main() -> Result<()> {
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
                     "exec" => commands::exec::run(),
+                    "file" => commands::file::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),
                     "worktree-init" => commands::init::run(),
