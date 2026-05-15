@@ -2180,9 +2180,12 @@ mod tests {
     #[test]
     fn run_single_background_job_registers_and_deregisters_pid() {
         let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        // Sleep 1.0 (not 0.4) gives the probe a wider window so the test
+        // doesn't flake under heavy parallel-test load when fork-exec is slow
+        // to schedule the registrar thread.
         let job = JobSpec {
             name: "sleep-job".to_string(),
-            command: "sleep 0.4 && echo done".to_string(),
+            command: "sleep 1.0 && echo done".to_string(),
             working_dir: std::env::temp_dir(),
             background: true,
             ..Default::default()
@@ -2197,8 +2200,20 @@ mod tests {
 
         let pids_probe = Arc::clone(&child_pids);
         let probe = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            pids_probe.lock().unwrap().clone()
+            // Poll until the registrar inserts, up to ~600ms. A fixed sleep
+            // raced against fork-exec scheduling under load and produced
+            // spurious failures in the full test sweep.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+            loop {
+                let snap = pids_probe.lock().unwrap().clone();
+                if snap.contains_key("sleep-job") {
+                    return snap;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return snap;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         });
 
         let _ = run_single_background_job(&job, &ctx, &store);
@@ -2233,7 +2248,18 @@ mod tests {
             let cancelled = Arc::clone(&cancelled_jobs);
             let store_for_killer = store.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                // Wait for the registrar thread to record the PID before we
+                // try to cancel by name. A fixed sleep raced against
+                // fork-exec scheduling under heavy parallel-test load —
+                // cancel_single_job would no-op because the map was still
+                // empty.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while !pids.lock().unwrap().contains_key("long-job") {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
                 // Route through the production cancellation path so that
                 // regressions (e.g. dropping the `cancelled_jobs` insert or
                 // skipping the SIGTERM) are caught here.
@@ -2510,7 +2536,16 @@ mod tests {
         let cancelled = Arc::clone(&cancelled_jobs);
         let store_for_killer = store.clone();
         let killer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Wait until the registrar thread records "long"'s PID before
+            // we try to cancel. A fixed 200ms sleep raced fork-exec
+            // scheduling under heavy parallel-test load.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !pids.lock().unwrap().contains_key("long") {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
             let _ = cancel_single_job("long", &pids, &cancelled, &store_for_killer);
         });
 
