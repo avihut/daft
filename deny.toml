@@ -18,6 +18,10 @@ targets = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ]
+# daft has no [features] table today, so all-features = false is a no-op
+# (nothing to gate). If a [features] table is ever added, revisit: any
+# optional dep pulled in by a feature flag is invisible to this check
+# unless this is flipped to true or run separately with --all-features.
 all-features = false
 no-default-features = false
 
@@ -62,14 +66,19 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "0BSD",
-    "MPL-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = [
-    # Example:
-    # { name = "ring", allow = ["OpenSSL"] },
-    # # why: ring's OpenSSL-derived BoringSSL code is statically embedded;
-    # #      the OpenSSL clause covers that subtree only.
+    # MPL-2.0 is file-level copyleft — modifications to MPL files must be
+    # shared. That's a materially different posture from the permissive
+    # licenses above, so each MPL-2.0 dep is named here rather than carried
+    # in the global allow list. Drop the entry when the dep is gone.
+    # why: transitive through ratatui's fuzzy-matcher; MPL applies only to
+    #      nucleo-matcher's own source, which we link but don't modify.
+    { name = "nucleo-matcher", allow = ["MPL-2.0"] },
+    # why: transitive through `dirs`; MPL applies only to option-ext's own
+    #      source, which we link but don't modify.
+    { name = "option-ext", allow = ["MPL-2.0"] },
 ]
 
 [sources]
