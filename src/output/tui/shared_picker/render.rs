@@ -14,6 +14,7 @@ use ratatui::{
     },
 };
 
+use super::super::columns::truncate_with_ellipsis;
 use super::PickerMode;
 use super::highlight::Highlighter;
 use super::state::{FileTabState, FocusPanel, PickerState};
@@ -23,6 +24,30 @@ const ACCENT: Color = Color::Indexed(208);
 const DIM: Color = Color::DarkGray;
 const GREEN: Color = Color::Green;
 const SELECTED_BG: Color = Color::Indexed(236);
+
+/// Below this width the worktree-name column is meaningless, so we stop
+/// shrinking and accept that the right-aligned state tag may be clipped at
+/// extreme terminal narrowness. Mirrors `BRANCH_MIN_WIDTH` in `columns.rs`
+/// by convention.
+const WORKTREE_NAME_MIN_WIDTH: usize = 12;
+
+/// Compute the budget (in display chars) for a worktree-name cell.
+///
+/// `tag_column_width` is the max tag length across all rows in the tab so
+/// the name-column right edge stays stable as you scroll, even when some
+/// rows have shorter tags or no tag at all.
+fn name_budget(
+    inner_width: usize,
+    pointer_len: usize,
+    marker_len: usize,
+    tag_column_width: usize,
+    right_margin: usize,
+) -> u16 {
+    let chrome = pointer_len + marker_len + tag_column_width + right_margin;
+    inner_width
+        .saturating_sub(chrome)
+        .max(WORKTREE_NAME_MIN_WIDTH) as u16
+}
 
 /// Render the entire picker UI.
 pub fn render(
@@ -215,6 +240,15 @@ fn render_worktree_list(
     let inner_width = block.inner(area).width as usize;
     let editing_shared = mode.is_editing_shared();
 
+    // Reserve a uniform state-tag column based on the widest tag in the
+    // tab, so name-column right edges line up across rows and don't jitter
+    // when shorter tags scroll past longer ones.
+    let tag_column_width: usize = (0..tab.entries.len())
+        .filter_map(|idx| mode.entry_decoration(tab, tab_idx, idx).tag)
+        .map(|(t, _)| t.chars().count())
+        .max()
+        .unwrap_or(0);
+
     let items: Vec<ListItem> = tab
         .entries
         .iter()
@@ -253,19 +287,31 @@ fn render_worktree_list(
                 Style::default().fg(Color::Reset)
             };
 
+            // Truncate the name to a budget that leaves room for the
+            // reserved state-tag column on the right. Without this, long
+            // branch names overflow and clip the tag (issue #503).
+            let right_margin = 1;
+            let pointer_len = pointer.chars().count();
+            let marker_len = decoration.marker.chars().count();
+            let budget = name_budget(
+                inner_width,
+                pointer_len,
+                marker_len,
+                tag_column_width,
+                right_margin,
+            );
+            let displayed_name = truncate_with_ellipsis(&entry.worktree_name, budget);
+
             let mut spans = vec![
                 Span::styled(pointer, style),
                 Span::styled(decoration.marker.clone(), style),
-                Span::styled(entry.worktree_name.clone(), style),
+                Span::styled(displayed_name.clone(), style),
             ];
 
             // Right-align the status tag (use char count for correct Unicode width)
             if let Some((tag_text, tag_color)) = decoration.tag {
-                let left_len = pointer.chars().count()
-                    + decoration.marker.chars().count()
-                    + entry.worktree_name.chars().count();
+                let left_len = pointer_len + marker_len + displayed_name.chars().count();
                 let tag_len = tag_text.chars().count();
-                let right_margin = 1;
                 let padding = inner_width.saturating_sub(left_len + tag_len + right_margin);
 
                 let highlight_row = is_current || is_co_edited;
@@ -446,4 +492,82 @@ fn dir_listing_lines(dir: &std::path::Path) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Standard chrome: pointer=2 ("▸ " / "  "), marker=2, right_margin=1.
+    // tag_col varies per case.
+
+    #[test]
+    fn name_budget_wide_terminal_returns_full_remainder() {
+        // 80 inner, chrome=2+2+7+1=12, budget=68 — full names render untruncated
+        // for any realistic branch name.
+        assert_eq!(name_budget(80, 2, 2, 7, 1), 68);
+    }
+
+    #[test]
+    fn name_budget_medium_terminal_shrinks_name_above_min() {
+        // 28 inner (100-col terminal × 30% panel ≈ 30, minus borders = 28),
+        // chrome=12, budget=16. Long names get ellipsis-truncated to 16.
+        assert_eq!(name_budget(28, 2, 2, 7, 1), 16);
+    }
+
+    #[test]
+    fn name_budget_tight_terminal_clamps_to_minimum() {
+        // 18 inner, chrome=12, naive budget=6 — clamped up to MIN=12 so
+        // names remain readable; tag may begin to overflow.
+        assert_eq!(name_budget(18, 2, 2, 7, 1), WORKTREE_NAME_MIN_WIDTH as u16);
+    }
+
+    #[test]
+    fn name_budget_extreme_narrow_still_clamps_to_minimum() {
+        // 10 inner — way too narrow for chrome. saturating_sub yields 0,
+        // clamp lifts to MIN=12. Tag will be clipped by panel; acceptable
+        // at this width.
+        assert_eq!(name_budget(10, 2, 2, 7, 1), WORKTREE_NAME_MIN_WIDTH as u16);
+    }
+
+    #[test]
+    fn name_budget_no_tags_in_tab_uses_remaining_space() {
+        // tag_col=0 (no entries have tags), so the name gets all the space
+        // minus pointer + marker + right margin.
+        assert_eq!(name_budget(28, 2, 2, 0, 1), 23);
+    }
+
+    #[test]
+    fn truncates_long_name_with_ellipsis_at_budget() {
+        let name = "daft-503/very-long-feature-name-that-takes-many-columns";
+        assert!(name.chars().count() > 16);
+        let budget = name_budget(28, 2, 2, 7, 1);
+        assert_eq!(budget, 16);
+
+        let displayed = truncate_with_ellipsis(name, budget);
+        assert_eq!(displayed.chars().count(), 16);
+        assert!(displayed.ends_with("..."));
+        assert!(displayed.starts_with("daft-503/"));
+    }
+
+    #[test]
+    fn keeps_short_name_unchanged_when_under_budget() {
+        let name = "main";
+        let budget = name_budget(80, 2, 2, 7, 1);
+        let displayed = truncate_with_ellipsis(name, budget);
+        assert_eq!(displayed, "main");
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries_on_multibyte_names() {
+        // CJK characters are multi-byte; truncation must not split a
+        // codepoint. `truncate_with_ellipsis` operates on `chars()` so this
+        // is safe — verify the output is a valid String and the right
+        // number of chars.
+        let name = "日本語のとても長いブランチ名";
+        let budget: u16 = 8;
+        let displayed = truncate_with_ellipsis(name, budget);
+        assert_eq!(displayed.chars().count(), 8);
+        assert!(displayed.ends_with("..."));
+    }
 }
