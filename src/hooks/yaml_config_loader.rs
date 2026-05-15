@@ -1364,4 +1364,42 @@ hooks:
         // No git init here — git ls-files will fail
         assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
     }
+
+    #[test]
+    fn test_classify_main_config_ignored_is_visitor() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), ".gitignore", "daft.yml\n");
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", ".gitignore"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add gitignore"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // Ignored daft.yml: ls-files --error-unmatch fails → Visitor.
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);
+    }
 }
