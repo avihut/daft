@@ -1,0 +1,92 @@
+# cargo-deny policy. See https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally: `mise run deny`
+# Gated in CI:  .github/workflows/test.yml (dep-license-check job)
+#
+# Exceptions require a `# why:` comment with a rationale and, ideally, an
+# expiration condition. Entries here weaken the policy and should be
+# temporary unless the why explains otherwise.
+
+[graph]
+# Check every release target, not just the host. Mirrors dist-workspace.toml.
+# Without this, Windows-only and macOS-only transitive crates are silently
+# skipped.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# daft has no [features] table today, so all-features = false is a no-op
+# (nothing to gate). If a [features] table is ever added, revisit: any
+# optional dep pulled in by a feature flag is invisible to this check
+# unless this is flipped to true or run separately with --all-features.
+all-features = false
+no-default-features = false
+
+[advisories]
+# Fail on any RustSec advisory not explicitly ignored. Complements Dependabot
+# security alerts (broader coverage, gated in CI).
+version = 2
+yanked = "deny"
+ignore = [
+    # why: `unmaintained` advisory, not a security CVE. bincode 1.x reached
+    #      an explicit "feature-complete, no further releases" state after
+    #      the maintainers stepped down. Reaches us transitively through
+    #      syntect (https://github.com/trishume/syntect). No safe upgrade
+    #      exists; revisit once syntect publishes a release that drops the
+    #      bincode 1.x dependency.
+    "RUSTSEC-2025-0141",
+    # why: `unmaintained` advisory, not a security CVE. yaml-rust 0.4 has
+    #      had no upstream activity in years; the maintained successor is
+    #      yaml-rust2. Reaches us transitively through syntect. Revisit
+    #      once syntect migrates to yaml-rust2.
+    "RUSTSEC-2024-0320",
+]
+
+[licenses]
+version = 2
+# Skip workspace members marked `publish = false` (xtask is internal-only and
+# never published). Without this, the check trips on missing/internal license
+# metadata for in-tree crates.
+private = { ignore = true }
+# Permissive licenses standard in the Rust ecosystem. Any license not on this
+# list fails the check; add via `exceptions` with a why.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+]
+confidence-threshold = 0.93
+exceptions = [
+    # MPL-2.0 is file-level copyleft — modifications to MPL files must be
+    # shared. That's a materially different posture from the permissive
+    # licenses above, so each MPL-2.0 dep is named here rather than carried
+    # in the global allow list. Drop the entry when the dep is gone.
+    # why: transitive through ratatui's fuzzy-matcher; MPL applies only to
+    #      nucleo-matcher's own source, which we link but don't modify.
+    { name = "nucleo-matcher", allow = ["MPL-2.0"] },
+    # why: transitive through `dirs`; MPL applies only to option-ext's own
+    #      source, which we link but don't modify.
+    { name = "option-ext", allow = ["MPL-2.0"] },
+]
+
+[sources]
+# Restrict crates to crates.io plus any git sources explicitly allowed below.
+# Catches accidental private-registry deps and unexpected forks.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# [bans] intentionally omitted — sub-task 4 follow-up (see #477).
