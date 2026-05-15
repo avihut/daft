@@ -213,7 +213,7 @@ pub fn execute(
     }
 
     // Execute deletions
-    let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, sink);
+    let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, &worktree_map, sink);
 
     Ok(BranchDeleteResult {
         deletions,
@@ -708,6 +708,7 @@ fn execute_deletions(
     ctx: &BranchDeleteContext,
     validated: &[ValidatedBranch],
     params: &BranchDeleteParams,
+    worktree_map: &HashMap<String, PathBuf>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> (Vec<DeletionResult>, Option<PathBuf>) {
     // Partition into regular and deferred (current worktree) branches
@@ -726,6 +727,7 @@ fn execute_deletions(
             params.remote_only,
             params.keep_local_branch,
             &params.command_label,
+            worktree_map,
             sink,
         );
         deletions.push(result);
@@ -769,6 +771,7 @@ fn execute_deletions(
                 params.remote_only,
                 params.keep_local_branch,
                 &params.command_label,
+                worktree_map,
                 sink,
             );
 
@@ -787,6 +790,7 @@ fn execute_deletions(
                 params.remote_only,
                 params.keep_local_branch,
                 &params.command_label,
+                worktree_map,
                 sink,
             );
             deletions.push(result);
@@ -810,6 +814,7 @@ fn delete_single_branch(
     remote_only: bool,
     keep_local_branch: bool,
     command_label: &str,
+    worktree_map: &HashMap<String, PathBuf>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> DeletionResult {
     let mut result = DeletionResult {
@@ -877,6 +882,31 @@ fn delete_single_branch(
             ));
         }
         return result;
+    }
+
+    // Visitor-config propagation: if the source worktree still has in-scope
+    // untracked daft files, copy them into the merge target's worktree before
+    // the source worktree gets removed. Gated cheapest-first so non-users
+    // pay no cost. Skip when the branch being deleted IS the default branch
+    // (worktree_only path), as there is no merge target to propagate to.
+    if !branch.worktree_only
+        && !remote_only
+        && branch.name != ctx.default_branch
+        && let Some(ref wt_path) = branch.worktree_path
+        && wt_path.is_dir()
+    {
+        let has_local = wt_path.join("daft.local.yml").is_file();
+        let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
+            && matches!(
+                crate::hooks::yaml_config_loader::classify_main_config(wt_path),
+                crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+            );
+
+        if (has_local || has_visitor_daft_yml)
+            && let Some(target_wt) = worktree_map.get(&ctx.default_branch)
+        {
+            let _ = crate::hooks::visitor_propagation::propagate(wt_path, target_wt);
+        }
     }
 
     // Step 3: Remove worktree (if one exists)

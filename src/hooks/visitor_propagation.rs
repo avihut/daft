@@ -84,6 +84,46 @@ fn propagate_one(
     Ok(())
 }
 
+/// Does the source worktree have in-scope untracked daft files whose content
+/// differs from the target worktree's corresponding file?
+///
+/// Returns false if source has no in-scope files (nothing to lose).
+/// Returns true if any in-scope file is present in source but absent in
+/// target, or if both are present and the content differs byte-for-byte.
+///
+/// Used by the worktree-removal safety boundary (Task 7.2) to prevent
+/// silently losing visitor-config refinements when a worktree is removed
+/// before its untracked daft files were propagated to the merge target.
+pub fn has_inscope_divergence(source: &Path, target: &Path) -> Result<bool> {
+    for filename in [VISITOR_DAFT_YML, VISITOR_DAFT_LOCAL_YML] {
+        // For daft.yml, only consider it in-scope if the source classifies as visitor.
+        if filename == VISITOR_DAFT_YML
+            && !matches!(classify_main_config(source), ConfigStatus::Visitor)
+        {
+            continue;
+        }
+
+        let src_path = source.join(filename);
+        let tgt_path = target.join(filename);
+
+        if !src_path.is_file() {
+            continue;
+        }
+
+        if !tgt_path.is_file() {
+            return Ok(true);
+        }
+
+        let src_str = fs::read_to_string(&src_path)?;
+        let tgt_str = fs::read_to_string(&tgt_path)?;
+        if src_str != tgt_str {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 /// Save target's in-scope daft files, propagate from source, run `action`,
 /// and restore the saved content if `action` returns an error.
 ///
@@ -350,5 +390,73 @@ mod tests {
             !tgt.join("daft.local.yml").is_file(),
             "file created only by propagation should be removed on rollback"
         );
+    }
+
+    #[test]
+    fn test_divergence_when_target_missing_source_present() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(src.join("daft.local.yml"), "hooks: {}").unwrap();
+
+        assert!(has_inscope_divergence(&src, &tgt).unwrap());
+    }
+
+    #[test]
+    fn test_no_divergence_when_both_missing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        assert!(!has_inscope_divergence(&src, &tgt).unwrap());
+    }
+
+    #[test]
+    fn test_no_divergence_when_content_matches() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(src.join("daft.local.yml"), "hooks: {}").unwrap();
+        fs::write(tgt.join("daft.local.yml"), "hooks: {}").unwrap();
+
+        assert!(!has_inscope_divergence(&src, &tgt).unwrap());
+    }
+
+    #[test]
+    fn test_divergence_when_content_differs() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(
+            src.join("daft.local.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo src\n",
+        )
+        .unwrap();
+        fs::write(
+            tgt.join("daft.local.yml"),
+            "hooks:\n  post-clone:\n    jobs:\n      - run: echo tgt\n",
+        )
+        .unwrap();
+
+        assert!(has_inscope_divergence(&src, &tgt).unwrap());
     }
 }
