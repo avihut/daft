@@ -128,7 +128,7 @@ pub fn find_per_hook_configs(root: &Path, location: &ConfigLocation) -> HashMap<
 /// 1. Main config (`daft.yml`)
 /// 2. Extends files
 /// 3. Per-hook YAML files (`post-clone.yml`)
-/// 4. Local override (`daft-local.yml`)
+/// 4. Local override (`daft.local.yml`, or deprecated `daft-local.yml`)
 ///
 /// Returns `None` if no config file is found.
 pub fn load_merged_config(root: &Path) -> Result<Option<YamlConfig>> {
@@ -342,6 +342,68 @@ pub fn get_effective_jobs(hook_def: &HookDef) -> Vec<JobDef> {
     }
 
     jobs
+}
+
+/// Runtime classification of the main `daft.yml` based on git tracking status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigStatus {
+    /// `daft.yml` is committed to the repo (team config).
+    Tracked,
+    /// `daft.yml` exists in the worktree but is not tracked (visitor config).
+    Visitor,
+    /// No `daft.yml` discovered at any candidate path.
+    Missing,
+}
+
+/// Classify the main daft config in `worktree_root` by tracking status.
+///
+/// Returns `Missing` if no candidate file exists. Otherwise checks whether the
+/// directory is a git worktree, then runs
+/// `git ls-files --error-unmatch <relative-path>` and maps the exit status:
+/// success → `Tracked`, failure → `Visitor`. If the git invocation itself
+/// errors (no git binary, not inside a repo), returns `Tracked` as a
+/// conservative fallback — we'd rather not implicitly treat a file as visitor
+/// when we can't confirm.
+pub fn classify_main_config(worktree_root: &Path) -> ConfigStatus {
+    let (path, _location) = match find_config_file(worktree_root) {
+        Some(found) => found,
+        None => return ConfigStatus::Missing,
+    };
+
+    let relative = match path.strip_prefix(worktree_root) {
+        Ok(p) => p,
+        Err(_) => return ConfigStatus::Tracked,
+    };
+
+    // Conservative fallback: if we can't confirm we're inside a git repo,
+    // treat the file as tracked. This handles the case where git is installed
+    // but the directory is not a git repository (git exits with code 128).
+    let in_repo = Command::new("git")
+        .arg("-C")
+        .arg(worktree_root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if !matches!(in_repo, Ok(s) if s.success()) {
+        return ConfigStatus::Tracked;
+    }
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(worktree_root)
+        .args(["ls-files", "--error-unmatch"])
+        .arg(relative)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => ConfigStatus::Tracked,
+        Ok(_) => ConfigStatus::Visitor,
+        Err(_) => ConfigStatus::Tracked,
+    }
 }
 
 /// Parse a YAML string into a `YamlConfig`.
@@ -1222,5 +1284,84 @@ hooks:
             .unwrap()
             .unwrap();
         assert!(config.hooks.contains_key("post-clone"));
+    }
+
+    // ── Tests for classify_main_config ───────────────────────────────
+
+    #[test]
+    fn test_classify_main_config_missing() {
+        let dir = tempdir().unwrap();
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Missing);
+    }
+
+    #[test]
+    fn test_classify_main_config_visitor_untracked() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // daft.yml exists in worktree but is NOT tracked → visitor
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);
+    }
+
+    #[test]
+    fn test_classify_main_config_tracked() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "daft.yml"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add"])
+            .output()
+            .unwrap();
+
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
+    }
+
+    #[test]
+    fn test_classify_main_config_no_git_falls_back_to_tracked() {
+        // Conservative fallback: if git can't answer, treat as tracked
+        let dir = tempdir().unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // No git init here — git ls-files will fail
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
     }
 }
