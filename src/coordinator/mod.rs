@@ -5,11 +5,41 @@ pub mod log_record;
 pub mod log_store;
 pub mod process;
 pub mod store;
+pub mod types;
+
+pub use types::JobAddress;
 
 use serde::{Deserialize, Serialize};
 
-/// Request from CLI to coordinator.
+/// Current wire-protocol version. Servers tag every framed envelope with
+/// this value; mismatches surface as a `SchemaMismatch` error rather than
+/// silent JSON parse failures.
+pub const PROTOCOL_VERSION: u16 = 1;
+
+/// Wire envelope for requests. Encoded as `{"v":1,"req":"<name>","payload":{...}}`
+/// thanks to `#[serde(flatten)]` on the body.
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RequestEnvelope {
+    pub v: u16,
+    #[serde(flatten)]
+    pub body: CoordinatorRequest,
+}
+
+/// Wire envelope for responses. Encoded as `{"v":1,"kind":"<variant>","payload":...}`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseEnvelope {
+    pub v: u16,
+    #[serde(flatten)]
+    pub body: CoordinatorResponse,
+}
+
+/// Request from CLI to coordinator.
+///
+/// Variants are serde-tagged `#[serde(tag = "req", content = "payload")]`
+/// so the wire shape lives inside [`RequestEnvelope`] without colliding
+/// with the `v` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "req", content = "payload")]
 pub enum CoordinatorRequest {
     /// List all jobs and their current status.
     ListJobs,
@@ -33,10 +63,39 @@ pub enum CoordinatorRequest {
         invocation_prefix: Option<String>,
         older_than_secs: Option<u64>,
     },
+    /// Streaming tail of a job's structured log file. Server emits one
+    /// `StreamFrame` envelope per `LogRecord` then a single `StreamEnd`
+    /// when the source closes (job finished, or `follow=false` reached
+    /// EOF). Implementation lives in
+    /// `coordinator::process::handle_tail_logs`.
+    TailLogs {
+        job: types::JobAddress,
+        /// `true` blocks at EOF waiting for more records (until job exits
+        /// or coordinator shuts down). `false` reads through current EOF
+        /// then sends `StreamEnd`.
+        follow: bool,
+        /// Skip records with `seq < since_seq`. Lets clients resume after
+        /// a disconnect without replaying records they already saw.
+        #[serde(default)]
+        since_seq: Option<u64>,
+    },
 }
 
-/// Response from coordinator to CLI.
+/// Stable error codes carried inside [`CoordinatorResponse::Error`]. Fixed
+/// strings so older clients can still recognize them after the enum grows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    JobNotFound,
+    NoMatch,
+    KillFailed,
+    SchemaMismatch,
+    Internal,
+}
+
+/// Response from coordinator to CLI. Tagged `#[serde(tag = "kind", content = "payload")]`.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload")]
 pub enum CoordinatorResponse {
     /// List of job statuses.
     Jobs(Vec<JobInfo>),
@@ -44,8 +103,14 @@ pub enum CoordinatorResponse {
     Ack { message: String },
     /// Result of a `CancelMatching` — count of jobs signaled + their names.
     Cancelled { count: usize, names: Vec<String> },
-    /// Error response.
-    Error { message: String },
+    /// Error response with a typed code + human-readable message.
+    Error { code: ErrorCode, message: String },
+    /// One frame of a streaming response. Body is a serialized
+    /// [`crate::coordinator::log_record::LogRecord`] (or any other
+    /// streaming payload added later).
+    StreamFrame(serde_json::Value),
+    /// End-of-stream sentinel. Server closes the connection after sending.
+    StreamEnd,
 }
 
 /// Summary info about a background job.

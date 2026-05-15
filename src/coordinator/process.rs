@@ -14,7 +14,8 @@ use super::log_store::{JobMeta, JobStatus, LogStore};
 use super::store::{JobRow, JobStore, schema as store_schema};
 #[cfg(unix)]
 use super::{
-    CoordinatorRequest, CoordinatorResponse, JobInfo, coordinator_pid_path, coordinator_socket_path,
+    CoordinatorRequest, CoordinatorResponse, ErrorCode, JobInfo, PROTOCOL_VERSION, RequestEnvelope,
+    ResponseEnvelope, coordinator_pid_path, coordinator_socket_path, framing, types::JobAddress,
 };
 use crate::executor::command::run_command;
 use crate::executor::dag::DagGraph;
@@ -776,7 +777,7 @@ fn start_socket_listener(
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn handle_client_connection(
-    stream: std::os::unix::net::UnixStream,
+    mut stream: std::os::unix::net::UnixStream,
     store: &LogStore,
     child_pids: &ChildPidMap,
     cancel_all: &Arc<AtomicBool>,
@@ -785,32 +786,58 @@ fn handle_client_connection(
     job_store: Option<&JobStore>,
     repo_hash: &str,
 ) {
-    use std::io::{BufRead, BufReader};
-
     // Set a read timeout so a misbehaving client doesn't block the listener.
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .ok();
 
-    let mut reader = BufReader::new(match stream.try_clone() {
-        Ok(s) => s,
+    let bytes = match framing::read_frame(&mut stream) {
+        Ok(b) => b,
         Err(_) => return,
-    });
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() || line.is_empty() {
-        return;
-    }
-
-    let request: CoordinatorRequest = match serde_json::from_str(&line) {
-        Ok(r) => r,
+    };
+    let env: RequestEnvelope = match serde_json::from_slice(&bytes) {
+        Ok(e) => e,
         Err(_) => {
-            let resp = CoordinatorResponse::Error {
-                message: "Invalid request".to_string(),
-            };
-            send_response(&stream, &resp);
+            send_response(
+                &stream,
+                &CoordinatorResponse::Error {
+                    code: ErrorCode::Internal,
+                    message: "Invalid request envelope".into(),
+                },
+            );
             return;
         }
     };
+    if env.v != PROTOCOL_VERSION {
+        send_response(
+            &stream,
+            &CoordinatorResponse::Error {
+                code: ErrorCode::SchemaMismatch,
+                message: format!(
+                    "client wire-version {} not supported (server expects {})",
+                    env.v, PROTOCOL_VERSION
+                ),
+            },
+        );
+        return;
+    }
+    let request = env.body;
+
+    // `TailLogs` is the only streaming variant today — handle it inline so
+    // it can emit multiple `StreamFrame` envelopes before `StreamEnd`.
+    if let CoordinatorRequest::TailLogs {
+        job,
+        follow,
+        since_seq,
+    } = &request
+    {
+        // `follow=true` blocks indefinitely; relax the connection's read
+        // timeout so the client side staying open isn't read as misbehavior.
+        let _ = stream.set_read_timeout(None);
+        let _ = stream.set_write_timeout(None);
+        handle_tail_logs(&stream, store, job, *follow, *since_seq);
+        return;
+    }
 
     let response = match request {
         CoordinatorRequest::ListJobs => {
@@ -882,6 +909,11 @@ fn handle_client_connection(
             job_store,
             repo_hash,
         ),
+        CoordinatorRequest::TailLogs { .. } => {
+            // Handled above (short-circuit at the top of this function);
+            // present here only so the match is exhaustive.
+            unreachable!("TailLogs is dispatched before the match")
+        }
     };
 
     send_response(&stream, &response);
@@ -945,6 +977,7 @@ fn cancel_single_job(
         }
     } else {
         CoordinatorResponse::Error {
+            code: ErrorCode::JobNotFound,
             message: format!("Job not found or not running: {name}"),
         }
     }
@@ -1003,6 +1036,7 @@ fn cancel_matching(
 ) -> CoordinatorResponse {
     let Some(js) = job_store else {
         return CoordinatorResponse::Error {
+            code: ErrorCode::Internal,
             message: "CancelMatching requires the redb job store; not available on this build"
                 .into(),
         };
@@ -1012,6 +1046,7 @@ fn cancel_matching(
         Ok(rows) => rows,
         Err(e) => {
             return CoordinatorResponse::Error {
+                code: ErrorCode::Internal,
                 message: format!("Failed to list active jobs: {e}"),
             };
         }
@@ -1045,17 +1080,177 @@ fn cancel_matching(
     }
 }
 
-/// Write a JSON response to the stream.
+/// Send one [`ResponseEnvelope`] as a length-prefixed frame.
 #[cfg(unix)]
 fn send_response(stream: &std::os::unix::net::UnixStream, response: &CoordinatorResponse) {
-    use std::io::Write;
-    let mut msg = match serde_json::to_string(response) {
-        Ok(m) => m,
+    let env = ResponseEnvelope {
+        v: PROTOCOL_VERSION,
+        // serde_json::to_value-then-from_value avoids needing
+        // CoordinatorResponse: Clone for the StreamFrame(Value) variant.
+        body: match serde_json::to_value(response).and_then(serde_json::from_value) {
+            Ok(b) => b,
+            Err(_) => return,
+        },
+    };
+    let bytes = match serde_json::to_vec(&env) {
+        Ok(b) => b,
         Err(_) => return,
     };
-    msg.push('\n');
     let mut writer = stream;
-    let _ = writer.write_all(msg.as_bytes());
+    let _ = framing::write_frame(&mut writer, &bytes);
+}
+
+/// Stream a job's `output.jsonl` to the client as a sequence of
+/// `StreamFrame` envelopes terminated by a single `StreamEnd`.
+///
+/// Per-invocation lifecycle means "this coordinator is alive only while
+/// jobs are running" — `follow=true` blocks reading the JSONL file until
+/// either EOF stays empty for a beat or the connection drops. The
+/// foreground client's "coordinator unreachable → file done" fallback
+/// (see `commands::hooks::jobs::show_logs`) covers the post-coordinator
+/// state.
+#[cfg(unix)]
+fn handle_tail_logs(
+    stream: &std::os::unix::net::UnixStream,
+    log_store: &LogStore,
+    job: &JobAddress,
+    follow: bool,
+    since_seq: Option<u64>,
+) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let job_dir = match resolve_tail_job_dir(log_store, job) {
+        Ok(dir) => dir,
+        Err(e) => {
+            send_response(
+                stream,
+                &CoordinatorResponse::Error {
+                    code: ErrorCode::JobNotFound,
+                    message: format!("{e}"),
+                },
+            );
+            send_response(stream, &CoordinatorResponse::StreamEnd);
+            return;
+        }
+    };
+    let jsonl = LogStore::jsonl_path(&job_dir);
+
+    // Open. If the file doesn't exist yet (job hasn't produced output),
+    // and we're following, wait briefly for it to appear.
+    let mut file = loop {
+        match std::fs::OpenOptions::new().read(true).open(&jsonl) {
+            Ok(f) => break f,
+            Err(_) if follow => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            Err(_) => {
+                send_response(stream, &CoordinatorResponse::StreamEnd);
+                return;
+            }
+        }
+    };
+
+    let mut reader = BufReader::new(&file);
+    // Walk through existing records first.
+    let mut line = String::new();
+    let send = |record: &LogRecord| -> bool {
+        let value = match serde_json::to_value(record) {
+            Ok(v) => v,
+            Err(_) => return true,
+        };
+        send_response(stream, &CoordinatorResponse::StreamFrame(value));
+        true
+    };
+
+    loop {
+        line.clear();
+        let n = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            if !follow {
+                break;
+            }
+            // EOF while following — wait a beat for new data. The reader
+            // already buffered EOF; reset our position to the actual end
+            // before sleeping so the next read picks up appends.
+            let pos = match file.stream_position() {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Reopen at the same position to re-read past previous EOF.
+            if file.seek(SeekFrom::Start(pos)).is_err() {
+                break;
+            }
+            reader = BufReader::new(&file);
+            continue;
+        }
+        let record: LogRecord = match serde_json::from_str(line.trim_end_matches('\n')) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Some(min) = since_seq
+            && record.seq < min
+        {
+            continue;
+        }
+        if !send(&record) {
+            break;
+        }
+        // A terminal Status::Finished/Signaled/Crashed record is the
+        // natural end of stream — stop following.
+        if matches!(
+            record.kind,
+            crate::coordinator::log_record::LogRecordKind::Status(
+                StatusEvent::Finished { .. }
+                    | StatusEvent::Signaled { .. }
+                    | StatusEvent::Crashed { .. }
+            )
+        ) {
+            break;
+        }
+    }
+
+    send_response(stream, &CoordinatorResponse::StreamEnd);
+}
+
+/// Resolve a `JobAddress` to a concrete `job_dir` for tailing. Reuses
+/// `LogStore::list_invocations_for_worktree`/`list_jobs_in_invocation`
+/// rather than the CLI's `resolve_job_address` so this stays inside the
+/// coordinator layer.
+#[cfg(unix)]
+fn resolve_tail_job_dir(store: &LogStore, addr: &JobAddress) -> Result<std::path::PathBuf> {
+    let invocations = if let Some(wt) = addr.worktree.as_deref() {
+        store.list_invocations_for_worktree(wt)?
+    } else {
+        store.list_invocations()?
+    };
+    if invocations.is_empty() {
+        anyhow::bail!("No invocations found");
+    }
+    let inv_id = match &addr.invocation_prefix {
+        Some(p) => invocations
+            .iter()
+            .find(|m| m.invocation_id.starts_with(p.as_str()))
+            .map(|m| m.invocation_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("No invocation matching prefix '{p}'"))?,
+        None => invocations
+            .last()
+            .map(|m| m.invocation_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("No invocations available"))?,
+    };
+    let job_dir = store.base_dir.join(&inv_id).join(&addr.job_name);
+    if !job_dir.exists() {
+        anyhow::bail!(
+            "No job named '{}' in invocation '{}'",
+            addr.job_name,
+            inv_id
+        );
+    }
+    Ok(job_dir)
 }
 
 /// Write the coordinator PID file.
@@ -1476,7 +1671,7 @@ mod tests {
         let response = cancel_single_job("nonexistent", &child_pids, &cancelled_jobs, &store);
         assert!(matches!(
             response,
-            CoordinatorResponse::Error { message } if message.contains("not found")
+            CoordinatorResponse::Error { message, .. } if message.contains("not found")
         ));
     }
 
@@ -1803,7 +1998,6 @@ mod tests {
 
     #[test]
     fn test_socket_listener_list_jobs() {
-        use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
 
         let tmp = TempDir::new().unwrap();
@@ -1873,22 +2067,23 @@ mod tests {
             }
         });
 
-        // Client: connect and send ListJobs.
-        let stream = UnixStream::connect(&socket_path).unwrap();
+        // Client: connect and send a framed `RequestEnvelope { v: 1, ... }`.
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
 
-        let mut msg = serde_json::to_string(&CoordinatorRequest::ListJobs).unwrap();
-        msg.push('\n');
-        (&stream).write_all(msg.as_bytes()).unwrap();
+        let env = RequestEnvelope {
+            v: PROTOCOL_VERSION,
+            body: CoordinatorRequest::ListJobs,
+        };
+        let req_bytes = serde_json::to_vec(&env).unwrap();
+        framing::write_frame(&mut stream, &req_bytes).unwrap();
 
-        let mut reader = BufReader::new(&stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line).unwrap();
-
-        let response: CoordinatorResponse = serde_json::from_str(&response_line).unwrap();
-        match response {
+        let resp_bytes = framing::read_frame(&mut stream).unwrap();
+        let resp_env: ResponseEnvelope = serde_json::from_slice(&resp_bytes).unwrap();
+        assert_eq!(resp_env.v, PROTOCOL_VERSION);
+        match resp_env.body {
             CoordinatorResponse::Jobs(jobs) => {
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].name, "test-job");
@@ -1903,8 +2098,6 @@ mod tests {
 
     #[test]
     fn test_send_response_round_trip() {
-        use std::io::{BufRead, BufReader};
-
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("test-send-resp.sock");
 
@@ -1918,17 +2111,15 @@ mod tests {
             send_response(&stream, &response);
         });
 
-        let stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        let mut reader = BufReader::new(&stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-
-        let resp: CoordinatorResponse = serde_json::from_str(&line).unwrap();
+        let bytes = framing::read_frame(&mut stream).unwrap();
+        let env: ResponseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(env.v, PROTOCOL_VERSION);
         assert!(matches!(
-            resp,
+            env.body,
             CoordinatorResponse::Ack { message } if message == "ok"
         ));
 

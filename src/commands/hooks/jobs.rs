@@ -124,6 +124,11 @@ enum JobsCommand {
         /// Skip records older than this duration (`5s`, `2m`, `1h`).
         #[arg(long = "since")]
         since: Option<String>,
+        /// Live-tail the job: stream new records as they're produced.
+        /// Requires the coordinator to still be running (otherwise the
+        /// job's already done and the file read once is exhaustive).
+        #[arg(long)]
+        follow: bool,
     },
     /// Cancel a running background job.
     Cancel {
@@ -182,108 +187,10 @@ enum JobsCommand {
     },
 }
 
-/// True for tokens that match the invocation-short-id shape (2–8 ASCII hex
-/// digits). Mirrors the heuristic the `retry` resolver uses (see
-/// `retry_target_from_arg`) so that bare-token resolution is consistent
-/// across `logs`, `cancel`, and `retry`.
-fn looks_like_inv_prefix(s: &str) -> bool {
-    s.len() >= 2 && s.len() <= 8 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Parsed composite job address: `[worktree:][invocation:]job_name`.
-///
-/// `job_name` is empty when the user supplied only an invocation prefix
-/// (e.g. `daft hooks jobs logs 1f2b`); `resolve_job_address` then auto-picks
-/// when the invocation has a single job and prints a candidate list otherwise.
-#[derive(Debug, Clone)]
-pub struct JobAddress {
-    pub worktree: Option<String>,
-    pub invocation_prefix: Option<String>,
-    pub job_name: String,
-}
-
-impl JobAddress {
-    pub fn parse(input: &str) -> Self {
-        // rsplitn splits from the right, so worktree (which may contain /)
-        // stays intact as a single piece.
-        let parts: Vec<&str> = input.rsplitn(3, ':').collect();
-        match parts.len() {
-            1 => {
-                // Bare hex tokens (`1f2b`) are invocation prefixes, not job
-                // names — same boundary as the `retry` resolver. A 9+ char
-                // hex string or anything containing non-hex chars stays a
-                // job name.
-                if looks_like_inv_prefix(parts[0]) {
-                    Self {
-                        worktree: None,
-                        invocation_prefix: Some(parts[0].to_string()),
-                        job_name: String::new(),
-                    }
-                } else {
-                    Self {
-                        worktree: None,
-                        invocation_prefix: None,
-                        job_name: parts[0].to_string(),
-                    }
-                }
-            }
-            2 => {
-                let left = parts[1];
-                let right = parts[0];
-                if left.contains('/') {
-                    // Slash → unambiguously a worktree path. (`feature/auth:db-migrate`)
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: None,
-                        job_name: right.to_string(),
-                    }
-                } else if looks_like_inv_prefix(left) {
-                    // Hex-shaped left → invocation:job. (`c9d4:db-migrate`)
-                    // If both sides are hex, left wins as inv — worktrees
-                    // are conventionally named, hex worktree names are an
-                    // edge case the user can resolve via 3-segment input.
-                    Self {
-                        worktree: None,
-                        invocation_prefix: Some(left.to_string()),
-                        job_name: right.to_string(),
-                    }
-                } else if looks_like_inv_prefix(right) {
-                    // Non-hex left + hex right → worktree:invocation drill-down,
-                    // no job specified yet. (`feature:1f2b`) — the resolver
-                    // auto-picks for single-job invocations or prints a
-                    // candidate list otherwise.
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: Some(right.to_string()),
-                        job_name: String::new(),
-                    }
-                } else {
-                    // Neither side hex-shaped, no slash → treat left as a
-                    // worktree name. Real invocations are hex-only, so
-                    // `feature:db-migrate` is overwhelmingly worktree:job.
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: None,
-                        job_name: right.to_string(),
-                    }
-                }
-            }
-            3 => Self {
-                worktree: Some(parts[2].to_string()),
-                invocation_prefix: Some(parts[1].to_string()),
-                job_name: parts[0].to_string(),
-            },
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn with_inv_override(mut self, inv: Option<&str>) -> Self {
-        if let Some(prefix) = inv {
-            self.invocation_prefix = Some(prefix.to_string());
-        }
-        self
-    }
-}
+// `JobAddress` + `looks_like_inv_prefix` moved to
+// `crate::coordinator::types` so the IPC layer can reference them on the
+// wire without a back-pointer into this CLI module.
+use crate::coordinator::types::JobAddress;
 
 #[derive(Debug)]
 pub struct ResolvedAddress {
@@ -593,6 +500,7 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             seq,
             since_seq,
             ref since,
+            follow,
         }) => {
             let since_ms = match since {
                 Some(s) => Some(
@@ -611,7 +519,11 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
                 since_seq,
                 since_ms_ago: since_ms,
             };
-            show_logs(job, inv.as_deref(), &filter, &args, path, output)
+            if follow {
+                follow_logs(job, inv.as_deref(), &filter, output)
+            } else {
+                show_logs(job, inv.as_deref(), &filter, &args, path, output)
+            }
         }
         Some(JobsCommand::Cancel {
             ref job,
@@ -1193,6 +1105,64 @@ fn render_job_log(
         wrote_any = true;
     }
     Ok(wrote_any)
+}
+
+/// Live-tail a job's structured log via the coordinator's `TailLogs`
+/// streaming endpoint.
+///
+/// Strategy (per-invocation coordinator lifecycle):
+/// - If the coordinator is reachable on the per-repo socket, open a
+///   `TailLogs { follow: true }` stream and write each `LogRecord` payload
+///   to stdout as the server emits frames. The server-side handler stops
+///   at the terminal `Status::Finished/Signaled/Crashed` record, so the
+///   client iteration ends naturally.
+/// - If the coordinator is *not* reachable, the job has already finished —
+///   fall back to a one-shot file read so `--follow` still produces the
+///   complete log instead of failing with "no coordinator".
+fn follow_logs(
+    job: &str,
+    inv: Option<&str>,
+    filter: &LogsFilter,
+    output: &mut dyn Output,
+) -> Result<()> {
+    use crate::coordinator::log_record::LogRecord;
+
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let addr = JobAddress::parse(job).with_inv_override(inv);
+
+    match CoordinatorClient::connect(&repo_hash)? {
+        Some(mut client) => {
+            let stream = client.tail_logs(addr, true, filter.since_seq)?;
+            for frame in stream {
+                let resp = frame?;
+                match resp {
+                    crate::coordinator::CoordinatorResponse::StreamFrame(value) => {
+                        let record: LogRecord = serde_json::from_value(value)?;
+                        if !filter.accepts(&record) {
+                            continue;
+                        }
+                        println!("{}", filter.format(&record));
+                    }
+                    crate::coordinator::CoordinatorResponse::Error { message, .. } => {
+                        anyhow::bail!(message);
+                    }
+                    _ => break,
+                }
+            }
+            Ok(())
+        }
+        None => {
+            // Coordinator gone → job is final. Read once and exit.
+            output.info("No coordinator running for this repository; reading log file once.");
+            let store = LogStore::for_repo(&repo_hash)?;
+            let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+            let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+            let mut buf = String::new();
+            render_job_log(&resolved.job_dir, filter, &mut buf)?;
+            print!("{buf}");
+            Ok(())
+        }
+    }
 }
 
 /// Show the output log for a job, resolved via address.
