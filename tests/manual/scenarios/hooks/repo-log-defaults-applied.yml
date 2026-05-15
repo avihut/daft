@@ -1,11 +1,13 @@
-name: Top-level log defaults reach repo-policy.json
+name: Top-level log defaults reach the redb-backed repo policy
 description:
   "Regression for Task 6 + Task 8: top-level `log:` defaults in daft.yml must
-  flow into each job's merged log_config and end up in
-  $XDG_STATE_HOME/daft/jobs/<repo-id>/repo-policy.json. Asserts that
+  flow into each job's merged log_config and be persisted in the per-repo redb
+  `repo_policy_v1` table (formerly `repo-policy.json`). Asserts that
   max_total_size=100MB and keep_last=5 (declared at the top level, not per-job)
-  survive the round-trip and are persisted with the canonical field names
-  (`max_total_size_bytes`, `keep_last`)."
+  survive the round-trip and are written under the canonical field names
+  (`max_total_size_bytes`, `keep_last`). Inspection is via the `daft
+  __dump-store repo-policy` debug helper since the JSON sidecar is deleted after
+  one-shot migration to redb (#476 Tier-3)."
 
 repos:
   - name: test-repo-log-defaults
@@ -44,20 +46,15 @@ steps:
       exit_code: 0
 
   - name:
-      repo-policy.json must exist and contain the persisted top-level log
-      defaults (100MB → 104857600 bytes, keep_last=5)
+      Redb-backed repo policy must contain the persisted top-level log defaults
+      (100MB → 104857600 bytes, keep_last=5)
     run: |
-      REPO_ID=$(cat "$WORK_DIR/test-repo-log-defaults/.git/daft-id")
-      POLICY="$HOME/.local/state/daft/jobs/$REPO_ID/repo-policy.json"
-      [ -f "$POLICY" ] || { echo "repo-policy.json missing at $POLICY"; exit 1; }
-      echo "POLICY_PATH=$POLICY"
-      echo "----- repo-policy.json -----"
-      cat "$POLICY"
-      echo
-      echo "----------------------------"
+      echo "----- daft __dump-store repo-policy -----"
+      daft __dump-store repo-policy
+      echo "------------------------------------------"
+    cwd: "$WORK_DIR/test-repo-log-defaults/feature/x"
     expect:
       exit_code: 0
       output_contains:
-        - "POLICY_PATH="
         - '"max_total_size_bytes": 104857600'
         - '"keep_last": 5'
