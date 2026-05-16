@@ -4,13 +4,19 @@
 --   * Timestamps stored as ISO-8601 UTC text (chrono `to_rfc3339()`).
 --   * Hashmap / Vec fields serialized as JSON text. There are no large blobs.
 --   * Booleans stored as INTEGER 0/1.
---   * Foreign keys cascade so `DELETE FROM invocations` cleans up jobs in
---     the same transaction. The store's per-connection PRAGMA enables
---     `foreign_keys`; the CASCADE clauses below make the cleanup automatic.
 --   * Primary keys are composite where the natural key is composite. SQLite
 --     creates the matching index automatically.
 --   * Explicit indexes cover lookup patterns the application uses repeatedly
 --     and where the PK index would not already serve.
+--
+-- The `invocations` table is present for forward compatibility but is not
+-- populated by the current production code (jobs were always written
+-- standalone under the prior redb store). A future feature will start
+-- recording invocation rows, and at that point a follow-up migration will
+-- add `FOREIGN KEY (repo_hash, invocation_id) REFERENCES invocations(...)
+-- ON DELETE CASCADE` to `jobs` and switch `log_clean` to rely on the
+-- cascade. Declaring the FK now would refuse every job insert until
+-- invocations are actually populated.
 
 CREATE TABLE invocations (
     repo_hash       TEXT    NOT NULL,
@@ -43,10 +49,7 @@ CREATE TABLE jobs (
     tags_json           TEXT    NOT NULL,
     retention_seconds   INTEGER,
     max_log_size_bytes  INTEGER,
-    PRIMARY KEY (repo_hash, invocation_id, name),
-    FOREIGN KEY (repo_hash, invocation_id)
-        REFERENCES invocations(repo_hash, invocation_id)
-        ON DELETE CASCADE
+    PRIMARY KEY (repo_hash, invocation_id, name)
 );
 
 -- Fast "all jobs for this repo across invocations" scan (used by `ls`,

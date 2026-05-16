@@ -24,6 +24,39 @@ pub enum JobStatus {
     Unknown,
 }
 
+impl JobStatus {
+    /// Canonical lowercase tag used in the SQLite `jobs.status` column.
+    /// Mirrors `#[serde(rename_all = "lowercase")]` so a status round-trips
+    /// through JSON and SQL identically.
+    pub fn as_status_str(&self) -> &'static str {
+        match self {
+            JobStatus::Running => "running",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+            JobStatus::Cancelled => "cancelled",
+            JobStatus::Skipped => "skipped",
+            JobStatus::Cancelling => "cancelling",
+            JobStatus::Crashed => "crashed",
+            JobStatus::Unknown => "unknown",
+        }
+    }
+
+    /// Inverse of [`as_status_str`]. Unknown tags map to [`JobStatus::Unknown`]
+    /// to match the `#[serde(other)]` forward-compat contract.
+    pub fn from_status_str(s: &str) -> Self {
+        match s {
+            "running" => JobStatus::Running,
+            "completed" => JobStatus::Completed,
+            "failed" => JobStatus::Failed,
+            "cancelled" => JobStatus::Cancelled,
+            "skipped" => JobStatus::Skipped,
+            "cancelling" => JobStatus::Cancelling,
+            "crashed" => JobStatus::Crashed,
+            _ => JobStatus::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobMeta {
     pub name: String,

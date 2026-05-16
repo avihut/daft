@@ -358,7 +358,12 @@ mod tests {
     }
 
     #[test]
-    fn deleting_invocation_cascades_to_jobs() {
+    fn deleting_invocation_does_not_touch_jobs_today() {
+        // The jobs ↔ invocations FK is deliberately *not* declared in
+        // 001_initial.sql (see the migration comment). A future migration
+        // will add it with ON DELETE CASCADE; until then, deleting an
+        // invocation leaves orphan job rows behind. This test pins current
+        // behavior so when the FK lands the change is visible.
         let (_tmp, conn) = fresh_db();
         seed_inv(&conn, "r", "i");
         JobsRepo::upsert(&conn, &sample_job("r", "i", "a")).unwrap();
@@ -369,21 +374,17 @@ mod tests {
         )
         .unwrap();
         let rows = JobsRepo::list_by_repo(&conn, "r").unwrap();
-        assert!(
-            rows.is_empty(),
-            "FK CASCADE should have wiped jobs, got {rows:?}"
-        );
+        assert_eq!(rows.len(), 2, "no cascade without FK; got {rows:?}");
     }
 
     #[test]
-    fn upsert_without_invocation_violates_foreign_key() {
+    fn upsert_succeeds_without_invocation_row() {
+        // No FK enforcement today (see 001_initial.sql). Production code
+        // never populates `invocations`, so requiring the row would refuse
+        // every job insert. Pins the current "jobs can stand alone" shape.
         let (_tmp, conn) = fresh_db();
-        // No seed_inv call — FK constraint must reject the insert.
-        let err = JobsRepo::upsert(&conn, &sample_job("r", "i-orphan", "a")).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.to_lowercase().contains("foreign key"),
-            "expected FK error, got: {msg}"
-        );
+        JobsRepo::upsert(&conn, &sample_job("r", "i-orphan", "a")).unwrap();
+        let back = JobsRepo::get(&conn, "r", "i-orphan", "a").unwrap();
+        assert!(back.is_some());
     }
 }

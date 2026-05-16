@@ -10,7 +10,14 @@ use crate::store::models::{InvocationRow, JobRow, RepoPolicyRow};
 use crate::store::repos::{InvocationsRepo, JobsRepo, RepoPoliciesRepo};
 use crate::store::{Pool, env_scrub};
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::sync::Arc;
+
+/// Files left over from the redb-era store. Removed (with a one-line
+/// stderr banner) the first time `for_repo_base` opens the per-repo state
+/// directory. Matches the pre-1.0 no-back-compat principle: cleanup is
+/// loud, not silent.
+const LEGACY_FILES: &[&str] = &["coordinator.redb", "repo-policy.json"];
 
 /// SQLite-backed JobsStorePort. Cheap to clone — shares the underlying
 /// [`Pool`] via `Arc`.
@@ -26,11 +33,44 @@ impl SqliteJobsStore {
         }
     }
 
+    /// Convenience: open the per-repo SQLite database that sits inside
+    /// `<base>/coordinator.db` and remove any legacy redb-era files that
+    /// are still sitting next to it (`coordinator.redb`,
+    /// `repo-policy.json`). Counterpart to the old
+    /// `JobStore::open_for_repo_base`.
+    pub fn for_repo_base(base: &Path) -> Result<Self> {
+        wipe_legacy_files(base);
+        let db_path = base.join(crate::store::paths::COORDINATOR_DB);
+        let pool = Pool::open(&db_path)
+            .with_context(|| format!("open coordinator store at {}", db_path.display()))?;
+        Ok(Self::new(pool))
+    }
+
     /// Borrow the underlying pool. Useful for code paths that legitimately
     /// need a raw reader checkout (today: the tab-completion hot path).
     /// Domain code must NOT call this — use the port methods instead.
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+}
+
+fn wipe_legacy_files(base: &Path) {
+    for name in LEGACY_FILES {
+        let p = base.join(name);
+        if !p.exists() {
+            continue;
+        }
+        match std::fs::remove_file(&p) {
+            Ok(()) => eprintln!(
+                "daft: removed legacy {} at {} (state format changed; see CHANGELOG)",
+                name,
+                p.display()
+            ),
+            Err(e) => eprintln!(
+                "daft: warning: failed to remove legacy {}: {e}",
+                p.display()
+            ),
+        }
     }
 }
 
