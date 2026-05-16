@@ -1017,13 +1017,13 @@ fn filter_matching_jobs(
         .collect()
 }
 
-/// Cancel every active job whose redb `JobRow` matches *all* supplied
+/// Cancel every active job whose SQLite `JobRow` matches *all* supplied
 /// predicates (AND, missing-is-wildcard). Looks up the runtime PID via
 /// `child_pids` so we signal exactly the process group that's still alive.
 ///
-/// Rows the coordinator never wrote (e.g. legacy pre-redb invocations) can't
-/// be filtered by the redb schema, so they fall through unmatched — the
-/// existing per-name `CancelJob` path remains for those.
+/// Rows the coordinator never wrote (e.g. legacy pre-store invocations)
+/// can't be filtered by the SQL schema, so they fall through unmatched —
+/// the existing per-name `CancelJob` path remains for those.
 #[cfg(unix)]
 fn cancel_matching(
     args: CancelMatchingArgs<'_>,
@@ -1035,7 +1035,7 @@ fn cancel_matching(
     let Some(js) = job_store else {
         return CoordinatorResponse::Error {
             code: ErrorCode::Internal,
-            message: "CancelMatching requires the redb job store; not available on this build"
+            message: "CancelMatching requires the SQLite job store; not available on this build"
                 .into(),
         };
     };
@@ -1391,7 +1391,7 @@ pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
     // Write PID file (best-effort).
     let pid_path = write_pid_file(&state.repo_hash).ok();
 
-    // Open the redb-backed job store and reconcile any rows left
+    // Open the SQLite-backed job store and reconcile any rows left
     // `Running`/`Cancelling` by a previous coordinator that crashed before
     // it could record terminal states. Best-effort: if the store fails to
     // open we proceed without it — the legacy `meta.json` lifecycle still

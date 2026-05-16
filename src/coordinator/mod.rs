@@ -54,10 +54,10 @@ pub enum CoordinatorRequest {
     /// Cancel every active job matching the supplied predicates.
     ///
     /// All present predicates AND together. The coordinator filters its
-    /// redb-recorded `Running`/`Cancelling` rows and signals SIGTERM to each
-    /// match's process group. Use `None` for predicates you don't want to
-    /// constrain. At least one predicate is required (validated client-side
-    /// in `Cancel` subcommand handler).
+    /// `Running`/`Cancelling` rows from the SQLite store and signals
+    /// SIGTERM to each match's process group. Use `None` for predicates
+    /// you don't want to constrain. At least one predicate is required
+    /// (validated client-side in `Cancel` subcommand handler).
     CancelMatching {
         hook: Option<String>,
         worktree: Option<String>,
