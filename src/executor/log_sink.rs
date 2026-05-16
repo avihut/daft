@@ -278,7 +278,8 @@ impl LogSink for BufferingLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::log_store::{JobStatus, LogStore};
+    use crate::coordinator::adapters::SqliteJobsStore;
+    use crate::coordinator::log_store::LogStore;
     use crate::executor::{JobResult, JobSpec, NodeStatus};
     use std::sync::Arc;
     use std::time::Duration;
@@ -304,7 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn buffering_sink_writes_meta_and_log_on_complete() {
+    fn buffering_sink_writes_row_and_log_on_complete() {
+        use crate::coordinator::ports::JobsStorePort;
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(LogStore::new(tmp.path().to_path_buf()));
 
@@ -323,15 +325,20 @@ mod tests {
         sink.on_job_output(&spec, OutputKind::Stdout, "done");
         sink.on_job_complete(&spec, &make_result("pnpm-install", NodeStatus::Succeeded));
 
-        let job_dir = tmp.path().join("inv1").join("pnpm-install");
-        let loaded = store.read_meta(&job_dir).unwrap();
-        assert_eq!(loaded.status, JobStatus::Completed);
-        assert_eq!(loaded.hook_type, "worktree-post-create");
-        assert_eq!(loaded.worktree, "feature/x");
-        assert!(!loaded.background);
-        assert!(loaded.finished_at.is_some());
-        assert_eq!(loaded.needs, vec!["db-migrate".to_string()]);
+        // SQLite is the source of truth for job metadata post-cutover.
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
+        let row = job_store
+            .get_job("test-repo", "inv1", "pnpm-install")
+            .unwrap()
+            .expect("row persisted on complete");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.hook_type, "worktree-post-create");
+        assert_eq!(row.worktree, "feature/x");
+        assert!(!row.background);
+        assert!(row.finished_at.is_some());
+        assert_eq!(row.needs, vec!["db-migrate".to_string()]);
 
+        let job_dir = tmp.path().join("inv1").join("pnpm-install");
         let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
         assert!(log_text.contains(r#""data":"installing...""#));
         assert!(log_text.contains(r#""data":"done""#));
@@ -341,6 +348,7 @@ mod tests {
 
     #[test]
     fn buffering_sink_records_failed_jobs() {
+        use crate::coordinator::ports::JobsStorePort;
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(LogStore::new(tmp.path().to_path_buf()));
 
@@ -359,10 +367,13 @@ mod tests {
         result.exit_code = Some(2);
         sink.on_job_complete(&spec, &result);
 
-        let job_dir = tmp.path().join("inv2").join("broken");
-        let loaded = store.read_meta(&job_dir).unwrap();
-        assert_eq!(loaded.status, JobStatus::Failed);
-        assert_eq!(loaded.exit_code, Some(2));
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
+        let row = job_store
+            .get_job("test-repo", "inv2", "broken")
+            .unwrap()
+            .expect("row persisted on complete");
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.exit_code, Some(2));
     }
 
     #[test]
@@ -391,6 +402,7 @@ mod tests {
 
     #[test]
     fn buffering_sink_runner_skipped_writes_sparse_record() {
+        use crate::coordinator::ports::JobsStorePort;
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(LogStore::new(tmp.path().to_path_buf()));
 
@@ -405,10 +417,14 @@ mod tests {
         let spec = make_spec("after-the-failure", false);
         sink.on_job_runner_skipped(&spec, "previous job failed");
 
-        let job_dir = tmp.path().join("inv4").join("after-the-failure");
-        let loaded = store.read_meta(&job_dir).unwrap();
-        assert_eq!(loaded.status, JobStatus::Skipped);
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
+        let row = job_store
+            .get_job("test-repo", "inv4", "after-the-failure")
+            .unwrap()
+            .expect("skipped row persisted");
+        assert_eq!(row.status, "skipped");
 
+        let job_dir = tmp.path().join("inv4").join("after-the-failure");
         let log_text = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
         assert!(log_text.contains(r#""data":"previous job failed""#));
     }

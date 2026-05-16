@@ -237,15 +237,13 @@ impl LogStore {
         job_dir.join("output.jsonl")
     }
 
-    /// Write `meta.json` and `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
-    /// per line) atomically. Used by the foreground `BufferingLogSink` and
-    /// by `on_job_runner_skipped`.
+    /// Write `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
+    /// per line). Used by the foreground `BufferingLogSink` and by
+    /// `on_job_runner_skipped`.
     ///
-    /// The matching job metadata also gets persisted through the SQLite
-    /// store (see `BufferingLogSink::persist_job_row`). `meta.json` is
-    /// still written so the file-based `LogStore::clean` retention pass
-    /// keeps seeing per-job retention metadata; once that is rewritten
-    /// to query SQLite directly, the `meta.json` write will go away.
+    /// Job metadata flows separately through the SQLite store
+    /// (`JobsStorePort::upsert_job`); this helper only owns the JSONL
+    /// payload + the per-job directory.
     pub fn write_job_record_jsonl(
         &self,
         invocation_id: &str,
@@ -253,7 +251,6 @@ impl LogStore {
         records: &[crate::coordinator::log_record::LogRecord],
     ) -> Result<PathBuf> {
         let job_dir = self.create_job_dir(invocation_id, &meta.name)?;
-        self.write_meta(&job_dir, meta)?;
         let mut buf = Vec::with_capacity(records.len().saturating_mul(64));
         for record in records {
             crate::coordinator::log_record::write_log_record(&mut buf, record)
@@ -1179,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn write_job_record_jsonl_creates_meta_and_jsonl_atomically() {
+    fn write_job_record_jsonl_writes_jsonl_without_meta_sidecar() {
         use crate::coordinator::log_record::LogRecord;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1211,9 +1208,12 @@ mod tests {
             .write_job_record_jsonl("inv42", &meta, &records)
             .unwrap();
 
-        let loaded_meta = store.read_meta(&job_dir).unwrap();
-        assert_eq!(loaded_meta.name, "pnpm-install");
-
+        // JSONL is the only thing this helper writes post-cutover; the
+        // matching JobRow flows separately through `JobsStorePort`.
+        assert!(
+            !job_dir.join("meta.json").exists(),
+            "meta.json sidecar must not be written"
+        );
         let jsonl = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
         assert_eq!(jsonl.lines().count(), 2);
         assert!(jsonl.contains("\"data\":\"installing...\""));

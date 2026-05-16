@@ -21,6 +21,14 @@ use std::sync::Arc;
 /// cleanup is loud, but only where loud is allowed.
 const LEGACY_FILES: &[&str] = &["coordinator.redb", "repo-policy.json"];
 
+/// Per-job sidecar files written by the pre-cutover code. Swept inside
+/// each invocation directory by the same coordinator-startup pass that
+/// removes [`LEGACY_FILES`]. Production code no longer writes
+/// `meta.json` — SQLite is the source of truth for job metadata — so
+/// any file by that name on disk is leftover from a daft version that
+/// dual-wrote during the SQLite migration.
+const LEGACY_JOB_FILES: &[&str] = &["meta.json"];
+
 /// SQLite-backed JobsStorePort. Cheap to clone — shares the underlying
 /// [`Pool`] via `Arc`.
 #[derive(Clone)]
@@ -99,6 +107,50 @@ fn wipe_legacy_files(base: &Path) {
                 "daft: warning: failed to remove legacy {}: {e}",
                 p.display()
             ),
+        }
+    }
+    wipe_legacy_job_files(base);
+}
+
+/// Walk per-invocation / per-job directories and remove sidecar files
+/// listed in [`LEGACY_JOB_FILES`] (currently `meta.json`). Each invocation
+/// is one entry directly under `base`; each job is one entry under its
+/// invocation. Walk depth is fixed at 2, so we don't recurse into job
+/// dirs (which contain user-controlled `output.jsonl`).
+fn wipe_legacy_job_files(base: &Path) {
+    let Ok(inv_entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for inv_entry in inv_entries.flatten() {
+        if inv_entry.file_type().map(|t| !t.is_dir()).unwrap_or(true) {
+            continue;
+        }
+        let inv_dir = inv_entry.path();
+        let Ok(job_entries) = std::fs::read_dir(&inv_dir) else {
+            continue;
+        };
+        for job_entry in job_entries.flatten() {
+            if job_entry.file_type().map(|t| !t.is_dir()).unwrap_or(true) {
+                continue;
+            }
+            let job_dir = job_entry.path();
+            for name in LEGACY_JOB_FILES {
+                let p = job_dir.join(name);
+                if !p.exists() {
+                    continue;
+                }
+                match std::fs::remove_file(&p) {
+                    Ok(()) => eprintln!(
+                        "daft: removed legacy {} at {} (SQLite is now the source of truth)",
+                        name,
+                        p.display()
+                    ),
+                    Err(e) => eprintln!(
+                        "daft: warning: failed to remove legacy {}: {e}",
+                        p.display()
+                    ),
+                }
+            }
         }
     }
 }
@@ -333,16 +385,23 @@ mod tests {
     }
 
     #[test]
-    fn for_repo_base_with_wipe_removes_legacy_redb_and_policy_json() {
-        // Upgrading from the prior redb design leaves `coordinator.redb`
-        // and `repo-policy.json` siblings of the new `coordinator.db`. The
-        // coordinator-startup constructor (`for_repo_base_with_wipe`) must
-        // delete both (the sweep is announced via stderr in production;
-        // the test just asserts the filesystem post-condition).
+    fn for_repo_base_with_wipe_removes_legacy_files() {
+        // Upgrading from the redb-era + dual-write design leaves three
+        // categories of files on disk:
+        //   1. `coordinator.redb`        (pre-PR-#508 redb store)
+        //   2. `repo-policy.json`        (pre-PR-#508 sidecar)
+        //   3. `<inv>/<job>/meta.json`   (PR-#508 transitional dual-write)
+        // The coordinator-startup constructor must remove all three (the
+        // sweep emits stderr banners in production; this test only
+        // asserts the filesystem post-condition).
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
         std::fs::write(base.join("coordinator.redb"), b"old redb bytes").unwrap();
         std::fs::write(base.join("repo-policy.json"), b"{}").unwrap();
+        // Per-job sidecar from the dual-write era.
+        let job_dir = base.join("inv-1").join("build");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::write(job_dir.join("meta.json"), b"{}").unwrap();
 
         let _store = SqliteJobsStore::for_repo_base_with_wipe(base).unwrap();
 
@@ -354,7 +413,13 @@ mod tests {
             !base.join("repo-policy.json").exists(),
             "legacy repo-policy.json should be wiped on first open"
         );
-        // The new SQLite DB landed in its place.
+        assert!(
+            !job_dir.join("meta.json").exists(),
+            "legacy per-job meta.json should be wiped on first open"
+        );
+        // The job dir itself stays (it may still hold an output.jsonl).
+        assert!(job_dir.exists(), "job dir survives the legacy-file sweep");
+        // The new SQLite DB landed.
         assert!(
             base.join("coordinator.db").exists(),
             "new coordinator.db should exist after for_repo_base_with_wipe"
@@ -372,6 +437,9 @@ mod tests {
         let base = tmp.path();
         std::fs::write(base.join("coordinator.redb"), b"old redb bytes").unwrap();
         std::fs::write(base.join("repo-policy.json"), b"{}").unwrap();
+        let job_dir = base.join("inv-1").join("build");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::write(job_dir.join("meta.json"), b"{}").unwrap();
 
         let _store = SqliteJobsStore::for_repo_base(base).unwrap();
 
@@ -382,6 +450,10 @@ mod tests {
         assert!(
             base.join("repo-policy.json").exists(),
             "non-wiping constructor must not touch legacy repo-policy.json"
+        );
+        assert!(
+            job_dir.join("meta.json").exists(),
+            "non-wiping constructor must not touch legacy per-job meta.json"
         );
         // The new SQLite DB still landed.
         assert!(

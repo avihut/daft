@@ -281,14 +281,14 @@ impl CoordinatorState {
                 job.background,
                 job.needs.clone(),
             );
-            if let Ok(job_dir) = store.create_job_dir(&self.invocation_id, &job.name) {
-                if let Err(e) = store.write_meta(&job_dir, &meta) {
-                    eprintln!(
-                        "daft: failed to write dep-failed meta for '{}': {e}",
-                        job.name
-                    );
-                }
-            } else {
+            // Create the dir so the writer thread has somewhere to drop
+            // an `output.jsonl` next to the terminal-status record.
+            // Metadata flows to SQLite via `JobsStorePort::upsert_job`
+            // below — no `meta.json` is written.
+            if store
+                .create_job_dir(&self.invocation_id, &job.name)
+                .is_err()
+            {
                 eprintln!(
                     "daft: failed to create dep-failed log dir for '{}'",
                     job.name
@@ -472,15 +472,10 @@ fn run_single_background_job(
         retention_seconds,
         max_log_size_bytes,
     };
-    if let Err(e) = store.write_meta(&job_dir, &meta) {
-        eprintln!("daft: failed to write meta for '{}': {e}", job.name);
-    }
-
-    // The initial JobRow lands in SQLite alongside the meta.json sidecar.
-    // The child PID/PGID aren't known yet — `run_command` spawns the
-    // shell — so they're populated alongside the terminal write below.
-    // `meta.json` stays around for `LogStore::clean` until that path is
-    // rewritten to query SQLite directly.
+    // SQLite is the source of truth for job metadata. The initial
+    // JobRow lands here; child PID/PGID aren't known yet — `run_command`
+    // spawns the shell — so they're populated alongside the terminal
+    // write below.
     if let Some(js) = ctx.job_store.as_ref()
         && let Err(e) = js.upsert_job(&job_row_from_meta(
             &meta,
@@ -621,15 +616,11 @@ fn run_single_background_job(
         let _ = std::fs::remove_file(&jsonl_path);
     }
 
-    // 8. Write updated meta with the final status, exit code, and finish
-    // time; persist the terminal JobRow to SQLite with the captured child
-    // PID/PGID.
+    // 8. Persist the terminal JobRow to SQLite with the captured child
+    // PID/PGID. SQLite is the source of truth for job metadata.
     meta.status = status.clone();
     meta.exit_code = exit_code;
     meta.finished_at = Some(chrono::Utc::now());
-    if let Err(e) = store.write_meta(&job_dir, &meta) {
-        eprintln!("daft: failed to update meta for '{}': {e}", job.name);
-    }
     if let Some(js) = ctx.job_store.as_ref()
         && let Err(e) = js.upsert_job(&job_row_from_meta(
             &meta,
@@ -1573,8 +1564,10 @@ mod tests {
 
     #[test]
     fn test_coordinator_run_jobs_to_completion() {
+        use crate::coordinator::ports::JobsStorePort;
         let tmp = TempDir::new().unwrap();
         let store = LogStore::new(tmp.path().to_path_buf());
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
         let mut state = CoordinatorState::new("test-repo", "inv-1");
         state.add_job(JobSpec {
             name: "echo-job".to_string(),
@@ -1584,18 +1577,25 @@ mod tests {
             ..Default::default()
         });
 
-        let results = state.run_all(&store).unwrap();
+        let results = state
+            .run_all_with_cancel(
+                &store,
+                &ChildPidMap::default(),
+                &Arc::new(AtomicBool::new(false)),
+                &CancelledJobs::default(),
+                Some(&job_store),
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].status.is_terminal());
 
-        // Verify log was written
-        let meta = store
-            .read_meta(&tmp.path().join("inv-1").join("echo-job"))
-            .unwrap();
-        assert!(matches!(
-            meta.status,
-            crate::coordinator::log_store::JobStatus::Completed
-        ));
+        // Verify terminal row landed in SQLite (the meta.json sidecar is
+        // not written post-cutover).
+        let row = job_store
+            .get_job("test-repo", "inv-1", "echo-job")
+            .unwrap()
+            .expect("job row persisted on completion");
+        assert_eq!(row.status, "completed");
     }
 
     #[test]
@@ -1712,7 +1712,9 @@ mod tests {
     #[test]
     fn test_run_all_populates_job_hook_type_and_worktree() {
         let tmp = TempDir::new().unwrap();
+        use crate::coordinator::ports::JobsStorePort;
         let store = LogStore::new(tmp.path().to_path_buf());
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
         let mut state = CoordinatorState::new("test-repo", "inv-pop-1").with_metadata(
             "worktree-post-create",
             "worktree-post-create",
@@ -1726,15 +1728,24 @@ mod tests {
             ..Default::default()
         });
 
-        state.run_all(&store).unwrap();
-
-        let meta = store
-            .read_meta(&tmp.path().join("inv-pop-1").join("check-job"))
+        state
+            .run_all_with_cancel(
+                &store,
+                &ChildPidMap::default(),
+                &Arc::new(AtomicBool::new(false)),
+                &CancelledJobs::default(),
+                Some(&job_store),
+            )
             .unwrap();
-        assert_eq!(meta.hook_type, "worktree-post-create");
-        assert_eq!(meta.worktree, "feature/y");
-        assert!(meta.background);
-        assert!(meta.finished_at.is_some());
+
+        let row = job_store
+            .get_job("test-repo", "inv-pop-1", "check-job")
+            .unwrap()
+            .expect("job row persisted on completion");
+        assert_eq!(row.hook_type, "worktree-post-create");
+        assert_eq!(row.worktree, "feature/y");
+        assert!(row.background);
+        assert!(row.finished_at.is_some());
     }
 
     // Reconciliation logic lives in `coordinator::domain::reconcile` and is
@@ -2064,13 +2075,16 @@ mod tests {
         cancel_all: &Arc<AtomicBool>,
         cancelled_jobs: &CancelledJobs,
         results: &Arc<Mutex<Vec<JobResult>>>,
+        job_store: Option<&SqliteJobsStore>,
     ) -> JobInvocationContext<'a> {
         JobInvocationContext {
             repo_hash: "test-repo",
             invocation_id: inv,
             hook_type: "worktree-post-create",
             worktree: "feat/x",
-            job_store: None,
+            // SqliteJobsStore is Clone (Arc inside); cloning here lets the
+            // caller hand us a borrow and keep its own reference.
+            job_store: job_store.cloned(),
             results: Arc::clone(results),
             child_pids: Arc::clone(child_pids),
             cancel_all: Arc::clone(cancel_all),
@@ -2082,6 +2096,7 @@ mod tests {
     fn make_test_state() -> (
         TempDir,
         LogStore,
+        SqliteJobsStore,
         ChildPidMap,
         Arc<AtomicBool>,
         CancelledJobs,
@@ -2089,16 +2104,27 @@ mod tests {
     ) {
         let tmp = TempDir::new().unwrap();
         let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
+        std::fs::create_dir_all(&store.base_dir).unwrap();
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).unwrap();
         let child_pids: ChildPidMap = Arc::new(Mutex::new(HashMap::new()));
         let cancel_all = Arc::new(AtomicBool::new(false));
         let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
         let results = Arc::new(Mutex::new(Vec::new()));
-        (tmp, store, child_pids, cancel_all, cancelled_jobs, results)
+        (
+            tmp,
+            store,
+            job_store,
+            child_pids,
+            cancel_all,
+            cancelled_jobs,
+            results,
+        )
     }
 
     #[test]
     fn run_single_background_job_registers_and_deregisters_pid() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
         // Sleep 1.0 (not 0.4) gives the probe a wider window so the test
         // doesn't flake under heavy parallel-test load when fork-exec is slow
         // to schedule the registrar thread.
@@ -2115,6 +2141,7 @@ mod tests {
             &cancel_all,
             &cancelled_jobs,
             &results,
+            Some(&job_store),
         );
 
         let pids_probe = Arc::clone(&child_pids);
@@ -2150,7 +2177,8 @@ mod tests {
 
     #[test]
     fn per_job_cancel_marks_status_cancelled_not_failed() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
         let job = JobSpec {
             name: "long-job".to_string(),
             command: "sleep 5".to_string(),
@@ -2160,7 +2188,14 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000002".to_string();
-        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
+        let ctx = make_ctx(
+            &inv_id,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+            Some(&job_store),
+        );
 
         let killer = {
             let pids = Arc::clone(&child_pids);
@@ -2189,19 +2224,23 @@ mod tests {
         let _ = run_single_background_job(&job, &ctx, &store);
         killer.join().unwrap();
 
-        let job_dir = store.base_dir.join(&inv_id).join("long-job");
-        let meta = store.read_meta(&job_dir).expect("meta should exist");
-        assert!(
-            matches!(meta.status, JobStatus::Cancelled),
+        use crate::coordinator::ports::JobsStorePort;
+        let row = job_store
+            .get_job("test-repo", &inv_id, "long-job")
+            .unwrap()
+            .expect("job row persisted via port");
+        assert_eq!(
+            row.status, "cancelled",
             "expected Cancelled, got {:?}",
-            meta.status
+            row.status
         );
     }
 
     #[test]
     fn silent_bg_output_deletes_log_on_success() {
         use crate::executor::BackgroundOutput;
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
         let job = JobSpec {
             name: "silent-ok".to_string(),
             command: "echo hello".to_string(),
@@ -2211,7 +2250,14 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000003".to_string();
-        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
+        let ctx = make_ctx(
+            &inv_id,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+            Some(&job_store),
+        );
 
         let _ = run_single_background_job(&job, &ctx, &store);
 
@@ -2226,7 +2272,8 @@ mod tests {
     #[test]
     fn silent_bg_output_keeps_log_on_failure() {
         use crate::executor::BackgroundOutput;
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
         let job = JobSpec {
             name: "silent-fail".to_string(),
             command: "echo whoops; exit 1".to_string(),
@@ -2236,7 +2283,14 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000004".to_string();
-        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
+        let ctx = make_ctx(
+            &inv_id,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+            Some(&job_store),
+        );
 
         let _ = run_single_background_job(&job, &ctx, &store);
 
@@ -2252,7 +2306,8 @@ mod tests {
 
     #[test]
     fn non_silent_bg_output_always_writes_log() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
         let job = JobSpec {
             name: "loud-ok".to_string(),
             command: "echo loud".to_string(),
@@ -2262,7 +2317,14 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000005".to_string();
-        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
+        let ctx = make_ctx(
+            &inv_id,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+            Some(&job_store),
+        );
 
         let _ = run_single_background_job(&job, &ctx, &store);
 
@@ -2274,7 +2336,8 @@ mod tests {
     #[test]
     fn silent_bg_output_keeps_log_when_status_is_cancelled() {
         use crate::executor::BackgroundOutput;
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, results) =
+            make_test_state();
 
         // Pre-insert into cancelled_jobs BEFORE running. The cmd will succeed
         // (exit 0), but the classifier will see was_cancelled_per_job and route
@@ -2293,7 +2356,14 @@ mod tests {
             ..Default::default()
         };
         let inv_id = "00000000-0000-0000-0000-000000000006".to_string();
-        let ctx = make_ctx(&inv_id, &child_pids, &cancel_all, &cancelled_jobs, &results);
+        let ctx = make_ctx(
+            &inv_id,
+            &child_pids,
+            &cancel_all,
+            &cancelled_jobs,
+            &results,
+            Some(&job_store),
+        );
 
         let _ = run_single_background_job(&job, &ctx, &store);
 
@@ -2304,11 +2374,15 @@ mod tests {
             "silent + cancelled (even when cmd succeeded) should preserve log"
         );
 
-        let meta = store.read_meta(&job_dir).expect("meta should exist");
-        assert!(
-            matches!(meta.status, JobStatus::Cancelled),
+        use crate::coordinator::ports::JobsStorePort;
+        let row = job_store
+            .get_job("test-repo", &inv_id, "pre-cancelled")
+            .unwrap()
+            .expect("job row persisted via port");
+        assert_eq!(
+            row.status, "cancelled",
             "expected Cancelled, got {:?}",
-            meta.status
+            row.status
         );
     }
 
@@ -2316,7 +2390,8 @@ mod tests {
     fn bg_dependent_waits_for_dep_to_finish() {
         // Regression test for daft#454: B `needs: [A]` must not start until A
         // has terminated.
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
 
         let mut state = CoordinatorState::new("test-repo", "inv-needs-1").with_metadata(
             "worktree-post-create",
@@ -2341,28 +2416,40 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
             .unwrap();
 
-        let dir_a = store.base_dir.join("inv-needs-1").join("dep-a");
-        let dir_b = store.base_dir.join("inv-needs-1").join("dep-b");
-        let meta_a = store.read_meta(&dir_a).expect("meta-a");
-        let meta_b = store.read_meta(&dir_b).expect("meta-b");
+        use crate::coordinator::ports::JobsStorePort;
+        let row_a = job_store
+            .get_job("test-repo", "inv-needs-1", "dep-a")
+            .unwrap()
+            .expect("dep-a row");
+        let row_b = job_store
+            .get_job("test-repo", "inv-needs-1", "dep-b")
+            .unwrap()
+            .expect("dep-b row");
 
-        let a_finished = meta_a.finished_at.expect("a finished_at");
-        let b_started = meta_b.started_at;
+        let a_finished = row_a.finished_at.expect("a finished_at");
+        let b_started = row_b.started_at;
 
         assert!(
             b_started >= a_finished,
             "dep-b started ({b_started}) before dep-a finished ({a_finished})"
         );
-        assert!(matches!(meta_a.status, JobStatus::Completed));
-        assert!(matches!(meta_b.status, JobStatus::Completed));
+        assert_eq!(row_a.status, "completed");
+        assert_eq!(row_b.status, "completed");
     }
 
     #[test]
     fn bg_dependent_skipped_when_dep_fails() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
 
         // Use a marker path scoped to this test's TempDir so parallel test
         // runs cannot race on a global `/tmp` path.
@@ -2391,29 +2478,37 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
             .unwrap();
 
-        let meta_fails = store
-            .read_meta(&store.base_dir.join("inv-needs-fail-1").join("fails"))
-            .expect("meta fails");
-        assert!(matches!(meta_fails.status, JobStatus::Failed));
+        use crate::coordinator::ports::JobsStorePort;
+        let row_fails = job_store
+            .get_job("test-repo", "inv-needs-fail-1", "fails")
+            .unwrap()
+            .expect("fails row");
+        assert_eq!(row_fails.status, "failed");
 
         // The dependent's closure was NOT invoked (no spawn) — but the
-        // coordinator synthesizes a `meta.json` after the DAG returns so the
-        // job remains visible to `daft hooks jobs`. Disk status is `Skipped`
-        // (the closest available variant). The job's command must NOT have
-        // produced its side-effect.
-        let dep_dir = store.base_dir.join("inv-needs-fail-1").join("dependent");
-        let meta_dependent = store
-            .read_meta(&dep_dir)
-            .expect("dependent should have a synthesized dep-failed meta");
-        assert!(
-            matches!(meta_dependent.status, JobStatus::Skipped),
-            "dep-failed dependent should be Skipped on disk, got {:?}",
-            meta_dependent.status
+        // coordinator synthesizes a JobRow after the DAG returns so the
+        // job remains visible to `daft hooks jobs`. Status is `Skipped`
+        // (the closest available variant). The job's command must NOT
+        // have produced its side-effect.
+        let row_dependent = job_store
+            .get_job("test-repo", "inv-needs-fail-1", "dependent")
+            .unwrap()
+            .expect("dependent should have a synthesized dep-failed row");
+        assert_eq!(
+            row_dependent.status, "skipped",
+            "dep-failed dependent should be Skipped, got {:?}",
+            row_dependent.status
         );
-        assert_eq!(meta_dependent.needs, vec!["fails".to_string()]);
+        assert_eq!(row_dependent.needs, vec!["fails".to_string()]);
         assert!(
             !marker.exists(),
             "dependent ran its command despite dep failing"
@@ -2422,7 +2517,8 @@ mod tests {
 
     #[test]
     fn bg_dependent_skipped_when_dep_cancelled() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
 
         // Marker path is scoped to this test's TempDir to avoid races with
         // parallel test runs.
@@ -2469,33 +2565,41 @@ mod tests {
         });
 
         state
-            .run_all_with_cancel(&store, &child_pids, &cancel_all, &cancelled_jobs, None)
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
             .unwrap();
         killer.join().unwrap();
 
-        let meta_long = store
-            .read_meta(&store.base_dir.join("inv-needs-cancel-1").join("long"))
-            .expect("meta long");
-        assert!(
-            matches!(meta_long.status, JobStatus::Cancelled),
+        use crate::coordinator::ports::JobsStorePort;
+        let row_long = job_store
+            .get_job("test-repo", "inv-needs-cancel-1", "long")
+            .unwrap()
+            .expect("long row");
+        assert_eq!(
+            row_long.status, "cancelled",
             "long should be Cancelled, got {:?}",
-            meta_long.status
+            row_long.status
         );
 
-        // After the DAG returns, the coordinator synthesizes a meta record
+        // After the DAG returns, the coordinator synthesizes a JobRow
         // for the dep-failed dependent so it remains visible to
-        // `daft hooks jobs`. Disk status is `Skipped` (no `DepFailed` variant
+        // `daft hooks jobs`. Status is `Skipped` (no `DepFailed` variant
         // exists in `JobStatus`). The job's command must NOT have run.
-        let after_dir = store.base_dir.join("inv-needs-cancel-1").join("after");
-        let meta_after = store
-            .read_meta(&after_dir)
-            .expect("after should have a synthesized dep-failed meta");
-        assert!(
-            matches!(meta_after.status, JobStatus::Skipped),
-            "after should be Skipped on disk (dep cancelled), got {:?}",
-            meta_after.status
+        let row_after = job_store
+            .get_job("test-repo", "inv-needs-cancel-1", "after")
+            .unwrap()
+            .expect("after should have a synthesized dep-failed row");
+        assert_eq!(
+            row_after.status, "skipped",
+            "after should be Skipped (dep cancelled), got {:?}",
+            row_after.status
         );
-        assert_eq!(meta_after.needs, vec!["long".to_string()]);
+        assert_eq!(row_after.needs, vec!["long".to_string()]);
         assert!(
             !marker.exists(),
             "after ran its command despite dep being cancelled"
@@ -2504,7 +2608,8 @@ mod tests {
 
     #[test]
     fn bg_cycle_in_needs_returns_error() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+        let (_tmp, store, _job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
 
         let mut state = CoordinatorState::new("test-repo", "inv-cycle-1").with_metadata(
             "worktree-post-create",
@@ -2539,7 +2644,8 @@ mod tests {
 
     #[test]
     fn bg_missing_dep_in_needs_returns_error() {
-        let (_tmp, store, child_pids, cancel_all, cancelled_jobs, _results) = make_test_state();
+        let (_tmp, store, _job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
 
         let mut state = CoordinatorState::new("test-repo", "inv-missing-1").with_metadata(
             "worktree-post-create",

@@ -694,25 +694,22 @@ fn job_row_to_meta(row: crate::store::models::JobRow) -> crate::coordinator::log
     }
 }
 
-/// Look up the meta for a single job directory, preferring the redb row
-/// when present. Falls back to the legacy `meta.json` reader so
-/// pre-upgrade data still renders and the new `Crashed` reconciliation
-/// status is visible to users.
-fn read_job_meta_redb_first(
-    redb_index: Option<
+/// Look up the meta for a single job directory via the SQLite-loaded
+/// index. Returns `None` when the row isn't present (legacy directories
+/// without a SQLite row, or jobs whose row was never written) — callers
+/// should skip rather than fall back to a sidecar file. SQLite is the
+/// sole source of truth post–PR #508.
+fn lookup_job_meta(
+    index: Option<
         &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
     >,
-    store: &LogStore,
     invocation_id: &str,
     job_dir: &Path,
-) -> Result<crate::coordinator::log_store::JobMeta> {
-    if let Some(idx) = redb_index
-        && let Some(name) = job_dir.file_name().and_then(|s| s.to_str())
-        && let Some(m) = idx.get(&(invocation_id.to_string(), name.to_string()))
-    {
-        return Ok(m.clone());
-    }
-    store.read_meta(job_dir)
+) -> Option<crate::coordinator::log_store::JobMeta> {
+    let name = job_dir.file_name().and_then(|s| s.to_str())?;
+    index?
+        .get(&(invocation_id.to_string(), name.to_string()))
+        .cloned()
 }
 
 /// Build a flat `Tabular` payload with one row per (invocation, job).
@@ -753,9 +750,8 @@ fn build_jobs_payload(
         let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
 
         for dir in &job_dirs {
-            let meta = match read_job_meta_redb_first(redb_index, store, &inv.invocation_id, dir) {
-                Ok(m) => m,
-                Err(_) => continue,
+            let Some(meta) = lookup_job_meta(redb_index, &inv.invocation_id, dir) else {
+                continue;
             };
 
             let status_str = match &meta.status {
@@ -926,14 +922,9 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     .unwrap_or_default()
                     .iter()
                     .any(|dir| {
-                        read_job_meta_redb_first(
-                            redb_index.as_ref(),
-                            &store,
-                            &inv.invocation_id,
-                            dir,
-                        )
-                        .map(|m| m.status == target_status)
-                        .unwrap_or(false)
+                        lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir)
+                            .map(|m| m.status == target_status)
+                            .unwrap_or(false)
                     })
             })
             .collect()
@@ -978,8 +969,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
             for dir in &job_dirs {
-                let Ok(meta) =
-                    read_job_meta_redb_first(redb_index.as_ref(), &store, &inv.invocation_id, dir)
+                let Some(meta) = lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir)
                 else {
                     continue;
                 };
@@ -1320,11 +1310,14 @@ fn render_single_job_log(
 ) -> Result<()> {
     use std::fmt::Write;
 
-    let meta = read_job_meta_redb_first(
-        redb_index,
-        store,
-        &resolved.invocation_id,
-        &resolved.job_dir,
+    let meta = lookup_job_meta(redb_index, &resolved.invocation_id, &resolved.job_dir).ok_or_else(
+        || {
+            anyhow::anyhow!(
+                "job '{}' has no SQLite row in invocation {}",
+                resolved.job_dir.display(),
+                resolved.invocation_id
+            )
+        },
     )?;
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
@@ -1416,11 +1409,7 @@ fn render_invocation_logs(
     let job_dirs = store.list_jobs_in_invocation(invocation_id)?;
     let mut jobs: Vec<(std::path::PathBuf, crate::coordinator::log_store::JobMeta)> = job_dirs
         .into_iter()
-        .filter_map(|dir| {
-            read_job_meta_redb_first(redb_index, store, invocation_id, &dir)
-                .ok()
-                .map(|m| (dir, m))
-        })
+        .filter_map(|dir| lookup_job_meta(redb_index, invocation_id, &dir).map(|m| (dir, m)))
         .collect();
     jobs.sort_by_key(|a| a.1.started_at);
 
@@ -1568,6 +1557,9 @@ fn cancel_matching(
 fn resolve_retry_invocation(
     target: &RetryTarget,
     store: &LogStore,
+    index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     current_worktree: &str,
 ) -> Result<InvocationMeta> {
     match target {
@@ -1620,7 +1612,7 @@ fn resolve_retry_invocation(
             for inv in invocations.iter().rev() {
                 let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
                 for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir)
+                    if let Some(meta) = lookup_job_meta(index, &inv.invocation_id, dir)
                         && meta.name == *name
                         && matches!(meta.status, JobStatus::Failed | JobStatus::Cancelled)
                     {
@@ -1646,6 +1638,7 @@ fn retry_command(
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let mut effective_worktree = worktree_flag
@@ -1687,13 +1680,13 @@ fn retry_command(
     };
 
     // Resolve to a source invocation.
-    let inv = resolve_retry_invocation(&parsed, &store, &effective_worktree)?;
+    let inv = resolve_retry_invocation(&parsed, &store, redb_index.as_ref(), &effective_worktree)?;
 
-    // Load all job metas from the source invocation.
+    // Load all job metas from the source invocation via the SQLite index.
     let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
     let mut metas: Vec<crate::coordinator::log_store::JobMeta> = Vec::new();
     for dir in &job_dirs {
-        if let Ok(meta) = store.read_meta(dir) {
+        if let Some(meta) = lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir) {
             metas.push(meta);
         }
     }
@@ -2117,7 +2110,7 @@ mod tests {
     }
 
     #[test]
-    fn read_job_meta_redb_first_prefers_redb_when_index_has_row() {
+    fn lookup_job_meta_returns_indexed_row() {
         use crate::coordinator::log_store::{JobMeta, JobStatus};
         use std::collections::HashMap;
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2126,30 +2119,20 @@ mod tests {
         let name = "build";
         let job_dir = store.create_job_dir(inv, name).unwrap();
 
-        // Seed a stale meta.json claiming "Running".
-        let stale = JobMeta::skipped(name, "worktree-post-create", "feat/test", "", true, vec![]);
-        let stale = JobMeta {
-            status: JobStatus::Running,
-            ..stale
-        };
-        store.write_meta(&job_dir, &stale).unwrap();
-
-        // The redb index reports Crashed (the post-reconciliation state).
         let mut idx = HashMap::new();
-        let redb_meta = JobMeta {
+        let row_meta = JobMeta {
             status: JobStatus::Crashed,
-            ..stale.clone()
+            ..JobMeta::skipped(name, "worktree-post-create", "feat/test", "", true, vec![])
         };
-        idx.insert((inv.to_string(), name.to_string()), redb_meta);
+        idx.insert((inv.to_string(), name.to_string()), row_meta);
 
-        let got =
-            read_job_meta_redb_first(Some(&idx), &store, inv, &job_dir).expect("read meta ok");
+        let got = lookup_job_meta(Some(&idx), inv, &job_dir).expect("indexed meta found");
         assert!(matches!(got.status, JobStatus::Crashed));
     }
 
     #[test]
-    fn read_job_meta_redb_first_falls_back_to_meta_json_when_redb_silent() {
-        use crate::coordinator::log_store::{JobMeta, JobStatus};
+    fn lookup_job_meta_returns_none_when_index_misses() {
+        use crate::coordinator::log_store::JobMeta;
         use std::collections::HashMap;
         let tmp = tempfile::TempDir::new().unwrap();
         let store = LogStore::new(tmp.path().to_path_buf());
@@ -2157,19 +2140,11 @@ mod tests {
         let name = "build";
         let job_dir = store.create_job_dir(inv, name).unwrap();
 
-        let meta = JobMeta {
-            status: JobStatus::Completed,
-            ..JobMeta::skipped(name, "worktree-post-create", "feat/x", "", true, vec![])
-        };
-        store.write_meta(&job_dir, &meta).unwrap();
-
+        // SQLite is the only source post-cutover: no row → None.
         let empty_idx: HashMap<(String, String), JobMeta> = HashMap::new();
-        let got = read_job_meta_redb_first(Some(&empty_idx), &store, inv, &job_dir).unwrap();
-        assert!(matches!(got.status, JobStatus::Completed));
-
-        // None index (redb file missing entirely) also falls back.
-        let got2 = read_job_meta_redb_first(None, &store, inv, &job_dir).unwrap();
-        assert!(matches!(got2.status, JobStatus::Completed));
+        assert!(lookup_job_meta(Some(&empty_idx), inv, &job_dir).is_none());
+        // Missing index also yields None (no read_meta fallback).
+        assert!(lookup_job_meta(None, inv, &job_dir).is_none());
     }
 
     #[test]
@@ -2717,15 +2692,25 @@ mod tests {
         };
         store.write_invocation_meta("inv1", &inv_meta).unwrap();
 
-        // Resolving with "feature/other" as worktree should find it
-        let result =
-            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/other");
+        // Resolving with "feature/other" as worktree should find it.
+        // `LatestInvocation` doesn't read job metas, so the index argument
+        // is irrelevant here.
+        let result = resolve_retry_invocation(
+            &RetryTarget::LatestInvocation,
+            &store,
+            None,
+            "feature/other",
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap().worktree, "feature/other");
 
         // Resolving with "feature/current" should find nothing
-        let result =
-            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/current");
+        let result = resolve_retry_invocation(
+            &RetryTarget::LatestInvocation,
+            &store,
+            None,
+            "feature/current",
+        );
         assert!(result.is_err());
     }
 
