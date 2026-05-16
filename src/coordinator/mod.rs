@@ -1,8 +1,11 @@
+pub mod adapters;
 pub mod clean_policy;
 pub mod client;
+pub mod domain;
 pub mod framing;
 pub mod log_record;
 pub mod log_store;
+pub mod ports;
 pub mod process;
 pub mod store;
 pub mod types;
