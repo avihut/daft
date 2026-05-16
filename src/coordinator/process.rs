@@ -1395,8 +1395,10 @@ pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
     // `Running`/`Cancelling` by a previous coordinator that crashed before
     // it could record terminal states. Best-effort: if the store fails to
     // open we proceed without it — the legacy `meta.json` lifecycle still
-    // works.
-    let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
+    // works. Coordinator startup is the right place to wipe redb-era files
+    // (`coordinator.redb`, `repo-policy.json`) — its stderr is allowed to
+    // surface diagnostics; the completion / CLI-reader path is not.
+    let job_store = match SqliteJobsStore::for_repo_base_with_wipe(&store.base_dir) {
         Ok(js) => {
             if let Err(e) = reconcile_active_jobs(&js, &state.repo_hash) {
                 eprintln!("daft: coordinator reconciliation failed: {e}");

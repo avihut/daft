@@ -14,9 +14,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// Files left over from the redb-era store. Removed (with a one-line
-/// stderr banner) the first time `for_repo_base` opens the per-repo state
-/// directory. Matches the pre-1.0 no-back-compat principle: cleanup is
-/// loud, not silent.
+/// stderr banner) by [`SqliteJobsStore::for_repo_base_with_wipe`] — which is
+/// called only from coordinator startup. The completion / CLI-reader path
+/// uses [`SqliteJobsStore::for_repo_base`] (no wipe) so the banner cannot
+/// surface mid-`Tab` press. Matches the pre-1.0 no-back-compat principle:
+/// cleanup is loud, but only where loud is allowed.
 const LEGACY_FILES: &[&str] = &["coordinator.redb", "repo-policy.json"];
 
 /// SQLite-backed JobsStorePort. Cheap to clone — shares the underlying
@@ -33,13 +35,40 @@ impl SqliteJobsStore {
         }
     }
 
-    /// Convenience: open the per-repo SQLite database that sits inside
-    /// `<base>/coordinator.db` and remove any legacy redb-era files that
-    /// are still sitting next to it (`coordinator.redb`,
-    /// `repo-policy.json`). Counterpart to the old
-    /// `JobStore::open_for_repo_base`.
+    /// Open the per-repo SQLite database at `<base>/coordinator.db`.
+    ///
+    /// **Trust boundary:** `base` MUST be a per-repo state directory
+    /// derived from `daft_state_dir()` (production callers pass
+    /// `LogStore::base_dir`, which is constructed as
+    /// `<daft_state_dir>/jobs/<repo_hash>`). The path is not canonicalized
+    /// here because `daft_state_dir()` isn't reachable from this layer
+    /// without coupling it to the application boundary; the assertion that
+    /// the per-repo parent stays under the state dir is enforced upstream
+    /// by [`crate::store::paths::for_repo_under`] (the canonical path
+    /// resolver used by `LogStore::new`). New callers MUST not derive
+    /// `base` from user input.
+    ///
+    /// Does NOT wipe legacy redb-era files — use
+    /// [`Self::for_repo_base_with_wipe`] for coordinator-startup paths
+    /// where the stderr banner is acceptable. Completion / CLI-reader
+    /// paths call this constructor so a `Tab` press cannot leak text into
+    /// the user's terminal.
     pub fn for_repo_base(base: &Path) -> Result<Self> {
+        Self::open_at(base)
+    }
+
+    /// Coordinator-startup variant: opens the per-repo SQLite database
+    /// after sweeping any legacy redb-era files (`coordinator.redb`,
+    /// `repo-policy.json`, …) that may still be sitting next to it. The
+    /// sweep emits a one-line stderr banner per file; called only from
+    /// [`run_coordinator`](crate::coordinator::process::run_coordinator),
+    /// which already writes diagnostics to stderr at startup time.
+    pub fn for_repo_base_with_wipe(base: &Path) -> Result<Self> {
         wipe_legacy_files(base);
+        Self::open_at(base)
+    }
+
+    fn open_at(base: &Path) -> Result<Self> {
         let db_path = base.join(crate::store::paths::COORDINATOR_DB);
         let pool = Pool::open(&db_path)
             .with_context(|| format!("open coordinator store at {}", db_path.display()))?;
@@ -304,18 +333,18 @@ mod tests {
     }
 
     #[test]
-    fn for_repo_base_wipes_legacy_redb_and_policy_json() {
+    fn for_repo_base_with_wipe_removes_legacy_redb_and_policy_json() {
         // Upgrading from the prior redb design leaves `coordinator.redb`
-        // and `repo-policy.json` siblings of the new `coordinator.db`.
-        // The first `for_repo_base` call must delete both (the sweep is
-        // announced via stderr in production; the test just asserts the
-        // filesystem post-condition).
+        // and `repo-policy.json` siblings of the new `coordinator.db`. The
+        // coordinator-startup constructor (`for_repo_base_with_wipe`) must
+        // delete both (the sweep is announced via stderr in production;
+        // the test just asserts the filesystem post-condition).
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
         std::fs::write(base.join("coordinator.redb"), b"old redb bytes").unwrap();
         std::fs::write(base.join("repo-policy.json"), b"{}").unwrap();
 
-        let _store = SqliteJobsStore::for_repo_base(base).unwrap();
+        let _store = SqliteJobsStore::for_repo_base_with_wipe(base).unwrap();
 
         assert!(
             !base.join("coordinator.redb").exists(),
@@ -328,7 +357,36 @@ mod tests {
         // The new SQLite DB landed in its place.
         assert!(
             base.join("coordinator.db").exists(),
-            "new coordinator.db should exist after for_repo_base"
+            "new coordinator.db should exist after for_repo_base_with_wipe"
+        );
+    }
+
+    #[test]
+    fn for_repo_base_does_not_wipe_legacy_files() {
+        // Completion / CLI-reader paths call `for_repo_base` (not
+        // `_with_wipe`). Stderr from this path leaks into the user's
+        // terminal because `__complete` runs inside `eval`-captured shell
+        // code that only captures stdout. Regression guard: any legacy
+        // file present must survive the open.
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::write(base.join("coordinator.redb"), b"old redb bytes").unwrap();
+        std::fs::write(base.join("repo-policy.json"), b"{}").unwrap();
+
+        let _store = SqliteJobsStore::for_repo_base(base).unwrap();
+
+        assert!(
+            base.join("coordinator.redb").exists(),
+            "non-wiping constructor must not touch legacy coordinator.redb"
+        );
+        assert!(
+            base.join("repo-policy.json").exists(),
+            "non-wiping constructor must not touch legacy repo-policy.json"
+        );
+        // The new SQLite DB still landed.
+        assert!(
+            base.join("coordinator.db").exists(),
+            "coordinator.db should exist after for_repo_base"
         );
     }
 }
