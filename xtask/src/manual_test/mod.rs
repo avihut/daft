@@ -5,37 +5,140 @@ pub mod runner;
 pub mod schema;
 
 use anyhow::{Context, Result};
-use std::io::IsTerminal;
+use rayon::prelude::*;
+use std::collections::HashSet;
+use std::io::{IsTerminal, Write};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Register a Ctrl+C handler that cleans up the active test environment.
+/// Shared registry of live sandbox directories.
 ///
-/// Returns a shared handle that the run loop updates with the current sandbox
-/// path. On SIGINT the handler removes that directory and exits.
-fn setup_cleanup_handler(keep: bool) -> Arc<Mutex<Option<PathBuf>>> {
-    let cleanup_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
-    let handler_path = Arc::clone(&cleanup_path);
+/// Workers register their sandbox path on creation and unregister on cleanup;
+/// the Ctrl+C handler drains the set and removes every live sandbox. Using a
+/// generic `HashSet<PathBuf>` keeps the scheduler decoupled from any sandbox
+/// path prefix, which preserves the runner's spin-out story.
+type CleanupSet = Arc<Mutex<HashSet<PathBuf>>>;
+
+/// RAII guard that keeps the live-sandbox registry in sync.
+///
+/// Inserted into the cleanup set on construction and removed on drop, so
+/// early returns, `?`-propagated errors, and panics inside a worker all
+/// leave the registry consistent.
+struct CleanupGuard {
+    set: CleanupSet,
+    path: PathBuf,
+}
+
+impl CleanupGuard {
+    fn new(set: CleanupSet, path: PathBuf) -> Self {
+        if let Ok(mut g) = set.lock() {
+            g.insert(path.clone());
+        }
+        Self { set, path }
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.set.lock() {
+            g.remove(&self.path);
+        }
+    }
+}
+
+/// Register a Ctrl+C handler that cleans up every live test environment.
+///
+/// Returns a shared registry the run loop populates as scenarios start and
+/// clears as they finish. On SIGINT the handler drains the set in a loop —
+/// `process::exit(130)` aborts worker threads mid-flight without running
+/// their `Drop` impls, so a single drain can miss workers that registered
+/// after the snapshot. Re-draining with a short sleep between passes catches
+/// those late registrations until the set stays empty.
+fn setup_cleanup_handler(keep: bool) -> CleanupSet {
+    let set: CleanupSet = Arc::new(Mutex::new(HashSet::new()));
+    let handler_set = Arc::clone(&set);
 
     ctrlc::set_handler(move || {
         // Restore terminal state in case interactive mode left raw mode on.
         let _ = crossterm::terminal::disable_raw_mode();
         eprintln!();
         if !keep {
-            if let Ok(guard) = handler_path.lock() {
-                if let Some(dir) = guard.as_ref() {
+            // Workers in flight fall into two camps when SIGINT fires:
+            //
+            // 1. Past `CleanupGuard::new` — their `base_dir` is in the set.
+            //    Drain captures it; we `rm -rf` to remove whatever they
+            //    built so far. Their subprocesses (`git`, `cp`) may still
+            //    be running and may RECREATE entries at the same path
+            //    between our `rm` and `process::exit` below, which is why
+            //    we re-rm in a short loop while holding the lock.
+            // 2. About to call `CleanupGuard::new` — they block at
+            //    `set.lock()` because we hold the lock to process exit, then
+            //    die with the process. They never touch disk, so no leak.
+            //
+            // Holding the lock for the whole sequence prevents new
+            // registrations, so the `known` set captures the entire universe
+            // of paths that could possibly still have on-disk presence. The
+            // re-rm loop is bounded so the handler always finishes ahead of
+            // the main thread's rayon-iteration completion (which would
+            // otherwise short-circuit the closure via the natural anyhow
+            // bail with a non-130 exit code).
+            let mut g = match handler_set.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let known: HashSet<PathBuf> = g.drain().collect();
+            for _ in 0..4 {
+                for dir in &known {
                     let _ = std::fs::remove_dir_all(dir);
-                    eprintln!("Cleaned up test environment.");
                 }
+                if known.iter().all(|p| !p.exists()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
             }
+            if !known.is_empty() {
+                eprintln!("Cleaned up {} test environment(s).", known.len());
+            }
+            // `g` stays in scope through process::exit — the lock is never
+            // released, which prevents any racing worker from registering a
+            // new sandbox between our drain and the process dying.
+            let _hold = g;
         }
         std::process::exit(130); // 128 + SIGINT(2)
     })
     .ok();
 
-    cleanup_path
+    set
 }
 
+/// Aggregated result of one scenario, produced by a parallel worker.
+struct ScenarioOutcome {
+    /// Position of the scenario in the input list; used to order both output
+    /// and stats independently of completion order.
+    index: usize,
+    /// Display name from the YAML (or the file path if parsing failed before
+    /// the name could be read).
+    name: String,
+    /// `None` when execution short-circuited before stats were computed
+    /// (parse/setup error or panic); `Some(_)` after a normal run.
+    result: Option<runner::ScenarioResult>,
+    /// Captured stderr-style output, replayed verbatim once all workers
+    /// finish.
+    output: Vec<u8>,
+    /// Fatal error, if any (parse/setup failure or panic).
+    error: Option<anyhow::Error>,
+}
+
+/// Read-only context shared across parallel workers.
+struct RunContext<'a> {
+    project_root: &'a Path,
+    fixtures_dir: &'a Path,
+    verbose: bool,
+    keep: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     scenarios: Vec<PathBuf>,
     no_interactive: bool,
@@ -47,6 +150,7 @@ pub fn run(
     list: bool,
     show: bool,
     checks: bool,
+    jobs: usize,
 ) -> Result<()> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -89,39 +193,175 @@ pub fn run(
     }
 
     let is_interactive = !no_interactive && std::io::stdin().is_terminal();
-    let cleanup_path = setup_cleanup_handler(keep);
+
+    if jobs > 1 {
+        if is_interactive {
+            anyhow::bail!(
+                "--jobs/--parallel is only supported in non-interactive mode (pass --ci or run from a non-TTY)"
+            );
+        }
+        if setup_only {
+            anyhow::bail!("--jobs/--parallel is incompatible with --setup-only");
+        }
+    }
+
+    let cleanup_set = setup_cleanup_handler(keep);
+
+    eprintln!();
+
+    // Interactive and --setup-only stay on the streaming serial path. Both
+    // have semantics — TTY ownership for interactive, `println!` of work_dir
+    // for shell capture in setup-only — that don't fit the buffered worker
+    // model used by the parallel scheduler.
+    if is_interactive || setup_only {
+        return run_serial(
+            &scenario_files,
+            &project_root,
+            &fixtures_dir,
+            &cleanup_set,
+            step,
+            loop_count,
+            verbose,
+            keep,
+            setup_only,
+            is_interactive,
+        );
+    }
+
+    // Non-interactive CI path — always goes through the parallel scheduler,
+    // even at `jobs == 1` (a 1-thread rayon pool). Output is buffered per
+    // scenario and flushed in input order.
+    run_parallel(
+        &scenario_files,
+        &project_root,
+        &fixtures_dir,
+        &cleanup_set,
+        verbose,
+        keep,
+        jobs,
+    )
+}
+
+fn run_parallel(
+    scenario_files: &[PathBuf],
+    project_root: &Path,
+    fixtures_dir: &Path,
+    cleanup_set: &CleanupSet,
+    verbose: bool,
+    keep: bool,
+    jobs: usize,
+) -> Result<()> {
+    let ctx = RunContext {
+        project_root,
+        fixtures_dir,
+        verbose,
+        keep,
+    };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .context("building rayon thread pool")?;
+
+    let mut outcomes: Vec<ScenarioOutcome> = pool.install(|| {
+        scenario_files
+            .par_iter()
+            .enumerate()
+            .map(|(idx, path)| run_one_scenario(idx, path, &ctx, cleanup_set))
+            .collect()
+    });
+
+    // Restore input order before printing and aggregating, so output and
+    // stats are deterministic regardless of completion order.
+    outcomes.sort_by_key(|o| o.index);
+
+    let stderr = std::io::stderr();
+    {
+        let mut lock = stderr.lock();
+        for o in &outcomes {
+            lock.write_all(&o.output)?;
+        }
+    }
 
     let mut total_scenarios = 0usize;
     let mut total_steps = 0usize;
     let mut total_passed = 0usize;
     let mut total_failed = 0usize;
     let mut failed_scenarios: Vec<String> = Vec::new();
+    let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
+
+    for o in outcomes {
+        match (o.result, o.error) {
+            (Some(sr), _) => {
+                total_scenarios += 1;
+                total_steps += sr.steps;
+                total_passed += sr.passed;
+                total_failed += sr.failed;
+                if sr.failed > 0 {
+                    failed_scenarios.push(o.name);
+                }
+            }
+            (None, Some(err)) => errors.push((o.name, err)),
+            (None, None) => {}
+        }
+    }
+
+    use daft::styles;
 
     eprintln!();
-
-    for path in &scenario_files {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
-        let raw: schema::RawScenario = serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
-        let repos = resolve_repos(raw.repos, &fixtures_dir)
-            .with_context(|| format!("Failed to resolve repos in: {}", path.display()))?;
-        let scenario = schema::Scenario {
-            name: raw.name,
-            description: raw.description,
-            repos,
-            env: raw.env,
-            steps: raw.steps,
-        };
-
-        let mut test_env = env::TestEnv::create(&scenario, &project_root, keep || setup_only)?;
-
-        // Register for cleanup on Ctrl+C.
-        if let Ok(mut guard) = cleanup_path.lock() {
-            *guard = Some(test_env.base_dir.clone());
+    eprintln!(
+        "{} scenarios, {} steps, {} passed, {} failed",
+        total_scenarios,
+        total_steps,
+        styles::green(&total_passed.to_string()),
+        if total_failed > 0 {
+            styles::red(&total_failed.to_string())
+        } else {
+            "0".into()
         }
+    );
+    for name in &failed_scenarios {
+        eprintln!("{} {}", styles::red("x"), name);
+    }
+    for (name, err) in &errors {
+        eprintln!("{} {}: {err:#}", styles::red("ERROR"), name);
+    }
+    eprintln!();
 
-        // Generate repos from specs.
+    if !errors.is_empty() {
+        anyhow::bail!("{} scenario(s) hit a fatal error", errors.len());
+    }
+    if total_failed > 0 {
+        anyhow::bail!("{total_failed} step(s) failed across {total_scenarios} scenarios");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_serial(
+    scenario_files: &[PathBuf],
+    project_root: &Path,
+    fixtures_dir: &Path,
+    cleanup_set: &CleanupSet,
+    step: Option<usize>,
+    loop_count: Option<usize>,
+    verbose: bool,
+    keep: bool,
+    setup_only: bool,
+    is_interactive: bool,
+) -> Result<()> {
+    for path in scenario_files {
+        let scenario = load_scenario(path, fixtures_dir)?;
+
+        // Register the sandbox path before touching disk so a SIGINT during
+        // `TestEnv::create_at` still leaves a tracked path the cleanup handler
+        // can `rm -rf`.
+        let base_dir = env::next_sandbox_base_dir(&scenario)?;
+        let _guard = CleanupGuard::new(Arc::clone(cleanup_set), base_dir.clone());
+        let mut test_env =
+            env::TestEnv::create_at(&scenario, project_root, base_dir, keep || setup_only)?;
+
         for repo_spec in &scenario.repos {
             repo_gen::generate_repo(repo_spec, &test_env.remotes_dir)?;
             test_env.register_remote(&repo_spec.name);
@@ -129,7 +369,6 @@ pub fn run(
         test_env.create_template()?;
 
         if setup_only {
-            // Run steps up to --step N (or all steps if not specified).
             let run_until = step
                 .unwrap_or(scenario.steps.len())
                 .min(scenario.steps.len());
@@ -146,19 +385,12 @@ pub fn run(
             eprintln!("Test environment ready at: {}", test_env.work_dir.display());
             // Print work dir to stdout for shell wrapper to capture for cd.
             println!("{}", test_env.work_dir.display());
-            // Don't clean up — the point is to keep the env for manual use.
-            if let Ok(mut guard) = cleanup_path.lock() {
-                *guard = None;
-            }
             continue;
         }
 
-        let result = if is_interactive {
+        if is_interactive {
             interactive::run_interactive(&scenario, &test_env, step, loop_count, verbose)?;
-            None
-        } else {
-            Some(runner::run_non_interactive(&scenario, &test_env, verbose)?)
-        };
+        }
 
         if keep {
             eprintln!(
@@ -171,52 +403,128 @@ pub fn run(
                 Err(e) => eprintln!("  Warning: cleanup failed: {e}"),
             }
         }
-
-        // Clear cleanup path after successful cleanup.
-        if let Ok(mut guard) = cleanup_path.lock() {
-            *guard = None;
-        }
-
-        if let Some(sr) = result {
-            total_scenarios += 1;
-            total_steps += sr.steps;
-            total_passed += sr.passed;
-            total_failed += sr.failed;
-            if sr.failed > 0 {
-                failed_scenarios.push(scenario.name.clone());
-            }
-        }
-    }
-
-    // Print overall summary for non-interactive runs.
-    if !is_interactive && scenario_files.len() > 0 {
-        use daft::styles;
-
-        eprintln!();
-        eprintln!(
-            "{} scenarios, {} steps, {} passed, {} failed",
-            total_scenarios,
-            total_steps,
-            styles::green(&total_passed.to_string()),
-            if total_failed > 0 {
-                styles::red(&total_failed.to_string())
-            } else {
-                "0".into()
-            }
-        );
-        if !failed_scenarios.is_empty() {
-            for name in &failed_scenarios {
-                eprintln!("{} {}", styles::red("x"), name);
-            }
-        }
-        eprintln!();
-
-        if total_failed > 0 {
-            anyhow::bail!("{total_failed} step(s) failed across {total_scenarios} scenarios");
-        }
     }
 
     Ok(())
+}
+
+fn load_scenario(path: &Path, fixtures_dir: &Path) -> Result<schema::Scenario> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
+    let raw: schema::RawScenario = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
+    let repos = resolve_repos(raw.repos, fixtures_dir)
+        .with_context(|| format!("Failed to resolve repos in: {}", path.display()))?;
+    Ok(schema::Scenario {
+        name: raw.name,
+        description: raw.description,
+        repos,
+        env: raw.env,
+        steps: raw.steps,
+    })
+}
+
+fn run_one_scenario(
+    index: usize,
+    path: &Path,
+    ctx: &RunContext<'_>,
+    cleanup_set: &CleanupSet,
+) -> ScenarioOutcome {
+    let scenario = match load_scenario(path, ctx.fixtures_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            return ScenarioOutcome {
+                index,
+                name: path.display().to_string(),
+                result: None,
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+    };
+
+    let name = scenario.name.clone();
+
+    // `catch_unwind` so a single panicking scenario doesn't poison the rayon
+    // pool — the worker reports the panic and the pool keeps draining the
+    // remaining scenarios.
+    let work = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        run_one_scenario_inner(&scenario, ctx, cleanup_set)
+    }));
+
+    match work {
+        Ok(Ok((sr, buf))) => ScenarioOutcome {
+            index,
+            name,
+            result: Some(sr),
+            output: buf,
+            error: None,
+        },
+        Ok(Err(err)) => ScenarioOutcome {
+            index,
+            name,
+            result: None,
+            output: Vec::new(),
+            error: Some(err),
+        },
+        Err(payload) => {
+            let msg = panic_payload_to_string(&payload);
+            ScenarioOutcome {
+                index,
+                name,
+                result: None,
+                output: Vec::new(),
+                error: Some(anyhow::anyhow!("scenario panicked: {msg}")),
+            }
+        }
+    }
+}
+
+fn run_one_scenario_inner(
+    scenario: &schema::Scenario,
+    ctx: &RunContext<'_>,
+    cleanup_set: &CleanupSet,
+) -> Result<(runner::ScenarioResult, Vec<u8>)> {
+    // Pre-register the sandbox path so a SIGINT during create_at still leaves
+    // a tracked path the cleanup handler can `rm -rf`. See [`setup_cleanup_handler`]
+    // for the matching drain-loop logic.
+    let base_dir = env::next_sandbox_base_dir(scenario)?;
+    let _guard = CleanupGuard::new(Arc::clone(cleanup_set), base_dir.clone());
+    let mut test_env = env::TestEnv::create_at(scenario, ctx.project_root, base_dir, ctx.keep)?;
+
+    for repo_spec in &scenario.repos {
+        repo_gen::generate_repo(repo_spec, &test_env.remotes_dir)?;
+        test_env.register_remote(&repo_spec.name);
+    }
+    test_env.create_template()?;
+
+    let mut buf: Vec<u8> = Vec::new();
+    let result = runner::run_non_interactive(scenario, &test_env, ctx.verbose, &mut buf)?;
+
+    if ctx.keep {
+        writeln!(
+            &mut buf,
+            "  Test environment kept at: {}",
+            test_env.base_dir.display()
+        )?;
+    } else {
+        match test_env.cleanup() {
+            Ok(()) => writeln!(&mut buf, "Cleaned up test environment.")?,
+            Err(e) => writeln!(&mut buf, "  Warning: cleanup failed: {e}")?,
+        }
+    }
+
+    Ok((result, buf))
+}
+
+fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Resolve scenario arguments to full paths.
@@ -542,4 +850,68 @@ fn discover_scenarios_recursive(dir: &PathBuf) -> Result<Vec<(String, PathBuf)>>
     }
     scenarios.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(scenarios)
+}
+
+#[cfg(test)]
+mod cleanup_guard_tests {
+    use super::*;
+
+    fn empty_set() -> CleanupSet {
+        Arc::new(Mutex::new(HashSet::new()))
+    }
+
+    #[test]
+    fn guard_registers_on_new_and_unregisters_on_drop() {
+        let set = empty_set();
+        let path = PathBuf::from("/tmp/daft-manual-test-fake");
+
+        {
+            let _g = CleanupGuard::new(Arc::clone(&set), path.clone());
+            assert!(set.lock().unwrap().contains(&path));
+        }
+
+        assert!(
+            !set.lock().unwrap().contains(&path),
+            "guard should have removed path on drop"
+        );
+    }
+
+    #[test]
+    fn guard_tracks_multiple_concurrent_sandboxes() {
+        let set = empty_set();
+        let p1 = PathBuf::from("/tmp/daft-manual-test-a");
+        let p2 = PathBuf::from("/tmp/daft-manual-test-b");
+
+        let g1 = CleanupGuard::new(Arc::clone(&set), p1.clone());
+        let g2 = CleanupGuard::new(Arc::clone(&set), p2.clone());
+        assert_eq!(set.lock().unwrap().len(), 2);
+
+        drop(g1);
+        assert!(set.lock().unwrap().contains(&p2));
+        assert!(!set.lock().unwrap().contains(&p1));
+
+        drop(g2);
+        assert!(set.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn guard_drop_during_panic_still_unregisters() {
+        let set = empty_set();
+        let path = PathBuf::from("/tmp/daft-manual-test-panicky");
+
+        let result = std::panic::catch_unwind({
+            let set = Arc::clone(&set);
+            let path = path.clone();
+            move || {
+                let _g = CleanupGuard::new(set, path);
+                panic!("worker exploded");
+            }
+        });
+
+        assert!(result.is_err());
+        assert!(
+            !set.lock().unwrap().contains(&path),
+            "guard must unregister even when the worker panics"
+        );
+    }
 }

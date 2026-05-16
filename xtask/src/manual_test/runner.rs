@@ -7,6 +7,7 @@
 //! reports pass/fail.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::env::TestEnv;
@@ -485,61 +486,65 @@ pub fn run_non_interactive(
     scenario: &Scenario,
     env: &TestEnv,
     verbose: bool,
+    out: &mut impl Write,
 ) -> Result<ScenarioResult> {
     use daft::styles;
 
-    eprintln!("{}", styles::cyan(&scenario.name));
+    writeln!(out, "{}", styles::cyan(&scenario.name))?;
 
     let mut passed = 0;
     let mut failed = 0;
 
     for (i, step) in scenario.steps.iter().enumerate() {
-        eprint!(
+        write!(
+            out,
             "{} {} ... ",
             styles::blue(&format!("[{}/{}]", i + 1, scenario.steps.len())),
             &step.name
-        );
+        )?;
 
         let result = execute_step(step, env, true)?;
 
         if result.all_passed {
             let check_count = result.assertions.len();
             if check_count > 0 {
-                eprintln!(
+                writeln!(
+                    out,
                     "{} {}",
                     styles::green("ok"),
                     styles::dim(&format!("({check_count} checks)"))
-                );
+                )?;
             } else {
-                eprintln!("{}", styles::green("ok"));
+                writeln!(out, "{}", styles::green("ok"))?;
             }
             if verbose {
                 for a in &result.assertions {
-                    eprintln!("  {} {}", styles::green("✓"), styles::dim(&a.label));
+                    writeln!(out, "  {} {}", styles::green("✓"), styles::dim(&a.label))?;
                 }
             }
             passed += 1;
         } else {
             let fail_count = result.assertions.iter().filter(|a| !a.passed).count();
-            eprintln!(
+            writeln!(
+                out,
                 "{} {}",
                 styles::red("FAIL"),
                 styles::dim(&format!("({fail_count} failed)"))
-            );
+            )?;
             for a in &result.assertions {
                 if !a.passed {
-                    eprintln!("  {} {}", styles::red("x"), a.label);
+                    writeln!(out, "  {} {}", styles::red("x"), a.label)?;
                     if let Some(detail) = &a.detail {
-                        eprintln!("    {}", styles::dim(detail));
+                        writeln!(out, "    {}", styles::dim(detail))?;
                     }
                 }
             }
             // Show captured output for debugging.
             let captured = combine_captured(&result.stdout, &result.stderr);
             if !captured.is_empty() {
-                eprintln!("  {}", styles::dim("--- captured output ---"));
+                writeln!(out, "  {}", styles::dim("--- captured output ---"))?;
                 for line in captured.lines().take(20) {
-                    eprintln!("  {}", styles::dim(line));
+                    writeln!(out, "  {}", styles::dim(line))?;
                 }
             }
             failed += 1;
