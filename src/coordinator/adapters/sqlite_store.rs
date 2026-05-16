@@ -302,4 +302,33 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "first");
     }
+
+    #[test]
+    fn for_repo_base_wipes_legacy_redb_and_policy_json() {
+        // Upgrading from the prior redb design leaves `coordinator.redb`
+        // and `repo-policy.json` siblings of the new `coordinator.db`.
+        // The first `for_repo_base` call must delete both (the sweep is
+        // announced via stderr in production; the test just asserts the
+        // filesystem post-condition).
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::write(base.join("coordinator.redb"), b"old redb bytes").unwrap();
+        std::fs::write(base.join("repo-policy.json"), b"{}").unwrap();
+
+        let _store = SqliteJobsStore::for_repo_base(base).unwrap();
+
+        assert!(
+            !base.join("coordinator.redb").exists(),
+            "legacy coordinator.redb should be wiped on first open"
+        );
+        assert!(
+            !base.join("repo-policy.json").exists(),
+            "legacy repo-policy.json should be wiped on first open"
+        );
+        // The new SQLite DB landed in its place.
+        assert!(
+            base.join("coordinator.db").exists(),
+            "new coordinator.db should exist after for_repo_base"
+        );
+    }
 }
