@@ -640,34 +640,58 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
     }
 }
 
-/// Index a repo's redb `JobRow`s by `(invocation_id, job_name)` so meta
+/// Index a repo's SQLite `JobRow`s by `(invocation_id, job_name)` so meta
 /// readers can look up Tier-1 status (including `Crashed`, which legacy
 /// `meta.json` never sees) without scanning the table per directory.
 ///
-/// Returns `None` when the redb file is unreadable — callers fall back to
-/// the legacy `meta.json` reader so pre-upgrade data and pre-redb test
+/// Returns `None` when the store is unreadable — callers fall back to the
+/// legacy `meta.json` reader so pre-upgrade data and pre-store test
 /// fixtures still render.
 ///
-/// Known limitation: redb takes a process-level lock on open
-/// (`coordinator::store::tests::concurrent_open_is_rejected_by_redb_lock`).
-/// While a coordinator is alive holding the same `coordinator.redb`,
-/// this open fails and the caller falls back to `meta.json`. For
-/// terminal status (Completed/Failed/Cancelled) that's a no-op — the
-/// dual-write reaches both stores. For `Crashed` (only written to redb
-/// by `reconcile_active_jobs`), it means the new status is invisible
-/// until the live coordinator drains.
+/// SQLite + WAL means this open succeeds even while a coordinator is
+/// actively writing to the same DB; the redb-era cross-process lock
+/// limitation is gone.
 fn load_redb_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
 ) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
+    use crate::coordinator::ports::JobsStorePort;
     let store =
-        crate::coordinator::store::JobStore::open_for_repo_base(repo_hash, log_store_base).ok()?;
+        crate::coordinator::adapters::SqliteJobsStore::for_repo_base(log_store_base).ok()?;
     let rows = store.list_jobs_for_repo(repo_hash).ok()?;
     Some(
         rows.into_iter()
-            .map(|r| ((r.invocation_id.clone(), r.name.clone()), r.to_job_meta()))
+            .map(|r| {
+                (
+                    (r.invocation_id.clone(), r.name.clone()),
+                    job_row_to_meta(r),
+                )
+            })
             .collect(),
     )
+}
+
+/// Project a store `JobRow` into the `JobMeta` shape `commands/hooks/jobs`
+/// formatters use. Keeps the renderer code path uniform regardless of
+/// whether the source was SQLite or a legacy `meta.json` file.
+fn job_row_to_meta(row: crate::store::models::JobRow) -> crate::coordinator::log_store::JobMeta {
+    crate::coordinator::log_store::JobMeta {
+        name: row.name,
+        hook_type: row.hook_type,
+        worktree: row.worktree,
+        command: row.command,
+        working_dir: row.working_dir,
+        env: row.env,
+        started_at: row.started_at,
+        status: crate::coordinator::log_store::JobStatus::from_status_str(&row.status),
+        exit_code: row.exit_code,
+        pid: row.pid,
+        background: row.background,
+        finished_at: row.finished_at,
+        needs: row.needs,
+        retention_seconds: row.retention_seconds,
+        max_log_size_bytes: row.max_log_size_bytes,
+    }
 }
 
 /// Look up the meta for a single job directory, preferring the redb row
@@ -1903,15 +1927,14 @@ fn prune_jobs(
     };
 
     let process_one = |repo_hash: &str, store: &LogStore| -> Result<CleanSummary> {
-        let repo_policy = match crate::coordinator::store::JobStore::open_for_repo_base(
-            repo_hash,
-            &store.base_dir,
-        ) {
-            Ok(js) => js
-                .read_repo_policy(repo_hash)
-                .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
-            Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
-        };
+        use crate::coordinator::ports::JobsStorePort;
+        let repo_policy =
+            match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
+                Ok(js) => js
+                    .read_repo_policy(repo_hash)
+                    .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
+                Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
+            };
         let policy = CleanPolicy {
             retention_override,
             dry_run,

@@ -9,9 +9,10 @@
 //! A Unix socket listener runs in a separate thread alongside job execution,
 //! handling IPC requests from CLI commands (`daft hooks jobs`).
 
+use super::adapters::SqliteJobsStore;
 use super::log_record::{LogRecord, OutputKind, StatusEvent, record_from, write_log_record};
 use super::log_store::{JobMeta, JobStatus, LogStore};
-use super::store::{JobRow, JobStore, schema as store_schema};
+use super::ports::JobsStorePort;
 #[cfg(unix)]
 use super::{
     CoordinatorRequest, CoordinatorResponse, ErrorCode, JobInfo, PROTOCOL_VERSION, RequestEnvelope,
@@ -20,6 +21,7 @@ use super::{
 use crate::executor::command::run_command;
 use crate::executor::dag::DagGraph;
 use crate::executor::{JobResult, JobSpec, NodeStatus};
+use crate::store::models::JobRow;
 #[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
@@ -30,76 +32,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// Returns the on-disk path of the coordinator's redb file for a given
-/// `<state_base>/jobs/<repo_hash>` log root.
-pub fn job_store_path(log_store_base: &std::path::Path) -> std::path::PathBuf {
-    log_store_base.join("coordinator.redb")
-}
-
-/// Reconcile `Running`/`Cancelling` rows that this repo's redb still holds
-/// by probing each row's recorded PGID. If the process group no longer
-/// exists, the prior coordinator crashed before it could record a terminal
-/// state — mark the row `Crashed` with `finished_at = now()`.
+/// Reconcile `Running`/`Cancelling` rows that this repo still holds by
+/// probing each row's recorded PGID. Thin wrapper around
+/// [`crate::coordinator::domain::reconcile_active_jobs`] that constructs
+/// the concrete `SystemClock` + `UnixProcess` adapters; the actual logic
+/// lives in the domain layer so it can be unit-tested with fakes.
 ///
-/// Best-effort: errors writing the updated row are reported via stderr but
-/// don't abort the boot.
+/// Best-effort: errors writing the updated row are reported via stderr by
+/// the domain function and don't abort the boot.
 #[cfg(unix)]
-fn reconcile_active_jobs(store: &JobStore, repo_hash: &str) -> Result<()> {
-    use nix::sys::signal;
-    use nix::unistd::Pid;
-
-    let active = store.list_active_jobs(repo_hash)?;
-    if active.is_empty() {
-        return Ok(());
-    }
-
-    let now = chrono::Utc::now();
-    let mut marked = 0usize;
-    for mut row in active {
-        // Without a recorded pgid we have nothing to probe; treat the row
-        // as crashed (it was written `Running` but we can't confirm).
-        let alive = match row.pgid {
-            Some(pgid) if pgid > 0 => {
-                // POSIX existence probe via signal 0: `signal::kill(pid, None)`
-                // sends nothing but returns Ok(()) if a process with this PID
-                // exists (regardless of permission), Err(ESRCH) otherwise.
-                //
-                // We probe the *process-group leader's PID* — which is
-                // identical to the PGID because background jobs are launched
-                // with `process_group(0)` (see `run_single_background_job`),
-                // making each job its own session leader. Best-effort:
-                // (a) PID reuse can satisfy the probe even after the original
-                //     leader exited; this is the standard pid-tracking caveat
-                //     and would require waitpid-style accounting to close.
-                // (b) Surviving children re-parented to init keep the PGID
-                //     alive at the kernel level, but the leader's PID is gone,
-                //     so the probe correctly reports "not alive" here.
-                let pid = Pid::from_raw(pgid as i32);
-                matches!(signal::kill(pid, None), Ok(()))
-            }
-            _ => false,
-        };
-        if alive {
-            continue;
-        }
-        row.status = JobStatus::Crashed;
-        row.finished_at = Some(now);
-        match store.upsert_job(&row) {
-            Ok(()) => marked += 1,
-            Err(e) => eprintln!(
-                "daft: reconcile failed to mark '{}' as crashed: {e}",
-                row.name
-            ),
-        }
-    }
-    if marked > 0 {
-        eprintln!("daft: reconcile marked {marked} crashed job(s) from a previous coordinator");
-    }
-    Ok(())
+fn reconcile_active_jobs(store: &SqliteJobsStore, repo_hash: &str) -> Result<()> {
+    use crate::coordinator::adapters::{SystemClock, UnixProcess};
+    crate::coordinator::domain::reconcile_active_jobs(store, &UnixProcess, &SystemClock, repo_hash)
+        .map(|_| ())
 }
 
 #[cfg(not(unix))]
-fn reconcile_active_jobs(_store: &JobStore, _repo_hash: &str) -> Result<()> {
+fn reconcile_active_jobs(_store: &SqliteJobsStore, _repo_hash: &str) -> Result<()> {
     // Non-Unix coordinators don't spawn background jobs (see yaml_executor
     // fallback). Nothing to reconcile.
     Ok(())
@@ -188,7 +137,7 @@ impl CoordinatorState {
         child_pids: &ChildPidMap,
         cancel_all: &Arc<AtomicBool>,
         cancelled_jobs: &CancelledJobs,
-        job_store: Option<&JobStore>,
+        job_store: Option<&SqliteJobsStore>,
     ) -> Result<Vec<JobResult>> {
         if self.jobs.is_empty() {
             return Ok(Vec::new());
@@ -377,7 +326,7 @@ struct JobInvocationContext<'a> {
     worktree: &'a str,
     /// Optional dual-write target for the redb-backed `JobRow` lifecycle
     /// records. `None` from test paths that don't exercise persistence.
-    job_store: Option<JobStore>,
+    job_store: Option<SqliteJobsStore>,
     /// Per-invocation completion records appended by every job as it
     /// terminates. Read at end of `run_all_with_cancel`.
     results: Arc<Mutex<Vec<JobResult>>>,
@@ -404,7 +353,6 @@ fn job_row_from_meta(
     child_pid: Option<u32>,
 ) -> JobRow {
     JobRow {
-        schema_version: store_schema::SCHEMA_VERSION,
         repo_hash: repo_hash.to_string(),
         invocation_id: invocation_id.to_string(),
         name: meta.name.clone(),
@@ -415,7 +363,9 @@ fn job_row_from_meta(
         env: meta.env.clone(),
         started_at: meta.started_at,
         finished_at: meta.finished_at,
-        status: meta.status.clone(),
+        // SQLite `jobs.status` is TEXT. The serde rename keeps the wire
+        // tag stable across enum ↔ string round-trips.
+        status: meta.status.as_status_str().to_string(),
         exit_code: meta.exit_code,
         pid: child_pid,
         pgid: child_pid, // PID == PGID via process_group(0)
@@ -740,7 +690,7 @@ fn start_socket_listener(
     cancel_all: Arc<AtomicBool>,
     cancelled_jobs: CancelledJobs,
     shutdown: Arc<AtomicBool>,
-    job_store: Option<JobStore>,
+    job_store: Option<SqliteJobsStore>,
 ) -> Result<(std::thread::JoinHandle<()>, std::path::PathBuf)> {
     let socket_path = coordinator_socket_path(repo_hash)?;
 
@@ -805,7 +755,7 @@ fn handle_client_connection(
     cancel_all: &Arc<AtomicBool>,
     cancelled_jobs: &CancelledJobs,
     shutdown: &Arc<AtomicBool>,
-    job_store: Option<&JobStore>,
+    job_store: Option<&SqliteJobsStore>,
     repo_hash: &str,
 ) {
     // On macOS (and other BSDs) `accept(2)` returns a socket that inherits
@@ -1063,7 +1013,7 @@ fn cancel_matching(
     args: CancelMatchingArgs<'_>,
     child_pids: &ChildPidMap,
     cancelled_jobs: &CancelledJobs,
-    job_store: Option<&JobStore>,
+    job_store: Option<&SqliteJobsStore>,
     repo_hash: &str,
 ) -> CoordinatorResponse {
     let Some(js) = job_store else {
@@ -1430,7 +1380,7 @@ pub fn run_coordinator(state_file: &std::path::Path) -> Result<()> {
     // it could record terminal states. Best-effort: if the store fails to
     // open we proceed without it — the legacy `meta.json` lifecycle still
     // works.
-    let job_store = match JobStore::open(&job_store_path(&store.base_dir)) {
+    let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
         Ok(js) => {
             if let Err(e) = reconcile_active_jobs(&js, &state.repo_hash) {
                 eprintln!("daft: coordinator reconciliation failed: {e}");
@@ -1761,91 +1711,15 @@ mod tests {
         assert!(meta.finished_at.is_some());
     }
 
-    /// A row left `Running` whose pgid no longer exists must be marked
-    /// `Crashed` by the reconciliation pass. This is the gate for #476
-    /// Tier-1 crash recovery.
-    #[test]
-    fn reconcile_marks_dead_running_as_crashed() {
-        let tmp = TempDir::new().unwrap();
-        let log_base = tmp.path().to_path_buf();
-        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
-
-        // Spawn-and-reap a short-lived child so we know a PID that is
-        // *definitely* gone — won't collide with anything that races us.
-        let mut child = std::process::Command::new("true").spawn().unwrap();
-        let dead_pid = child.id();
-        child.wait().unwrap();
-
-        let row = JobRow {
-            schema_version: store_schema::SCHEMA_VERSION,
-            repo_hash: "rh".into(),
-            invocation_id: "inv1".into(),
-            name: "ghost".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "feat/x".into(),
-            command: "sleep 9999".into(),
-            working_dir: "/tmp".into(),
-            env: HashMap::new(),
-            started_at: chrono::Utc::now(),
-            finished_at: None,
-            status: JobStatus::Running,
-            exit_code: None,
-            pid: Some(dead_pid),
-            pgid: Some(dead_pid),
-            background: true,
-            needs: vec![],
-            tags: vec![],
-            retention_seconds: None,
-            max_log_size_bytes: None,
-        };
-        job_store.upsert_job(&row).unwrap();
-
-        reconcile_active_jobs(&job_store, "rh").unwrap();
-
-        let back = job_store.get_job("rh", "inv1", "ghost").unwrap().unwrap();
-        assert_eq!(back.status, JobStatus::Crashed);
-        assert!(back.finished_at.is_some());
-    }
-
-    /// A row left `Running` whose pgid IS still alive must stay `Running`.
-    /// Reconciliation only touches rows whose process has actually exited.
-    #[test]
-    fn reconcile_leaves_alive_running_intact() {
-        let tmp = TempDir::new().unwrap();
-        let log_base = tmp.path().to_path_buf();
-        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
-
-        let row = JobRow {
-            schema_version: store_schema::SCHEMA_VERSION,
-            repo_hash: "rh".into(),
-            invocation_id: "inv1".into(),
-            name: "alive".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "feat/x".into(),
-            command: "sleep 9999".into(),
-            working_dir: "/tmp".into(),
-            env: HashMap::new(),
-            started_at: chrono::Utc::now(),
-            finished_at: None,
-            status: JobStatus::Running,
-            // Our own PID — guaranteed to exist (we're it).
-            pid: Some(std::process::id()),
-            pgid: Some(std::process::id()),
-            exit_code: None,
-            background: true,
-            needs: vec![],
-            tags: vec![],
-            retention_seconds: None,
-            max_log_size_bytes: None,
-        };
-        job_store.upsert_job(&row).unwrap();
-
-        reconcile_active_jobs(&job_store, "rh").unwrap();
-
-        let back = job_store.get_job("rh", "inv1", "alive").unwrap().unwrap();
-        assert_eq!(back.status, JobStatus::Running);
-        assert!(back.finished_at.is_none());
-    }
+    // Reconciliation logic lives in `coordinator::domain::reconcile` and is
+    // covered there by six unit tests against mock adapters
+    // (`marks_dead_running_as_crashed`,
+    // `leaves_alive_running_intact`,
+    // `job_without_pgid_is_treated_as_crashed`,
+    // `cancelling_status_is_also_reconciled`,
+    // `terminal_statuses_are_not_touched`,
+    // `other_repos_are_left_alone`). The thin wrapper in this module is
+    // exercised end-to-end via the YAML integration scenarios.
 
     /// Filter predicates AND together; missing predicates wildcard. Tag
     /// matching is "contains" against the JobRow's `tags` vector.
@@ -1853,7 +1727,6 @@ mod tests {
     fn filter_matching_jobs_combines_predicates_and() {
         fn row(name: &str, hook: &str, wt: &str, inv: &str, tags: &[&str]) -> JobRow {
             JobRow {
-                schema_version: store_schema::SCHEMA_VERSION,
                 repo_hash: "rh".into(),
                 invocation_id: inv.into(),
                 name: name.into(),
@@ -1864,7 +1737,7 @@ mod tests {
                 env: HashMap::new(),
                 started_at: chrono::Utc::now(),
                 finished_at: None,
-                status: JobStatus::Running,
+                status: JobStatus::Running.as_status_str().to_string(),
                 exit_code: None,
                 pid: Some(1),
                 pgid: Some(1),
@@ -1950,7 +1823,6 @@ mod tests {
     fn filter_matching_jobs_older_than_uses_elapsed_runtime() {
         let now = chrono::Utc::now();
         let old = JobRow {
-            schema_version: store_schema::SCHEMA_VERSION,
             repo_hash: "rh".into(),
             invocation_id: "old".into(),
             name: "old".into(),
@@ -1961,7 +1833,7 @@ mod tests {
             env: HashMap::new(),
             started_at: now - chrono::Duration::seconds(60),
             finished_at: None,
-            status: JobStatus::Running,
+            status: JobStatus::Running.as_status_str().to_string(),
             exit_code: None,
             pid: None,
             pgid: None,
@@ -1997,7 +1869,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let log_base = tmp.path().to_path_buf();
         let store = LogStore::new(log_base.clone());
-        let job_store = JobStore::open(&job_store_path(&log_base)).unwrap();
+        let job_store = SqliteJobsStore::for_repo_base(&log_base).unwrap();
 
         let mut state = CoordinatorState::new("rh", "inv-dual").with_metadata(
             "trigger",
@@ -2022,7 +1894,7 @@ mod tests {
             .get_job("rh", "inv-dual", "dual-job")
             .unwrap()
             .expect("terminal JobRow must be written");
-        assert_eq!(row.status, JobStatus::Completed);
+        assert_eq!(row.status, JobStatus::Completed.as_status_str());
         assert_eq!(row.tags, vec!["fast", "build"]);
         assert!(row.pid.is_some(), "terminal write must record child pid");
         assert!(row.finished_at.is_some());

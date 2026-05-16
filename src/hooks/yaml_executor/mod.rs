@@ -318,15 +318,16 @@ pub fn execute_yaml_hook_with_rc(
     // the next non-fully-filtered fire. Best-effort: a failed write should
     // not break the hook fire.
     let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
-    match crate::coordinator::store::JobStore::open_for_repo_base(&repo_hash, &store.base_dir) {
+    match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
         Ok(job_store) => {
+            use crate::coordinator::ports::JobsStorePort;
             if let Err(e) = job_store.write_repo_policy(&repo_hash, &repo_policy) {
                 eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
             }
         }
         Err(e) => {
             eprintln!(
-                "daft: failed to open redb store while writing repo policy for '{hook_name}': {e}"
+                "daft: failed to open coordinator store while writing repo policy for '{hook_name}': {e}"
             );
         }
     }

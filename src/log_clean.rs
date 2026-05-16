@@ -60,8 +60,9 @@ fn maybe_clean_logs_inner() {
 }
 
 pub fn run_clean_logs() -> Result<()> {
+    use crate::coordinator::adapters::SqliteJobsStore;
     use crate::coordinator::log_store::LogStore;
-    use crate::coordinator::store::JobStore;
+    use crate::coordinator::ports::JobsStorePort;
 
     // Single-flight lock.
     let lock_path = cache_path()?.with_extension("lock");
@@ -105,7 +106,7 @@ pub fn run_clean_logs() -> Result<()> {
         }
 
         let store = LogStore::for_repo(&name)?;
-        let job_store = JobStore::open_for_repo_base(&name, &store.base_dir).ok();
+        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).ok();
         let repo_policy = job_store
             .as_ref()
             .and_then(|js| js.read_repo_policy(&name).ok())
