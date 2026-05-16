@@ -158,7 +158,7 @@ impl JobsStorePort for SqliteJobsStore {
 
     fn list_active_jobs(&self, repo_hash: &str) -> Result<Vec<JobRow>> {
         let conn = self.pool.reader().context("checkout reader")?;
-        JobsRepo::list_by_repo_and_statuses(&conn, repo_hash, &["running", "cancelling"])
+        JobsRepo::list_by_repo_and_two_statuses(&conn, repo_hash, "running", "cancelling")
             .map_err(anyhow::Error::from)
     }
 

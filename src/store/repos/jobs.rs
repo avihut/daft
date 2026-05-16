@@ -126,41 +126,34 @@ impl JobsRepo {
         Ok(rows?)
     }
 
-    /// Jobs whose status matches any of `statuses` (interpreted as the
-    /// over-the-wire lowercase tag, e.g. "running", "cancelling"). The
-    /// caller picks the set; the repo doesn't bake in business logic
-    /// like "which statuses count as active".
-    pub fn list_by_repo_and_statuses(
+    /// Jobs whose status matches either of two over-the-wire lowercase
+    /// tags (e.g. `"running"`, `"cancelling"` — the reconciler's active
+    /// set). The caller picks the two; the repo doesn't bake in business
+    /// logic like "which statuses count as active".
+    ///
+    /// Fixed at exactly two statuses so the SQL stays parameterized with
+    /// hardcoded placeholders — the `no format!` invariant in
+    /// `src/store/repos/` is enforced by a CI grep-gate, and dynamic
+    /// `IN (?2, ?3, ?4, ...)` construction would have to use `format!`.
+    /// Add a sibling method (e.g. `list_by_repo_and_three_statuses`) if
+    /// the reconciler grows a third lifecycle state.
+    pub fn list_by_repo_and_two_statuses(
         conn: &Connection,
         repo_hash: &str,
-        statuses: &[&str],
+        status_a: &str,
+        status_b: &str,
     ) -> Result<Vec<JobRow>> {
-        if statuses.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Build `?1, ?2, ?3, ...` placeholders for the IN clause without
-        // string-interpolating user data — only the placeholder count comes
-        // from `statuses.len()`.
-        let placeholders = (2..=statuses.len() + 1)
-            .map(|i| format!("?{i}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
+        let mut stmt = conn.prepare(
             "SELECT repo_hash, invocation_id, name, hook_type, worktree, command, working_dir,
                     env_json, started_at, finished_at, status, exit_code, pid, pgid,
                     background, needs_json, tags_json, retention_seconds, max_log_size_bytes
              FROM jobs
-             WHERE repo_hash = ?1 AND status IN ({placeholders})
-             ORDER BY started_at ASC"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(statuses.len() + 1);
-        params_vec.push(&repo_hash);
-        for s in statuses {
-            params_vec.push(s);
-        }
-        let rows: rusqlite::Result<Vec<JobRow>> =
-            stmt.query_map(params_vec.as_slice(), row_to_job)?.collect();
+             WHERE repo_hash = ?1 AND status IN (?2, ?3)
+             ORDER BY started_at ASC",
+        )?;
+        let rows: rusqlite::Result<Vec<JobRow>> = stmt
+            .query_map(params![repo_hash, status_a, status_b], row_to_job)?
+            .collect();
         Ok(rows?)
     }
 }
@@ -336,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn list_by_repo_and_statuses_filters_to_requested_set() {
+    fn list_by_repo_and_two_statuses_filters_to_requested_pair() {
         let (_tmp, conn) = fresh_db();
         seed_inv(&conn, "r", "i");
         let mut running = sample_job("r", "i", "running");
@@ -351,7 +344,7 @@ mod tests {
             JobsRepo::upsert(&conn, row).unwrap();
         }
         let active =
-            JobsRepo::list_by_repo_and_statuses(&conn, "r", &["running", "cancelling"]).unwrap();
+            JobsRepo::list_by_repo_and_two_statuses(&conn, "r", "running", "cancelling").unwrap();
         let mut names: Vec<_> = active.iter().map(|j| j.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["cancelling", "running"]);
