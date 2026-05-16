@@ -60,7 +60,9 @@ fn maybe_clean_logs_inner() {
 }
 
 pub fn run_clean_logs() -> Result<()> {
+    use crate::coordinator::adapters::SqliteJobsStore;
     use crate::coordinator::log_store::LogStore;
+    use crate::coordinator::ports::JobsStorePort;
 
     // Single-flight lock.
     let lock_path = cache_path()?.with_extension("lock");
@@ -104,24 +106,26 @@ pub fn run_clean_logs() -> Result<()> {
         }
 
         let store = LogStore::for_repo(&name)?;
-        let repo_policy = store.read_repo_policy();
+        let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
+            Ok(js) => js,
+            Err(_) => continue, // can't retention-sweep without the store
+        };
+        let repo_policy = job_store
+            .read_repo_policy(&name)
+            .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults());
 
-        // 1. Truncation pre-pass.
-        let truncated = store.truncate_oversized_logs(None).unwrap_or(0);
-        total_summary.truncated_logs += truncated;
-
-        // 2. Retention sweep.
+        // 1. Retention sweep.
         let policy = CleanPolicy {
             repo_policy: repo_policy.clone(),
             ..CleanPolicy::default()
         };
-        let s = store.clean(&policy).unwrap_or_default();
+        let s = store.clean(&job_store, &name, &policy).unwrap_or_default();
         total_summary.removed_invocations += s.removed_invocations;
         total_summary.removed_jobs += s.removed_jobs;
         total_summary.freed_bytes += s.freed_bytes;
         total_summary.stale_running_marked += s.stale_running_marked;
 
-        // 3. Budget post-pass.
+        // 2. Budget post-pass.
         let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
         total_summary.removed_invocations += bo.evicted_invocations;
         total_summary.removed_jobs += bo.freed_jobs;

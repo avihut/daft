@@ -44,52 +44,37 @@ steps:
       exit_code: 0
 
   - name:
-      Construct a synthetic Running invocation on disk — fresh started_at, no
-      finished_at, status=running. This simulates a hook invocation that was
-      started but never reached a terminal state (e.g. the daft process crashed,
-      or a coordinator is genuinely still running).
+      Construct a synthetic Running invocation directly in coordinator.db —
+      fresh started_at, no finished_at, status=running. Simulates a hook
+      invocation that was started but never reached a terminal state (the daft
+      process crashed, or a coordinator is genuinely still running).
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      DB="$JOBS_DIR/coordinator.db"
       INV_ID=feedfeedfeedfeed
+      [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       mkdir -p "$JOBS_DIR/$INV_ID/longjob"
-      python3 - "$JOBS_DIR/$INV_ID" "$INV_ID" <<'PY'
-      import json, sys, datetime, os
-      inv_dir, inv_id = sys.argv[1], sys.argv[2]
-      now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-      inv_meta = {
-          "invocation_id": inv_id,
-          "trigger_command": "test-synthetic",
-          "hook_type": "worktree-post-create",
-          "worktree": "feature/r",
-          "created_at": now,
-      }
-      with open(os.path.join(inv_dir, "invocation.json"), "w") as f:
-          json.dump(inv_meta, f)
-      job_meta = {
-          "name": "longjob",
-          "hook_type": "worktree-post-create",
-          "worktree": "feature/r",
-          "command": "sleep 9999",
-          "working_dir": "/tmp",
-          "env": {},
-          "started_at": now,
-          "status": "running",
-          "exit_code": None,
-          "pid": None,
-          "background": True,
-          "finished_at": None,
-          "needs": [],
-          "retention_seconds": None,
-          "max_log_size_bytes": None,
-          "log_truncated": False,
-          "original_size_bytes": None,
-      }
-      with open(os.path.join(inv_dir, "longjob", "meta.json"), "w") as f:
-          json.dump(job_meta, f)
-      open(os.path.join(inv_dir, "longjob", "output.log"), "w").close()
+      python3 - "$DB" "$REPO_ID" "$INV_ID" <<'PY'
+      import sqlite3, sys, datetime
+      db, repo, inv = sys.argv[1], sys.argv[2], sys.argv[3]
+      now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+      conn = sqlite3.connect(db)
+      conn.execute(
+          "INSERT INTO invocations(repo_hash, invocation_id, trigger_command, hook_type, worktree, created_at, coordinator_pid) "
+          "VALUES (?, ?, 'test-synthetic', 'worktree-post-create', 'feature/r', ?, NULL)",
+          (repo, inv, now),
+      )
+      conn.execute(
+          "INSERT INTO jobs(repo_hash, invocation_id, name, hook_type, worktree, command, working_dir, env_json, started_at, finished_at, status, exit_code, pid, pgid, background, needs_json, tags_json, retention_seconds, max_log_size_bytes) "
+          "VALUES (?, ?, 'longjob', 'worktree-post-create', 'feature/r', 'sleep 9999', '/tmp', '{}', ?, NULL, 'running', NULL, NULL, NULL, 1, '[]', '[]', NULL, NULL)",
+          (repo, inv, now),
+      )
+      conn.commit()
       print("SYNTH_OK")
       PY
+      # Empty placeholder log file so the eviction path has something to remove.
+      : > "$JOBS_DIR/$INV_ID/longjob/output.jsonl"
     expect:
       exit_code: 0
       output_contains:
@@ -119,17 +104,10 @@ steps:
       it must be removed
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      META="$JOBS_DIR/feedfeedfeedfeed/longjob/meta.json"
-      python3 -c "
-      import json,sys,datetime
-      p = sys.argv[1]
-      with open(p) as f: m = json.load(f)
-      m['status'] = 'completed'
-      m['exit_code'] = 0
-      m['finished_at'] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-      with open(p, 'w') as f: json.dump(m, f)
-      " "$META"
+      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      NOW=$(python3 -c "import datetime; print(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f+00:00'))")
+      sqlite3 "$DB" \
+        "UPDATE jobs SET status = 'completed', exit_code = 0, finished_at = '$NOW' WHERE name = 'longjob' AND invocation_id = 'feedfeedfeedfeed';"
       daft hooks jobs prune --older-than 0s 2>&1
     cwd: "$WORK_DIR/test-log-cleanup-running/feature/r"
     expect:

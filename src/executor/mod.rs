@@ -58,6 +58,13 @@ pub struct LogConfig {
     /// only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_running_after: Option<String>,
+
+    /// Drop all but every Nth `stdout`/`stderr` line at log-record write time
+    /// (lifecycle `Status` records are never sampled). `seq` advances on every
+    /// emitted line whether or not the record is written, so consumers can
+    /// detect gaps. Default `None` = no sampling. Per-job only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_every_nth: Option<u32>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -94,6 +101,11 @@ pub struct JobSpec {
     pub background_output: Option<BackgroundOutput>,
     /// Log configuration for this job.
     pub log_config: Option<LogConfig>,
+    /// User-supplied labels (from `JobDef.tags` in YAML). Persisted into the
+    /// coordinator's SQLite `JobRow` and used by richer cancel semantics
+    /// (`daft hooks jobs cancel --tag <tag>`). Default empty.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// `Duration <-> u64 seconds` serde adapter for `JobSpec.timeout`.
@@ -129,6 +141,7 @@ impl Default for JobSpec {
             background: false,
             background_output: None,
             log_config: None,
+            tags: Vec::new(),
         }
     }
 }
@@ -242,6 +255,7 @@ mod tests {
             background: false,
             background_output: None,
             log_config: None,
+            tags: vec!["slow".into()],
         };
 
         assert_eq!(spec.name, "install");

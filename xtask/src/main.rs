@@ -1052,6 +1052,24 @@ fn build_usage_string(command_name: &str, cmd: &clap::Command, display_name: &st
     parts.join(" ")
 }
 
+/// Return `true` when our parent process is gone (we've been reparented to
+/// `init`/`launchd`). Used by `run_test_matrix` as a self-termination guard
+/// so a closed terminal doesn't leave a long-running spawn loop reparented
+/// and consuming CPU.
+#[cfg(unix)]
+fn has_been_orphaned() -> bool {
+    nix::unistd::getppid().as_raw() == 1
+}
+
+#[cfg(not(unix))]
+fn has_been_orphaned() -> bool {
+    // Windows has no equivalent "reparented to PID 1" concept; the closest
+    // signal would be a job-object death, which we don't wire up. Always
+    // return false on non-Unix — these test matrices are Unix-only in
+    // practice.
+    false
+}
+
 /// Run integration tests across a matrix of configurations
 fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
     if list {
@@ -1114,6 +1132,16 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
     let has_yaml_tests = scenarios_dir.exists();
 
     for entry in &selected {
+        // Orphan guard: if our parent process is gone (reparented to PID 1),
+        // the user almost certainly closed their terminal or the invoking
+        // shell died — keep looping would spawn `xtask manual-test` instances
+        // in a runaway loop reparented to init/launchd. Bail out cleanly so
+        // we don't keep burning CPU after the user moved on.
+        if has_been_orphaned() {
+            eprintln!("xtask test-matrix: parent process gone, exiting early");
+            break;
+        }
+
         println!();
         println!("=============================================");
         println!("  Matrix entry: {}", entry.name);
@@ -1419,6 +1447,21 @@ mod tests {
     fn test_related_commands_unknown_returns_empty() {
         let related = related_commands("unknown-command");
         assert!(related.is_empty());
+    }
+
+    /// When the test process is being run directly by cargo/mise the parent
+    /// is alive — `has_been_orphaned` must report `false`. We can't easily
+    /// exercise the "true" branch without forking + killing, so the unit test
+    /// only pins the non-orphaned case (the load-bearing one for the
+    /// test-matrix loop: don't bail out on healthy runs).
+    #[cfg(unix)]
+    #[test]
+    fn has_been_orphaned_returns_false_under_running_test_harness() {
+        assert!(
+            !has_been_orphaned(),
+            "test runner should not appear orphaned — ppid was {}",
+            nix::unistd::getppid().as_raw()
+        );
     }
 
     #[test]

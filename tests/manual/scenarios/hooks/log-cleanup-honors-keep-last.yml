@@ -73,37 +73,44 @@ steps:
       output_contains:
         - "INV_COUNT_BEFORE="
 
-  - name: Backdate every meta.json to 2 days ago, but keep the relative ordering
+  - name: Backdate every SQLite job/invocation row by 2 days (keeps ordering)
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      python3 - "$JOBS_DIR" <<'PY'
-      import sys, json, os, datetime
-      root = sys.argv[1]
-      # Build a list of meta files with their original started/created timestamps,
-      # then shift them all back by 2 days uniformly so ordering is preserved.
+      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
+      # Per-row Python shift so relative ordering of started_at is
+      # preserved (uniform -2d). SQLite's datetime() truncates fractional
+      # seconds; we do the shift in Python and emit one UPDATE per row.
+      python3 - "$DB" <<'PY'
+      import sqlite3, sys, datetime
+      conn = sqlite3.connect(sys.argv[1])
       delta = datetime.timedelta(days=2)
       def shift(ts):
-          dt = datetime.datetime.strptime(ts.rstrip("Z").split("+")[0][:26], "%Y-%m-%dT%H:%M:%S.%f") if "." in ts else datetime.datetime.strptime(ts.rstrip("Z").split("+")[0], "%Y-%m-%dT%H:%M:%S")
-          return (dt - delta).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+          if not ts:
+              return ts
+          # Strip "Z" and any timezone fragment; parse the fractional form
+          # daft writes (e.g. 2026-05-16T12:00:00.123456789+00:00).
+          core = ts.rstrip("Z").split("+")[0]
+          if "." in core:
+              core = core[: core.index(".") + 7]  # cap microseconds
+              fmt = "%Y-%m-%dT%H:%M:%S.%f"
+          else:
+              fmt = "%Y-%m-%dT%H:%M:%S"
+          dt = datetime.datetime.strptime(core, fmt)
+          return (dt - delta).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+      cur = conn.cursor()
       patched = 0
-      for dirpath, _, files in os.walk(root):
-          for f in files:
-              if f != "meta.json":
-                  continue
-              p = os.path.join(dirpath, f)
-              with open(p) as fh:
-                  m = json.load(fh)
-              for k in ("created_at", "started_at", "finished_at"):
-                  v = m.get(k)
-                  if isinstance(v, str) and v:
-                      try:
-                          m[k] = shift(v)
-                      except Exception:
-                          pass
-              with open(p, "w") as fh:
-                  json.dump(m, fh)
+      for table, cols in (
+          ("jobs", ("started_at", "finished_at")),
+          ("invocations", ("created_at",)),
+      ):
+          for row in cur.execute(f"SELECT rowid, {', '.join(cols)} FROM {table}").fetchall():
+              rid = row[0]
+              new = [shift(v) for v in row[1:]]
+              set_clause = ", ".join(f"{c} = ?" for c in cols)
+              cur.execute(f"UPDATE {table} SET {set_clause} WHERE rowid = ?", (*new, rid))
               patched += 1
+      conn.commit()
       print(f"PATCHED={patched}")
       PY
     expect:

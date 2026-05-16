@@ -9,6 +9,7 @@ use super::dag::DagGraph;
 use super::log_sink::LogSink;
 use super::presenter::JobPresenter;
 use super::{ExecutionMode, JobResult, JobSpec, NodeStatus};
+use crate::coordinator::log_record::OutputKind;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -341,7 +342,7 @@ fn execute_single_job(
     if job.interactive {
         run_command_interactive(&job.command, &job.env, &job.working_dir)
     } else {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
 
         // Spawn a reader thread that streams output to the presenter
         // and, if provided, the sink.
@@ -352,10 +353,10 @@ fn execute_single_job(
             sink.cloned().map(|s| (s, job.clone()));
         let job_name = job.name.clone();
         let reader_handle = std::thread::spawn(move || {
-            for line in rx {
+            for (kind, line) in rx {
                 presenter_clone.on_job_output(&job_name, &line);
                 if let Some((s, spec)) = &sink_context {
-                    s.on_job_output(spec, &line);
+                    s.on_job_output(spec, kind, &line);
                 }
             }
         });
@@ -1148,11 +1149,15 @@ mod tests {
                 .unwrap()
                 .push(format!("start:{}", spec.name));
         }
-        fn on_job_output(&self, spec: &JobSpec, line: &str) {
+        fn on_job_output(&self, spec: &JobSpec, kind: OutputKind, line: &str) {
+            let tag = match kind {
+                OutputKind::Stdout => "stdout",
+                OutputKind::Stderr => "stderr",
+            };
             self.events
                 .lock()
                 .unwrap()
-                .push(format!("output:{}:{}", spec.name, line));
+                .push(format!("output:{}:{}:{}", spec.name, tag, line));
         }
         fn on_job_complete(&self, spec: &JobSpec, result: &JobResult) {
             self.events

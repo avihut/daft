@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#MISE description="Enforce no format! macro in src/store/repos/ (all SQL must be parameterized)"
+set -euo pipefail
+
+# The store's repo layer must never build SQL via `format!`. All queries
+# are parameterized — placeholders are baked in literally so the source
+# is self-evidently injection-safe. The `\s*\(` suffix matches macro
+# calls (`format!(...)`, `format! (...)`) but not doc-comment prose like
+# `` `format!` ``.
+if grep -REn 'format!\s*\(' src/store/repos/; then
+    echo "" >&2
+    echo "ERROR: \`format!\` is forbidden in src/store/repos/." >&2
+    echo "All SQL must be parameterized; build query strings with hardcoded placeholders." >&2
+    echo "If you need a dynamic IN-list, fix the data model or hardcode the placeholder count." >&2
+    exit 1
+fi

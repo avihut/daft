@@ -125,6 +125,14 @@ shlex = "1.3"
 uuid = { version = "1", features = ["v7"] }
 fs2 = "0.4"
 walkdir = "2.5"
+# `bundled` compiles SQLite from source into the daft binary (~+1 MB on
+# release builds, +C compiler at build time). The rationale is in CLAUDE.md
+# under "Database & Storage" — every daft installation gets the same SQLite
+# version, no system-library skew, WAL mode works out of the box.
+rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite_migration = "2.5"
+r2d2 = "0.8"
+r2d2_sqlite = "0.33"
 
 # libc is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]

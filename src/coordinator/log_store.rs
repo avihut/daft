@@ -12,6 +12,49 @@ pub enum JobStatus {
     Failed,
     Cancelled,
     Skipped,
+    /// SIGTERM sent, process not yet confirmed dead.
+    Cancelling,
+    /// Reconciliation found a `Running` row whose process is gone. Distinct
+    /// from `Cancelled` so retry-on-crash policies can react differently.
+    Crashed,
+    /// Forward-compat fallback for older binaries reading newer data: any
+    /// unknown variant deserializes here instead of panicking. CLI rendering
+    /// treats this as terminal/not-success.
+    #[serde(other)]
+    Unknown,
+}
+
+impl JobStatus {
+    /// Canonical lowercase tag used in the SQLite `jobs.status` column.
+    /// Mirrors `#[serde(rename_all = "lowercase")]` so a status round-trips
+    /// through JSON and SQL identically.
+    pub fn as_status_str(&self) -> &'static str {
+        match self {
+            JobStatus::Running => "running",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+            JobStatus::Cancelled => "cancelled",
+            JobStatus::Skipped => "skipped",
+            JobStatus::Cancelling => "cancelling",
+            JobStatus::Crashed => "crashed",
+            JobStatus::Unknown => "unknown",
+        }
+    }
+
+    /// Inverse of [`as_status_str`]. Unknown tags map to [`JobStatus::Unknown`]
+    /// to match the `#[serde(other)]` forward-compat contract.
+    pub fn from_status_str(s: &str) -> Self {
+        match s {
+            "running" => JobStatus::Running,
+            "completed" => JobStatus::Completed,
+            "failed" => JobStatus::Failed,
+            "cancelled" => JobStatus::Cancelled,
+            "skipped" => JobStatus::Skipped,
+            "cancelling" => JobStatus::Cancelling,
+            "crashed" => JobStatus::Crashed,
+            _ => JobStatus::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,12 +79,6 @@ pub struct JobMeta {
     /// Per-log size cap captured at hook-fire time. None = use repo default.
     #[serde(default)]
     pub max_log_size_bytes: Option<u64>,
-    /// True if `output.log` has been truncated by a cleanup pass.
-    #[serde(default)]
-    pub log_truncated: bool,
-    /// Original size in bytes before truncation, if `log_truncated == true`.
-    #[serde(default)]
-    pub original_size_bytes: Option<u64>,
 }
 
 impl JobMeta {
@@ -69,9 +106,31 @@ impl JobMeta {
             needs,
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         }
+    }
+}
+
+/// Project a SQLite [`crate::store::models::JobRow`] into the [`JobMeta`]
+/// shape used by CLI renderers and the tab-completion hot path. Keeps
+/// presentation code uniform regardless of whether the source is the
+/// SQLite store or (transitionally) a legacy `meta.json` file.
+pub fn job_meta_from_row(row: crate::store::models::JobRow) -> JobMeta {
+    JobMeta {
+        name: row.name,
+        hook_type: row.hook_type,
+        worktree: row.worktree,
+        command: row.command,
+        working_dir: row.working_dir,
+        env: row.env,
+        started_at: row.started_at,
+        status: JobStatus::from_status_str(&row.status),
+        exit_code: row.exit_code,
+        pid: row.pid,
+        background: row.background,
+        finished_at: row.finished_at,
+        needs: row.needs,
+        retention_seconds: row.retention_seconds,
+        max_log_size_bytes: row.max_log_size_bytes,
     }
 }
 
@@ -123,7 +182,7 @@ pub fn generate_invocation_id() -> String {
 ///   <invocation-id>/
 ///     <job-name>/
 ///       meta.json
-///       output.log
+///       output.jsonl
 /// ```
 #[derive(Clone)]
 pub struct LogStore {
@@ -172,24 +231,33 @@ impl LogStore {
         Ok(meta)
     }
 
-    pub fn log_path(job_dir: &Path) -> PathBuf {
-        job_dir.join("output.log")
+    /// Structured per-line log file. One [`crate::coordinator::log_record::LogRecord`]
+    /// per `\n`-terminated line — the canonical (and only) on-disk log format.
+    pub fn jsonl_path(job_dir: &Path) -> PathBuf {
+        job_dir.join("output.jsonl")
     }
 
-    /// Write `meta.json` and `output.log` for a completed job atomically.
+    /// Write `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
+    /// per line). Used by the foreground `BufferingLogSink` and by
+    /// `on_job_runner_skipped`.
     ///
-    /// Creates the job directory if needed. Used by `BufferingLogSink` (for
-    /// foreground jobs) and by `yaml_executor` (for skipped job records).
-    pub fn write_job_record(
+    /// Job metadata flows separately through the SQLite store
+    /// (`JobsStorePort::upsert_job`); this helper only owns the JSONL
+    /// payload + the per-job directory.
+    pub fn write_job_record_jsonl(
         &self,
         invocation_id: &str,
         meta: &JobMeta,
-        log_bytes: &[u8],
+        records: &[crate::coordinator::log_record::LogRecord],
     ) -> Result<PathBuf> {
         let job_dir = self.create_job_dir(invocation_id, &meta.name)?;
-        self.write_meta(&job_dir, meta)?;
-        fs::write(Self::log_path(&job_dir), log_bytes)
-            .with_context(|| format!("Failed to write log file for job: {}", meta.name))?;
+        let mut buf = Vec::with_capacity(records.len().saturating_mul(64));
+        for record in records {
+            crate::coordinator::log_record::write_log_record(&mut buf, record)
+                .with_context(|| format!("Failed to encode log record for job: {}", meta.name))?;
+        }
+        fs::write(Self::jsonl_path(&job_dir), buf)
+            .with_context(|| format!("Failed to write JSONL log file for job: {}", meta.name))?;
         Ok(job_dir)
     }
 
@@ -212,134 +280,86 @@ impl LogStore {
         Ok(dirs)
     }
 
-    /// Clean job dirs according to policy. Returns a summary of what was done.
+    /// Apply the retention policy: identify stale-running rows, evict job
+    /// directories past their retention window, and (when every job in an
+    /// invocation has been evicted) drop the invocation directory too.
+    ///
+    /// This is the imperative shell for
+    /// [`crate::coordinator::domain::retention::retention`] — it gathers
+    /// the snapshot from the SQLite store and the filesystem, calls the
+    /// pure function, then applies the returned decision. Retention
+    /// metadata (per-job `retention_seconds`, status, started_at, …) flows
+    /// through the port instead of `meta.json`.
     pub fn clean(
         &self,
+        jobs_store: &dyn crate::coordinator::ports::JobsStorePort,
+        repo_hash: &str,
         policy: &crate::coordinator::clean_policy::CleanPolicy,
     ) -> Result<crate::coordinator::clean_policy::CleanSummary> {
         use crate::coordinator::clean_policy::CleanSummary;
+        use crate::coordinator::domain::retention::{JobSnapshot, RetentionInput, retention};
 
+        // 1. Gather snapshot.
+        let rows = jobs_store.list_jobs_for_repo(repo_hash)?;
+        let mut jobs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let job_dir = self.base_dir.join(&row.invocation_id).join(&row.name);
+            let log_size_bytes = log_file_size(&job_dir);
+            jobs.push(JobSnapshot {
+                invocation_id: row.invocation_id,
+                name: row.name,
+                worktree: row.worktree,
+                status: JobStatus::from_status_str(&row.status),
+                started_at: row.started_at,
+                retention_seconds: row.retention_seconds,
+                log_size_bytes,
+            });
+        }
+        let socket = crate::coordinator::coordinator_socket_path(repo_hash).ok();
+        let coordinator_socket_alive = socket.as_ref().map(|p| p.exists()).unwrap_or(false);
+        let now = chrono::Utc::now();
+        let decision = retention(RetentionInput {
+            base_dir: self.base_dir.clone(),
+            jobs,
+            policy: policy.clone(),
+            coordinator_socket_alive,
+            now,
+        });
+
+        // 2. Apply decision.
         let mut summary = CleanSummary {
             reason: "retention".into(),
             ..CleanSummary::default()
         };
 
-        let now = chrono::Utc::now();
-        // try_seconds avoids the i64::MIN panic in Duration::seconds. T1's parser
-        // rejects negatives, but a corrupted on-disk value could still reach here.
-        let stale_threshold =
-            chrono::Duration::try_seconds(policy.repo_policy.stale_running_after_resolved())
-                .unwrap_or_else(|| chrono::Duration::seconds(86_400));
-
-        // Build the candidate set: group by worktree for sanity-floor evaluation.
-        // Each entry holds (inv_id, job_dir, meta).
-        let mut by_worktree: std::collections::BTreeMap<String, Vec<(String, PathBuf, JobMeta)>> =
-            Default::default();
-        // Track total job count per invocation across all worktrees so we know
-        // when an entire invocation has been removed.
-        let mut jobs_per_inv: std::collections::BTreeMap<String, usize> = Default::default();
-
-        for job_dir in self.list_job_dirs()? {
-            let meta = match self.read_meta(&job_dir) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let inv_id = job_dir
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            *jobs_per_inv.entry(inv_id.clone()).or_default() += 1;
-
-            // Stale-Running: if Running for >threshold and no live socket, treat as terminal.
-            let effective_status = if matches!(meta.status, JobStatus::Running) {
-                let age = now.signed_duration_since(meta.started_at);
-                let socket =
-                    crate::coordinator::coordinator_socket_path(&self.repo_id_or_empty()).ok();
-                let socket_alive = socket.as_ref().map(|p| p.exists()).unwrap_or(false);
-                if age > stale_threshold && !socket_alive {
-                    summary.stale_running_marked += 1;
-                    JobStatus::Cancelled
-                } else {
-                    JobStatus::Running
-                }
-            } else {
-                meta.status.clone()
-            };
-            if matches!(effective_status, JobStatus::Running) {
-                continue; // never delete running jobs
+        // 2a. Stale-running marks: flip status to Cancelled in SQLite.
+        for mark in &decision.stale_running_marks {
+            if let Some(mut row) = jobs_store.get_job(repo_hash, &mark.invocation_id, &mark.name)? {
+                row.status = JobStatus::Cancelled.as_status_str().to_string();
+                row.finished_at = Some(now);
+                jobs_store.upsert_job(&row)?;
+                summary.stale_running_marked += 1;
             }
-
-            by_worktree
-                .entry(meta.worktree.clone())
-                .or_default()
-                .push((inv_id, job_dir, meta));
         }
 
-        // Determine which jobs are eligible for retention-based removal.
-        let keep_last = policy.repo_policy.keep_last_resolved();
-
-        // (job_dir, log_size, inv_id) for each candidate.
-        let mut candidates: Vec<(PathBuf, u64, String)> = Vec::new();
-
-        for (_worktree, entries) in by_worktree {
-            // Group by invocation. Sanity floor counts invocations, not jobs.
-            let mut by_inv: std::collections::BTreeMap<String, Vec<(PathBuf, JobMeta)>> =
-                Default::default();
-            for (inv_id, dir, meta) in entries {
-                by_inv.entry(inv_id).or_default().push((dir, meta));
-            }
-            // Re-sort invocations by recency (newest first).
-            let mut invs: Vec<(String, Vec<(PathBuf, JobMeta)>)> = by_inv.into_iter().collect();
-            invs.sort_by_key(|(_, jobs)| {
-                std::cmp::Reverse(
-                    jobs.iter()
-                        .map(|(_, m)| m.started_at)
-                        .max()
-                        .unwrap_or_else(chrono::Utc::now),
+        // 2b. Candidate listing for dry-run output.
+        summary.candidates = decision
+            .evictions
+            .iter()
+            .map(|e| {
+                (
+                    e.worktree.clone(),
+                    e.invocation_id.clone(),
+                    e.job_name.clone(),
                 )
-            });
-
-            for (idx, (inv_id, jobs)) in invs.into_iter().enumerate() {
-                if idx < keep_last {
-                    continue; // sanity floor — keep most recent N
-                }
-                for (dir, meta) in jobs {
-                    let retention = policy.retention_override.unwrap_or_else(|| {
-                        meta.retention_seconds
-                            .and_then(chrono::Duration::try_seconds)
-                            .unwrap_or(policy.default_retention)
-                    });
-                    if now.signed_duration_since(meta.started_at) > retention {
-                        let size = log_file_size(&dir);
-                        candidates.push((dir.clone(), size, inv_id.clone()));
-                        summary.candidates.push((
-                            meta.worktree.clone(),
-                            inv_id.clone(),
-                            meta.name.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Tally candidates per invocation so we can drop the entire invocation
-        // dir (including invocation.json) when every job in it was a candidate.
-        // Hoisted above the dry-run early-return so dry-run can report the same
-        // would-be-removed invocation count as the live path.
-        let mut candidates_per_inv: std::collections::BTreeMap<String, usize> = Default::default();
-        for (_, _, inv_id) in &candidates {
-            *candidates_per_inv.entry(inv_id.clone()).or_default() += 1;
-        }
+            })
+            .collect();
 
         if policy.dry_run {
-            summary.freed_bytes = candidates.iter().map(|(_, s, _)| s).sum();
-            summary.removed_jobs = candidates.len();
-            // Mirror the live path's invocation tally: an invocation is
-            // counted as removed when every job in it was a candidate.
-            for (inv_id, count) in &candidates_per_inv {
-                let total = jobs_per_inv.get(inv_id).copied().unwrap_or(0);
+            summary.freed_bytes = decision.freed_bytes_predicted;
+            summary.removed_jobs = decision.evictions.len();
+            for (inv_id, count) in &decision.candidates_per_inv {
+                let total = decision.jobs_per_inv.get(inv_id).copied().unwrap_or(0);
                 if *count >= total && total > 0 {
                     summary.removed_invocations += 1;
                 }
@@ -347,40 +367,44 @@ impl LogStore {
             return Ok(summary);
         }
 
-        // Atomic remove: rename to .deleting-, then remove.
+        // 2c. Atomic remove: rename to `.deleting-…`, then `remove_dir_all`.
         let mut touched_invs: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        for (dir, size, inv_id) in candidates {
-            if let Some(parent) = dir.parent() {
+        for eviction in &decision.evictions {
+            if let Some(parent) = eviction.job_dir.parent() {
                 let trash = parent.join(format!(
                     ".deleting-{}",
-                    dir.file_name()
+                    eviction
+                        .job_dir
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown"),
                 ));
-                if fs::rename(&dir, &trash).is_ok() {
+                if fs::rename(&eviction.job_dir, &trash).is_ok() {
                     let _ = fs::remove_dir_all(&trash);
                     summary.removed_jobs += 1;
-                    summary.freed_bytes += size;
-                    touched_invs.insert(inv_id.clone());
+                    summary.freed_bytes += eviction.size_bytes;
+                    touched_invs.insert(eviction.invocation_id.clone());
                 }
             }
         }
 
-        // For invocations where every job was removed, also drop the parent
-        // directory (including the invocation.json sidecar). For invocations
-        // with partial removal, try `remove_dir` (succeeds only if empty —
-        // back-compat with stores that have no sidecar).
+        // 2d. Drop invocation directories whose every job was evicted; for
+        // partials, try `remove_dir` (succeeds only if empty).
         for inv_id in touched_invs {
             let inv_dir = self.base_dir.join(&inv_id);
-            let total = jobs_per_inv.get(&inv_id).copied().unwrap_or(0);
-            let removed = candidates_per_inv.get(&inv_id).copied().unwrap_or(0);
+            let total = decision.jobs_per_inv.get(&inv_id).copied().unwrap_or(0);
+            let removed = decision
+                .candidates_per_inv
+                .get(&inv_id)
+                .copied()
+                .unwrap_or(0);
             if removed >= total && total > 0 {
                 if fs::remove_dir_all(&inv_dir).is_ok() {
                     summary.removed_invocations += 1;
                 }
             } else {
-                let _ = fs::remove_dir(&inv_dir); // succeeds only if empty
+                let _ = fs::remove_dir(&inv_dir);
                 if !inv_dir.exists() {
                     summary.removed_invocations += 1;
                 }
@@ -388,86 +412,6 @@ impl LogStore {
         }
 
         Ok(summary)
-    }
-
-    /// Truncate any terminal-status log file that exceeds its
-    /// `max_log_size_bytes`. Append a footer recording the original size.
-    /// Skips Running jobs (truncating a live writer invites corruption).
-    ///
-    /// `default_cap` is used when JobMeta.max_log_size_bytes is None.
-    /// Pass None to use the built-in 10 MB default.
-    pub fn truncate_oversized_logs(&self, default_cap: Option<u64>) -> Result<usize> {
-        const BUILTIN_DEFAULT_CAP: u64 = 10 * 1024 * 1024;
-        const MIN_CAP: u64 = 1024; // Floor: cap below this is treated as 1KB.
-
-        let mut truncated = 0;
-        for job_dir in self.list_job_dirs()? {
-            let mut meta = match self.read_meta(&job_dir) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if matches!(meta.status, JobStatus::Running) {
-                continue;
-            }
-            if meta.log_truncated {
-                continue; // already handled
-            }
-
-            let cap = meta
-                .max_log_size_bytes
-                .or(default_cap)
-                .unwrap_or(BUILTIN_DEFAULT_CAP)
-                .max(MIN_CAP);
-
-            let log_path = LogStore::log_path(&job_dir);
-            let log_size = match log_path.metadata() {
-                Ok(m) => m.len(),
-                Err(_) => continue,
-            };
-            if log_size <= cap {
-                continue;
-            }
-
-            // Build footer
-            let footer = format!("\n[output truncated at {log_size} bytes]\n");
-            let footer_bytes = footer.as_bytes();
-            let head_len = cap.saturating_sub(footer_bytes.len() as u64);
-
-            // Read [0..head_len), write [head][footer] atomically via tmpfile-and-rename.
-            let mut head = vec![0u8; head_len as usize];
-            {
-                use std::io::Read;
-                let mut f = fs::File::open(&log_path)?;
-                f.read_exact(&mut head)?;
-            }
-
-            // Atomic replacement: write head + footer to a sibling tmpfile, then rename.
-            // File is renamed before meta is updated; if meta.write fails, the on-disk
-            // file is correctly truncated but `log_truncated` stays false. The subsequent
-            // `log_size <= cap` short-circuit prevents re-truncation, at the cost of
-            // permanently losing `original_size_bytes`. Single-flight protection is
-            // added in T6 (currently best-effort under concurrent calls).
-            let tmp_path = log_path.with_extension("log.truncating");
-            let result = (|| -> Result<()> {
-                use std::io::Write;
-                let mut tmp = fs::File::create(&tmp_path)?;
-                tmp.write_all(&head)?;
-                tmp.write_all(footer_bytes)?;
-                drop(tmp);
-                fs::rename(&tmp_path, &log_path)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&tmp_path); // best-effort cleanup
-            }
-            result?;
-
-            meta.log_truncated = true;
-            meta.original_size_bytes = Some(log_size);
-            self.write_meta(&job_dir, &meta)?;
-            truncated += 1;
-        }
-        Ok(truncated)
     }
 
     /// Total bytes consumed under base_dir (recursive).
@@ -568,15 +512,6 @@ impl LogStore {
         Ok(outcome)
     }
 
-    /// Helper: derive repo_id from base_dir's last component (the repo UUID).
-    fn repo_id_or_empty(&self) -> String {
-        self.base_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string()
-    }
-
     pub fn write_invocation_meta(&self, invocation_id: &str, meta: &InvocationMeta) -> Result<()> {
         let dir = self.base_dir.join(invocation_id);
         fs::create_dir_all(&dir)
@@ -654,63 +589,10 @@ impl LogStore {
         }
         Ok(seen.into_iter().collect())
     }
-
-    /// Path to the repo-level cleanup policy sidecar.
-    pub fn repo_policy_path(&self) -> PathBuf {
-        self.base_dir.join("repo-policy.json")
-    }
-
-    /// Persist the repo-level cleanup policy. Field-merges with the on-disk
-    /// values: explicit `Some(_)` in the new policy wins; `None` preserves the
-    /// on-disk value. This prevents hooks without a `log:` block (which
-    /// produce an all-`None` policy) from silently wiping persisted tuning.
-    pub fn write_repo_policy(
-        &self,
-        policy: &crate::coordinator::clean_policy::RepoPolicy,
-    ) -> Result<()> {
-        fs::create_dir_all(&self.base_dir)
-            .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
-
-        let on_disk = self.read_repo_policy();
-        let merged = crate::coordinator::clean_policy::RepoPolicy {
-            version: policy.version,
-            max_total_size_bytes: policy.max_total_size_bytes.or(on_disk.max_total_size_bytes),
-            keep_last: policy.keep_last.or(on_disk.keep_last),
-            stale_running_after_seconds: policy
-                .stale_running_after_seconds
-                .or(on_disk.stale_running_after_seconds),
-        };
-
-        let json = serde_json::to_string_pretty(&merged)?;
-        let path = self.repo_policy_path();
-        fs::write(&path, json)
-            .with_context(|| format!("Failed to write repo policy: {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Read the repo-level cleanup policy, falling back to defaults if the
-    /// sidecar is missing or unreadable.
-    pub fn read_repo_policy(&self) -> crate::coordinator::clean_policy::RepoPolicy {
-        let path = self.repo_policy_path();
-        match fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str(&json) {
-                Ok(policy) => policy,
-                Err(err) => {
-                    eprintln!(
-                        "daft: warning: failed to parse repo policy at {}: {}; using defaults",
-                        path.display(),
-                        err
-                    );
-                    crate::coordinator::clean_policy::RepoPolicy::defaults()
-                }
-            },
-            Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
-        }
-    }
 }
 
 fn log_file_size(job_dir: &Path) -> u64 {
-    LogStore::log_path(job_dir)
+    LogStore::jsonl_path(job_dir)
         .metadata()
         .map(|m| m.len())
         .unwrap_or(0)
@@ -719,8 +601,78 @@ fn log_file_size(job_dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinator::adapters::SqliteJobsStore;
+    use crate::coordinator::ports::JobsStorePort;
+    use crate::store::models::JobRow;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    /// Stand up a `SqliteJobsStore` rooted at `<base>/coordinator.db`. The
+    /// store's parent dir must already exist; `LogStore::create_job_dir`
+    /// satisfies that for the per-repo base. Tests that call
+    /// [`LogStore::clean`] use this to construct the port the new
+    /// (post-meta.json) shell talks through.
+    fn fresh_job_store(base: &std::path::Path) -> SqliteJobsStore {
+        std::fs::create_dir_all(base).unwrap();
+        SqliteJobsStore::for_repo_base(base).expect("open SqliteJobsStore for test base dir")
+    }
+
+    /// Upsert a [`JobRow`] derived from the test's `JobMeta` so the
+    /// SQLite-backed retention pass sees the same fields the legacy
+    /// `meta.json` path used to surface. Mirrors the production
+    /// `job_row_from_meta` projection but takes the explicit fields the
+    /// pure retention function cares about.
+    fn seed_job_row(
+        job_store: &SqliteJobsStore,
+        repo_hash: &str,
+        invocation_id: &str,
+        meta: &JobMeta,
+    ) {
+        let row = JobRow {
+            repo_hash: repo_hash.into(),
+            invocation_id: invocation_id.into(),
+            name: meta.name.clone(),
+            hook_type: meta.hook_type.clone(),
+            worktree: meta.worktree.clone(),
+            command: meta.command.clone(),
+            working_dir: meta.working_dir.clone(),
+            env: meta.env.clone(),
+            started_at: meta.started_at,
+            finished_at: meta.finished_at,
+            status: meta.status.as_status_str().to_string(),
+            exit_code: meta.exit_code,
+            pid: meta.pid,
+            pgid: None,
+            background: meta.background,
+            needs: meta.needs.clone(),
+            tags: Vec::new(),
+            retention_seconds: meta.retention_seconds,
+            max_log_size_bytes: meta.max_log_size_bytes,
+        };
+        job_store.upsert_job(&row).unwrap();
+    }
+
+    #[test]
+    fn job_status_unknown_round_trips_via_serde_other() {
+        // An older binary reading data written by a newer one (with a status
+        // variant it doesn't recognize) must fall back to Unknown, not panic.
+        let payload = r#"{"status":"futurething"}"#;
+        #[derive(Deserialize)]
+        struct Wrap {
+            status: JobStatus,
+        }
+        let w: Wrap = serde_json::from_str(payload).expect("must deserialize");
+        assert!(matches!(w.status, JobStatus::Unknown));
+    }
+
+    #[test]
+    fn job_status_new_variants_round_trip() {
+        for s in [JobStatus::Cancelling, JobStatus::Crashed] {
+            let ser = serde_json::to_string(&s).unwrap();
+            let back: JobStatus = serde_json::from_str(&ser).unwrap();
+            assert_eq!(back, s);
+        }
+    }
 
     #[test]
     fn test_create_job_log_dir() {
@@ -752,8 +704,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -775,8 +725,10 @@ mod tests {
     #[test]
     fn test_clean_old_logs() {
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
+        let base = tmp.path().join("jobs").join("test-repo");
+        let store = LogStore::new(base.clone());
         let dir = store.create_job_dir("old-inv", "old-job").unwrap();
+        let job_store = fresh_job_store(&base);
         let meta = JobMeta {
             name: "old-job".to_string(),
             hook_type: "post-clone".to_string(),
@@ -793,10 +745,8 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
-        store.write_meta(&dir, &meta).unwrap();
+        seed_job_row(&job_store, "test-repo", "old-inv", &meta);
         let policy = crate::coordinator::clean_policy::CleanPolicy {
             retention_override: Some(chrono::Duration::days(7)),
             repo_policy: crate::coordinator::clean_policy::RepoPolicy {
@@ -806,18 +756,23 @@ mod tests {
             },
             ..crate::coordinator::clean_policy::CleanPolicy::default()
         };
-        let summary = store.clean(&policy).unwrap();
+        let summary = store.clean(&job_store, "test-repo", &policy).unwrap();
         assert_eq!(summary.removed_jobs, 1);
         assert!(!dir.exists());
     }
 
     #[test]
-    fn clean_uses_per_job_retention_from_meta() {
+    fn clean_uses_per_job_retention_from_sqlite_row() {
         use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
 
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
+        let base = tmp.path().join("jobs").join("test-repo");
+        let store = LogStore::new(base.clone());
         let now = chrono::Utc::now();
+
+        // create_job_dir creates base; SqliteJobsStore can then open against it.
+        store.create_job_dir("0001", "build").unwrap();
+        let job_store = fresh_job_store(&base);
 
         // Two invocations, one with a 1-day retention (old), one with 30-day
         // retention (also old, but should survive).
@@ -831,7 +786,7 @@ mod tests {
             };
             store.write_invocation_meta(id, &inv_meta).unwrap();
 
-            let dir = store.create_job_dir(id, "build").unwrap();
+            store.create_job_dir(id, "build").unwrap();
             let meta = JobMeta {
                 name: "build".into(),
                 hook_type: "worktree-post-create".into(),
@@ -848,10 +803,8 @@ mod tests {
                 needs: vec![],
                 retention_seconds: Some(*retention_secs),
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
-            store.write_meta(&dir, &meta).unwrap();
+            seed_job_row(&job_store, "test-repo", id, &meta);
         }
 
         let policy = CleanPolicy {
@@ -864,13 +817,13 @@ mod tests {
                 ..RepoPolicy::defaults()
             },
         };
-        let summary = store.clean(&policy).unwrap();
+        let summary = store.clean(&job_store, "test-repo", &policy).unwrap();
 
         // 0001 had 1d retention, started 10d ago → removed
         // 0002 had 30d retention, started 10d ago → kept
         assert_eq!(summary.removed_invocations, 1);
-        assert!(!tmp.path().join("0001").exists());
-        assert!(tmp.path().join("0002").exists());
+        assert!(!base.join("0001").exists());
+        assert!(base.join("0002").exists());
     }
 
     #[test]
@@ -878,8 +831,13 @@ mod tests {
         use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
 
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
+        let base = tmp.path().join("jobs").join("test-repo");
+        let store = LogStore::new(base.clone());
         let now = chrono::Utc::now();
+
+        // create_job_dir creates base; SqliteJobsStore opens against it.
+        store.create_job_dir("0000", "build").unwrap();
+        let job_store = fresh_job_store(&base);
 
         // 5 invocations all >30 days old, retention 7 days.
         for i in 0..5 {
@@ -892,7 +850,7 @@ mod tests {
                 created_at: now - chrono::Duration::days(30 + i),
             };
             store.write_invocation_meta(&id, &inv_meta).unwrap();
-            let dir = store.create_job_dir(&id, "build").unwrap();
+            store.create_job_dir(&id, "build").unwrap();
             let meta = JobMeta {
                 name: "build".into(),
                 hook_type: "worktree-post-create".into(),
@@ -909,10 +867,8 @@ mod tests {
                 needs: vec![],
                 retention_seconds: Some(86_400 * 7),
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
-            store.write_meta(&dir, &meta).unwrap();
+            seed_job_row(&job_store, "test-repo", &id, &meta);
         }
 
         let policy = CleanPolicy {
@@ -925,27 +881,34 @@ mod tests {
                 ..RepoPolicy::defaults()
             },
         };
-        store.clean(&policy).unwrap();
+        store.clean(&job_store, "test-repo", &policy).unwrap();
 
         // 5 invocations — sanity floor of 3 keeps the most recent 3.
-        let remaining: Vec<_> = std::fs::read_dir(tmp.path())
+        let remaining: Vec<_> = std::fs::read_dir(&base)
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        assert_eq!(remaining.len(), 3);
+        // Three invocation dirs + the SQLite store sometimes adds nothing
+        // visible here (coordinator.db lives at `base`, not in a sub-dir).
+        let inv_dirs: Vec<_> = remaining
+            .iter()
+            .filter(|n| n.starts_with("000"))
+            .cloned()
+            .collect();
+        assert_eq!(inv_dirs.len(), 3, "remaining inv dirs: {inv_dirs:?}");
         assert!(
-            remaining.contains(&"0000".to_string()),
-            "expected most-recent invocation 0000 to survive, got: {remaining:?}"
+            inv_dirs.contains(&"0000".to_string()),
+            "expected most-recent invocation 0000 to survive, got: {inv_dirs:?}"
         );
         assert!(
-            remaining.contains(&"0001".to_string()),
-            "expected 0001 to survive, got: {remaining:?}"
+            inv_dirs.contains(&"0001".to_string()),
+            "expected 0001 to survive, got: {inv_dirs:?}"
         );
         assert!(
-            remaining.contains(&"0002".to_string()),
-            "expected 0002 to survive, got: {remaining:?}"
+            inv_dirs.contains(&"0002".to_string()),
+            "expected 0002 to survive, got: {inv_dirs:?}"
         );
     }
 
@@ -982,6 +945,7 @@ mod tests {
         store.write_invocation_meta(inv_id, &inv_meta).unwrap();
 
         let dir = store.create_job_dir(inv_id, "long-running").unwrap();
+        let job_store = fresh_job_store(&repo_dir);
         let meta = JobMeta {
             name: "long-running".into(),
             hook_type: "worktree-post-create".into(),
@@ -998,10 +962,10 @@ mod tests {
             needs: vec![],
             retention_seconds: Some(60), // 1 minute, well exceeded
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
-        store.write_meta(&dir, &meta).unwrap();
+        // Repo hash is the last path segment used by coordinator_socket_path.
+        let repo_hash = "01900000-0000-7000-8000-000000000000";
+        seed_job_row(&job_store, repo_hash, inv_id, &meta);
 
         // No socket file is created — coordinator considered dead.
         let policy = CleanPolicy {
@@ -1015,7 +979,7 @@ mod tests {
                 ..RepoPolicy::defaults()
             },
         };
-        let summary = store.clean(&policy).unwrap();
+        let summary = store.clean(&job_store, repo_hash, &policy).unwrap();
 
         assert_eq!(
             summary.stale_running_marked, 1,
@@ -1145,8 +1109,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -1184,8 +1146,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&job_dir, &meta).unwrap();
 
@@ -1216,7 +1176,9 @@ mod tests {
     }
 
     #[test]
-    fn write_job_record_creates_meta_and_log_atomically() {
+    fn write_job_record_jsonl_writes_jsonl_without_meta_sidecar() {
+        use crate::coordinator::log_record::LogRecord;
+
         let dir = tempfile::tempdir().unwrap();
         let store = LogStore::new(dir.path().to_path_buf());
 
@@ -1236,19 +1198,26 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
 
+        let records = vec![
+            LogRecord::stdout(0, "installing..."),
+            LogRecord::stdout(1, "done"),
+        ];
         let job_dir = store
-            .write_job_record("inv42", &meta, b"installing...\ndone\n")
+            .write_job_record_jsonl("inv42", &meta, &records)
             .unwrap();
 
-        let loaded_meta = store.read_meta(&job_dir).unwrap();
-        assert_eq!(loaded_meta.name, "pnpm-install");
-
-        let log_bytes = std::fs::read(LogStore::log_path(&job_dir)).unwrap();
-        assert_eq!(log_bytes, b"installing...\ndone\n");
+        // JSONL is the only thing this helper writes post-cutover; the
+        // matching JobRow flows separately through `JobsStorePort`.
+        assert!(
+            !job_dir.join("meta.json").exists(),
+            "meta.json sidecar must not be written"
+        );
+        let jsonl = std::fs::read_to_string(LogStore::jsonl_path(&job_dir)).unwrap();
+        assert_eq!(jsonl.lines().count(), 2);
+        assert!(jsonl.contains("\"data\":\"installing...\""));
+        assert!(jsonl.contains("\"data\":\"done\""));
     }
 
     #[test]
@@ -1272,8 +1241,6 @@ mod tests {
             needs: vec!["migrator".to_string()],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
         let loaded = store.read_meta(&dir).unwrap();
@@ -1443,14 +1410,11 @@ mod tests {
             needs: vec![],
             retention_seconds: Some(86_400 * 14),
             max_log_size_bytes: Some(20 * 1024 * 1024),
-            log_truncated: false,
-            original_size_bytes: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: JobMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back.retention_seconds, Some(86_400 * 14));
         assert_eq!(back.max_log_size_bytes, Some(20 * 1024 * 1024));
-        assert!(!back.log_truncated);
     }
 
     #[test]
@@ -1465,33 +1429,6 @@ mod tests {
         let meta: JobMeta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.retention_seconds, None);
         assert_eq!(meta.max_log_size_bytes, None);
-        assert!(!meta.log_truncated);
-    }
-
-    #[test]
-    fn repo_policy_round_trip_via_log_store() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-
-        let policy = RepoPolicy {
-            version: 1,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(7),
-            stale_running_after_seconds: Some(120),
-        };
-        store.write_repo_policy(&policy).unwrap();
-        let back = store.read_repo_policy();
-        assert_eq!(back, policy);
-    }
-
-    #[test]
-    fn repo_policy_missing_returns_defaults() {
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let p = store.read_repo_policy();
-        assert_eq!(p.max_total_size_resolved(), 500 * 1024 * 1024);
-        assert_eq!(p.keep_last_resolved(), 3);
     }
 
     #[test]
@@ -1514,6 +1451,7 @@ mod tests {
 
     fn seed_inv_with_jobs(
         store: &LogStore,
+        job_store: Option<(&SqliteJobsStore, &str)>,
         inv_id: &str,
         worktree: &str,
         started_at: chrono::DateTime<chrono::Utc>,
@@ -1552,11 +1490,14 @@ mod tests {
                 needs: Vec::new(),
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
-            store.write_meta(&job_dir, &meta).unwrap();
-            let log_path = LogStore::log_path(&job_dir);
+            // Tests that exercise `clean` need the row in SQLite (retention
+            // metadata source post-cutover). Budget tests that only stat
+            // the filesystem pass None.
+            if let Some((js, repo_hash)) = job_store {
+                seed_job_row(js, repo_hash, inv_id, &meta);
+            }
+            let log_path = LogStore::jsonl_path(&job_dir);
             std::fs::write(&log_path, vec![b'x'; log_bytes]).unwrap();
         }
     }
@@ -1569,15 +1510,17 @@ mod tests {
         let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
 
         let now = chrono::Utc::now();
+        // Budget enforcement reads the filesystem, not SQLite. Pass None.
         seed_inv_with_jobs(
             &store,
+            None,
             "inv-old",
             "feat/x",
             now - chrono::Duration::days(2),
             2,
             1_048_576,
         );
-        seed_inv_with_jobs(&store, "inv-new", "feat/x", now, 2, 1_048_576);
+        seed_inv_with_jobs(&store, None, "inv-new", "feat/x", now, 2, 1_048_576);
 
         let policy = RepoPolicy {
             version: RepoPolicy::VERSION,
@@ -1632,11 +1575,9 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
-            let mut f = std::fs::File::create(LogStore::log_path(&dir)).unwrap();
+            let mut f = std::fs::File::create(LogStore::jsonl_path(&dir)).unwrap();
             f.write_all(&vec![b'.'; 200 * 1024]).unwrap();
         }
 
@@ -1667,69 +1608,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_caps_oversized_log_with_footer() {
-        use std::collections::HashMap;
-        use std::io::Write;
-        use tempfile::TempDir;
-
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let now = chrono::Utc::now();
-
-        let inv_id = "0001";
-        let inv_meta = InvocationMeta {
-            invocation_id: inv_id.into(),
-            trigger_command: "post-create".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "main".into(),
-            created_at: now,
-        };
-        store.write_invocation_meta(inv_id, &inv_meta).unwrap();
-
-        let dir = store.create_job_dir(inv_id, "spam").unwrap();
-        let meta = JobMeta {
-            name: "spam".into(),
-            hook_type: "worktree-post-create".into(),
-            worktree: "main".into(),
-            command: "yes".into(),
-            working_dir: "/tmp".into(),
-            env: HashMap::new(),
-            started_at: now,
-            status: JobStatus::Completed,
-            exit_code: Some(0),
-            pid: None,
-            background: false,
-            finished_at: Some(now),
-            needs: vec![],
-            retention_seconds: None,
-            max_log_size_bytes: Some(1024),
-            log_truncated: false,
-            original_size_bytes: None,
-        };
-        store.write_meta(&dir, &meta).unwrap();
-
-        // Write a 4KB log file
-        let log_path = LogStore::log_path(&dir);
-        let mut f = std::fs::File::create(&log_path).unwrap();
-        f.write_all(&vec![b'x'; 4096]).unwrap();
-
-        // Truncate with 1KB cap (from meta.max_log_size_bytes)
-        let truncated = store.truncate_oversized_logs(None).unwrap();
-        assert_eq!(truncated, 1);
-
-        // File should be approximately 1KB (cap), with footer
-        let len = log_path.metadata().unwrap().len();
-        assert!(len <= 1024, "expected <=1024, got {len}");
-        let contents = std::fs::read_to_string(&log_path).unwrap();
-        assert!(contents.ends_with("[output truncated at 4096 bytes]\n"));
-
-        // Meta should be updated
-        let updated = store.read_meta(&dir).unwrap();
-        assert!(updated.log_truncated);
-        assert_eq!(updated.original_size_bytes, Some(4096));
-    }
-
-    #[test]
     fn total_size_bytes_skips_deleting_orphans() {
         use std::io::Write;
         use tempfile::TempDir;
@@ -1739,7 +1617,7 @@ mod tests {
 
         // Real invocation dir with a 1KB log
         let dir = store.create_job_dir("0001", "build").unwrap();
-        let log = LogStore::log_path(&dir);
+        let log = LogStore::jsonl_path(&dir);
         let mut f = std::fs::File::create(&log).unwrap();
         f.write_all(&[b'.'; 1024]).unwrap();
         drop(f);
@@ -1747,7 +1625,7 @@ mod tests {
         // Orphan trash dir with 5KB of garbage
         let trash = tmp.path().join(".deleting-orphan-001");
         std::fs::create_dir(&trash).unwrap();
-        let mut f = std::fs::File::create(trash.join("output.log")).unwrap();
+        let mut f = std::fs::File::create(trash.join("output.jsonl")).unwrap();
         f.write_all(&[b'.'; 5 * 1024]).unwrap();
         drop(f);
 
@@ -1758,72 +1636,22 @@ mod tests {
     }
 
     #[test]
-    fn write_repo_policy_preserves_unset_fields_from_on_disk() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().join("store"));
-
-        // First write: user sets max_total_size + keep_last.
-        let first = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(5),
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&first).unwrap();
-
-        // Second write: a hook with no log block submits all-None.
-        let second = RepoPolicy::defaults();
-        store.write_repo_policy(&second).unwrap();
-
-        // The on-disk policy should still have the user's values.
-        let read = store.read_repo_policy();
-        assert_eq!(read.max_total_size_bytes, Some(100 * 1024 * 1024));
-        assert_eq!(read.keep_last, Some(5));
-    }
-
-    #[test]
-    fn write_repo_policy_overrides_explicitly_set_fields() {
-        use crate::coordinator::clean_policy::RepoPolicy;
-        let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().join("store"));
-
-        let first = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(100 * 1024 * 1024),
-            keep_last: Some(5),
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&first).unwrap();
-
-        let second = RepoPolicy {
-            version: RepoPolicy::VERSION,
-            max_total_size_bytes: Some(200 * 1024 * 1024),
-            keep_last: None,
-            stale_running_after_seconds: None,
-        };
-        store.write_repo_policy(&second).unwrap();
-
-        let read = store.read_repo_policy();
-        assert_eq!(
-            read.max_total_size_bytes,
-            Some(200 * 1024 * 1024),
-            "explicit set wins"
-        );
-        assert_eq!(read.keep_last, Some(5), "unset preserves on-disk");
-    }
-
-    #[test]
     fn dry_run_tallies_removed_invocations() {
         use crate::coordinator::clean_policy::{CleanPolicy, RepoPolicy};
 
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().join("jobs").join("test-repo"));
+        let base = tmp.path().join("jobs").join("test-repo");
+        let store = LogStore::new(base.clone());
+
+        // create_job_dir creates base; SqliteJobsStore opens against it.
+        std::fs::create_dir_all(&base).unwrap();
+        let job_store = fresh_job_store(&base);
 
         let now = chrono::Utc::now();
         // 1 invocation with 2 jobs, both far older than retention (override below).
         seed_inv_with_jobs(
             &store,
+            Some((&job_store, "test-repo")),
             "inv-old",
             "feat/x",
             now - chrono::Duration::days(30),
@@ -1844,7 +1672,7 @@ mod tests {
             retention_override: Some(chrono::Duration::seconds(1)),
             default_retention: chrono::Duration::days(7),
         };
-        let summary = store.clean(&policy).unwrap();
+        let summary = store.clean(&job_store, "test-repo", &policy).unwrap();
         assert_eq!(summary.removed_jobs, 2);
         assert_eq!(
             summary.removed_invocations, 1,

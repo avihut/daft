@@ -1,4 +1,4 @@
-name: repo-policy.json is not clobbered by a hook fire that omits the log block
+name: Redb repo policy is not clobbered by a hook fire that omits the log block
 description:
   "Regression for Task 8 / Bug 3: `write_repo_policy` field-merges with the
   on-disk values, so a subsequent hook fire that produces an all-None policy (no
@@ -8,7 +8,9 @@ description:
   Verifies by: (1) firing post-create with a daft.yml containing top-level log:
   {max_total_size: 100MB, keep_last: 5} → policy persisted; (2) editing daft.yml
   in place to remove the log block; (3) re-firing post-create via `daft hooks
-  run`; (4) asserting repo-policy.json STILL has 100MB / 5."
+  run`; (4) asserting the redb-backed policy STILL has 100MB / 5. Inspection is
+  via `daft __dump-store repo-policy` since #476 Tier-3 deletes the JSON sidecar
+  after one-shot migration."
 
 env:
   # Suppress the autospawned cleanup pipeline so any stray policy reads/writes
@@ -52,11 +54,8 @@ steps:
       exit_code: 0
 
   - name: Confirm the first fire persisted max_total_size=100MB and keep_last=5
-    run: |
-      REPO_ID=$(cat "$WORK_DIR/test-repo-policy-noclobber/.git/daft-id")
-      POLICY="$HOME/.local/state/daft/jobs/$REPO_ID/repo-policy.json"
-      [ -f "$POLICY" ] || { echo "policy missing"; exit 1; }
-      cat "$POLICY"
+    run: daft __dump-store repo-policy
+    cwd: "$WORK_DIR/test-repo-policy-noclobber/feature/x"
     expect:
       exit_code: 0
       output_contains:
@@ -92,15 +91,13 @@ steps:
       exit_code: 0
 
   - name:
-      repo-policy.json must STILL contain max_total_size=100MB and keep_last=5 —
+      Redb repo policy must STILL contain max_total_size=100MB and keep_last=5 —
       the unset fields were preserved, not clobbered to None.
     run: |
-      REPO_ID=$(cat "$WORK_DIR/test-repo-policy-noclobber/.git/daft-id")
-      POLICY="$HOME/.local/state/daft/jobs/$REPO_ID/repo-policy.json"
-      echo "----- repo-policy.json AFTER second fire -----"
-      cat "$POLICY"
-      echo
-      echo "-----------------------------------------------"
+      echo "----- repo policy AFTER second fire -----"
+      daft __dump-store repo-policy
+      echo "-----------------------------------------"
+    cwd: "$WORK_DIR/test-repo-policy-noclobber/feature/x"
     expect:
       exit_code: 0
       output_contains:

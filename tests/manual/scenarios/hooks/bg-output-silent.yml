@@ -65,19 +65,21 @@ steps:
         - "daft: background job 'silent-fail-job' failed"
 
   - name:
-      Wait for both bg jobs to finish — poll meta.json until neither is
-      `running`. Bounded at 10 s (replaces a flaky fixed sleep).
+      Wait for both bg jobs to finish — poll the SQLite store until neither
+      silent-* job is `running`. Bounded at 10 s (replaces a flaky fixed sleep).
+      meta.json is no longer written; the coordinator.db is the source of truth.
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
       for i in $(seq 1 20); do
-        REMAINING=$(grep -l '"status": "running"' "$JOBS_DIR"/*/silent-*-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$REMAINING" = "0" ]; then
-          # Make sure both jobs actually have meta.json files (not still
-          # being created on first poll).
-          OK=$(ls "$JOBS_DIR"/*/silent-ok-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
-          FAIL=$(ls "$JOBS_DIR"/*/silent-fail-job/meta.json 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$OK" -ge 1 ] && [ "$FAIL" -ge 1 ]; then
+        if [ -f "$DB" ]; then
+          REMAINING=$(sqlite3 "$DB" \
+            "SELECT COUNT(*) FROM jobs WHERE name LIKE 'silent-%-job' AND status = 'running'" \
+            2>/dev/null || echo "")
+          TOTAL=$(sqlite3 "$DB" \
+            "SELECT COUNT(*) FROM jobs WHERE name LIKE 'silent-%-job'" \
+            2>/dev/null || echo "")
+          if [ "$REMAINING" = "0" ] && [ "$TOTAL" -ge "2" ] 2>/dev/null; then
             echo "BG_JOBS_SETTLED"
             exit 0
           fi
@@ -85,7 +87,7 @@ steps:
         sleep 0.5
       done
       echo "BG_JOBS_DID_NOT_SETTLE_IN_10S"
-      ls -la "$JOBS_DIR"/*/silent-*/ 2>/dev/null
+      [ -f "$DB" ] && sqlite3 "$DB" "SELECT name, status FROM jobs WHERE name LIKE 'silent-%'" 2>/dev/null
       exit 1
     expect:
       exit_code: 0
@@ -98,7 +100,7 @@ steps:
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.log' 2>/dev/null)
+      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.jsonl' 2>/dev/null)
       echo "ok_logs_found:"
       printf '%s\n' "$LOGS"
       [ -z "$LOGS" ] || { echo "ASSERTION_FAILED: silent-ok-job log was not deleted: $LOGS"; exit 1; }
@@ -115,7 +117,7 @@ steps:
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.log' 2>/dev/null | head -1)
+      LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.jsonl' 2>/dev/null | head -1)
       echo "fail_log: $LOG"
       [ -n "$LOG" ] && [ -f "$LOG" ] || { echo "ASSERTION_FAILED: silent-fail-job log missing"; exit 1; }
       grep -q "whoops" "$LOG" || { echo "ASSERTION_FAILED: silent-fail-job log missing 'whoops'"; cat "$LOG"; exit 1; }

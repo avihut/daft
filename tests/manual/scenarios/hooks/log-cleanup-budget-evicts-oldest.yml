@@ -67,8 +67,15 @@ steps:
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
       [ "$INV_COUNT" -ge 5 ] || { echo "expected >=5, got $INV_COUNT"; exit 1; }
-      # Newest = most recently mtime-modified subdir.
-      NEWEST=$(ls -1tr "$JOBS_DIR" | grep -v '\.json$' | tail -1)
+      # Newest = most recently mtime-modified subdir. The per-repo dir now
+      # also contains the SQLite coordinator store (`coordinator.db`, plus
+      # the WAL/SHM sidecars when WAL is hot), so filter those out before
+      # picking the newest "invocation".
+      NEWEST=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; \
+        | xargs -I{} ls -d "$JOBS_DIR/{}" \
+        | xargs ls -1td \
+        | head -1 \
+        | xargs basename)
       echo "NEWEST=$NEWEST"
       mkdir -p "$WORK_DIR/.scratch"
       printf '%s' "$NEWEST" > "$WORK_DIR/.scratch/newest-inv"

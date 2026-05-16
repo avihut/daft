@@ -47,50 +47,34 @@ steps:
       exit_code: 0
 
   - name:
-      Construct a synthetic Running invocation that started 48h ago, with no
-      coordinator socket file
+      Construct a synthetic Running invocation that started 48h ago in
+      coordinator.db, with no coordinator socket file
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-stale/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      DB="$JOBS_DIR/coordinator.db"
       INV_ID=deadbeefdeadbeef
+      [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       mkdir -p "$JOBS_DIR/$INV_ID/zombiejob"
-      python3 - "$JOBS_DIR/$INV_ID" "$INV_ID" <<'PY'
-      import json, sys, datetime, os
-      inv_dir, inv_id = sys.argv[1], sys.argv[2]
-      old = (datetime.datetime.utcnow() - datetime.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-      inv_meta = {
-          "invocation_id": inv_id,
-          "trigger_command": "test-stale",
-          "hook_type": "worktree-post-create",
-          "worktree": "feature/s",
-          "created_at": old,
-      }
-      with open(os.path.join(inv_dir, "invocation.json"), "w") as f:
-          json.dump(inv_meta, f)
-      job_meta = {
-          "name": "zombiejob",
-          "hook_type": "worktree-post-create",
-          "worktree": "feature/s",
-          "command": "sleep 9999",
-          "working_dir": "/tmp",
-          "env": {},
-          "started_at": old,
-          "status": "running",
-          "exit_code": None,
-          "pid": None,
-          "background": True,
-          "finished_at": None,
-          "needs": [],
-          "retention_seconds": None,
-          "max_log_size_bytes": None,
-          "log_truncated": False,
-          "original_size_bytes": None,
-      }
-      with open(os.path.join(inv_dir, "zombiejob", "meta.json"), "w") as f:
-          json.dump(job_meta, f)
-      open(os.path.join(inv_dir, "zombiejob", "output.log"), "w").close()
+      python3 - "$DB" "$REPO_ID" "$INV_ID" <<'PY'
+      import sqlite3, sys, datetime
+      db, repo, inv = sys.argv[1], sys.argv[2], sys.argv[3]
+      old = (datetime.datetime.utcnow() - datetime.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+      conn = sqlite3.connect(db)
+      conn.execute(
+          "INSERT INTO invocations(repo_hash, invocation_id, trigger_command, hook_type, worktree, created_at, coordinator_pid) "
+          "VALUES (?, ?, 'test-stale', 'worktree-post-create', 'feature/s', ?, NULL)",
+          (repo, inv, old),
+      )
+      conn.execute(
+          "INSERT INTO jobs(repo_hash, invocation_id, name, hook_type, worktree, command, working_dir, env_json, started_at, finished_at, status, exit_code, pid, pgid, background, needs_json, tags_json, retention_seconds, max_log_size_bytes) "
+          "VALUES (?, ?, 'zombiejob', 'worktree-post-create', 'feature/s', 'sleep 9999', '/tmp', '{}', ?, NULL, 'running', NULL, NULL, NULL, 1, '[]', '[]', NULL, NULL)",
+          (repo, inv, old),
+      )
+      conn.commit()
       print("ZOMBIE_OK")
       PY
+      : > "$JOBS_DIR/$INV_ID/zombiejob/output.jsonl"
       # Make sure no coordinator socket lingers for this repo so the
       # stale-Running detector decides the job is dead.
       rm -f "$HOME/.local/state/daft/coordinator-${REPO_ID}.sock"

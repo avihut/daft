@@ -136,6 +136,13 @@ fn main() -> Result<()> {
                         let _ = daft::log_clean::run_clean_logs();
                         return Ok(());
                     }
+                    "__dump-store" => {
+                        if let Err(e) = commands::dump_store::run() {
+                            eprintln!("daft __dump-store: {e:#}");
+                            std::process::exit(1);
+                        }
+                        return Ok(());
+                    }
                     #[cfg(unix)]
                     "__coordinator" => {
                         // Internal: spawned by `spawn_coordinator()`. argv[2]

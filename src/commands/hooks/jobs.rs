@@ -106,17 +106,54 @@ enum JobsCommand {
         /// Invocation ID prefix (overrides inline prefix).
         #[arg(long)]
         inv: Option<String>,
+        /// Only show stdout lines.
+        #[arg(long, conflicts_with_all = ["stderr", "status"])]
+        stdout: bool,
+        /// Only show stderr lines.
+        #[arg(long, conflicts_with_all = ["stdout", "status"])]
+        stderr: bool,
+        /// Only show lifecycle status records (started, finished, signaled).
+        #[arg(long, conflicts_with_all = ["stdout", "stderr"])]
+        status: bool,
+        /// Prefix each line with its `seq` number.
+        #[arg(long)]
+        seq: bool,
+        /// Skip records with `seq < N`.
+        #[arg(long = "since-seq")]
+        since_seq: Option<u64>,
+        /// Skip records older than this duration (`5s`, `2m`, `1h`).
+        #[arg(long = "since")]
+        since: Option<String>,
+        /// Live-tail the job: stream new records as they're produced.
+        /// Requires the coordinator to still be running (otherwise the
+        /// job's already done and the file read once is exhaustive).
+        #[arg(long)]
+        follow: bool,
     },
     /// Cancel a running background job.
     Cancel {
-        /// Job address (omit for --all).
+        /// Job address (omit for --all or a filter flag).
         job: Option<String>,
-        /// Cancel all running jobs.
+        /// Cancel all running jobs in this repo.
         #[arg(long)]
         all: bool,
         /// Invocation ID prefix.
         #[arg(long)]
         inv: Option<String>,
+        /// Match jobs whose `hook_type` equals this value (e.g.
+        /// `worktree-post-create`).
+        #[arg(long)]
+        hook: Option<String>,
+        /// Match jobs in the given worktree (branch slug).
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Match jobs whose `tags:` (from YAML) contain this label.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Match jobs whose elapsed runtime is at least this duration
+        /// (`30s`, `5m`, `1h`, `2d`).
+        #[arg(long = "older-than")]
+        older_than: Option<String>,
     },
     /// Re-run failed jobs from an invocation.
     Retry {
@@ -150,108 +187,10 @@ enum JobsCommand {
     },
 }
 
-/// True for tokens that match the invocation-short-id shape (2–8 ASCII hex
-/// digits). Mirrors the heuristic the `retry` resolver uses (see
-/// `retry_target_from_arg`) so that bare-token resolution is consistent
-/// across `logs`, `cancel`, and `retry`.
-fn looks_like_inv_prefix(s: &str) -> bool {
-    s.len() >= 2 && s.len() <= 8 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Parsed composite job address: `[worktree:][invocation:]job_name`.
-///
-/// `job_name` is empty when the user supplied only an invocation prefix
-/// (e.g. `daft hooks jobs logs 1f2b`); `resolve_job_address` then auto-picks
-/// when the invocation has a single job and prints a candidate list otherwise.
-#[derive(Debug, Clone)]
-pub struct JobAddress {
-    pub worktree: Option<String>,
-    pub invocation_prefix: Option<String>,
-    pub job_name: String,
-}
-
-impl JobAddress {
-    pub fn parse(input: &str) -> Self {
-        // rsplitn splits from the right, so worktree (which may contain /)
-        // stays intact as a single piece.
-        let parts: Vec<&str> = input.rsplitn(3, ':').collect();
-        match parts.len() {
-            1 => {
-                // Bare hex tokens (`1f2b`) are invocation prefixes, not job
-                // names — same boundary as the `retry` resolver. A 9+ char
-                // hex string or anything containing non-hex chars stays a
-                // job name.
-                if looks_like_inv_prefix(parts[0]) {
-                    Self {
-                        worktree: None,
-                        invocation_prefix: Some(parts[0].to_string()),
-                        job_name: String::new(),
-                    }
-                } else {
-                    Self {
-                        worktree: None,
-                        invocation_prefix: None,
-                        job_name: parts[0].to_string(),
-                    }
-                }
-            }
-            2 => {
-                let left = parts[1];
-                let right = parts[0];
-                if left.contains('/') {
-                    // Slash → unambiguously a worktree path. (`feature/auth:db-migrate`)
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: None,
-                        job_name: right.to_string(),
-                    }
-                } else if looks_like_inv_prefix(left) {
-                    // Hex-shaped left → invocation:job. (`c9d4:db-migrate`)
-                    // If both sides are hex, left wins as inv — worktrees
-                    // are conventionally named, hex worktree names are an
-                    // edge case the user can resolve via 3-segment input.
-                    Self {
-                        worktree: None,
-                        invocation_prefix: Some(left.to_string()),
-                        job_name: right.to_string(),
-                    }
-                } else if looks_like_inv_prefix(right) {
-                    // Non-hex left + hex right → worktree:invocation drill-down,
-                    // no job specified yet. (`feature:1f2b`) — the resolver
-                    // auto-picks for single-job invocations or prints a
-                    // candidate list otherwise.
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: Some(right.to_string()),
-                        job_name: String::new(),
-                    }
-                } else {
-                    // Neither side hex-shaped, no slash → treat left as a
-                    // worktree name. Real invocations are hex-only, so
-                    // `feature:db-migrate` is overwhelmingly worktree:job.
-                    Self {
-                        worktree: Some(left.to_string()),
-                        invocation_prefix: None,
-                        job_name: right.to_string(),
-                    }
-                }
-            }
-            3 => Self {
-                worktree: Some(parts[2].to_string()),
-                invocation_prefix: Some(parts[1].to_string()),
-                job_name: parts[0].to_string(),
-            },
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn with_inv_override(mut self, inv: Option<&str>) -> Self {
-        if let Some(prefix) = inv {
-            self.invocation_prefix = Some(prefix.to_string());
-        }
-        self
-    }
-}
+// `JobAddress` + `looks_like_inv_prefix` moved to
+// `crate::coordinator::types` so the IPC layer can reference them on the
+// wire without a back-pointer into this CLI module.
+use crate::coordinator::types::JobAddress;
 
 #[derive(Debug)]
 pub struct ResolvedAddress {
@@ -552,18 +491,73 @@ fn build_retry_set(
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
     match args.command {
         None => list_jobs(&args, path, output),
-        Some(JobsCommand::Logs { ref job, ref inv }) => {
-            show_logs(job, inv.as_deref(), &args, path, output)
+        Some(JobsCommand::Logs {
+            ref job,
+            ref inv,
+            stdout,
+            stderr,
+            status,
+            seq,
+            since_seq,
+            ref since,
+            follow,
+        }) => {
+            let since_ms = match since {
+                Some(s) => Some(
+                    crate::coordinator::clean_policy::parse_duration_str(s)
+                        .with_context(|| format!("Failed to parse --since duration '{s}'"))?
+                        as i64
+                        * 1000,
+                ),
+                None => None,
+            };
+            let filter = LogsFilter {
+                stdout_only: stdout,
+                stderr_only: stderr,
+                status_only: status,
+                show_seq: seq,
+                since_seq,
+                since_ms_ago: since_ms,
+            };
+            if follow {
+                follow_logs(job, inv.as_deref(), &filter, output)
+            } else {
+                show_logs(job, inv.as_deref(), &filter, &args, path, output)
+            }
         }
         Some(JobsCommand::Cancel {
             ref job,
             all,
             ref inv,
+            ref hook,
+            ref worktree,
+            ref tag,
+            ref older_than,
         }) => {
-            if all || job.is_none() {
+            if cancel_has_filter(
+                hook.as_deref(),
+                worktree.as_deref(),
+                tag.as_deref(),
+                older_than.as_deref(),
+                inv.as_deref(),
+            ) {
+                cancel_matching(
+                    hook.as_deref(),
+                    worktree.as_deref(),
+                    tag.as_deref(),
+                    inv.as_deref(),
+                    older_than.as_deref(),
+                    output,
+                )
+            } else if all {
                 cancel_all(path, output)
+            } else if let Some(j) = job {
+                cancel_job(j, inv.as_deref(), path, output)
             } else {
-                cancel_job(job.as_ref().unwrap(), inv.as_deref(), path, output)
+                anyhow::bail!(
+                    "cancel requires a job address, --all, or at least one filter \
+                     (--hook/--worktree/--tag/--older-than/--inv)"
+                );
             }
         }
         Some(JobsCommand::Retry {
@@ -588,6 +582,18 @@ pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
             dry_run,
         }) => prune_jobs(&args, path, output, older_than.as_deref(), dry_run),
     }
+}
+
+/// Whether any of the cancel-filter predicates is set. Extracted so the
+/// `--inv`-respects-filter invariant has a dedicated regression test.
+fn cancel_has_filter(
+    hook: Option<&str>,
+    worktree: Option<&str>,
+    tag: Option<&str>,
+    older_than: Option<&str>,
+    inv: Option<&str>,
+) -> bool {
+    hook.is_some() || worktree.is_some() || tag.is_some() || older_than.is_some() || inv.is_some()
 }
 
 /// List all repo hashes that have job directories under the state dir.
@@ -626,9 +632,84 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
                 yellow("\u{27f3} running (stale)")
             }
         }
+        JobStatus::Cancelling => yellow("\u{27f3} cancelling"),
         JobStatus::Cancelled => dim("\u{2014} cancelled"),
+        JobStatus::Crashed => red("\u{2717} crashed"),
         JobStatus::Skipped => dim("\u{2014} skipped"),
+        JobStatus::Unknown => red("\u{2717} unknown"),
     }
+}
+
+/// Index a repo's SQLite `JobRow`s by `(invocation_id, job_name)` so meta
+/// readers can look up Tier-1 status (including `Crashed`, which legacy
+/// `meta.json` never sees) without scanning the table per directory.
+///
+/// Returns `None` when the store is unreadable — callers fall back to the
+/// legacy `meta.json` reader so pre-upgrade data and pre-store test
+/// fixtures still render.
+///
+/// SQLite + WAL means this open succeeds even while a coordinator is
+/// actively writing to the same DB — readers and writers don't block
+/// each other.
+fn load_sqlite_job_meta_index(
+    repo_hash: &str,
+    log_store_base: &Path,
+) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
+    use crate::coordinator::ports::JobsStorePort;
+    let store =
+        crate::coordinator::adapters::SqliteJobsStore::for_repo_base(log_store_base).ok()?;
+    let rows = store.list_jobs_for_repo(repo_hash).ok()?;
+    Some(
+        rows.into_iter()
+            .map(|r| {
+                (
+                    (r.invocation_id.clone(), r.name.clone()),
+                    job_row_to_meta(r),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Project a store `JobRow` into the `JobMeta` shape `commands/hooks/jobs`
+/// formatters use. Keeps the renderer code path uniform regardless of
+/// whether the source was SQLite or a legacy `meta.json` file.
+fn job_row_to_meta(row: crate::store::models::JobRow) -> crate::coordinator::log_store::JobMeta {
+    crate::coordinator::log_store::JobMeta {
+        name: row.name,
+        hook_type: row.hook_type,
+        worktree: row.worktree,
+        command: row.command,
+        working_dir: row.working_dir,
+        env: row.env,
+        started_at: row.started_at,
+        status: crate::coordinator::log_store::JobStatus::from_status_str(&row.status),
+        exit_code: row.exit_code,
+        pid: row.pid,
+        background: row.background,
+        finished_at: row.finished_at,
+        needs: row.needs,
+        retention_seconds: row.retention_seconds,
+        max_log_size_bytes: row.max_log_size_bytes,
+    }
+}
+
+/// Look up the meta for a single job directory via the SQLite-loaded
+/// index. Returns `None` when the row isn't present (legacy directories
+/// without a SQLite row, or jobs whose row was never written) — callers
+/// should skip rather than fall back to a sidecar file. SQLite is the
+/// sole source of truth post–PR #508.
+fn lookup_job_meta(
+    index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
+    invocation_id: &str,
+    job_dir: &Path,
+) -> Option<crate::coordinator::log_store::JobMeta> {
+    let name = job_dir.file_name().and_then(|s| s.to_str())?;
+    index?
+        .get(&(invocation_id.to_string(), name.to_string()))
+        .cloned()
 }
 
 /// Build a flat `Tabular` payload with one row per (invocation, job).
@@ -639,6 +720,9 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
+    sqlite_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     coordinator_alive: bool,
 ) -> Result<EmitPayload> {
     let now = chrono::Utc::now();
@@ -666,9 +750,8 @@ fn build_jobs_payload(
         let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
 
         for dir in &job_dirs {
-            let meta = match store.read_meta(dir) {
-                Ok(m) => m,
-                Err(_) => continue,
+            let Some(meta) = lookup_job_meta(sqlite_index, &inv.invocation_id, dir) else {
+                continue;
             };
 
             let status_str = match &meta.status {
@@ -676,8 +759,11 @@ fn build_jobs_payload(
                 JobStatus::Running => "running",
                 JobStatus::Completed => "completed",
                 JobStatus::Failed => "failed",
+                JobStatus::Cancelling => "cancelling",
                 JobStatus::Cancelled => "cancelled",
+                JobStatus::Crashed => "crashed",
                 JobStatus::Skipped => "skipped",
+                JobStatus::Unknown => "unknown",
             };
 
             let duration_secs = match (&meta.status, meta.finished_at) {
@@ -692,7 +778,7 @@ fn build_jobs_payload(
                 _ => None,
             };
 
-            let size = LogStore::log_path(dir).metadata().map(|m| m.len()).ok();
+            let size = LogStore::jsonl_path(dir).metadata().map(|m| m.len()).ok();
             let size_cell = size.map(|s| Cell::int(s as i64)).unwrap_or(Cell::Null);
 
             table = table.row([
@@ -796,6 +882,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let invocations = if args.all {
         store.list_invocations()?
     } else if let Some(ref wt) = args.worktree {
@@ -835,8 +922,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     .unwrap_or_default()
                     .iter()
                     .any(|dir| {
-                        store
-                            .read_meta(dir)
+                        lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir)
                             .map(|m| m.status == target_status)
                             .unwrap_or(false)
                     })
@@ -852,7 +938,12 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     }
 
     if args.emit.is_structured() {
-        let payload = build_jobs_payload(&invocations, &store, coordinator_alive)?;
+        let payload = build_jobs_payload(
+            &invocations,
+            &store,
+            sqlite_index.as_ref(),
+            coordinator_alive,
+        )?;
         return emit::emit_and_handle("hooks jobs", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
@@ -882,7 +973,8 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
             for dir in &job_dirs {
-                let Ok(meta) = store.read_meta(dir) else {
+                let Some(meta) = lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir)
+                else {
                     continue;
                 };
                 let icon = if meta.background {
@@ -906,7 +998,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     ),
                     _ => "\u{2014}".to_string(),
                 };
-                let size = LogStore::log_path(dir)
+                let size = LogStore::jsonl_path(dir)
                     .metadata()
                     .map(|m| m.len())
                     .unwrap_or(0);
@@ -988,16 +1080,177 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     Ok(())
 }
 
+/// Predicates for the `daft hooks jobs logs` reader. Filters and rendering
+/// flags applied to each `LogRecord` read from `output.jsonl`.
+#[derive(Debug, Clone, Default)]
+struct LogsFilter {
+    stdout_only: bool,
+    stderr_only: bool,
+    status_only: bool,
+    show_seq: bool,
+    since_seq: Option<u64>,
+    /// Lower bound on `LogRecord.ts` (unix ms). Records older than this are
+    /// dropped.
+    since_ms_ago: Option<i64>,
+}
+
+impl LogsFilter {
+    fn accepts(&self, record: &crate::coordinator::log_record::LogRecord) -> bool {
+        use crate::coordinator::log_record::LogRecordKind;
+        if let Some(min_seq) = self.since_seq
+            && record.seq < min_seq
+        {
+            return false;
+        }
+        if let Some(ago_ms) = self.since_ms_ago {
+            let cutoff = chrono::Utc::now().timestamp_millis() - ago_ms;
+            if record.ts < cutoff {
+                return false;
+            }
+        }
+        match &record.kind {
+            LogRecordKind::Stdout(_) => !(self.stderr_only || self.status_only),
+            LogRecordKind::Stderr(_) => !(self.stdout_only || self.status_only),
+            LogRecordKind::Status(_) => !(self.stdout_only || self.stderr_only),
+        }
+    }
+
+    fn format(&self, record: &crate::coordinator::log_record::LogRecord) -> String {
+        use crate::coordinator::log_record::{LogRecordKind, StatusEvent};
+        let body = match &record.kind {
+            LogRecordKind::Stdout(s) => s.clone(),
+            LogRecordKind::Stderr(s) => s.clone(),
+            LogRecordKind::Status(event) => match event {
+                StatusEvent::Started { pid } => format!("[status] started pid={pid}"),
+                StatusEvent::Finished { exit_code } => {
+                    let code = exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".into());
+                    format!("[status] finished exit_code={code}")
+                }
+                StatusEvent::Signaled { signal } => format!("[status] signaled signal={signal}"),
+                StatusEvent::Crashed { message } => format!("[status] crashed message={message}"),
+            },
+        };
+        if self.show_seq {
+            format!("{:>6}\t{body}", record.seq)
+        } else {
+            body
+        }
+    }
+}
+
+/// Render a job's `output.jsonl` log into `buf` with `filter` applied.
+fn render_job_log(
+    job_dir: &std::path::Path,
+    filter: &LogsFilter,
+    buf: &mut String,
+) -> Result<bool> {
+    use crate::coordinator::log_record::LogRecord;
+
+    let jsonl_path = LogStore::jsonl_path(job_dir);
+    if !jsonl_path.exists() {
+        return Ok(false);
+    }
+    let file = std::fs::File::open(&jsonl_path)
+        .with_context(|| format!("Failed to open log file: {}", jsonl_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut wrote_any = false;
+    for line in std::io::BufRead::lines(reader) {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let record: LogRecord =
+            serde_json::from_str(&line).with_context(|| "Failed to parse JSONL log record")?;
+        if !filter.accepts(&record) {
+            continue;
+        }
+        buf.push_str(&filter.format(&record));
+        buf.push('\n');
+        wrote_any = true;
+    }
+    Ok(wrote_any)
+}
+
+/// Live-tail a job's structured log via the coordinator's `TailLogs`
+/// streaming endpoint.
+///
+/// Strategy (per-invocation coordinator lifecycle):
+/// - If the coordinator is reachable on the per-repo socket, open a
+///   `TailLogs { follow: true }` stream and write each `LogRecord` payload
+///   to stdout as the server emits frames. The server-side handler stops
+///   at the terminal `Status::Finished/Signaled/Crashed` record, so the
+///   client iteration ends naturally.
+/// - If the coordinator is *not* reachable, the job has already finished —
+///   fall back to a one-shot file read so `--follow` still produces the
+///   complete log instead of failing with "no coordinator".
+fn follow_logs(
+    job: &str,
+    inv: Option<&str>,
+    filter: &LogsFilter,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let addr = JobAddress::parse(job).with_inv_override(inv);
+
+    #[cfg(unix)]
+    if let Some(mut client) = CoordinatorClient::connect(&repo_hash)? {
+        return follow_logs_via_coordinator(&mut client, addr, filter);
+    }
+
+    // Coordinator unreachable (or non-Unix where there is no IPC) → the
+    // job is final. Read once and exit.
+    output.info("No coordinator running for this repository; reading log file once.");
+    let store = LogStore::for_repo(&repo_hash)?;
+    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
+    let mut buf = String::new();
+    render_job_log(&resolved.job_dir, filter, &mut buf)?;
+    print!("{buf}");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn follow_logs_via_coordinator(
+    client: &mut CoordinatorClient,
+    addr: JobAddress,
+    filter: &LogsFilter,
+) -> Result<()> {
+    use crate::coordinator::log_record::LogRecord;
+
+    let stream = client.tail_logs(addr, true, filter.since_seq)?;
+    for frame in stream {
+        let resp = frame?;
+        match resp {
+            crate::coordinator::CoordinatorResponse::StreamFrame(value) => {
+                let record: LogRecord = serde_json::from_value(value)?;
+                if !filter.accepts(&record) {
+                    continue;
+                }
+                println!("{}", filter.format(&record));
+            }
+            crate::coordinator::CoordinatorResponse::Error { message, .. } => {
+                anyhow::bail!(message);
+            }
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
 /// Show the output log for a job, resolved via address.
 fn show_logs(
     job: &str,
     inv: Option<&str>,
+    filter: &LogsFilter,
     _args: &JobsArgs,
     _path: &Path,
     _output: &mut dyn Output,
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let addr = JobAddress::parse(job).with_inv_override(inv);
@@ -1027,10 +1280,16 @@ fn show_logs(
     let mut buf = String::new();
 
     if let Some(invocation_id) = invocation_only {
-        render_invocation_logs(&store, &invocation_id, &mut buf)?;
+        render_invocation_logs(
+            &store,
+            sqlite_index.as_ref(),
+            &invocation_id,
+            filter,
+            &mut buf,
+        )?;
     } else {
         let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-        render_single_job_log(&store, &resolved, &mut buf)?;
+        render_single_job_log(&store, sqlite_index.as_ref(), &resolved, filter, &mut buf)?;
     }
 
     crate::output::pager::display_with_pager(&buf);
@@ -1046,13 +1305,23 @@ fn is_hex_prefix(s: &str) -> bool {
 /// Render a single job's metadata and log into `buf`.
 fn render_single_job_log(
     store: &LogStore,
+    sqlite_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     resolved: &ResolvedAddress,
+    filter: &LogsFilter,
     buf: &mut String,
 ) -> Result<()> {
     use std::fmt::Write;
 
-    let meta = store.read_meta(&resolved.job_dir)?;
-    let log_path = LogStore::log_path(&resolved.job_dir);
+    let meta = lookup_job_meta(sqlite_index, &resolved.invocation_id, &resolved.job_dir)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "job '{}' has no SQLite row in invocation {}",
+                resolved.job_dir.display(),
+                resolved.invocation_id
+            )
+        })?;
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
     let now = chrono::Utc::now();
@@ -1062,8 +1331,11 @@ fn render_single_job_log(
         JobStatus::Completed => green("COMPLETED"),
         JobStatus::Failed => red("FAILED"),
         JobStatus::Running => yellow("RUNNING"),
+        JobStatus::Cancelling => yellow("CANCELLING"),
         JobStatus::Cancelled => dim("CANCELLED"),
+        JobStatus::Crashed => red("CRASHED"),
         JobStatus::Skipped => dim("SKIPPED"),
+        JobStatus::Unknown => red("UNKNOWN"),
     };
     writeln!(
         buf,
@@ -1104,27 +1376,32 @@ fn render_single_job_log(
         writeln!(buf, "command:   {}", meta.command)?;
     }
 
-    if log_path.exists() {
-        writeln!(buf)?;
-        writeln!(buf, "{}", dim("--- output ---"))?;
-        let contents = std::fs::read_to_string(&log_path)
-            .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-        buf.push_str(&contents);
-        if !contents.ends_with('\n') {
-            buf.push('\n');
-        }
-        writeln!(buf)?;
-        writeln!(buf, "Full log: {}", log_path.display())?;
+    writeln!(buf)?;
+    writeln!(buf, "{}", dim("--- output ---"))?;
+    let wrote = render_job_log(&resolved.job_dir, filter, buf)?;
+    if !wrote {
+        writeln!(buf, "{}", dim("(no output)"))?;
     } else {
-        writeln!(buf)?;
-        writeln!(buf, "{}", dim("(no output log)"))?;
+        let jsonl = LogStore::jsonl_path(&resolved.job_dir);
+        if jsonl.exists() {
+            writeln!(buf)?;
+            writeln!(buf, "Full log: {}", jsonl.display())?;
+        }
     }
 
     Ok(())
 }
 
 /// Render all job logs for a single invocation into `buf`.
-fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut String) -> Result<()> {
+fn render_invocation_logs(
+    store: &LogStore,
+    sqlite_index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
+    invocation_id: &str,
+    filter: &LogsFilter,
+    buf: &mut String,
+) -> Result<()> {
     use std::fmt::Write;
 
     let inv_meta = store.read_invocation_meta(invocation_id)?;
@@ -1135,7 +1412,7 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
     let job_dirs = store.list_jobs_in_invocation(invocation_id)?;
     let mut jobs: Vec<(std::path::PathBuf, crate::coordinator::log_store::JobMeta)> = job_dirs
         .into_iter()
-        .filter_map(|dir| store.read_meta(&dir).ok().map(|m| (dir, m)))
+        .filter_map(|dir| lookup_job_meta(sqlite_index, invocation_id, &dir).map(|m| (dir, m)))
         .collect();
     jobs.sort_by_key(|a| a.1.started_at);
 
@@ -1166,8 +1443,11 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
             JobStatus::Completed => green("COMPLETED"),
             JobStatus::Failed => red("FAILED"),
             JobStatus::Running => yellow("RUNNING"),
+            JobStatus::Cancelling => yellow("CANCELLING"),
             JobStatus::Cancelled => dim("CANCELLED"),
+            JobStatus::Crashed => red("CRASHED"),
             JobStatus::Skipped => dim("SKIPPED"),
+            JobStatus::Unknown => red("UNKNOWN"),
         };
 
         let duration_str = match meta.finished_at {
@@ -1184,20 +1464,9 @@ fn render_invocation_logs(store: &LogStore, invocation_id: &str, buf: &mut Strin
             dim(&format!("({duration_str})")),
         )?;
 
-        let log_path = LogStore::log_path(dir);
-        if log_path.exists() {
-            let contents = std::fs::read_to_string(&log_path)
-                .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
-            if contents.is_empty() {
-                writeln!(buf, "{}", dim("(empty)"))?;
-            } else {
-                buf.push_str(&contents);
-                if !contents.ends_with('\n') {
-                    buf.push('\n');
-                }
-            }
-        } else {
-            writeln!(buf, "{}", dim("(no output log)"))?;
+        let wrote = render_job_log(dir, filter, buf)?;
+        if !wrote {
+            writeln!(buf, "{}", dim("(empty)"))?;
         }
         writeln!(buf)?;
     }
@@ -1244,10 +1513,56 @@ fn cancel_all(_path: &Path, output: &mut dyn Output) -> Result<()> {
     Ok(())
 }
 
+/// Cancel every active job matching the supplied predicates. AND-combined;
+/// requires the running coordinator (the signaling side). Returns the list
+/// of cancelled job names.
+fn cancel_matching(
+    hook: Option<&str>,
+    worktree: Option<&str>,
+    tag: Option<&str>,
+    invocation_prefix: Option<&str>,
+    older_than: Option<&str>,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+
+    let older_than_secs = match older_than {
+        Some(s) => Some(
+            crate::coordinator::clean_policy::parse_duration_str(s)
+                .with_context(|| format!("Failed to parse --older-than duration '{s}'"))?,
+        ),
+        None => None,
+    };
+
+    match CoordinatorClient::connect(&repo_hash)? {
+        Some(mut client) => {
+            let names =
+                client.cancel_matching(hook, worktree, tag, invocation_prefix, older_than_secs)?;
+            if names.is_empty() {
+                output.info("No active jobs matched the filter.");
+            } else {
+                output.success(&format!(
+                    "Cancelled {} job(s): {}",
+                    names.len(),
+                    names.join(", ")
+                ));
+            }
+        }
+        None => {
+            output.info("No coordinator running for this repository.");
+        }
+    }
+
+    Ok(())
+}
+
 /// Resolve the retry target to a specific invocation.
 fn resolve_retry_invocation(
     target: &RetryTarget,
     store: &LogStore,
+    index: Option<
+        &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
+    >,
     current_worktree: &str,
 ) -> Result<InvocationMeta> {
     match target {
@@ -1300,7 +1615,7 @@ fn resolve_retry_invocation(
             for inv in invocations.iter().rev() {
                 let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
                 for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir)
+                    if let Some(meta) = lookup_job_meta(index, &inv.invocation_id, dir)
                         && meta.name == *name
                         && matches!(meta.status, JobStatus::Failed | JobStatus::Cancelled)
                     {
@@ -1326,6 +1641,7 @@ fn retry_command(
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let mut effective_worktree = worktree_flag
@@ -1367,13 +1683,14 @@ fn retry_command(
     };
 
     // Resolve to a source invocation.
-    let inv = resolve_retry_invocation(&parsed, &store, &effective_worktree)?;
+    let inv =
+        resolve_retry_invocation(&parsed, &store, sqlite_index.as_ref(), &effective_worktree)?;
 
-    // Load all job metas from the source invocation.
+    // Load all job metas from the source invocation via the SQLite index.
     let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
     let mut metas: Vec<crate::coordinator::log_store::JobMeta> = Vec::new();
     for dir in &job_dirs {
-        if let Ok(meta) = store.read_meta(dir) {
+        if let Some(meta) = lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir) {
             metas.push(meta);
         }
     }
@@ -1514,6 +1831,7 @@ fn retry_command(
         let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
             std::sync::Arc::new(crate::executor::BufferingLogSink::new(
                 std::sync::Arc::new(store.clone()),
+                repo_hash.clone(),
                 new_invocation_id.clone(),
                 inv.hook_type.clone(),
                 effective_worktree.clone(),
@@ -1545,7 +1863,7 @@ fn retry_command(
             for spec in bg_specs {
                 coord_state.add_job(spec);
             }
-            crate::coordinator::process::fork_coordinator(coord_state, bg_store)?;
+            crate::coordinator::process::spawn_coordinator(coord_state, bg_store)?;
         }
 
         #[cfg(not(unix))]
@@ -1606,8 +1924,13 @@ fn prune_jobs(
         }
     };
 
-    let process_one = |store: &LogStore| -> Result<CleanSummary> {
-        let repo_policy = store.read_repo_policy();
+    let process_one = |repo_hash: &str, store: &LogStore| -> Result<CleanSummary> {
+        use crate::coordinator::ports::JobsStorePort;
+        let job_store =
+            crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir)?;
+        let repo_policy = job_store
+            .read_repo_policy(repo_hash)
+            .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults());
         let policy = CleanPolicy {
             retention_override,
             dry_run,
@@ -1615,20 +1938,10 @@ fn prune_jobs(
             ..CleanPolicy::default()
         };
 
-        // Pass 1: truncation pre-pass (skipped in dry-run since the spec
-        // describes truncation as side-effecting; dry-run mode shouldn't
-        // touch disk for any pass).
-        let truncated = if dry_run {
-            0
-        } else {
-            store.truncate_oversized_logs(None).unwrap_or(0)
-        };
+        // Pass 1: retention sweep.
+        let mut summary = store.clean(&job_store, repo_hash, &policy)?;
 
-        // Pass 2: retention sweep.
-        let mut summary = store.clean(&policy)?;
-        summary.truncated_logs += truncated;
-
-        // Pass 3: budget post-pass (also skipped in dry-run).
+        // Pass 2: budget post-pass (also skipped in dry-run).
         if !dry_run {
             let bo = store.enforce_budget(&repo_policy).unwrap_or_default();
             summary.removed_invocations += bo.evicted_invocations;
@@ -1644,15 +1957,13 @@ fn prune_jobs(
         let mut total_jobs = 0;
         let mut total_invs = 0;
         let mut total_bytes = 0u64;
-        let mut total_truncated = 0u64;
         let mut all_candidates: Vec<(String, String, String)> = Vec::new();
         for hash in &hashes {
             let store = LogStore::for_repo(hash)?;
-            let s = process_one(&store)?;
+            let s = process_one(hash, &store)?;
             total_jobs += s.removed_jobs;
             total_invs += s.removed_invocations;
             total_bytes += s.freed_bytes;
-            total_truncated += s.truncated_logs as u64;
             let short_repo = &hash[..8.min(hash.len())];
             for (wt, inv, name) in s.candidates {
                 all_candidates.push((format!("{short_repo}/{wt}"), inv, name));
@@ -1660,23 +1971,18 @@ fn prune_jobs(
         }
         if dry_run {
             print_dry_run_summary(output, total_invs, total_jobs, total_bytes, &all_candidates);
-        } else if total_jobs > 0 || total_truncated > 0 {
-            let mut msg = format!(
-                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos",
+        } else if total_jobs > 0 {
+            output.success(&format!(
+                "Removed {total_jobs} job(s) across {total_invs} invocation(s), freed {} across all repos.",
                 format_bytes(total_bytes),
-            );
-            if total_truncated > 0 {
-                msg.push_str(&format!(", truncated {total_truncated} log(s)"));
-            }
-            msg.push('.');
-            output.success(&msg);
+            ));
         } else {
             output.info("No old logs to clean.");
         }
     } else {
         let repo_hash = crate::core::repo_identity::compute_repo_id()?;
         let store = LogStore::for_repo(&repo_hash)?;
-        let s = process_one(&store)?;
+        let s = process_one(&repo_hash, &store)?;
         if dry_run {
             print_dry_run_summary(
                 output,
@@ -1685,17 +1991,12 @@ fn prune_jobs(
                 s.freed_bytes,
                 &s.candidates,
             );
-        } else if s.removed_jobs > 0 || s.truncated_logs > 0 {
-            let mut msg = format!(
-                "Removed {} job(s) ({} freed)",
+        } else if s.removed_jobs > 0 {
+            output.success(&format!(
+                "Removed {} job(s) ({} freed).",
                 s.removed_jobs,
                 format_bytes(s.freed_bytes),
-            );
-            if s.truncated_logs > 0 {
-                msg.push_str(&format!(", truncated {} log(s)", s.truncated_logs));
-            }
-            msg.push('.');
-            output.success(&msg);
+            ));
         } else {
             output.info("No old logs to clean.");
         }
@@ -1711,7 +2012,7 @@ fn print_dry_run_summary(
     bytes: u64,
     candidates: &[(String, String, String)],
 ) {
-    if jobs == 0 {
+    if jobs == 0 && invs == 0 {
         output.info("No candidates for removal.");
         return;
     }
@@ -1740,6 +2041,33 @@ fn format_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_inv_alone_counts_as_filter() {
+        // Regression: `daft hooks jobs cancel --inv abc123` previously fell
+        // through to the bail! because `--inv` wasn't included in the
+        // has_filter set. It should now drive cancel_matching.
+        assert!(cancel_has_filter(None, None, None, None, Some("abc123")));
+    }
+
+    #[test]
+    fn cancel_no_predicates_is_not_a_filter() {
+        assert!(!cancel_has_filter(None, None, None, None, None));
+    }
+
+    #[test]
+    fn cancel_other_predicates_still_count() {
+        assert!(cancel_has_filter(
+            Some("worktree-post-create"),
+            None,
+            None,
+            None,
+            None
+        ));
+        assert!(cancel_has_filter(None, Some("feat/x"), None, None, None));
+        assert!(cancel_has_filter(None, None, Some("build"), None, None));
+        assert!(cancel_has_filter(None, None, None, Some("5m"), None));
+    }
 
     #[test]
     fn format_duration_sub_second_uses_milliseconds() {
@@ -1783,6 +2111,62 @@ mod tests {
     fn format_duration_negative_clamps_to_zero() {
         assert_eq!(format_duration(chrono::Duration::seconds(-5)), "0ms");
         assert_eq!(format_duration(chrono::Duration::milliseconds(-1)), "0ms");
+    }
+
+    #[test]
+    fn lookup_job_meta_returns_indexed_row() {
+        use crate::coordinator::log_store::{JobMeta, JobStatus};
+        use std::collections::HashMap;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let inv = "inv1";
+        let name = "build";
+        let job_dir = store.create_job_dir(inv, name).unwrap();
+
+        let mut idx = HashMap::new();
+        let row_meta = JobMeta {
+            status: JobStatus::Crashed,
+            ..JobMeta::skipped(name, "worktree-post-create", "feat/test", "", true, vec![])
+        };
+        idx.insert((inv.to_string(), name.to_string()), row_meta);
+
+        let got = lookup_job_meta(Some(&idx), inv, &job_dir).expect("indexed meta found");
+        assert!(matches!(got.status, JobStatus::Crashed));
+    }
+
+    #[test]
+    fn lookup_job_meta_returns_none_when_index_misses() {
+        use crate::coordinator::log_store::JobMeta;
+        use std::collections::HashMap;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = LogStore::new(tmp.path().to_path_buf());
+        let inv = "inv1";
+        let name = "build";
+        let job_dir = store.create_job_dir(inv, name).unwrap();
+
+        // SQLite is the only source post-cutover: no row → None.
+        let empty_idx: HashMap<(String, String), JobMeta> = HashMap::new();
+        assert!(lookup_job_meta(Some(&empty_idx), inv, &job_dir).is_none());
+        // Missing index also yields None (no read_meta fallback).
+        assert!(lookup_job_meta(None, inv, &job_dir).is_none());
+    }
+
+    #[test]
+    fn print_dry_run_summary_emits_with_invs_only() {
+        let mut output = crate::output::TestOutput::new();
+        print_dry_run_summary(&mut output, 2, 0, 0, &[]);
+        assert!(
+            output.has_info("Would remove 0 job(s) across 2 invocation(s)"),
+            "expected summary when invs > 0 even if jobs == 0; got infos: {:?}",
+            output.infos(),
+        );
+    }
+
+    #[test]
+    fn print_dry_run_summary_silent_when_both_zero() {
+        let mut output = crate::output::TestOutput::new();
+        print_dry_run_summary(&mut output, 0, 0, 0, &[]);
+        assert!(output.has_info("No candidates for removal."));
     }
 
     #[test]
@@ -1936,8 +2320,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -1988,8 +2370,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2041,8 +2421,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2105,8 +2483,6 @@ mod tests {
                 needs: vec![],
                 retention_seconds: None,
                 max_log_size_bytes: None,
-                log_truncated: false,
-                original_size_bytes: None,
             };
             store.write_meta(&dir, &meta).unwrap();
         }
@@ -2155,8 +2531,6 @@ mod tests {
             needs: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         };
         store.write_meta(&dir, &meta).unwrap();
 
@@ -2260,8 +2634,6 @@ mod tests {
             needs,
             retention_seconds: None,
             max_log_size_bytes: None,
-            log_truncated: false,
-            original_size_bytes: None,
         }
     }
 
@@ -2324,15 +2696,25 @@ mod tests {
         };
         store.write_invocation_meta("inv1", &inv_meta).unwrap();
 
-        // Resolving with "feature/other" as worktree should find it
-        let result =
-            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/other");
+        // Resolving with "feature/other" as worktree should find it.
+        // `LatestInvocation` doesn't read job metas, so the index argument
+        // is irrelevant here.
+        let result = resolve_retry_invocation(
+            &RetryTarget::LatestInvocation,
+            &store,
+            None,
+            "feature/other",
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap().worktree, "feature/other");
 
         // Resolving with "feature/current" should find nothing
-        let result =
-            resolve_retry_invocation(&RetryTarget::LatestInvocation, &store, "feature/current");
+        let result = resolve_retry_invocation(
+            &RetryTarget::LatestInvocation,
+            &store,
+            None,
+            "feature/current",
+        );
         assert!(result.is_err());
     }
 

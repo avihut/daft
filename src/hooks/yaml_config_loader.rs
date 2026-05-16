@@ -231,6 +231,7 @@ pub fn merge_log_configs(o: LogConfig, b: LogConfig) -> LogConfig {
         max_total_size: o.max_total_size.or(b.max_total_size),
         keep_last: o.keep_last.or(b.keep_last),
         stale_running_after: o.stale_running_after.or(b.stale_running_after),
+        sampling_every_nth: o.sampling_every_nth.or(b.sampling_every_nth),
     }
 }
 
@@ -887,13 +888,15 @@ hooks:
             max_total_size: Some("500MB".into()),
             keep_last: Some(3),
             stale_running_after: Some("24h".into()),
+            sampling_every_nth: Some(5),
         };
         let override_cfg = LogConfig {
             retention: Some("14d".into()),
             max_log_size: Some("20MB".into()),
-            max_total_size: None,      // base wins for this one
-            keep_last: None,           // base wins
-            stale_running_after: None, // base wins
+            max_total_size: None,        // base wins for this one
+            keep_last: None,             // base wins
+            stale_running_after: None,   // base wins
+            sampling_every_nth: Some(2), // override wins
         };
         let merged = merge_log_configs(override_cfg, base);
         assert_eq!(merged.retention.as_deref(), Some("14d"));

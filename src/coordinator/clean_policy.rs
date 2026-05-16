@@ -34,7 +34,6 @@ pub struct CleanSummary {
     pub removed_invocations: usize,
     pub removed_jobs: usize,
     pub freed_bytes: u64,
-    pub truncated_logs: usize,
     pub stale_running_marked: usize,
     /// One-line human reason: "retention", "budget", "stale-running", "mixed".
     pub reason: String,

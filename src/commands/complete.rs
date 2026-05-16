@@ -802,6 +802,7 @@ fn complete_worktree_names(prefix: &str) -> Result<Vec<String>> {
 /// - `abcd:name` (1 colon): jobs within a specific invocation OR invocations for a worktree
 /// - `worktree:abcd:name` (2 colons): jobs within a specific worktree+invocation
 fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::adapters::SqliteJobsStore;
     use crate::coordinator::log_store::LogStore;
 
     let repo_hash = match crate::core::repo_identity::compute_repo_id() {
@@ -813,6 +814,12 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
         Ok(s) => s,
         Err(_) => return Ok(vec![]),
     };
+    // The completion entry-point pays a single SQLite open per Tab press;
+    // each colon-branch below reuses the same store for batched
+    // `list_jobs_for_invocation` queries (one query per invocation, not
+    // one query per job). On a populated state dir this keeps the
+    // critical path comparable to the previous meta.json filesystem scan.
+    let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).ok();
 
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
     let now = chrono::Utc::now();
@@ -830,13 +837,9 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
             // Job names from the latest invocation
             let mut job_rows: Vec<(String, Vec<String>)> = Vec::new();
             if let Some(latest) = invocations.last() {
-                let job_dirs = store
-                    .list_jobs_in_invocation(&latest.invocation_id)
-                    .unwrap_or_default();
-                for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir)
-                        && meta.name.starts_with(prefix)
-                    {
+                let metas = jobs_for_invocation(&job_store, &repo_hash, &latest.invocation_id);
+                for meta in &metas {
+                    if meta.name.starts_with(prefix) {
                         let short_id = &latest.invocation_id[..4.min(latest.invocation_id.len())];
                         let ago = crate::output::format::shorthand_from_seconds(
                             now.signed_duration_since(latest.created_at).num_seconds(),
@@ -862,10 +865,8 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                     let ago = crate::output::format::shorthand_from_seconds(
                         now.signed_duration_since(inv.created_at).num_seconds(),
                     );
-                    let job_count = store
-                        .list_jobs_in_invocation(&inv.invocation_id)
-                        .map(|d| d.len())
-                        .unwrap_or(0);
+                    let job_count =
+                        jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id).len();
                     inv_rows.push((
                         short_id.to_string(),
                         vec![
@@ -911,14 +912,10 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
                 // inv:job completions
                 let inv = matching[0];
                 let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
-                let job_dirs = store
-                    .list_jobs_in_invocation(&inv.invocation_id)
-                    .unwrap_or_default();
+                let metas = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id);
                 let mut rows: Vec<(String, Vec<String>)> = Vec::new();
-                for dir in &job_dirs {
-                    if let Ok(meta) = store.read_meta(dir)
-                        && meta.name.starts_with(after)
-                    {
+                for meta in &metas {
+                    if meta.name.starts_with(after) {
                         rows.push((
                             format!("{short_id}:{}", meta.name),
                             vec![job_status_icon(&meta.status).to_string()],
@@ -962,14 +959,10 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
             }
             let inv = matching[0];
             let short_id = &inv.invocation_id[..4.min(inv.invocation_id.len())];
-            let job_dirs = store
-                .list_jobs_in_invocation(&inv.invocation_id)
-                .unwrap_or_default();
+            let metas = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id);
             let mut rows: Vec<(String, Vec<String>)> = Vec::new();
-            for dir in &job_dirs {
-                if let Ok(meta) = store.read_meta(dir)
-                    && meta.name.starts_with(job_prefix)
-                {
+            for meta in &metas {
+                if meta.name.starts_with(job_prefix) {
                     rows.push((
                         format!("{wt}:{short_id}:{}", meta.name),
                         vec![job_status_icon(&meta.status).to_string()],
@@ -980,6 +973,29 @@ fn complete_job_addresses(prefix: &str) -> Result<Vec<String>> {
         }
         _ => Ok(vec![]),
     }
+}
+
+/// Batched per-invocation job lookup for the completion hot path.
+///
+/// Each `daft __complete` invocation pays one SQLite open; this helper
+/// turns each per-invocation pass into a single `list_jobs_for_invocation`
+/// query instead of one filesystem `read_meta` call per job dir. Returns
+/// an empty vec when the store hasn't been opened yet or when the query
+/// fails (completion is best-effort — silence beats panicking on Tab).
+fn jobs_for_invocation(
+    job_store: &Option<crate::coordinator::adapters::SqliteJobsStore>,
+    repo_hash: &str,
+    invocation_id: &str,
+) -> Vec<crate::coordinator::log_store::JobMeta> {
+    use crate::coordinator::ports::JobsStorePort;
+    let Some(js) = job_store else {
+        return Vec::new();
+    };
+    js.list_jobs_for_invocation(repo_hash, invocation_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(crate::coordinator::log_store::job_meta_from_row)
+        .collect()
 }
 
 /// Build worktree-drill-down entries for the colon_count==0 branch of
@@ -1039,8 +1055,11 @@ fn job_status_icon(status: &crate::coordinator::log_store::JobStatus) -> &'stati
         JobStatus::Completed => "\u{2713} completed",
         JobStatus::Failed => "\u{2717} failed",
         JobStatus::Running => "\u{27f3} running",
+        JobStatus::Cancelling => "\u{27f3} cancelling",
         JobStatus::Cancelled => "\u{2014} cancelled",
+        JobStatus::Crashed => "\u{2717} crashed",
         JobStatus::Skipped => "\u{2014} skipped",
+        JobStatus::Unknown => "\u{2717} unknown",
     }
 }
 
@@ -1135,6 +1154,7 @@ fn align_completion_columns(entries: Vec<String>) -> Vec<String> {
 /// - Invocation short IDs with failures
 /// - Job names from the most recent failing invocation
 fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::adapters::SqliteJobsStore;
     use crate::coordinator::log_store::{JobStatus, LogStore};
 
     let repo_hash = match crate::core::repo_identity::compute_repo_id() {
@@ -1146,6 +1166,7 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
         Ok(s) => s,
         Err(_) => return Ok(vec![]),
     };
+    let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).ok();
 
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
     let now = chrono::Utc::now();
@@ -1159,12 +1180,8 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
     let mut hooks_with_failures: std::collections::HashMap<String, (usize, usize)> =
         std::collections::HashMap::new();
     for inv in &invocations {
-        let job_dirs = store
-            .list_jobs_in_invocation(&inv.invocation_id)
-            .unwrap_or_default();
-        let failed_count = job_dirs
-            .iter()
-            .filter_map(|d| store.read_meta(d).ok())
+        let failed_count = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id)
+            .into_iter()
             .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
             .count();
         if failed_count > 0 {
@@ -1190,12 +1207,8 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
         if !short_id.starts_with(prefix) {
             continue;
         }
-        let job_dirs = store
-            .list_jobs_in_invocation(&inv.invocation_id)
-            .unwrap_or_default();
-        let failed_count = job_dirs
-            .iter()
-            .filter_map(|d| store.read_meta(d).ok())
+        let failed_count = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id)
+            .into_iter()
             .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
             .count();
         if failed_count > 0 {
@@ -1211,12 +1224,8 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
 
     // 3. Job names from latest invocation with failures
     for inv in invocations.iter().rev() {
-        let job_dirs = store
-            .list_jobs_in_invocation(&inv.invocation_id)
-            .unwrap_or_default();
-        let failed_jobs: Vec<_> = job_dirs
-            .iter()
-            .filter_map(|d| store.read_meta(d).ok())
+        let failed_jobs: Vec<_> = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id)
+            .into_iter()
             .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
             .collect();
         if !failed_jobs.is_empty() {
@@ -1240,6 +1249,7 @@ fn complete_retry_targets(prefix: &str) -> Result<Vec<String>> {
 }
 
 fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
+    use crate::coordinator::adapters::SqliteJobsStore;
     use crate::coordinator::log_store::{JobStatus, LogStore};
 
     let repo_hash = match crate::core::repo_identity::compute_repo_id() {
@@ -1250,6 +1260,7 @@ fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
         Ok(s) => s,
         Err(_) => return Ok(vec![]),
     };
+    let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).ok();
 
     let now = chrono::Utc::now();
     let invocations = store.list_invocations().unwrap_or_default();
@@ -1259,12 +1270,8 @@ fn complete_retry_worktrees(prefix: &str) -> Result<Vec<String>> {
         (usize, chrono::DateTime<chrono::Utc>),
     > = std::collections::HashMap::new();
     for inv in &invocations {
-        let job_dirs = store
-            .list_jobs_in_invocation(&inv.invocation_id)
-            .unwrap_or_default();
-        let failed = job_dirs
-            .iter()
-            .filter_map(|d| store.read_meta(d).ok())
+        let failed = jobs_for_invocation(&job_store, &repo_hash, &inv.invocation_id)
+            .into_iter()
             .filter(|m| matches!(m.status, JobStatus::Failed | JobStatus::Cancelled))
             .count();
         let entry = worktree_stats

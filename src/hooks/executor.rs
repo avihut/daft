@@ -359,19 +359,16 @@ impl HookExecutor {
         let env = HookEnvironment::from_context(ctx);
         let working_dir = env.working_directory(ctx);
 
-        let result = yaml_executor::execute_yaml_hook_with_rc(
-            hook_name,
-            hook_def,
-            ctx,
-            output,
+        let cfg = yaml_executor::HookExecutionContext {
             source_dir,
             working_dir,
             rc,
-            &self.config.output,
-            &self.job_filter,
+            filter: &self.job_filter,
             presenter,
-            yaml_config.log.as_ref(),
-        )?;
+            repo_log: yaml_config.log.as_ref(),
+        };
+        let result =
+            yaml_executor::execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)?;
 
         // Return the raw result — failure translation (Abort → Err, Warn →
         // logged-and-continue) is the caller's responsibility via

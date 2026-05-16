@@ -196,6 +196,7 @@ pub mod logging;
 pub mod output;
 pub mod prompt;
 pub mod shortcuts;
+pub mod store;
 pub mod styles;
 pub mod suggest;
 pub mod trust_prune;

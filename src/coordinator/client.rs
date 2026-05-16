@@ -1,9 +1,11 @@
 //! Client for communicating with a running coordinator over Unix socket IPC.
 //!
-//! The protocol is simple JSON-over-Unix-socket with newline delimiters.
-//! Each message is one JSON object followed by `\n`. The client sends a
-//! [`CoordinatorRequest`], and the coordinator responds with a
-//! [`CoordinatorResponse`].
+//! The protocol is length-prefixed framed JSON envelopes. Each frame is
+//! a `u32` big-endian length followed by a UTF-8 JSON [`RequestEnvelope`]
+//! (request) or [`ResponseEnvelope`] (response). Single-response requests
+//! exchange one frame in each direction; streaming requests (e.g.
+//! [`CoordinatorRequest::TailLogs`]) get many `StreamFrame` envelopes
+//! terminated by exactly one `StreamEnd`, then the server closes.
 //!
 //! IPC is Unix-only. On non-Unix platforms `CoordinatorClient` exposes the
 //! same API but `connect()` always returns `Ok(None)` — there is no
@@ -11,12 +13,13 @@
 
 use super::JobInfo;
 #[cfg(unix)]
-use super::{CoordinatorRequest, CoordinatorResponse, coordinator_socket_path};
+use super::{
+    CoordinatorRequest, CoordinatorResponse, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope,
+    coordinator_socket_path, framing,
+};
 #[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
-#[cfg(unix)]
-use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
@@ -51,6 +54,17 @@ impl CoordinatorClient {
     }
 
     pub fn cancel_all(&mut self) -> Result<String> {
+        match self.0 {}
+    }
+
+    pub fn cancel_matching(
+        &mut self,
+        _hook: Option<&str>,
+        _worktree: Option<&str>,
+        _tag: Option<&str>,
+        _invocation_prefix: Option<&str>,
+        _older_than_secs: Option<u64>,
+    ) -> Result<Vec<String>> {
         match self.0 {}
     }
 }
@@ -89,25 +103,90 @@ impl CoordinatorClient {
         Self { stream }
     }
 
-    /// Send a request and receive the response.
+    /// Send a framed envelope and receive exactly one framed envelope back.
+    /// For streaming responses, use [`Self::stream_request`] instead.
     pub fn send(&mut self, request: &CoordinatorRequest) -> Result<CoordinatorResponse> {
-        let mut msg = serde_json::to_string(request)?;
-        msg.push('\n');
-        self.stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(&self.stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line)?;
-
-        let response: CoordinatorResponse = serde_json::from_str(&response_line)?;
-        Ok(response)
+        self.write_request(request)?;
+        self.read_response()
     }
 
+    fn write_request(&mut self, request: &CoordinatorRequest) -> Result<()> {
+        let envelope = RequestEnvelope {
+            v: PROTOCOL_VERSION,
+            body: request.clone(),
+        };
+        let bytes = serde_json::to_vec(&envelope)?;
+        framing::write_frame(&mut self.stream, &bytes)?;
+        Ok(())
+    }
+
+    fn read_response(&mut self) -> Result<CoordinatorResponse> {
+        let bytes = framing::read_frame(&mut self.stream)?;
+        let env: ResponseEnvelope =
+            serde_json::from_slice(&bytes).context("decode coordinator response envelope")?;
+        if env.v != PROTOCOL_VERSION {
+            anyhow::bail!(
+                "coordinator response wire-version {} is incompatible with client {}",
+                env.v,
+                PROTOCOL_VERSION
+            );
+        }
+        Ok(env.body)
+    }
+
+    /// Send a streaming request. Returns an iterator over each
+    /// [`CoordinatorResponse::StreamFrame`] payload; iteration ends after
+    /// a `StreamEnd` envelope (or on stream close). Non-stream variants
+    /// (`Error`, `Jobs`, etc.) are yielded once and then iteration ends.
+    pub fn stream_request(
+        &mut self,
+        request: &CoordinatorRequest,
+    ) -> Result<StreamingResponse<'_>> {
+        self.write_request(request)?;
+        // Streaming responses can take a long time; relax the read timeout
+        // so a slow-producing tail doesn't error out.
+        let _ = self.stream.set_read_timeout(None);
+        Ok(StreamingResponse { client: self })
+    }
+}
+
+/// Iterator over a streaming coordinator response. Each `next()` returns
+/// the next frame's body or `None` once the stream ends (terminator
+/// envelope received or socket closed).
+#[cfg(unix)]
+pub struct StreamingResponse<'a> {
+    client: &'a mut CoordinatorClient,
+}
+
+#[cfg(unix)]
+impl<'a> Iterator for StreamingResponse<'a> {
+    type Item = Result<CoordinatorResponse>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.client.read_response() {
+            Ok(CoordinatorResponse::StreamEnd) => None,
+            Ok(resp) => Some(Ok(resp)),
+            Err(e) => {
+                // EOF from the server is the natural end of a stream;
+                // surface other I/O errors so callers can act on them.
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                    && io_err.kind() == std::io::ErrorKind::UnexpectedEof
+                {
+                    return None;
+                }
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl CoordinatorClient {
     /// List all jobs from the coordinator.
     pub fn list_jobs(&mut self) -> Result<Vec<JobInfo>> {
         match self.send(&CoordinatorRequest::ListJobs)? {
             CoordinatorResponse::Jobs(jobs) => Ok(jobs),
-            CoordinatorResponse::Error { message } => anyhow::bail!(message),
+            CoordinatorResponse::Error { message, .. } => anyhow::bail!(message),
             _ => anyhow::bail!("Unexpected response from coordinator"),
         }
     }
@@ -118,7 +197,7 @@ impl CoordinatorClient {
             name: name.to_string(),
         })? {
             CoordinatorResponse::Ack { message } => Ok(message),
-            CoordinatorResponse::Error { message } => anyhow::bail!(message),
+            CoordinatorResponse::Error { message, .. } => anyhow::bail!(message),
             _ => anyhow::bail!("Unexpected response from coordinator"),
         }
     }
@@ -127,211 +206,165 @@ impl CoordinatorClient {
     pub fn cancel_all(&mut self) -> Result<String> {
         match self.send(&CoordinatorRequest::CancelAll)? {
             CoordinatorResponse::Ack { message } => Ok(message),
-            CoordinatorResponse::Error { message } => anyhow::bail!(message),
+            CoordinatorResponse::Error { message, .. } => anyhow::bail!(message),
             _ => anyhow::bail!("Unexpected response from coordinator"),
         }
+    }
+
+    /// Cancel every active job matching the predicate set. Returns the
+    /// names of the jobs that were signaled.
+    pub fn cancel_matching(
+        &mut self,
+        hook: Option<&str>,
+        worktree: Option<&str>,
+        tag: Option<&str>,
+        invocation_prefix: Option<&str>,
+        older_than_secs: Option<u64>,
+    ) -> Result<Vec<String>> {
+        let req = CoordinatorRequest::CancelMatching {
+            hook: hook.map(str::to_string),
+            worktree: worktree.map(str::to_string),
+            tag: tag.map(str::to_string),
+            invocation_prefix: invocation_prefix.map(str::to_string),
+            older_than_secs,
+        };
+        match self.send(&req)? {
+            CoordinatorResponse::Cancelled { names, .. } => Ok(names),
+            CoordinatorResponse::Error { message, .. } => anyhow::bail!(message),
+            _ => anyhow::bail!("Unexpected response from coordinator"),
+        }
+    }
+
+    /// Open a streaming tail of a job's `output.jsonl` from the
+    /// coordinator. Returns an iterator that yields one [`crate::coordinator::log_record::LogRecord`]
+    /// per `StreamFrame` envelope until `StreamEnd` or socket close.
+    pub fn tail_logs(
+        &mut self,
+        job: super::JobAddress,
+        follow: bool,
+        since_seq: Option<u64>,
+    ) -> Result<StreamingResponse<'_>> {
+        self.stream_request(&CoordinatorRequest::TailLogs {
+            job,
+            follow,
+            since_seq,
+        })
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use crate::coordinator::ErrorCode;
     use std::os::unix::net::{UnixListener, UnixStream};
 
+    /// Helper: spin a one-shot listener that frames a single `ResponseEnvelope`
+    /// back and returns the deserialized request the client sent.
+    fn one_shot_server(
+        socket_path: std::path::PathBuf,
+        response: CoordinatorResponse,
+    ) -> std::thread::JoinHandle<CoordinatorRequest> {
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let req_bytes = framing::read_frame(&mut stream).unwrap();
+            let env: RequestEnvelope = serde_json::from_slice(&req_bytes).unwrap();
+            let response_env = ResponseEnvelope {
+                v: PROTOCOL_VERSION,
+                body: response,
+            };
+            let bytes = serde_json::to_vec(&response_env).unwrap();
+            framing::write_frame(&mut stream, &bytes).unwrap();
+            env.body
+        })
+    }
+
     #[test]
-    fn test_ipc_round_trip_list_jobs() {
+    fn ipc_round_trip_list_jobs() {
         let tmp = tempfile::TempDir::new().unwrap();
         let socket_path = tmp.path().join("test.sock");
 
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let handle = one_shot_server(socket_path.clone(), CoordinatorResponse::Jobs(vec![]));
 
-        // Spawn a handler thread that mimics a coordinator.
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-
-            let request: CoordinatorRequest = serde_json::from_str(&line).unwrap();
-            assert!(matches!(request, CoordinatorRequest::ListJobs));
-
-            let response = CoordinatorResponse::Jobs(vec![]);
-            let mut msg = serde_json::to_string(&response).unwrap();
-            msg.push('\n');
-            stream
-                .try_clone()
-                .unwrap()
-                .write_all(msg.as_bytes())
-                .unwrap();
-        });
-
-        // Client side.
         let stream = UnixStream::connect(&socket_path).unwrap();
         let mut client = CoordinatorClient::from_stream(stream);
         let jobs = client.list_jobs().unwrap();
         assert!(jobs.is_empty());
 
-        handle.join().unwrap();
+        let req = handle.join().unwrap();
+        assert!(matches!(req, CoordinatorRequest::ListJobs));
     }
 
     #[test]
-    fn test_ipc_round_trip_list_jobs_with_entries() {
+    fn ipc_round_trip_cancel_job() {
         let tmp = tempfile::TempDir::new().unwrap();
         let socket_path = tmp.path().join("test.sock");
 
-        let listener = UnixListener::bind(&socket_path).unwrap();
-
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-
-            let request: CoordinatorRequest = serde_json::from_str(&line).unwrap();
-            assert!(matches!(request, CoordinatorRequest::ListJobs));
-
-            let response = CoordinatorResponse::Jobs(vec![JobInfo {
-                name: "build".to_string(),
-                hook_type: "worktree-post-create".to_string(),
-                worktree: "/tmp/wt".to_string(),
-                status: crate::coordinator::log_store::JobStatus::Running,
-                elapsed_secs: Some(42),
-                exit_code: None,
-            }]);
-            let mut msg = serde_json::to_string(&response).unwrap();
-            msg.push('\n');
-            stream
-                .try_clone()
-                .unwrap()
-                .write_all(msg.as_bytes())
-                .unwrap();
-        });
-
-        let stream = UnixStream::connect(&socket_path).unwrap();
-        let mut client = CoordinatorClient::from_stream(stream);
-        let jobs = client.list_jobs().unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].name, "build");
-        assert_eq!(jobs[0].elapsed_secs, Some(42));
-        assert!(matches!(
-            jobs[0].status,
-            crate::coordinator::log_store::JobStatus::Running
-        ));
-
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn test_ipc_round_trip_cancel_job() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let socket_path = tmp.path().join("test.sock");
-
-        let listener = UnixListener::bind(&socket_path).unwrap();
-
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-
-            let request: CoordinatorRequest = serde_json::from_str(&line).unwrap();
-            match request {
-                CoordinatorRequest::CancelJob { name } => {
-                    assert_eq!(name, "build");
-                }
-                _ => panic!("Expected CancelJob"),
-            }
-
-            let response = CoordinatorResponse::Ack {
+        let handle = one_shot_server(
+            socket_path.clone(),
+            CoordinatorResponse::Ack {
                 message: "Cancelled job: build".to_string(),
-            };
-            let mut msg = serde_json::to_string(&response).unwrap();
-            msg.push('\n');
-            stream
-                .try_clone()
-                .unwrap()
-                .write_all(msg.as_bytes())
-                .unwrap();
-        });
+            },
+        );
 
         let stream = UnixStream::connect(&socket_path).unwrap();
         let mut client = CoordinatorClient::from_stream(stream);
         let result = client.cancel_job("build").unwrap();
         assert_eq!(result, "Cancelled job: build");
 
-        handle.join().unwrap();
+        let req = handle.join().unwrap();
+        assert!(matches!(req, CoordinatorRequest::CancelJob { ref name } if name == "build"));
     }
 
     #[test]
-    fn test_ipc_round_trip_cancel_all() {
+    fn ipc_round_trip_error_response_is_surfaced() {
         let tmp = tempfile::TempDir::new().unwrap();
         let socket_path = tmp.path().join("test.sock");
 
-        let listener = UnixListener::bind(&socket_path).unwrap();
-
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-
-            let request: CoordinatorRequest = serde_json::from_str(&line).unwrap();
-            assert!(matches!(request, CoordinatorRequest::CancelAll));
-
-            let response = CoordinatorResponse::Ack {
-                message: "Cancelled 3 jobs".to_string(),
-            };
-            let mut msg = serde_json::to_string(&response).unwrap();
-            msg.push('\n');
-            stream
-                .try_clone()
-                .unwrap()
-                .write_all(msg.as_bytes())
-                .unwrap();
-        });
-
-        let stream = UnixStream::connect(&socket_path).unwrap();
-        let mut client = CoordinatorClient::from_stream(stream);
-        let result = client.cancel_all().unwrap();
-        assert_eq!(result, "Cancelled 3 jobs");
-
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn test_ipc_error_response() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let socket_path = tmp.path().join("test.sock");
-
-        let listener = UnixListener::bind(&socket_path).unwrap();
-
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-
-            let response = CoordinatorResponse::Error {
+        let handle = one_shot_server(
+            socket_path.clone(),
+            CoordinatorResponse::Error {
+                code: ErrorCode::JobNotFound,
                 message: "Job not found: unknown".to_string(),
-            };
-            let mut msg = serde_json::to_string(&response).unwrap();
-            msg.push('\n');
-            stream
-                .try_clone()
-                .unwrap()
-                .write_all(msg.as_bytes())
-                .unwrap();
-        });
+            },
+        );
 
         let stream = UnixStream::connect(&socket_path).unwrap();
         let mut client = CoordinatorClient::from_stream(stream);
         let result = client.cancel_job("unknown");
-        assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Job not found: unknown"));
 
-        handle.join().unwrap();
+        let _ = handle.join().unwrap();
+    }
+
+    #[test]
+    fn ipc_round_trip_cancel_matching_returns_names() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let socket_path = tmp.path().join("test.sock");
+
+        let handle = one_shot_server(
+            socket_path.clone(),
+            CoordinatorResponse::Cancelled {
+                count: 2,
+                names: vec!["a".into(), "b".into()],
+            },
+        );
+
+        let stream = UnixStream::connect(&socket_path).unwrap();
+        let mut client = CoordinatorClient::from_stream(stream);
+        let names = client
+            .cancel_matching(Some("h"), None, None, None, None)
+            .unwrap();
+        assert_eq!(names, vec!["a", "b"]);
+
+        let req = handle.join().unwrap();
+        match req {
+            CoordinatorRequest::CancelMatching { hook, .. } => {
+                assert_eq!(hook.as_deref(), Some("h"))
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
     }
 
     #[test]
@@ -395,11 +428,16 @@ mod tests {
         assert!(matches!(deserialized, CoordinatorResponse::Ack { message } if message == "ok"));
 
         let response = CoordinatorResponse::Error {
+            code: ErrorCode::JobNotFound,
             message: "bad".to_string(),
         };
         let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("JOB_NOT_FOUND"));
         let deserialized: CoordinatorResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(deserialized, CoordinatorResponse::Error { message } if message == "bad"));
+        assert!(matches!(
+            deserialized,
+            CoordinatorResponse::Error { message, .. } if message == "bad"
+        ));
     }
 
     #[test]

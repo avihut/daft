@@ -74,6 +74,28 @@ pub struct JobFilter {
     pub only_tags: Vec<String>,
 }
 
+/// Bundle of configuration values threaded into `execute_yaml_hook_with_rc`.
+///
+/// Replaces a long passthrough arg list (#476 Tier-3 API surface). Holds
+/// non-per-hook values that previously lived as separate parameters.
+pub struct HookExecutionContext<'a> {
+    /// Directory under the working tree where hook YAML lives (typically
+    /// `.daft`).
+    pub source_dir: &'a str,
+    /// Resolved working directory for the hook fire.
+    pub working_dir: &'a Path,
+    /// Optional shell RC file to source before every job command.
+    pub rc: Option<&'a str>,
+    /// Job filter from CLI args (`hooks run --job` / `--tag`).
+    pub filter: &'a JobFilter,
+    /// Presenter for live progress updates. Owned via `Arc` so spawned job
+    /// threads can clone cheaply.
+    pub presenter: &'a Arc<dyn JobPresenter>,
+    /// Top-level `log:` section from the YAML config — propagated into each
+    /// job's effective `LogConfig`.
+    pub repo_log: Option<&'a LogConfig>,
+}
+
 /// Execute a YAML-defined hook.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook(
@@ -87,36 +109,32 @@ pub fn execute_yaml_hook(
 ) -> Result<HookResult> {
     let presenter: Arc<dyn JobPresenter> =
         crate::executor::cli_presenter::CliPresenter::auto(output_config);
-    execute_yaml_hook_with_rc(
-        hook_name,
-        hook_def,
-        ctx,
-        output,
+    let filter = JobFilter::default();
+    let cfg = HookExecutionContext {
         source_dir,
         working_dir,
-        None,
-        output_config,
-        &JobFilter::default(),
-        &presenter,
-        None,
-    )
+        rc: None,
+        filter: &filter,
+        presenter: &presenter,
+        repo_log: None,
+    };
+    execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
 }
 
 /// Execute a YAML-defined hook with optional RC file.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_yaml_hook_with_rc(
     hook_name: &str,
     hook_def: &HookDef,
     ctx: &HookContext,
     output: &mut dyn Output,
-    source_dir: &str,
-    working_dir: &Path,
-    rc: Option<&str>,
-    _output_config: &HookOutputConfig,
-    filter: &JobFilter,
-    presenter: &Arc<dyn JobPresenter>,
-    repo_log: Option<&LogConfig>,
+    cfg: &HookExecutionContext<'_>,
 ) -> Result<HookResult> {
+    let source_dir = cfg.source_dir;
+    let working_dir = cfg.working_dir;
+    let rc = cfg.rc;
+    let filter = cfg.filter;
+    let presenter = cfg.presenter;
+    let repo_log = cfg.repo_log;
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip
         && let Some(info) = super::conditions::should_skip(skip, working_dir)
@@ -252,21 +270,38 @@ pub fn execute_yaml_hook_with_rc(
     let hook_env = hook_env_obj.vars().clone();
 
     // Convert filtered JobDefs to generic JobSpecs
+    let adapter = crate::hooks::job_adapter::JobAdapterContext {
+        rc,
+        hook_background: hook_def.background,
+        repo_log,
+    };
     let (specs, skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
         source_dir,
         working_dir,
-        rc,
-        hook_def.background,
-        repo_log,
+        &adapter,
     );
 
+    // Open the per-repo SQLite store once and reuse for both the
+    // skipped-job persistence loop and the repo-policy write below.
+    // `for_repo_base` is the non-wiping constructor; the coordinator
+    // is the only caller that should sweep legacy files.
+    let job_store_for_skipped =
+        match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
+            Ok(js) => Some(js),
+            Err(e) => {
+                eprintln!("daft: failed to open coordinator store for '{hook_name}': {e}");
+                None
+            }
+        };
+
     // Write sparse records for jobs that were filtered out before execution.
-    // Each skipped job gets a meta.json + log file containing the reason so
-    // the user can investigate via `daft hooks jobs logs <name>`. This runs
-    // BEFORE the `specs.is_empty()` early return so fully-filtered hooks still
+    // Each skipped job gets an `output.jsonl` containing the reason string
+    // plus a `JobRow` in SQLite so the user can investigate via
+    // `daft hooks jobs ls` / `daft hooks jobs logs <name>`. Runs BEFORE the
+    // `specs.is_empty()` early return so fully-filtered hooks still
     // produce skipped-job records.
     for sj in &skipped_jobs {
         let meta = crate::coordinator::log_store::JobMeta::skipped(
@@ -277,24 +312,61 @@ pub fn execute_yaml_hook_with_rc(
             sj.background,
             vec![],
         );
-        if let Err(e) = store.write_job_record(&invocation_id, &meta, sj.reason.as_bytes()) {
+        let records = vec![crate::coordinator::log_record::LogRecord::stdout(
+            0,
+            sj.reason.as_str(),
+        )];
+        if let Err(e) = store.write_job_record_jsonl(&invocation_id, &meta, &records) {
             eprintln!(
                 "daft: failed to write skipped job record for '{}': {e}",
                 sj.name
             );
         }
+        if let Some(ref js) = job_store_for_skipped {
+            use crate::coordinator::ports::JobsStorePort;
+            let row = crate::store::models::JobRow {
+                repo_hash: repo_hash.clone(),
+                invocation_id: invocation_id.clone(),
+                name: meta.name.clone(),
+                hook_type: meta.hook_type.clone(),
+                worktree: meta.worktree.clone(),
+                command: meta.command.clone(),
+                working_dir: meta.working_dir.clone(),
+                env: meta.env.clone(),
+                started_at: meta.started_at,
+                finished_at: meta.finished_at,
+                status: meta.status.as_status_str().to_string(),
+                exit_code: meta.exit_code,
+                pid: meta.pid,
+                pgid: None,
+                background: meta.background,
+                needs: meta.needs.clone(),
+                tags: Vec::new(),
+                retention_seconds: meta.retention_seconds,
+                max_log_size_bytes: meta.max_log_size_bytes,
+            };
+            if let Err(e) = js.upsert_job(&row) {
+                eprintln!(
+                    "daft: failed to persist skipped job row for '{}': {e}",
+                    sj.name
+                );
+            }
+        }
     }
 
-    // Capture the repo-level cleanup policy as a sidecar so cleanup doesn't
-    // need to re-parse `daft.yml` later. Written once per hook fire after
-    // spec building; most-recent write wins. Note: early returns above (no
-    // jobs defined, all jobs filtered by tags or changed-attribute tracking)
-    // skip this write, so the previous sidecar value remains in effect until
-    // the next non-fully-filtered fire. Best-effort: a failed write should
-    // not break the hook fire.
+    // Capture the repo-level cleanup policy so cleanup doesn't need to
+    // re-parse `daft.yml` later. Written once per hook fire after spec
+    // building; most-recent write wins. Note: early returns above (no
+    // jobs defined, all jobs filtered by tags or changed-attribute
+    // tracking) skip this write, so the previous value remains in effect
+    // until the next non-fully-filtered fire. Best-effort: a failed write
+    // should not break the hook fire.
     let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
-    if let Err(e) = store.write_repo_policy(&repo_policy) {
-        eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+    if let Some(ref js) = job_store_for_skipped {
+        use crate::coordinator::ports::JobsStorePort;
+        if let Err(e) = js.write_repo_policy(&repo_hash, &repo_policy) {
+            eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+        }
     }
 
     if specs.is_empty() {
@@ -323,6 +395,7 @@ pub fn execute_yaml_hook_with_rc(
     let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
         std::sync::Arc::new(crate::executor::log_sink::BufferingLogSink::new(
             std::sync::Arc::clone(&store),
+            repo_hash.clone(),
             invocation_id.clone(),
             hook_name.to_string(),
             ctx.branch_name.clone(),
@@ -372,7 +445,7 @@ pub fn execute_yaml_hook_with_rc(
         }
 
         let bg_count = coord_state.jobs.len();
-        crate::coordinator::process::fork_coordinator(coord_state, (*store).clone())?;
+        crate::coordinator::process::spawn_coordinator(coord_state, (*store).clone())?;
 
         presenter.on_message(&format!(
             "⟳ {} background job{} running — daft hooks jobs to manage",
