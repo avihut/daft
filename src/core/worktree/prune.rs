@@ -832,7 +832,7 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 /// Best-effort: if no coordinator is running or unreachable, errors are
 /// silently dropped so the worktree-removal flow proceeds. Implemented as
 /// a single `CancelMatching { worktree: ... }` IPC call so the coordinator
-/// filters its redb-recorded active jobs in one round trip rather than the
+/// filters its SQLite-recorded active jobs in one round trip rather than the
 /// previous list-then-cancel-per-name dance.
 pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
     use crate::coordinator::client::CoordinatorClient;

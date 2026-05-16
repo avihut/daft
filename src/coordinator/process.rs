@@ -335,7 +335,7 @@ struct JobInvocationContext<'a> {
     invocation_id: &'a str,
     hook_type: &'a str,
     worktree: &'a str,
-    /// Optional dual-write target for the redb-backed `JobRow` lifecycle
+    /// Optional dual-write target for the SQLite-backed `JobRow` lifecycle
     /// records. `None` from test paths that don't exercise persistence.
     job_store: Option<SqliteJobsStore>,
     /// Per-invocation completion records appended by every job as it
@@ -352,7 +352,7 @@ struct JobInvocationContext<'a> {
     cancelled_jobs: CancelledJobs,
 }
 
-/// Project a `JobMeta` into a redb `JobRow`. `repo_hash`/`invocation_id`/
+/// Project a `JobMeta` into a SQLite `JobRow`. `repo_hash`/`invocation_id`/
 /// `tags` come from outside `JobMeta` (the coordinator's invocation context),
 /// and `child_pid` is the spawned shell's PID — equal to its PGID because
 /// `run_command` calls `process_group(0)`.

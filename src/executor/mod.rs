@@ -102,7 +102,7 @@ pub struct JobSpec {
     /// Log configuration for this job.
     pub log_config: Option<LogConfig>,
     /// User-supplied labels (from `JobDef.tags` in YAML). Persisted into the
-    /// coordinator's redb `JobRow` and used by richer cancel semantics
+    /// coordinator's SQLite `JobRow` and used by richer cancel semantics
     /// (`daft hooks jobs cancel --tag <tag>`). Default empty.
     #[serde(default)]
     pub tags: Vec<String>,

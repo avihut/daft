@@ -649,8 +649,8 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 /// fixtures still render.
 ///
 /// SQLite + WAL means this open succeeds even while a coordinator is
-/// actively writing to the same DB; the redb-era cross-process lock
-/// limitation is gone.
+/// actively writing to the same DB — readers and writers don't block
+/// each other.
 fn load_redb_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
