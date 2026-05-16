@@ -27,6 +27,9 @@ IMPORTANT: These rules must NEVER be violated:
    `#[allow]`-overridden at any inner scope — that's the whole point — so adding
    `#[allow(unsafe_code)]` to a function will fail to compile. If a genuine need
    arises, refactor the design (e.g. fork→spawn) rather than weakening the lint.
+   When picking dependencies, prefer those with a fully safe public API — SQLite
+   via `rusqlite` was chosen over LMDB via `heed` partly because
+   `heed::Env::open` is `unsafe fn`.
 
 ## Safe Local Testing with Git
 
@@ -88,6 +91,33 @@ When adding a package, pin to a version ≥7 days old: `cargo add foo@<version>`
 or `bun add foo@<version>`. To bypass, add an entry (with `# why:` rationale) to
 `.dep-age-allowlist`, `bunfig.toml` `minimumReleaseAgeExcludes`, or
 `cooldown.toml`; emergency CI override is `ALLOW_FRESH_DEPS=1`.
+
+## Database & Storage
+
+**SQLite via `rusqlite` is daft's canonical structured-data store.** All new
+persistent state goes through `src/store/`. The shape, security defaults, and
+migration runner are all there; consumers wire it up through
+`src/coordinator/ports/` + `src/coordinator/adapters/` rather than touching
+SQLite directly.
+
+- Do not introduce other embedded databases (redb, sled, fjall, RocksDB, persy).
+  The redb store this PR replaced is the cautionary tale: it took a
+  process-exclusive file lock that didn't fit daft's coordinator + CLI access
+  pattern, which forced a `meta.json` dual-write as a compensating workaround.
+  See
+  `~/.claude/projects/-Users-avihu-Projects-daft/memory/project_redb_concurrency_mismatch.md`.
+- `rusqlite` uses the `bundled` feature so SQLite is compiled from source into
+  the daft binary (~+1 MB on release builds, +C compiler at build time). The
+  trade-off is intentional: every installation gets the same SQLite version, no
+  system-library skew, WAL mode works out of the box.
+- WAL mode does not work over network filesystems (NFS, SMB). Daft state must
+  live on a local filesystem.
+- The pool has two halves: a writer pool sized 1 (enforces WAL's single-writer
+  ordering, cheaper than waiting on `SQLITE_BUSY`) and a multi-slot reader pool
+  opened `SQLITE_OPEN_READ_ONLY` with a tight `busy_timeout` (300 ms) so
+  CLI/completion paths fail fast instead of blocking the user's shell.
+- Future registries (trust, repo catalog) will migrate to this layer in their
+  own PRs.
 
 ## MSRV Policy
 
@@ -190,6 +220,43 @@ panics. Temporarily replace it with
 `Stdio::from(File::open("/tmp/daft-X-debug.log")?)`, run the failing test,
 revert before commit. Don't ship the debug redirect.
 
+**Store / Ports / Adapters / Domain pattern (coordinator)**: The coordinator
+follows hexagonal architecture so domain logic stays pure and the data layer can
+be swapped without rewriting business code.
+
+```
+Application       commands/hooks/jobs, commands/dump_store, IPC dispatch
+   │
+   ▼ depends on
+Domain            coordinator/domain/  (pure logic, no SQL, no syscalls)
+   │
+   ▼ talks through traits in
+Ports             coordinator/ports/{store, clock, process}
+   ▲
+   │ implemented by
+Adapters          coordinator/adapters/{sqlite_store, system_clock, unix_process}
+   │
+   ▼ uses
+Store             src/store/{connection, pool, migrate, models, repos, env_scrub}
+```
+
+Hard rules:
+
+- **Domain never imports `rusqlite`, `nix`, or `std::env`**. It talks to the
+  outside world through ports only. This is what makes the layer unit-testable
+  without spawning processes or touching disk.
+- **Store never imports domain types**. Returns its own typed row structs
+  (`JobRow`, `InvocationRow`, `RepoPolicyRow`). Whatever shape consumers want on
+  top — `JobMeta`, `JobView`, etc. — lives in the adapter or above.
+- **Adapters are the only translation layer**. They wrap repos + apply
+  cross-cutting concerns (env scrub, status enum ↔ TEXT conversion, policy merge
+  semantics). New cross-cutting concerns go here, not in the store.
+
+Canonical examples to study before adding a new feature:
+`coordinator/domain/reconcile.rs` (pure logic, six fake-adapter tests),
+`coordinator/adapters/sqlite_store.rs` (port impl + env scrub at the persistence
+boundary), `coordinator/ports/store.rs` (trait surface).
+
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`
@@ -245,6 +312,41 @@ produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
    wrapper: write `DAFT_CD_FILE` from the binary AND add the verb to the
    `daft()` wrapper in `src/commands/shell_init.rs` (both bash/zsh and fish).
    See the Shell integration section for the full contract.
+
+## Adding a New DB-backed Feature
+
+Every persistent-state feature lands through the same store / ports / adapters
+spine. Follow the same order so the layering stays clean and the security
+defaults (PRAGMAs, perms, env scrub) come for free.
+
+1. **Schema first.** Add a `.sql` file in `src/store/migrations/` with the next
+   sequence number, e.g. `002_trust_registry.sql`. Never edit a shipped
+   migration in place; only append. Add a unit test in `store::migrate::tests`
+   that asserts the new tables exist after `to_latest`.
+2. **Typed row model.** Add a struct in `src/store/models/<thing>.rs` — one Rust
+   field per SQL column, no JSON blobs.
+3. **Repo with parameterized queries.** Add a struct in
+   `src/store/repos/<things>.rs` exposing methods that take
+   `&rusqlite::Connection`. All SQL must be parameterized via `params![...]` — a
+   CI grep-gate disallows `format!` inside `src/store/repos/` so the rule can't
+   drift.
+4. **Port trait** (if the feature has business logic). Declare it in the
+   consuming subsystem's `ports/` directory — for the coordinator that's
+   `src/coordinator/ports/`. Surface store row models (or domain types if
+   appropriate), never raw `Connection`s.
+5. **Adapter.** Bridge the port to the repos. This is where cross-cutting
+   concerns belong (env scrub on persistence, RepoPolicy ↔ RepoPolicyRow
+   conversion, …).
+6. **Wire the adapter.** Either inject it into the consuming function directly
+   (`process.rs` style) or construct it at the application boundary (CLI command
+   handler, IPC dispatch).
+7. **Unit-test the domain logic with mock adapters** that implement the port
+   traits in tests. `coordinator/domain/reconcile.rs` is the canonical example —
+   six tests against fake `Store + Process + Clock`.
+8. **The security defaults are non-bypassable** — every consumer goes through
+   `src/store/connection.rs::bring_up`, which enforces the PRAGMA set, refuses
+   foreign `application_id` files, and tightens file/dir perms to 0600/0700. Do
+   not duplicate or weaken those checks.
 
 ## Shell Completions
 
