@@ -139,6 +139,15 @@ landing.
 
 ## Architecture
 
+**Strategic intent lives in [ARCHITECTURE.md](./ARCHITECTURE.md).** That file
+owns the _why_ and the long-term direction: hexagonal at subsystem boundaries,
+functional core inside domain modules, vertical slice at the CLI command layer,
+the future crate decomposition, and the native agentic IDE spin-out that
+motivates ports at crate edges. This section owns operational detail (current
+patterns, conventions, hard rules) — when introducing a new subsystem or making
+architectural decisions, read both. ARCHITECTURE.md tells you which direction to
+point; this section tells you the conventions to follow getting there.
+
 **Multicall binary**: All commands route through a single `daft` binary
 (`src/main.rs`). The binary examines `argv[0]` to determine which command was
 invoked, then dispatches to the matching module in `src/commands/`. Symlinks
