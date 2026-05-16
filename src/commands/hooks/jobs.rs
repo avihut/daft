@@ -1834,6 +1834,7 @@ fn retry_command(
         let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
             std::sync::Arc::new(crate::executor::BufferingLogSink::new(
                 std::sync::Arc::new(store.clone()),
+                repo_hash.clone(),
                 new_invocation_id.clone(),
                 inv.hook_type.clone(),
                 effective_worktree.clone(),

@@ -358,6 +358,7 @@ pub fn execute_yaml_hook_with_rc(
     let fg_sink: std::sync::Arc<dyn crate::executor::log_sink::LogSink> =
         std::sync::Arc::new(crate::executor::log_sink::BufferingLogSink::new(
             std::sync::Arc::clone(&store),
+            repo_hash.clone(),
             invocation_id.clone(),
             hook_name.to_string(),
             ctx.branch_name.clone(),

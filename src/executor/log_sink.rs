@@ -8,8 +8,10 @@
 //! pass `None`.
 
 use super::{JobResult, JobSpec};
+use crate::coordinator::adapters::SqliteJobsStore;
 use crate::coordinator::log_record::{LogRecord, OutputKind, StatusEvent, record_from};
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
+use crate::coordinator::ports::JobsStorePort;
 use crate::executor::NodeStatus;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -35,8 +37,9 @@ pub trait LogSink: Send + Sync {
     fn on_job_runner_skipped(&self, spec: &JobSpec, reason: &str);
 }
 
-/// A `LogSink` that buffers output per job and writes `meta.json` +
-/// `output.jsonl` atomically at `on_job_complete`.
+/// A `LogSink` that buffers output per job and writes the
+/// `output.jsonl` log file plus the SQLite `jobs` row atomically at
+/// `on_job_complete`.
 ///
 /// If a job is in flight when the sink is dropped (e.g., the main process
 /// crashes mid-run), its buffered output is discarded and no record is
@@ -44,6 +47,12 @@ pub trait LogSink: Send + Sync {
 /// docs/superpowers/specs/2026-04-11-universal-hook-logging.md §1.
 pub struct BufferingLogSink {
     store: Arc<LogStore>,
+    /// SQLite source-of-truth for job metadata. `None` when the per-repo
+    /// store can't be opened — the sink still writes `output.jsonl` so
+    /// log viewers work, but the row is absent from `daft hooks jobs ls`
+    /// until the next successful open.
+    job_store: Option<SqliteJobsStore>,
+    repo_hash: String,
     invocation_id: String,
     hook_type: String,
     worktree: String,
@@ -65,12 +74,26 @@ struct JobBuffer {
 impl BufferingLogSink {
     pub fn new(
         store: Arc<LogStore>,
+        repo_hash: String,
         invocation_id: String,
         hook_type: String,
         worktree: String,
     ) -> Self {
+        let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
+            Ok(js) => Some(js),
+            Err(e) => {
+                eprintln!(
+                    "daft: warning: opening coordinator store at {} failed: {e} \
+                     (foreground job records will not be persisted to the store)",
+                    store.base_dir.display()
+                );
+                None
+            }
+        };
         Self {
             store,
+            job_store,
+            repo_hash,
             invocation_id,
             hook_type,
             worktree,
@@ -86,6 +109,42 @@ impl BufferingLogSink {
             NodeStatus::Pending | NodeStatus::Running => {
                 unreachable!("on_job_complete called with non-terminal NodeStatus: {status:?}")
             }
+        }
+    }
+
+    /// Persist a `JobMeta` into the SQLite store as a `JobRow`. Best
+    /// effort: errors go to stderr and don't abort the surrounding write.
+    fn persist_job_row(&self, meta: &JobMeta, tags: &[String]) {
+        let Some(js) = self.job_store.as_ref() else {
+            return;
+        };
+        let row = crate::store::models::JobRow {
+            repo_hash: self.repo_hash.clone(),
+            invocation_id: self.invocation_id.clone(),
+            name: meta.name.clone(),
+            hook_type: meta.hook_type.clone(),
+            worktree: meta.worktree.clone(),
+            command: meta.command.clone(),
+            working_dir: meta.working_dir.clone(),
+            env: meta.env.clone(),
+            started_at: meta.started_at,
+            finished_at: meta.finished_at,
+            status: meta.status.as_status_str().to_string(),
+            exit_code: meta.exit_code,
+            pid: meta.pid,
+            // Foreground jobs run inline — no separate process group leader.
+            pgid: meta.pid,
+            background: meta.background,
+            needs: meta.needs.clone(),
+            tags: tags.to_vec(),
+            retention_seconds: meta.retention_seconds,
+            max_log_size_bytes: meta.max_log_size_bytes,
+        };
+        if let Err(e) = js.upsert_job(&row) {
+            eprintln!(
+                "daft: failed to persist job '{}' to the coordinator store: {e}",
+                meta.name
+            );
         }
     }
 }
@@ -180,6 +239,10 @@ impl LogSink for BufferingLogSink {
         {
             eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
+        // SQLite source-of-truth write happens after the log file is on
+        // disk so a successful `daft hooks jobs logs` lookup can rely on
+        // both being present.
+        self.persist_job_row(&meta, &spec.tags);
     }
 
     fn on_job_runner_skipped(&self, spec: &JobSpec, reason: &str) {
@@ -208,6 +271,7 @@ impl LogSink for BufferingLogSink {
         {
             eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
         }
+        self.persist_job_row(&meta, &spec.tags);
     }
 }
 
@@ -246,6 +310,7 @@ mod tests {
 
         let sink = BufferingLogSink::new(
             Arc::clone(&store),
+            "test-repo".to_string(),
             "inv1".to_string(),
             "worktree-post-create".to_string(),
             "feature/x".to_string(),
@@ -281,6 +346,7 @@ mod tests {
 
         let sink = BufferingLogSink::new(
             Arc::clone(&store),
+            "test-repo".to_string(),
             "inv2".to_string(),
             "worktree-post-create".to_string(),
             "feature/x".to_string(),
@@ -306,6 +372,7 @@ mod tests {
         {
             let sink = BufferingLogSink::new(
                 Arc::clone(&store),
+                "test-repo".to_string(),
                 "inv3".to_string(),
                 "worktree-post-create".to_string(),
                 "feature/x".to_string(),
@@ -329,6 +396,7 @@ mod tests {
 
         let sink = BufferingLogSink::new(
             Arc::clone(&store),
+            "test-repo".to_string(),
             "inv4".to_string(),
             "worktree-post-create".to_string(),
             "feature/x".to_string(),
@@ -356,6 +424,7 @@ mod tests {
 
         let sink = BufferingLogSink::new(
             Arc::clone(&store),
+            "test-repo".to_string(),
             "inv-sample".to_string(),
             "worktree-post-create".to_string(),
             "feature/x".to_string(),
@@ -407,6 +476,7 @@ mod tests {
 
         let sink = BufferingLogSink::new(
             Arc::clone(&store),
+            "test-repo".to_string(),
             "inv-all".to_string(),
             "worktree-post-create".to_string(),
             "feature/x".to_string(),

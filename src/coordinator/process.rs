@@ -263,9 +263,9 @@ impl CoordinatorState {
             ready = next_ready;
         }
 
-        // Synthesize meta + JobResult for jobs the scheduler marked DepFailed
-        // (their closure was not invoked, so they would otherwise be invisible
-        // to `daft hooks jobs`).
+        // Synthesize a row + JobResult for jobs the scheduler marked
+        // DepFailed (their closure was not invoked, so they would otherwise
+        // be invisible to `daft hooks jobs`).
         for (idx, status) in statuses.iter().enumerate() {
             if *status != NodeStatus::DepFailed {
                 continue;
@@ -273,15 +273,15 @@ impl CoordinatorState {
             let Some(job) = self.jobs.get(idx) else {
                 continue;
             };
+            let meta = JobMeta::skipped(
+                &job.name,
+                &self.hook_type,
+                &self.worktree,
+                &job.command,
+                job.background,
+                job.needs.clone(),
+            );
             if let Ok(job_dir) = store.create_job_dir(&self.invocation_id, &job.name) {
-                let meta = JobMeta::skipped(
-                    &job.name,
-                    &self.hook_type,
-                    &self.worktree,
-                    &job.command,
-                    job.background,
-                    job.needs.clone(),
-                );
                 if let Err(e) = store.write_meta(&job_dir, &meta) {
                     eprintln!(
                         "daft: failed to write dep-failed meta for '{}': {e}",
@@ -293,6 +293,17 @@ impl CoordinatorState {
                     "daft: failed to create dep-failed log dir for '{}'",
                     job.name
                 );
+            }
+            if let Some(js) = job_store
+                && let Err(e) = js.upsert_job(&job_row_from_meta(
+                    &meta,
+                    &self.repo_hash,
+                    &self.invocation_id,
+                    &job.tags,
+                    None,
+                ))
+            {
+                eprintln!("daft: failed to persist dep-failed job '{}': {e}", job.name);
             }
             results.lock().unwrap().push(JobResult {
                 name: job.name.clone(),
@@ -465,9 +476,11 @@ fn run_single_background_job(
         eprintln!("daft: failed to write meta for '{}': {e}", job.name);
     }
 
-    // Dual-write the initial JobRow into the redb store. The child PID/PGID
-    // aren't known yet — `run_command` spawns the shell — so they're
-    // populated alongside the terminal write below.
+    // The initial JobRow lands in SQLite alongside the meta.json sidecar.
+    // The child PID/PGID aren't known yet — `run_command` spawns the
+    // shell — so they're populated alongside the terminal write below.
+    // `meta.json` stays around for `LogStore::clean` until that path is
+    // rewritten to query SQLite directly.
     if let Some(js) = ctx.job_store.as_ref()
         && let Err(e) = js.upsert_job(&job_row_from_meta(
             &meta,
@@ -608,15 +621,15 @@ fn run_single_background_job(
         let _ = std::fs::remove_file(&jsonl_path);
     }
 
-    // 8. Write updated meta with the final status, exit code, and finish time.
+    // 8. Write updated meta with the final status, exit code, and finish
+    // time; persist the terminal JobRow to SQLite with the captured child
+    // PID/PGID.
     meta.status = status.clone();
     meta.exit_code = exit_code;
     meta.finished_at = Some(chrono::Utc::now());
     if let Err(e) = store.write_meta(&job_dir, &meta) {
         eprintln!("daft: failed to update meta for '{}': {e}", job.name);
     }
-
-    // Dual-write the terminal JobRow with the captured child PID/PGID.
     if let Some(js) = ctx.job_store.as_ref()
         && let Err(e) = js.upsert_job(&job_row_from_meta(
             &meta,
@@ -823,7 +836,7 @@ fn handle_client_connection(
 
     let response = match request {
         CoordinatorRequest::ListJobs => {
-            let jobs = build_job_list(store);
+            let jobs = build_job_list(job_store, repo_hash);
             CoordinatorResponse::Jobs(jobs)
         }
         CoordinatorRequest::CancelJob { name } => {
@@ -901,38 +914,41 @@ fn handle_client_connection(
     send_response(&stream, &response);
 }
 
-/// Build a list of job info from the log store.
+/// Build the list of jobs the coordinator's `ListJobs` IPC returns.
+/// Sources every field from SQLite — the meta.json filesystem scan is
+/// gone now that the store is the single source of truth.
 #[cfg(unix)]
-fn build_job_list(store: &LogStore) -> Vec<JobInfo> {
-    let job_dirs = match store.list_job_dirs() {
-        Ok(dirs) => dirs,
-        Err(_) => return vec![],
+fn build_job_list(job_store: Option<&SqliteJobsStore>, repo_hash: &str) -> Vec<JobInfo> {
+    let Some(js) = job_store else {
+        return Vec::new();
     };
-
+    let rows = match js.list_jobs_for_repo(repo_hash) {
+        Ok(rs) => rs,
+        Err(_) => return Vec::new(),
+    };
     let now = chrono::Utc::now();
-    let mut jobs = Vec::new();
-
-    for dir in job_dirs {
-        if let Ok(meta) = store.read_meta(&dir) {
-            let elapsed_secs = if matches!(meta.status, JobStatus::Running) {
-                let elapsed = now.signed_duration_since(meta.started_at);
-                Some(elapsed.num_seconds().max(0) as u64)
+    rows.into_iter()
+        .map(|row| {
+            let status = JobStatus::from_status_str(&row.status);
+            let elapsed_secs = if matches!(status, JobStatus::Running) {
+                Some(
+                    now.signed_duration_since(row.started_at)
+                        .num_seconds()
+                        .max(0) as u64,
+                )
             } else {
                 None
             };
-
-            jobs.push(JobInfo {
-                name: meta.name,
-                hook_type: meta.hook_type,
-                worktree: meta.worktree,
-                status: meta.status,
+            JobInfo {
+                name: row.name,
+                hook_type: row.hook_type,
+                worktree: row.worktree,
+                status,
                 elapsed_secs,
-                exit_code: meta.exit_code,
-            });
-        }
-    }
-
-    jobs
+                exit_code: row.exit_code,
+            }
+        })
+        .collect()
 }
 
 /// Cancel a single job by name. Records the name in `cancelled_jobs` so
@@ -1578,38 +1594,39 @@ mod tests {
     #[test]
     fn test_build_job_list_empty_store() {
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-        let jobs = build_job_list(&store);
+        let job_store = SqliteJobsStore::for_repo_base(tmp.path()).unwrap();
+        let jobs = build_job_list(Some(&job_store), "rh");
         assert!(jobs.is_empty());
     }
 
     #[test]
     fn test_build_job_list_with_jobs() {
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-
-        // Create a completed job.
-        let dir = store.create_job_dir("inv-1", "build").unwrap();
-        let meta = JobMeta {
-            name: "build".to_string(),
-            hook_type: "worktree-post-create".to_string(),
-            worktree: "/tmp/wt".to_string(),
-            command: "cargo build".to_string(),
-            working_dir: "/tmp/wt".to_string(),
+        let job_store = SqliteJobsStore::for_repo_base(tmp.path()).unwrap();
+        let row = JobRow {
+            repo_hash: "rh".into(),
+            invocation_id: "inv-1".into(),
+            name: "build".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "/tmp/wt".into(),
+            command: "cargo build".into(),
+            working_dir: "/tmp/wt".into(),
             env: HashMap::new(),
             started_at: chrono::Utc::now(),
-            status: JobStatus::Completed,
+            finished_at: None,
+            status: JobStatus::Completed.as_status_str().to_string(),
             exit_code: Some(0),
             pid: Some(1234),
+            pgid: Some(1234),
             background: false,
-            finished_at: None,
             needs: vec![],
+            tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
         };
-        store.write_meta(&dir, &meta).unwrap();
+        job_store.upsert_job(&row).unwrap();
 
-        let jobs = build_job_list(&store);
+        let jobs = build_job_list(Some(&job_store), "rh");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "build");
         assert_eq!(jobs[0].hook_type, "worktree-post-create");
@@ -1622,29 +1639,31 @@ mod tests {
     #[test]
     fn test_build_job_list_running_job_has_elapsed() {
         let tmp = TempDir::new().unwrap();
-        let store = LogStore::new(tmp.path().to_path_buf());
-
-        let dir = store.create_job_dir("inv-1", "long-job").unwrap();
-        let meta = JobMeta {
-            name: "long-job".to_string(),
-            hook_type: "worktree-post-create".to_string(),
-            worktree: "/tmp/wt".to_string(),
-            command: "sleep 100".to_string(),
-            working_dir: "/tmp/wt".to_string(),
+        let job_store = SqliteJobsStore::for_repo_base(tmp.path()).unwrap();
+        let row = JobRow {
+            repo_hash: "rh".into(),
+            invocation_id: "inv-1".into(),
+            name: "long-job".into(),
+            hook_type: "worktree-post-create".into(),
+            worktree: "/tmp/wt".into(),
+            command: "sleep 100".into(),
+            working_dir: "/tmp/wt".into(),
             env: HashMap::new(),
             started_at: chrono::Utc::now() - chrono::Duration::seconds(30),
-            status: JobStatus::Running,
+            finished_at: None,
+            status: JobStatus::Running.as_status_str().to_string(),
             exit_code: None,
             pid: Some(9999),
+            pgid: Some(9999),
             background: false,
-            finished_at: None,
             needs: vec![],
+            tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
         };
-        store.write_meta(&dir, &meta).unwrap();
+        job_store.upsert_job(&row).unwrap();
 
-        let jobs = build_job_list(&store);
+        let jobs = build_job_list(Some(&job_store), "rh");
         assert_eq!(jobs.len(), 1);
         assert!(matches!(jobs[0].status, JobStatus::Running));
         // Should have elapsed_secs >= 30 (approximately).
@@ -1909,28 +1928,31 @@ mod tests {
         let store_dir = tmp.path().join("store");
         std::fs::create_dir_all(&store_dir).unwrap();
 
-        let store = LogStore::new(store_dir.clone());
-
-        // Create a job in the store so ListJobs returns something.
-        let dir = store.create_job_dir("inv-1", "test-job").unwrap();
-        let meta = JobMeta {
-            name: "test-job".to_string(),
-            hook_type: "post-clone".to_string(),
-            worktree: "/tmp/wt".to_string(),
-            command: "echo test".to_string(),
-            working_dir: "/tmp/wt".to_string(),
+        // Seed a job through the SQLite store so `ListJobs` sees it —
+        // `build_job_list` now reads from SQLite, not from `meta.json`.
+        let job_store = SqliteJobsStore::for_repo_base(&store_dir).unwrap();
+        let row = JobRow {
+            repo_hash: "test-repo".into(),
+            invocation_id: "inv-1".into(),
+            name: "test-job".into(),
+            hook_type: "post-clone".into(),
+            worktree: "/tmp/wt".into(),
+            command: "echo test".into(),
+            working_dir: "/tmp/wt".into(),
             env: HashMap::new(),
             started_at: chrono::Utc::now(),
-            status: JobStatus::Completed,
+            finished_at: None,
+            status: JobStatus::Completed.as_status_str().to_string(),
             exit_code: Some(0),
             pid: Some(1234),
+            pgid: Some(1234),
             background: false,
-            finished_at: None,
             needs: vec![],
+            tags: vec![],
             retention_seconds: None,
             max_log_size_bytes: None,
         };
-        store.write_meta(&dir, &meta).unwrap();
+        job_store.upsert_job(&row).unwrap();
 
         // Manually bind the listener (bypassing coordinator_socket_path).
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
@@ -1941,6 +1963,7 @@ mod tests {
         let cancelled_jobs: CancelledJobs = Arc::new(Mutex::new(HashSet::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
+        let job_store_for_thread = job_store.clone();
 
         let handle = std::thread::spawn(move || {
             let store = LogStore::new(store_dir);
@@ -1957,8 +1980,8 @@ mod tests {
                             &cancel_all,
                             &cancelled_jobs,
                             &shutdown_clone,
-                            None,
-                            "",
+                            Some(&job_store_for_thread),
+                            "test-repo",
                         );
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {

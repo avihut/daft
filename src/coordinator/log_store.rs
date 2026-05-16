@@ -110,6 +110,30 @@ impl JobMeta {
     }
 }
 
+/// Project a SQLite [`crate::store::models::JobRow`] into the [`JobMeta`]
+/// shape used by CLI renderers and the tab-completion hot path. Keeps
+/// presentation code uniform regardless of whether the source is the
+/// SQLite store or (transitionally) a legacy `meta.json` file.
+pub fn job_meta_from_row(row: crate::store::models::JobRow) -> JobMeta {
+    JobMeta {
+        name: row.name,
+        hook_type: row.hook_type,
+        worktree: row.worktree,
+        command: row.command,
+        working_dir: row.working_dir,
+        env: row.env,
+        started_at: row.started_at,
+        status: JobStatus::from_status_str(&row.status),
+        exit_code: row.exit_code,
+        pid: row.pid,
+        background: row.background,
+        finished_at: row.finished_at,
+        needs: row.needs,
+        retention_seconds: row.retention_seconds,
+        max_log_size_bytes: row.max_log_size_bytes,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationMeta {
     pub invocation_id: String,
@@ -216,6 +240,12 @@ impl LogStore {
     /// Write `meta.json` and `output.jsonl` (one [`crate::coordinator::log_record::LogRecord`]
     /// per line) atomically. Used by the foreground `BufferingLogSink` and
     /// by `on_job_runner_skipped`.
+    ///
+    /// The matching job metadata also gets persisted through the SQLite
+    /// store (see `BufferingLogSink::persist_job_row`). `meta.json` is
+    /// still written so the file-based `LogStore::clean` retention pass
+    /// keeps seeing per-job retention metadata; once that is rewritten
+    /// to query SQLite directly, the `meta.json` write will go away.
     pub fn write_job_record_jsonl(
         &self,
         invocation_id: &str,
