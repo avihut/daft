@@ -17,7 +17,7 @@
 
 use crate::store::connection::{READER_BUSY_TIMEOUT_MS, WRITER_BUSY_TIMEOUT_MS, bring_up};
 use crate::store::error::{Result, StoreError};
-use crate::store::migrate;
+use crate::store::{migrate, paths};
 use r2d2::{ManageConnection, Pool as R2d2Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OpenFlags};
@@ -55,6 +55,14 @@ impl Pool {
         )?;
         migrate::run(&mut bootstrap, path)?;
         drop(bootstrap);
+
+        // Verify file/parent permissions are at most 0o600/0o700 before any
+        // checkout. Fresh DBs were just tightened by `bring_up`; existing
+        // DBs are checked here to catch tampering (e.g. an admin process
+        // replacing the file with a world-readable copy between daft
+        // invocations). Runs once per pool open — the writer/reader
+        // checkouts don't pay the stat.
+        paths::verify_perms(path)?;
 
         let writer_mgr =
             DaftSqliteManager::new(path, WRITER_BUSY_TIMEOUT_MS, /* read_only */ false);
@@ -222,5 +230,27 @@ mod tests {
         let _r1 = pool.reader().unwrap();
         let _r2 = pool.reader().unwrap();
         // Both readers succeed because the reader pool has multiple slots.
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pool_rejects_world_readable_db() {
+        use crate::store::error::StoreError;
+        use std::os::unix::fs::PermissionsExt;
+
+        // First open tightens to 0o600.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        drop(Pool::open(&path).unwrap());
+
+        // Simulate an admin tool that loosened the perms between daft
+        // invocations. Parent stays 0o700 from the first open.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = Pool::open(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::PermissionsTooOpen { .. }),
+            "expected PermissionsTooOpen, got {err:?}"
+        );
     }
 }
