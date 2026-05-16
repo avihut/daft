@@ -1,18 +1,31 @@
-# daft.yml — daft configuration for this clone.
+# daft.yml — per-repo daft configuration.
 #
-# Status:
-#   - This file is your local visitor configuration unless committed to git.
-#   - Once tracked, it becomes the team baseline and applies to all clones.
-#   - For personal overrides on top of a tracked daft.yml, create daft.local.yml
-#     (must remain untracked; doctor will flag it as a smell if tracked).
+# This file works two ways:
 #
-# Sections below are commented placeholders. Uncomment and edit to enable.
+#   - Tracked (committed):
+#     Team baseline. Every clone of this repo picks it up automatically.
+#     Use this for hooks and settings the team agrees on.
+#
+#   - Untracked (gitignored):
+#     Your personal local configuration for this clone. Add `daft.yml`
+#     to .gitignore (or to .git/info/exclude) and it stays just for you.
+#
+# You can also layer per-user overrides on top of a tracked baseline by
+# creating `daft.local.yml` — that file must remain untracked, and
+# `daft doctor` will flag it if it ever gets committed.
+#
+# Sections below are commented placeholders. Uncomment what you need.
 
 # layout: sibling
-# Layouts: sibling | nested | contained | centralized | <custom>
+# sibling | nested | contained | centralized | <custom>
+# Use this only to enforce a worktree layout across the team — once daft.yml
+# is tracked, every clone inherits this setting. For personal layout choice,
+# prefer `daft layout` (writes to ~/.config/daft, doesn't affect teammates).
 
 # shared: []
-# Files/directories shared across worktrees via symlink (e.g. ".env").
+# Files/directories symlinked across all worktrees of this repo. The best
+# fit is files that are gitignored by design (e.g. `.env`, `.venv`) so each
+# worktree doesn't carry its own copy.
 
 # hooks:
 #   post-clone:
