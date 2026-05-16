@@ -808,6 +808,16 @@ fn handle_client_connection(
     job_store: Option<&JobStore>,
     repo_hash: &str,
 ) {
+    // On macOS (and other BSDs) `accept(2)` returns a socket that inherits
+    // O_NONBLOCK from the listening socket. `start_socket_listener` puts the
+    // listener in non-blocking mode so the accept loop can poll the shutdown
+    // flag, which means every accepted stream lands here non-blocking on
+    // macOS. `read_exact` against a non-blocking socket returns `WouldBlock`
+    // before any data arrives and the request silently drops. Force the
+    // accepted stream back to blocking so `set_read_timeout` is the only
+    // thing bounding reads.
+    let _ = stream.set_nonblocking(false);
+
     // Set a read timeout so a misbehaving client doesn't block the listener.
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
