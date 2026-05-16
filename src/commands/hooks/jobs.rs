@@ -651,7 +651,7 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 /// SQLite + WAL means this open succeeds even while a coordinator is
 /// actively writing to the same DB — readers and writers don't block
 /// each other.
-fn load_redb_job_meta_index(
+fn load_sqlite_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
 ) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
@@ -720,7 +720,7 @@ fn lookup_job_meta(
 fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
-    redb_index: Option<
+    sqlite_index: Option<
         &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
     >,
     coordinator_alive: bool,
@@ -750,7 +750,7 @@ fn build_jobs_payload(
         let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
 
         for dir in &job_dirs {
-            let Some(meta) = lookup_job_meta(redb_index, &inv.invocation_id, dir) else {
+            let Some(meta) = lookup_job_meta(sqlite_index, &inv.invocation_id, dir) else {
                 continue;
             };
 
@@ -882,7 +882,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
-    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let invocations = if args.all {
         store.list_invocations()?
     } else if let Some(ref wt) = args.worktree {
@@ -922,7 +922,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     .unwrap_or_default()
                     .iter()
                     .any(|dir| {
-                        lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir)
+                        lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir)
                             .map(|m| m.status == target_status)
                             .unwrap_or(false)
                     })
@@ -938,8 +938,12 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     }
 
     if args.emit.is_structured() {
-        let payload =
-            build_jobs_payload(&invocations, &store, redb_index.as_ref(), coordinator_alive)?;
+        let payload = build_jobs_payload(
+            &invocations,
+            &store,
+            sqlite_index.as_ref(),
+            coordinator_alive,
+        )?;
         return emit::emit_and_handle("hooks jobs", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
@@ -969,7 +973,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
             for dir in &job_dirs {
-                let Some(meta) = lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir)
+                let Some(meta) = lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir)
                 else {
                     continue;
                 };
@@ -1246,7 +1250,7 @@ fn show_logs(
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
-    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let addr = JobAddress::parse(job).with_inv_override(inv);
@@ -1278,14 +1282,14 @@ fn show_logs(
     if let Some(invocation_id) = invocation_only {
         render_invocation_logs(
             &store,
-            redb_index.as_ref(),
+            sqlite_index.as_ref(),
             &invocation_id,
             filter,
             &mut buf,
         )?;
     } else {
         let resolved = resolve_job_address(&addr, &store, &current_worktree)?;
-        render_single_job_log(&store, redb_index.as_ref(), &resolved, filter, &mut buf)?;
+        render_single_job_log(&store, sqlite_index.as_ref(), &resolved, filter, &mut buf)?;
     }
 
     crate::output::pager::display_with_pager(&buf);
@@ -1301,7 +1305,7 @@ fn is_hex_prefix(s: &str) -> bool {
 /// Render a single job's metadata and log into `buf`.
 fn render_single_job_log(
     store: &LogStore,
-    redb_index: Option<
+    sqlite_index: Option<
         &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
     >,
     resolved: &ResolvedAddress,
@@ -1310,15 +1314,14 @@ fn render_single_job_log(
 ) -> Result<()> {
     use std::fmt::Write;
 
-    let meta = lookup_job_meta(redb_index, &resolved.invocation_id, &resolved.job_dir).ok_or_else(
-        || {
+    let meta = lookup_job_meta(sqlite_index, &resolved.invocation_id, &resolved.job_dir)
+        .ok_or_else(|| {
             anyhow::anyhow!(
                 "job '{}' has no SQLite row in invocation {}",
                 resolved.job_dir.display(),
                 resolved.invocation_id
             )
-        },
-    )?;
+        })?;
     let inv_meta = store.read_invocation_meta(&resolved.invocation_id).ok();
 
     let now = chrono::Utc::now();
@@ -1392,7 +1395,7 @@ fn render_single_job_log(
 /// Render all job logs for a single invocation into `buf`.
 fn render_invocation_logs(
     store: &LogStore,
-    redb_index: Option<
+    sqlite_index: Option<
         &std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>,
     >,
     invocation_id: &str,
@@ -1409,7 +1412,7 @@ fn render_invocation_logs(
     let job_dirs = store.list_jobs_in_invocation(invocation_id)?;
     let mut jobs: Vec<(std::path::PathBuf, crate::coordinator::log_store::JobMeta)> = job_dirs
         .into_iter()
-        .filter_map(|dir| lookup_job_meta(redb_index, invocation_id, &dir).map(|m| (dir, m)))
+        .filter_map(|dir| lookup_job_meta(sqlite_index, invocation_id, &dir).map(|m| (dir, m)))
         .collect();
     jobs.sort_by_key(|a| a.1.started_at);
 
@@ -1638,7 +1641,7 @@ fn retry_command(
 ) -> Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let store = LogStore::for_repo(&repo_hash)?;
-    let redb_index = load_redb_job_meta_index(&repo_hash, &store.base_dir);
+    let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
 
     let mut effective_worktree = worktree_flag
@@ -1680,13 +1683,14 @@ fn retry_command(
     };
 
     // Resolve to a source invocation.
-    let inv = resolve_retry_invocation(&parsed, &store, redb_index.as_ref(), &effective_worktree)?;
+    let inv =
+        resolve_retry_invocation(&parsed, &store, sqlite_index.as_ref(), &effective_worktree)?;
 
     // Load all job metas from the source invocation via the SQLite index.
     let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
     let mut metas: Vec<crate::coordinator::log_store::JobMeta> = Vec::new();
     for dir in &job_dirs {
-        if let Some(meta) = lookup_job_meta(redb_index.as_ref(), &inv.invocation_id, dir) {
+        if let Some(meta) = lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir) {
             metas.push(meta);
         }
     }
