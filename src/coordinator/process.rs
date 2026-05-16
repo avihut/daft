@@ -465,7 +465,9 @@ fn run_single_background_job(
         started_at: chrono::Utc::now(),
         status: JobStatus::Running,
         exit_code: None,
-        pid: Some(std::process::id()),
+        // Child PID is unknown until `run_command` spawns; the terminal
+        // `JobRow` write populates it via `child_pid`.
+        pid: None,
         background: true,
         finished_at: None,
         needs: job.needs.clone(),
