@@ -178,7 +178,7 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: shell_init::Args::command(),
                 },
                 CommandEntry {
-                    display_name: "setup shortcuts",
+                    display_name: "activate shortcuts",
                     command: shortcuts::Args::command(),
                 },
                 CommandEntry {
@@ -317,7 +317,7 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     command: multi_remote::Args::command(),
                 },
                 CommandEntry {
-                    display_name: "daft setup shortcuts",
+                    display_name: "daft activate shortcuts",
                     command: shortcuts::Args::command(),
                 },
                 CommandEntry {

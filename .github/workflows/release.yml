@@ -364,8 +364,8 @@ jobs:
             sed -i '$ d' "$FORMULA_FILE"
             # Append caveats method using printf to avoid heredoc YAML issues
             printf '\n  def caveats\n    <<~EOS\n' >> "$FORMULA_FILE"
-            printf '      To complete setup (shell integration + shortcuts), run:\n' >> "$FORMULA_FILE"
-            printf '        daft setup\n\n' >> "$FORMULA_FILE"
+            printf '      To activate daft (shell integration + shortcuts), run:\n' >> "$FORMULA_FILE"
+            printf '        daft activate\n\n' >> "$FORMULA_FILE"
             printf '      This enables automatic cd into new worktrees and installs\n' >> "$FORMULA_FILE"
             printf '      git-style shortcuts (gwtco, gwtcb, etc.)\n\n' >> "$FORMULA_FILE"
             printf '      For more information:\n' >> "$FORMULA_FILE"
@@ -457,8 +457,8 @@ jobs:
             sed -i '$ d' "$FORMULA_FILE"
             # Append caveats method using printf to avoid heredoc YAML issues
             printf '\n  def caveats\n    <<~EOS\n' >> "$FORMULA_FILE"
-            printf '      To complete setup (shell integration + shortcuts), run:\n' >> "$FORMULA_FILE"
-            printf '        daft setup\n\n' >> "$FORMULA_FILE"
+            printf '      To activate daft (shell integration + shortcuts), run:\n' >> "$FORMULA_FILE"
+            printf '        daft activate\n\n' >> "$FORMULA_FILE"
             printf '      This enables automatic cd into new worktrees and installs\n' >> "$FORMULA_FILE"
             printf '      git-style shortcuts (gwtco, gwtcb, etc.)\n\n' >> "$FORMULA_FILE"
             printf '      For more information:\n' >> "$FORMULA_FILE"

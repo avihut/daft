@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Integration tests for daft setup command
-# Tests automatic shell config setup functionality
+# Integration tests for daft activate command
+# Tests automatic shell config activation functionality
 
 set -eo pipefail
 
@@ -11,11 +11,11 @@ source "$SCRIPT_DIR/test_framework.sh"
 
 # --- Test Functions ---
 
-test_setup_help() {
-    log "Testing: daft setup --help shows usage"
+test_activate_help() {
+    log "Testing: daft activate --help shows usage"
 
     local output
-    output=$(daft setup --help 2>&1)
+    output=$(daft activate --help 2>&1)
 
     if echo "$output" | grep -q "shell-init"; then
         log_success "Help text mentions shell-init"
@@ -31,21 +31,26 @@ test_setup_help() {
         return 1
     fi
 
-    if echo "$output" | grep -q "\-\-yes"; then
-        log_success "Help text mentions --yes"
+    if echo "$output" | grep -q "\-\-force"; then
+        log_success "Help text mentions --force"
     else
-        log_error "Help text missing --yes"
+        log_error "Help text missing --force"
         return 1
     fi
 
     return 0
 }
 
-test_setup_dry_run() {
-    log "Testing: daft setup --dry-run shows what would be done"
+test_activate_dry_run() {
+    log "Testing: daft activate --dry-run shows what would be done"
 
+    # Use a fake HOME so the dry-run isn't short-circuited by the developer's
+    # already-configured ~/.zshrc (would hit the "already configured" branch).
+    local fake_home
+    fake_home=$(mktemp -d)
     local output
-    output=$(daft setup --dry-run 2>&1)
+    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft activate --dry-run 2>&1)
+    rm -rf "$fake_home"
 
     if echo "$output" | grep -q "Detected shell:"; then
         log_success "Output shows detected shell"
@@ -78,8 +83,8 @@ test_setup_dry_run() {
     return 0
 }
 
-test_setup_creates_config() {
-    log "Testing: daft setup creates config in new file"
+test_activate_creates_config() {
+    log "Testing: daft activate creates config in new file"
 
     # Create a temp directory for a fake home
     local fake_home
@@ -87,7 +92,7 @@ test_setup_creates_config() {
 
     # Run setup with fake home, forcing zsh
     local output
-    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft setup --yes 2>&1) || true
+    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft activate --force 2>&1) || true
 
     local config_file="$fake_home/.zshrc"
 
@@ -112,8 +117,8 @@ test_setup_creates_config() {
     return 0
 }
 
-test_setup_idempotent() {
-    log "Testing: daft setup is idempotent (doesn't add duplicates)"
+test_activate_idempotent() {
+    log "Testing: daft activate is idempotent (doesn't add duplicates)"
 
     # Create a temp directory for a fake home
     local fake_home
@@ -123,9 +128,10 @@ test_setup_idempotent() {
     echo '# existing config' > "$fake_home/.zshrc"
     echo 'eval "$(daft shell-init zsh)"' >> "$fake_home/.zshrc"
 
-    # Run setup
+    # Run activate without --force — it should detect the existing line and
+    # return early. (--force would skip the check by design.)
     local output
-    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft setup --yes 2>&1) || true
+    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft activate 2>&1) || true
 
     if echo "$output" | grep -q "already configured"; then
         log_success "Setup detected existing configuration"
@@ -152,8 +158,8 @@ test_setup_idempotent() {
     return 0
 }
 
-test_setup_creates_backup() {
-    log "Testing: daft setup creates backup of existing config"
+test_activate_creates_backup() {
+    log "Testing: daft activate creates backup of existing config"
 
     # Create a temp directory for a fake home
     local fake_home
@@ -165,7 +171,7 @@ test_setup_creates_backup() {
 
     # Run setup
     local output
-    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft setup --yes 2>&1) || true
+    output=$(HOME="$fake_home" SHELL="/bin/zsh" daft activate --force 2>&1) || true
 
     local backup_file="$fake_home/.zshrc.bak"
 
@@ -189,11 +195,11 @@ test_setup_creates_backup() {
     return 0
 }
 
-test_setup_bash_detection() {
-    log "Testing: daft setup detects bash shell"
+test_activate_bash_detection() {
+    log "Testing: daft activate detects bash shell"
 
     local output
-    output=$(SHELL="/bin/bash" daft setup --dry-run 2>&1)
+    output=$(SHELL="/bin/bash" daft activate --dry-run 2>&1)
 
     if echo "$output" | grep -q "Detected shell: bash"; then
         log_success "Correctly detected bash"
@@ -213,11 +219,11 @@ test_setup_bash_detection() {
     return 0
 }
 
-test_setup_fish_detection() {
-    log "Testing: daft setup detects fish shell"
+test_activate_fish_detection() {
+    log "Testing: daft activate detects fish shell"
 
     local output
-    output=$(SHELL="/usr/local/bin/fish" daft setup --dry-run 2>&1)
+    output=$(SHELL="/usr/local/bin/fish" daft activate --dry-run 2>&1)
 
     if echo "$output" | grep -q "Detected shell: fish"; then
         log_success "Correctly detected fish"
@@ -244,17 +250,17 @@ main() {
 
     echo
     echo "========================================================="
-    echo "Running daft setup Integration Tests"
+    echo "Running daft activate Integration Tests"
     echo "========================================================="
     echo
 
-    run_test "setup_help" test_setup_help
-    run_test "setup_dry_run" test_setup_dry_run
-    run_test "setup_creates_config" test_setup_creates_config
-    run_test "setup_idempotent" test_setup_idempotent
-    run_test "setup_creates_backup" test_setup_creates_backup
-    run_test "setup_bash_detection" test_setup_bash_detection
-    run_test "setup_fish_detection" test_setup_fish_detection
+    run_test "activate_help" test_activate_help
+    run_test "activate_dry_run" test_activate_dry_run
+    run_test "activate_creates_config" test_activate_creates_config
+    run_test "activate_idempotent" test_activate_idempotent
+    run_test "activate_creates_backup" test_activate_creates_backup
+    run_test "activate_bash_detection" test_activate_bash_detection
+    run_test "activate_fish_detection" test_activate_fish_detection
 
     print_summary
 }

@@ -47,7 +47,7 @@ pub struct Args {
 
 pub fn run() -> Result<()> {
     // Build clap argv: program name + everything after `daft repo remove`.
-    // `daft repo` is a subcommand category (like `daft setup shortcuts`), so
+    // `daft repo` is a subcommand category (like `daft activate shortcuts`), so
     // `crate::get_clap_args` does not recognize it; we rebuild argv manually.
     //
     // The router in `src/main.rs` only dispatches here when argv[1] == "repo"

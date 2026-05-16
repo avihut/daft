@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH setup 1  "setup " 
+.TH activate 1  "activate " 
 .SH NAME
-setup \- Add daft shell integration to your shell config
+activate \- Activate daft in this shell
 .SH SYNOPSIS
-\fBsetup\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBactivate\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 .PP
 Automatically adds the daft shell\-init line to your shell configuration file.
@@ -19,9 +19,9 @@ The command will:
   5. Append the shell\-init line
 .PP
 Examples:
-  daft setup              # Interactive setup with confirmation
-  daft setup \-\-force      # Skip confirmation and re\-add if already configured
-  daft setup \-\-dry\-run    # Show what would be done without making changes
+  daft activate              # Interactive activation with confirmation
+  daft activate \-\-force      # Skip confirmation and re\-add if already configured
+  daft activate \-\-dry\-run    # Show what would be done without making changes
 .SH OPTIONS
 .TP
 \fB\-f\fR, \fB\-\-force\fR

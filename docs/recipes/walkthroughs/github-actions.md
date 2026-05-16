@@ -196,8 +196,8 @@ Before:
 
 After:
 
-- `test.yml` is five steps. Three are daft setup (install, trust, run hooks);
-  one is checkout; one runs the actual tests.
+- `test.yml` is five steps. Three set up daft (install, trust, run hooks); one
+  is checkout; one runs the actual tests.
 - Adding a new dep updates _one_ file — `daft.yml`. CI picks it up
   automatically.
 - The "keep in sync" comment is gone because there's nothing to keep in sync.

@@ -160,8 +160,8 @@ Run any command with `--help` for full options.
 Enable short aliases like `gwtco`, `gwtcb`:
 
 ```bash
-daft setup shortcuts enable git    # gwtco, gwtcb, gwtprune, etc.
-daft setup shortcuts list          # See all available shortcuts
+daft activate shortcuts enable git    # gwtco, gwtcb, gwtprune, etc.
+daft activate shortcuts list          # See all available shortcuts
 ```
 
 ## Hooks

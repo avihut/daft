@@ -31,6 +31,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-merge",
     "git-worktree-sync",
     "git-daft-repo-remove",
+    "daft-activate",
     "daft-config",
     "daft-doctor",
     "daft-file",
@@ -39,7 +40,6 @@ const COMMANDS: &[&str] = &[
     "daft-layout",
     "daft-multi-remote",
     "daft-release-notes",
-    "daft-setup",
     "daft-shared",
     "daft-shell-init",
     "daft-shortcuts",
@@ -184,7 +184,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-hooks" => Some(daft::commands::hooks::Args::command()),
         "daft-install" => Some(daft::commands::install::Args::command()),
         "daft-multi-remote" => Some(daft::commands::multi_remote::Args::command()),
-        "daft-setup" => Some(daft::commands::setup::Args::command()),
+        "daft-activate" => Some(daft::commands::activate::Args::command()),
         "daft-shell-init" => Some(daft::commands::shell_init::Args::command()),
         "daft-shortcuts" => Some(daft::commands::shortcuts::Args::command()),
         _ => None,
@@ -305,9 +305,9 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],
         "daft-release-notes" => vec![],
-        "daft-setup" => vec!["daft-shortcuts", "daft-shell-init"],
-        "daft-shortcuts" => vec!["daft-setup", "daft-shell-init"],
-        "daft-shell-init" => vec!["daft-setup", "daft-shortcuts"],
+        "daft-activate" => vec!["daft-shortcuts", "daft-shell-init"],
+        "daft-shortcuts" => vec!["daft-activate", "daft-shell-init"],
+        "daft-shell-init" => vec!["daft-activate", "daft-shortcuts"],
         _ => vec![],
     }
 }
@@ -740,7 +740,7 @@ fn build_top_level_command() -> clap::Command {
         )
         .subcommand(daft::commands::doctor::Args::command().name("doctor"))
         .subcommand(daft::commands::shell_init::Args::command().name("shell-init"))
-        .subcommand(daft::commands::setup::Args::command().name("setup"))
+        .subcommand(daft::commands::activate::Args::command().name("activate"))
         .subcommand(daft::commands::shortcuts::Args::command().name("shortcuts"))
         .subcommand(daft::commands::release_notes::Args::command().name("release-notes"))
 }

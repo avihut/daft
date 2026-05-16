@@ -7,7 +7,7 @@
 //! - **Shell style**: `gwco`, `gwcob`, `gwcobd`
 //! - **Legacy style**: `gclone`, `gcw`, `gcbw`, etc.
 //!
-//! Users can enable/disable styles via `daft setup shortcuts`.
+//! Users can enable/disable styles via `daft activate shortcuts`.
 
 use std::fmt;
 use std::str::FromStr;

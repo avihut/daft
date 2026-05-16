@@ -332,7 +332,7 @@ complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version in
 complete -c daft -n '__fish_use_subcommand' -s h -l help -d 'Print help'
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
-complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
+complete -c daft -n '__fish_use_subcommand' -a 'activate' -d 'Activate daft in this shell'
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'

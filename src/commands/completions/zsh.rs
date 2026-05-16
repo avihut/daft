@@ -904,7 +904,7 @@ _daft() {
         if [[ "$curword" == -* ]]; then
             compadd -- --version -V --help -h -C
         else
-            compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
+            compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
                     config file repo clone init install go start carry exec update list prune rename sync remove \
                     merge worktree-merge adopt eject
         fi

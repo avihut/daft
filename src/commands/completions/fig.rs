@@ -881,7 +881,7 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
-        ("setup", "Setup and configuration"),
+        ("activate", "Activate daft in this shell"),
         ("release-notes", "Generate release notes"),
     ];
 

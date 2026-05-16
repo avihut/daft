@@ -81,4 +81,4 @@ daft completions fig --install
 ## See Also
 
 - [daft-shell-init](./daft-shell-init.md)
-- [daft-setup](./daft-setup.md)
+- [daft-activate](./daft-activate.md)

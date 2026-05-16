@@ -447,7 +447,7 @@ export default defineConfig({
                     text: "completions",
                     link: "/reference/cli/daft-completions",
                   },
-                  { text: "setup", link: "/reference/cli/daft-setup" },
+                  { text: "activate", link: "/reference/cli/daft-activate" },
                 ],
               },
               {

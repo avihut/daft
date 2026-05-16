@@ -719,7 +719,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config file repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

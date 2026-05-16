@@ -167,12 +167,12 @@ fn main() -> Result<()> {
                     "shared" => commands::shared::run(),
                     "release-notes" => commands::release_notes::run(),
                     "repo" => commands::repo::run(),
-                    "setup" => {
-                        // Check for setup subcommands
+                    "activate" => {
+                        // Check for activate subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {
                             commands::shortcuts::run()
                         } else {
-                            commands::setup::run()
+                            commands::activate::run()
                         }
                     }
                     "shell-init" => commands::shell_init::run(),

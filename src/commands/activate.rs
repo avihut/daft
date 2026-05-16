@@ -60,8 +60,8 @@ impl Shell {
 }
 
 #[derive(Parser)]
-#[command(name = "setup")]
-#[command(about = "Add daft shell integration to your shell config")]
+#[command(name = "activate")]
+#[command(about = "Activate daft in this shell")]
 #[command(long_about = r#"
 Automatically adds the daft shell-init line to your shell configuration file.
 
@@ -75,9 +75,9 @@ The command will:
   5. Append the shell-init line
 
 Examples:
-  daft setup              # Interactive setup with confirmation
-  daft setup --force      # Skip confirmation and re-add if already configured
-  daft setup --dry-run    # Show what would be done without making changes
+  daft activate              # Interactive activation with confirmation
+  daft activate --force      # Skip confirmation and re-add if already configured
+  daft activate --dry-run    # Show what would be done without making changes
 "#)]
 pub struct Args {
     #[arg(
@@ -218,8 +218,8 @@ pub fn run() -> Result<()> {
     if shortcuts_installed {
         output.info("");
         output.info("To use different shortcut styles:");
-        output.info("  daft setup shortcuts only shell   # gwco, gwcob, gwcobd");
-        output.info("  daft setup shortcuts only legacy  # gclone, gcw, gcbw, ...");
+        output.info("  daft activate shortcuts only shell   # gwco, gwcob, gwcobd");
+        output.info("  daft activate shortcuts only legacy  # gclone, gcw, gcbw, ...");
     }
 
     Ok(())
