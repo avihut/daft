@@ -125,11 +125,6 @@ shlex = "1.3"
 uuid = { version = "1", features = ["v7"] }
 fs2 = "0.4"
 walkdir = "2.5"
-redb = "4.1"
-# Pinned to 1.3 so we share the version already in the dep tree via syntect/edtui.
-# bincode 2.x/3.x changed the public API (no default serde feature); upgrading
-# is a separate concern from this work.
-bincode = "1.3"
 # `bundled` compiles SQLite from source into the daft binary (~+1 MB on
 # release builds, +C compiler at build time). The rationale is in CLAUDE.md
 # under "Database & Storage" — every daft installation gets the same SQLite

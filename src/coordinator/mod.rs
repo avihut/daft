@@ -7,7 +7,6 @@ pub mod log_record;
 pub mod log_store;
 pub mod ports;
 pub mod process;
-pub mod store;
 pub mod types;
 
 pub use types::JobAddress;
