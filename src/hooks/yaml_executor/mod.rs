@@ -284,11 +284,25 @@ pub fn execute_yaml_hook_with_rc(
         &adapter,
     );
 
+    // Open the per-repo SQLite store once and reuse for both the
+    // skipped-job persistence loop and the repo-policy write below.
+    // `for_repo_base` is the non-wiping constructor; the coordinator
+    // is the only caller that should sweep legacy files.
+    let job_store_for_skipped =
+        match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
+            Ok(js) => Some(js),
+            Err(e) => {
+                eprintln!("daft: failed to open coordinator store for '{hook_name}': {e}");
+                None
+            }
+        };
+
     // Write sparse records for jobs that were filtered out before execution.
-    // Each skipped job gets a meta.json + output.jsonl record containing the
-    // reason so the user can investigate via `daft hooks jobs logs <name>`.
-    // Runs BEFORE the `specs.is_empty()` early return so fully-filtered
-    // hooks still produce skipped-job records.
+    // Each skipped job gets an `output.jsonl` containing the reason string
+    // plus a `JobRow` in SQLite so the user can investigate via
+    // `daft hooks jobs ls` / `daft hooks jobs logs <name>`. Runs BEFORE the
+    // `specs.is_empty()` early return so fully-filtered hooks still
+    // produce skipped-job records.
     for sj in &skipped_jobs {
         let meta = crate::coordinator::log_store::JobMeta::skipped(
             &sj.name,
@@ -308,27 +322,50 @@ pub fn execute_yaml_hook_with_rc(
                 sj.name
             );
         }
-    }
-
-    // Capture the repo-level cleanup policy as a sidecar so cleanup doesn't
-    // need to re-parse `daft.yml` later. Written once per hook fire after
-    // spec building; most-recent write wins. Note: early returns above (no
-    // jobs defined, all jobs filtered by tags or changed-attribute tracking)
-    // skip this write, so the previous sidecar value remains in effect until
-    // the next non-fully-filtered fire. Best-effort: a failed write should
-    // not break the hook fire.
-    let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
-    match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
-        Ok(job_store) => {
+        if let Some(ref js) = job_store_for_skipped {
             use crate::coordinator::ports::JobsStorePort;
-            if let Err(e) = job_store.write_repo_policy(&repo_hash, &repo_policy) {
-                eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+            let row = crate::store::models::JobRow {
+                repo_hash: repo_hash.clone(),
+                invocation_id: invocation_id.clone(),
+                name: meta.name.clone(),
+                hook_type: meta.hook_type.clone(),
+                worktree: meta.worktree.clone(),
+                command: meta.command.clone(),
+                working_dir: meta.working_dir.clone(),
+                env: meta.env.clone(),
+                started_at: meta.started_at,
+                finished_at: meta.finished_at,
+                status: meta.status.as_status_str().to_string(),
+                exit_code: meta.exit_code,
+                pid: meta.pid,
+                pgid: None,
+                background: meta.background,
+                needs: meta.needs.clone(),
+                tags: Vec::new(),
+                retention_seconds: meta.retention_seconds,
+                max_log_size_bytes: meta.max_log_size_bytes,
+            };
+            if let Err(e) = js.upsert_job(&row) {
+                eprintln!(
+                    "daft: failed to persist skipped job row for '{}': {e}",
+                    sj.name
+                );
             }
         }
-        Err(e) => {
-            eprintln!(
-                "daft: failed to open coordinator store while writing repo policy for '{hook_name}': {e}"
-            );
+    }
+
+    // Capture the repo-level cleanup policy so cleanup doesn't need to
+    // re-parse `daft.yml` later. Written once per hook fire after spec
+    // building; most-recent write wins. Note: early returns above (no
+    // jobs defined, all jobs filtered by tags or changed-attribute
+    // tracking) skip this write, so the previous value remains in effect
+    // until the next non-fully-filtered fire. Best-effort: a failed write
+    // should not break the hook fire.
+    let repo_policy = crate::coordinator::clean_policy::build_repo_policy(&specs);
+    if let Some(ref js) = job_store_for_skipped {
+        use crate::coordinator::ports::JobsStorePort;
+        if let Err(e) = js.write_repo_policy(&repo_hash, &repo_policy) {
+            eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
         }
     }
 
