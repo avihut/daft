@@ -43,28 +43,15 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Backdate every meta.json to 2 days ago
+  - name: Backdate every SQLite job/invocation timestamp to 2 days ago
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      python3 - "$JOBS_DIR" <<'PY'
-      import sys, json, os, datetime
-      root = sys.argv[1]
-      old = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-      for dirpath, _, files in os.walk(root):
-          for f in files:
-              if f != "meta.json":
-                  continue
-              p = os.path.join(dirpath, f)
-              with open(p) as fh:
-                  m = json.load(fh)
-              for k in ("created_at", "started_at", "finished_at"):
-                  if isinstance(m.get(k), str) and m.get(k):
-                      m[k] = old
-              with open(p, "w") as fh:
-                  json.dump(m, fh)
-      print("BACKDATE_OK")
-      PY
+      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
+      OLD=$(python3 -c "import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
+      sqlite3 "$DB" \
+        "UPDATE jobs SET started_at = '$OLD', finished_at = CASE WHEN finished_at IS NOT NULL THEN '$OLD' ELSE NULL END; UPDATE invocations SET created_at = '$OLD';"
+      echo "BACKDATE_OK"
     expect:
       exit_code: 0
       output_contains:

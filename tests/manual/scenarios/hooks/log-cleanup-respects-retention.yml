@@ -58,34 +58,16 @@ steps:
       output_contains:
         - "INV_COUNT_BEFORE="
 
-  - name: Backdate every meta.json under this repo to 2 days ago
+  - name: Backdate every SQLite job/invocation timestamp to 2 days ago
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      python3 - "$JOBS_DIR" <<'PY'
-      import sys, json, os, datetime
-      root = sys.argv[1]
-      old = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-      patched = 0
-      for dirpath, _, files in os.walk(root):
-          for f in files:
-              if f != "meta.json":
-                  continue
-              p = os.path.join(dirpath, f)
-              with open(p) as fh:
-                  m = json.load(fh)
-              # Both InvocationMeta (created_at) and JobMeta (started_at)
-              if "created_at" in m:
-                  m["created_at"] = old
-              if "started_at" in m:
-                  m["started_at"] = old
-              if m.get("finished_at"):
-                  m["finished_at"] = old
-              with open(p, "w") as fh:
-                  json.dump(m, fh)
-              patched += 1
-      print(f"PATCHED={patched}")
-      PY
+      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
+      OLD=$(python3 -c "import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
+      sqlite3 "$DB" \
+        "UPDATE jobs SET started_at = '$OLD', finished_at = CASE WHEN finished_at IS NOT NULL THEN '$OLD' ELSE NULL END; UPDATE invocations SET created_at = '$OLD';"
+      PATCHED=$(sqlite3 "$DB" "SELECT COUNT(*) FROM jobs WHERE started_at = '$OLD'")
+      echo "PATCHED=$PATCHED"
     expect:
       exit_code: 0
       output_contains:
