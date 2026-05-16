@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Pin the latest manual-test scaling results as the new baseline"
+set -euo pipefail
+
+RESULTS_DIR="$(git rev-parse --show-toplevel)/benches/results"
+
+if [[ ! -f "$RESULTS_DIR/test-manual-scale.md" ]]; then
+    echo "No scaling results to baseline. Run: mise run bench:tests:manual:scale"
+    exit 1
+fi
+
+cp "$RESULTS_DIR/test-manual-scale.md" "$RESULTS_DIR/test-manual-scale-baseline.md"
+cp "$RESULTS_DIR/test-manual-scale.json" "$RESULTS_DIR/test-manual-scale-baseline.json"
+echo "Baseline updated from current results."

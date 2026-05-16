@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#MISE description="Diff the latest manual-test scaling results against the pinned baseline"
+set -euo pipefail
+
+RESULTS_DIR="$(git rev-parse --show-toplevel)/benches/results"
+
+if [[ ! -f "$RESULTS_DIR/test-manual-scale.md" ]]; then
+    echo "No scaling results found. Run: mise run bench:tests:manual:scale"
+    exit 1
+fi
+
+if [[ ! -f "$RESULTS_DIR/test-manual-scale-baseline.md" ]]; then
+    echo "No baseline pinned yet. Run: mise run bench:tests:manual:scale-baseline"
+    echo
+    cat "$RESULTS_DIR/test-manual-scale.md"
+    exit 0
+fi
+
+diff --color "$RESULTS_DIR/test-manual-scale-baseline.md" "$RESULTS_DIR/test-manual-scale.md" || true

@@ -499,7 +499,20 @@ fn run_one_scenario_inner(
     test_env.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
+    let scenario_start = std::time::Instant::now();
     let result = runner::run_non_interactive(scenario, &test_env, ctx.verbose, &mut buf)?;
+    let elapsed_ms = scenario_start.elapsed().as_millis();
+
+    // Opt-in per-scenario timing for the bench harness. Lines are
+    // grep-friendly and live inside the scenario's buffered output so they
+    // print in input order alongside the scenario's own report.
+    if std::env::var_os("DAFT_MANUAL_TEST_EMIT_TIMING").is_some() {
+        writeln!(
+            &mut buf,
+            "[bench] scenario={:?} elapsed_ms={elapsed_ms}",
+            scenario.name
+        )?;
+    }
 
     if ctx.keep {
         writeln!(
