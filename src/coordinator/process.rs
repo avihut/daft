@@ -744,8 +744,13 @@ fn start_socket_listener(
                     // No pending connection; sleep briefly and retry.
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                Err(_) => {
-                    // Unexpected error; break the loop.
+                Err(e) => {
+                    // Unexpected error (FD exhaustion, protocol error,
+                    // etc.). From this point on every IPC client sees
+                    // "connection refused" with no breadcrumb in the
+                    // coordinator output — surface the underlying error
+                    // before exiting so the failure is diagnosable.
+                    eprintln!("daft coordinator: socket listener error: {e}");
                     break;
                 }
             }
