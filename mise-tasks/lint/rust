@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Run Rust linting (clippy + fmt + shellcheck)"
+#MISE description="Run Rust linting (clippy + fmt + shellcheck + repos-no-format)"
+#MISE depends=["lint:repos-no-format"]
 set -euo pipefail
 
 echo "Running Rust linting..."
