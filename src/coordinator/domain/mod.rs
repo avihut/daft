@@ -11,5 +11,6 @@
 //! give future extractions a working template.
 
 pub mod reconcile;
+pub mod retention;
 
 pub use reconcile::reconcile_active_jobs;

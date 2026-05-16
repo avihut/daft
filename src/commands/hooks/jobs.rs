@@ -1929,13 +1929,11 @@ fn prune_jobs(
 
     let process_one = |repo_hash: &str, store: &LogStore| -> Result<CleanSummary> {
         use crate::coordinator::ports::JobsStorePort;
-        let repo_policy =
-            match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
-                Ok(js) => js
-                    .read_repo_policy(repo_hash)
-                    .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults()),
-                Err(_) => crate::coordinator::clean_policy::RepoPolicy::defaults(),
-            };
+        let job_store =
+            crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir)?;
+        let repo_policy = job_store
+            .read_repo_policy(repo_hash)
+            .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults());
         let policy = CleanPolicy {
             retention_override,
             dry_run,
@@ -1944,7 +1942,7 @@ fn prune_jobs(
         };
 
         // Pass 1: retention sweep.
-        let mut summary = store.clean(&policy)?;
+        let mut summary = store.clean(&job_store, repo_hash, &policy)?;
 
         // Pass 2: budget post-pass (also skipped in dry-run).
         if !dry_run {

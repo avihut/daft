@@ -106,18 +106,20 @@ pub fn run_clean_logs() -> Result<()> {
         }
 
         let store = LogStore::for_repo(&name)?;
-        let job_store = SqliteJobsStore::for_repo_base(&store.base_dir).ok();
+        let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
+            Ok(js) => js,
+            Err(_) => continue, // can't retention-sweep without the store
+        };
         let repo_policy = job_store
-            .as_ref()
-            .and_then(|js| js.read_repo_policy(&name).ok())
-            .unwrap_or_else(crate::coordinator::clean_policy::RepoPolicy::defaults);
+            .read_repo_policy(&name)
+            .unwrap_or_else(|_| crate::coordinator::clean_policy::RepoPolicy::defaults());
 
         // 1. Retention sweep.
         let policy = CleanPolicy {
             repo_policy: repo_policy.clone(),
             ..CleanPolicy::default()
         };
-        let s = store.clean(&policy).unwrap_or_default();
+        let s = store.clean(&job_store, &name, &policy).unwrap_or_default();
         total_summary.removed_invocations += s.removed_invocations;
         total_summary.removed_jobs += s.removed_jobs;
         total_summary.freed_bytes += s.freed_bytes;
