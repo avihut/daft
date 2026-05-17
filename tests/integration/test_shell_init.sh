@@ -536,6 +536,83 @@ test_daft_repo_wrapper_writes_cd_file() {
     return 0
 }
 
+# Regression for issue #519: the `-C <path>` global flag must work end-to-end
+# through the shell wrapper. Two failure modes the wrapper could introduce:
+#  1. Binary writes DAFT_CD_FILE relative to its post-`-C` cwd correctly, but
+#     the wrapper's `cd` happens before the binary runs and points at the
+#     wrong place. (Wrapper doesn't touch DAFT_CD_FILE between
+#     binary-exit and `cd`, so this should be fine — but assert it.)
+#  2. Binary's `cli::install_and_apply` doesn't trigger for the multicall arm
+#     and the chdir never happens — wrapper would then land in the wrong repo.
+test_c_flag_cd_redirect_through_wrapper() {
+    log "Testing: daft -C <other-repo> checkout through wrapper lands shell in other-repo's worktree"
+
+    local remote_a remote_b
+    remote_a=$(create_test_remote "test-c-flag-wrapper-a" "main")
+    remote_b=$(create_test_remote "test-c-flag-wrapper-b" "main")
+
+    git-worktree-clone --layout contained "$remote_a" >/dev/null 2>&1
+    git-worktree-clone --layout contained "$remote_b" >/dev/null 2>&1
+    local repo_a="$PWD/test-c-flag-wrapper-a"
+    local repo_b="$PWD/test-c-flag-wrapper-b"
+
+    # From inside repo_a/main, invoke `daft -C <repo_b/main> go develop`.
+    # Expected: the wrapper cd's us into repo_b's new worktree, NOT into
+    # repo_b/main directly and NOT staying in repo_a.
+    local out
+    out=$(REPO_A_MAIN="$repo_a/main" REPO_B_MAIN="$repo_b/main" REPO_B="$repo_b" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$REPO_A_MAIN" || exit 11
+        daft -C "$REPO_B_MAIN" go develop >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    # Resolve symlinks: /tmp -> /private/tmp on macOS, where daft canonicalizes
+    # paths in DAFT_CD_FILE but $repo_b stays un-resolved.
+    local resolved_repo_b
+    resolved_repo_b=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$repo_b")
+
+    if [[ "$out" != "$resolved_repo_b/develop"* ]]; then
+        log_error "wrapper did not cd into the -C target's new worktree"
+        log_error "  expected prefix: $resolved_repo_b/develop"
+        log_error "  actual pwd:      $out"
+        return 1
+    fi
+
+    log_success "daft -C through wrapper lands shell at: $out"
+    return 0
+}
+
+# Regression for issue #519: -C must work for symlinked-entry invocations
+# (git-worktree-*, daft-go, etc.) just like for the multicall `daft` arm.
+# The argv-strip is in the SAME place for both paths, so this is mostly a
+# smoke test that nothing in the symlink dispatch path bypassed it.
+test_c_flag_symlink_entry() {
+    log "Testing: git-worktree-list -C <other-repo> succeeds"
+
+    local remote
+    remote=$(create_test_remote "test-c-flag-symlink" "main")
+    git-worktree-clone --layout contained "$remote" >/dev/null 2>&1
+    local repo="$PWD/test-c-flag-symlink"
+
+    # From an unrelated cwd, list via the symlink entry against the repo.
+    local out
+    out=$(builtin cd "$TEMP_BASE_DIR" && NO_COLOR=1 git-worktree-list -C "$repo/main" 2>&1) || {
+        log_error "git-worktree-list -C exited non-zero"
+        log_error "output: $out"
+        return 1
+    }
+
+    if [[ "$out" != *"main"* ]]; then
+        log_error "git-worktree-list -C did not list the target repo"
+        log_error "output: $out"
+        return 1
+    fi
+
+    log_success "git-worktree-list -C succeeds: lists target repo's worktrees"
+    return 0
+}
+
 # --- Main Test Runner ---
 
 main() {
@@ -566,6 +643,8 @@ main() {
     run_test "daft_wrapper_intercepts_subcommand" test_daft_wrapper_intercepts_subcommand
     run_test "wrapper_resolves_binary_live" test_wrapper_resolves_binary_live
     run_test "daft_repo_wrapper_writes_cd_file" test_daft_repo_wrapper_writes_cd_file
+    run_test "c_flag_cd_redirect_through_wrapper" test_c_flag_cd_redirect_through_wrapper
+    run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
 
     print_summary
 }

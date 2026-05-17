@@ -1,0 +1,25 @@
+name: -C composes like git
+description: Multiple -C flags compose (matches `git -C`), they don't last-win
+
+repos:
+  - name: repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone repo-b
+    run: git-worktree-clone --layout contained $REMOTE_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: daft -C $WORK_DIR -C repo-b/main behaves like -C $WORK_DIR/repo-b/main
+    # If the impl was "last-wins", `-C repo-b/main` would be resolved against
+    # the original cwd ($WORK_DIR) — same outcome by coincidence. So we use a
+    # different cwd to make composition observable: start from /, then
+    # `-C $WORK_DIR -C repo-b/main` should land in $WORK_DIR/repo-b/main.
+    # Last-wins would try to resolve `repo-b/main` relative to /, fail.
+    run: daft -C "$WORK_DIR" -C repo-b/main go develop
+    cwd: "/"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/repo-b/develop"
