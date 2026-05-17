@@ -187,7 +187,15 @@ daft() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -C)
-                __daft_pre+=("$1" "$2"); shift 2 || return 2 ;;
+                # Trailing `-C` with no path: surface the same error the binary
+                # would print, then exit 2. Without this echo the wrapper's
+                # `return 2` is silent and the user sees no clue what went
+                # wrong (the binary never runs to print its own error).
+                if [ "$#" -lt 2 ]; then
+                    echo "daft: -C: option requires an argument" >&2
+                    return 2
+                fi
+                __daft_pre+=("$1" "$2"); shift 2 ;;
             *) break ;;
         esac
     done
