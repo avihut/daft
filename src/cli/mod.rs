@@ -27,11 +27,17 @@ static ARGV: OnceLock<Vec<String>> = OnceLock::new();
 /// Exits with code 2 (clap usage-error convention) on `-C` paths that don't
 /// exist or aren't directories, matching `git -C`'s terse error style.
 pub fn install_and_apply(raw: Vec<String>) -> Result<()> {
-    let parsed = argv::parse_top_level_cwd(&raw).map_err(|e| match e {
-        argv::ParseError::MissingPathAfterC => {
-            anyhow::anyhow!("daft: -C: option requires an argument")
+    let parsed = match argv::parse_top_level_cwd(&raw) {
+        Ok(p) => p,
+        Err(argv::ParseError::MissingPathAfterC) => {
+            // Exit 2 to match the directory-not-found branch and the clap
+            // usage-error convention. Returning anyhow::Err would propagate
+            // through main's `?` and exit 1 instead — inconsistent with the
+            // rest of the flag's error surface.
+            eprintln!("daft: -C: option requires an argument");
+            std::process::exit(2);
         }
-    })?;
+    };
 
     for path in &parsed.chdir_paths {
         if path.as_os_str().is_empty() {
@@ -66,17 +72,4 @@ fn apply_chdir(path: &Path) {
 pub fn argv() -> &'static [String] {
     ARGV.get()
         .expect("cli::install_and_apply must be called before cli::argv()")
-}
-
-/// Test-only: install a known argv vector, bypassing the parser.
-///
-/// Panics if the slot was already set in the same process. Each test must run
-/// in a fresh process, so use `#[cfg(test)]` `serial_test::serial` and prefer
-/// `#[test]` functions that don't share state with this slot. For tests that
-/// truly need to exercise [`argv()`], the recommended pattern is to do so once
-/// per integration-test binary rather than across unit tests.
-#[cfg(test)]
-pub fn install_for_tests(argv: Vec<String>) {
-    ARGV.set(argv)
-        .expect("ARGV already set in this test process");
 }
