@@ -1,69 +1,33 @@
-//! Test environment management for the manual test framework.
+//! Isolated filesystem sandbox for one scenario run.
 //!
-//! `TestEnv` creates and manages an isolated filesystem sandbox for each
-//! scenario run, handling directory layout, variable expansion, git identity
-//! isolation, and reset/cleanup.
+//! [`Sandbox`] owns the directory layout, scenario-variable store, git identity
+//! isolation, and `reset` / `cleanup` lifecycle for a single test scenario.
+//! It is intentionally project-agnostic: it knows nothing about daft, its env
+//! vars, or its binary path. Daft-specific concerns live in
+//! [`super::daft_executor::DaftCommandExecutor`], which adapts the sandbox to
+//! the [`super::executor::CommandExecutor`] port.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::schema::Scenario;
 
-/// Within-process counter that guarantees `TestEnv::create` produces a unique
-/// `base_dir` even when called concurrently from rayon workers. The
+/// Within-process counter that guarantees [`alloc_default_base_dir`] produces
+/// a unique path even when called concurrently from rayon workers. The
 /// nanosecond+pid prefix disambiguates across overlapping xtask invocations.
 static SANDBOX_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Manages the lifecycle of a single test environment (sandbox).
-pub struct TestEnv {
-    /// Root of the test sandbox (e.g., `/tmp/daft-manual-test-<timestamp>/`).
-    pub base_dir: PathBuf,
-    /// Directory containing bare remote repos.
-    pub remotes_dir: PathBuf,
-    /// Snapshot of remotes/ taken after initial setup, used by `reset()`.
-    pub template_dir: PathBuf,
-    /// Working directory where test commands execute.
-    pub work_dir: PathBuf,
-    /// Path to the locally-built daft binaries.
-    pub binary_dir: PathBuf,
-    /// Path to an empty gitconfig file that isolates tests from user config.
-    pub git_config_path: PathBuf,
-    /// Isolated daft config directory (prevents global config leakage).
-    pub daft_config_dir: PathBuf,
-    /// Isolated daft data directory (prevents centralized worktrees from
-    /// polluting the real XDG data dir).
-    pub daft_data_dir: PathBuf,
-    /// Variable store for `$VAR` expansion in step commands and paths.
-    vars: HashMap<String, String>,
-    /// When true, `Drop` removes `base_dir` — guarantees cleanup on early
-    /// returns and panics. Set to false for `--keep` and `--setup-only`.
-    cleanup_on_drop: bool,
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        if self.cleanup_on_drop && self.base_dir.exists() {
-            let _ = std::fs::remove_dir_all(&self.base_dir);
-        }
-    }
-}
-
-/// Reserve the next sandbox base directory without creating it on disk.
+/// Allocate the next unique sandbox base directory under `/tmp`.
 ///
-/// Workers call this before registering the path with the SIGINT cleanup set
-/// so that an interruption during `TestEnv::create_at` still leaves a tracked
-/// path the handler can `rm -rf`.
-pub fn next_sandbox_base_dir(scenario: &Scenario) -> Result<PathBuf> {
-    if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
-        // Deterministic path under a managed directory (e.g., sandbox/test/).
-        // Note: callers using DAFT_MANUAL_TEST_BASE with --jobs > 1 must
-        // ensure scenario names are unique, since this path is keyed by slug.
-        let slug = scenario.name.to_lowercase().replace(' ', "-");
-        return Ok(PathBuf::from(base).join(slug));
-    }
+/// The path is reserved on the path namespace only — no filesystem state is
+/// created — so workers can register the path with the SIGINT cleanup set
+/// before any directory I/O begins. The nanosecond + pid + counter triple
+/// guarantees uniqueness across rayon workers and overlapping xtask
+/// invocations.
+pub fn alloc_default_base_dir() -> Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock before UNIX epoch")?
@@ -75,60 +39,68 @@ pub fn next_sandbox_base_dir(scenario: &Scenario) -> Result<PathBuf> {
     )))
 }
 
-impl TestEnv {
-    /// Create a new test environment on disk for the given scenario.
+/// Manages the lifecycle of a single test environment (sandbox).
+pub struct Sandbox {
+    /// Root of the test sandbox (e.g., `/tmp/daft-manual-test-<timestamp>/`).
+    pub base_dir: PathBuf,
+    /// Directory containing bare remote repos.
+    pub remotes_dir: PathBuf,
+    /// Snapshot of remotes/ taken after initial setup, used by `reset()`.
+    pub template_dir: PathBuf,
+    /// Working directory where test commands execute.
+    pub work_dir: PathBuf,
+    /// Path to an empty gitconfig file that isolates tests from user config.
+    pub git_config_path: PathBuf,
+    /// Variable store for `$VAR` expansion in step commands and paths.
+    vars: HashMap<String, String>,
+    /// When true, `Drop` removes `base_dir` — guarantees cleanup on early
+    /// returns and panics. Set to false for `--keep` and `--setup-only`.
+    cleanup_on_drop: bool,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop && self.base_dir.exists() {
+            let _ = std::fs::remove_dir_all(&self.base_dir);
+        }
+    }
+}
+
+impl Sandbox {
+    /// Create a new test sandbox on disk for the given scenario.
     ///
-    /// Picks a fresh sandbox path and delegates to [`Self::create_at`].
-    /// Prefer [`Self::create_at`] in the parallel worker path so the cleanup
-    /// registry can be populated before any directory I/O.
+    /// Picks a fresh sandbox path via [`alloc_default_base_dir`] and delegates
+    /// to [`Self::create_at`]. Prefer [`Self::create_at`] in the parallel
+    /// worker path so the cleanup registry can be populated before any
+    /// directory I/O.
     #[allow(dead_code)]
-    pub fn create(scenario: &Scenario, project_root: &Path, keep: bool) -> Result<Self> {
-        let base_dir = next_sandbox_base_dir(scenario)?;
-        Self::create_at(scenario, project_root, base_dir, keep)
+    pub fn create(scenario: &Scenario, keep: bool) -> Result<Self> {
+        let base_dir = alloc_default_base_dir()?;
+        Self::create_at(scenario, base_dir, keep)
     }
 
-    /// Create a test environment rooted at a caller-supplied `base_dir`.
+    /// Create a sandbox rooted at a caller-supplied `base_dir`.
     ///
     /// Used by the parallel worker so it can register `base_dir` with the
     /// SIGINT cleanup set before any directories are created — that way a
     /// signal arriving mid-create still leaves a tracked path the handler
     /// can `rm -rf`.
-    pub fn create_at(
-        scenario: &Scenario,
-        project_root: &Path,
-        base_dir: PathBuf,
-        keep: bool,
-    ) -> Result<Self> {
+    pub fn create_at(scenario: &Scenario, base_dir: PathBuf, keep: bool) -> Result<Self> {
         let remotes_dir = base_dir.join("remotes");
         let template_dir = base_dir.join("remotes-template");
         let work_dir = base_dir.join("work");
-        let binary_dir = project_root.join("target/release");
         let git_config_path = base_dir.join("gitconfig");
-        let daft_config_dir = base_dir.join("daft-config");
-        let daft_data_dir = base_dir.join("daft-data");
 
         std::fs::create_dir_all(&remotes_dir)
             .with_context(|| format!("creating remotes dir: {}", remotes_dir.display()))?;
         std::fs::create_dir_all(&work_dir)
             .with_context(|| format!("creating work dir: {}", work_dir.display()))?;
-        std::fs::create_dir_all(&daft_config_dir)
-            .with_context(|| format!("creating daft config dir: {}", daft_config_dir.display()))?;
-        std::fs::create_dir_all(&daft_data_dir)
-            .with_context(|| format!("creating daft data dir: {}", daft_data_dir.display()))?;
         std::fs::write(&git_config_path, "")
             .with_context(|| format!("creating gitconfig: {}", git_config_path.display()))?;
 
         let mut vars = HashMap::new();
         vars.insert("WORK_DIR".into(), work_dir.to_string_lossy().into_owned());
         vars.insert("BASE_DIR".into(), base_dir.to_string_lossy().into_owned());
-        vars.insert(
-            "BINARY_DIR".into(),
-            binary_dir.to_string_lossy().into_owned(),
-        );
-        vars.insert(
-            "DAFT_DATA_DIR".into(),
-            daft_data_dir.to_string_lossy().into_owned(),
-        );
 
         for (k, v) in &scenario.env {
             vars.insert(k.clone(), v.clone());
@@ -139,16 +111,13 @@ impl TestEnv {
             remotes_dir,
             template_dir,
             work_dir,
-            binary_dir,
             git_config_path,
-            daft_config_dir,
-            daft_data_dir,
             vars,
             cleanup_on_drop: !keep,
         })
     }
 
-    /// Create a `TestEnv` with only variables set (paths are dummy values).
+    /// Create a `Sandbox` with only variables set (paths are dummy values).
     ///
     /// Intended for unit-testing variable expansion without touching the
     /// filesystem.
@@ -159,10 +128,7 @@ impl TestEnv {
             remotes_dir: PathBuf::from("/tmp/test-dummy/remotes"),
             template_dir: PathBuf::from("/tmp/test-dummy/remotes-template"),
             work_dir: PathBuf::from("/tmp/test-dummy/work"),
-            binary_dir: PathBuf::from("/tmp/test-dummy/bin"),
             git_config_path: PathBuf::from("/tmp/test-dummy/gitconfig"),
-            daft_config_dir: PathBuf::from("/tmp/test-dummy/daft-config"),
-            daft_data_dir: PathBuf::from("/tmp/test-dummy/daft-data"),
             vars,
             cleanup_on_drop: false,
         }
@@ -213,6 +179,26 @@ impl TestEnv {
         let path = self.remotes_dir.join(repo_name);
         self.vars
             .insert(var_name, path.to_string_lossy().into_owned());
+    }
+
+    /// Register an arbitrary `$NAME` variable in the sandbox's var store.
+    ///
+    /// Used by adapters to surface adapter-managed paths (e.g., the daft data
+    /// dir) to scenario commands without leaking adapter internals into the
+    /// sandbox's own constructor.
+    pub fn register_var(&mut self, name: &str, value: String) {
+        self.vars.insert(name.to_string(), value);
+    }
+
+    /// Read-only view of the scenario var store.
+    ///
+    /// Adapters call this when building the subprocess env so scenario-defined
+    /// values flow into the child process under their original names. Safety
+    /// vars (git identity, daemon-suppression flags) are layered on top by
+    /// the adapter, which is why this is intentionally distinct from `env`
+    /// construction.
+    pub fn scenario_vars(&self) -> &HashMap<String, String> {
+        &self.vars
     }
 
     /// Snapshot `remotes/` → `remotes-template/` so that `reset()` can
@@ -269,57 +255,6 @@ impl TestEnv {
         }
         Ok(())
     }
-
-    /// Build the environment variable map for subprocess execution.
-    ///
-    /// Includes git identity isolation, daft feature flags, and PATH with
-    /// `binary_dir` prepended so locally-built binaries take precedence.
-    pub fn command_env(&self) -> HashMap<String, String> {
-        let mut env = HashMap::new();
-
-        // Scenario vars first — these can be overridden by safety vars below.
-        for (k, v) in &self.vars {
-            env.insert(k.clone(), v.clone());
-        }
-
-        // Safety vars LAST — cannot be overridden by scenario definitions.
-        // Git identity — local to test, never touches global config.
-        env.insert("GIT_AUTHOR_NAME".into(), "Manual Test".into());
-        env.insert("GIT_AUTHOR_EMAIL".into(), "test@daft.test".into());
-        env.insert("GIT_COMMITTER_NAME".into(), "Manual Test".into());
-        env.insert("GIT_COMMITTER_EMAIL".into(), "test@daft.test".into());
-        env.insert(
-            "GIT_CONFIG_GLOBAL".into(),
-            self.git_config_path.to_string_lossy().into_owned(),
-        );
-
-        // Daft feature flags. Disable every daemon-style background spawn:
-        // the test harness invokes `daft` many times back-to-back, and any
-        // detached child that survives its parent (e.g. `daft __clean-logs`)
-        // accumulates as init-reparented orphans and steals CPU — visible as
-        // load-average climbing into the hundreds during parallel runs.
-        env.insert("DAFT_TESTING".into(), "1".into());
-        env.insert("DAFT_NO_UPDATE_CHECK".into(), "1".into());
-        env.insert("DAFT_NO_TRUST_PRUNE".into(), "1".into());
-        env.insert("DAFT_NO_LOG_CLEAN".into(), "1".into());
-        env.insert(
-            "DAFT_CONFIG_DIR".into(),
-            self.daft_config_dir.to_string_lossy().into_owned(),
-        );
-        env.insert(
-            "DAFT_DATA_DIR".into(),
-            self.daft_data_dir.to_string_lossy().into_owned(),
-        );
-
-        // PATH — binary_dir first so locally-built daft wins.
-        let existing_path = std::env::var("PATH").unwrap_or_default();
-        env.insert(
-            "PATH".into(),
-            format!("{}:{existing_path}", self.binary_dir.display()),
-        );
-
-        env
-    }
 }
 
 /// Returns `true` if `c` is a valid variable-name character (A-Z, 0-9, _).
@@ -336,18 +271,18 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("WORK_DIR".into(), "/tmp/work".into());
         vars.insert("REMOTE_MY_PROJECT".into(), "/tmp/remotes/my-project".into());
-        let env = TestEnv::new_with_vars(vars);
-        assert_eq!(env.expand_vars("$WORK_DIR/foo"), "/tmp/work/foo");
+        let sb = Sandbox::new_with_vars(vars);
+        assert_eq!(sb.expand_vars("$WORK_DIR/foo"), "/tmp/work/foo");
         assert_eq!(
-            env.expand_vars("$REMOTE_MY_PROJECT"),
+            sb.expand_vars("$REMOTE_MY_PROJECT"),
             "/tmp/remotes/my-project"
         );
     }
 
     #[test]
     fn test_expand_vars_no_match() {
-        let env = TestEnv::new_with_vars(HashMap::new());
-        assert_eq!(env.expand_vars("no vars here"), "no vars here");
+        let sb = Sandbox::new_with_vars(HashMap::new());
+        assert_eq!(sb.expand_vars("no vars here"), "no vars here");
     }
 
     #[test]
@@ -355,44 +290,40 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("A".into(), "1".into());
         vars.insert("B".into(), "2".into());
-        let env = TestEnv::new_with_vars(vars);
-        assert_eq!(env.expand_vars("$A and $B"), "1 and 2");
+        let sb = Sandbox::new_with_vars(vars);
+        assert_eq!(sb.expand_vars("$A and $B"), "1 and 2");
     }
 
     #[test]
     fn test_expand_vars_unknown_left_as_is() {
-        let env = TestEnv::new_with_vars(HashMap::new());
-        assert_eq!(env.expand_vars("$UNKNOWN_VAR"), "$UNKNOWN_VAR");
+        let sb = Sandbox::new_with_vars(HashMap::new());
+        assert_eq!(sb.expand_vars("$UNKNOWN_VAR"), "$UNKNOWN_VAR");
     }
 
     #[test]
     fn test_register_remote() {
-        let mut env = TestEnv::new_with_vars(HashMap::new());
-        env.remotes_dir = PathBuf::from("/tmp/remotes");
-        env.register_remote("my-project");
+        let mut sb = Sandbox::new_with_vars(HashMap::new());
+        sb.remotes_dir = PathBuf::from("/tmp/remotes");
+        sb.register_remote("my-project");
         assert_eq!(
-            env.expand_vars("$REMOTE_MY_PROJECT"),
+            sb.expand_vars("$REMOTE_MY_PROJECT"),
             "/tmp/remotes/my-project"
         );
     }
 
     #[test]
-    fn test_command_env_has_git_identity() {
-        let env = TestEnv::new_with_vars(HashMap::new());
-        let cmd_env = env.command_env();
-        assert_eq!(cmd_env.get("GIT_AUTHOR_NAME").unwrap(), "Manual Test");
-        assert_eq!(cmd_env.get("DAFT_TESTING").unwrap(), "1");
+    fn test_register_var() {
+        let mut sb = Sandbox::new_with_vars(HashMap::new());
+        sb.register_var("MY_VAR", "/some/path".into());
+        assert_eq!(sb.expand_vars("$MY_VAR/foo"), "/some/path/foo");
     }
 
     /// Regression test for the millisecond-timestamp collision bug:
-    /// two `TestEnv::create` calls in quick succession must produce distinct
+    /// two `Sandbox::create` calls in quick succession must produce distinct
     /// `base_dir`s. Pre-#510 this used `as_millis()` and would collide under
     /// rayon-parallel scheduling.
     #[test]
     fn test_create_produces_unique_base_dirs() {
-        use tempfile::TempDir;
-
-        let project_root = TempDir::new().expect("temp project root");
         let scenario = Scenario {
             name: "unique-test".to_string(),
             description: None,
@@ -403,17 +334,16 @@ mod tests {
 
         let mut paths = Vec::new();
         for _ in 0..16 {
-            let env = TestEnv::create(&scenario, project_root.path(), false)
-                .expect("TestEnv::create should succeed");
-            paths.push(env.base_dir.clone());
-            // env drops here, removing its sandbox.
+            let sb = Sandbox::create(&scenario, false).expect("Sandbox::create should succeed");
+            paths.push(sb.base_dir.clone());
+            // sb drops here, removing its sandbox.
         }
 
         let unique: std::collections::HashSet<_> = paths.iter().collect();
         assert_eq!(
             unique.len(),
             paths.len(),
-            "TestEnv::create produced colliding base_dirs: {paths:?}"
+            "Sandbox::create produced colliding base_dirs: {paths:?}"
         );
     }
 }

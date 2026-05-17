@@ -10,8 +10,9 @@ use crossterm::{
 };
 use term_styles as styles;
 
-use super::env::TestEnv;
+use super::executor::CommandExecutor;
 use super::runner::{self, AssertionResult};
+use super::sandbox::Sandbox;
 use super::schema::Scenario;
 
 // ---------------------------------------------------------------------------
@@ -62,9 +63,9 @@ fn wait_for_key() -> Result<KeyCode> {
 // UI helpers
 // ---------------------------------------------------------------------------
 
-fn print_scenario_header(scenario: &Scenario, env: &TestEnv) {
+fn print_scenario_header(scenario: &Scenario, sandbox: &Sandbox) {
     let desc = scenario.description.as_deref().unwrap_or("");
-    let work_dir = &env.work_dir;
+    let work_dir = &sandbox.work_dir;
     let display_path = std::env::current_dir()
         .ok()
         .and_then(|cwd| {
@@ -84,8 +85,8 @@ fn print_scenario_header(scenario: &Scenario, env: &TestEnv) {
     eprintln!();
 }
 
-fn print_step_header(index: usize, total: usize, step: &super::schema::Step, env: &TestEnv) {
-    let expanded = env.expand_vars(&step.run);
+fn print_step_header(index: usize, total: usize, step: &super::schema::Step, sandbox: &Sandbox) {
+    let expanded = sandbox.expand_vars(&step.run);
     eprintln!();
     eprintln!(
         "{} {}",
@@ -144,13 +145,14 @@ fn print_prompt(msg: &str) {
 ///   this many times, resetting the environment between iterations.
 pub fn run_interactive(
     scenario: &Scenario,
-    env: &TestEnv,
+    sandbox: &Sandbox,
+    executor: &dyn CommandExecutor,
     start_step: Option<usize>,
     loop_count: Option<usize>,
     verbose: bool,
 ) -> Result<()> {
     let total = scenario.steps.len();
-    print_scenario_header(scenario, env);
+    print_scenario_header(scenario, sandbox);
 
     // Convert 1-based start_step to 0-based index.
     let start_index = start_step.map(|s| s.saturating_sub(1)).unwrap_or(0);
@@ -168,14 +170,14 @@ pub fn run_interactive(
 
             // Run prerequisite steps silently.
             for i in 0..step_index {
-                runner::execute_step(&scenario.steps[i], env, false)?;
+                runner::execute_step(&scenario.steps[i], sandbox, executor, false)?;
             }
 
             // Run target step.
             let step = &scenario.steps[step_index];
-            print_step_header(step_index, total, step, env);
-            let (exit_code, output) = runner::run_step_command(step, env)?;
-            let results = runner::check_step(step, exit_code, env, Some(&output));
+            print_step_header(step_index, total, step, sandbox);
+            let (exit_code, output) = runner::run_step_command(step, sandbox, executor)?;
+            let results = runner::check_step(step, exit_code, sandbox, Some(&output));
             print_assertion_results(&results, verbose);
 
             if iteration < count {
@@ -185,7 +187,7 @@ pub fn run_interactive(
                     eprintln!("Quit.");
                     return Ok(());
                 }
-                env.reset()?;
+                sandbox.reset()?;
             }
         }
 
@@ -202,7 +204,7 @@ pub fn run_interactive(
             styles::dim(&format!("Skipping to step {}...", start_index + 1))
         );
         for i in 0..start_index.min(total) {
-            runner::execute_step(&scenario.steps[i], env, false)?;
+            runner::execute_step(&scenario.steps[i], sandbox, executor, false)?;
         }
     }
 
@@ -210,7 +212,7 @@ pub fn run_interactive(
     'outer: while current < total {
         let step = &scenario.steps[current];
         let has_checks = step.expect.is_some();
-        print_step_header(current, total, step, env);
+        print_step_header(current, total, step, sandbox);
 
         // Pre-run prompt.
         let pre_prompt = if has_checks {
@@ -244,11 +246,12 @@ pub fn run_interactive(
         }
 
         // Execute the command.
-        let (mut exit_code, mut captured_output) = runner::run_step_command(step, env)?;
+        let (mut exit_code, mut captured_output) =
+            runner::run_step_command(step, sandbox, executor)?;
 
         // Run checks if requested — auto-advance on success.
         if run_checks && has_checks {
-            let results = runner::check_step(step, exit_code, env, Some(&captured_output));
+            let results = runner::check_step(step, exit_code, sandbox, Some(&captured_output));
             let all_passed = results.iter().all(|r| r.passed);
             print_assertion_results(&results, verbose);
             if all_passed {
@@ -272,18 +275,19 @@ pub fn run_interactive(
                     break;
                 }
                 KeyCode::Char('c') if has_checks => {
-                    let results = runner::check_step(step, exit_code, env, Some(&captured_output));
+                    let results =
+                        runner::check_step(step, exit_code, sandbox, Some(&captured_output));
                     print_assertion_results(&results, verbose);
                 }
                 KeyCode::Char('r') => {
                     eprintln!("{}", styles::dim("(re-running...)"));
-                    let result = runner::run_step_command(step, env)?;
+                    let result = runner::run_step_command(step, sandbox, executor)?;
                     exit_code = result.0;
                     captured_output = result.1;
                 }
                 KeyCode::Char('R') => {
                     eprintln!("{}", styles::dim("(resetting environment...)"));
-                    env.reset()?;
+                    sandbox.reset()?;
                     current = 0;
                     continue 'outer;
                 }
