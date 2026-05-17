@@ -9,7 +9,7 @@ pub mod remove;
 
 /// Dispatch entry from the top-level main.
 pub fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli::argv().to_vec();
     let sub = args.get(2).map(String::as_str).unwrap_or("");
     match sub {
         "remove" => remove::run(),

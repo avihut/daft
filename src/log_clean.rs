@@ -40,7 +40,7 @@ pub fn maybe_clean_logs() {
 }
 
 fn maybe_clean_logs_inner() {
-    if env::args().any(|a| a.starts_with("__")) {
+    if crate::cli::argv().iter().any(|a| a.starts_with("__")) {
         return;
     }
     if is_disabled() {

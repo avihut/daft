@@ -36,7 +36,7 @@ pub struct Args {
 
 pub fn run() -> Result<()> {
     // Skip the first two args ("daft" and "shell-init") to let clap parse from "shell-init"
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = crate::cli::argv().iter().skip(1).cloned().collect();
     let args = Args::parse_from(args);
 
     let shell_name = match args.shell {

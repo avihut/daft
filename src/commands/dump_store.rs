@@ -18,7 +18,7 @@
 use anyhow::{Context, Result, bail};
 
 pub fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli::argv().to_vec();
     let Some(table) = args.get(2) else {
         bail!("usage: daft __dump-store <table>\n  tables: repo-policy");
     };

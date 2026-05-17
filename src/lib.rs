@@ -133,7 +133,7 @@ const DAFT_VERBS: &[&str] = &[
 /// # Arguments
 /// * `expected_cmd` - The expected command name (e.g., "git-worktree-clone")
 pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
-    let args: Vec<String> = env::args().collect();
+    let args = cli::argv();
 
     // Check if invoked as `daft worktree-*` or `daft <verb>`
     if args.len() >= 2 {
@@ -147,13 +147,13 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
         {
             // Reconstruct args with the expected command name
             let mut new_args = vec![expected_cmd.to_string()];
-            new_args.extend(args.into_iter().skip(2));
+            new_args.extend(args.iter().skip(2).cloned());
             return new_args;
         }
     }
 
     // Default: return args as-is (symlink invocation)
-    args
+    args.to_vec()
 }
 
 /// Returns `true` if the given argv corresponds to an invocation that should
@@ -180,6 +180,7 @@ pub fn skip_startup_tasks_for(args: &[String]) -> bool {
     sub.starts_with("__") || matches!(sub, "shell-init" | "completions")
 }
 
+pub mod cli;
 pub mod commands;
 pub mod completion_spinner;
 pub mod coordinator;
