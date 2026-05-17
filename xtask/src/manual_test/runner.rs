@@ -392,7 +392,8 @@ pub fn execute_step(
     executor: &dyn CommandExecutor,
     quiet: bool,
 ) -> Result<StepResult> {
-    let output = executor.execute(&step.run, sandbox)?;
+    let cwd = resolve_step_cwd(step, sandbox);
+    let output = executor.execute(&step.run, &cwd, sandbox)?;
     let exit_code = output.exit_code;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -406,7 +407,6 @@ pub fn execute_step(
         }
     }
 
-    let cwd = resolve_step_cwd(step, sandbox);
     let combined = combine_captured(&Some(stdout.clone()), &Some(stderr.clone()));
     let assertions = step
         .expect
@@ -434,7 +434,8 @@ pub fn run_step_command(
     sandbox: &Sandbox,
     executor: &dyn CommandExecutor,
 ) -> Result<(i32, String)> {
-    let output = executor.execute(&step.run, sandbox)?;
+    let cwd = resolve_step_cwd(step, sandbox);
+    let output = executor.execute(&step.run, &cwd, sandbox)?;
     let exit_code = output.exit_code;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -781,7 +782,7 @@ mod tests {
     }
 
     impl CommandExecutor for FakeExecutor {
-        fn execute(&self, command: &str, sandbox: &Sandbox) -> Result<CommandOutput> {
+        fn execute(&self, command: &str, _cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
             // Mirror what a real adapter does: expand variables *before*
             // recording, so the test sees what the user-facing command would
             // actually have executed.

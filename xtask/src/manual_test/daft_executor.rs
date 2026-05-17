@@ -121,11 +121,11 @@ impl DaftCommandExecutor {
 }
 
 impl CommandExecutor for DaftCommandExecutor {
-    fn execute(&self, command: &str, sandbox: &Sandbox) -> Result<CommandOutput> {
+    fn execute(&self, command: &str, cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
         let expanded = sandbox.expand_vars(command);
         let output = Command::new("bash")
             .args(["-c", &expanded])
-            .current_dir(&sandbox.work_dir)
+            .current_dir(cwd)
             .envs(self.build_env(sandbox))
             .output()
             .with_context(|| format!("Failed to execute: {expanded}"))?;

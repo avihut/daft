@@ -19,6 +19,7 @@
 //! for the mapping.
 
 use anyhow::Result;
+use std::path::Path;
 
 use super::sandbox::Sandbox;
 
@@ -27,21 +28,25 @@ use super::sandbox::Sandbox;
 /// Implementations are responsible for:
 /// - Expanding `$VAR` references in the command (typically via
 ///   [`Sandbox::expand_vars`]).
-/// - Resolving the working directory.
 /// - Constructing the process environment (PATH, project-specific env vars,
 ///   git identity isolation).
-/// - Spawning the command and capturing stdout / stderr / exit code.
+/// - Spawning the command in `cwd` and capturing stdout / stderr / exit code.
+///
+/// The runner core resolves `cwd` from the step's `cwd:` field (or defaults
+/// it to `sandbox.work_dir`) before calling — keeping that logic in the core
+/// means the executor doesn't need to know the [`super::schema::Step`] shape.
 ///
 /// Implementations must be `Send + Sync` so the parallel scheduler can share
 /// a single executor across rayon workers.
 pub trait CommandExecutor: Send + Sync {
-    /// Run `command` inside `sandbox` and return its captured output.
+    /// Run `command` inside `sandbox` with the given working directory and
+    /// return its captured output.
     ///
     /// `command` is the raw step command from the scenario YAML, before
     /// variable expansion — implementations call `sandbox.expand_vars` on it
     /// (so a fake executor recording invocations sees expanded, post-`$VAR`
     /// strings, matching what the user-facing command actually executed).
-    fn execute(&self, command: &str, sandbox: &Sandbox) -> Result<CommandOutput>;
+    fn execute(&self, command: &str, cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput>;
 }
 
 /// Captured result of running a step command.
