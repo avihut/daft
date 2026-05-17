@@ -6,11 +6,12 @@
 //! state). The non-interactive runner executes all steps sequentially and
 //! reports pass/fail.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::env::TestEnv;
+use super::executor::CommandExecutor;
+use super::sandbox::Sandbox;
 use super::schema::{Expectations, Scenario, Step};
 
 // ---------------------------------------------------------------------------
@@ -293,13 +294,13 @@ pub fn run_assertions(
     expectations: &Expectations,
     exit_code: i32,
     cwd: &Path,
-    env: &TestEnv,
+    sandbox: &Sandbox,
     output: Option<&str>,
 ) -> Vec<AssertionResult> {
     let mut results = Vec::new();
 
     let resolve = |raw: &str| -> String {
-        let expanded = env.expand_vars(raw);
+        let expanded = sandbox.expand_vars(raw);
         if expanded.starts_with('/') {
             expanded
         } else {
@@ -324,12 +325,12 @@ pub fn run_assertions(
     }
 
     for fc in &expectations.file_contains {
-        let expanded_content = env.expand_vars(&fc.content);
+        let expanded_content = sandbox.expand_vars(&fc.content);
         results.push(check_file_contains(&resolve(&fc.path), &expanded_content));
     }
 
     for fc in &expectations.file_not_contains {
-        let expanded_content = env.expand_vars(&fc.content);
+        let expanded_content = sandbox.expand_vars(&fc.content);
         results.push(check_file_not_contains(
             &resolve(&fc.path),
             &expanded_content,
@@ -338,22 +339,22 @@ pub fn run_assertions(
 
     let output_str = output.unwrap_or("");
     for expected in &expectations.output_contains {
-        let expanded = env.expand_vars(expected);
+        let expanded = sandbox.expand_vars(expected);
         results.push(check_output_contains(output_str, &expanded));
     }
 
     for unexpected in &expectations.output_not_contains {
-        let expanded = env.expand_vars(unexpected);
+        let expanded = sandbox.expand_vars(unexpected);
         results.push(check_output_not_contains(output_str, &expanded));
     }
 
     for wt in &expectations.is_git_worktree {
-        let expanded_branch = env.expand_vars(&wt.branch);
+        let expanded_branch = sandbox.expand_vars(&wt.branch);
         results.push(check_git_worktree(&resolve(&wt.dir), &expanded_branch));
     }
 
     for bc in &expectations.branch_exists {
-        let expanded_branch = env.expand_vars(&bc.branch);
+        let expanded_branch = sandbox.expand_vars(&bc.branch);
         results.push(check_branch_exists(&resolve(&bc.repo), &expanded_branch));
     }
 
@@ -365,36 +366,35 @@ pub fn run_assertions(
 // ---------------------------------------------------------------------------
 
 /// Resolve the working directory for a step.
-fn resolve_step_cwd(step: &Step, env: &TestEnv) -> PathBuf {
+fn resolve_step_cwd(step: &Step, sandbox: &Sandbox) -> PathBuf {
     step.cwd
         .as_deref()
         .map(|c| {
-            let expanded = PathBuf::from(env.expand_vars(c));
+            let expanded = PathBuf::from(sandbox.expand_vars(c));
             if expanded.is_absolute() {
                 expanded
             } else {
-                env.work_dir.join(expanded)
+                sandbox.work_dir.join(expanded)
             }
         })
-        .unwrap_or_else(|| env.work_dir.clone())
+        .unwrap_or_else(|| sandbox.work_dir.clone())
 }
 
 /// Execute a single test step and verify its expectations.
 ///
-/// Output is always captured. When `quiet` is false, captured output is printed
-/// to the terminal after execution so the user can see it.
-pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResult> {
-    let expanded_cmd = env.expand_vars(&step.run);
-    let cwd = resolve_step_cwd(step, env);
-
-    let output = std::process::Command::new("bash")
-        .args(["-c", &expanded_cmd])
-        .current_dir(&cwd)
-        .envs(env.command_env())
-        .output()
-        .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
-
-    let exit_code = output.status.code().unwrap_or(-1);
+/// The command is dispatched through `executor`, which owns project-specific
+/// concerns (env construction, binary resolution). Output is always captured;
+/// when `quiet` is false, captured output is printed to the terminal after
+/// execution so the user can see it.
+pub fn execute_step(
+    step: &Step,
+    sandbox: &Sandbox,
+    executor: &dyn CommandExecutor,
+    quiet: bool,
+) -> Result<StepResult> {
+    let cwd = resolve_step_cwd(step, sandbox);
+    let output = executor.execute(&step.run, &cwd, sandbox)?;
+    let exit_code = output.exit_code;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
@@ -411,7 +411,7 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
     let assertions = step
         .expect
         .as_ref()
-        .map(|e| run_assertions(e, exit_code, &cwd, env, Some(&combined)))
+        .map(|e| run_assertions(e, exit_code, &cwd, sandbox, Some(&combined)))
         .unwrap_or_default();
 
     let all_passed = assertions.iter().all(|a| a.passed);
@@ -429,20 +429,16 @@ pub fn execute_step(step: &Step, env: &TestEnv, quiet: bool) -> Result<StepResul
 ///
 /// Returns `(exit_code, combined_output)`. Output is always captured and printed
 /// to the terminal. Used by interactive mode where checks are optional.
-pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<(i32, String)> {
-    let expanded_cmd = env.expand_vars(&step.run);
-    let cwd = resolve_step_cwd(step, env);
-
-    let output = std::process::Command::new("bash")
-        .args(["-c", &expanded_cmd])
-        .current_dir(&cwd)
-        .envs(env.command_env())
-        .output()
-        .with_context(|| format!("Failed to execute: {expanded_cmd}"))?;
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+pub fn run_step_command(
+    step: &Step,
+    sandbox: &Sandbox,
+    executor: &dyn CommandExecutor,
+) -> Result<(i32, String)> {
+    let cwd = resolve_step_cwd(step, sandbox);
+    let output = executor.execute(&step.run, &cwd, sandbox)?;
+    let exit_code = output.exit_code;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     // Print to terminal so user sees what happened.
     if !stdout.is_empty() {
@@ -452,7 +448,7 @@ pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<(i32, String)> {
         eprint!("{stderr}");
     }
 
-    let combined = combine_captured(&Some(stdout.into_owned()), &Some(stderr.into_owned()));
+    let combined = combine_captured(&Some(stdout), &Some(stderr));
 
     Ok((exit_code, combined))
 }
@@ -463,13 +459,13 @@ pub fn run_step_command(step: &Step, env: &TestEnv) -> Result<(i32, String)> {
 pub fn check_step(
     step: &Step,
     exit_code: i32,
-    env: &TestEnv,
+    sandbox: &Sandbox,
     output: Option<&str>,
 ) -> Vec<AssertionResult> {
-    let cwd = resolve_step_cwd(step, env);
+    let cwd = resolve_step_cwd(step, sandbox);
     step.expect
         .as_ref()
-        .map(|e| run_assertions(e, exit_code, &cwd, env, output))
+        .map(|e| run_assertions(e, exit_code, &cwd, sandbox, output))
         .unwrap_or_default()
 }
 
@@ -484,11 +480,12 @@ pub fn check_step(
 /// pass/fail counts.
 pub fn run_non_interactive(
     scenario: &Scenario,
-    env: &TestEnv,
+    sandbox: &Sandbox,
+    executor: &dyn CommandExecutor,
     verbose: bool,
     out: &mut impl Write,
 ) -> Result<ScenarioResult> {
-    use daft::styles;
+    use term_styles as styles;
 
     writeln!(out, "{}", styles::cyan(&scenario.name))?;
 
@@ -503,7 +500,7 @@ pub fn run_non_interactive(
             &step.name
         )?;
 
-        let result = execute_step(step, env, true)?;
+        let result = execute_step(step, sandbox, executor, true)?;
 
         if result.all_passed {
             let check_count = result.assertions.len();
@@ -697,7 +694,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("file.txt"), "data").unwrap();
 
-        let env = TestEnv::new_with_vars(std::collections::HashMap::new());
+        let sandbox = Sandbox::new_with_vars(std::collections::HashMap::new());
 
         let expectations = Expectations {
             exit_code: Some(0),
@@ -718,7 +715,7 @@ mod tests {
             branch_exists: vec![],
         };
 
-        let results = run_assertions(&expectations, 0, dir.path(), &env, None);
+        let results = run_assertions(&expectations, 0, dir.path(), &sandbox, None);
         for r in &results {
             assert!(r.passed, "assertion failed: {}", r.label);
         }
@@ -748,5 +745,169 @@ mod tests {
         let r = check_output_not_contains("hello world", "hello");
         assert!(!r.passed);
         assert!(r.detail.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // FakeExecutor — proves the seam holds.
+    //
+    // The runner core compiles and runs against an executor that has nothing
+    // to do with daft. If this test ever stops compiling because daft types
+    // crept back into `runner.rs`, the seam was breached. Removing or
+    // gutting this test is the wrong fix — restore the seam.
+    // -----------------------------------------------------------------------
+
+    use super::super::executor::{CommandExecutor, CommandOutput};
+    use std::collections::HashMap;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// In-memory executor that records invocations and returns canned outputs.
+    /// Knows nothing about daft.
+    struct FakeExecutor {
+        responses: Mutex<VecDeque<CommandOutput>>,
+        invocations: Mutex<Vec<String>>,
+        cwds: Mutex<Vec<PathBuf>>,
+    }
+
+    impl FakeExecutor {
+        fn new(responses: Vec<CommandOutput>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                invocations: Mutex::new(Vec::new()),
+                cwds: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn invocations(&self) -> Vec<String> {
+            self.invocations.lock().unwrap().clone()
+        }
+
+        fn cwds(&self) -> Vec<PathBuf> {
+            self.cwds.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for FakeExecutor {
+        fn execute(&self, command: &str, cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
+            // Mirror what a real adapter does: expand variables *before*
+            // recording, so the test sees what the user-facing command would
+            // actually have executed.
+            let expanded = sandbox.expand_vars(command);
+            self.invocations.lock().unwrap().push(expanded);
+            self.cwds.lock().unwrap().push(cwd.to_path_buf());
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default())
+        }
+    }
+
+    fn make_step(name: &str, run: &str) -> Step {
+        Step {
+            name: name.to_string(),
+            run: run.to_string(),
+            cwd: None,
+            expect: None,
+        }
+    }
+
+    #[test]
+    fn execute_step_runs_command_through_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput {
+            exit_code: 0,
+            stdout: b"hello\n".to_vec(),
+            stderr: Vec::new(),
+        }]);
+
+        let step = make_step("greet", "echo hello");
+        let result = execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.all_passed); // no assertions defined → trivially true
+        assert_eq!(executor.invocations(), vec!["echo hello"]);
+    }
+
+    #[test]
+    fn execute_step_expands_sandbox_vars_in_command() {
+        let mut vars = HashMap::new();
+        vars.insert("GREETING".into(), "hi".into());
+        let sandbox = Sandbox::new_with_vars(vars);
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let step = make_step("greet", "echo $GREETING");
+        let _ = execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        // Adapter is responsible for expansion; FakeExecutor mirrors that
+        // contract so the recorded invocation matches what `bash -c` would see.
+        assert_eq!(executor.invocations(), vec!["echo hi"]);
+    }
+
+    #[test]
+    fn run_step_command_returns_exit_code_and_combined_output() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput {
+            exit_code: 2,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        }]);
+
+        let step = make_step("fail", "false");
+        let (code, combined) = run_step_command(&step, &sandbox, &executor).unwrap();
+        assert_eq!(code, 2);
+        assert!(combined.contains("out"));
+        assert!(combined.contains("err"));
+    }
+
+    /// Regression test for the cwd plumbing fix in 8a3ce9b2.
+    ///
+    /// The first cut of the port took only `(command, sandbox)`, so
+    /// `step.cwd` was resolved by the runner core but never reached the
+    /// adapter — every step ran in `sandbox.work_dir`, breaking any scenario
+    /// (e.g. `clone/all-branches.yml`) whose later steps `cd` into a worktree
+    /// subdirectory before running `git`. The fix added `cwd: &Path` to the
+    /// trait; this test holds the contract at the unit-test layer so it
+    /// regresses immediately rather than only when the full YAML suite is run.
+    #[test]
+    fn execute_step_passes_resolved_cwd_to_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let mut step = make_step("cwd-honored", "true");
+        step.cwd = Some("sub/dir".to_string());
+
+        execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        let cwds = executor.cwds();
+        assert_eq!(cwds.len(), 1);
+        // Relative cwd is resolved against sandbox.work_dir (the dummy
+        // `new_with_vars` value is `/tmp/test-dummy/work`), not the process
+        // cwd. Asserting the trailing segments avoids coupling to the dummy.
+        assert!(
+            cwds[0].ends_with("sub/dir"),
+            "executor received cwd {:?}, expected suffix sub/dir",
+            cwds[0],
+        );
+    }
+
+    #[test]
+    fn run_step_command_passes_resolved_cwd_to_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let mut step = make_step("cwd-honored", "true");
+        step.cwd = Some("other/place".to_string());
+
+        run_step_command(&step, &sandbox, &executor).unwrap();
+
+        let cwds = executor.cwds();
+        assert_eq!(cwds.len(), 1);
+        assert!(
+            cwds[0].ends_with("other/place"),
+            "executor received cwd {:?}, expected suffix other/place",
+            cwds[0],
+        );
     }
 }

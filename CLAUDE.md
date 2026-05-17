@@ -266,6 +266,26 @@ Canonical examples to study before adding a new feature:
 `coordinator/adapters/sqlite_store.rs` (port impl + env scrub at the persistence
 boundary), `coordinator/ports/store.rs` (trait surface).
 
+**YAML test runner port (`xtask/src/manual_test/`)**: One port —
+`CommandExecutor` in `executor.rs`, daft adapter in `daft_executor.rs` — between
+the runner core (`runner.rs`, `sandbox.rs`, `executor.rs`) and daft-specific
+command execution. Future #509 sub-tasks plug in as adapter changes, not
+runner-core changes.
+
+Hard rules:
+
+- **Runner core never names daft.** Greppable check:
+  `rg 'daft::|DAFT_' xtask/src/manual_test/{runner,sandbox,executor}.rs` returns
+  zero matches outside docstrings. If a change can't be done as an adapter
+  change, widen the port deliberately — don't leak.
+- **One port, not several.** Sandbox provisioning, fixture handling, and step
+  evaluation are candidates for future ports. Extracting them speculatively is
+  the trap; wait for a downstream PR with a concrete reason.
+- **Intentional exception:** `DAFT_MANUAL_TEST_BASE`,
+  `DAFT_MANUAL_TEST_EMIT_TIMING`, and `DAFT_MANUAL_TEST_JOBS` are the runner's
+  own config knobs and live in `mod.rs` / `main.rs`. Renaming the namespace is a
+  spin-out concern, not a coupling concern.
+
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`

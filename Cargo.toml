@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "xtask"]
+members = [".", "term-styles", "xtask"]
 resolver = "2"
 
 [package]
@@ -80,6 +80,7 @@ anyhow = "1.0"
 dirs = "6.0"
 which = "8.0"
 tempfile = "3.8"
+term-styles = { path = "term-styles" }
 regex = "1.10"
 url = "2.5"
 serde = { version = "1.0", features = ["derive"] }

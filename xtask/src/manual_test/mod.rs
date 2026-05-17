@@ -1,7 +1,9 @@
-pub mod env;
+pub mod daft_executor;
+pub mod executor;
 pub mod interactive;
 pub mod repo_gen;
 pub mod runner;
+pub mod sandbox;
 pub mod schema;
 
 use anyhow::{Context, Result};
@@ -11,6 +13,26 @@ use std::io::{IsTerminal, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Pick a base directory for a scenario sandbox.
+///
+/// Honors the `DAFT_MANUAL_TEST_BASE` env var as an opt-in override for
+/// managed test directories (e.g. a ramdisk under `sandbox/test/`). When set,
+/// the path is `<base>/<slug>` where the slug is the lowercased scenario name
+/// — callers using `--jobs > 1` must ensure scenario names are unique.
+/// Otherwise falls back to a unique `/tmp/daft-manual-test-*` path allocated
+/// by [`sandbox::alloc_default_base_dir`].
+///
+/// Lives at this layer (not in `sandbox::`) so the runner core stays free of
+/// daft-named env vars; renaming `DAFT_MANUAL_TEST_BASE` is a concern for the
+/// eventual runner spin-out.
+fn pick_sandbox_base_dir(scenario: &schema::Scenario) -> Result<PathBuf> {
+    if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
+        let slug = scenario.name.to_lowercase().replace(' ', "-");
+        return Ok(PathBuf::from(base).join(slug));
+    }
+    sandbox::alloc_default_base_dir()
+}
 
 /// Shared registry of live sandbox directories.
 ///
@@ -306,7 +328,7 @@ fn run_parallel(
         }
     }
 
-    use daft::styles;
+    use term_styles as styles;
 
     eprintln!();
     eprintln!(
@@ -355,18 +377,18 @@ fn run_serial(
         let scenario = load_scenario(path, fixtures_dir)?;
 
         // Register the sandbox path before touching disk so a SIGINT during
-        // `TestEnv::create_at` still leaves a tracked path the cleanup handler
+        // `Sandbox::create_at` still leaves a tracked path the cleanup handler
         // can `rm -rf`.
-        let base_dir = env::next_sandbox_base_dir(&scenario)?;
+        let base_dir = pick_sandbox_base_dir(&scenario)?;
         let _guard = CleanupGuard::new(Arc::clone(cleanup_set), base_dir.clone());
-        let mut test_env =
-            env::TestEnv::create_at(&scenario, project_root, base_dir, keep || setup_only)?;
+        let mut sb = sandbox::Sandbox::create_at(&scenario, base_dir, keep || setup_only)?;
+        let executor = daft_executor::DaftCommandExecutor::new_for_sandbox(&mut sb, project_root)?;
 
         for repo_spec in &scenario.repos {
-            repo_gen::generate_repo(repo_spec, &test_env.remotes_dir)?;
-            test_env.register_remote(&repo_spec.name);
+            repo_gen::generate_repo(repo_spec, &sb.remotes_dir)?;
+            sb.register_remote(&repo_spec.name);
         }
-        test_env.create_template()?;
+        sb.create_template()?;
 
         if setup_only {
             let run_until = step
@@ -375,30 +397,27 @@ fn run_serial(
             for (i, s) in scenario.steps.iter().take(run_until).enumerate() {
                 eprint!(
                     "{} {} ... ",
-                    daft::styles::blue(&format!("[{}/{}]", i + 1, run_until)),
+                    term_styles::blue(&format!("[{}/{}]", i + 1, run_until)),
                     &s.name
                 );
-                runner::execute_step(s, &test_env, true)?;
-                eprintln!("{}", daft::styles::green("ok"));
+                runner::execute_step(s, &sb, &executor, true)?;
+                eprintln!("{}", term_styles::green("ok"));
             }
             eprintln!();
-            eprintln!("Test environment ready at: {}", test_env.work_dir.display());
+            eprintln!("Test environment ready at: {}", sb.work_dir.display());
             // Print work dir to stdout for shell wrapper to capture for cd.
-            println!("{}", test_env.work_dir.display());
+            println!("{}", sb.work_dir.display());
             continue;
         }
 
         if is_interactive {
-            interactive::run_interactive(&scenario, &test_env, step, loop_count, verbose)?;
+            interactive::run_interactive(&scenario, &sb, &executor, step, loop_count, verbose)?;
         }
 
         if keep {
-            eprintln!(
-                "  Test environment kept at: {}",
-                test_env.base_dir.display()
-            );
+            eprintln!("  Test environment kept at: {}", sb.base_dir.display());
         } else {
-            match test_env.cleanup() {
+            match sb.cleanup() {
                 Ok(()) => eprintln!("Cleaned up test environment."),
                 Err(e) => eprintln!("  Warning: cleanup failed: {e}"),
             }
@@ -488,19 +507,20 @@ fn run_one_scenario_inner(
     // Pre-register the sandbox path so a SIGINT during create_at still leaves
     // a tracked path the cleanup handler can `rm -rf`. See [`setup_cleanup_handler`]
     // for the matching drain-loop logic.
-    let base_dir = env::next_sandbox_base_dir(scenario)?;
+    let base_dir = pick_sandbox_base_dir(scenario)?;
     let _guard = CleanupGuard::new(Arc::clone(cleanup_set), base_dir.clone());
-    let mut test_env = env::TestEnv::create_at(scenario, ctx.project_root, base_dir, ctx.keep)?;
+    let mut sb = sandbox::Sandbox::create_at(scenario, base_dir, ctx.keep)?;
+    let executor = daft_executor::DaftCommandExecutor::new_for_sandbox(&mut sb, ctx.project_root)?;
 
     for repo_spec in &scenario.repos {
-        repo_gen::generate_repo(repo_spec, &test_env.remotes_dir)?;
-        test_env.register_remote(&repo_spec.name);
+        repo_gen::generate_repo(repo_spec, &sb.remotes_dir)?;
+        sb.register_remote(&repo_spec.name);
     }
-    test_env.create_template()?;
+    sb.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
     let scenario_start = std::time::Instant::now();
-    let result = runner::run_non_interactive(scenario, &test_env, ctx.verbose, &mut buf)?;
+    let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.verbose, &mut buf)?;
     let elapsed_ms = scenario_start.elapsed().as_millis();
 
     // Opt-in per-scenario timing for the bench harness. Lines are
@@ -518,10 +538,10 @@ fn run_one_scenario_inner(
         writeln!(
             &mut buf,
             "  Test environment kept at: {}",
-            test_env.base_dir.display()
+            sb.base_dir.display()
         )?;
     } else {
-        match test_env.cleanup() {
+        match sb.cleanup() {
             Ok(()) => writeln!(&mut buf, "Cleaned up test environment.")?,
             Err(e) => writeln!(&mut buf, "  Warning: cleanup failed: {e}")?,
         }
@@ -694,7 +714,7 @@ fn resolve_repos(
 
 /// List available scenarios with their name and description.
 fn list_scenarios(dir: &PathBuf) -> Result<()> {
-    use daft::styles;
+    use term_styles as styles;
 
     let scenarios = discover_scenarios_recursive(dir)?;
     if scenarios.is_empty() {
@@ -727,7 +747,7 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
 
 /// Print a human-readable summary of a scenario without executing anything.
 fn show_scenario(path: &Path, checks: bool) -> Result<()> {
-    use daft::styles;
+    use term_styles as styles;
 
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
@@ -776,7 +796,7 @@ fn show_scenario(path: &Path, checks: bool) -> Result<()> {
 
 /// Format and print expectation checks for a step.
 fn show_expectations(expect: &schema::Expectations) {
-    use daft::styles;
+    use term_styles as styles;
 
     let mut lines: Vec<String> = Vec::new();
 
