@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Scaling sweep: time the YAML manual-test runner across --jobs values"
+#MISE depends=["dev"]
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/benches/scenarios/test_manual_scale.sh" "$@"

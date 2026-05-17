@@ -482,9 +482,16 @@ jobs:
 
       - name: Run YAML manual tests
         if: matrix.suite == 'yaml'
+        # `--jobs $(nproc)` saturates the runner — CI is dedicated to this job
+        # so there's no need for `--parallel`'s `num_cpus/2` headroom for
+        # concurrent local work.
+        #
+        # Security note: every input here is workflow-controlled (the config
+        # file path comes from a `mktemp` step, `nproc` is a coreutils binary).
+        # No `${{ github.event.* }}` substitutions touch the run: body.
         run: |
           GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
-            DAFT_TESTING=1 ./target/release/xtask manual-test --ci
+            DAFT_TESTING=1 ./target/release/xtask manual-test --ci --jobs "$(nproc)"
 
       - name: Test shell completions
         if: matrix.suite == 'bash'

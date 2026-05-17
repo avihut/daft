@@ -399,6 +399,17 @@ enum Commands {
         /// Include expectation checks in --show output
         #[arg(long, requires = "show")]
         checks: bool,
+
+        /// Run scenarios in parallel. Output is buffered per scenario and
+        /// flushed in input order once all scenarios finish — runs concurrently,
+        /// reports deterministically.
+        #[arg(long)]
+        parallel: bool,
+
+        /// Cap on concurrent scenarios. Overrides --parallel and
+        /// DAFT_MANUAL_TEST_JOBS. `--jobs 1` forces serial execution.
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
     },
 }
 
@@ -427,18 +438,124 @@ fn main() -> Result<()> {
             list,
             show,
             checks,
-        } => manual_test::run(
-            scenarios,
-            no_interactive,
-            verbose,
-            step,
-            loop_count,
-            keep,
-            setup_only,
-            list,
-            show,
-            checks,
-        ),
+            parallel,
+            jobs,
+        } => {
+            let jobs = resolve_jobs(jobs, parallel)?;
+            manual_test::run(
+                scenarios,
+                no_interactive,
+                verbose,
+                step,
+                loop_count,
+                keep,
+                setup_only,
+                list,
+                show,
+                checks,
+                jobs,
+            )
+        }
+    }
+}
+
+/// Resolve the parallel-job cap for the manual-test runner.
+///
+/// Precedence: `--jobs N` > `DAFT_MANUAL_TEST_JOBS` > (`--parallel` ?
+/// `default_cap()` : 1). Returning `1` keeps today's serial behavior as the
+/// default; the rollout plan flips this to `default_cap()` in a follow-up PR
+/// after a week of `--parallel` use surfaces no new flakes.
+fn resolve_jobs(jobs_flag: Option<usize>, parallel_flag: bool) -> Result<usize> {
+    if let Some(n) = jobs_flag {
+        return Ok(n.max(1));
+    }
+    if let Ok(raw) = std::env::var("DAFT_MANUAL_TEST_JOBS") {
+        let parsed: usize = raw
+            .parse()
+            .with_context(|| format!("DAFT_MANUAL_TEST_JOBS must be a usize, got {raw:?}"))?;
+        return Ok(parsed.max(1));
+    }
+    if parallel_flag {
+        return Ok(default_cap());
+    }
+    Ok(1)
+}
+
+/// Default parallel-job cap. Aims for `available_parallelism() / 2` to leave
+/// headroom for the two-worktree scenarios that spawn child `daft` processes.
+fn default_cap() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .saturating_div(2)
+        .max(1)
+}
+
+#[cfg(test)]
+mod jobs_resolution_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serializes the env-touching tests below — cargo runs unit tests on
+    // multiple threads by default and concurrent writes to the same env var
+    // would race.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_jobs_flag_wins_over_env_and_parallel() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("DAFT_MANUAL_TEST_JOBS", "9");
+        let r = resolve_jobs(Some(4), true).unwrap();
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        assert_eq!(r, 4);
+    }
+
+    #[test]
+    fn resolve_jobs_env_wins_over_parallel_flag() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("DAFT_MANUAL_TEST_JOBS", "7");
+        let r = resolve_jobs(None, true).unwrap();
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        assert_eq!(r, 7);
+    }
+
+    #[test]
+    fn resolve_jobs_parallel_flag_uses_default_cap() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        let r = resolve_jobs(None, true).unwrap();
+        assert_eq!(r, default_cap());
+        assert!(r >= 1);
+    }
+
+    #[test]
+    fn resolve_jobs_default_is_one() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        let r = resolve_jobs(None, false).unwrap();
+        assert_eq!(r, 1);
+    }
+
+    #[test]
+    fn resolve_jobs_zero_coerced_to_one() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        let r = resolve_jobs(Some(0), false).unwrap();
+        assert_eq!(r, 1);
+    }
+
+    #[test]
+    fn resolve_jobs_malformed_env_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("DAFT_MANUAL_TEST_JOBS", "not-a-number");
+        let r = resolve_jobs(None, false);
+        std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn default_cap_is_at_least_one() {
+        assert!(default_cap() >= 1);
     }
 }
 

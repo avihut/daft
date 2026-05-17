@@ -7,9 +7,15 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::schema::Scenario;
+
+/// Within-process counter that guarantees `TestEnv::create` produces a unique
+/// `base_dir` even when called concurrently from rayon workers. The
+/// nanosecond+pid prefix disambiguates across overlapping xtask invocations.
+static SANDBOX_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Manages the lifecycle of a single test environment (sandbox).
 pub struct TestEnv {
@@ -45,24 +51,54 @@ impl Drop for TestEnv {
     }
 }
 
+/// Reserve the next sandbox base directory without creating it on disk.
+///
+/// Workers call this before registering the path with the SIGINT cleanup set
+/// so that an interruption during `TestEnv::create_at` still leaves a tracked
+/// path the handler can `rm -rf`.
+pub fn next_sandbox_base_dir(scenario: &Scenario) -> Result<PathBuf> {
+    if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
+        // Deterministic path under a managed directory (e.g., sandbox/test/).
+        // Note: callers using DAFT_MANUAL_TEST_BASE with --jobs > 1 must
+        // ensure scenario names are unique, since this path is keyed by slug.
+        let slug = scenario.name.to_lowercase().replace(' ', "-");
+        return Ok(PathBuf::from(base).join(slug));
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before UNIX epoch")?
+        .as_nanos();
+    let pid = std::process::id();
+    let counter = SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(PathBuf::from(format!(
+        "/tmp/daft-manual-test-{nanos}-{pid}-{counter}"
+    )))
+}
+
 impl TestEnv {
     /// Create a new test environment on disk for the given scenario.
     ///
-    /// This creates the sandbox directory tree and initialises built-in
-    /// variables (`WORK_DIR`, `BASE_DIR`, `BINARY_DIR`) plus any extra vars
-    /// from `scenario.env`.
+    /// Picks a fresh sandbox path and delegates to [`Self::create_at`].
+    /// Prefer [`Self::create_at`] in the parallel worker path so the cleanup
+    /// registry can be populated before any directory I/O.
+    #[allow(dead_code)]
     pub fn create(scenario: &Scenario, project_root: &Path, keep: bool) -> Result<Self> {
-        let base_dir = if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
-            // Deterministic path under a managed directory (e.g., sandbox/test/).
-            let slug = scenario.name.to_lowercase().replace(' ', "-");
-            PathBuf::from(base).join(slug)
-        } else {
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("system clock before UNIX epoch")?
-                .as_millis();
-            PathBuf::from(format!("/tmp/daft-manual-test-{timestamp}"))
-        };
+        let base_dir = next_sandbox_base_dir(scenario)?;
+        Self::create_at(scenario, project_root, base_dir, keep)
+    }
+
+    /// Create a test environment rooted at a caller-supplied `base_dir`.
+    ///
+    /// Used by the parallel worker so it can register `base_dir` with the
+    /// SIGINT cleanup set before any directories are created — that way a
+    /// signal arriving mid-create still leaves a tracked path the handler
+    /// can `rm -rf`.
+    pub fn create_at(
+        scenario: &Scenario,
+        project_root: &Path,
+        base_dir: PathBuf,
+        keep: bool,
+    ) -> Result<Self> {
         let remotes_dir = base_dir.join("remotes");
         let template_dir = base_dir.join("remotes-template");
         let work_dir = base_dir.join("work");
@@ -257,10 +293,15 @@ impl TestEnv {
             self.git_config_path.to_string_lossy().into_owned(),
         );
 
-        // Daft feature flags.
+        // Daft feature flags. Disable every daemon-style background spawn:
+        // the test harness invokes `daft` many times back-to-back, and any
+        // detached child that survives its parent (e.g. `daft __clean-logs`)
+        // accumulates as init-reparented orphans and steals CPU — visible as
+        // load-average climbing into the hundreds during parallel runs.
         env.insert("DAFT_TESTING".into(), "1".into());
         env.insert("DAFT_NO_UPDATE_CHECK".into(), "1".into());
         env.insert("DAFT_NO_TRUST_PRUNE".into(), "1".into());
+        env.insert("DAFT_NO_LOG_CLEAN".into(), "1".into());
         env.insert(
             "DAFT_CONFIG_DIR".into(),
             self.daft_config_dir.to_string_lossy().into_owned(),
@@ -341,5 +382,38 @@ mod tests {
         let cmd_env = env.command_env();
         assert_eq!(cmd_env.get("GIT_AUTHOR_NAME").unwrap(), "Manual Test");
         assert_eq!(cmd_env.get("DAFT_TESTING").unwrap(), "1");
+    }
+
+    /// Regression test for the millisecond-timestamp collision bug:
+    /// two `TestEnv::create` calls in quick succession must produce distinct
+    /// `base_dir`s. Pre-#510 this used `as_millis()` and would collide under
+    /// rayon-parallel scheduling.
+    #[test]
+    fn test_create_produces_unique_base_dirs() {
+        use tempfile::TempDir;
+
+        let project_root = TempDir::new().expect("temp project root");
+        let scenario = Scenario {
+            name: "unique-test".to_string(),
+            description: None,
+            repos: Vec::new(),
+            env: HashMap::new(),
+            steps: Vec::new(),
+        };
+
+        let mut paths = Vec::new();
+        for _ in 0..16 {
+            let env = TestEnv::create(&scenario, project_root.path(), false)
+                .expect("TestEnv::create should succeed");
+            paths.push(env.base_dir.clone());
+            // env drops here, removing its sandbox.
+        }
+
+        let unique: std::collections::HashSet<_> = paths.iter().collect();
+        assert_eq!(
+            unique.len(),
+            paths.len(),
+            "TestEnv::create produced colliding base_dirs: {paths:?}"
+        );
     }
 }
