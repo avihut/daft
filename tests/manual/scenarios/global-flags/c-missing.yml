@@ -1,6 +1,8 @@
-name: -C missing path errors with exit 2
+name: -C error paths exit with usage-error code 2
 description:
-  -C with a non-existent path fails fast with clap usage-error exit code
+  Both `-C /missing` (non-directory) and trailing `-C` (no path argument) must
+  exit with clap usage-error code 2, not 1. Regression for the consistency issue
+  where MissingPathAfterC originally exited via anyhow Err → 1.
 
 steps:
   - name: daft -C /nonexistent/path exits 2 with terse message
@@ -10,3 +12,11 @@ steps:
       output_contains:
         - "-C"
         - "not a directory"
+
+  - name: trailing -C (no path argument) exits 2 with terse message
+    run: daft -C 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "-C"
+        - "requires an argument"
