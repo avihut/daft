@@ -766,6 +766,7 @@ mod tests {
     struct FakeExecutor {
         responses: Mutex<VecDeque<CommandOutput>>,
         invocations: Mutex<Vec<String>>,
+        cwds: Mutex<Vec<PathBuf>>,
     }
 
     impl FakeExecutor {
@@ -773,21 +774,27 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 invocations: Mutex::new(Vec::new()),
+                cwds: Mutex::new(Vec::new()),
             }
         }
 
         fn invocations(&self) -> Vec<String> {
             self.invocations.lock().unwrap().clone()
         }
+
+        fn cwds(&self) -> Vec<PathBuf> {
+            self.cwds.lock().unwrap().clone()
+        }
     }
 
     impl CommandExecutor for FakeExecutor {
-        fn execute(&self, command: &str, _cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
+        fn execute(&self, command: &str, cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
             // Mirror what a real adapter does: expand variables *before*
             // recording, so the test sees what the user-facing command would
             // actually have executed.
             let expanded = sandbox.expand_vars(command);
             self.invocations.lock().unwrap().push(expanded);
+            self.cwds.lock().unwrap().push(cwd.to_path_buf());
             Ok(self
                 .responses
                 .lock()
@@ -852,5 +859,55 @@ mod tests {
         assert_eq!(code, 2);
         assert!(combined.contains("out"));
         assert!(combined.contains("err"));
+    }
+
+    /// Regression test for the cwd plumbing fix in 8a3ce9b2.
+    ///
+    /// The first cut of the port took only `(command, sandbox)`, so
+    /// `step.cwd` was resolved by the runner core but never reached the
+    /// adapter — every step ran in `sandbox.work_dir`, breaking any scenario
+    /// (e.g. `clone/all-branches.yml`) whose later steps `cd` into a worktree
+    /// subdirectory before running `git`. The fix added `cwd: &Path` to the
+    /// trait; this test holds the contract at the unit-test layer so it
+    /// regresses immediately rather than only when the full YAML suite is run.
+    #[test]
+    fn execute_step_passes_resolved_cwd_to_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let mut step = make_step("cwd-honored", "true");
+        step.cwd = Some("sub/dir".to_string());
+
+        execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        let cwds = executor.cwds();
+        assert_eq!(cwds.len(), 1);
+        // Relative cwd is resolved against sandbox.work_dir (the dummy
+        // `new_with_vars` value is `/tmp/test-dummy/work`), not the process
+        // cwd. Asserting the trailing segments avoids coupling to the dummy.
+        assert!(
+            cwds[0].ends_with("sub/dir"),
+            "executor received cwd {:?}, expected suffix sub/dir",
+            cwds[0],
+        );
+    }
+
+    #[test]
+    fn run_step_command_passes_resolved_cwd_to_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let mut step = make_step("cwd-honored", "true");
+        step.cwd = Some("other/place".to_string());
+
+        run_step_command(&step, &sandbox, &executor).unwrap();
+
+        let cwds = executor.cwds();
+        assert_eq!(cwds.len(), 1);
+        assert!(
+            cwds[0].ends_with("other/place"),
+            "executor received cwd {:?}, expected suffix other/place",
+            cwds[0],
+        );
     }
 }
