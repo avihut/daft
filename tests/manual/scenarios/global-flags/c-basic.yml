@@ -1,0 +1,38 @@
+name: -C basic chdir
+description:
+  -C <path> chdirs before subcommand dispatch; new worktree lands in the -C
+  target repo
+
+repos:
+  - name: repo-a
+    use_fixture: standard-remote
+  - name: repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone repo-a
+    run: git-worktree-clone --layout contained $REMOTE_REPO_A
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/repo-a/main"
+
+  - name: Clone repo-b
+    run: git-worktree-clone --layout contained $REMOTE_REPO_B
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/repo-b/main"
+
+  - name:
+      From inside repo-a/main, run daft -C against repo-b to checkout a branch
+    # If -C didn't take effect, the new worktree would be created inside repo-a
+    # (since that's the cwd). dirs_exist on the repo-b path proves the chdir.
+    run: daft -C "$WORK_DIR/repo-b/main" go develop
+    cwd: "$WORK_DIR/repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/repo-b/develop"
+      files_not_exist:
+        - "$WORK_DIR/repo-a/develop"

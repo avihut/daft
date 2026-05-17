@@ -1,0 +1,12 @@
+name: -C missing path errors with exit 2
+description:
+  -C with a non-existent path fails fast with clap usage-error exit code
+
+steps:
+  - name: daft -C /nonexistent/path exits 2 with terse message
+    run: daft -C /nonexistent/path-for-c-flag-test list 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "-C"
+        - "not a directory"

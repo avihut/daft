@@ -1,0 +1,53 @@
+name: -C runs hooks from the target repo
+description:
+  worktree-post-create hook in the -C target fires when invoking from outside
+
+repos:
+  - name: repo-a
+    use_fixture: standard-remote
+  - name: repo-b
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# repo-b"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: write-sentinel
+              run: 'echo hook-fired > "$DAFT_WORKTREE_PATH/.hook-sentinel"'
+
+steps:
+  - name: Clone repo-a
+    run: git-worktree-clone --layout contained $REMOTE_REPO_A
+    expect:
+      exit_code: 0
+
+  - name: Clone repo-b
+    run: git-worktree-clone --layout contained $REMOTE_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Trust the hooks config in repo-b
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/repo-b/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      From repo-a/main, run daft -C against repo-b; the hook fires inside repo-b
+    run: daft -C "$WORK_DIR/repo-b/main" go develop
+    cwd: "$WORK_DIR/repo-a/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/repo-b/develop/.hook-sentinel"
+      file_contains:
+        - path: "$WORK_DIR/repo-b/develop/.hook-sentinel"
+          content: "hook-fired"

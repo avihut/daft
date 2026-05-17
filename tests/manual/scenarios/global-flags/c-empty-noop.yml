@@ -1,0 +1,20 @@
+name: -C "" is a no-op
+description: Matches git's `-C ""` semantic — cwd unchanged
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: daft -C "" list from inside the repo lists the current repo
+    run: NO_COLOR=1 daft -C "" list 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
