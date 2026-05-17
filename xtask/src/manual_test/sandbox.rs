@@ -140,33 +140,52 @@ impl Sandbox {
     /// Variable names consist of uppercase ASCII letters, digits, and
     /// underscores. Unknown variables are left as-is (including the `$`
     /// prefix).
+    ///
+    /// Scans byte-by-byte over the UTF-8 representation. That's safe because
+    /// every var-name byte is ASCII (so byte boundaries match char
+    /// boundaries), and any non-ASCII bytes outside a var name are copied
+    /// through unchanged.
     pub fn expand_vars(&self, input: &str) -> String {
         let mut result = String::with_capacity(input.len());
-        let chars: Vec<char> = input.chars().collect();
-        let len = chars.len();
+        let bytes = input.as_bytes();
         let mut i = 0;
 
-        while i < len {
-            if chars[i] == '$' && i + 1 < len && is_var_char(chars[i + 1]) {
-                // Scan the variable name.
-                let start = i + 1;
-                let mut end = start;
-                while end < len && is_var_char(chars[end]) {
-                    end += 1;
-                }
-                let var_name: String = chars[start..end].iter().collect();
-                if let Some(value) = self.vars.get(&var_name) {
-                    result.push_str(value);
-                } else {
-                    // Unknown variable — leave as-is.
-                    result.push('$');
-                    result.push_str(&var_name);
-                }
-                i = end;
-            } else {
-                result.push(chars[i]);
-                i += 1;
+        while i < bytes.len() {
+            // Fast path: anything before the next `$` is copied verbatim.
+            let Some(dollar) = bytes[i..].iter().position(|&b| b == b'$') else {
+                // Safe: `i` is a char boundary (we never split a multi-byte
+                // sequence — see method docs) and `bytes.len()` is too.
+                result.push_str(&input[i..]);
+                break;
+            };
+            let dollar = i + dollar;
+            result.push_str(&input[i..dollar]);
+
+            // Scan the var name immediately after the `$`.
+            let name_start = dollar + 1;
+            let mut name_end = name_start;
+            while name_end < bytes.len() && is_var_byte(bytes[name_end]) {
+                name_end += 1;
             }
+
+            if name_end == name_start {
+                // Lone `$` (or `$` followed by a non-var character) — preserve.
+                result.push('$');
+                i = name_start;
+                continue;
+            }
+
+            // Safe: every var-name byte is ASCII, so [name_start, name_end) is
+            // a valid UTF-8 substring on its own.
+            let var_name = &input[name_start..name_end];
+            if let Some(value) = self.vars.get(var_name) {
+                result.push_str(value);
+            } else {
+                // Unknown variable — leave the `$NAME` token as-is.
+                result.push('$');
+                result.push_str(var_name);
+            }
+            i = name_end;
         }
 
         result
@@ -257,9 +276,12 @@ impl Sandbox {
     }
 }
 
-/// Returns `true` if `c` is a valid variable-name character (A-Z, 0-9, _).
-fn is_var_char(c: char) -> bool {
-    c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+/// Returns `true` if `b` is a valid variable-name byte (A-Z, 0-9, _).
+///
+/// Every accepted byte is ASCII, so callers may treat positions returned by
+/// scanning with this predicate as both byte and char boundaries safely.
+fn is_var_byte(b: u8) -> bool {
+    b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'
 }
 
 #[cfg(test)]
@@ -298,6 +320,35 @@ mod tests {
     fn test_expand_vars_unknown_left_as_is() {
         let sb = Sandbox::new_with_vars(HashMap::new());
         assert_eq!(sb.expand_vars("$UNKNOWN_VAR"), "$UNKNOWN_VAR");
+    }
+
+    /// `$` not followed by a var-name character (lowercase, space, EOF) is
+    /// preserved literally. Guards the byte-scan path from accidentally
+    /// consuming the `$` and producing an empty lookup.
+    #[test]
+    fn test_expand_vars_lone_dollar_preserved() {
+        let mut vars = HashMap::new();
+        vars.insert("FOO".into(), "x".into());
+        let sb = Sandbox::new_with_vars(vars);
+        assert_eq!(
+            sb.expand_vars("price is $5 plus tax"),
+            "price is $5 plus tax"
+        );
+        assert_eq!(sb.expand_vars("trailing $"), "trailing $");
+        assert_eq!(sb.expand_vars("$ $FOO $"), "$ x $");
+    }
+
+    /// Non-ASCII (multi-byte UTF-8) bytes outside a var name copy through
+    /// untouched. Guards the byte-scan path from splitting a multi-byte
+    /// sequence — the `$` and var-name bytes are pure ASCII so they never
+    /// land mid-codepoint.
+    #[test]
+    fn test_expand_vars_handles_non_ascii_around_tokens() {
+        let mut vars = HashMap::new();
+        vars.insert("NAME".into(), "world".into());
+        let sb = Sandbox::new_with_vars(vars);
+        assert_eq!(sb.expand_vars("héllo $NAME 🦀"), "héllo world 🦀");
+        assert_eq!(sb.expand_vars("✨$NAME✨"), "✨world✨");
     }
 
     #[test]
