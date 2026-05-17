@@ -141,16 +141,28 @@ impl CommandExecutor for DaftCommandExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
+    /// Dummy `project_root` value. The adapter only uses it to compute
+    /// `project_root.join("target/release")` for PATH construction — no I/O
+    /// against this path, so a non-existent dummy is fine.
     fn project_root() -> PathBuf {
-        PathBuf::from("/tmp/test-dummy-project")
+        PathBuf::from("/nonexistent/dummy-project-root")
+    }
+
+    /// Build a `Sandbox` whose `base_dir` points at a fresh temp directory.
+    /// The returned `TempDir` must outlive the sandbox: dropping it removes
+    /// the directory tree.
+    fn sandbox_with_tempdir() -> (Sandbox, TempDir) {
+        let tmp = tempfile::tempdir().expect("create temp sandbox base dir");
+        let mut sandbox = Sandbox::new_with_vars(HashMap::new());
+        sandbox.base_dir = tmp.path().to_path_buf();
+        (sandbox, tmp)
     }
 
     #[test]
     fn build_env_has_git_identity_and_daft_flags() {
-        let mut sandbox = Sandbox::new_with_vars(HashMap::new());
-        sandbox.base_dir = PathBuf::from("/tmp/test-build-env");
-        std::fs::create_dir_all(&sandbox.base_dir).unwrap();
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
 
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
         let env = exec.build_env(&sandbox);
@@ -161,15 +173,11 @@ mod tests {
         assert!(env.get("PATH").unwrap().contains("target/release"));
         assert!(env.get("DAFT_CONFIG_DIR").unwrap().contains("daft-config"));
         assert!(env.get("DAFT_DATA_DIR").unwrap().contains("daft-data"));
-
-        std::fs::remove_dir_all(&sandbox.base_dir).ok();
     }
 
     #[test]
     fn registers_binary_dir_and_data_dir_vars_on_sandbox() {
-        let mut sandbox = Sandbox::new_with_vars(HashMap::new());
-        sandbox.base_dir = PathBuf::from("/tmp/test-register-vars");
-        std::fs::create_dir_all(&sandbox.base_dir).unwrap();
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
 
         let _exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
 
@@ -178,7 +186,5 @@ mod tests {
         let expanded = sandbox.expand_vars("$BINARY_DIR/daft and data=$DAFT_DATA_DIR");
         assert!(expanded.contains("target/release"));
         assert!(expanded.contains("daft-data"));
-
-        std::fs::remove_dir_all(&sandbox.base_dir).ok();
     }
 }
