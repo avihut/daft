@@ -109,11 +109,13 @@ impl DaftCommandExecutor {
             self.daft_data_dir.to_string_lossy().into_owned(),
         );
 
-        // PATH — binary_dir first so locally-built daft wins.
+        // PATH — binary_dir first so locally-built daft wins. `to_string_lossy`
+        // (not `display`) is the right idiom here: this is a string going into
+        // the subprocess env, not human-readable terminal output.
         let existing_path = std::env::var("PATH").unwrap_or_default();
         env.insert(
             "PATH".into(),
-            format!("{}:{existing_path}", self.binary_dir.display()),
+            format!("{}:{existing_path}", self.binary_dir.to_string_lossy()),
         );
 
         env
