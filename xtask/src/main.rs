@@ -660,6 +660,22 @@ fn build_top_level_command() -> clap::Command {
              See daft-shell-init(1) for details.",
         )
         .subcommand_required(false)
+        // Top-level `-C <path>` flag (issue #519). The flag is actually parsed
+        // pre-clap in `daft::cli::install_and_apply`; declaring it here only
+        // affects man-page generation and `--help` output so the global option
+        // is documented in the standard OPTIONS section.
+        .arg(
+            clap::Arg::new("cwd")
+                .short('C')
+                .value_name("path")
+                .global(false)
+                .num_args(1)
+                .help(
+                    "Run as if started in <path> instead of the current working directory. \
+                     Applied before subcommand dispatch, layout resolution, and hook discovery. \
+                     Multiple `-C` flags compose, matching `git -C` semantics.",
+                ),
+        )
         // Setup commands
         .subcommand(daft::commands::clone::Args::command().name("clone"))
         .subcommand(daft::commands::init::Args::command().name("init"))

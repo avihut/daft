@@ -57,6 +57,10 @@ struct FigOption {
 struct FigOptionArg {
     #[serde(skip_serializing_if = "Option::is_none")]
     suggestions: Option<Vec<FigSuggestion>>,
+    /// Fig built-in completion source (e.g. "folders", "filepaths"). Set this
+    /// to let Fig's filesystem completion fill in the argument value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -221,6 +225,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 }
                 Some(FigOptionArg {
                     suggestions: Some(suggestions),
+                    template: None,
                 })
             } else if has_columns && long == "--sort" {
                 let sort_defs = [
@@ -256,6 +261,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 }
                 Some(FigOptionArg {
                     suggestions: Some(suggestions),
+                    template: None,
                 })
             } else if long == "--format" {
                 emit_formats_for(command_name).map(|formats| {
@@ -268,6 +274,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                         .collect();
                     FigOptionArg {
                         suggestions: Some(suggestions),
+                        template: None,
                     }
                 })
             } else {
@@ -347,6 +354,7 @@ fn build_emit_options(command_path: &str) -> Vec<FigOption> {
             description: "Output format. Mutually exclusive with --template.".into(),
             args: Some(FigOptionArg {
                 suggestions: Some(suggestions),
+                template: None,
             }),
         },
         FigOption {
@@ -426,17 +434,26 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
                 FigOption {
                     name: FigName::Single("--worktree".into()),
                     description: "Filter to a specific worktree".into(),
-                    args: Some(FigOptionArg { suggestions: None }),
+                    args: Some(FigOptionArg {
+                        suggestions: None,
+                        template: None,
+                    }),
                 },
                 FigOption {
                     name: FigName::Single("--status".into()),
                     description: "Filter by job status".into(),
-                    args: Some(FigOptionArg { suggestions: None }),
+                    args: Some(FigOptionArg {
+                        suggestions: None,
+                        template: None,
+                    }),
                 },
                 FigOption {
                     name: FigName::Single("--hook".into()),
                     description: "Filter to invocations of this hook type".into(),
-                    args: Some(FigOptionArg { suggestions: None }),
+                    args: Some(FigOptionArg {
+                        suggestions: None,
+                        template: None,
+                    }),
                 },
             ];
             opts.extend(build_emit_options("hooks jobs"));
@@ -560,7 +577,10 @@ fn build_fig_layout_subcommand() -> FigSubcommand {
             FigOption {
                 name: FigName::Single("--include".into()),
                 description: "Also relocate non-conforming worktree".into(),
-                args: Some(FigOptionArg { suggestions: None }),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
             },
             FigOption {
                 name: FigName::Single("--include-all".into()),
@@ -645,6 +665,7 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
                 description: "Strip trailing whitespace only".into(),
             },
         ]),
+        template: None,
     });
 
     let strategy_suggestions = Some(FigOptionArg {
@@ -657,9 +678,13 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
                 })
                 .collect(),
         ),
+        template: None,
     });
 
-    let into_suggestions = Some(FigOptionArg { suggestions: None });
+    let into_suggestions = Some(FigOptionArg {
+        suggestions: None,
+        template: None,
+    });
     let branch_arg_option = FigOption {
         name: FigName::Single("--into".into()),
         description: "Target worktree/branch for the merge".into(),
@@ -716,12 +741,18 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
         FigOption {
             name: FigName::Single("-m".into()),
             description: "Commit message for the merge commit".into(),
-            args: Some(FigOptionArg { suggestions: None }),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
         },
         FigOption {
             name: FigName::Multiple(vec!["-F".into(), "--file".into()]),
             description: "Read the commit message from FILE".into(),
-            args: Some(FigOptionArg { suggestions: None }),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
         },
         FigOption {
             name: FigName::Single("--edit".into()),
@@ -786,12 +817,18 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
         FigOption {
             name: FigName::Multiple(vec!["-X".into(), "--strategy-option".into()]),
             description: "Strategy-specific option".into(),
-            args: Some(FigOptionArg { suggestions: None }),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
         },
         FigOption {
             name: FigName::Multiple(vec!["-S".into(), "--gpg-sign".into()]),
             description: "GPG-sign the merge commit (optional KEYID)".into(),
-            args: Some(FigOptionArg { suggestions: None }),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
         },
         FigOption {
             name: FigName::Single("--no-gpg-sign".into()),
@@ -889,6 +926,16 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
                 name: FigName::Multiple(vec!["--help".to_string(), "-h".to_string()]),
                 description: "Print help".to_string(),
                 args: None,
+            },
+            // Top-level `-C <path>` (issue #519). `template: "folders"` makes
+            // Fig fill in directory completions for the value.
+            FigOption {
+                name: FigName::Single("-C".to_string()),
+                description: "Run as if started in <path>".to_string(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: Some("folders".to_string()),
+                }),
             },
         ]),
         subcommands: Some(subcommands),

@@ -323,6 +323,11 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
 
 const DAFT_FISH_COMPLETIONS: &str = r#"# daft subcommand completions
 complete -c daft -f
+# `-C <path>` is a top-level option (issue #519). Fish completes by short
+# letter regardless of position, so a single -c registration with -xa for
+# directory value completion is enough — no need to thread it through every
+# __fish_seen_subcommand_from condition below.
+complete -c daft -s C -d 'Run as if started in <path>' -xa '(__fish_complete_directories)'
 complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version information'
 complete -c daft -n '__fish_use_subcommand' -s h -l help -d 'Print help'
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
