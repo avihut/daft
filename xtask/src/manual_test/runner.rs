@@ -745,4 +745,111 @@ mod tests {
         assert!(!r.passed);
         assert!(r.detail.is_some());
     }
+
+    // -----------------------------------------------------------------------
+    // FakeExecutor — proves the seam holds.
+    //
+    // The runner core compiles and runs against an executor that has nothing
+    // to do with daft. If this test ever stops compiling because daft types
+    // crept back into `runner.rs`, the seam was breached. Removing or
+    // gutting this test is the wrong fix — restore the seam.
+    // -----------------------------------------------------------------------
+
+    use super::super::executor::{CommandExecutor, CommandOutput};
+    use std::collections::HashMap;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// In-memory executor that records invocations and returns canned outputs.
+    /// Knows nothing about daft.
+    struct FakeExecutor {
+        responses: Mutex<VecDeque<CommandOutput>>,
+        invocations: Mutex<Vec<String>>,
+    }
+
+    impl FakeExecutor {
+        fn new(responses: Vec<CommandOutput>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                invocations: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn invocations(&self) -> Vec<String> {
+            self.invocations.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandExecutor for FakeExecutor {
+        fn execute(&self, command: &str, sandbox: &Sandbox) -> Result<CommandOutput> {
+            // Mirror what a real adapter does: expand variables *before*
+            // recording, so the test sees what the user-facing command would
+            // actually have executed.
+            let expanded = sandbox.expand_vars(command);
+            self.invocations.lock().unwrap().push(expanded);
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default())
+        }
+    }
+
+    fn make_step(name: &str, run: &str) -> Step {
+        Step {
+            name: name.to_string(),
+            run: run.to_string(),
+            cwd: None,
+            expect: None,
+        }
+    }
+
+    #[test]
+    fn execute_step_runs_command_through_executor() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput {
+            exit_code: 0,
+            stdout: b"hello\n".to_vec(),
+            stderr: Vec::new(),
+        }]);
+
+        let step = make_step("greet", "echo hello");
+        let result = execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.all_passed); // no assertions defined → trivially true
+        assert_eq!(executor.invocations(), vec!["echo hello"]);
+    }
+
+    #[test]
+    fn execute_step_expands_sandbox_vars_in_command() {
+        let mut vars = HashMap::new();
+        vars.insert("GREETING".into(), "hi".into());
+        let sandbox = Sandbox::new_with_vars(vars);
+        let executor = FakeExecutor::new(vec![CommandOutput::default()]);
+
+        let step = make_step("greet", "echo $GREETING");
+        let _ = execute_step(&step, &sandbox, &executor, true).unwrap();
+
+        // Adapter is responsible for expansion; FakeExecutor mirrors that
+        // contract so the recorded invocation matches what `bash -c` would see.
+        assert_eq!(executor.invocations(), vec!["echo hi"]);
+    }
+
+    #[test]
+    fn run_step_command_returns_exit_code_and_combined_output() {
+        let sandbox = Sandbox::new_with_vars(HashMap::new());
+        let executor = FakeExecutor::new(vec![CommandOutput {
+            exit_code: 2,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        }]);
+
+        let step = make_step("fail", "false");
+        let (code, combined) = run_step_command(&step, &sandbox, &executor).unwrap();
+        assert_eq!(code, 2);
+        assert!(combined.contains("out"));
+        assert!(combined.contains("err"));
+    }
 }
