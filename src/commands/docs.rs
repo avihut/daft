@@ -371,8 +371,9 @@ fn bold(text: &str, use_color: bool) -> String {
 
 pub fn run() -> Result<()> {
     // Detect how we were invoked
-    let program_path = std::env::args()
-        .next()
+    let program_path = crate::cli::argv()
+        .first()
+        .cloned()
         .unwrap_or_else(|| "daft".to_string());
     let program_name = Path::new(&program_path)
         .file_name()

@@ -154,7 +154,7 @@ to match the new remote organization.
 
 pub fn run() -> Result<()> {
     // Skip "daft" and "multi-remote" from args
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = crate::cli::argv().iter().skip(1).cloned().collect();
     let args = Args::parse_from(args);
 
     match args.command {

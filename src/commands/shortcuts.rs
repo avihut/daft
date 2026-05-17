@@ -80,7 +80,7 @@ enum ShortcutsCommand {
 
 pub fn run() -> Result<()> {
     // Skip "daft", "setup", and "shortcuts" from args
-    let args: Vec<String> = std::env::args().skip(3).collect();
+    let args: Vec<String> = crate::cli::argv().iter().skip(3).cloned().collect();
     let args = Args::parse_from(std::iter::once("shortcuts".to_string()).chain(args));
     let mut output = CliOutput::new(OutputConfig::new(false, false));
 

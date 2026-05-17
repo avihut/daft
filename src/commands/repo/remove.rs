@@ -55,7 +55,7 @@ pub fn run() -> Result<()> {
     // in debug builds — if a future shortcut alias or alternative entry path
     // dispatches here without that argv shape, we want a loud failure rather
     // than silently dropping or shifting positional arguments.
-    let raw_args: Vec<String> = std::env::args().collect();
+    let raw_args: Vec<String> = crate::cli::argv().to_vec();
     debug_assert!(
         raw_args.len() >= 3 && raw_args[1] == "repo" && raw_args[2] == "remove",
         "repo::remove::run() invoked with unexpected argv: {raw_args:?} \

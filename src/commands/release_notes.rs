@@ -68,7 +68,7 @@ pub struct Args {
 
 pub fn run() -> Result<()> {
     // When called as a subcommand, skip "daft" and "release-notes" from args
-    let mut args_vec: Vec<String> = std::env::args().collect();
+    let mut args_vec: Vec<String> = crate::cli::argv().to_vec();
 
     // If args start with [daft, release-notes, ...], remove "release-notes"
     // to make clap parse correctly (keep "daft" as program name)

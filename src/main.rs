@@ -11,10 +11,17 @@ use daft::shortcuts;
 use std::path::Path;
 
 fn main() -> Result<()> {
+    // Parse and apply top-level flags (currently just `-C <path>`) before any
+    // other work. This MUST happen before `skip_startup_tasks_for` below — that
+    // gate inspects argv[1] to detect `shell-init`/`__*` invocations that must
+    // skip background spawns, and if `-C` is still in argv at that point the
+    // gate fails open (see the fork-bomb warning further down).
+    let raw_argv: Vec<String> = std::env::args().collect();
+    daft::cli::install_and_apply(raw_argv)?;
+    let argv = daft::cli::argv();
+
     // Detect how we were invoked by checking argv[0]
-    let program_path = std::env::args()
-        .next()
-        .unwrap_or_else(|| "daft".to_string());
+    let program_path = argv.first().cloned().unwrap_or_else(|| "daft".to_string());
     let program_name = Path::new(&program_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -24,12 +31,12 @@ fn main() -> Result<()> {
     let resolved = shortcuts::resolve(program_name);
 
     // Handle --version/-V flag for the main daft/git-daft command
-    if resolved == "daft" || resolved == "git-daft" {
-        let args: Vec<String> = std::env::args().collect();
-        if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-            println!("daft {}", daft::VERSION_DISPLAY);
-            return Ok(());
-        }
+    if (resolved == "daft" || resolved == "git-daft")
+        && argv.len() == 2
+        && (argv[1] == "--version" || argv[1] == "-V")
+    {
+        println!("daft {}", daft::VERSION_DISPLAY);
+        return Ok(());
     }
 
     // Skip startup-time background work for invocations that must stay lean:
@@ -48,8 +55,7 @@ fn main() -> Result<()> {
     // Or more broadly:
     //   pkill -9 -f "<worktree-path>/target/release"
     // Repeat until `ps aux | grep __check-update | wc -l` returns 0.
-    let argv: Vec<String> = std::env::args().collect();
-    let skip_startup_tasks = daft::skip_startup_tasks_for(&argv);
+    let skip_startup_tasks = daft::skip_startup_tasks_for(argv);
 
     // Also skip background spawning if we're inside a coordinator process
     let is_coordinator = std::env::var("DAFT_IS_COORDINATOR").is_ok();
@@ -117,7 +123,7 @@ fn main() -> Result<()> {
                 "daft"
             };
             // Check if a subcommand was provided
-            let args: Vec<String> = std::env::args().collect();
+            let args = argv;
             if args.len() > 1 {
                 match args[1].as_str() {
                     "--help" | "-h" => commands::docs::run(),
