@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/avihut/daft/compare/v1.12.0...v1.13.0) - 2026-05-16
+
+### Bug Fixes
+
+- *(tui)* keep size column TOTAL summary intact when wider than data cells ([#507](https://github.com/avihut/daft/pull/507))
+- *(tui)* truncate worktree names in shared picker to keep state column visible ([#506](https://github.com/avihut/daft/pull/506))
+- *(tui)* always render selected columns; stop dropping by terminal width ([#497](https://github.com/avihut/daft/pull/497))
+
+### Features
+
+- *(coordinator)* redesign internals — persistence, IPC, structured logs ([#476](https://github.com/avihut/daft/pull/476)) ([#508](https://github.com/avihut/daft/pull/508))
+
+### Miscellaneous
+
+- enforce dependency license allowlist via cargo-deny ([#499](https://github.com/avihut/daft/pull/499))
+- reduce test.yml flake — pin mise tools, skip cargo-cooldown on CI ([#498](https://github.com/avihut/daft/pull/498))
+
 ## [1.12.0](https://github.com/avihut/daft/compare/v1.11.1...v1.12.0) - 2026-05-09
 
 ### Bug Fixes
