@@ -488,7 +488,7 @@ pub fn run_non_interactive(
     verbose: bool,
     out: &mut impl Write,
 ) -> Result<ScenarioResult> {
-    use daft::styles;
+    use term_styles as styles;
 
     writeln!(out, "{}", styles::cyan(&scenario.name))?;
 

@@ -306,7 +306,7 @@ fn run_parallel(
         }
     }
 
-    use daft::styles;
+    use term_styles as styles;
 
     eprintln!();
     eprintln!(
@@ -375,11 +375,11 @@ fn run_serial(
             for (i, s) in scenario.steps.iter().take(run_until).enumerate() {
                 eprint!(
                     "{} {} ... ",
-                    daft::styles::blue(&format!("[{}/{}]", i + 1, run_until)),
+                    term_styles::blue(&format!("[{}/{}]", i + 1, run_until)),
                     &s.name
                 );
                 runner::execute_step(s, &test_env, true)?;
-                eprintln!("{}", daft::styles::green("ok"));
+                eprintln!("{}", term_styles::green("ok"));
             }
             eprintln!();
             eprintln!("Test environment ready at: {}", test_env.work_dir.display());
@@ -694,7 +694,7 @@ fn resolve_repos(
 
 /// List available scenarios with their name and description.
 fn list_scenarios(dir: &PathBuf) -> Result<()> {
-    use daft::styles;
+    use term_styles as styles;
 
     let scenarios = discover_scenarios_recursive(dir)?;
     if scenarios.is_empty() {
@@ -727,7 +727,7 @@ fn list_scenarios(dir: &PathBuf) -> Result<()> {
 
 /// Print a human-readable summary of a scenario without executing anything.
 fn show_scenario(path: &Path, checks: bool) -> Result<()> {
-    use daft::styles;
+    use term_styles as styles;
 
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read scenario: {}", path.display()))?;
@@ -776,7 +776,7 @@ fn show_scenario(path: &Path, checks: bool) -> Result<()> {
 
 /// Format and print expectation checks for a step.
 fn show_expectations(expect: &schema::Expectations) {
-    use daft::styles;
+    use term_styles as styles;
 
     let mut lines: Vec<String> = Vec::new();
 

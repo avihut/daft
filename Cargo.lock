@@ -754,6 +754,7 @@ dependencies = [
  "tabled",
  "tempfile",
  "tera",
+ "term-styles",
  "termimad",
  "terminal_size",
  "thiserror 2.0.18",
@@ -4442,6 +4443,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "term-styles"
+version = "0.1.0"
+
+[[package]]
 name = "termimad"
 version = "0.34.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5703,6 +5708,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
+ "term-styles",
 ]
 
 [[package]]

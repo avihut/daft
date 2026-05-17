@@ -8,7 +8,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal,
 };
-use daft::styles;
+use term_styles as styles;
 
 use super::env::TestEnv;
 use super::runner::{self, AssertionResult};
