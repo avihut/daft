@@ -266,59 +266,25 @@ Canonical examples to study before adding a new feature:
 `coordinator/adapters/sqlite_store.rs` (port impl + env scrub at the persistence
 boundary), `coordinator/ports/store.rs` (trait surface).
 
-**YAML test runner port (`xtask/src/manual_test/`)**: One port between the
-runner core (project-agnostic scheduling, sandboxing, step evaluation, assertion
-checking) and daft-specific command execution. Future #509 sub-tasks (clonefile
-snapshots, ramdisk sandboxes, fixture caches, shared binary dirs) plug in as
-adapter changes — not runner-core changes.
-
-```
-Scheduler         manual_test/mod.rs           (parallel/serial fan-out, wires adapter)
-   │
-   ▼ uses
-Runner core       manual_test/{runner,sandbox,executor}.rs
-                  (step execution, sandbox lifecycle, CommandExecutor trait)
-   ▲
-   │ implemented by
-Adapter           manual_test/daft_executor.rs
-                  (PATH=target/release/, DAFT_* daemon-suppression flags,
-                   isolated DAFT_CONFIG_DIR / DAFT_DATA_DIR per sandbox)
-```
+**YAML test runner port (`xtask/src/manual_test/`)**: One port —
+`CommandExecutor` in `executor.rs`, daft adapter in `daft_executor.rs` — between
+the runner core (`runner.rs`, `sandbox.rs`, `executor.rs`) and daft-specific
+command execution. Future #509 sub-tasks plug in as adapter changes, not
+runner-core changes.
 
 Hard rules:
 
-- **Runner core never names daft.** No `daft::` imports, no `DAFT_*` env-var
-  reads or writes, no daft binary path resolution inside `runner.rs`,
-  `sandbox.rs`, or `executor.rs`. The greppable check:
+- **Runner core never names daft.** Greppable check:
   `rg 'daft::|DAFT_' xtask/src/manual_test/{runner,sandbox,executor}.rs` returns
-  zero matches outside docstrings. Docstring mentions in `executor.rs`
-  describing what the daft adapter does are intentional and fine.
-- **One port, not several.** `CommandExecutor` is the only seam today. Sandbox
-  provisioning, fixture handling, and step evaluation are candidates for future
-  ports — but extracting them speculatively is the trap. Wait for a downstream
-  PR with a concrete reason.
-- **Adapter owns env construction and binary resolution.**
-  `DaftCommandExecutor::build_env` layers scenario vars first, then safety vars
-  (git identity, `DAFT_TESTING`, `DAFT_NO_UPDATE_CHECK`, `DAFT_NO_TRUST_PRUNE`,
-  `DAFT_NO_LOG_CLEAN`, isolated `DAFT_CONFIG_DIR` / `DAFT_DATA_DIR`). The runner
-  core resolves `cwd` from `step.cwd` (it owns the `Step` schema) and hands it
-  to the executor.
+  zero matches outside docstrings. If a change can't be done as an adapter
+  change, widen the port deliberately — don't leak.
+- **One port, not several.** Sandbox provisioning, fixture handling, and step
+  evaluation are candidates for future ports. Extracting them speculatively is
+  the trap; wait for a downstream PR with a concrete reason.
 - **Intentional exception:** `DAFT_MANUAL_TEST_BASE`,
   `DAFT_MANUAL_TEST_EMIT_TIMING`, and `DAFT_MANUAL_TEST_JOBS` are the runner's
-  own config knobs and live in `mod.rs` and `main.rs` (adapter layer). They keep
-  the daft name because renaming the namespace is a spin-out concern, not a
-  coupling concern.
-
-Canonical examples to study before extending the runner:
-`manual_test/executor.rs` (port trait + `CommandOutput`),
-`manual_test/daft_executor.rs` (adapter — env construction + bash spawn),
-`manual_test/runner.rs::tests::FakeExecutor` (in-memory test double — proves the
-runner core compiles and runs without daft at the type level).
-
-When adding a feature to the runner, ask: _could a future #509 sub-task do its
-work without modifying the runner core?_ If a change can't be done as an adapter
-change, widen the port deliberately (a new method, a richer return type) — or
-open a follow-up to move the boundary. Don't leak.
+  own config knobs and live in `mod.rs` / `main.rs`. Renaming the namespace is a
+  spin-out concern, not a coupling concern.
 
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
