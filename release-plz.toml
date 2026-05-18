@@ -32,6 +32,18 @@ changelog_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
 git_only = false
 
+# term-styles is an internal workspace crate - don't release it
+# Use package-specific tag format so release-plz doesn't misattribute the
+# top-level `v{{ version }}` tag (which belongs to daft) to this crate and
+# then fail to find term-styles/ at that historical tag.
+[[package]]
+name = "term-styles"
+release = false
+publish = false
+changelog_update = false
+git_tag_name = "{{ package }}-v{{ version }}"
+git_only = false
+
 [changelog]
 # Use git-cliff for changelog generation (matches cliff.toml)
 commit_parsers = [
