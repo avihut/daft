@@ -8,9 +8,11 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal,
 };
+use std::io::Write;
 use term_styles as styles;
 
 use super::executor::CommandExecutor;
+use super::reporter::{Reporter, StepReport, Verbosity};
 use super::runner::{self, AssertionResult};
 use super::sandbox::Sandbox;
 use super::schema::Scenario;
@@ -96,37 +98,28 @@ fn print_step_header(index: usize, total: usize, step: &super::schema::Step, san
     eprintln!("{}", styles::cyan(&format!("$ {expanded}")));
 }
 
-fn print_assertion_results(results: &[AssertionResult], verbose: bool) {
+fn print_assertion_results(reporter: &dyn Reporter, results: &[AssertionResult], captured: &str) {
     if results.is_empty() {
         return;
     }
-
-    let passed = results.iter().filter(|r| r.passed).count();
-    let failed = results.iter().filter(|r| !r.passed).count();
-
-    eprintln!();
-    if failed == 0 {
-        eprintln!("{} {passed} checks passed", styles::green("✓"));
-        if verbose {
-            for r in results {
-                eprintln!("  {} {}", styles::green("✓"), styles::dim(&r.label));
-            }
-        }
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr);
+    let report = StepReport {
+        expanded_command: None,
+        assertions: results,
+        stdout: if captured.is_empty() {
+            None
+        } else {
+            Some(captured)
+        },
+        stderr: None,
+    };
+    let all_passed = results.iter().all(|r| r.passed);
+    let _ = if all_passed {
+        reporter.step_pass(&mut stderr, &report)
     } else {
-        eprintln!(
-            "{} {}",
-            styles::red("x"),
-            styles::red(&format!("{failed} failed, {passed} passed"))
-        );
-        for r in results {
-            if !r.passed {
-                eprintln!("  {} {}", styles::red("x"), r.label);
-                if let Some(detail) = &r.detail {
-                    eprintln!("    {}", styles::dim(detail));
-                }
-            }
-        }
-    }
+        reporter.step_fail(&mut stderr, &report)
+    };
 }
 
 fn print_prompt(msg: &str) {
@@ -143,13 +136,21 @@ fn print_prompt(msg: &str) {
 /// - `start_step`: 1-based index to jump to (prior steps run silently).
 /// - `loop_count`: when set (requires `start_step`), re-runs the target step
 ///   this many times, resetting the environment between iterations.
+///
+/// Per-step assertion output (the `ok (N checks)` / `FAIL (N failed)` block)
+/// is routed through `reporter` so the per-check icons and capture-on-pass
+/// honor the `-v` / `-vv` ladder; the scenario header and step preview lines
+/// are interactive-specific (they show description + env path + the expanded
+/// command) and stay local.
+#[allow(clippy::too_many_arguments)]
 pub fn run_interactive(
     scenario: &Scenario,
     sandbox: &Sandbox,
     executor: &dyn CommandExecutor,
+    reporter: &dyn Reporter,
+    _verbosity: Verbosity,
     start_step: Option<usize>,
     loop_count: Option<usize>,
-    verbose: bool,
 ) -> Result<()> {
     let total = scenario.steps.len();
     print_scenario_header(scenario, sandbox);
@@ -178,7 +179,7 @@ pub fn run_interactive(
             print_step_header(step_index, total, step, sandbox);
             let (exit_code, output) = runner::run_step_command(step, sandbox, executor)?;
             let results = runner::check_step(step, exit_code, sandbox, Some(&output));
-            print_assertion_results(&results, verbose);
+            print_assertion_results(reporter, &results, &output);
 
             if iteration < count {
                 print_prompt("[Enter] next iteration, [q] quit");
@@ -253,7 +254,7 @@ pub fn run_interactive(
         if run_checks && has_checks {
             let results = runner::check_step(step, exit_code, sandbox, Some(&captured_output));
             let all_passed = results.iter().all(|r| r.passed);
-            print_assertion_results(&results, verbose);
+            print_assertion_results(reporter, &results, &captured_output);
             if all_passed {
                 current += 1;
                 continue;
@@ -277,7 +278,7 @@ pub fn run_interactive(
                 KeyCode::Char('c') if has_checks => {
                     let results =
                         runner::check_step(step, exit_code, sandbox, Some(&captured_output));
-                    print_assertion_results(&results, verbose);
+                    print_assertion_results(reporter, &results, &captured_output);
                 }
                 KeyCode::Char('r') => {
                     eprintln!("{}", styles::dim("(re-running...)"));

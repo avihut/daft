@@ -2,6 +2,7 @@ pub mod daft_executor;
 pub mod executor;
 pub mod interactive;
 pub mod repo_gen;
+pub mod reporter;
 pub mod runner;
 pub mod sandbox;
 pub mod schema;
@@ -142,6 +143,9 @@ struct ScenarioOutcome {
     /// Display name from the YAML (or the file path if parsing failed before
     /// the name could be read).
     name: String,
+    /// Source YAML path. Empty when execution short-circuited before
+    /// `load_scenario` ran successfully.
+    source: PathBuf,
     /// `None` when execution short-circuited before stats were computed
     /// (parse/setup error or panic); `Some(_)` after a normal run.
     result: Option<runner::ScenarioResult>,
@@ -156,7 +160,7 @@ struct ScenarioOutcome {
 struct RunContext<'a> {
     project_root: &'a Path,
     fixtures_dir: &'a Path,
-    verbose: bool,
+    reporter: &'a dyn reporter::Reporter,
     keep: bool,
 }
 
@@ -164,7 +168,7 @@ struct RunContext<'a> {
 pub fn run(
     scenarios: Vec<PathBuf>,
     no_interactive: bool,
-    verbose: bool,
+    verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
     keep: bool,
@@ -231,6 +235,8 @@ pub fn run(
 
     eprintln!();
 
+    let reporter = reporter::reporter_for(verbosity);
+
     // Interactive and --setup-only stay on the streaming serial path. Both
     // have semantics — TTY ownership for interactive, `println!` of work_dir
     // for shell capture in setup-only — that don't fit the buffered worker
@@ -241,9 +247,10 @@ pub fn run(
             &project_root,
             &fixtures_dir,
             &cleanup_set,
+            reporter.as_ref(),
+            verbosity,
             step,
             loop_count,
-            verbose,
             keep,
             setup_only,
             is_interactive,
@@ -255,28 +262,31 @@ pub fn run(
     // scenario and flushed in input order.
     run_parallel(
         &scenario_files,
+        &scenarios_dir,
         &project_root,
         &fixtures_dir,
         &cleanup_set,
-        verbose,
+        reporter.as_ref(),
         keep,
         jobs,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_parallel(
     scenario_files: &[PathBuf],
+    scenarios_dir: &Path,
     project_root: &Path,
     fixtures_dir: &Path,
     cleanup_set: &CleanupSet,
-    verbose: bool,
+    reporter: &dyn reporter::Reporter,
     keep: bool,
     jobs: usize,
 ) -> Result<()> {
     let ctx = RunContext {
         project_root,
         fixtures_dir,
-        verbose,
+        reporter,
         keep,
     };
 
@@ -285,6 +295,7 @@ fn run_parallel(
         .build()
         .context("building rayon thread pool")?;
 
+    let run_start = std::time::Instant::now();
     let mut outcomes: Vec<ScenarioOutcome> = pool.install(|| {
         scenario_files
             .par_iter()
@@ -292,6 +303,7 @@ fn run_parallel(
             .map(|(idx, path)| run_one_scenario(idx, path, &ctx, cleanup_set))
             .collect()
     });
+    let duration = run_start.elapsed();
 
     // Restore input order before printing and aggregating, so output and
     // stats are deterministic regardless of completion order.
@@ -305,59 +317,92 @@ fn run_parallel(
         }
     }
 
-    let mut total_scenarios = 0usize;
-    let mut total_steps = 0usize;
-    let mut total_passed = 0usize;
-    let mut total_failed = 0usize;
-    let mut failed_scenarios: Vec<String> = Vec::new();
-    let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
+    let stats = aggregate_outcomes(&outcomes, scenarios_dir, duration, Some(jobs));
+
+    let total_failed = stats.summary.steps_failed;
+    let error_count = stats.summary.errors.len();
+    {
+        let mut lock = stderr.lock();
+        reporter.run_summary(&mut lock, &stats.summary)?;
+    }
+
+    if error_count > 0 {
+        anyhow::bail!("{} scenario(s) hit a fatal error", error_count);
+    }
+    if total_failed > 0 {
+        anyhow::bail!(
+            "{total_failed} step(s) failed across {} scenarios",
+            stats.summary.scenarios_total
+        );
+    }
+
+    Ok(())
+}
+
+/// Aggregated counters + summary records derived from a sorted outcome list.
+///
+/// Output borrows lifetimes from the `outcomes` slice, so callers must keep
+/// the slice alive until the summary is consumed.
+struct OutcomeStats<'a> {
+    summary: reporter::RunSummary<'a>,
+}
+
+fn aggregate_outcomes<'a>(
+    outcomes: &'a [ScenarioOutcome],
+    scenarios_dir: &Path,
+    duration: std::time::Duration,
+    parallel_jobs: Option<usize>,
+) -> OutcomeStats<'a> {
+    let mut scenarios_total = 0usize;
+    let mut scenarios_passed = 0usize;
+    let mut scenarios_failed = 0usize;
+    let mut steps_total = 0usize;
+    let mut steps_passed = 0usize;
+    let mut steps_failed = 0usize;
+    let mut failed = Vec::new();
+    let mut errors = Vec::new();
 
     for o in outcomes {
-        match (o.result, o.error) {
+        match (&o.result, &o.error) {
             (Some(sr), _) => {
-                total_scenarios += 1;
-                total_steps += sr.steps;
-                total_passed += sr.passed;
-                total_failed += sr.failed;
+                scenarios_total += 1;
+                steps_total += sr.steps;
+                steps_passed += sr.passed;
+                steps_failed += sr.failed;
                 if sr.failed > 0 {
-                    failed_scenarios.push(o.name);
+                    scenarios_failed += 1;
+                    failed.push(reporter::FailedScenarioRecord {
+                        name: o.name.as_str(),
+                        source: o.source.as_path(),
+                        reproduce_token: reporter::reproduce_token(&o.source, scenarios_dir),
+                        failing_step: sr.failing_step.as_ref(),
+                    });
+                } else {
+                    scenarios_passed += 1;
                 }
             }
-            (None, Some(err)) => errors.push((o.name, err)),
+            (None, Some(err)) => errors.push(reporter::ScenarioErrorRecord {
+                name: o.name.as_str(),
+                error: format!("{err:#}"),
+            }),
             (None, None) => {}
         }
     }
 
-    use term_styles as styles;
-
-    eprintln!();
-    eprintln!(
-        "{} scenarios, {} steps, {} passed, {} failed",
-        total_scenarios,
-        total_steps,
-        styles::green(&total_passed.to_string()),
-        if total_failed > 0 {
-            styles::red(&total_failed.to_string())
-        } else {
-            "0".into()
-        }
-    );
-    for name in &failed_scenarios {
-        eprintln!("{} {}", styles::red("x"), name);
+    OutcomeStats {
+        summary: reporter::RunSummary {
+            scenarios_total,
+            scenarios_passed,
+            scenarios_failed,
+            steps_total,
+            steps_passed,
+            steps_failed,
+            duration,
+            parallel_jobs,
+            failed,
+            errors,
+        },
     }
-    for (name, err) in &errors {
-        eprintln!("{} {}: {err:#}", styles::red("ERROR"), name);
-    }
-    eprintln!();
-
-    if !errors.is_empty() {
-        anyhow::bail!("{} scenario(s) hit a fatal error", errors.len());
-    }
-    if total_failed > 0 {
-        anyhow::bail!("{total_failed} step(s) failed across {total_scenarios} scenarios");
-    }
-
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,9 +411,10 @@ fn run_serial(
     project_root: &Path,
     fixtures_dir: &Path,
     cleanup_set: &CleanupSet,
+    reporter: &dyn reporter::Reporter,
+    verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
-    verbose: bool,
     keep: bool,
     setup_only: bool,
     is_interactive: bool,
@@ -411,15 +457,23 @@ fn run_serial(
         }
 
         if is_interactive {
-            interactive::run_interactive(&scenario, &sb, &executor, step, loop_count, verbose)?;
+            interactive::run_interactive(
+                &scenario, &sb, &executor, reporter, verbosity, step, loop_count,
+            )?;
         }
 
+        let mut stderr = std::io::stderr().lock();
         if keep {
-            eprintln!("  Test environment kept at: {}", sb.base_dir.display());
+            reporter.cleanup_note(
+                &mut stderr,
+                &format!("Test environment kept at: {}", sb.base_dir.display()),
+            )?;
         } else {
             match sb.cleanup() {
-                Ok(()) => eprintln!("Cleaned up test environment."),
-                Err(e) => eprintln!("  Warning: cleanup failed: {e}"),
+                Ok(()) => reporter.cleanup_note(&mut stderr, "Cleaned up test environment.")?,
+                Err(e) => {
+                    reporter.cleanup_note(&mut stderr, &format!("Warning: cleanup failed: {e}"))?
+                }
             }
         }
     }
@@ -434,12 +488,19 @@ fn load_scenario(path: &Path, fixtures_dir: &Path) -> Result<schema::Scenario> {
         .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
     let repos = resolve_repos(raw.repos, fixtures_dir)
         .with_context(|| format!("Failed to resolve repos in: {}", path.display()))?;
+    // Canonicalize so `reproduce_token` can reliably strip the absolute
+    // scenarios_dir prefix regardless of how the path was spelled on the
+    // command line (relative, absolute, `..`-laden). Fall back to the raw
+    // path if canonicalize fails for any reason — we'd rather report a
+    // funny-looking reproduce token than refuse to load the scenario.
+    let source_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Ok(schema::Scenario {
         name: raw.name,
         description: raw.description,
         repos,
         env: raw.env,
         steps: raw.steps,
+        source_path,
     })
 }
 
@@ -455,6 +516,7 @@ fn run_one_scenario(
             return ScenarioOutcome {
                 index,
                 name: path.display().to_string(),
+                source: path.to_path_buf(),
                 result: None,
                 output: Vec::new(),
                 error: Some(e),
@@ -463,6 +525,7 @@ fn run_one_scenario(
     };
 
     let name = scenario.name.clone();
+    let source = scenario.source_path.clone();
 
     // `catch_unwind` so a single panicking scenario doesn't poison the rayon
     // pool — the worker reports the panic and the pool keeps draining the
@@ -475,6 +538,7 @@ fn run_one_scenario(
         Ok(Ok((sr, buf))) => ScenarioOutcome {
             index,
             name,
+            source,
             result: Some(sr),
             output: buf,
             error: None,
@@ -482,6 +546,7 @@ fn run_one_scenario(
         Ok(Err(err)) => ScenarioOutcome {
             index,
             name,
+            source,
             result: None,
             output: Vec::new(),
             error: Some(err),
@@ -491,6 +556,7 @@ fn run_one_scenario(
             ScenarioOutcome {
                 index,
                 name,
+                source,
                 result: None,
                 output: Vec::new(),
                 error: Some(anyhow::anyhow!("scenario panicked: {msg}")),
@@ -520,7 +586,7 @@ fn run_one_scenario_inner(
 
     let mut buf: Vec<u8> = Vec::new();
     let scenario_start = std::time::Instant::now();
-    let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.verbose, &mut buf)?;
+    let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.reporter, &mut buf)?;
     let elapsed_ms = scenario_start.elapsed().as_millis();
 
     // Opt-in per-scenario timing for the bench harness. Lines are
@@ -535,15 +601,18 @@ fn run_one_scenario_inner(
     }
 
     if ctx.keep {
-        writeln!(
+        ctx.reporter.cleanup_note(
             &mut buf,
-            "  Test environment kept at: {}",
-            sb.base_dir.display()
+            &format!("Test environment kept at: {}", sb.base_dir.display()),
         )?;
     } else {
         match sb.cleanup() {
-            Ok(()) => writeln!(&mut buf, "Cleaned up test environment.")?,
-            Err(e) => writeln!(&mut buf, "  Warning: cleanup failed: {e}")?,
+            Ok(()) => ctx
+                .reporter
+                .cleanup_note(&mut buf, "Cleaned up test environment.")?,
+            Err(e) => ctx
+                .reporter
+                .cleanup_note(&mut buf, &format!("Warning: cleanup failed: {e}"))?,
         }
     }
 

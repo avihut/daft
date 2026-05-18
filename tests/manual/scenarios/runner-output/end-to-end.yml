@@ -1,0 +1,37 @@
+name: runner-output regression smoke
+description: |
+  End-to-end smoke test for issue #518 output improvements. Shells out to
+  `cargo run -p xtask -- manual-test` against `_fixtures/fail.yml` (an
+  intentionally-failing fixture invisible to recursive discovery because
+  the discoverer only descends one level) and asserts that the new failure
+  output appears on stderr.
+
+  Per-byte formatting fidelity is owned by the Rust golden tests in
+  xtask/src/manual_test/reporter/tests.rs; this scenario only verifies the
+  wiring — that the reporter is actually plumbed through the runner, the
+  CLI, and the summary block.
+
+steps:
+  - name: invoke xtask against the intentional-failure fixture
+    run: |
+      cd "$BINARY_DIR/../.." && \
+        NO_COLOR=1 cargo run --quiet --package xtask -- \
+          manual-test --no-interactive \
+          tests/manual/scenarios/runner-output/_fixtures/fail.yml \
+          2>&1 || true
+    expect:
+      exit_code: 0
+      # Substrings deliberately avoid spanning ANSI escape boundaries
+      # (term_styles always emits color codes today, even with NO_COLOR set —
+      # tracked separately from this issue). Pick substrings that fall between
+      # color spans.
+      output_contains:
+        - "runner-output fixture (intentional failure)"
+        - "Failed scenarios:"
+        - "step 2/2  step that fails"
+        - "Exit code: expected 0, got 1"
+        - "Scenarios:  "
+        - " passed, "
+        - " failed   (1 total)"
+        - "Reproduce:"
+        - "runner-output:_fixtures:fail"

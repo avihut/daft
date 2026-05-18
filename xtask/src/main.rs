@@ -368,9 +368,15 @@ enum Commands {
         #[arg(long, alias = "ci")]
         no_interactive: bool,
 
-        /// Show verbose output (full check details, command output)
-        #[arg(short, long)]
-        verbose: bool,
+        /// Increase verbosity (-v for per-check icons + captured output on pass,
+        /// -vv for expanded commands + untruncated captured output).
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+
+        /// Suppress per-step output; print only scenario PASS/FAIL plus the
+        /// final summary (CI green-path, benches).
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
 
         /// Jump to a specific step number (1-based)
         #[arg(long)]
@@ -431,6 +437,7 @@ fn main() -> Result<()> {
             scenarios,
             no_interactive,
             verbose,
+            quiet,
             step,
             loop_count,
             keep,
@@ -442,10 +449,11 @@ fn main() -> Result<()> {
             jobs,
         } => {
             let jobs = resolve_jobs(jobs, parallel)?;
+            let verbosity = manual_test::reporter::Verbosity::from_flags(verbose, quiet);
             manual_test::run(
                 scenarios,
                 no_interactive,
-                verbose,
+                verbosity,
                 step,
                 loop_count,
                 keep,

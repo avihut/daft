@@ -381,6 +381,7 @@ mod tests {
             repos: Vec::new(),
             env: HashMap::new(),
             steps: Vec::new(),
+            source_path: std::path::PathBuf::new(),
         };
 
         let mut paths = Vec::new();

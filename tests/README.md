@@ -51,6 +51,23 @@ mise run test:manual -- checkout:basic
 mise run test:manual -- --list
 ```
 
+### Verbosity ladder
+
+Per #518, the runner output has four levels (`-q` / default / `-v` / `-vv`):
+
+| Flag   | Per-step lines | Captured output on fail | Captured output on pass | Expanded command |
+| ------ | -------------- | ----------------------- | ----------------------- | ---------------- |
+| `-q`   | suppressed     | summary block only      | no                      | no               |
+| (none) | shown          | first 20 lines          | no                      | no               |
+| `-v`   | + check icons  | first 20 lines          | first 20 lines          | yes              |
+| `-vv`  | + check icons  | full, no line cap       | full, no line cap       | yes              |
+
+Each scenario ends with a `✓` / `✗` footer. At the end of a run the summary
+shows separate `Scenarios:` / `Steps:` lines, `Duration:`, an optional
+`parallel jobs: N` suffix, a `Failed scenarios:` block with file paths and
+failing-step detail, and a `Reproduce:` block with one
+`mise run test:manual -- --ci <token>` per failure.
+
 ## Benchmarks
 
 ```bash
