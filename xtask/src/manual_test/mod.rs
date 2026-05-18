@@ -233,7 +233,9 @@ pub fn run(
 
     let cleanup_set = setup_cleanup_handler(keep);
 
-    eprintln!();
+    // No leading eprintln! here — the pretty reporter's scenario_header
+    // owns the inter-scenario blank line, including the one before the very
+    // first scenario.
 
     let reporter = reporter::reporter_for(verbosity);
 

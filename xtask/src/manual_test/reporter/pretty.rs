@@ -50,6 +50,10 @@ impl PrettyReporter {
 
 impl Reporter for PrettyReporter {
     fn scenario_header(&self, out: &mut dyn Write, scenario: &Scenario) -> io::Result<()> {
+        // Leading blank separates this scenario block from the previous one
+        // (cleanup note + footer attach tight to the scenario above; the
+        // breathing room lives here, owned by the next scenario's header).
+        writeln!(out)?;
         writeln!(out, "{}", styles::cyan(&scenario.name))?;
         if !scenario.source_path.as_os_str().is_empty() {
             writeln!(
@@ -136,16 +140,12 @@ impl Reporter for PrettyReporter {
         scenario: &Scenario,
         status: ScenarioStatus,
     ) -> io::Result<()> {
+        // No trailing blank: the cleanup_note (or next scenario_header)
+        // attaches directly so the footer reads as part of its scenario block.
         match status {
-            ScenarioStatus::Pass => {
-                writeln!(out, "{} {}", styles::green("✓"), &scenario.name)?;
-            }
-            ScenarioStatus::Fail => {
-                writeln!(out, "{} {}", styles::red("✗"), &scenario.name)?;
-            }
+            ScenarioStatus::Pass => writeln!(out, "{} {}", styles::green("✓"), &scenario.name),
+            ScenarioStatus::Fail => writeln!(out, "{} {}", styles::red("✗"), &scenario.name),
         }
-        writeln!(out)?;
-        Ok(())
     }
 
     fn cleanup_note(&self, out: &mut dyn Write, msg: &str) -> io::Result<()> {

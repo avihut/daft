@@ -247,6 +247,28 @@ fn pretty_default_capture_truncates_with_hint() {
 }
 
 #[test]
+fn pretty_scenario_block_spacing_attaches_cleanup_to_its_scenario() {
+    // The cleanup note should sit flush against the scenario footer; the
+    // blank line that separates scenarios belongs to the NEXT scenario's
+    // header. Regression test for the spacing fix following #518.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc1 = scenario("first", "tests/manual/scenarios/first.yml", vec![]);
+    let sc2 = scenario("second", "tests/manual/scenarios/second.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_header(buf, &sc1).unwrap();
+        r.scenario_footer(buf, &sc1, ScenarioStatus::Pass).unwrap();
+        r.cleanup_note(buf, "Cleaned up test environment.").unwrap();
+        r.scenario_header(buf, &sc2).unwrap();
+        r.scenario_footer(buf, &sc2, ScenarioStatus::Pass).unwrap();
+        r.cleanup_note(buf, "Cleaned up test environment.").unwrap();
+    });
+    assert!(
+        out.contains("✓ first\nCleaned up test environment.\n\nsecond"),
+        "expected footer + cleanup tight, blank before next header; got:\n{out}"
+    );
+}
+
+#[test]
 fn pretty_scenario_footer_pass_and_fail() {
     let r = PrettyReporter::new(Verbosity::Default);
     let sc = scenario(
