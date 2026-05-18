@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.14.0](https://github.com/avihut/daft/compare/v1.13.0...v1.14.0) - 2026-05-18
+
+### Features
+
+- add top-level -C <path> flag (git -C semantics) ([#523](https://github.com/avihut/daft/pull/523))
+
+### Miscellaneous
+
+- *(release-plz)* give term-styles its own tag namespace ([#528](https://github.com/avihut/daft/pull/528))
+
+### Performance
+
+- *(test-runner)* parallelize YAML scenario execution ([#515](https://github.com/avihut/daft/pull/515))
+
+### Refactoring
+
+- *(test-runner)* introduce CommandExecutor port at runner/daft seam ([#521](https://github.com/avihut/daft/pull/521))
+
 ## [1.13.0](https://github.com/avihut/daft/compare/v1.12.0...v1.13.0) - 2026-05-16
 
 ### Bug Fixes
