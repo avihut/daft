@@ -11,6 +11,7 @@
 //! | `VeryVerbose` | yes            | yes                | yes (untrunc.)  | full, no line cap      | yes              |
 
 use std::io::{self, Write};
+use std::time::Duration;
 
 use term_styles as styles;
 
@@ -18,6 +19,12 @@ use super::{Reporter, RunSummary, ScenarioStatus, StepReport, Verbosity};
 use crate::manual_test::schema::{Scenario, Step};
 
 const CAPTURE_LINE_CAP: usize = 20;
+
+/// Scenarios slower than this earn a `(slow)` annotation on their footer.
+/// Picked empirically — most scenarios finish in <1s, the slowest tend to be
+/// the multi-clone fixtures around 3–4s, and anything above 5s is a real
+/// outlier worth surfacing.
+const SLOW_THRESHOLD: Duration = Duration::from_secs(5);
 
 pub struct PrettyReporter {
     verbosity: Verbosity,
@@ -139,13 +146,16 @@ impl Reporter for PrettyReporter {
         out: &mut dyn Write,
         scenario: &Scenario,
         status: ScenarioStatus,
+        duration: Duration,
     ) -> io::Result<()> {
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
-        match status {
-            ScenarioStatus::Pass => writeln!(out, "{} {}", styles::green("✓"), &scenario.name),
-            ScenarioStatus::Fail => writeln!(out, "{} {}", styles::red("✗"), &scenario.name),
-        }
+        let icon = match status {
+            ScenarioStatus::Pass => styles::green("✓"),
+            ScenarioStatus::Fail => styles::red("✗"),
+        };
+        let suffix = scenario_duration_suffix(duration);
+        writeln!(out, "{} {}{}", icon, &scenario.name, suffix)
     }
 
     fn cleanup_note(&self, out: &mut dyn Write, msg: &str) -> io::Result<()> {
@@ -157,55 +167,57 @@ impl Reporter for PrettyReporter {
     }
 }
 
-/// Write the captured stdout/stderr block, honoring an optional line cap.
+/// Write captured stdout and stderr as two labeled blocks, honoring an
+/// optional per-stream line cap. Keeping the streams separate matches how
+/// other test runners (Vitest, pytest) surface failure detail — the reader
+/// can immediately tell whether the noise came from the program's normal
+/// output or its error stream.
 fn write_captured(
     out: &mut dyn Write,
     report: &StepReport<'_>,
     cap: Option<usize>,
 ) -> io::Result<()> {
-    let combined = combine_captured(report.stdout, report.stderr);
-    if combined.is_empty() {
+    write_captured_section(out, "stdout", report.stdout, cap)?;
+    write_captured_section(out, "stderr", report.stderr, cap)?;
+    Ok(())
+}
+
+/// Write a single captured stream as a `--- {label} ---` block with the given
+/// line cap. No-op when the stream is missing or empty after trimming.
+fn write_captured_section(
+    out: &mut dyn Write,
+    label: &str,
+    content: Option<&str>,
+    cap: Option<usize>,
+) -> io::Result<()> {
+    let trimmed = match content {
+        Some(s) => s.trim(),
+        None => return Ok(()),
+    };
+    if trimmed.is_empty() {
         return Ok(());
     }
-    writeln!(out, "  {}", styles::dim("--- captured output ---"))?;
-    let mut total_lines = 0usize;
-    let line_iter = combined.lines();
+    writeln!(out, "  {}", styles::dim(&format!("--- {label} ---")))?;
     let limit = cap.unwrap_or(usize::MAX);
-    for line in line_iter.take(limit) {
+    let mut printed = 0usize;
+    for line in trimmed.lines().take(limit) {
         writeln!(out, "  {}", styles::dim(line))?;
-        total_lines += 1;
+        printed += 1;
     }
     if let Some(cap) = cap {
-        let actual = combined.lines().count();
+        let actual = trimmed.lines().count();
         if actual > cap {
             writeln!(
                 out,
                 "  {}",
                 styles::dim(&format!(
                     "... {} more lines truncated (re-run with -vv for full output)",
-                    actual - total_lines
+                    actual - printed
                 ))
             )?;
         }
     }
     Ok(())
-}
-
-fn combine_captured(stdout: Option<&str>, stderr: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    if let Some(s) = stdout {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            parts.push(trimmed);
-        }
-    }
-    if let Some(s) = stderr {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            parts.push(trimmed);
-        }
-    }
-    parts.join("\n")
 }
 
 /// Format the end-of-run summary block.
@@ -226,23 +238,28 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
     writeln!(out)?;
 
     if !s.failed.is_empty() {
-        writeln!(out, "{}", styles::red("Failed scenarios:"))?;
+        writeln!(out, "{}", failed_scenarios_banner(s.failed.len()))?;
         writeln!(out)?;
-        for f in &s.failed {
+        for (idx, f) in s.failed.iter().enumerate() {
             writeln!(
                 out,
-                "  {} {}   {}",
+                "  {}) {} {}   {}{}",
+                idx + 1,
                 styles::red("✗"),
                 f.name,
-                styles::dim(&f.source.display().to_string())
+                styles::dim(&f.source.display().to_string()),
+                scenario_duration_suffix(f.duration),
             )?;
             if let Some(failing) = f.failing_step {
+                let citation = step_citation(f.source, failing.line);
                 writeln!(
                     out,
-                    "      step {}/{}  {}",
+                    "      {} step {}/{}  {}{}",
+                    styles::red("❯"),
                     failing.index + 1,
                     failing.total,
-                    failing.step_name
+                    failing.step_name,
+                    citation,
                 )?;
                 for a in &failing.failed_assertions {
                     writeln!(out, "      {} {}", styles::red("✗"), a.label)?;
@@ -252,12 +269,8 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
                         }
                     }
                 }
-                if !failing.captured_output.is_empty() {
-                    writeln!(out, "      {}", styles::dim("--- captured output ---"))?;
-                    for line in failing.captured_output.lines() {
-                        writeln!(out, "      {line}")?;
-                    }
-                }
+                write_summary_capture(out, "stdout", &failing.captured_stdout)?;
+                write_summary_capture(out, "stderr", &failing.captured_stderr)?;
             }
             writeln!(out)?;
         }
@@ -304,6 +317,84 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
     }
     writeln!(out)?;
 
+    Ok(())
+}
+
+/// Trailing footer suffix for scenario duration. Returns an empty string for
+/// `Duration::ZERO` (interactive runner sentinel — see `Reporter::scenario_footer`),
+/// otherwise `"  142ms"` (or `"  2.3s  (slow)"` over [`SLOW_THRESHOLD`]).
+///
+/// The leading double-space is intentional: it separates the duration from
+/// the scenario name without competing with the leading icon's color span.
+pub(super) fn scenario_duration_suffix(d: Duration) -> String {
+    if d.is_zero() {
+        return String::new();
+    }
+    let core = format_short_duration(d);
+    if d >= SLOW_THRESHOLD {
+        format!("  {core}  {}", styles::yellow("(slow)"))
+    } else {
+        format!("  {}", styles::dim(&core))
+    }
+}
+
+/// Short-form duration formatter used in footers and the failures block.
+///
+/// - `< 1s` → `"142ms"`
+/// - `< 60s` → `"2.3s"`
+/// - `>= 60s` → `"1m04s"`
+///
+/// Tied to the `(slow)` annotation rule above — keep the breakpoints visually
+/// distinct so the eye can group fast/slow/very-slow without reading the units.
+pub(super) fn format_short_duration(d: Duration) -> String {
+    let total_ms = d.as_millis();
+    if total_ms < 1_000 {
+        format!("{total_ms}ms")
+    } else if d.as_secs() < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else {
+        let total = d.as_secs();
+        let minutes = total / 60;
+        let seconds = total % 60;
+        format!("{minutes}m{seconds:02}s")
+    }
+}
+
+/// Render `   at file.yml:N` next to the failing-step line, using just the
+/// source file's basename — the full path appears on the line above. Returns
+/// an empty string when no line number is available (synthetic scenarios in
+/// tests, or pre-Phase-3 cached `FailingStep` records).
+fn step_citation(source: &std::path::Path, line: Option<usize>) -> String {
+    let line = match line {
+        Some(n) => n,
+        None => return String::new(),
+    };
+    let basename = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source.display().to_string());
+    format!("   {}", styles::dim(&format!("at {basename}:{line}")))
+}
+
+/// Render the `⎯⎯⎯ Failed Scenarios (N) ⎯⎯⎯` section banner above the
+/// failures block. Fixed-width (no terminal-width probing) so golden tests
+/// stay deterministic across environments.
+fn failed_scenarios_banner(failure_count: usize) -> String {
+    const RULE: &str = "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯";
+    styles::red(&format!("{RULE} Failed Scenarios ({failure_count}) {RULE}"))
+}
+
+/// Render a single captured stream inside the failed-scenarios summary block.
+/// Indentation is six spaces (matching the surrounding step-detail block); the
+/// label uses dim styling to stay subordinate to the assertion lines above it.
+fn write_summary_capture(out: &mut dyn Write, label: &str, content: &str) -> io::Result<()> {
+    if content.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "      {}", styles::dim(&format!("--- {label} ---")))?;
+    for line in content.lines() {
+        writeln!(out, "      {line}")?;
+    }
     Ok(())
 }
 

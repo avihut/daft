@@ -85,6 +85,7 @@ fn step(name: &str, run: &str) -> Step {
         run: run.to_string(),
         cwd: None,
         expect: Some(Expectations::default()),
+        line: None,
     }
 }
 
@@ -201,8 +202,61 @@ fn pretty_default_step_fail_shows_failed_assertions_and_capture() {
     assert!(out.contains("expected 0, got 1"));
     assert!(out.contains("expected: OK_LOG_DELETED"));
     assert!(out.contains("actual:   ASSERTION_FAILED: ..."));
-    assert!(out.contains("--- captured output ---"));
+    assert!(out.contains("--- stdout ---"));
     assert!(out.contains("ASSERTION_FAILED: silent-ok-job log was not deleted"));
+    // stderr was empty for this fixture — no stderr block should appear.
+    assert!(!out.contains("--- stderr ---"));
+}
+
+#[test]
+fn pretty_step_fail_renders_stdout_and_stderr_in_separate_blocks() {
+    // Phase 1.4: per-step captured output is split into `--- stdout ---` and
+    // `--- stderr ---` blocks so the reader can immediately tell which stream
+    // the noise came from.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let s = step("noisy fail", "do-it");
+    let assertions = vec![assertion(
+        false,
+        "Exit code: expected 0, got 1",
+        Some("expected 0, got 1"),
+    )];
+    let report = StepReport {
+        expanded_command: None,
+        assertions: &assertions,
+        stdout: Some("normal-output-line\n"),
+        stderr: Some("warning: something\nfatal: it broke\n"),
+    };
+    let out = render(|buf| {
+        r.step_start(buf, 0, 1, &s).unwrap();
+        r.step_fail(buf, &report).unwrap();
+    });
+    let stdout_idx = out.find("--- stdout ---").expect("stdout block emitted");
+    let stderr_idx = out.find("--- stderr ---").expect("stderr block emitted");
+    assert!(stdout_idx < stderr_idx, "stdout block precedes stderr");
+    assert!(out.contains("normal-output-line"));
+    assert!(out.contains("warning: something"));
+    assert!(out.contains("fatal: it broke"));
+}
+
+#[test]
+fn pretty_step_fail_omits_stream_block_when_empty() {
+    let r = PrettyReporter::new(Verbosity::Default);
+    let s = step("stderr-only fail", "do-it");
+    let assertions = vec![assertion(
+        false,
+        "Exit code: expected 0, got 1",
+        Some("expected 0, got 1"),
+    )];
+    let report = StepReport {
+        expanded_command: None,
+        assertions: &assertions,
+        stdout: Some("   \n"), // whitespace-only — trims to empty
+        stderr: Some("real stderr content\n"),
+    };
+    let out = render(|buf| r.step_fail(buf, &report).unwrap());
+    assert!(!out.contains("--- stdout ---"));
+    assert!(out.contains("--- stderr ---"));
+    assert!(out.contains("real stderr content"));
 }
 
 #[test]
@@ -256,10 +310,12 @@ fn pretty_scenario_block_spacing_attaches_cleanup_to_its_scenario() {
     let sc2 = scenario("second", "tests/manual/scenarios/second.yml", vec![]);
     let out = render(|buf| {
         r.scenario_header(buf, &sc1).unwrap();
-        r.scenario_footer(buf, &sc1, ScenarioStatus::Pass).unwrap();
+        r.scenario_footer(buf, &sc1, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap();
         r.cleanup_note(buf, "Cleaned up test environment.").unwrap();
         r.scenario_header(buf, &sc2).unwrap();
-        r.scenario_footer(buf, &sc2, ScenarioStatus::Pass).unwrap();
+        r.scenario_footer(buf, &sc2, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap();
         r.cleanup_note(buf, "Cleaned up test environment.").unwrap();
     });
     assert!(
@@ -276,15 +332,88 @@ fn pretty_scenario_footer_pass_and_fail() {
         "tests/manual/scenarios/hooks/silent-job-logs.yml",
         vec![],
     );
-    let pass = render(|buf| r.scenario_footer(buf, &sc, ScenarioStatus::Pass).unwrap());
+    let pass = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap()
+    });
     assert!(pass.starts_with("✓ hooks:silent-job-logs"));
-    let fail = render(|buf| r.scenario_footer(buf, &sc, ScenarioStatus::Fail).unwrap());
+    let fail = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Fail, Duration::ZERO)
+            .unwrap()
+    });
     assert!(fail.starts_with("✗ hooks:silent-job-logs"));
 }
 
 // ---------------------------------------------------------------------------
 // PrettyReporter — run_summary
 // ---------------------------------------------------------------------------
+
+#[test]
+fn pretty_footer_renders_duration_in_ms() {
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("fast", "tests/manual/scenarios/fast.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::from_millis(142))
+            .unwrap()
+    });
+    assert!(out.contains("✓ fast"));
+    assert!(out.contains("142ms"));
+    // Fast scenarios must not carry the (slow) annotation.
+    assert!(!out.contains("(slow)"));
+}
+
+#[test]
+fn pretty_footer_renders_seconds_with_decimal() {
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("medium", "tests/manual/scenarios/medium.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::from_millis(2_300))
+            .unwrap()
+    });
+    assert!(out.contains("2.3s"));
+    assert!(!out.contains("(slow)"));
+}
+
+#[test]
+fn pretty_footer_marks_slow_scenarios() {
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("slowpoke", "tests/manual/scenarios/slowpoke.yml", vec![]);
+    let out = render(|buf| {
+        // SLOW_THRESHOLD is 5s — anything at or beyond gets the annotation.
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::from_secs(7))
+            .unwrap()
+    });
+    assert!(out.contains("7.0s"));
+    assert!(out.contains("(slow)"));
+}
+
+#[test]
+fn pretty_footer_suppresses_suffix_for_zero_duration() {
+    // Interactive runner passes Duration::ZERO because wall-clock would
+    // include time the user spent at the prompt — meaningless as a perf
+    // signal, so the reporter omits the duration entirely.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("interactive", "tests/manual/scenarios/i.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap()
+    });
+    // The line should be just "✓ interactive\n" — no trailing duration.
+    let line = out.trim_end_matches('\n');
+    assert_eq!(line, "✓ interactive");
+}
+
+#[test]
+fn quiet_footer_renders_duration_and_slow_annotation() {
+    let r = QuietReporter::new();
+    let sc = scenario("slow-quiet", "tests/manual/scenarios/sq.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::from_secs(6))
+            .unwrap()
+    });
+    assert!(out.contains("6.0s"));
+    assert!(out.contains("(slow)"));
+}
 
 #[test]
 fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
@@ -294,6 +423,7 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
         index: 3,
         total: 6,
         step_name: "silent-ok-job log deleted".to_string(),
+        line: Some(23),
         failed_assertions: vec![
             assertion(false, "Exit code: expected 0, got 1", Some("expected 0, got 1")),
             assertion(
@@ -302,12 +432,14 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
                 Some("expected: OK_LOG_DELETED\nactual:   ASSERTION_FAILED: silent-ok-job ..."),
             ),
         ],
-        captured_output: "ok_logs_found:\n/home/runner/.../silent-ok-job/output.jsonl\nASSERTION_FAILED: silent-ok-job log was not deleted: /home/runner/.../...".to_string(),
+        captured_stdout: "ok_logs_found:\n/home/runner/.../silent-ok-job/output.jsonl\nASSERTION_FAILED: silent-ok-job log was not deleted: /home/runner/.../...".to_string(),
+        captured_stderr: String::new(),
     };
     let failed = vec![FailedScenarioRecord {
         name: "hooks:silent-job-logs",
         source: &source,
         reproduce_token: "hooks:silent-job-logs".to_string(),
+        duration: Duration::from_millis(842),
         failing_step: Some(&failing),
     }];
     let summary = RunSummary {
@@ -323,13 +455,21 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
         errors: vec![],
     };
     let out = render(|buf| r.run_summary(buf, &summary).unwrap());
-    assert!(out.contains("Failed scenarios:"));
-    assert!(out.contains("✗ hooks:silent-job-logs"));
+    // Phase 1.2: banner with rule chars + failure count.
+    assert!(out.contains("Failed Scenarios (1)"));
+    assert!(out.contains("⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"));
+    // Phase 1.3: numbered entry.
+    assert!(out.contains("1) ✗ hooks:silent-job-logs"));
     assert!(out.contains("tests/manual/scenarios/hooks/silent-job-logs.yml"));
-    assert!(out.contains("step 4/6  silent-ok-job log deleted"));
+    // Phase 1.5: ❯ marker on the failing-step line.
+    assert!(out.contains("❯ step 4/6  silent-ok-job log deleted"));
+    // Phase 3.3: source-line citation uses the file basename + 1-indexed line.
+    assert!(out.contains("at silent-job-logs.yml:23"));
     assert!(out.contains("✗ Exit code: expected 0, got 1"));
     assert!(out.contains("expected: OK_LOG_DELETED"));
     assert!(out.contains("ASSERTION_FAILED: silent-ok-job log was not deleted"));
+    // Captured output is split into stdout/stderr blocks.
+    assert!(out.contains("--- stdout ---"));
     assert!(out.contains("Scenarios:  570 passed, 2 failed   (572 total)"));
     assert!(out.contains("Steps:      2191 passed, 2 failed   (2193 total)"));
     assert!(out.contains("Duration:   01:04 (parallel jobs: 4)"));
@@ -353,12 +493,50 @@ fn pretty_run_summary_clean_when_all_passed() {
         errors: vec![],
     };
     let out = render(|buf| r.run_summary(buf, &summary).unwrap());
-    assert!(!out.contains("Failed scenarios:"));
+    assert!(!out.contains("Failed Scenarios"));
     assert!(!out.contains("Reproduce:"));
     assert!(out.contains("Scenarios:  5 passed, 0 failed   (5 total)"));
     assert!(out.contains("Steps:      20 passed, 0 failed   (20 total)"));
     assert!(out.contains("Duration:   00:07"));
     assert!(!out.contains("parallel jobs"));
+}
+
+#[test]
+fn pretty_run_summary_numbers_multiple_failures() {
+    let r = PrettyReporter::new(Verbosity::Default);
+    let src_a = PathBuf::from("tests/manual/scenarios/a.yml");
+    let src_b = PathBuf::from("tests/manual/scenarios/b.yml");
+    let summary = RunSummary {
+        scenarios_total: 3,
+        scenarios_passed: 1,
+        scenarios_failed: 2,
+        steps_total: 6,
+        steps_passed: 4,
+        steps_failed: 2,
+        duration: Duration::from_secs(3),
+        parallel_jobs: None,
+        failed: vec![
+            FailedScenarioRecord {
+                name: "alpha",
+                source: &src_a,
+                reproduce_token: "a".to_string(),
+                duration: Duration::from_millis(120),
+                failing_step: None,
+            },
+            FailedScenarioRecord {
+                name: "beta",
+                source: &src_b,
+                reproduce_token: "b".to_string(),
+                duration: Duration::from_millis(450),
+                failing_step: None,
+            },
+        ],
+        errors: vec![],
+    };
+    let out = render(|buf| r.run_summary(buf, &summary).unwrap());
+    assert!(out.contains("Failed Scenarios (2)"));
+    assert!(out.contains("1) ✗ alpha"));
+    assert!(out.contains("2) ✗ beta"));
 }
 
 #[test]
@@ -414,7 +592,10 @@ fn quiet_still_emits_scenario_footer() {
         "tests/manual/scenarios/hooks/silent-job-logs.yml",
         vec![],
     );
-    let out = render(|buf| r.scenario_footer(buf, &sc, ScenarioStatus::Pass).unwrap());
+    let out = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap()
+    });
     assert!(out.starts_with("✓ hooks:silent-job-logs"));
 }
 
@@ -434,13 +615,14 @@ fn quiet_run_summary_matches_pretty() {
             name: "demo",
             source: Path::new("tests/manual/scenarios/demo.yml"),
             reproduce_token: "demo".to_string(),
+            duration: Duration::from_secs(1),
             failing_step: None,
         }],
         errors: vec![],
     };
     let out = render(|buf| r.run_summary(buf, &summary).unwrap());
-    assert!(out.contains("Failed scenarios:"));
-    assert!(out.contains("✗ demo"));
+    assert!(out.contains("Failed Scenarios (1)"));
+    assert!(out.contains("1) ✗ demo"));
     assert!(out.contains("Scenarios:  0 passed, 1 failed   (1 total)"));
     assert!(out.contains("Reproduce:"));
     assert!(out.contains("mise run test:manual -- --ci demo"));

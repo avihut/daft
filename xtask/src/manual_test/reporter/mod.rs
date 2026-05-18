@@ -81,10 +81,18 @@ pub struct FailingStep {
     pub total: usize,
     /// Step name (cloned to detach lifetimes from per-scenario allocations).
     pub step_name: String,
+    /// 1-indexed source line where the step begins in the scenario YAML.
+    /// `None` for synthetic/test scenarios that aren't loaded from a file.
+    /// Rendered as `at file.yml:N` next to the failing-step line.
+    pub line: Option<usize>,
     /// Failed assertions only.
     pub failed_assertions: Vec<AssertionResult>,
-    /// Combined captured stdout/stderr at the time of failure.
-    pub captured_output: String,
+    /// Captured stdout at the time of failure (trimmed of trailing whitespace).
+    /// Rendered as a separate labeled block in the summary so the reader can
+    /// distinguish the program's normal output from its error stream.
+    pub captured_stdout: String,
+    /// Captured stderr at the time of failure (trimmed of trailing whitespace).
+    pub captured_stderr: String,
 }
 
 /// One row in the failed-scenarios block of the summary.
@@ -92,6 +100,9 @@ pub struct FailedScenarioRecord<'a> {
     pub name: &'a str,
     pub source: &'a Path,
     pub reproduce_token: String,
+    /// Wall-clock duration of the scenario's step phase. Rendered next to the
+    /// source path so the reader can spot slow failures at a glance.
+    pub duration: Duration,
     pub failing_step: Option<&'a FailingStep>,
 }
 
@@ -142,11 +153,17 @@ pub trait Reporter: Send + Sync {
     fn step_fail(&self, out: &mut dyn Write, report: &StepReport<'_>) -> io::Result<()>;
 
     /// Called once at the end of each scenario.
+    ///
+    /// `duration` is the wall-clock time spent in the scenario's step phase.
+    /// Passing `Duration::ZERO` suppresses the duration suffix — used by the
+    /// interactive runner, where wall-clock includes time the user spent at
+    /// the prompt and would lie about scenario performance.
     fn scenario_footer(
         &self,
         out: &mut dyn Write,
         scenario: &Scenario,
         status: ScenarioStatus,
+        duration: Duration,
     ) -> io::Result<()>;
 
     /// Called for ancillary cleanup notes (kept env, cleanup warning, etc.).

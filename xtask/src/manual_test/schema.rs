@@ -187,6 +187,13 @@ pub struct Step {
     /// Optional expectations to verify after the command completes.
     #[serde(default)]
     pub expect: Option<Expectations>,
+
+    /// 1-indexed source line where this step begins in the scenario YAML.
+    /// Populated by `load_scenario` via a post-parse text scan; not part of
+    /// the YAML schema (skipped on serialize/deserialize). Surfaces in the
+    /// failed-scenarios summary block as `at file.yml:N`.
+    #[serde(default, skip)]
+    pub line: Option<usize>,
 }
 
 /// Expectations to verify after a step completes.

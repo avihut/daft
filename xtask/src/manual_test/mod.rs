@@ -377,6 +377,7 @@ fn aggregate_outcomes<'a>(
                         name: o.name.as_str(),
                         source: o.source.as_path(),
                         reproduce_token: reporter::reproduce_token(&o.source, scenarios_dir),
+                        duration: sr.duration,
                         failing_step: sr.failing_step.as_ref(),
                     });
                 } else {
@@ -496,14 +497,71 @@ fn load_scenario(path: &Path, fixtures_dir: &Path) -> Result<schema::Scenario> {
     // path if canonicalize fails for any reason — we'd rather report a
     // funny-looking reproduce token than refuse to load the scenario.
     let source_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let step_lines = extract_step_lines(&content);
+    let mut steps = raw.steps;
+    for (i, step) in steps.iter_mut().enumerate() {
+        step.line = step_lines.get(i).copied();
+    }
     Ok(schema::Scenario {
         name: raw.name,
         description: raw.description,
         repos,
         env: raw.env,
-        steps: raw.steps,
+        steps,
         source_path,
     })
+}
+
+/// Extract 1-indexed line numbers for each step in the scenario YAML.
+///
+/// Walks the file once. Locates the top-level `steps:` key, captures its
+/// indent column, then records every subsequent line whose trimmed prefix is
+/// `- name:` at indent strictly greater than the steps block. Stops when a
+/// non-blank, non-comment line returns to the steps-block indent (start of
+/// the next top-level key).
+///
+/// Pragmatic, not a YAML parser — we own every scenario file, the schema
+/// requires `name:` on every step, and `- name:` does not appear at the
+/// steps-list indent anywhere else (it can appear deeper, inside `repos:`
+/// blocks for example, but the indent check rules those out). If the scan
+/// returns fewer lines than the parsed step count, trailing steps get
+/// `line: None` — better than panicking on a YAML the parser already
+/// accepted.
+fn extract_step_lines(yaml_text: &str) -> Vec<usize> {
+    let mut step_lines = Vec::new();
+    let mut steps_indent: Option<usize> = None;
+
+    for (idx, line) in yaml_text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+
+        match steps_indent {
+            None => {
+                // Looking for the `steps:` block. Top-level only — accept any
+                // indent (canonical scenarios use 0, but be flexible).
+                if trimmed == "steps:" || trimmed.starts_with("steps:") {
+                    let rest = trimmed.trim_start_matches("steps:").trim();
+                    if rest.is_empty() {
+                        steps_indent = Some(indent);
+                    }
+                }
+            }
+            Some(block_indent) => {
+                if indent <= block_indent {
+                    // Returned to top level — done with the steps block.
+                    break;
+                }
+                if trimmed.starts_with("- name:") {
+                    step_lines.push(idx + 1);
+                }
+            }
+        }
+    }
+
+    step_lines
 }
 
 fn run_one_scenario(
@@ -587,18 +645,18 @@ fn run_one_scenario_inner(
     sb.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
-    let scenario_start = std::time::Instant::now();
     let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.reporter, &mut buf)?;
-    let elapsed_ms = scenario_start.elapsed().as_millis();
 
     // Opt-in per-scenario timing for the bench harness. Lines are
     // grep-friendly and live inside the scenario's buffered output so they
-    // print in input order alongside the scenario's own report.
+    // print in input order alongside the scenario's own report. Reuses the
+    // duration the runner already tracks so we have a single source of truth.
     if std::env::var_os("DAFT_MANUAL_TEST_EMIT_TIMING").is_some() {
         writeln!(
             &mut buf,
-            "[bench] scenario={:?} elapsed_ms={elapsed_ms}",
-            scenario.name
+            "[bench] scenario={:?} elapsed_ms={}",
+            scenario.name,
+            result.duration.as_millis()
         )?;
     }
 
@@ -609,6 +667,11 @@ fn run_one_scenario_inner(
         )?;
     } else {
         match sb.cleanup() {
+            // Suppress the "Cleaned up..." chatter on green scenarios — the
+            // cleanup still happens, but the line was noise on the happy path.
+            // Failures keep it so the failure-detail block visibly attaches to
+            // its scenario rather than running into the next one.
+            Ok(()) if result.failed == 0 => {}
             Ok(()) => ctx
                 .reporter
                 .cleanup_note(&mut buf, "Cleaned up test environment.")?,
@@ -954,6 +1017,91 @@ fn discover_scenarios_recursive(dir: &PathBuf) -> Result<Vec<(String, PathBuf)>>
     }
     scenarios.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(scenarios)
+}
+
+#[cfg(test)]
+mod extract_step_lines_tests {
+    use super::extract_step_lines;
+
+    #[test]
+    fn returns_each_step_start_line() {
+        let yaml = "\
+name: example
+steps:
+  - name: first
+    run: \"true\"
+  - name: second
+    run: \"true\"
+  - name: third
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        // Line 1: `name: example`. Line 2: `steps:`. Step `- name:` lines are 3, 5, 7.
+        assert_eq!(lines, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn skips_comments_and_blank_lines() {
+        let yaml = "\
+name: example
+
+# explanatory comment
+
+steps:
+  # first step
+  - name: first
+    run: \"true\"
+
+  - name: second
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![7, 10]);
+    }
+
+    #[test]
+    fn ignores_nested_name_keys_inside_repos_block() {
+        // Phase 3.2's text scan must not confuse `- name:` entries in the
+        // `repos:` block with step entries. The indent check (and the
+        // `steps:` anchor) is what protects us.
+        let yaml = "\
+name: scenario
+repos:
+  - name: my-repo
+    use_fixture: standard-remote
+  - name: other-repo
+    use_fixture: standard-remote
+steps:
+  - name: only-step
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![8]);
+    }
+
+    #[test]
+    fn stops_at_end_of_steps_block() {
+        // A trailing top-level key after `steps:` must not get scanned for
+        // pseudo-steps.
+        let yaml = "\
+name: scenario
+steps:
+  - name: only-step
+    run: \"true\"
+env:
+  FOO: bar
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![3]);
+    }
+
+    #[test]
+    fn returns_empty_for_scenarios_without_steps_block() {
+        // Defensive: if the YAML somehow parses but has no `steps:` key,
+        // the scan yields an empty Vec and every Step gets `line: None`.
+        let yaml = "name: malformed\n";
+        assert!(extract_step_lines(yaml).is_empty());
+    }
 }
 
 #[cfg(test)]

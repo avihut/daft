@@ -6,6 +6,7 @@
 //! silently swallowed.
 
 use std::io::{self, Write};
+use std::time::Duration;
 
 use term_styles as styles;
 
@@ -54,11 +55,16 @@ impl Reporter for QuietReporter {
         out: &mut dyn Write,
         scenario: &Scenario,
         status: ScenarioStatus,
+        duration: Duration,
     ) -> io::Result<()> {
-        match status {
-            ScenarioStatus::Pass => writeln!(out, "{} {}", styles::green("✓"), &scenario.name),
-            ScenarioStatus::Fail => writeln!(out, "{} {}", styles::red("✗"), &scenario.name),
-        }
+        let icon = match status {
+            ScenarioStatus::Pass => styles::green("✓"),
+            ScenarioStatus::Fail => styles::red("✗"),
+        };
+        // Quiet mode still surfaces slow/duration so green-path runs flag
+        // outliers without needing a separate verbosity bump.
+        let suffix = super::pretty::scenario_duration_suffix(duration);
+        writeln!(out, "{} {}{}", icon, &scenario.name, suffix)
     }
 
     fn cleanup_note(&self, _out: &mut dyn Write, _msg: &str) -> io::Result<()> {

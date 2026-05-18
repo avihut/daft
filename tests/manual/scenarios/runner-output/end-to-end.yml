@@ -27,11 +27,18 @@ steps:
       # color spans.
       output_contains:
         - "runner-output fixture (intentional failure)"
-        - "Failed scenarios:"
+        # Phase 1.2: section banner with rule chars + failure count.
+        - "Failed Scenarios (1)"
+        - "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"
+        # Phase 1.3: numbered entry.
+        - "1) "
+        # Phase 1.5: ❯ marker on the failing-step line.
         - "step 2/2  step that fails"
         - "Exit code: expected 0, got 1"
         - "Scenarios:  "
         - " passed, "
         - " failed   (1 total)"
+        # Phase 3.3: source-line citation uses the file basename.
+        - "at fail.yml:"
         - "Reproduce:"
         - "runner-output:_fixtures:fail"

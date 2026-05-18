@@ -9,6 +9,7 @@
 use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use super::executor::CommandExecutor;
 use super::reporter::{FailingStep, Reporter, ScenarioStatus, StepReport};
@@ -52,6 +53,11 @@ pub struct ScenarioResult {
     pub passed: usize,
     /// Number of steps with at least one failed assertion.
     pub failed: usize,
+    /// Wall-clock duration of the scenario's step phase (excludes sandbox
+    /// setup and cleanup). Surfaced on every footer and in the failed-
+    /// scenarios block; the bench harness still reads it via the
+    /// `DAFT_MANUAL_TEST_EMIT_TIMING` opt-in.
+    pub duration: Duration,
     /// The first failing step (full detail), captured for the run summary.
     pub failing_step: Option<FailingStep>,
 }
@@ -499,6 +505,7 @@ pub fn run_non_interactive(
     let mut failed = 0;
     let mut failing_step: Option<FailingStep> = None;
 
+    let started = Instant::now();
     for (i, step) in scenario.steps.iter().enumerate() {
         reporter.step_start(out, i, total, step)?;
 
@@ -522,18 +529,20 @@ pub fn run_non_interactive(
             failed += 1;
         }
     }
+    let duration = started.elapsed();
 
     let status = if failed == 0 {
         ScenarioStatus::Pass
     } else {
         ScenarioStatus::Fail
     };
-    reporter.scenario_footer(out, scenario, status)?;
+    reporter.scenario_footer(out, scenario, status, duration)?;
 
     Ok(ScenarioResult {
         steps: total,
         passed,
         failed,
+        duration,
         failing_step,
     })
 }
@@ -556,14 +565,22 @@ fn snapshot_failing_step(
             detail: a.detail.clone(),
         })
         .collect();
-    let captured_output = combine_captured(&result.stdout, &result.stderr);
     FailingStep {
         index,
         total,
         step_name: step.name.clone(),
+        line: step.line,
         failed_assertions,
-        captured_output,
+        captured_stdout: trim_or_empty(&result.stdout),
+        captured_stderr: trim_or_empty(&result.stderr),
     }
+}
+
+/// Trim trailing whitespace, returning an empty string when the source is
+/// missing. Kept separate from `combine_captured` so the FailingStep snapshot
+/// can preserve the stdout/stderr split for the summary block.
+fn trim_or_empty(s: &Option<String>) -> String {
+    s.as_ref().map(|v| v.trim().to_string()).unwrap_or_default()
 }
 
 /// Combine captured stdout/stderr, trimming trailing whitespace.
@@ -821,6 +838,7 @@ mod tests {
             run: run.to_string(),
             cwd: None,
             expect: None,
+            line: None,
         }
     }
 

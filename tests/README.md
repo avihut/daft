@@ -62,10 +62,17 @@ Per #518, the runner output has four levels (`-q` / default / `-v` / `-vv`):
 | `-v`   | + check icons  | first 20 lines          | first 20 lines          | yes              |
 | `-vv`  | + check icons  | full, no line cap       | full, no line cap       | yes              |
 
-Each scenario ends with a `✓` / `✗` footer. At the end of a run the summary
-shows separate `Scenarios:` / `Steps:` lines, `Duration:`, an optional
-`parallel jobs: N` suffix, a `Failed scenarios:` block with file paths and
-failing-step detail, and a `Reproduce:` block with one
+Each scenario ends with a `✓` / `✗` footer carrying its wall-clock duration
+(`✓ name  142ms` / `✗ name  2.3s`). Scenarios over 5s get a `(slow)` annotation
+so green-but-slow tests are visible at a glance. Per-step captured output is
+rendered as separate `--- stdout ---` and `--- stderr ---` blocks so the reader
+can tell which stream produced the noise.
+
+At the end of a run the summary shows a `⎯⎯⎯ Failed Scenarios (N) ⎯⎯⎯` banner
+(when there are failures) followed by numbered entries — each with the source
+path, duration, `❯` marker on the failing step, and an `at file.yml:line`
+citation. Then come separate `Scenarios:` / `Steps:` lines, `Duration:`, an
+optional `parallel jobs: N` suffix, and a `Reproduce:` block with one
 `mise run test:manual -- --ci <token>` per failure.
 
 ## Benchmarks
