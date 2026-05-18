@@ -82,7 +82,16 @@ pub fn render_outcome<W: Sink>(
     Ok(())
 }
 
-/// Per-failure output dump. Each failed/cancelled worktree gets:
+/// Selects which outcomes get an output block dumped after the progress UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DumpMode {
+    /// Default: only failed or cancelled worktrees are dumped.
+    FailuresOnly,
+    /// `--show-output`: every worktree is dumped, including successes.
+    All,
+}
+
+/// Per-outcome output dump. Each rendered worktree gets:
 ///
 /// ```text
 /// <sigil> <branch>  ·  <cmd>  ·  <status>, <elapsed>, exit <code>
@@ -90,29 +99,32 @@ pub fn render_outcome<W: Sink>(
 ///   │ <captured line 2>
 /// ```
 ///
-/// A blank line separates each failure block from whatever precedes it (the
-/// preceding summary rows or a prior failure block) so the boundary is
-/// obvious. The vertical gutter visually contains the captured output; the
-/// header has no gutter, so absence-of-gutter on the next header is the
-/// section break.
-pub fn render_failed_output_dump<W: Sink>(
+/// Sigil/status come from outcome state (`✓ succeeded`, `✗ failed`,
+/// `⊘ cancelled`). `mode` decides whether successful outcomes are included.
+///
+/// A blank line separates each block from whatever precedes it (the preceding
+/// summary rows or a prior block) so the boundary is obvious. The vertical
+/// gutter visually contains the captured output; the header has no gutter, so
+/// absence-of-gutter on the next header is the section break.
+pub fn render_output_dump<W: Sink>(
     sink: &mut W,
     report: &ExecReport,
     pipeline: &[CommandSpec],
+    mode: DumpMode,
 ) -> std::io::Result<()> {
     for outcome in &report.outcomes {
-        if outcome.succeeded() {
+        if matches!(mode, DumpMode::FailuresOnly) && outcome.succeeded() {
             continue;
         }
         writeln!(sink)?;
-        render_failure_block(sink, outcome, pipeline)?;
+        render_outcome_block(sink, outcome, pipeline)?;
     }
     Ok(())
 }
 
 const GUTTER_PREFIX: &[u8] = "  \u{2502} ".as_bytes(); // "  │ "
 
-fn render_failure_block<W: Sink>(
+fn render_outcome_block<W: Sink>(
     sink: &mut W,
     outcome: &WorktreeOutcome,
     pipeline: &[CommandSpec],
@@ -121,15 +133,12 @@ fn render_failure_block<W: Sink>(
         .get(outcome.last_command_index)
         .map(|s| s.display())
         .unwrap_or_default();
-    let sigil = if outcome.cancelled {
-        "\u{2298}"
+    let (sigil, status) = if outcome.cancelled {
+        ("\u{2298}", "cancelled")
+    } else if outcome.succeeded() {
+        ("\u{2713}", "succeeded")
     } else {
-        "\u{2717}"
-    };
-    let status = if outcome.cancelled {
-        "cancelled"
-    } else {
-        "failed"
+        ("\u{2717}", "failed")
     };
     let elapsed = format!("{:.1}s", outcome.elapsed.as_secs_f64());
     writeln!(
@@ -225,8 +234,12 @@ mod tests {
     }
 
     fn dump(report: &ExecReport, pipeline: &[CommandSpec]) -> String {
+        dump_with(report, pipeline, DumpMode::FailuresOnly)
+    }
+
+    fn dump_with(report: &ExecReport, pipeline: &[CommandSpec], mode: DumpMode) -> String {
         let mut out = Vec::new();
-        render_failed_output_dump(&mut out, report, pipeline).unwrap();
+        render_output_dump(&mut out, report, pipeline, mode).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -330,5 +343,68 @@ mod tests {
         // One leading blank + one header line; no gutter lines.
         assert_eq!(s.lines().count(), 2, "expected blank + header only: {s:?}");
         assert!(s.starts_with('\n'));
+    }
+
+    #[test]
+    fn all_mode_includes_successful_outcomes() {
+        // With DumpMode::All, a successful outcome gets its own block — same
+        // gutter format as failures but with the success sigil and label.
+        let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
+        let report = ExecReport {
+            outcomes: vec![outcome("feat/ok", 0, false, b"hi\n")],
+            orphan_branches_skipped: vec![],
+        };
+        let s = dump_with(&report, &pipeline, DumpMode::All);
+        assert_eq!(
+            s,
+            "\n\u{2713} feat/ok  \u{00b7}  echo hi  \u{00b7}  succeeded, 1.2s, exit 0\n  \
+             \u{2502} hi\n",
+        );
+    }
+
+    #[test]
+    fn all_mode_renders_success_failure_and_cancelled_in_order() {
+        // Order of outcomes is preserved; each gets the right sigil/label.
+        let pipeline = vec![CommandSpec::Argv(vec!["mise".into(), "dev".into()])];
+        let report = ExecReport {
+            outcomes: vec![
+                outcome("feat/ok", 0, false, b"good\n"),
+                outcome("feat/bad", 7, false, b"oops\n"),
+                outcome("feat/cancel", -1, true, b"halt\n"),
+            ],
+            orphan_branches_skipped: vec![],
+        };
+        let s = dump_with(&report, &pipeline, DumpMode::All);
+        let ok_pos = s.find("\u{2713} feat/ok").expect("missing success header");
+        let bad_pos = s.find("\u{2717} feat/bad").expect("missing failure header");
+        let cancel_pos = s
+            .find("\u{2298} feat/cancel")
+            .expect("missing cancelled header");
+        assert!(
+            ok_pos < bad_pos && bad_pos < cancel_pos,
+            "blocks rendered out of order: {s}"
+        );
+        assert!(s.contains("succeeded, 1.2s, exit 0"));
+        assert!(s.contains("failed, 1.2s, exit 7"));
+        assert!(s.contains("cancelled, 1.2s, exit -1"));
+        assert!(s.contains("  \u{2502} good\n"));
+        assert!(s.contains("  \u{2502} oops\n"));
+        assert!(s.contains("  \u{2502} halt\n"));
+    }
+
+    #[test]
+    fn all_mode_with_empty_captured_output_emits_only_header() {
+        // Parity with the FailuresOnly case: a success with no output still
+        // gets its header block (leading blank + header line) and nothing else.
+        let pipeline = vec![CommandSpec::Argv(vec!["true".into()])];
+        let report = ExecReport {
+            outcomes: vec![outcome("feat/quiet", 0, false, b"")],
+            orphan_branches_skipped: vec![],
+        };
+        let s = dump_with(&report, &pipeline, DumpMode::All);
+        assert!(!s.contains('\u{2502}'), "unexpected gutter line: {s}");
+        assert_eq!(s.lines().count(), 2, "expected blank + header only: {s:?}");
+        assert!(s.starts_with('\n'));
+        assert!(s.contains("\u{2713} feat/quiet"));
     }
 }

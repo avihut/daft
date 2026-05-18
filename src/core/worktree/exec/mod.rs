@@ -1334,7 +1334,7 @@ mod tests {
 
     #[test]
     fn list_renderer_header_and_rows_and_failed_dump() {
-        use super::list_renderer::{render_failed_output_dump, render_header, render_outcome};
+        use super::list_renderer::{DumpMode, render_header, render_outcome, render_output_dump};
 
         let pipeline = vec![CommandSpec::Argv(vec!["cargo".into(), "test".into()])];
         let outcomes = vec![
@@ -1371,7 +1371,7 @@ mod tests {
         for o in &report.outcomes {
             render_outcome(&mut out, o, &pipeline).unwrap();
         }
-        render_failed_output_dump(&mut out, &report, &pipeline).unwrap();
+        render_output_dump(&mut out, &report, &pipeline, DumpMode::FailuresOnly).unwrap();
 
         let s = String::from_utf8(out).unwrap();
         assert!(
