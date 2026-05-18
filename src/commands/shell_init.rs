@@ -36,7 +36,7 @@ pub struct Args {
 
 pub fn run() -> Result<()> {
     // Skip the first two args ("daft" and "shell-init") to let clap parse from "shell-init"
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = crate::cli::argv().iter().skip(1).cloned().collect();
     let args = Args::parse_from(args);
 
     let shell_name = match args.shell {
@@ -177,37 +177,60 @@ git() {
 
 # daft wrapper to intercept "daft worktree-*" and "daft <verb>" subcommands
 daft() {
+    # Strip top-level options (currently just `-C <path>`) so the dispatch
+    # below sees the verb in $1. The stripped options are re-attached as
+    # arguments to the binary so the binary's cli::install_and_apply applies
+    # the chdir. Without this, `daft -C /path go branch` would fall through
+    # to `*) command daft "$@"`, skipping DAFT_CD_FILE setup — the shell
+    # wouldn't follow the binary into the newly-created worktree.
+    local __daft_pre=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -C)
+                # Trailing `-C` with no path: surface the same error the binary
+                # would print, then exit 2. Without this echo the wrapper's
+                # `return 2` is silent and the user sees no clue what went
+                # wrong (the binary never runs to print its own error).
+                if [ "$#" -lt 2 ]; then
+                    echo "daft: -C: option requires an argument" >&2
+                    return 2
+                fi
+                __daft_pre+=("$1" "$2"); shift 2 ;;
+            *) break ;;
+        esac
+    done
+
     case "$1" in
         worktree-clone|clone)
-            shift; __daft_wrapper git-worktree-clone "$@" ;;
+            shift; __daft_wrapper git-worktree-clone "${__daft_pre[@]}" "$@" ;;
         worktree-init|init)
-            shift; __daft_wrapper git-worktree-init "$@" ;;
+            shift; __daft_wrapper git-worktree-init "${__daft_pre[@]}" "$@" ;;
         worktree-checkout)
-            shift; __daft_wrapper git-worktree-checkout "$@" ;;
+            shift; __daft_wrapper git-worktree-checkout "${__daft_pre[@]}" "$@" ;;
         go)
-            shift; __daft_wrapper daft-go "$@" ;;
+            shift; __daft_wrapper daft-go "${__daft_pre[@]}" "$@" ;;
         start)
-            shift; __daft_wrapper daft-start "$@" ;;
+            shift; __daft_wrapper daft-start "${__daft_pre[@]}" "$@" ;;
         worktree-carry|carry)
-            shift; __daft_wrapper git-worktree-carry "$@" ;;
+            shift; __daft_wrapper git-worktree-carry "${__daft_pre[@]}" "$@" ;;
         worktree-prune|prune)
-            shift; __daft_wrapper git-worktree-prune "$@" ;;
+            shift; __daft_wrapper git-worktree-prune "${__daft_pre[@]}" "$@" ;;
         worktree-branch)
-            shift; __daft_wrapper git-worktree-branch "$@" ;;
+            shift; __daft_wrapper git-worktree-branch "${__daft_pre[@]}" "$@" ;;
         remove)
-            shift; __daft_wrapper daft-remove "$@" ;;
+            shift; __daft_wrapper daft-remove "${__daft_pre[@]}" "$@" ;;
         worktree-branch-delete)
-            shift; __daft_wrapper git-worktree-branch-delete "$@" ;;
+            shift; __daft_wrapper git-worktree-branch-delete "${__daft_pre[@]}" "$@" ;;
         rename)
-            shift; __daft_wrapper daft-rename "$@" ;;
+            shift; __daft_wrapper daft-rename "${__daft_pre[@]}" "$@" ;;
         worktree-fetch|update)
-            shift; __daft_wrapper git-worktree-fetch "$@" ;;
+            shift; __daft_wrapper git-worktree-fetch "${__daft_pre[@]}" "$@" ;;
         worktree-flow-adopt|adopt)
-            shift; __daft_wrapper git-worktree-flow-adopt "$@" ;;
+            shift; __daft_wrapper git-worktree-flow-adopt "${__daft_pre[@]}" "$@" ;;
         worktree-flow-eject|eject)
-            shift; __daft_wrapper git-worktree-flow-eject "$@" ;;
+            shift; __daft_wrapper git-worktree-flow-eject "${__daft_pre[@]}" "$@" ;;
         worktree-sync|sync)
-            shift; __daft_wrapper git-worktree-sync "$@" ;;
+            shift; __daft_wrapper git-worktree-sync "${__daft_pre[@]}" "$@" ;;
         layout|repo)
             # `daft layout` (transform) and `daft repo remove` both need cd
             # support — repo-remove writes DAFT_CD_FILE when the user invoked
@@ -218,7 +241,7 @@ daft() {
             local __cd_file
             __cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX" 2>/dev/null)
             if [ -n "$__cd_file" ]; then
-                DAFT_CD_FILE="$__cd_file" command daft "$@"
+                DAFT_CD_FILE="$__cd_file" command daft "${__daft_pre[@]}" "$@"
                 local __exit=$?
                 if [ -s "$__cd_file" ]; then
                     local __target
@@ -228,11 +251,11 @@ daft() {
                 rm -f "$__cd_file"
                 return $__exit
             else
-                command daft "$@"
+                command daft "${__daft_pre[@]}" "$@"
             fi
             ;;
         *)
-            command daft "$@" ;;
+            command daft "${__daft_pre[@]}" "$@" ;;
     esac
 }
 
@@ -428,37 +451,56 @@ end
 
 # daft wrapper to intercept "daft worktree-*" and "daft <verb>" subcommands
 function daft --wraps daft
+    # Strip top-level options (currently just `-C <path>`) so the switch
+    # below sees the verb in $argv[1]. The stripped options are re-attached
+    # as arguments to the binary so cli::install_and_apply applies the chdir.
+    # See the bash/zsh wrapper for the matching rationale.
+    set -l pre
+    while test (count $argv) -gt 0
+        switch $argv[1]
+            case -C
+                set pre $pre $argv[1] $argv[2]
+                if test (count $argv) -ge 3
+                    set argv $argv[3..-1]
+                else
+                    set argv
+                end
+            case '*'
+                break
+        end
+    end
+
     switch $argv[1]
         case worktree-clone clone
-            __daft_wrapper git-worktree-clone $argv[2..-1]
+            __daft_wrapper git-worktree-clone $pre $argv[2..-1]
         case worktree-init init
-            __daft_wrapper git-worktree-init $argv[2..-1]
+            __daft_wrapper git-worktree-init $pre $argv[2..-1]
         case worktree-checkout
-            __daft_wrapper git-worktree-checkout $argv[2..-1]
+            __daft_wrapper git-worktree-checkout $pre $argv[2..-1]
         case go
-            __daft_wrapper daft-go $argv[2..-1]
+            __daft_wrapper daft-go $pre $argv[2..-1]
         case start
-            __daft_wrapper daft-start $argv[2..-1]
+            __daft_wrapper daft-start $pre $argv[2..-1]
         case worktree-carry carry
-            __daft_wrapper git-worktree-carry $argv[2..-1]
+            __daft_wrapper git-worktree-carry $pre $argv[2..-1]
         case worktree-prune prune
-            __daft_wrapper git-worktree-prune $argv[2..-1]
+            __daft_wrapper git-worktree-prune $pre $argv[2..-1]
         case worktree-branch
-            __daft_wrapper git-worktree-branch $argv[2..-1]
+            __daft_wrapper git-worktree-branch $pre $argv[2..-1]
         case remove
-            __daft_wrapper daft-remove $argv[2..-1]
+            __daft_wrapper daft-remove $pre $argv[2..-1]
         case worktree-branch-delete
-            __daft_wrapper git-worktree-branch-delete $argv[2..-1]
+            __daft_wrapper git-worktree-branch-delete $pre $argv[2..-1]
         case rename
-            __daft_wrapper daft-rename $argv[2..-1]
+            __daft_wrapper daft-rename $pre $argv[2..-1]
         case worktree-fetch update
-            __daft_wrapper git-worktree-fetch $argv[2..-1]
+            __daft_wrapper git-worktree-fetch $pre $argv[2..-1]
         case worktree-flow-adopt adopt
-            __daft_wrapper git-worktree-flow-adopt $argv[2..-1]
+            __daft_wrapper git-worktree-flow-adopt $pre $argv[2..-1]
         case worktree-flow-eject eject
-            __daft_wrapper git-worktree-flow-eject $argv[2..-1]
+            __daft_wrapper git-worktree-flow-eject $pre $argv[2..-1]
         case worktree-sync sync
-            __daft_wrapper git-worktree-sync $argv[2..-1]
+            __daft_wrapper git-worktree-sync $pre $argv[2..-1]
         case layout repo
             # `daft layout` (transform) and `daft repo remove` both need cd
             # support — repo-remove writes DAFT_CD_FILE when the user invoked
@@ -468,7 +510,7 @@ function daft --wraps daft
             # `exec -a`; mirror the per-subcommand pattern used for layout.
             set -l cd_file (mktemp (set -q TMPDIR; and echo $TMPDIR; or echo /tmp)/daft-cd.XXXXXX 2>/dev/null)
             if test -n "$cd_file"
-                DAFT_CD_FILE=$cd_file command daft $argv
+                DAFT_CD_FILE=$cd_file command daft $pre $argv
                 set -l exit_code $status
                 if test -s "$cd_file"
                     builtin cd (cat "$cd_file") 2>/dev/null
@@ -476,10 +518,10 @@ function daft --wraps daft
                 rm -f "$cd_file"
                 return $exit_code
             else
-                command daft $argv
+                command daft $pre $argv
             end
         case '*'
-            command daft $argv
+            command daft $pre $argv
     end
 end
 

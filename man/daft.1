@@ -4,7 +4,7 @@
 .SH NAME
 daft \- A Git extensions toolkit for worktree\-based development
 .SH SYNOPSIS
-\fBdaft\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+\fBdaft\fR [\fB\-C \fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
 daft is a comprehensive Git extensions toolkit that enhances developer workflows with powerful worktree management. It provides both git\-style subcommands (git worktree\-clone, git worktree\-checkout, ...) and short verb aliases (daft clone, daft go, daft start, ...).
 .PP
@@ -16,6 +16,9 @@ To enable automatic cd into new worktrees, add the shell integration:
 .PP
 See daft\-shell\-init(1) for details.
 .SH OPTIONS
+.TP
+\fB\-C\fR \fI<path>\fR
+Run as if started in <path> instead of the current working directory. Applied before subcommand dispatch, layout resolution, and hook discovery. Multiple `\-C` flags compose, matching `git \-C` semantics.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

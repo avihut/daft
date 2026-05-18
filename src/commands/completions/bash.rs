@@ -252,6 +252,27 @@ _daft() {
     local cur prev words cword
     _init_completion || return
 
+    # `-C <path>` is a top-level option (issue #519). If the previous token is
+    # `-C`, complete directories for its value and stop.
+    if [[ "$prev" == "-C" ]]; then
+        COMPREPLY=( $(compgen -d -- "$cur") )
+        return 0
+    fi
+
+    # Strip leading `-C <path>` pairs from words/cword so the rest of the
+    # completion logic sees argv as if `-C` weren't there. This keeps every
+    # subsequent `${words[1]}` / `cword -eq N` branch correct regardless of
+    # how many `-C` flags precede the subcommand.
+    local __daft_skip=1
+    while [[ "${words[$__daft_skip]}" == "-C" && $((__daft_skip + 1)) -le ${#words[@]} ]]; do
+        __daft_skip=$((__daft_skip + 2))
+    done
+    if [[ $__daft_skip -gt 1 ]]; then
+        words=("${words[0]}" "${words[@]:$__daft_skip}")
+        cword=$((cword - (__daft_skip - 1)))
+        if [[ $cword -lt 1 ]]; then cword=1; fi
+    fi
+
     # --format value completion (emit-enabled subcommand paths)
     if [[ "$prev" == "--format" ]]; then
         local _fmt_path="" _fmt_i _fmt_w
@@ -677,7 +698,7 @@ _daft() {
     # top-level: complete daft subcommands and flags
     if [[ $cword -eq 1 ]]; then
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=( $(compgen -W "--version -V --help -h" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi

@@ -371,8 +371,9 @@ fn bold(text: &str, use_color: bool) -> String {
 
 pub fn run() -> Result<()> {
     // Detect how we were invoked
-    let program_path = std::env::args()
-        .next()
+    let program_path = crate::cli::argv()
+        .first()
+        .cloned()
         .unwrap_or_else(|| "daft".to_string());
     let program_name = Path::new(&program_path)
         .file_name()
@@ -433,6 +434,13 @@ fn render_daft() -> Result<()> {
     }
 
     println!();
+    println!("{}", bold_underline("Global options", use_color));
+    println!(
+        "   {}      Run as if started in <path>. Composes like git -C.",
+        bold("-C <path>", use_color)
+    );
+
+    println!();
     println!(
         "'daft {} --help' to read about a specific command.",
         bold("<command>", use_color)
@@ -486,6 +494,10 @@ fn render_git_daft() -> Result<()> {
     println!(
         "   clone, init, carry, merge, update, list, prune, rename, sync, remove, adopt, eject"
     );
+
+    println!();
+    println!("Global options");
+    println!("   -C <path>            Run as if started in <path>. Composes like git -C.");
 
     println!();
     println!("'git worktree-<command> --help' to read about a specific command.");

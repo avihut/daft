@@ -160,6 +160,36 @@ but agent shells typically don't have that wrapper installed, so follow-up
 commands will fail with `chdir: no such file or directory` until the agent's cwd
 is fixed.
 
+## Global Flags
+
+All daft commands and `git-worktree-*` symlinked entries accept a top-level
+`-C <path>` flag that changes the effective working directory before resolving
+any path-dependent state (repo discovery, layout, hooks, `daft.yml`). Semantics
+match `git -C`.
+
+```bash
+daft -C /path/to/repo list             # equivalent to: cd /path/to/repo && daft list
+daft -C /path/to/repo go feature/x     # creates worktree inside /path/to/repo
+git-worktree-list -C /path/to/repo     # works for symlink entries too
+```
+
+**This is the recommended pattern for agents** operating across multiple daft
+worktrees in a session. It eliminates the need to `cd` between invocations and
+makes each command self-contained ("do X in path Y"). Prefer `-C` over spawning
+a subshell with `cd && daft …`.
+
+Rules:
+
+- Composes like `git -C`: `daft -C /a -C b list` is equivalent to
+  `daft -C /a/b list`. Each subsequent non-absolute `-C` resolves relative to
+  the previous applied cwd. **Not** "last wins".
+- `-C ""` is a no-op (cwd unchanged).
+- Missing/non-directory path: terse error, exit code 2.
+- Relative paths in subcommand arguments resolve against the post-`-C` cwd.
+- `-C` is parsed only at the very front of the argv (before the subcommand
+  name), so a subcommand-local `-C` (e.g. an inner shell command in `daft exec`)
+  is preserved.
+
 ## Command Reference
 
 All commands below use the `daft` binary form for agent execution. Users know

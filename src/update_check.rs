@@ -146,7 +146,7 @@ pub fn print_notification(notification: &UpdateNotification) {
 fn maybe_check_for_update_inner() -> Option<UpdateNotification> {
     // Don't run inside any background task process — otherwise __check-update
     // spawns __prune-trust which spawns __check-update, creating a fork bomb.
-    if env::args().any(|a| a.starts_with("__")) {
+    if crate::cli::argv().iter().any(|a| a.starts_with("__")) {
         return None;
     }
 

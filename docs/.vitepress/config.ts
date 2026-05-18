@@ -252,6 +252,10 @@ export default defineConfig({
             text: "Running commands across worktrees",
             link: "/worktrees/running-commands",
           },
+          {
+            text: "Running daft from anywhere (-C)",
+            link: "/worktrees/from-anywhere",
+          },
           { text: "Merging across worktrees", link: "/worktrees/merging" },
           { text: "Shortcuts", link: "/worktrees/shortcuts" },
         ],
@@ -392,6 +396,7 @@ export default defineConfig({
             text: "CLI",
             collapsed: true,
             items: [
+              { text: "daft (top-level)", link: "/reference/cli/daft" },
               {
                 text: "Setup",
                 items: [

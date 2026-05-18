@@ -410,6 +410,27 @@ pub(super) const DAFT_ZSH_COMPLETIONS: &str = r#"# daft subcommand completions
 _daft() {
     local curword="${words[$CURRENT]}"
 
+    # `-C <path>` is a top-level option (issue #519). If the previous token is
+    # `-C`, complete directories for its value and stop.
+    local __daft_prev="${words[$((CURRENT-1))]}"
+    if [[ "$__daft_prev" == "-C" ]]; then
+        _files -/
+        return
+    fi
+
+    # Strip leading `-C <path>` pairs from words/CURRENT so the rest of the
+    # completion logic sees argv as if `-C` weren't there.
+    local __daft_skip=2
+    while [[ "${words[$__daft_skip]}" == "-C" ]] && (( __daft_skip + 1 <= ${#words} )); do
+        __daft_skip=$((__daft_skip + 2))
+    done
+    if (( __daft_skip > 2 )); then
+        words=("${words[1]}" "${(@)words[$__daft_skip,-1]}")
+        CURRENT=$((CURRENT - (__daft_skip - 2)))
+        if (( CURRENT < 2 )); then CURRENT=2; fi
+        curword="${words[$CURRENT]}"
+    fi
+
     # --format value completion (emit-enabled subcommand paths)
     local _fmt_prev="${words[$((CURRENT-1))]}"
     if [[ "$_fmt_prev" == "--format" ]]; then
@@ -864,7 +885,7 @@ _daft() {
     # top-level: complete daft subcommands and flags
     if (( CURRENT == 2 )); then
         if [[ "$curword" == -* ]]; then
-            compadd -- --version -V --help -h
+            compadd -- --version -V --help -h -C
         else
             compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
                     config repo clone init go start carry exec update list prune rename sync remove \

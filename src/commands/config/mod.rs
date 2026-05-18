@@ -3,7 +3,7 @@ pub mod remote_sync;
 use anyhow::Result;
 
 pub fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli::argv().to_vec();
     // Find the "config" arg and route to subcommands after it
     let config_idx = args.iter().position(|a| a == "config").unwrap_or(1);
     let sub_args: Vec<String> = args[(config_idx + 1)..].to_vec();
