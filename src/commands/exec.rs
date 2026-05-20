@@ -28,6 +28,10 @@ does not stop other worktrees.
 When a single worktree is targeted, stdio is fully inherited, making
 interactive programs (claude, vim, fzf) work the same as if you had cd'd
 into the worktree first.
+
+By default, captured stdout/stderr is dumped only for failed or cancelled
+worktrees. Pass --show-output to dump it for successful worktrees too. The
+flag has no effect on single-target runs (stdio is already inherited).
 "#)]
 #[command(after_help = r#"EXAMPLES:
     Run a single command across all worktrees:
@@ -44,6 +48,9 @@ into the worktree first.
 
     Pass-through to an interactive program (single target):
         daft exec feat/auth -- claude
+
+    Dump captured output for successful worktrees too:
+        daft exec --all --show-output -- cargo build --timings
 "#)]
 pub struct Args {
     #[arg(help = "Target worktree(s) by branch name, directory name, or glob")]
@@ -82,6 +89,12 @@ pub struct Args {
         help = "Re-capture user shell aliases instead of using the cached snapshot"
     )]
     pub refresh_aliases: bool,
+
+    #[arg(
+        long = "show-output",
+        help = "Dump captured stdout/stderr for successful worktrees too (no-op for single-target runs)"
+    )]
+    pub show_output: bool,
 
     /// Trailing command vector after `--`. Mutually exclusive with `-x`.
     #[arg(last = true, value_name = "CMD")]
@@ -205,9 +218,14 @@ pub fn run() -> Result<()> {
         alias_cache.as_ref(),
     )?;
 
+    let dump_mode = if args.show_output {
+        core::list_renderer::DumpMode::All
+    } else {
+        core::list_renderer::DumpMode::FailuresOnly
+    };
     let stdout = std::io::stdout();
     let mut sink = stdout.lock();
-    core::list_renderer::render_failed_output_dump(&mut sink, &report, &pipeline)?;
+    core::list_renderer::render_output_dump(&mut sink, &report, &pipeline, dump_mode)?;
     drop(sink);
 
     std::process::exit(report.aggregate_exit_code());
