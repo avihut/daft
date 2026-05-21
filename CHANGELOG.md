@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.14.1](https://github.com/avihut/daft/compare/v1.14.0...v1.14.1) - 2026-05-21
+
+### Features
+
+- *(exec)* add --show-output to dump captured output for successful worktrees ([#530](https://github.com/avihut/daft/pull/530))
+
 ## [1.14.0](https://github.com/avihut/daft/compare/v1.13.0...v1.14.0) - 2026-05-18
 
 ### Features
