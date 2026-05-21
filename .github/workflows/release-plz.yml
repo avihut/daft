@@ -33,7 +33,7 @@ jobs:
         uses: release-plz/action@v0.5.129
         with:
           command: release
-          version: 0.3.156
+          version: 0.3.158
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
@@ -69,7 +69,7 @@ jobs:
         uses: release-plz/action@v0.5.129
         with:
           command: release-pr
-          version: 0.3.156
+          version: 0.3.158
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 

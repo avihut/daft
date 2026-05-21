@@ -2,6 +2,10 @@
 members = [".", "term-styles", "xtask"]
 resolver = "2"
 
+# Internal path deps need `version` to be packageable. See release-plz#2595.
+[workspace.dependencies]
+term-styles = { path = "term-styles", version = "0.1.0" }
+
 [package]
 name = "daft"
 version = "1.14.0"
@@ -80,7 +84,7 @@ anyhow = "1.0"
 dirs = "6.0"
 which = "8.0"
 tempfile = "3.8"
-term-styles = { path = "term-styles" }
+term-styles = { workspace = true }
 regex = "1.10"
 url = "2.5"
 serde = { version = "1.0", features = ["derive"] }
