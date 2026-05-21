@@ -268,28 +268,35 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         for (idx, f) in s.failed.iter().enumerate() {
             // §2: `1) ✗ name` is the primary anchor for the failure entry —
             // bold red across the icon+name span keeps it as one strong line.
-            // The path uses `display_path` (scenarios-dir-relative) so it
-            // doesn't outweigh the scenario name with absolute-path bytes.
+            // The duration is the only suffix; the location pointer moves to
+            // its own line below.
             writeln!(
                 out,
-                "  {}) {}   {}{}",
+                "  {}) {}{}",
                 idx + 1,
                 styles::bold_red(&format!("✗ {}", f.name)),
-                styles::dim(&f.display_path),
                 scenario_duration_suffix(f.duration),
             )?;
+            // §1/§2: location pointer is the answer to "where did this fail"
+            // — secondary (default fg), on its own line. Most terminals
+            // recognize `path:line` as click-to-open; keeping it unstyled
+            // and on its own line maximizes that affordance.
+            let line_num = f.failing_step.and_then(|fs| fs.line);
+            writeln!(
+                out,
+                "      {}",
+                failure_location_line(&f.display_path, line_num),
+            )?;
             if let Some(failing) = f.failing_step {
-                let citation = step_citation(f.source, failing.line);
                 // §3 iconography: ❯ is bold red. §2: focal step name is the
                 // primary content of the sub-block — bold default-fg (the red
                 // already belongs to the marker; the name is the data).
                 writeln!(
                     out,
-                    "      {} {} {}{}",
+                    "      {} {} {}",
                     styles::bold_red("❯"),
                     styles::dim(&format!("step {}/{}", failing.index + 1, failing.total)),
                     styles::bold(&failing.step_name),
-                    citation,
                 )?;
                 for a in &failing.failed_assertions {
                     writeln!(out, "      {} {}", styles::bold_red("✗"), a.label)?;
@@ -390,20 +397,15 @@ pub(super) fn format_short_duration(d: Duration) -> String {
     }
 }
 
-/// Render `   at file.yml:N` next to the failing-step line, using just the
-/// source file's basename — the full path appears on the line above. Returns
-/// an empty string when no line number is available (synthetic scenarios in
-/// tests, or pre-Phase-3 cached `FailingStep` records).
-fn step_citation(source: &std::path::Path, line: Option<usize>) -> String {
-    let line = match line {
-        Some(n) => n,
-        None => return String::new(),
-    };
-    let basename = source
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| source.display().to_string());
-    format!("   {}", styles::dim(&format!("at {basename}:{line}")))
+/// Render the failure-block location pointer: the scenarios-relative path,
+/// optionally followed by `:line` when the failing step's source line is
+/// known. Emitted unstyled (default fg) so most terminals' click-to-open
+/// `path:line` heuristics fire on it. The caller owns indentation.
+fn failure_location_line(display_path: &str, line: Option<usize>) -> String {
+    match line {
+        Some(n) => format!("{display_path}:{n}"),
+        None => display_path.to_string(),
+    }
 }
 
 /// Render the `⎯⎯⎯ Failed Scenarios (N) ⎯⎯⎯` section banner above the

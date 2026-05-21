@@ -481,7 +481,6 @@ fn quiet_footer_renders_duration_and_slow_annotation() {
 #[test]
 fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
     let r = PrettyReporter::new(Verbosity::Default);
-    let source = PathBuf::from("tests/manual/scenarios/hooks/silent-job-logs.yml");
     let failing = FailingStep {
         index: 3,
         total: 6,
@@ -500,7 +499,6 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
     };
     let failed = vec![FailedScenarioRecord {
         name: "hooks:silent-job-logs",
-        source: &source,
         display_path: "hooks/silent-job-logs.yml".to_string(),
         reproduce_token: "hooks:silent-job-logs".to_string(),
         duration: Duration::from_millis(842),
@@ -531,8 +529,12 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
     // bold default-fg step name. The strip_ansi helper collapses styling so
     // we assert on the visible character content.
     assert!(out.contains("❯ step 4/6 silent-ok-job log deleted"));
-    // Phase 3.3: source-line citation uses the file basename + 1-indexed line.
-    assert!(out.contains("at silent-job-logs.yml:23"));
+    // Failure-block location pointer: scenarios-relative `path:line` on its
+    // own line (terminal-clickable). Replaces the prior basename-based `at
+    // file.yml:N` citation that sat at the right of the focal-step line.
+    assert!(out.contains("hooks/silent-job-logs.yml:23"));
+    // Old `at <basename>:<line>` citation form must not reappear inline.
+    assert!(!out.contains("at silent-job-logs.yml:23"));
     assert!(out.contains("✗ Exit code: expected 0, got 1"));
     assert!(out.contains("expected: OK_LOG_DELETED"));
     assert!(out.contains("ASSERTION_FAILED: silent-ok-job log was not deleted"));
@@ -572,8 +574,6 @@ fn pretty_run_summary_clean_when_all_passed() {
 #[test]
 fn pretty_run_summary_numbers_multiple_failures() {
     let r = PrettyReporter::new(Verbosity::Default);
-    let src_a = PathBuf::from("tests/manual/scenarios/a.yml");
-    let src_b = PathBuf::from("tests/manual/scenarios/b.yml");
     let summary = RunSummary {
         scenarios_total: 3,
         scenarios_passed: 1,
@@ -586,7 +586,6 @@ fn pretty_run_summary_numbers_multiple_failures() {
         failed: vec![
             FailedScenarioRecord {
                 name: "alpha",
-                source: &src_a,
                 display_path: "a.yml".to_string(),
                 reproduce_token: "a".to_string(),
                 duration: Duration::from_millis(120),
@@ -594,7 +593,6 @@ fn pretty_run_summary_numbers_multiple_failures() {
             },
             FailedScenarioRecord {
                 name: "beta",
-                source: &src_b,
                 display_path: "b.yml".to_string(),
                 reproduce_token: "b".to_string(),
                 duration: Duration::from_millis(450),
@@ -683,7 +681,6 @@ fn quiet_run_summary_matches_pretty() {
         parallel_jobs: Some(1),
         failed: vec![FailedScenarioRecord {
             name: "demo",
-            source: Path::new("tests/manual/scenarios/demo.yml"),
             display_path: "demo.yml".to_string(),
             reproduce_token: "demo".to_string(),
             duration: Duration::from_secs(1),

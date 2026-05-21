@@ -98,19 +98,14 @@ pub struct FailingStep {
 /// One row in the failed-scenarios block of the summary.
 pub struct FailedScenarioRecord<'a> {
     pub name: &'a str,
-    /// Full source path (absolute, canonicalized). Kept for downstream uses
-    /// that need the canonical location — e.g., the failing-step citation
-    /// uses just the basename, but a future terminal-click feature might
-    /// want the absolute path.
-    pub source: &'a Path,
-    /// Path string rendered in the failed-scenarios block, relative to
-    /// `tests/manual/scenarios/`. Shorter than the canonical source path so
-    /// the scenario name (primary content) outweighs the path metadata
-    /// (tertiary) per §2.
+    /// Path string rendered in the failure-block location pointer, relative
+    /// to `tests/manual/scenarios/`. Appears on its own line below the
+    /// scenario-name line as `display_path:line` (terminal-clickable), per
+    /// reporter design language §1 (location pointer = default fg).
     pub display_path: String,
     pub reproduce_token: String,
     /// Wall-clock duration of the scenario's step phase. Rendered next to the
-    /// source path so the reader can spot slow failures at a glance.
+    /// scenario name so the reader can spot slow failures at a glance.
     pub duration: Duration,
     pub failing_step: Option<&'a FailingStep>,
 }

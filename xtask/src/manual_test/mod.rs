@@ -381,7 +381,6 @@ fn aggregate_outcomes<'a>(
                         .to_string();
                     failed.push(reporter::FailedScenarioRecord {
                         name: o.name.as_str(),
-                        source: o.source.as_path(),
                         display_path,
                         reproduce_token: reporter::reproduce_token(&o.source, scenarios_dir),
                         duration: sr.duration,
