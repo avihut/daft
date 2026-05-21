@@ -286,6 +286,10 @@ Hard rules:
   own config knobs and live in `mod.rs` / `main.rs`. Renaming the namespace is a
   spin-out concern, not a coupling concern.
 
+**Design language**: `xtask/src/manual_test/reporter/CLAUDE.md` constrains the
+output's appearance (color budget, hierarchy, iconography, microcopy, rhythm).
+Travels with the runner spin-out — do not inline its rules here.
+
 **Hooks system**: Lifecycle hooks in `.daft/hooks/` with trust-based security.
 Hook types: `post-clone`, `worktree-pre-create`, `worktree-post-create`,
 `worktree-pre-remove`, `worktree-post-remove`. Old names without `worktree-`
