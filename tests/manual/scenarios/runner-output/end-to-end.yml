@@ -32,13 +32,22 @@ steps:
         - "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"
         # Phase 1.3: numbered entry.
         - "1) "
-        # Phase 1.5: ❯ marker on the failing-step line.
-        - "step 2/2  step that fails"
+        # Phase 1.5 + S2: ❯ marker on the failing-step line.
+        - "step 2/2"
         - "Exit code: expected 0, got 1"
         - "Scenarios:  "
         - " passed, "
         - " failed   (1 total)"
         # Phase 3.3: source-line citation uses the file basename.
         - "at fail.yml:"
+        # Reporter design language §3: failure icon is `✗`, never lowercase `x`.
+        - "✗ "
+        # S8: display path in the failures block is scenarios-relative,
+        # not absolute. The fixture lives under `runner-output/_fixtures/`.
+        - "runner-output/_fixtures/fail.yml"
         - "Reproduce:"
         - "runner-output:_fixtures:fail"
+      output_not_contains:
+        # Reporter design language §3: lowercase `x` as a failure icon is
+        # banned. Asserting absence catches accidental regressions.
+        - "x Exit code:"

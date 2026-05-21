@@ -57,14 +57,17 @@ impl Reporter for QuietReporter {
         status: ScenarioStatus,
         duration: Duration,
     ) -> io::Result<()> {
-        let icon = match status {
-            ScenarioStatus::Pass => styles::green("✓"),
-            ScenarioStatus::Fail => styles::red("✗"),
+        // §2/§4 (reporter/CLAUDE.md): the whole icon+name span carries the
+        // pass/fail semantic — bold + outcome color. Parity with PrettyReporter
+        // so `-q` runs read the same way at the scenario boundary.
+        let icon_and_name = match status {
+            ScenarioStatus::Pass => styles::bold_green(&format!("✓ {}", &scenario.name)),
+            ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", &scenario.name)),
         };
         // Quiet mode still surfaces slow/duration so green-path runs flag
         // outliers without needing a separate verbosity bump.
         let suffix = super::pretty::scenario_duration_suffix(duration);
-        writeln!(out, "{} {}{}", icon, &scenario.name, suffix)
+        writeln!(out, "{}{}", icon_and_name, suffix)
     }
 
     fn cleanup_note(&self, _out: &mut dyn Write, _msg: &str) -> io::Result<()> {

@@ -373,9 +373,16 @@ fn aggregate_outcomes<'a>(
                 steps_failed += sr.failed;
                 if sr.failed > 0 {
                     scenarios_failed += 1;
+                    let display_path = o
+                        .source
+                        .strip_prefix(scenarios_dir)
+                        .unwrap_or(&o.source)
+                        .display()
+                        .to_string();
                     failed.push(reporter::FailedScenarioRecord {
                         name: o.name.as_str(),
                         source: o.source.as_path(),
+                        display_path,
                         reproduce_token: reporter::reproduce_token(&o.source, scenarios_dir),
                         duration: sr.duration,
                         failing_step: sr.failing_step.as_ref(),

@@ -90,9 +90,10 @@ fn print_scenario_header(scenario: &Scenario, sandbox: &Sandbox) {
 fn print_step_header(index: usize, total: usize, step: &super::schema::Step, sandbox: &Sandbox) {
     let expanded = sandbox.expand_vars(&step.run);
     eprintln!();
+    // §1 budget: blue isn't a daft color slot. Counter is tertiary scaffolding.
     eprintln!(
         "{} {}",
-        styles::blue(&format!("[{}/{}]", index + 1, total)),
+        styles::dim(&format!("[{}/{}]", index + 1, total)),
         styles::bold(&step.name)
     );
     eprintln!("{}", styles::cyan(&format!("$ {expanded}")));

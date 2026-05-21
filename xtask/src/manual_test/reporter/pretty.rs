@@ -61,7 +61,8 @@ impl Reporter for PrettyReporter {
         // (cleanup note + footer attach tight to the scenario above; the
         // breathing room lives here, owned by the next scenario's header).
         writeln!(out)?;
-        writeln!(out, "{}", styles::cyan(&scenario.name))?;
+        // §2 (Hierarchy): scenario name is a primary heading — bold + named color.
+        writeln!(out, "{}", styles::bold_cyan(&scenario.name))?;
         if !scenario.source_path.as_os_str().is_empty() {
             writeln!(
                 out,
@@ -79,16 +80,20 @@ impl Reporter for PrettyReporter {
         total: usize,
         step: &Step,
     ) -> io::Result<()> {
+        // §1 budget: blue is not a daft color slot. §2: counters are
+        // scaffolding (tertiary), dim.
         write!(
             out,
             "{} {} ... ",
-            styles::blue(&format!("[{}/{}]", idx + 1, total)),
+            styles::dim(&format!("[{}/{}]", idx + 1, total)),
             &step.name
         )
     }
 
     fn step_pass(&self, out: &mut dyn Write, report: &StepReport<'_>) -> io::Result<()> {
         let check_count = report.assertions.len();
+        // §4 (pass-quiet/fail-loud): pass marker is minimal — lowercase `ok` in
+        // plain green (not bold). The bold/loud stacking is reserved for FAIL.
         if check_count > 0 {
             writeln!(
                 out,
@@ -102,12 +107,20 @@ impl Reporter for PrettyReporter {
 
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                writeln!(out, "  {}", styles::cyan(&format!("$ {cmd}")))?;
+                // §1: cyan is reserved for section heading. `$` lines are
+                // content-level metadata — dim per §2 tertiary.
+                writeln!(out, "  {}", styles::dim(&format!("$ {cmd}")))?;
             }
         }
         if self.show_pass_check_icons() {
             for a in report.assertions {
-                writeln!(out, "  {} {}", styles::green("✓"), styles::dim(&a.label))?;
+                // §3 iconography: ✓ is bold green at every level.
+                writeln!(
+                    out,
+                    "  {} {}",
+                    styles::bold_green("✓"),
+                    styles::dim(&a.label)
+                )?;
             }
         }
         if self.show_pass_capture() {
@@ -118,19 +131,22 @@ impl Reporter for PrettyReporter {
 
     fn step_fail(&self, out: &mut dyn Write, report: &StepReport<'_>) -> io::Result<()> {
         let fail_count = report.assertions.iter().filter(|a| !a.passed).count();
+        // §4 (pass-quiet/fail-loud): FAIL stacks signals — bold + red + uppercase.
         writeln!(
             out,
             "{} {}",
-            styles::red("FAIL"),
+            styles::bold_red("FAIL"),
             styles::dim(&format!("({fail_count} failed)"))
         )?;
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                writeln!(out, "  {}", styles::cyan(&format!("$ {cmd}")))?;
+                // §1: cyan is reserved for section heading. `$` lines are
+                // content-level metadata — dim per §2 tertiary.
+                writeln!(out, "  {}", styles::dim(&format!("$ {cmd}")))?;
             }
         }
         for a in report.assertions.iter().filter(|a| !a.passed) {
-            writeln!(out, "  {} {}", styles::red("x"), a.label)?;
+            writeln!(out, "  {} {}", styles::bold_red("✗"), a.label)?;
             if let Some(detail) = &a.detail {
                 for line in detail.lines() {
                     writeln!(out, "    {}", styles::dim(line))?;
@@ -150,12 +166,17 @@ impl Reporter for PrettyReporter {
     ) -> io::Result<()> {
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
-        let icon = match status {
-            ScenarioStatus::Pass => styles::green("✓"),
-            ScenarioStatus::Fail => styles::red("✗"),
+        //
+        // §2/§4: icon AND scenario name share the same semantic at the same
+        // granularity (this scenario passed/failed) — so the entire prefix is
+        // bold + the outcome color, giving one strong horizontal anchor per
+        // scenario. The dim duration suffix stays separate (tertiary metadata).
+        let icon_and_name = match status {
+            ScenarioStatus::Pass => styles::bold_green(&format!("✓ {}", &scenario.name)),
+            ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", &scenario.name)),
         };
         let suffix = scenario_duration_suffix(duration);
-        writeln!(out, "{} {}{}", icon, &scenario.name, suffix)
+        writeln!(out, "{}{}", icon_and_name, suffix)
     }
 
     fn cleanup_note(&self, out: &mut dyn Write, msg: &str) -> io::Result<()> {
@@ -241,28 +262,33 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         writeln!(out, "{}", failed_scenarios_banner(s.failed.len()))?;
         writeln!(out)?;
         for (idx, f) in s.failed.iter().enumerate() {
+            // §2: `1) ✗ name` is the primary anchor for the failure entry —
+            // bold red across the icon+name span keeps it as one strong line.
+            // The path uses `display_path` (scenarios-dir-relative) so it
+            // doesn't outweigh the scenario name with absolute-path bytes.
             writeln!(
                 out,
-                "  {}) {} {}   {}{}",
+                "  {}) {}   {}{}",
                 idx + 1,
-                styles::red("✗"),
-                f.name,
-                styles::dim(&f.source.display().to_string()),
+                styles::bold_red(&format!("✗ {}", f.name)),
+                styles::dim(&f.display_path),
                 scenario_duration_suffix(f.duration),
             )?;
             if let Some(failing) = f.failing_step {
                 let citation = step_citation(f.source, failing.line);
+                // §3 iconography: ❯ is bold red. §2: focal step name is the
+                // primary content of the sub-block — bold default-fg (the red
+                // already belongs to the marker; the name is the data).
                 writeln!(
                     out,
-                    "      {} step {}/{}  {}{}",
-                    styles::red("❯"),
-                    failing.index + 1,
-                    failing.total,
-                    failing.step_name,
+                    "      {} {} {}{}",
+                    styles::bold_red("❯"),
+                    styles::dim(&format!("step {}/{}", failing.index + 1, failing.total)),
+                    styles::bold(&failing.step_name),
                     citation,
                 )?;
                 for a in &failing.failed_assertions {
-                    writeln!(out, "      {} {}", styles::red("✗"), a.label)?;
+                    writeln!(out, "      {} {}", styles::bold_red("✗"), a.label)?;
                     if let Some(detail) = &a.detail {
                         for line in detail.lines() {
                             writeln!(out, "        {line}")?;
@@ -379,9 +405,18 @@ fn step_citation(source: &std::path::Path, line: Option<usize>) -> String {
 /// Render the `⎯⎯⎯ Failed Scenarios (N) ⎯⎯⎯` section banner above the
 /// failures block. Fixed-width (no terminal-width probing) so golden tests
 /// stay deterministic across environments.
+///
+/// §1 + §2 (CLAUDE.md): label is primary content (bold red); rule chars are
+/// decoration (dim). Coloring the whole banner red would have the decoration
+/// competing with the data.
 fn failed_scenarios_banner(failure_count: usize) -> String {
     const RULE: &str = "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯";
-    styles::red(&format!("{RULE} Failed Scenarios ({failure_count}) {RULE}"))
+    format!(
+        "{} {} {}",
+        styles::dim(RULE),
+        styles::bold_red(&format!("Failed Scenarios ({failure_count})")),
+        styles::dim(RULE),
+    )
 }
 
 /// Render a single captured stream inside the failed-scenarios summary block.

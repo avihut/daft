@@ -55,12 +55,16 @@ mise run test:manual -- --list
 
 Per #518, the runner output has four levels (`-q` / default / `-v` / `-vv`):
 
-| Flag   | Per-step lines | Captured output on fail | Captured output on pass | Expanded command |
-| ------ | -------------- | ----------------------- | ----------------------- | ---------------- |
-| `-q`   | suppressed     | summary block only      | no                      | no               |
-| (none) | shown          | first 20 lines          | no                      | no               |
-| `-v`   | + check icons  | first 20 lines          | first 20 lines          | yes              |
-| `-vv`  | + check icons  | full, no line cap       | full, no line cap       | yes              |
+| Flag   | Per-step lines | Captured on fail   | Captured on pass  | Expanded command | Cleanup line |
+| ------ | -------------- | ------------------ | ----------------- | ---------------- | ------------ |
+| `-q`   | suppressed     | summary block only | no                | no               | suppressed   |
+| (none) | shown          | first 20 lines     | no                | no               | fail only    |
+| `-v`   | + check icons  | first 20 lines     | first 20 lines    | yes              | fail only    |
+| `-vv`  | + check icons  | full, no line cap  | full, no line cap | yes              | fail only    |
+
+The "Cleanup line" column is the `Cleaned up test environment.` message — it
+emits flush against the failure footer on a failed scenario at every verbosity,
+and is suppressed entirely on green to avoid noise on the happy path.
 
 Each scenario ends with a `✓` / `✗` footer carrying its wall-clock duration
 (`✓ name  142ms` / `✗ name  2.3s`). Scenarios over 5s get a `(slow)` annotation
