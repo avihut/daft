@@ -27,20 +27,30 @@ gradients, viewers learn each accent fast and get confused fast if you reuse
 one. Each slot below answers exactly one question; any future "I want to make
 this stand out" gets answered by looking up the right slot.
 
-| Slot                    | Reserved for                                                                                                                                                              | Anti-meaning                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **bold green**          | Success outcome: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                   | Never "in progress" or "ready"       |
-| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0                                                                                | Never warnings                       |
-| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                             | Never errors                         |
-| **cyan**                | Section heading: scenario name (top-of-block)                                                                                                                             | Never status, never expanded command |
-| **dim** / **dark grey** | Scaffolding: counters (`[N/M]`, `(N checks)`), paths, durations under threshold, detail lines, citations, banner rules, `$ expanded-command`, `step N/M` in failure block | Never primary content                |
-| **default fg**          | Body content: step names, assertion labels, summary labels, reproduce command body                                                                                        | Never decoration                     |
+| Slot                    | Reserved for                                                                                                                                                                                               | Anti-meaning                         |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **bold green**          | Success outcome: `✓` step pass, `✓` scenario footer, "passed" count > 0; `expected:` / `unexpected:` diff label                                                                                            | Never "in progress" or "ready"       |
+| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                           | Never warnings                       |
+| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                              | Never errors                         |
+| **cyan**                | Section heading: scenario name (top-of-block)                                                                                                                                                              | Never status, never expanded command |
+| **dim** / **dark grey** | Pure scaffolding: counters (`[N/M]`, `(N checks)`), scenario-header path, durations under threshold, banner rules, `$ expanded-command`, `step N/M` in failure block, capture-block content (label + body) | Never the failure payload            |
+| **default fg**          | Body content + failure payload: step names, assertion labels, summary labels, reproduce command body, **assertion `detail` lines under a failed assertion**, failure-block location pointer (`path:line`)  | Never decoration                     |
 
 **Cyan repurposed from `daft-tui-design`.** The TUI budget reserves cyan for
 focus/selection. Stdout has no focus, so cyan slides one slot over to "section
 heading." That's still a primary anchor; viewers learn it within the first
 scenario. One use per screen — never reuse cyan for anything else in the
 runner's output.
+
+**Never combine dim with color.** Most terminals implement dim as
+half-brightness on top of whatever color is set — `dim + green` and `dim + red`
+collapse to muddy grey-green / grey-red that's nearly invisible at a glance
+against a normal background. Colors must render at full saturation. If a span
+needs to be colored, it cannot also be inside a dimmed line — restructure so the
+dim wrap doesn't cover it, or accept that it's scaffolding and use dim alone (no
+color). The corollary: assertion `detail` lines on a failed assertion are
+**not** scaffolding — they're the failure payload — and so they render at
+default-fg (their diff labels at full bold green / bold red), never dim.
 
 ---
 
@@ -50,12 +60,12 @@ Three levels carry the entire visual weight system. Monospace forbids size
 shifts; weight + color + position is the whole toolkit. **Pick one mechanism per
 level and stop** — adding bold to a secondary item collapses the hierarchy.
 
-| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                     |
-| ------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer (whole line bold green/red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                             |
-| **Secondary** | default fg, no styling       | Step name in per-step lines, assertion labels, summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body                                                                     |
-| **Tertiary**  | dim                          | `[N/M]` step counter, `(N checks)` / `(N failed)`, source paths, detail lines under assertions, `step N/M` inside failure block, source-line citations (`at file.yml:N`), banner rule chars, durations under threshold, `$ expanded-command`, capture-block content |
-| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (✓ bold green, ✗ bold red, ❯ bold red)                                                                                                                                    |
+| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                                                                            |
+| ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer (whole line bold green/red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                                                                                    |
+| **Secondary** | default fg, no styling       | Step name in per-step lines, assertion labels, summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body, **assertion `detail` lines under a failed assertion** (the failure payload), failure-block location pointer (`path:line`) |
+| **Tertiary**  | dim                          | `[N/M]` step counter, `(N checks)` / `(N failed)`, scenario-header path, `step N/M` inside failure block, banner rule chars, durations under threshold, `$ expanded-command`, capture-block content (label + body)                                                                                                         |
+| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (✓ bold green, ✗ bold red, ❯ bold red), diff labels (`expected:` bold green, `actual:` bold red)                                                                                                                                 |
 
 **The decision rule.** "Should this be bold?" → look up its level in the table.
 "What color?" → look up the slot in §1. If a string fits no row, it probably
@@ -192,6 +202,13 @@ by an earlier section's rule it would violate.
   need a combination the crate doesn't expose, add a helper to `term_styles`
   (like the existing `bold_red`, `bold_green`, `bold_cyan`) rather than inlining
   the bytes.
+- **Coloring a span inside a dimmed line** ("FG-only reset so outer dim
+  survives"). Don't. Most terminals render dim as half-brightness on top of the
+  color and you get muddy grey-green / grey-red that's invisible at a glance. If
+  a span needs color, it cannot be inside a dim wrap — restructure the
+  surrounding context to drop the dim, or accept the span as scaffolding and use
+  dim alone. The original `term_styles::inline_green` / `inline_red` /
+  `FG_DEFAULT` helpers existed to support this anti-pattern and were removed.
 - **Drifting microcopy.** New label that says "in progress…" with an ellipsis
   when `Status:` would do; new outcome word that capitalizes; Title-Case where
   lowercase is the rule. Look up §5 before writing a new string.

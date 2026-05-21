@@ -131,28 +131,6 @@ pub fn bold_cyan(text: &str) -> String {
     format!("{BOLD}{CYAN}{text}{RESET}")
 }
 
-/// ANSI escape code to reset foreground color only (preserves bold/dim/etc.).
-///
-/// Use this — not [`RESET`] — when emitting a colored span inside a larger
-/// styled region (e.g., a dim line containing a colored label segment): the
-/// full reset (`\x1b[0m`) would kill the outer dim too.
-pub const FG_DEFAULT: &str = "\x1b[39m";
-
-/// Wraps text in green coloring with a foreground-only reset.
-///
-/// Use when emitting a colored span inside a larger styled wrap (e.g., the
-/// `expected:` diff label inside a dim detail line). Pairs with [`FG_DEFAULT`]
-/// instead of [`RESET`] so the outer attribute (dim) survives the inner color.
-pub fn inline_green(text: &str) -> String {
-    format!("{GREEN}{text}{FG_DEFAULT}")
-}
-
-/// Wraps text in red coloring with a foreground-only reset. Companion to
-/// [`inline_green`]; same use case (colored span inside dim line).
-pub fn inline_red(text: &str) -> String {
-    format!("{RED}{text}{FG_DEFAULT}")
-}
-
 /// Wraps text in green styling.
 pub fn green(text: &str) -> String {
     format!("{GREEN}{text}{RESET}")

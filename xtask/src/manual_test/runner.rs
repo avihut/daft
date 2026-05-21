@@ -231,14 +231,14 @@ pub fn check_output_not_contains(output: &str, unexpected: &str) -> AssertionRes
 /// owns the outer indent (per-line `    ` prefix), so this helper produces
 /// content with no leading whitespace.
 ///
-/// Per the reporter design language (§1, §3): the label segments carry the
-/// diff semantic — green for `expected:` / `unexpected:` (what we were
-/// looking for), red for `actual:` (the failure state). `inline_green` /
-/// `inline_red` use the FG-only reset so the reporter's outer `dim` wrap on
-/// each line survives the colored label.
+/// Per the reporter design language (§1, §2): the label segments are accent —
+/// `bold_green` for `expected:` / `unexpected:` (what we were looking for),
+/// `bold_red` for `actual:` (the failure state). The reporter emits these
+/// lines at default fg (NOT inside a dim wrap) — dim + colored collapses to
+/// muddy grey-X on most terminals.
 fn format_diff_detail(label: &str, needle: &str, actual: &str) -> String {
-    let mut out = format!("{}: {needle}\n", term_styles::inline_green(label));
-    let actual_label = term_styles::inline_red("actual");
+    let mut out = format!("{}: {needle}\n", term_styles::bold_green(label));
+    let actual_label = term_styles::bold_red("actual");
     if actual.is_empty() {
         out.push_str(&format!("{actual_label}:   <empty>"));
     } else if actual.contains('\n') {

@@ -148,8 +148,12 @@ impl Reporter for PrettyReporter {
         for a in report.assertions.iter().filter(|a| !a.passed) {
             writeln!(out, "  {} {}", styles::bold_red("✗"), a.label)?;
             if let Some(detail) = &a.detail {
+                // §1 + §2: assertion detail lines under a failed assertion are
+                // the failure payload — secondary (default fg), not tertiary
+                // (dim). `dim` + a colored diff label collapses to muddy
+                // grey-X on most terminals.
                 for line in detail.lines() {
-                    writeln!(out, "    {}", styles::dim(line))?;
+                    writeln!(out, "    {line}")?;
                 }
             }
         }

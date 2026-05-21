@@ -241,13 +241,11 @@ fn pretty_step_fail_renders_stdout_and_stderr_in_separate_blocks() {
 }
 
 #[test]
-fn pretty_step_fail_emits_diff_label_colors_with_fg_reset() {
-    // Design language §1 / §3: `expected:` and `actual:` carry the diff
-    // semantic at the label level — green for "what we wanted", red for
-    // "what we got". The labels use FG-only reset (`\x1b[39m`), not full
-    // reset, so the reporter's outer dim wrap on detail lines survives.
-    // We assert on raw bytes (NOT strip_ansi) to pin both the color and
-    // the FG-only reset.
+fn pretty_step_fail_emits_detail_lines_without_dim_wrap() {
+    // Design language §1: assertion `detail` lines under a failed assertion
+    // are the failure payload — secondary, default fg. They must NOT be
+    // wrapped in `dim` (`\x1b[2m`), which on most terminals collapses any
+    // embedded color (the diff labels) into muddy grey-X.
     let r = PrettyReporter::new(Verbosity::Default);
     let s = step("output-check", "echo something");
     let assertions = vec![assertion(
@@ -264,40 +262,42 @@ fn pretty_step_fail_emits_diff_label_colors_with_fg_reset() {
     let mut buf = Vec::new();
     r.step_fail(&mut buf, &report).unwrap();
     let raw = String::from_utf8(buf).expect("reporter output is valid UTF-8");
-    // Green-then-FG-reset around the expected label only. (The detail content
-    // here is the literal string from the `assertion` helper above, not
-    // produced by format_diff_detail, so this test verifies that the
-    // string IF colored by format_diff_detail survives the reporter's dim
-    // wrap. Verified indirectly: the FG-only reset preserves the outer dim.
-    // Direct verification of format_diff_detail is in runner.rs tests.)
     assert!(raw.contains("expected: WANTED"));
     assert!(raw.contains("actual:   got_something_else"));
+    // The dim sequence is `\x1b[2m`. It must not appear around the detail
+    // lines (it can still appear earlier in the output for the FAIL count
+    // suffix, so we extract the line containing "expected:" and assert that
+    // specific line is unwrapped).
+    let expected_line = raw
+        .lines()
+        .find(|l| l.contains("expected: WANTED"))
+        .expect("output has a line containing expected: WANTED");
+    assert!(
+        !expected_line.contains("\x1b[2m"),
+        "detail line is wrapped in dim, will render as muddy grey on color: {expected_line:?}",
+    );
 }
 
 #[test]
-fn format_diff_detail_uses_fg_only_reset_so_outer_dim_survives() {
-    // Direct test of the helper that produces colored diff labels — this
-    // catches any future change that switches back to a full \x1b[0m reset
-    // (which would kill the reporter's surrounding dim wrap).
+fn format_diff_detail_uses_bold_color_labels() {
+    // Design language §1 + §2: `expected:` is bold green (accent), `actual:`
+    // is bold red (accent). The bold attribute (`\x1b[1m`) carries the
+    // accent weight; without it the colored label is too thin to scan in
+    // a stretch of default-fg text.
     use crate::manual_test::runner;
-    // Access via the public function that uses it.
     let r = runner::check_output_contains("got something else", "WANTED");
     assert!(!r.passed);
     let detail = r.detail.expect("failed check has detail");
-    // Green label + FG-only reset around "expected"; red label around "actual".
+    // Bold + green for the expected label, bold + red for the actual label,
+    // each terminated by a full reset (no FG-only reset trick anymore — the
+    // reporter no longer dims around these lines).
     assert!(
-        detail.contains("\x1b[32mexpected\x1b[39m:"),
-        "expected: label not green-with-FG-reset; got: {detail:?}",
+        detail.contains("\x1b[1m\x1b[32mexpected\x1b[0m:"),
+        "expected: label not bold green; got: {detail:?}",
     );
     assert!(
-        detail.contains("\x1b[31mactual\x1b[39m:"),
-        "actual: label not red-with-FG-reset; got: {detail:?}",
-    );
-    // Ensure no full RESET inside the label segment (would kill outer dim).
-    let expected_segment_end = detail.find("\x1b[39m").unwrap();
-    assert!(
-        !detail[..expected_segment_end].contains("\x1b[0m"),
-        "label segment uses full RESET, would kill outer dim",
+        detail.contains("\x1b[1m\x1b[31mactual\x1b[0m:"),
+        "actual: label not bold red; got: {detail:?}",
     );
 }
 
