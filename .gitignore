@@ -45,6 +45,9 @@ docs/.vitepress/cache/
 # Superpowers brainstorming artifacts
 .superpowers/
 
+# Understand-Anything knowledge graph artifacts (rebuildable via /understand)
+.understand-anything/
+
 # Benchmark artifacts
 benches/results/
 benches/fixtures/cache/
