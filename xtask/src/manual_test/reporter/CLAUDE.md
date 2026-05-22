@@ -29,7 +29,8 @@ this stand out" gets answered by looking up the right slot.
 
 | Slot                    | Reserved for                                                                                                                                                                                               | Anti-meaning                         |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **bold green**          | Success outcome: `✓` step pass, `✓` scenario footer, "passed" count > 0; `expected:` / `unexpected:` diff label                                                                                            | Never "in progress" or "ready"       |
+| **bold green**          | Diff label: `expected:` / `unexpected:` (failure payload, accent at concentrated weight)                                                                                                                   | Never the pass icon                  |
+| **green** (not bold)    | Pass marker: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                                                        | Never "selected" or "in progress"    |
 | **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                           | Never warnings                       |
 | **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                              | Never errors                         |
 | **cyan**                | Section heading: scenario name (top-of-block)                                                                                                                                                              | Never status, never expanded command |
@@ -60,12 +61,12 @@ Three levels carry the entire visual weight system. Monospace forbids size
 shifts; weight + color + position is the whole toolkit. **Pick one mechanism per
 level and stop** — adding bold to a secondary item collapses the hierarchy.
 
-| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                                                                            |
-| ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer (whole line bold green/red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                                                                                    |
-| **Secondary** | default fg, no styling       | Step name in per-step lines, assertion labels, summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body, **assertion `detail` lines under a failed assertion** (the failure payload), failure-block location pointer (`path:line`) |
-| **Tertiary**  | dim                          | `[N/M]` step counter, `(N checks)` / `(N failed)`, scenario-header path, `step N/M` inside failure block, banner rule chars, durations under threshold, `$ expanded-command`, capture-block content (label + body)                                                                                                         |
-| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (✓ bold green, ✗ bold red, ❯ bold red), diff labels (`expected:` bold green, `actual:` bold red)                                                                                                                                 |
+| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer on FAIL (whole `✗ name` span bold red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                                                                                                                                       |
+| **Secondary** | default fg, no styling       | Step name in per-step lines, **scenario name on a PASSING footer** (default fg, not bold), assertion labels, summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body, **assertion `detail` lines under a failed assertion** (the failure payload), failure-block location pointer (`path:line`) |
+| **Tertiary**  | dim                          | `[N/M]` step counter, `(N checks)` / `(N failed)`, scenario-header path, `step N/M` inside failure block, banner rule chars, durations under threshold, `$ expanded-command`, capture-block content (label + body)                                                                                                                                                                       |
+| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (`✓` green not bold, `✗` bold red, `❯` bold red), diff labels (`expected:` bold green, `actual:` bold red)                                                                                                                                                                                     |
 
 **The decision rule.** "Should this be bold?" → look up its level in the table.
 "What color?" → look up the slot in §1. If a string fits no row, it probably
@@ -75,14 +76,14 @@ doesn't belong on screen.
 
 ## 3. Iconography
 
-| Glyph   | Meaning                                                                                                      | Styling    |
-| ------- | ------------------------------------------------------------------------------------------------------------ | ---------- |
-| `✓`     | Pass — applies at both step level and scenario footer                                                        | bold green |
-| `✗`     | Fail — at every level: step assertion, scenario footer, failures-block entries, failures-block per-assertion | bold red   |
-| `❯`     | Focal failing step in the failures block (one per failure entry)                                             | bold red   |
-| `⎯`     | Section rule (banner only — twelve per side, fixed width)                                                    | dim        |
-| `[N/M]` | Step counter — the only counter form                                                                         | dim        |
-| `$`     | Expanded-command prefix (under `-v`+ verbosity)                                                              | dim        |
+| Glyph   | Meaning                                                                                                      | Styling                   |
+| ------- | ------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| `✓`     | Pass — applies at both step level and scenario footer                                                        | green (not bold) — see §4 |
+| `✗`     | Fail — at every level: step assertion, scenario footer, failures-block entries, failures-block per-assertion | bold red                  |
+| `❯`     | Focal failing step in the failures block (one per failure entry)                                             | bold red                  |
+| `⎯`     | Section rule (banner only — twelve per side, fixed width)                                                    | dim                       |
+| `[N/M]` | Step counter — the only counter form                                                                         | dim                       |
+| `$`     | Expanded-command prefix (under `-v`+ verbosity)                                                              | dim                       |
 
 **Never use lowercase `x` for failure**, even at the assertion-detail level.
 Every fail icon is `✗`. (Pre-styling-pass code used `x` in one site — that was a
@@ -98,11 +99,16 @@ entry. Don't use `❯` for "in progress," "selected," or generic emphasis.
 The eye should skim past green outcomes and stop hard on red ones. Build
 asymmetry deliberately:
 
-- **Pass marker = minimal.** `✓` + lowercase `ok`. No CAPS, no extra decoration.
-  Step counts use plain `(N checks)` in dim.
+- **Pass marker = minimal.** `✓` in plain green (NOT bold), lowercase `ok`, no
+  CAPS, no extra decoration. The scenario name on a passing footer is default
+  fg, not bold. Step counts use plain `(N checks)` in dim. A wall of bold green
+  at default-tier verbosity (one footer per scenario × hundreds of scenarios)
+  collapses into chrome — the eye stops being able to skim past it. Plain green
+  on a small `✓` glyph is the entire pass signal.
 - **Fail marker = stacked signals.** `✗` + bold + red + UPPERCASE `FAIL`. The
   `FAIL` word itself is bold red caps; the icon doubles the signal at scenario
-  level.
+  level, and the scenario name on a failing footer goes bold red (the whole
+  icon+name span) so a single red line jumps off a wall of quiet pass lines.
 
 This asymmetry is the point. Never "balance" the output by introducing `PASS`
 caps or `✓ PASSED` to match `FAIL` — they should not match. The runner's loudest

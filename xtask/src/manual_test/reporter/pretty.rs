@@ -163,13 +163,9 @@ impl Reporter for PrettyReporter {
         }
         if self.show_pass_check_icons() {
             for a in report.assertions {
-                // §3 iconography: ✓ is bold green at every level.
-                writeln!(
-                    out,
-                    "  {} {}",
-                    styles::bold_green("✓"),
-                    styles::dim(&a.label)
-                )?;
+                // §3 + §4: `✓` is plain green (not bold) at every level —
+                // pass markers don't stack signals.
+                writeln!(out, "  {} {}", styles::green("✓"), styles::dim(&a.label))?;
             }
         }
         if self.show_pass_capture() {
@@ -233,16 +229,21 @@ impl Reporter for PrettyReporter {
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
         //
-        // §2/§4: icon AND scenario name share the same semantic at the same
-        // granularity (this scenario passed/failed) — so the entire prefix is
-        // bold + the outcome color, giving one strong horizontal anchor per
-        // scenario. The dim duration suffix stays separate (tertiary metadata).
-        let icon_and_name = match status {
-            ScenarioStatus::Pass => styles::bold_green(&format!("✓ {}", &scenario.name)),
+        // §4 (pass-quiet, fail-loud): the styling is asymmetric.
+        //   Pass: `✓` in plain green + name in default fg + dim duration.
+        //     Bold green on every passing footer in a 252-scenario green run
+        //     turns the whole stream into chrome — the eye stops being able
+        //     to skim past it. Plain green on the tiny `✓` glyph is enough.
+        //   Fail: whole `✗ name` span bold red so a single red line jumps
+        //     off a wall of quiet pass lines.
+        let prefix = match status {
+            ScenarioStatus::Pass => {
+                format!("{} {}", styles::green("✓"), &scenario.name)
+            }
             ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", &scenario.name)),
         };
         let suffix = scenario_duration_suffix(duration);
-        writeln!(out, "{}{}", icon_and_name, suffix)
+        writeln!(out, "{}{}", prefix, suffix)
     }
 
     fn cleanup_note(&self, out: &mut dyn Write, msg: &str) -> io::Result<()> {

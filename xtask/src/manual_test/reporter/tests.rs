@@ -509,6 +509,37 @@ fn pretty_scenario_footer_pass_and_fail() {
     assert!(fail.starts_with("✗ hooks:silent-job-logs"));
 }
 
+#[test]
+fn pretty_scenario_footer_pass_is_quiet_fail_is_loud() {
+    // §4 pass-quiet/fail-loud: the pass footer must NOT carry bold (`\x1b[1m`).
+    // Plain green on a tiny `✓` glyph is the entire pass signal — anything
+    // more turns a 252-scenario green run into a wall of chrome. The fail
+    // footer continues to stack signals: bold + red on the icon+name span.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("demo", "tests/manual/scenarios/demo.yml", vec![]);
+    let mut pass_buf = Vec::new();
+    r.scenario_footer(&mut pass_buf, &sc, ScenarioStatus::Pass, Duration::ZERO)
+        .unwrap();
+    let pass_raw = String::from_utf8(pass_buf).unwrap();
+    assert!(
+        !pass_raw.contains("\x1b[1m"),
+        "pass footer must not be bold; got: {pass_raw:?}",
+    );
+    assert!(
+        pass_raw.contains("\x1b[32m✓\x1b[0m"),
+        "pass icon must be plain green; got: {pass_raw:?}",
+    );
+
+    let mut fail_buf = Vec::new();
+    r.scenario_footer(&mut fail_buf, &sc, ScenarioStatus::Fail, Duration::ZERO)
+        .unwrap();
+    let fail_raw = String::from_utf8(fail_buf).unwrap();
+    assert!(
+        fail_raw.contains("\x1b[1m\x1b[31m"),
+        "fail footer prefix must be bold red; got: {fail_raw:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PrettyReporter — run_summary
 // ---------------------------------------------------------------------------
