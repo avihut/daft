@@ -2,584 +2,590 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
 ## [1.14.1](https://github.com/avihut/daft/compare/v1.14.0...v1.14.1) - 2026-05-21
 
+
 ### Features
 
-- *(exec)* add --show-output to dump captured output for successful worktrees ([#530](https://github.com/avihut/daft/pull/530))
-
+- **exec**: Add --show-output to dump captured output for successful worktrees (#530)
 ## [1.14.0](https://github.com/avihut/daft/compare/v1.13.0...v1.14.0) - 2026-05-18
 
+
 ### Features
 
-- add top-level -C <path> flag (git -C semantics) ([#523](https://github.com/avihut/daft/pull/523))
+- Add top-level -C <path> flag (git -C semantics) (#523)
+
 
 ### Miscellaneous
 
-- *(release-plz)* give term-styles its own tag namespace ([#528](https://github.com/avihut/daft/pull/528))
+- **release-plz**: Give term-styles its own tag namespace (#528)
+
 
 ### Performance
 
-- *(test-runner)* parallelize YAML scenario execution ([#515](https://github.com/avihut/daft/pull/515))
+- **test-runner**: Parallelize YAML scenario execution (#515)
+
 
 ### Refactoring
 
-- *(test-runner)* introduce CommandExecutor port at runner/daft seam ([#521](https://github.com/avihut/daft/pull/521))
+- **test-runner**: Introduce CommandExecutor port at runner/daft seam (#521)
+## [1.13.0](https://github.com/avihut/daft/compare/v1.12.0...v1.13.0) - 2026-05-17
 
-## [1.13.0](https://github.com/avihut/daft/compare/v1.12.0...v1.13.0) - 2026-05-16
 
 ### Bug Fixes
 
-- *(tui)* keep size column TOTAL summary intact when wider than data cells ([#507](https://github.com/avihut/daft/pull/507))
-- *(tui)* truncate worktree names in shared picker to keep state column visible ([#506](https://github.com/avihut/daft/pull/506))
-- *(tui)* always render selected columns; stop dropping by terminal width ([#497](https://github.com/avihut/daft/pull/497))
+- **tui**: Keep size column TOTAL summary intact when wider than data cells (#507)
+- **tui**: Truncate worktree names in shared picker to keep state column visible (#506)
+- **tui**: Always render selected columns; stop dropping by terminal width (#497)
+
 
 ### Features
 
-- *(coordinator)* redesign internals — persistence, IPC, structured logs ([#476](https://github.com/avihut/daft/pull/476)) ([#508](https://github.com/avihut/daft/pull/508))
+- **coordinator**: Redesign internals — persistence, IPC, structured logs (#476) (#508)
+
 
 ### Miscellaneous
 
-- enforce dependency license allowlist via cargo-deny ([#499](https://github.com/avihut/daft/pull/499))
-- reduce test.yml flake — pin mise tools, skip cargo-cooldown on CI ([#498](https://github.com/avihut/daft/pull/498))
-
+- Enforce dependency license allowlist via cargo-deny (#499)
+- Reduce test.yml flake — pin mise tools, skip cargo-cooldown on CI (#498)
 ## [1.12.0](https://github.com/avihut/daft/compare/v1.11.1...v1.12.0) - 2026-05-09
 
+
 ### Bug Fixes
 
-- prevent panic on Shift+Tab in shared manage editor ([#479](https://github.com/avihut/daft/pull/479))
-- *(hooks)* stop yaml_executor unit tests from leaking into ~/.local/state/daft ([#480](https://github.com/avihut/daft/pull/480))
+- Prevent panic on Shift+Tab in shared manage editor (#479)
+- **hooks**: Stop yaml_executor unit tests from leaking into ~/.local/state/daft (#480)
+
 
 ### Features
 
-- redesign merge with rebase styles and PR-style hook gates ([#471](https://github.com/avihut/daft/pull/471))
+- Redesign merge with rebase styles and PR-style hook gates (#471)
+
 
 ### Miscellaneous
 
-- Rust ecosystem alignment — edition 2024, MSRV policy, forbid unsafe, dual-license ([#481](https://github.com/avihut/daft/pull/481))
-
+- Rust ecosystem alignment — edition 2024, MSRV policy, forbid unsafe, dual-license (#481)
 ## [1.11.1](https://github.com/avihut/daft/compare/v1.11.0...v1.11.1) - 2026-05-02
 
+
 ### Bug Fixes
 
-- *(coordinator)* honor needs: between background jobs ([#454](https://github.com/avihut/daft/pull/454)) ([#463](https://github.com/avihut/daft/pull/463))
-- *(list)* render empty-state hint when no worktrees, plus repo remove copy refresh ([#462](https://github.com/avihut/daft/pull/462))
-- *(hooks)* honor user git-config in commands that fire hooks ([#461](https://github.com/avihut/daft/pull/461))
-- *(completions)* offer path completions and out-of-repo path remove ([#459](https://github.com/avihut/daft/pull/459))
-- *(clone)* reject --no-checkout for non-bare layouts and cd into root on success ([#458](https://github.com/avihut/daft/pull/458))
-
+- **coordinator**: Honor needs: between background jobs (#454) (#463)
+- **list**: Render empty-state hint when no worktrees, plus repo remove copy refresh (#462)
+- **hooks**: Honor user git-config in commands that fire hooks (#461)
+- **completions**: Offer path completions and out-of-repo path remove (#459)
+- **clone**: Reject --no-checkout for non-bare layouts and cd into root on success (#458)
 ## [1.11.0](https://github.com/avihut/daft/compare/v1.10.3...v1.11.0) - 2026-05-02
 
+
 ### Features
 
-- add `daft repo remove` and `daft repo` subcommand category ([#448](https://github.com/avihut/daft/pull/448))
-
+- Add `daft repo remove` and `daft repo` subcommand category (#448)
 ## [1.10.3](https://github.com/avihut/daft/compare/v1.10.2...v1.10.3) - 2026-05-02
 
+
 ### Bug Fixes
 
-- do not create default-branch worktree for multi-branch bare clones ([#453](https://github.com/avihut/daft/pull/453))
-- *(ci)* scope claude-pr-review concurrency to the job ([#440](https://github.com/avihut/daft/pull/440))
-
+- Do not create default-branch worktree for multi-branch bare clones (#453)
+- **ci**: Scope claude-pr-review concurrency to the job (#440)
 ## [1.10.2](https://github.com/avihut/daft/compare/v1.10.1...v1.10.2) - 2026-05-01
 
+
 ### Bug Fixes
 
-- *(tui)* stop default-branch owner shimmer in prune/sync ([#430](https://github.com/avihut/daft/pull/430))
+- **tui**: Stop default-branch owner shimmer in prune/sync (#430)
+
 
 ### Miscellaneous
 
-- *(deps)* add 7-day cooldown across cargo, bun, mise, dependabot, and CI ([#431](https://github.com/avihut/daft/pull/431))
-
+- **deps**: Add 7-day cooldown across cargo, bun, mise, dependabot, and CI (#431)
 ## [1.10.1](https://github.com/avihut/daft/compare/v1.10.0...v1.10.1) - 2026-04-28
 
+
 ### Bug Fixes
 
-- *(hooks)* gate coordinator IPC behind cfg(unix) so Windows builds ([#426](https://github.com/avihut/daft/pull/426))
+- **hooks**: Gate coordinator IPC behind cfg(unix) so Windows builds (#426)
+
 
 ### Miscellaneous
 
-- *(hooks)* warm up dev build via background mise dev job ([#425](https://github.com/avihut/daft/pull/425))
-
+- **hooks**: Warm up dev build via background mise dev job (#425)
 ## [1.10.0](https://github.com/avihut/daft/compare/v1.9.1...v1.10.0) - 2026-04-28
 
+
 ### Bug Fixes
 
-- *(exec)* clarify failed-run output dump format ([#422](https://github.com/avihut/daft/pull/422))
+- **exec**: Clarify failed-run output dump format (#422)
+
 
 ### Features
 
-- *(hooks)* background hook jobs + universal logging + daft hooks jobs CLI ([#411](https://github.com/avihut/daft/pull/411))
-
+- **hooks**: Background hook jobs + universal logging + daft hooks jobs CLI (#411)
 ## [1.9.1](https://github.com/avihut/daft/compare/v1.9.0...v1.9.1) - 2026-04-27
 
+
 ### Bug Fixes
 
-- *(exec)* isolate alias capture from rc-file stdout ([#418](https://github.com/avihut/daft/pull/418))
-- *(shell-init,completions)* skip update check and trust prune for shell-eval'd commands ([#416](https://github.com/avihut/daft/pull/416))
-
+- **exec**: Isolate alias capture from rc-file stdout (#418)
+- **shell-init,completions**: Skip update check and trust prune for shell-eval'd commands (#416)
 ## [1.9.0](https://github.com/avihut/daft/compare/v1.8.0...v1.9.0) - 2026-04-27
 
+
 ### Bug Fixes
 
-- *(exec)* resolve user shell aliases and functions ([#414](https://github.com/avihut/daft/pull/414))
+- **exec**: Resolve user shell aliases and functions (#414)
+- **test**: Guarantee manual-test sandbox cleanup via Drop (#413)
+
 
 ### Features
 
-- shared infrastructure for live list population ([#402](https://github.com/avihut/daft/pull/402)) ([#410](https://github.com/avihut/daft/pull/410))
-
+- Shared infrastructure for live list population (#402) (#410)
 ## [1.8.0](https://github.com/avihut/daft/compare/v1.7.2...v1.8.0) - 2026-04-25
 
-### Features
-
-- multi-format emit support (--format, --template) ([#377](https://github.com/avihut/daft/pull/377))
-- *(exec)* run commands across multiple worktrees ([#381](https://github.com/avihut/daft/pull/381))
 
 ### Bug Fixes
 
-- *(tests)* tolerate per-test cleanup races in integration suite ([#401](https://github.com/avihut/daft/pull/401))
-- *(shell-init)* resolve daft binary live, drop eager path cache ([#403](https://github.com/avihut/daft/pull/403))
-- *(exec)* center header, fix stuck timer, brighten command preview ([#404](https://github.com/avihut/daft/pull/404))
-- *(ci)* skip cargo package verify in release-plz ([#405](https://github.com/avihut/daft/pull/405))
+- **ci**: Skip cargo package verify in release-plz (#405)
+- **exec**: Center header, fix stuck timer, brighten command preview (#404)
+- **shell-init**: Resolve daft binary live, drop eager path cache (#403)
+- **tests**: Tolerate per-test cleanup races in integration suite (#401)
+
+
+### Features
+
+- **exec**: Run commands across multiple worktrees (#381)
+- Multi-format emit support (--format, --template) (#377)
+
 
 ### Miscellaneous
 
-- commit Cargo.lock and bump gix to 0.82 ([#382](https://github.com/avihut/daft/pull/382))
+- Commit Cargo.lock and bump gix to 0.82 (#382)
 
-### BREAKING
 
-- The `--json` flag is removed from `daft list` and `daft release-notes`. Use
-  `--format json` instead.
-- `daft list --format json` emits a flat `owner_name` and `owner_email`
-  (strings) in place of the previous nested `owner: {name, email}` object.
-  This is a schema change forced by the new format-agnostic emit path (other
-  formats like TSV and CSV cannot represent nested objects). Scripts reading
-  the old `.owner.name` / `.owner.email` need to switch to `.owner_name` /
-  `.owner_email`.
+### Revert
 
-### Added
-
-- `--format` on `list`, `release-notes`, `hooks trust list`, `layout list`,
-  `shared status`, `multi-remote status`, `hooks run` with seven declarative
-  formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
-- `--template <tera>` for custom output on the same commands.
-- `--no-headers` to suppress header rows in `tsv` / `csv` output.
-- New guide: `docs/guide/output-formats.md`.
-- `daft worktree-exec` (alias `daft exec`) runs one or more commands across
-  one or more worktrees. Supports glob targets, `--all`,
-  parallel/sequential/keep-going modes, and single-target stdio pass-through.
-  Multi-worktree runs render a live progress row per worktree with a rolling
-  tail of output; each row finalizes to a self-describing compact line
-  (`✓ branch ❯ cmd (1.5s)` / `✗ branch ❯ cmd (1.2s)`). Steps cancelled
-  mid-flight surface as `⊘ branch ❯ cmd cancelled after N`; steps that never
-  started (fail-fast upstream or cancel before launch) surface as
-  `○ branch ❯ cmd skipped`. Failed worktrees' captured output is dumped to
-  stdout at the end for scrollback.
-
+- Drop publish_no_verify in release-plz.toml (#406)
 ## [1.7.2](https://github.com/avihut/daft/compare/v1.7.1...v1.7.2) - 2026-04-21
 
-### Bug Fixes
-
-- *(ownership)* configurable strategy-driven branch ownership detection ([#376](https://github.com/avihut/daft/pull/376))
-- *(sync)* exclude rebase base branch from push ([#375](https://github.com/avihut/daft/pull/375))
-- *(update-check)* drop git-style "hint:" prefix from notification ([#373](https://github.com/avihut/daft/pull/373))
-- *(hooks)* skip prompt when trust level unchanged ([#371](https://github.com/avihut/daft/pull/371))
-
-## [1.7.1](https://github.com/avihut/daft/compare/v1.7.0...v1.7.1) - 2026-04-17
 
 ### Bug Fixes
 
-- *(output)* keep outer spinner alive across hook boundary ([#367](https://github.com/avihut/daft/pull/367))
+- **ownership**: Configurable strategy-driven branch ownership detection (#376)
+- **sync**: Exclude rebase base branch from push (#375)
+- **update-check**: Drop git-style "hint:" prefix from notification (#373)
+- **hooks**: Skip prompt when trust level unchanged (#371)
+## [1.7.1](https://github.com/avihut/daft/compare/v1.7.0...v1.7.1) - 2026-04-20
+
+
+### Bug Fixes
+
+- **output**: Keep outer spinner alive across hook boundary (#367)
+
 
 ### Miscellaneous
 
-- fix clippy warnings new in Rust 1.95 ([#368](https://github.com/avihut/daft/pull/368))
-
+- Fix clippy warnings new in Rust 1.95 (#368)
 ## [1.7.0](https://github.com/avihut/daft/compare/v1.6.5...v1.7.0) - 2026-04-15
 
+
 ### Features
 
-- *(completions)* rich grouped completions with configurable columns ([#365](https://github.com/avihut/daft/pull/365))
-
+- **completions**: Rich grouped completions with configurable columns (#365)
 ## [1.6.5](https://github.com/avihut/daft/compare/v1.6.4...v1.6.5) - 2026-04-11
 
+
 ### Bug Fixes
 
-- *(ci)* verify remote/ clone directly in test-homebrew ([#363](https://github.com/avihut/daft/pull/363))
-
+- **ci**: Verify remote/ clone directly in test-homebrew (#363)
 ## [1.6.4](https://github.com/avihut/daft/compare/v1.6.3...v1.6.4) - 2026-04-11
 
+
 ### Bug Fixes
 
-- *(ci)* run test-homebrew clone from a clean workspace subdir ([#360](https://github.com/avihut/daft/pull/360))
+- **ci**: Run test-homebrew clone from a clean workspace subdir (#360)
+
 
 ### Miscellaneous
 
-- add --env flag to sandbox help command ([#362](https://github.com/avihut/daft/pull/362))
-
+- Add --env flag to sandbox help command (#362)
 ## [1.6.3](https://github.com/avihut/daft/compare/v1.6.2...v1.6.3) - 2026-04-11
 
-### Bug Fixes
-
-- add daft-go/daft-start to all packaging symlink lists ([#358](https://github.com/avihut/daft/pull/358))
-
-## [1.6.2](https://github.com/avihut/daft/compare/v1.6.1...v1.6.2) - 2026-04-09
 
 ### Bug Fixes
 
-- shared status/sync/manage work from contained layout root ([#353](https://github.com/avihut/daft/pull/353))
+- Add daft-go/daft-start to all packaging symlink lists (#358)
+## [1.6.2](https://github.com/avihut/daft/compare/v1.6.1...v1.6.2) - 2026-04-11
 
+
+### Bug Fixes
+
+- Shared status/sync/manage work from contained layout root (#353)
 ## [1.6.1](https://github.com/avihut/daft/compare/v1.6.0...v1.6.1) - 2026-04-09
 
+
 ### Bug Fixes
 
-- shared status column alignment and default subcommand ([#352](https://github.com/avihut/daft/pull/352))
-- collect uncollected shared files from manage TUI via Enter/Space ([#351](https://github.com/avihut/daft/pull/351))
-- exclude Size column from default responsive column set ([#350](https://github.com/avihut/daft/pull/350))
-
+- Shared status column alignment and default subcommand (#352)
+- Collect uncollected shared files from manage TUI via Enter/Space (#351)
+- Exclude Size column from default responsive column set (#350)
 ## [1.6.0](https://github.com/avihut/daft/compare/v1.5.1...v1.6.0) - 2026-03-31
 
+
 ### Bug Fixes
 
-- prevent auto-upstream tracking on new local-first branches ([#342](https://github.com/avihut/daft/pull/342))
-- allow --remote delete when local branch does not exist ([#341](https://github.com/avihut/daft/pull/341))
-- *(ci)* update homebrew test for sibling layout and new commands
+- Prevent auto-upstream tracking on new local-first branches (#342)
+- Allow --remote delete when local branch does not exist (#341)
+- **ci**: Update homebrew test for sibling layout and new commands
+
 
 ### Features
 
-- shared file manage TUI with inline editor ([#344](https://github.com/avihut/daft/pull/344))
-- interactive sync for declared-but-uncollected shared files ([#343](https://github.com/avihut/daft/pull/343))
-- add layout prompt to init command ([#338](https://github.com/avihut/daft/pull/338))
-- local-first remote sync ([#337](https://github.com/avihut/daft/pull/337))
-
+- Shared file manage TUI with inline editor (#344)
+- Interactive sync for declared-but-uncollected shared files (#343)
+- Add layout prompt to init command (#338)
+- Local-first remote sync (#337)
 ## [1.5.1](https://github.com/avihut/daft/compare/v1.5.0...v1.5.1) - 2026-03-26
 
+
 ### Bug Fixes
 
-- gate unix symlink import with cfg(unix) to fix Windows build
-
+- Gate unix symlink import with cfg(unix) to fix Windows build
 ## [1.5.0](https://github.com/avihut/daft/compare/v1.4.0...v1.5.0) - 2026-03-26
 
+
 ### Bug Fixes
 
-- move shared-env.sh out of gitignored .mise/ to fix release-plz
-- prevent fork bomb from recursive background task spawning ([#332](https://github.com/avihut/daft/pull/332))
+- Move shared-env.sh out of gitignored .mise/ to fix release-plz
+- Prevent fork bomb from recursive background task spawning (#332)
+
 
 ### Features
 
-- worktree shared files — centralize untracked config across worktrees ([#328](https://github.com/avihut/daft/pull/328)) ([#331](https://github.com/avihut/daft/pull/331))
-- move hooks — identity-tracked hook replay on worktree move ([#326](https://github.com/avihut/daft/pull/326))
-
+- Worktree shared files — centralize untracked config across worktrees (#328) (#331)
+- Move hooks — identity-tracked hook replay on worktree move (#326)
 ## [1.4.0](https://github.com/avihut/daft/compare/v1.3.1...v1.4.0) - 2026-03-25
 
+
 ### Features
 
-- repeatable -b flag for multi-branch clone ([#324](https://github.com/avihut/daft/pull/324))
-
+- Repeatable -b flag for multi-branch clone (#324)
 ## [1.3.1](https://github.com/avihut/daft/compare/v1.3.0...v1.3.1) - 2026-03-24
 
+
 ### Bug Fixes
 
-- gate unix-only MetadataExt behind cfg(unix) for Windows build ([#321](https://github.com/avihut/daft/pull/321))
-
+- Gate unix-only MetadataExt behind cfg(unix) for Windows build (#321)
 ## [1.3.0](https://github.com/avihut/daft/compare/v1.2.1...v1.3.0) - 2026-03-24
 
+
 ### Features
 
-- progressive adoption layout system ([#320](https://github.com/avihut/daft/pull/320))
-- add --columns hash and gitoxide commit metadata fast path ([#319](https://github.com/avihut/daft/pull/319))
-- add --sort flag to list, prune, and sync commands ([#317](https://github.com/avihut/daft/pull/317))
-- add optional size column with summary footer ([#315](https://github.com/avihut/daft/pull/315))
-
+- Progressive adoption layout system (#320)
+- Add --columns hash and gitoxide commit metadata fast path (#319)
+- Add --sort flag to list, prune, and sync commands (#317)
+- Add optional size column with summary footer (#315)
 ## [1.2.1](https://github.com/avihut/daft/compare/v1.2.0...v1.2.1) - 2026-03-17
 
-### Bug Fixes
-
-- navigate to detached HEAD worktrees and clean rebase lock files ([#313](https://github.com/avihut/daft/pull/313))
-
-## [1.2.0](https://github.com/avihut/daft/compare/v1.1.1...v1.2.0) - 2026-03-16
 
 ### Bug Fixes
 
-- *(sandbox)* reset ZDOTDIR in setup-test to prevent shell contamination
-- add missing completions for top-level flags ([#311](https://github.com/avihut/daft/pull/311))
-- align default branch symbol and color in sync and prune with list ([#308](https://github.com/avihut/daft/pull/308))
+- Navigate to detached HEAD worktrees and clean rebase lock files (#313)
+## [1.2.0](https://github.com/avihut/daft/compare/v1.1.1...v1.2.0) - 2026-03-17
+
+
+### Bug Fixes
+
+- **sandbox**: Reset ZDOTDIR in setup-test to prevent shell contamination
+- Add missing completions for top-level flags (#311)
+- Align default branch symbol and color in sync and prune with list (#308)
+
 
 ### Features
 
-- branch ownership, local branch sync, and --include flag ([#312](https://github.com/avihut/daft/pull/312))
-- add --columns flag for list, sync, and prune commands ([#310](https://github.com/avihut/daft/pull/310))
-
+- Branch ownership, local branch sync, and --include flag (#312)
+- Add --columns flag for list, sync, and prune commands (#310)
 ## [1.1.1](https://github.com/avihut/daft/compare/v1.1.0...v1.1.1) - 2026-03-15
 
+
 ### Bug Fixes
 
-- rename git-sync to git-worktree-sync to avoid Homebrew conflicts ([#305](https://github.com/avihut/daft/pull/305))
-- build.rs rerun-if-changed watches wrong paths in worktrees ([#303](https://github.com/avihut/daft/pull/303))
-
+- Rename git-sync to git-worktree-sync to avoid Homebrew conflicts (#305)
+- Build.rs rerun-if-changed watches wrong paths in worktrees (#303)
 ## [1.1.0](https://github.com/avihut/daft/compare/v1.0.37...v1.1.0) - 2026-03-15
 
+
 ### Bug Fixes
 
-- *(sync)* prevent push after rebase conflict ([#299](https://github.com/avihut/daft/pull/299))
+- **sync**: Prevent push after rebase conflict (#299)
+
 
 ### Features
 
-- manual testing framework ([#301](https://github.com/avihut/daft/pull/301))
+- Manual testing framework (#301)
+
 
 ### Miscellaneous
 
-- convert integration tests to YAML manual test framework ([#302](https://github.com/avihut/daft/pull/302))
-
+- Convert integration tests to YAML manual test framework (#302)
 ## [1.0.37](https://github.com/avihut/daft/compare/v1.0.36...v1.0.37) - 2026-03-13
 
+
 ### Bug Fixes
 
-- *(sync)* show dirty status instead of pruned for unremovable worktrees ([#298](https://github.com/avihut/daft/pull/298))
-- *(sync)* refresh remote tracking info after push in TUI output ([#297](https://github.com/avihut/daft/pull/297))
-- prevent brew link failures with Homebrew-aware symlink management ([#294](https://github.com/avihut/daft/pull/294))
-
+- **sync**: Show dirty status instead of pruned for unremovable worktrees (#298)
+- **sync**: Refresh remote tracking info after push in TUI output (#297)
+- Prevent brew link failures with Homebrew-aware symlink management (#294)
 ## [1.0.36](https://github.com/avihut/daft/compare/v1.0.35...v1.0.36) - 2026-03-12
 
+
 ### Bug Fixes
 
-- *(sync)* treat non-fast-forwardable branches as warnings ([#291](https://github.com/avihut/daft/pull/291))
-- simplify hooks trust level change output ([#289](https://github.com/avihut/daft/pull/289))
-- use resolved remote URL for trust fingerprint during clone ([#286](https://github.com/avihut/daft/pull/286))
-- sync symlink lists across all packaging configs
+- **sync**: Treat non-fast-forwardable branches as warnings (#291)
+- Simplify hooks trust level change output (#289)
+- Use resolved remote URL for trust fingerprint during clone (#286)
+- Sync symlink lists across all packaging configs
+
 
 ### Features
 
-- *(sync)* add --push and --force-with-lease flags ([#293](https://github.com/avihut/daft/pull/293))
-- *(sync)* add --autostash flag for rebase phase ([#292](https://github.com/avihut/daft/pull/292))
-- *(sync,prune)* hook lifecycle in TUI with verbose job sub-rows ([#290](https://github.com/avihut/daft/pull/290))
-- *(sync,prune)* parallel DAG executor with inline ratatui TUI ([#285](https://github.com/avihut/daft/pull/285))
-- allow force-removal of default branch worktree ([#284](https://github.com/avihut/daft/pull/284))
+- **sync**: Add --push and --force-with-lease flags (#293)
+- **sync**: Add --autostash flag for rebase phase (#292)
+- **sync,prune**: Hook lifecycle in TUI with verbose job sub-rows (#290)
+- **sync,prune**: Parallel DAG executor with inline ratatui TUI (#285)
+- Allow force-removal of default branch worktree (#284)
+
 
 ### Miscellaneous
 
-- compartmentalized sandbox config directory ([#288](https://github.com/avihut/daft/pull/288))
-
+- Compartmentalized sandbox config directory (#288)
 ## [1.0.35](https://github.com/avihut/daft/compare/v1.0.34...v1.0.35) - 2026-03-09
 
+
 ### Bug Fixes
 
-- dev version format leaking to release builds ([#282](https://github.com/avihut/daft/pull/282))
+- Dev version format leaking to release builds (#282)
+
 
 ### Miscellaneous
 
-- replace custom commit-msg regex with cocogitto
-
+- Replace custom commit-msg regex with cocogitto
 ## [1.0.34](https://github.com/avihut/daft/compare/v1.0.33...v1.0.34) - 2026-03-08
 
+
 ### Bug Fixes
 
-- *(completions)* remote branches not matching when typing prefix
-- *(ci)* pin release-plz to 0.3.156 to fix release PR creation
-- *(ci)* add version to xtask path dependency for cargo package compatibility
-- *(hooks)* trust fingerprinting, stale entry protection, and prune improvements ([#278](https://github.com/avihut/daft/pull/278))
-- *(list)* use orange for default branch indicator and tighten first column ([#272](https://github.com/avihut/daft/pull/272))
+- **completions**: Remote branches not matching when typing prefix
+- **ci**: Pin release-plz to 0.3.156 to fix release PR creation
+- **ci**: Add version to xtask path dependency for cargo package compatibility
+- **hooks**: Trust fingerprinting, stale entry protection, and prune improvements (#278)
+- **list**: Use orange for default branch indicator and tighten first column (#272)
+
 
 ### Features
 
-- *(list)* enhance list command with stat modes, branch flags, and config ([#280](https://github.com/avihut/daft/pull/280))
-- add spinner feedback for long-running operations ([#277](https://github.com/avihut/daft/pull/277))
+- **list**: Enhance list command with stat modes, branch flags, and config (#280)
+- Add spinner feedback for long-running operations (#277)
+
 
 ### Refactoring
 
-- hide completions command from help and shell completions ([#270](https://github.com/avihut/daft/pull/270))
-
+- Hide completions command from help and shell completions (#270)
 ## [1.0.33](https://github.com/avihut/daft/compare/v1.0.32...v1.0.33) - 2026-02-24
 
+
 ### Bug Fixes
 
-- *(list)* respect terminal width and work from repo root ([#268](https://github.com/avihut/daft/pull/268))
-
+- **list**: Respect terminal width and work from repo root (#268)
 ## [1.0.32](https://github.com/avihut/daft/compare/v1.0.31...v1.0.32) - 2026-02-24
 
+
 ### Bug Fixes
 
-- *(docs)* build issue and missing docs
-- *(release-notes)* add PR links to older changelog entries
-- *(release-notes)* improve link rendering and skip empty sections ([#260](https://github.com/avihut/daft/pull/260))
-- *(hooks)* resolve hooks not executing on first run after upgrade ([#259](https://github.com/avihut/daft/pull/259))
+- **docs**: Build issue and missing docs
+- **release-notes**: Add PR links to older changelog entries
+- **release-notes**: Improve link rendering and skip empty sections (#260)
+- **hooks**: Resolve hooks not executing on first run after upgrade (#259)
+
 
 ### Features
 
-- *(list)* enrich daft list with status indicators, branch age, and relative paths ([#266](https://github.com/avihut/daft/pull/266))
-- *(list)* add daft list / git worktree-list command ([#264](https://github.com/avihut/daft/pull/264))
-- *(sync)* add daft sync / git sync command ([#263](https://github.com/avihut/daft/pull/263))
-- add `daft rename` / `git worktree-rename` command ([#256](https://github.com/avihut/daft/pull/256))
-- *(go)* add `daft go -` to toggle between previous worktrees ([#262](https://github.com/avihut/daft/pull/262))
-- *(update)* rename daft fetch to daft update with refspec support ([#261](https://github.com/avihut/daft/pull/261))
-- *(go)* auto-start worktrees and improved branch-not-found errors ([#257](https://github.com/avihut/daft/pull/257))
+- **list**: Enrich daft list with status indicators, branch age, and relative paths (#266)
+- **list**: Add daft list / git worktree-list command (#264)
+- **sync**: Add daft sync / git sync command (#263)
+- Add `daft rename` / `git worktree-rename` command (#256)
+- **go**: Add `daft go -` to toggle between previous worktrees (#262)
+- **update**: Rename daft fetch to daft update with refspec support (#261)
+- **go**: Auto-start worktrees and improved branch-not-found errors (#257)
+
 
 ### Refactoring
 
-- *(cli)* separate daft go/start from git-worktree-checkout ([#265](https://github.com/avihut/daft/pull/265))
+- **cli**: Separate daft go/start from git-worktree-checkout (#265)
+## [1.0.31](https://github.com/avihut/daft/compare/v1.0.30...v1.0.31) - 2026-02-23
 
-## [1.0.31](https://github.com/avihut/daft/compare/v1.0.30...v1.0.31) - 2026-02-22
-
-### Bug Fixes
-
-- *(gitoxide)* detect gone upstream branches in branch_list_verbose ([#252](https://github.com/avihut/daft/pull/252))
-
-### Features
-
-- *(hooks)* OS-variant run map for polymorphic platform targeting ([#254](https://github.com/avihut/daft/pull/254))
-- consolidate worktree-branch-delete into worktree-branch -d/-D ([#253](https://github.com/avihut/daft/pull/253))
-- add daft verb aliases and consolidate checkout-branch into checkout -b ([#250](https://github.com/avihut/daft/pull/250))
-
-## [1.0.30](https://github.com/avihut/daft/compare/v1.0.29...v1.0.30) - 2026-02-21
 
 ### Bug Fixes
 
-- *(ci)* prevent test workflow from running twice on release PRs
-- *(bench)* missing symlink, jq overflow, and worktree cleanup ([#247](https://github.com/avihut/daft/pull/247))
-- *(bench)* add target/release to PATH so benchmarks find daft ([#246](https://github.com/avihut/daft/pull/246))
-- use \$SHELL -i for exec commands to support aliases and shell functions ([#242](https://github.com/avihut/daft/pull/242))
+- **gitoxide**: Detect gone upstream branches in branch_list_verbose (#252)
+
 
 ### Features
 
-- *(hooks)* add job descriptions, skip descriptions, and OS/arch conditions ([#248](https://github.com/avihut/daft/pull/248))
-- *(hooks)* add manual hook execution with `hooks run` command ([#245](https://github.com/avihut/daft/pull/245))
+- **hooks**: OS-variant run map for polymorphic platform targeting (#254)
+- Consolidate worktree-branch-delete into worktree-branch -d/-D (#253)
+- Add daft verb aliases and consolidate checkout-branch into checkout -b (#250)
+## [1.0.30](https://github.com/avihut/daft/compare/v1.0.29...v1.0.30) - 2026-02-22
+
+
+### Bug Fixes
+
+- **ci**: Prevent test workflow from running twice on release PRs
+- **bench**: Missing symlink, jq overflow, and worktree cleanup (#247)
+- **bench**: Add target/release to PATH so benchmarks find daft (#246)
+- Use \$SHELL -i for exec commands to support aliases and shell functions (#242)
+
+
+### Features
+
+- **hooks**: Add job descriptions, skip descriptions, and OS/arch conditions (#248)
+- **hooks**: Add manual hook execution with `hooks run` command (#245)
+
 
 ### Miscellaneous
 
-- add benchmark suite with dashboard ([#244](https://github.com/avihut/daft/pull/244))
+- Add benchmark suite with dashboard (#244)
+
 
 ### Refactoring
 
-- separate core logic from UI layer ([#249](https://github.com/avihut/daft/pull/249))
-
+- Separate core logic from UI layer (#249)
 ## [1.0.29](https://github.com/avihut/daft/compare/v1.0.28...v1.0.29) - 2026-02-19
 
+
 ### Bug Fixes
 
-- prevent prune from deleting worktrees with uncommitted changes or untracked files ([#240](https://github.com/avihut/daft/pull/240))
-- grow hook output window dynamically instead of pre-allocating blank lines ([#237](https://github.com/avihut/daft/pull/237))
-- check remote tracking branch when validating merge status for deletion ([#236](https://github.com/avihut/daft/pull/236))
-- doctor --fix now creates missing shortcuts and --dry-run shows concrete actions ([#232](https://github.com/avihut/daft/pull/232))
-- cd to safe directory when branch-delete removes current worktree ([#234](https://github.com/avihut/daft/pull/234))
-- run post-clone hook before worktree-post-create during clone ([#233](https://github.com/avihut/daft/pull/233))
-- carry changes from base branch worktree instead of current worktree ([#231](https://github.com/avihut/daft/pull/231))
+- Prevent prune from deleting worktrees with uncommitted changes or untracked files (#240)
+- Grow hook output window dynamically instead of pre-allocating blank lines (#237)
+- Check remote tracking branch when validating merge status for deletion (#236)
+- Doctor --fix now creates missing shortcuts and --dry-run shows concrete actions (#232)
+- Cd to safe directory when branch-delete removes current worktree (#234)
+- Run post-clone hook before worktree-post-create during clone (#233)
+- Carry changes from base branch worktree instead of current worktree (#231)
+
 
 ### Features
 
-- accept worktree paths as arguments in branch-delete ([#239](https://github.com/avihut/daft/pull/239))
-- add -x/--exec option to run commands in worktree after setup ([#238](https://github.com/avihut/daft/pull/238))
+- Accept worktree paths as arguments in branch-delete (#239)
+- Add -x/--exec option to run commands in worktree after setup (#238)
+
 
 ### Miscellaneous
 
-- removed plans
-- removed unused WARP.md
-- reorganize mise tasks into file-based structure with : hierarchy ([#235](https://github.com/avihut/daft/pull/235))
-- simplified daft hooks
-
+- Removed plans
+- Removed unused WARP.md
+- Reorganize mise tasks into file-based structure with : hierarchy (#235)
+- Simplified daft hooks
 ## [1.0.28](https://github.com/avihut/daft/compare/v1.0.27...v1.0.28) - 2026-02-18
 
+
 ### Bug Fixes
 
-- skip pre-push hooks for structural push operations ([#228](https://github.com/avihut/daft/pull/228))
+- Skip pre-push hooks for structural push operations (#228)
+
 
 ### Features
 
-- add Linux distribution pipeline with shell installer ([#229](https://github.com/avihut/daft/pull/229))
-
+- Add Linux distribution pipeline with shell installer (#229)
 ## [1.0.27](https://github.com/avihut/daft/compare/v1.0.26...v1.0.27) - 2026-02-18
 
+
 ### Bug Fixes
 
-- enable CD after worktree-branch-delete removes current worktree ([#224](https://github.com/avihut/daft/pull/224))
-- render hook job output after heading, not before ([#223](https://github.com/avihut/daft/pull/223))
+- Enable CD after worktree-branch-delete removes current worktree (#224)
+- Render hook job output after heading, not before (#223)
+
 
 ### Features
 
-- *(doctor)* improve output format, fix bugs, and add --dry-run ([#222](https://github.com/avihut/daft/pull/222))
-
+- **doctor**: Improve output format, fix bugs, and add --dry-run (#222)
 ## [1.0.26](https://github.com/avihut/daft/compare/v1.0.25...v1.0.26) - 2026-02-17
 
+
 ### Bug Fixes
 
-- use temp file for shell wrapper CD communication ([#219](https://github.com/avihut/daft/pull/219))
+- Use temp file for shell wrapper CD communication (#219)
+
 
 ### Features
 
-- add hook execution progress display with spinners ([#217](https://github.com/avihut/daft/pull/217))
-
+- Add hook execution progress display with spinners (#217)
 ## [1.0.25](https://github.com/avihut/daft/compare/v1.0.24...v1.0.25) - 2026-02-16
 
+
 ### Bug Fixes
 
-- *(fetch)* check target worktree for dirty state instead of current worktree ([#213](https://github.com/avihut/daft/pull/213))
-- *(docs)* align changelog rendering for new release-plz format ([#210](https://github.com/avihut/daft/pull/210))
+- **fetch**: Check target worktree for dirty state instead of current worktree (#213)
+- **docs**: Align changelog rendering for new release-plz format (#210)
+
 
 ### Features
 
-- *(output)* add colored output to CliOutput and fetch/prune commands ([#215](https://github.com/avihut/daft/pull/215))
-- *(shortcuts)* make default-branch shortcuts shell-only functions ([#214](https://github.com/avihut/daft/pull/214))
-- add git-worktree-branch-delete command ([#211](https://github.com/avihut/daft/pull/211))
-
+- **output**: Add colored output to CliOutput and fetch/prune commands (#215)
+- **shortcuts**: Make default-branch shortcuts shell-only functions (#214)
+- Add git-worktree-branch-delete command (#211)
 ## [1.0.24](https://github.com/avihut/daft/compare/v1.0.23...v1.0.24) - 2026-02-15
+
 
 ### Bug Fixes
 
-- prevent hook commands from hanging on long-running tasks ([#205](https://github.com/avihut/daft/pull/205))
+- Prevent hook commands from hanging on long-running tasks (#205)
+
 
 ### Refactoring
 
-- absorb checkout-branch-from-default into --from-default flag ([#206](https://github.com/avihut/daft/pull/206))
+- Absorb checkout-branch-from-default into --from-default flag (#206)
+
 
 ### Testing
 
-- add gitoxide integration test coverage and move matrix to Rust xtask ([#208](https://github.com/avihut/daft/pull/208))
-
+- Add gitoxide integration test coverage and move matrix to Rust xtask (#208)
 ## [1.0.23](https://github.com/avihut/daft/compare/v1.0.22...v1.0.23) - 2026-02-14
 
-### Miscellaneous
-
-- add Prettier formatting with Bun for docs and YAML
-- remove unused install.sh script ([#192](https://github.com/avihut/daft/pull/192))
-- improve daft.yml hooks for full worktree automation ([#190](https://github.com/avihut/daft/pull/190))
-
 
 ### Miscellaneous
 
-- Filter CI, deps, docs, and style commits from changelog
 - Add Prettier formatting with Bun for docs and YAML
-- Remove unused install.sh script ([#192](https://github.com/avihut/daft/pull/192))
-- Improve daft.yml hooks for full worktree automation ([#190](https://github.com/avihut/daft/pull/190))
-## [1.0.22] - 2026-02-07
+- Remove unused install.sh script (#192)
+- Improve daft.yml hooks for full worktree automation (#190)
+## [1.0.22](https://github.com/avihut/daft/compare/v1.0.21...v1.0.22) - 2026-02-07
 
 
 ### Bug Fixes
 
-- **clone**: Fall back to git CLI for remote ops when no local repo exists ([#184](https://github.com/avihut/daft/pull/184))
-## [1.0.21] - 2026-02-07
+- **clone**: Fall back to git CLI for remote ops when no local repo exists (#184)
+## [1.0.21](https://github.com/avihut/daft/compare/v1.0.20...v1.0.21) - 2026-02-07
 
 
 ### Features
 
-- Add lefthook git hooks for local code quality checks ([#183](https://github.com/avihut/daft/pull/183))
-- Migrate from just to mise task runner ([#182](https://github.com/avihut/daft/pull/182))
-- **hooks**: Add YAML hooks system ([#181](https://github.com/avihut/daft/pull/181))
-- Add `daft doctor` diagnostic command ([#169](https://github.com/avihut/daft/pull/169))
-- **update-check**: Throttle new version notification to once per 24 hours ([#168](https://github.com/avihut/daft/pull/168))
-- **shell-init**: Add daft() shell wrapper for cd into worktrees ([#165](https://github.com/avihut/daft/pull/165))
-## [1.0.20] - 2026-02-04
+- Add lefthook git hooks for local code quality checks (#183)
+- Migrate from just to mise task runner (#182)
+- **hooks**: Add YAML hooks system (#181)
+- Add `daft doctor` diagnostic command (#169)
+- **update-check**: Throttle new version notification to once per 24 hours (#168)
+- **shell-init**: Add daft() shell wrapper for cd into worktrees (#165)
+## [1.0.20](https://github.com/avihut/daft/compare/v1.0.19...v1.0.20) - 2026-02-04
 
 
 ### Features
 
-- Add experimental gitoxide backend for git operations ([#161](https://github.com/avihut/daft/pull/161))
+- Add experimental gitoxide backend for git operations (#161)
 
 
 ### Refactoring
 
-- **completions**: Replace Fig spec string concatenation with serde_json ([#159](https://github.com/avihut/daft/pull/159))
-## [1.0.19] - 2026-02-03
+- **completions**: Replace Fig spec string concatenation with serde_json (#159)
+## [1.0.19](https://github.com/avihut/daft/compare/v1.0.18...v1.0.19) - 2026-02-03
 
 
 ### Bug Fixes
@@ -589,67 +595,67 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- **fetch**: Emit git-fetch-like output with real-time progress ([#158](https://github.com/avihut/daft/pull/158))
+- **fetch**: Emit git-fetch-like output with real-time progress (#158)
 - Add --no-cd flag to worktree-creating commands
 - **prune**: Add streaming per-branch output in git-remote-prune style
-- Handle pruning when inside the worktree being removed ([#148](https://github.com/avihut/daft/pull/148))
-- Add background update check with new version notifications ([#143](https://github.com/avihut/daft/pull/143))
-## [1.0.18] - 2026-02-02
+- Handle pruning when inside the worktree being removed (#148)
+- Add background update check with new version notifications (#143)
+## [1.0.18](https://github.com/avihut/daft/compare/v1.0.17...v1.0.18) - 2026-02-02
 
 
 ### Bug Fixes
 
-- Include shell completions in shell-init and add Fig/Amazon Q support ([#142](https://github.com/avihut/daft/pull/142))
-- Skip uncommitted changes check when not in a work tree ([#141](https://github.com/avihut/daft/pull/141))
-- Display full branch path for worktrees with slashes ([#139](https://github.com/avihut/daft/pull/139))
-- Clean up empty parent directories after pruning worktrees ([#137](https://github.com/avihut/daft/pull/137))
-## [1.0.17] - 2026-02-01
+- Include shell completions in shell-init and add Fig/Amazon Q support (#142)
+- Skip uncommitted changes check when not in a work tree (#141)
+- Display full branch path for worktrees with slashes (#139)
+- Clean up empty parent directories after pruning worktrees (#137)
+## [1.0.17](https://github.com/avihut/daft/compare/v1.0.16...v1.0.17) - 2026-02-01
 
 
 ### Bug Fixes
 
-- Handle '+' marker in git branch -vv for linked worktree branches ([#136](https://github.com/avihut/daft/pull/136))
+- Handle '+' marker in git branch -vv for linked worktree branches (#136)
 
 
 ### Features
 
-- Rename worktree hooks with deprecation support ([#131](https://github.com/avihut/daft/pull/131))
-## [1.0.16] - 2026-01-31
+- Rename worktree hooks with deprecation support (#131)
+## [1.0.16](https://github.com/avihut/daft/compare/v1.0.15...v1.0.16) - 2026-01-31
 
 
 ### Bug Fixes
 
-- Show error message and suggestions for unknown subcommands ([#121](https://github.com/avihut/daft/pull/121))
-- Add retry logic for release PR detection in man page update ([#117](https://github.com/avihut/daft/pull/117))
+- Show error message and suggestions for unknown subcommands (#121)
+- Add retry logic for release PR detection in man page update (#117)
 
 
 ### Features
 
-- Migrate Homebrew tap from avihut/homebrew-daft to avihut/homebrew-tap ([#126](https://github.com/avihut/daft/pull/126))
+- Migrate Homebrew tap from avihut/homebrew-daft to avihut/homebrew-tap (#126)
 
 
 ### Refactoring
 
-- Unify git-daft and daft command routing ([#123](https://github.com/avihut/daft/pull/123))
-## [1.0.15] - 2026-01-28
+- Unify git-daft and daft command routing (#123)
+## [1.0.15](https://github.com/avihut/daft/compare/v1.0.14...v1.0.15) - 2026-01-28
 
 
 ### Bug Fixes
 
-- Sync man page versions with release workflow ([#115](https://github.com/avihut/daft/pull/115))
-## [1.0.14] - 2026-01-28
+- Sync man page versions with release workflow (#115)
+## [1.0.14](https://github.com/avihut/daft/compare/v1.0.13...v1.0.14) - 2026-01-28
 
 
 ### Bug Fixes
 
-- Install man pages before pkgshare.install in Homebrew formula ([#113](https://github.com/avihut/daft/pull/113))
-## [1.0.13] - 2026-01-28
+- Install man pages before pkgshare.install in Homebrew formula (#113)
+## [1.0.13](https://github.com/avihut/daft/compare/v1.0.12...v1.0.13) - 2026-01-28
 
 
 ### Bug Fixes
 
-- Include man pages in binary distribution archives ([#111](https://github.com/avihut/daft/pull/111))
-## [1.0.12] - 2026-01-28
+- Include man pages in binary distribution archives (#111)
+## [1.0.12](https://github.com/avihut/daft/compare/v1.0.11...v1.0.12) - 2026-01-28
 
 
 ### Bug Fixes
@@ -666,8 +672,8 @@ All notable changes to this project will be documented in this file.
 
 ### Refactoring
 
-- Migrate man page generation to cargo xtask ([#109](https://github.com/avihut/daft/pull/109))
-## [1.0.11] - 2026-01-28
+- Migrate man page generation to cargo xtask (#109)
+## [1.0.11](https://github.com/avihut/daft/compare/v1.0.7...v1.0.11) - 2026-01-28
 
 
 ### Bug Fixes
@@ -677,76 +683,76 @@ All notable changes to this project will be documented in this file.
 - Add man page installation to Homebrew formula
 - Prevent duplicate release creation in workflow
 - Make pager dependency Unix-only for Windows compatibility
-- Resolve hooks trust mechanism issues ([#101](https://github.com/avihut/daft/pull/101))
+- Resolve hooks trust mechanism issues (#101)
 
 
 ### Features
 
-- Add daft release-notes command ([#100](https://github.com/avihut/daft/pull/100))
-- Improve help system with git-like format and dynamic generation ([#98](https://github.com/avihut/daft/pull/98))
-## [1.0.7] - 2026-01-24
+- Add daft release-notes command (#100)
+- Improve help system with git-like format and dynamic generation (#98)
+## [1.0.7](https://github.com/avihut/daft/compare/v1.0.6...v1.0.7) - 2026-01-24
 
 
 ### Bug Fixes
 
 - Remove conflicting prerelease tags before changelog generation
-## [1.0.4] - 2026-01-24
+## [1.0.4](https://github.com/avihut/daft/compare/v1.0.3...v1.0.4) - 2026-01-24
 
 
 ### Features
 
-- Add one-time shell integration hint for new users ([#81](https://github.com/avihut/daft/pull/81))
-## [1.0.2] - 2026-01-24
+- Add one-time shell integration hint for new users (#81)
+## [1.0.2](https://github.com/avihut/daft/compare/v1.0.1...v1.0.2) - 2026-01-24
 
 
 ### Bug Fixes
 
-- Enable CD behavior for all shortcut styles ([#80](https://github.com/avihut/daft/pull/80))
-## [1.0.1] - 2026-01-24
+- Enable CD behavior for all shortcut styles (#80)
+## [1.0.1](https://github.com/avihut/daft/compare/v1.0.0...v1.0.1) - 2026-01-24
 
 
 ### Bug Fixes
 
-- Resolve v1.0.0 release issues ([#78](https://github.com/avihut/daft/pull/78))
-## [1.0.0] - 2026-01-24
+- Resolve v1.0.0 release issues (#78)
+## [1.0.0](https://github.com/avihut/daft/compare/v0.3.3...v1.0.0) - 2026-01-24
 
 
 ### Bug Fixes
 
-- Checkout existing branch no longer results in detached HEAD ([#58](https://github.com/avihut/daft/pull/58))
+- Checkout existing branch no longer results in detached HEAD (#58)
 
 
 ### Features
 
-- Support cloning empty repositories ([#74](https://github.com/avihut/daft/pull/74))
-- Add git-worktree-flow-adopt and git-worktree-flow-eject commands ([#73](https://github.com/avihut/daft/pull/73))
-- Add multi-remote workflow support ([#71](https://github.com/avihut/daft/pull/71))
-- Add multi-style command shortcuts system ([#4](https://github.com/avihut/daft/pull/4)) ([#69](https://github.com/avihut/daft/pull/69))
-- Add git-worktree-fetch command to update worktree branches ([#66](https://github.com/avihut/daft/pull/66))
-- Add man page generation using clap_mangen ([#63](https://github.com/avihut/daft/pull/63))
-- **hooks**: Add flexible project-managed hooks system ([#62](https://github.com/avihut/daft/pull/62))
-- **init**: Respect git config init.defaultBranch setting ([#61](https://github.com/avihut/daft/pull/61))
-- Add git config-based configuration system ([#60](https://github.com/avihut/daft/pull/60))
-- **clone**: Add -b/--branch option to specify checkout branch ([#59](https://github.com/avihut/daft/pull/59))
-- Git-like terminal logging ([#55](https://github.com/avihut/daft/pull/55))
-- Add IO abstraction layer for future TUI support ([#54](https://github.com/avihut/daft/pull/54))
-- Worktree-checkout to branch with existing worktree just CDs to that worktree ([#51](https://github.com/avihut/daft/pull/51))
-- Shell integration for automatic cd into new worktrees ([#46](https://github.com/avihut/daft/pull/46))
-- Carry uncommitted (dirty) state between worktrees ([#44](https://github.com/avihut/daft/pull/44))
+- Support cloning empty repositories (#74)
+- Add git-worktree-flow-adopt and git-worktree-flow-eject commands (#73)
+- Add multi-remote workflow support (#71)
+- Add multi-style command shortcuts system (#4) (#69)
+- Add git-worktree-fetch command to update worktree branches (#66)
+- Add man page generation using clap_mangen (#63)
+- **hooks**: Add flexible project-managed hooks system (#62)
+- **init**: Respect git config init.defaultBranch setting (#61)
+- Add git config-based configuration system (#60)
+- **clone**: Add -b/--branch option to specify checkout branch (#59)
+- Git-like terminal logging (#55)
+- Add IO abstraction layer for future TUI support (#54)
+- Worktree-checkout to branch with existing worktree just CDs to that worktree (#51)
+- Shell integration for automatic cd into new worktrees (#46)
+- Carry uncommitted (dirty) state between worktrees (#44)
 
 
 ### Miscellaneous
 
 - Add VHS demo recording tape
-- Migrate from Makefile to justfile ([#50](https://github.com/avihut/daft/pull/50))
-- Remove legacy shell scripts ([#48](https://github.com/avihut/daft/pull/48))
-## [0.3.2] - 2026-01-11
+- Migrate from Makefile to justfile (#50)
+- Remove legacy shell scripts (#48)
+## [0.3.2](https://github.com/avihut/daft/compare/v0.3.1...v0.3.2) - 2026-01-11
 
 
 ### Bug Fixes
 
 - Correct heredoc syntax in workflow YAML files
-## [0.3.1] - 2026-01-11
+## [0.3.1](https://github.com/avihut/daft/compare/v0.3.0...v0.3.1) - 2026-01-11
 
 
 ### Bug Fixes
@@ -756,54 +762,54 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- Integrate git-cliff for automated changelog generation ([#38](https://github.com/avihut/daft/pull/38))
-## [0.3.0] - 2026-01-10
+- Integrate git-cliff for automated changelog generation (#38)
+## [0.3.0](https://github.com/avihut/daft/compare/v0.2.2...v0.3.0) - 2026-01-10
 
 
 ### Features
 
 - Setup develop branch with canary releases (v0.2.0)
-## [0.2.2] - 2026-01-10
+## [0.2.2](https://github.com/avihut/daft/compare/v0.2.1...v0.2.2) - 2026-01-10
 
 
 ### Bug Fixes
 
-- Exclude prerelease tags when finding latest version ([#37](https://github.com/avihut/daft/pull/37))
-## [0.2.1] - 2026-01-10
+- Exclude prerelease tags when finding latest version (#37)
+## [0.2.1](https://github.com/avihut/daft/compare/v0.1.28...v0.2.1) - 2026-01-10
 
 
 ### Bug Fixes
 
-- Add GitHub release creation to canary and beta workflows ([#36](https://github.com/avihut/daft/pull/36))
-## [0.1.28] - 2026-01-10
+- Add GitHub release creation to canary and beta workflows (#36)
+## [0.1.28](https://github.com/avihut/daft/compare/v0.1.27...v0.1.28) - 2026-01-10
 
 
 ### Miscellaneous
 
-- Add developer-tools keyword to Cargo.toml ([#35](https://github.com/avihut/daft/pull/35))
+- Add developer-tools keyword to Cargo.toml (#35)
 - Use wheatley bot for Homebrew formula commits [skip ci]
-## [0.1.27] - 2026-01-10
+## [0.1.27](https://github.com/avihut/daft/compare/v0.1.26...v0.1.27) - 2026-01-10
 
 
 ### Features
 
 - Migrate Homebrew formula to separate tap repository
-## [0.1.26] - 2026-01-10
+## [0.1.26](https://github.com/avihut/daft/compare/v0.1.25...v0.1.26) - 2026-01-10
 
 
 ### Miscellaneous
 
 - Test release workflow
-## [0.1.22] - 2026-01-10
+## [0.1.22](https://github.com/avihut/daft/compare/v0.1.21...v0.1.22) - 2026-01-10
 
 
 ### Miscellaneous
 
 - Trigger v0.1.22 release
-## [0.1.21] - 2026-01-10
+## [0.1.21](https://github.com/avihut/daft/compare/v0.1.20...v0.1.21) - 2026-01-10
 
 
 ### Feature
 
-- Root Level `.git` Dir ([#2](https://github.com/avihut/daft/pull/2))
+- Root Level `.git` Dir (#2)
 
