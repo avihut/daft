@@ -98,6 +98,14 @@ impl PrettyReporter {
     fn show_bold_step_name(&self) -> bool {
         matches!(self.verbosity, Verbosity::VeryVerbose)
     }
+
+    /// CLAUDE.md §6 `-vv` callout: at `-vv` step blocks are separated by a
+    /// blank line — Layer 3 + 4 content otherwise floods consecutive steps
+    /// into a wall of text. At `-v` step blocks stack densely (Layer 2
+    /// only, nothing in between to separate).
+    fn show_block_spacing(&self) -> bool {
+        matches!(self.verbosity, Verbosity::VeryVerbose)
+    }
 }
 
 impl Reporter for PrettyReporter {
@@ -119,6 +127,11 @@ impl Reporter for PrettyReporter {
                 styles::dim(&format!("  at {}", scenario.source_path.display()))
             )?;
         }
+        // §6 `-vv`: blank between scenario header (Layer 1 metadata) and the
+        // first step block (Layer 2). At `-v` step blocks attach tight.
+        if self.show_block_spacing() {
+            writeln!(out)?;
+        }
         Ok(())
     }
 
@@ -133,11 +146,19 @@ impl Reporter for PrettyReporter {
         if !self.show_per_step_lines() {
             return Ok(());
         }
+        // §6 `-vv` callout: blank line between step blocks at `-vv`. Owned by
+        // step_start (not the prior step_pass/step_fail) so the first step
+        // — whose leading blank comes from scenario_header — doesn't double.
+        if idx > 0 && self.show_block_spacing() {
+            writeln!(out)?;
+        }
+        // §6 indent ladder: step opening line indents to col 2 (Layer 2
+        // sits one indent under Layer 1 scenario). Backported to `-v`.
         // §1 budget: blue is not a daft color slot. §2: counters are
         // scaffolding (tertiary), dim.
-        // §6 `-vv` callout: at `-vv` the step name is bold default-fg so each
-        // step block has a Level-2 anchor against the uncapped body content
-        // emitted below it.
+        // §6 `-vv` callout: step name bolds at `-vv` only — without Layer 3/4
+        // content between step lines at `-v`, bold there would just compete
+        // with the scenario header.
         let name = if self.show_bold_step_name() {
             styles::bold(&step.name)
         } else {
@@ -145,7 +166,7 @@ impl Reporter for PrettyReporter {
         };
         write!(
             out,
-            "{} {} ... ",
+            "  {} {} ... ",
             styles::dim(&format!("[{}/{}]", idx + 1, total)),
             name,
         )
@@ -173,18 +194,20 @@ impl Reporter for PrettyReporter {
 
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                // §1: cyan is reserved for section heading. `$` lines are
-                // content-level metadata — dim per §2 tertiary.
-                writeln!(out, "  {}", styles::dim(&format!("$ {cmd}")))?;
+                // §6 indent ladder: `$ command` is Layer 3 — col 6 under the
+                // step header at col 2.
+                // §6 `-vv` callout: `$ command` promotes from dim to default
+                // fg at `-vv` (where it's the only emission tier) — sitting
+                // adjacent to Layer 4 body, dim would render it invisible.
+                writeln!(out, "      $ {cmd}")?;
             }
         }
         if self.show_pass_check_icons() {
             for a in report.assertions {
-                // §3 + §4: `✓` is plain green (not bold) at every level —
-                // pass markers don't stack signals.
+                // §6 indent ladder: ✓ verification is Layer 3, col 6.
+                // §3 + §4: `✓` is plain green (not bold) at every level.
                 // §2: assertion labels are secondary (default fg, not dim).
-                // Only the `✓` carries the accent; the label is the payload.
-                writeln!(out, "  {} {}", styles::green("✓"), &a.label)?;
+                writeln!(out, "      {} {}", styles::green("✓"), &a.label)?;
             }
         }
         if self.show_pass_capture() {
@@ -211,20 +234,22 @@ impl Reporter for PrettyReporter {
         )?;
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                // §1: cyan is reserved for section heading. `$` lines are
-                // content-level metadata — dim per §2 tertiary.
-                writeln!(out, "  {}", styles::dim(&format!("$ {cmd}")))?;
+                // §6 indent ladder: `$ command` at col 6 (Layer 3), default fg.
+                writeln!(out, "      $ {cmd}")?;
             }
         }
         for a in report.assertions.iter().filter(|a| !a.passed) {
-            writeln!(out, "  {} {}", styles::bold_red("✗"), a.label)?;
+            // §6 indent ladder: ✗ assertion at col 6 (Layer 3); detail at
+            // col 8 (2 inside the ✗ line — same sub-element relationship
+            // detail has had since the ladder was at 2-space increments).
+            writeln!(out, "      {} {}", styles::bold_red("✗"), a.label)?;
             if let Some(detail) = &a.detail {
                 // §1 + §2: assertion detail lines under a failed assertion are
                 // the failure payload — secondary (default fg), not tertiary
                 // (dim). `dim` + a colored diff label collapses to muddy
                 // grey-X on most terminals.
                 for line in detail.lines() {
-                    writeln!(out, "    {line}")?;
+                    writeln!(out, "        {line}")?;
                 }
             }
         }
@@ -304,14 +329,15 @@ fn write_captured_section(
     if trimmed.is_empty() {
         return Ok(());
     }
-    // §2: divider is tertiary (dim) — it's orientation only. Body lines are
-    // secondary (default fg) — when capture is emitted inline at `-v`+ it's
-    // the payload the user opted in for; dimming it works against the user.
-    writeln!(out, "  {}", styles::dim(&format!("--- {label} ---")))?;
+    // §6 indent ladder + `-vv` callout: stream label at col 6 (Layer 4
+    // header, same indent as Layer 3 sibling content), default fg, no
+    // `--- {label} ---` decoration — the indent provides the framing now.
+    // Body lines at col 10 (Layer 4 body, one ladder step deeper).
+    writeln!(out, "      {label}")?;
     let limit = cap.unwrap_or(usize::MAX);
     let mut printed = 0usize;
     for line in trimmed.lines().take(limit) {
-        writeln!(out, "  {line}")?;
+        writeln!(out, "          {line}")?;
         printed += 1;
     }
     if let Some(cap) = cap {
@@ -320,7 +346,7 @@ fn write_captured_section(
             // Truncation hint is metadata, not payload — stays dim.
             writeln!(
                 out,
-                "  {}",
+                "          {}",
                 styles::dim(&format!(
                     "... {} more lines truncated (re-run with -vv for full output)",
                     actual - printed

@@ -156,7 +156,9 @@ fn pretty_verbose_step_pass_line_with_check_count() {
         r.step_start(buf, 0, 3, &s).unwrap();
         r.step_pass(buf, &report).unwrap();
     });
-    assert!(out.starts_with("[1/3] Clone the repo ... ok (1 checks)"));
+    // §6 indent ladder: step opening line at col 2 (Layer 2 sits under
+    // Layer 1 scenario header at col 0).
+    assert!(out.starts_with("  [1/3] Clone the repo ... ok (1 checks)"));
     // `-v` should NOT print per-check icons or expanded command — those move
     // up to `-vv`.
     assert!(!out.contains("✓ Exit code"));
@@ -337,16 +339,22 @@ fn pretty_verbose_step_fail_shows_failed_assertions_and_capture() {
         r.step_start(buf, 3, 6, &s).unwrap();
         r.step_fail(buf, &report).unwrap();
     });
-    assert!(out.starts_with("[4/6] silent-ok-job log deleted ... FAIL (2 failed)"));
+    // §6 indent ladder: step header at col 2 (Layer 2).
+    assert!(out.starts_with("  [4/6] silent-ok-job log deleted ... FAIL (2 failed)"));
     // Iconography (§3 of reporter/CLAUDE.md): assertion failures use `✗`, not `x`.
     assert!(out.contains("✗ Exit code: expected 0, got 1"));
     assert!(!out.contains("x Exit code:"));
     assert!(out.contains("expected 0, got 1"));
     assert!(out.contains("expected: OK_LOG_DELETED"));
     assert!(out.contains("actual:   ASSERTION_FAILED: ..."));
-    assert!(out.contains("--- stdout ---"));
+    // §6 `-vv` callout: capture-stream label dropped the `--- {label} ---`
+    // decoration in favor of plain `stdout` / `stderr` (indent carries the
+    // framing). The label still appears just without the dashes.
+    assert!(out.contains("stdout"));
+    assert!(!out.contains("--- stdout ---"));
     assert!(out.contains("ASSERTION_FAILED: silent-ok-job log was not deleted"));
     // stderr was empty for this fixture — no stderr block should appear.
+    assert!(!out.contains("\n      stderr\n"));
     assert!(!out.contains("--- stderr ---"));
 }
 
@@ -372,8 +380,11 @@ fn pretty_step_fail_renders_stdout_and_stderr_in_separate_blocks() {
         r.step_start(buf, 0, 1, &s).unwrap();
         r.step_fail(buf, &report).unwrap();
     });
-    let stdout_idx = out.find("--- stdout ---").expect("stdout block emitted");
-    let stderr_idx = out.find("--- stderr ---").expect("stderr block emitted");
+    // §6 `-vv` callout: stream label is plain `stdout` / `stderr` (no
+    // `--- {label} ---` decoration). Find by the label content on its own
+    // line at the Layer-4-header indent (col 6).
+    let stdout_idx = out.find("      stdout\n").expect("stdout block emitted");
+    let stderr_idx = out.find("      stderr\n").expect("stderr block emitted");
     assert!(stdout_idx < stderr_idx, "stdout block precedes stderr");
     assert!(out.contains("normal-output-line"));
     assert!(out.contains("warning: something"));
@@ -459,8 +470,11 @@ fn pretty_step_fail_omits_stream_block_when_empty() {
         stderr: Some("real stderr content\n"),
     };
     let out = render(|buf| r.step_fail(buf, &report).unwrap());
-    assert!(!out.contains("--- stdout ---"));
-    assert!(out.contains("--- stderr ---"));
+    // §6 `-vv` callout: stream labels are plain `stdout` / `stderr` (no
+    // `--- {label} ---`). Match the label-on-its-own-line at the
+    // Layer-4-header indent.
+    assert!(!out.contains("      stdout\n"));
+    assert!(out.contains("      stderr\n"));
     assert!(out.contains("real stderr content"));
 }
 
