@@ -166,12 +166,6 @@ pub fn bright_purple(text: &str) -> String {
     format!("{BRIGHT_PURPLE}{text}{RESET}")
 }
 
-/// Wraps text in bold + bright purple styling. Used by the test runner
-/// reporter for the step-name Level-2 anchor at `-vv` (`pretty.rs`).
-pub fn bold_bright_purple(text: &str) -> String {
-    format!("{BOLD}{BRIGHT_PURPLE}{text}{RESET}")
-}
-
 /// Wraps text in dark gray styling (bright black).
 pub fn dark_gray(text: &str) -> String {
     format!("{DARK_GRAY}{text}{RESET}")
