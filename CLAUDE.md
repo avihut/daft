@@ -319,9 +319,33 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
 
 ## Release Process
 
-Uses [release-plz](https://release-plz.dev/): push to master → Release PR
-auto-created → merge it → GitHub Release + tag → binary builds. All commits
-produce patch bumps; edit `Cargo.toml` in the Release PR for minor/major bumps.
+Uses [cargo-release](https://github.com/crate-ci/cargo-release) wired into
+`.github/workflows/release-flow.yml` to mimic the release-plz UX it replaced
+(see #540 for the migration motivation: release-plz's `cargo package` codepath
+was broken against our root-package workspace with an unpublished internal
+crate, upstream release-plz#2595).
+
+Mechanics: every push to master runs two jobs.
+
+1. `tag-merged-release` — if HEAD's subject is `chore: release vX.Y.Z` (i.e.
+   someone just merged the release PR), tag the commit and push the tag.
+   `release.yml` (cargo-dist) then builds the binary release.
+2. `maintain-release-pr` — compute the next version from conventional commits
+   via `git-cliff --bumped-version`. If releasable commits exist since the last
+   tag, force-rebuild a `release-pr` branch on top of master via
+   `cargo release <next> --no-tag --no-push` (bumps Cargo.toml + xtask path-dep,
+   runs the `pre-release-hook` in `release.toml` to regenerate CHANGELOG.md +
+   man pages + CLI docs, commits `chore: release vNEXT`), and open/update the
+   release PR. If no releasable commits remain, close any stale release PR.
+
+Conventional-commit-driven bump (per `cliff.toml`): `feat` → minor, `fix`/`perf`
+→ patch, `feat!`/`BREAKING CHANGE:` → major, `ci`/`deps`/`docs` → no bump.
+
+Manual version override: `workflow_dispatch` exposes an `override_version` input
+(Actions → Release flow → Run workflow → fill `1.14.3`) for one-off overrides —
+the input is per-run and the next push to master returns to auto-compute. Useful
+when conventional-commit detection picks a different bump than you want (e.g.
+demote a `feat:` from minor to patch).
 
 ## Adding a New Command
 

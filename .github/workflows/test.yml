@@ -18,7 +18,7 @@ on:
       - "!.github/workflows/claude-pr-review.yml"
       - "!.github/workflows/docs.yml"
       - "!.github/workflows/mise-tool-updates.yml"
-      - "!.github/workflows/release-plz.yml"
+      - "!.github/workflows/release-flow.yml"
       - "!.github/workflows/release.yml"
       - "!.github/workflows/test-homebrew.yml"
 
@@ -89,9 +89,10 @@ jobs:
   # rationale) or commit env ALLOW_FRESH_DEPS=1 in an emergency.
   dep-age-check:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.lockfile ==
-      'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.lockfile ==
+      'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -111,9 +112,10 @@ jobs:
   # license, an open RustSec advisory, or comes from an unexpected source.
   dep-license-check:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true' || needs.changes.outputs.lockfile == 'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.lockfile == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -133,10 +135,11 @@ jobs:
   # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
   lint:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
       'true' || needs.changes.outputs.tests == 'true' ||
-      needs.changes.outputs.xtask == 'true'
+      needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     env:
       # cargo-cooldown is a local-dev supply-chain guard that wraps `cargo
@@ -193,9 +196,10 @@ jobs:
   # uses post-1.93 stdlib features.
   msrv-check:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -218,9 +222,10 @@ jobs:
   # of `std::os::unix::*` or `libc`) before they reach a release tag.
   windows-check:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -277,13 +282,6 @@ jobs:
 
       - name: Verify committed man pages are up-to-date
         run: |
-          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-          # which causes man pages (that embed version) to appear outdated
-          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-            echo "Skipping man page verification on release PR (version bump expected)"
-            exit 0
-          fi
-
           cargo run --package xtask -- gen-man --output-dir=man
           if ! git diff --exit-code man/; then
             echo "FAILED: Committed man pages are out of date!"
@@ -322,13 +320,6 @@ jobs:
 
       - name: Verify committed CLI docs are up-to-date
         run: |
-          # Skip verification on release PRs - release-plz bumps version in Cargo.toml
-          # which causes CLI docs (that embed version) to appear outdated
-          if [[ "${{ github.head_ref }}" == release-plz-* ]]; then
-            echo "Skipping CLI docs verification on release PR (version bump expected)"
-            exit 0
-          fi
-
           cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli
           if ! git diff --exit-code docs/cli/; then
             echo "FAILED: Committed CLI docs are out of date!"
@@ -343,9 +334,10 @@ jobs:
   # Build release binary once, share across integration test matrix
   build:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true' || needs.changes.outputs.tests == 'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.tests == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -529,11 +521,11 @@ jobs:
   # Homebrew installation simulation (macOS)
   homebrew-simulation:
     needs: changes
-    if:
-      needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true' || needs.changes.outputs.man == 'true'
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.man == 'true')
     runs-on: macos-latest
-
     steps:
       - uses: actions/checkout@v6
 

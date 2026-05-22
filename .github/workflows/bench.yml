@@ -15,7 +15,7 @@ on:
       - "!.github/workflows/claude-pr-review.yml"
       - "!.github/workflows/docs.yml"
       - "!.github/workflows/mise-tool-updates.yml"
-      - "!.github/workflows/release-plz.yml"
+      - "!.github/workflows/release-flow.yml"
       - "!.github/workflows/release.yml"
       - "!.github/workflows/test-homebrew.yml"
       - "!.github/workflows/test.yml"

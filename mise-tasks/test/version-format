@@ -53,7 +53,7 @@ check_version "dev format" "^daft ${CARGO_VERSION//./\\.} \\(dev .+ [0-9a-f]+\\)
 echo ""
 
 # ── Test 2: Simulated release build (detached HEAD + version tag) ──
-# This mirrors what cargo-dist / release-plz does:
+# This mirrors what cargo-dist / cargo-release does:
 #   actions/checkout checks out the tag → detached HEAD with tag at HEAD
 echo "2. Simulated release build (detached HEAD + version tag at HEAD)"
 

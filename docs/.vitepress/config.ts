@@ -165,7 +165,7 @@ export default defineConfig({
 
       // Reformat changelog version headings:
       //   ## [1.0.22] - 2026-02-07            →  version + date on separate line
-      //   ## [1.0.24](compare-url) - 2026-02-15  →  same treatment (new release-plz format)
+      //   ## [1.0.24](compare-url) - 2026-02-15  →  same treatment (with GitHub compare URL)
       const defaultHeadingOpen =
         md.renderer.rules.heading_open ||
         ((tokens, idx, options, _env, self) =>
