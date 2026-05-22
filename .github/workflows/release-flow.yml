@@ -232,8 +232,12 @@ jobs:
           # CHANGELOG.md (from `## [<NEXT_VER>]` to the line before the next
           # `## [` heading) so reviewers can see exactly what's going into the
           # release without leaving the PR. Mirrors the release-plz body
-          # format we used to have.
+          # format we used to have. The `gsub` in BEGIN escapes the dots in
+          # the semver so they match literally rather than any-char (defense
+          # against a CHANGELOG heading line that happens to fit the
+          # dot-wildcard shape).
           CHANGELOG_SECTION=$(awk -v ver="$NEXT_VER" '
+            BEGIN { gsub(/\./, "\\.", ver) }
             $0 ~ "^## \\["ver"\\]" { found=1; print; next }
             found && /^## \[/ { exit }
             found { print }
@@ -265,7 +269,10 @@ jobs:
           EXISTING=$(gh pr list --head release-pr --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             echo "Updating existing release PR #$EXISTING"
-            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+            # --add-label keeps the `release` label self-healing in case it
+            # was manually removed — the CI-skip logic in test.yml/bench.yml
+            # gates on this label being present.
+            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY" --add-label release
           else
             echo "Opening new release PR"
             gh pr create --base master --head release-pr \
