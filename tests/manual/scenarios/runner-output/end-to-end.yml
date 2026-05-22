@@ -53,3 +53,27 @@ steps:
         # The old basename-only inline citation must not reappear; the
         # location now lives on its own line as the full relative path.
         - "at fail.yml:"
+        # §6 shift: at default verbosity, per-step lines are suppressed. The
+        # `[N/M]` counter only appears at `-v` and above. Regression guard
+        # for the ladder shift.
+        - "[1/2]"
+        - "[2/2]"
+
+  - name: invoke xtask at -v to confirm per-step lines surface
+    run: |
+      cd "$BINARY_DIR/../.." && \
+        NO_COLOR=1 cargo run --quiet --package xtask -- \
+          manual-test --no-interactive -v \
+          tests/manual/scenarios/runner-output/_fixtures/fail.yml \
+          2>&1 || true
+    expect:
+      exit_code: 0
+      output_contains:
+        # §6: at -v, per-step lines (with [N/M] counter) appear inline before
+        # the scenario footer.
+        - "[1/2]"
+        - "[2/2]"
+        - "step that succeeds"
+        - "step that fails"
+        # The failures block at end still emits at -v (unchanged from default).
+        - "Failed Scenarios (1)"
