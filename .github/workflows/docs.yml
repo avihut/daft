@@ -20,6 +20,16 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      # wrangler-action installs `wrangler@4` via bun and then verifies it with
+      # `bun run wrangler --version`. That verification shells out to system
+      # Node, and wrangler 4 requires Node ≥ 22 — but ubuntu-latest still ships
+      # Node 20.x as the default. Without this step the deploy fails with
+      # "Wrangler requires at least Node.js v22.0.0". Pinning to the current
+      # Active LTS (24, EOL April 2028) buys the longest runway.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
       - name: Install dependencies
         working-directory: docs
         run: bun install --frozen-lockfile
