@@ -72,42 +72,13 @@ level and stop** — adding bold to a secondary item collapses the hierarchy.
 "What color?" → look up the slot in §1. If a string fits no row, it probably
 doesn't belong on screen.
 
-**Hierarchy is contextual to the visible data layers.** This is the rule that
-makes everything else work — write it down because it's the one that's easiest
-to lose. Each verbosity tier reveals a different set of "data layers" (scenario
-/ step / step action / capture body / …). The styling of an existing element is
-not fixed for life; it must be re-evaluated each time a new layer is introduced.
-
-The canonical failure mode: `✓` check labels were correctly styled as
-"secondary, default fg" at `-v` (where capture body wasn't on screen). At `-vv`
-(uncapped capture flooding the screen) the same default-fg label suddenly
-competes with default-fg body lines at the same indent — same weight, same color
-— and the §2 hierarchy collapses for that block. The fix isn't to re-style the
-check label in isolation; it's to recognize that adding a "capture body" layer
-forces a re-think of the elements adjacent to it: step name needs more weight
-(bold at `-vv`), `$ command` becomes more critical (no longer dim), capture body
-needs an indent level of its own so it's spatially separate from the check
-labels above it.
-
-**When designing for a new tier:**
-
-1. **Map the data layers the tier reveals.** What's NEW on screen at this
-   verbosity? What's now visible that wasn't before?
-2. **For each existing element, ask: does its relative weight change?** An
-   element at "secondary" weight may need to move up to "primary" if a sibling
-   layer now sits next to it at the same level. An element at "tertiary" (dim)
-   may need to move up to "secondary" (default fg) if the body content the user
-   wants to read became the focal payload.
-3. **Indentation is a hierarchy mechanism too** — not just color and weight.
-   When a new layer appears, the existing elements may need to indent further to
-   give the new layer its own column. Spatial separation often replaces
-   color/weight separation more cleanly.
-4. **Express verbosity-specific styling rules explicitly** in §6 callouts. Don't
-   bury them in `pretty.rs` helpers without explaining why — the rule is about
-   which data layers are visible, not about which Verbosity variant matched.
-
-The §6 ladder table tells you what each tier emits. This rule tells you how to
-re-style the emissions when adjacent layers shift.
+**Hierarchy is contextual to the visible data layers.** An element styled
+correctly at one verbosity tier can dissolve into noise at the next when a new
+layer with similar styling appears alongside it. Re-coloring and re-indenting
+existing elements is the right move, not the wrong one — indentation is a
+hierarchy mechanism as much as weight and color. Verbosity-specific rules live
+in §6 callouts; never bury them in `pretty.rs` helpers without a comment
+pointing at the layer interaction that motivated them.
 
 ---
 
@@ -218,67 +189,17 @@ scenario" feedback as the run progresses (a sequential debug run, a flake hunt)
 reaches for `-v`. Anyone who wants full capture without truncation reaches for
 `-vv`.
 
-**`-vv` re-styles existing elements to keep the data layers legible.** At this
-tier four data layers are simultaneously on screen for each scenario (Layer 1
-scenario → Layer 2 step → Layer 3 step action/verification → Layer 4 capture
-body). The §2 hierarchy is contextual to which layers are visible (see the §2
-callout), so several elements that worked one way at lower tiers re-style at
-`-vv`:
-
-1. **Indent ladder — 4 spaces per data layer.** Spatial separation carries
-   hierarchy that weight + color alone cannot at this density:
-
-   ```
-   col 0    Fetch specific worktree                       <- Layer 1 (scenario)
-   col 2      at /Users/.../specific.yml                  <- Layer 1 metadata
-                                                          <- blank
-   col 2      [1/5] Clone the repository ... ok (N)       <- Layer 2 (step header)
-   col 6          $ git-worktree-clone ...                <- Layer 3 (step action)
-   col 6          ✓ Exit code: expected 0, got 0          <- Layer 3 (verification)
-   col 6          stdout                                  <- Layer 4 header
-   col 10             Cloned into 'test-repo/main'        <- Layer 4 body
-   col 10             hint: ...                           <- Layer 4 body
-   col 6          stderr                                  <- Layer 4 header
-   col 10             warning: ...                        <- Layer 4 body
-                                                          <- blank
-   col 2      [2/5] Checkout develop branch ... ok (N)
-   col 6          $ git-worktree-checkout develop
-   col 6          ✓ Exit code: expected 0, got 0
-   col 0    ✓ Fetch specific worktree  761ms              <- Layer 1 closer
-   ```
-
-2. **Step opening line bolds the step name.** Step name in
-   `[N/M] name ... ok (N checks)` is bold default-fg at `-vv`. At `-v` it stays
-   plain — without Layer 3/4 content between step lines, bolding the name would
-   just add chrome that competes with the scenario header.
-
-3. **`$ command` and capture-stream labels promote to default fg.** At default
-   tier they don't appear; at `-v` `$ command` doesn't appear and capture labels
-   are subordinate dividers; at `-vv` they sit next to capture body lines — dim
-   would render them invisible against the bright body content. They're step
-   action / payload framing, not pure scaffolding, once Layer 4 is on screen.
-
-4. **Drop the `--- {stream} ---` decoration; emit just `stdout` / `stderr`.**
-   Indentation now provides the framing the rule chars used to provide. Per
-   Principle 1, when one mechanism (indent) does the job, another (decoration)
-   becomes non-data ink.
-
-5. **One blank line between step blocks at `-vv`.** With Layer 3 + 4 content
-   flooding each step, dense back-to-back steps become a wall of text. The blank
-   gives each step its own visual frame. At `-v` step blocks stay dense — they
-   only carry Layer 2 content, no flood to separate.
-
-**At `-v`** the indent ladder still applies for the Layer 1 → Layer 2
-transition: step opening line indents to col 2 (not col 0). Steps clearly nest
-inside scenarios at any verbosity — that's a backport. Layer 4 on fail at `-v`
-(capture body) reaches col 10 via the same ladder. Layer 3 content (`$ command`,
-pass `✓` icons) doesn't appear at `-v`, so the rest of the ladder doesn't get
-exercised.
-
-This whole block is the canonical worked example of the §2 "hierarchy is
-contextual" rule. Future tiers (a `-vvv` if one ever lands, or a new "with diff"
-verbosity) get the same treatment: map the new layers, re-style the existing
-ones to make room.
+**`-vv` re-styles existing elements to keep four data layers on screen at once**
+(scenario / step / step action / capture body). Specifically at `-vv`: each
+layer gets its own indent column so spatial separation can carry the hierarchy
+that weight + color alone can't sustain at this density; the step opening name
+bolds so each step block has a Level-2 anchor; `$ command` and capture-stream
+labels promote from dim to default fg because they sit adjacent to capture body
+and would otherwise vanish; the `--- {stream} ---` decoration drops in favor of
+plain `stdout` / `stderr` labels (the indent carries the framing now); a blank
+line separates step blocks. At `-v` only the step-indent and the on-fail
+capture-body indent apply — Layer 3 / pass Layer 4 don't appear, so the rest of
+the ladder doesn't get exercised.
 
 ---
 
