@@ -74,7 +74,10 @@ jobs:
           echo "HEAD commit subject: $FIRST_LINE"
 
           # Match "chore: release vX.Y.Z" with optional pre-release suffix.
-          if [[ "$FIRST_LINE" =~ ^chore:\ release\ (v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
+          # The trailing `( \(#[0-9]+\))?` allows GitHub's default
+          # squash-merge title format, which appends ` (#nnn)` to the PR
+          # title when the PR is squash-merged via the UI.
+          if [[ "$FIRST_LINE" =~ ^chore:\ release\ (v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)(\ \(#[0-9]+\))?$ ]]; then
             VER="${BASH_REMATCH[1]}"
             echo "Release commit detected for $VER"
 
