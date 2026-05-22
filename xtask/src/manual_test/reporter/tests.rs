@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::pretty::PrettyReporter;
-use super::quiet::QuietReporter;
 use super::{
     reproduce_token, FailedScenarioRecord, FailingStep, Reporter, RunSummary, ScenarioErrorRecord,
     ScenarioStatus, StepReport, Verbosity,
@@ -122,8 +121,9 @@ where
 // ---------------------------------------------------------------------------
 
 #[test]
-fn pretty_default_scenario_header_includes_source_path() {
-    let r = PrettyReporter::new(Verbosity::Default);
+fn pretty_verbose_scenario_header_includes_source_path() {
+    // §6: scenario header (cyan name + dim path) ships from `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let sc = scenario("my-scenario", "tests/manual/scenarios/foo/bar.yml", vec![]);
     let out = render(|buf| r.scenario_header(buf, &sc).unwrap());
     assert!(out.contains("my-scenario"));
@@ -131,8 +131,19 @@ fn pretty_default_scenario_header_includes_source_path() {
 }
 
 #[test]
-fn pretty_default_step_pass_line_with_check_count() {
+fn pretty_default_scenario_header_emits_nothing() {
+    // §6: at `-q` / `Default`, the entire scenario block collapses to one
+    // footer line — the cyan name + dim path live at `-v`.
     let r = PrettyReporter::new(Verbosity::Default);
+    let sc = scenario("my-scenario", "tests/manual/scenarios/foo/bar.yml", vec![]);
+    let out = render(|buf| r.scenario_header(buf, &sc).unwrap());
+    assert!(out.is_empty(), "expected no header output, got: {out:?}");
+}
+
+#[test]
+fn pretty_verbose_step_pass_line_with_check_count() {
+    // §6: per-step lines ship from `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("Clone the repo", "git clone $REMOTE_FOO");
     let assertions = vec![assertion(true, "Exit code", None)];
     let report = StepReport {
@@ -146,13 +157,35 @@ fn pretty_default_step_pass_line_with_check_count() {
         r.step_pass(buf, &report).unwrap();
     });
     assert!(out.starts_with("[1/3] Clone the repo ... ok (1 checks)"));
-    // Default verbosity should NOT print per-check icons or captured output.
+    // `-v` should NOT print per-check icons or expanded command — those move
+    // up to `-vv`.
     assert!(!out.contains("✓ Exit code"));
+    assert!(!out.contains("$ "));
 }
 
 #[test]
-fn pretty_verbose_step_pass_emits_check_icons() {
-    let r = PrettyReporter::new(Verbosity::Verbose);
+fn pretty_default_step_pass_emits_nothing() {
+    // §6: per-step lines are suppressed at `-q` / `Default`.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let s = step("Clone the repo", "git clone $REMOTE_FOO");
+    let assertions = vec![assertion(true, "Exit code", None)];
+    let report = StepReport {
+        expanded_command: None,
+        assertions: &assertions,
+        stdout: None,
+        stderr: None,
+    };
+    let out = render(|buf| {
+        r.step_start(buf, 0, 3, &s).unwrap();
+        r.step_pass(buf, &report).unwrap();
+    });
+    assert!(out.is_empty(), "expected no per-step output, got: {out:?}");
+}
+
+#[test]
+fn pretty_very_verbose_step_pass_emits_check_icons() {
+    // §6: per-check `✓` icons + `$ expanded-command` ship only at `-vv`.
+    let r = PrettyReporter::new(Verbosity::VeryVerbose);
     let s = step("Clone the repo", "git clone $REMOTE_FOO");
     let assertions = vec![
         assertion(true, "Exit code: expected 0, got 0", None),
@@ -172,8 +205,53 @@ fn pretty_verbose_step_pass_emits_check_icons() {
 }
 
 #[test]
-fn pretty_default_step_fail_shows_failed_assertions_and_capture() {
+fn pretty_verbose_step_pass_omits_check_icons_and_expanded_command() {
+    // Regression guard: today's `-v` shows the `ok (N checks)` outcome but
+    // NOT per-check icons or expanded commands — those moved to `-vv`.
+    let r = PrettyReporter::new(Verbosity::Verbose);
+    let s = step("Clone the repo", "git clone $REMOTE_FOO");
+    let assertions = vec![assertion(true, "Exit code", None)];
+    let report = StepReport {
+        expanded_command: Some("git clone /tmp/foo"),
+        assertions: &assertions,
+        stdout: None,
+        stderr: None,
+    };
+    let out = render(|buf| {
+        r.step_start(buf, 0, 3, &s).unwrap();
+        r.step_pass(buf, &report).unwrap();
+    });
+    assert!(out.contains("ok (1 checks)"));
+    assert!(!out.contains("✓ Exit code"));
+    assert!(!out.contains("$ git clone /tmp/foo"));
+}
+
+#[test]
+fn pretty_default_step_fail_emits_nothing() {
+    // §6: at `-q` / `Default`, fail-step inline detail is deferred to the
+    // end-of-run failures block. Inline emission ships from `-v` upward.
     let r = PrettyReporter::new(Verbosity::Default);
+    let assertions = vec![assertion(
+        false,
+        "Exit code: expected 0, got 1",
+        Some("expected 0, got 1"),
+    )];
+    let report = StepReport {
+        expanded_command: None,
+        assertions: &assertions,
+        stdout: Some("noise\n"),
+        stderr: None,
+    };
+    let out = render(|buf| r.step_fail(buf, &report).unwrap());
+    assert!(
+        out.is_empty(),
+        "expected no inline step_fail output, got: {out:?}"
+    );
+}
+
+#[test]
+fn pretty_verbose_step_fail_shows_failed_assertions_and_capture() {
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("silent-ok-job log deleted", "daft hooks jobs ...");
     let assertions = vec![
         assertion(
@@ -214,8 +292,8 @@ fn pretty_default_step_fail_shows_failed_assertions_and_capture() {
 fn pretty_step_fail_renders_stdout_and_stderr_in_separate_blocks() {
     // Phase 1.4: per-step captured output is split into `--- stdout ---` and
     // `--- stderr ---` blocks so the reader can immediately tell which stream
-    // the noise came from.
-    let r = PrettyReporter::new(Verbosity::Default);
+    // the noise came from. §6: inline per-step ships at `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("noisy fail", "do-it");
     let assertions = vec![assertion(
         false,
@@ -246,7 +324,8 @@ fn pretty_step_fail_emits_detail_lines_without_dim_wrap() {
     // are the failure payload — secondary, default fg. They must NOT be
     // wrapped in `dim` (`\x1b[2m`), which on most terminals collapses any
     // embedded color (the diff labels) into muddy grey-X.
-    let r = PrettyReporter::new(Verbosity::Default);
+    // §6: inline per-step ships at `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("output-check", "echo something");
     let assertions = vec![assertion(
         false,
@@ -303,7 +382,8 @@ fn format_diff_detail_uses_bold_color_labels() {
 
 #[test]
 fn pretty_step_fail_omits_stream_block_when_empty() {
-    let r = PrettyReporter::new(Verbosity::Default);
+    // §6: inline per-step ships at `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("stderr-only fail", "do-it");
     let assertions = vec![assertion(
         false,
@@ -341,8 +421,9 @@ fn pretty_very_verbose_capture_has_no_line_cap() {
 }
 
 #[test]
-fn pretty_default_capture_truncates_with_hint() {
-    let r = PrettyReporter::new(Verbosity::Default);
+fn pretty_verbose_capture_truncates_with_hint() {
+    // §6: capture cap is 20 lines at `-v`, uncapped at `-vv`.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("noisy fail", "echo lots");
     let assertions = vec![assertion(
         false,
@@ -364,11 +445,12 @@ fn pretty_default_capture_truncates_with_hint() {
 }
 
 #[test]
-fn pretty_scenario_block_spacing_attaches_cleanup_to_its_scenario() {
+fn pretty_verbose_scenario_block_spacing_attaches_cleanup_to_its_scenario() {
     // The cleanup note should sit flush against the scenario footer; the
     // blank line that separates scenarios belongs to the NEXT scenario's
     // header. Regression test for the spacing fix following #518.
-    let r = PrettyReporter::new(Verbosity::Default);
+    // §6: scenario header (and the blank above it) ships at `-v` upward.
+    let r = PrettyReporter::new(Verbosity::Verbose);
     let sc1 = scenario("first", "tests/manual/scenarios/first.yml", vec![]);
     let sc2 = scenario("second", "tests/manual/scenarios/second.yml", vec![]);
     let out = render(|buf| {
@@ -385,6 +467,26 @@ fn pretty_scenario_block_spacing_attaches_cleanup_to_its_scenario() {
         out.contains("✓ first\nCleaned up test environment.\n\nsecond"),
         "expected footer + cleanup tight, blank before next header; got:\n{out}"
     );
+}
+
+#[test]
+fn pretty_default_scenarios_pack_dense_no_blanks_between() {
+    // At `Default`, scenario_header emits nothing — successive scenarios
+    // pack tight as a stream of footer lines. No blank separators.
+    let r = PrettyReporter::new(Verbosity::Default);
+    let sc1 = scenario("first", "tests/manual/scenarios/first.yml", vec![]);
+    let sc2 = scenario("second", "tests/manual/scenarios/second.yml", vec![]);
+    let out = render(|buf| {
+        r.scenario_header(buf, &sc1).unwrap();
+        r.scenario_footer(buf, &sc1, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap();
+        r.scenario_header(buf, &sc2).unwrap();
+        r.scenario_footer(buf, &sc2, ScenarioStatus::Pass, Duration::ZERO)
+            .unwrap();
+    });
+    // Two footer lines back-to-back, no blank in between.
+    let line = out.trim_end_matches('\n');
+    assert_eq!(line, "✓ first\n✓ second");
 }
 
 #[test]
@@ -467,11 +569,14 @@ fn pretty_footer_suppresses_suffix_for_zero_duration() {
 }
 
 #[test]
-fn quiet_footer_renders_duration_and_slow_annotation() {
-    let r = QuietReporter::new();
+fn pretty_quiet_fail_footer_renders_duration_and_slow_annotation() {
+    // §6: at `-q` the pass footer is suppressed, but the FAIL footer still
+    // surfaces — and it carries the same `(slow)` annotation as the pretty
+    // tiers when the scenario crossed the SLOW_THRESHOLD.
+    let r = PrettyReporter::new(Verbosity::Quiet);
     let sc = scenario("slow-quiet", "tests/manual/scenarios/sq.yml", vec![]);
     let out = render(|buf| {
-        r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::from_secs(6))
+        r.scenario_footer(buf, &sc, ScenarioStatus::Fail, Duration::from_secs(6))
             .unwrap()
     });
     assert!(out.contains("6.0s"));
@@ -631,12 +736,13 @@ fn pretty_run_summary_reports_errors_separately_from_failures() {
 }
 
 // ---------------------------------------------------------------------------
-// QuietReporter
+// PrettyReporter — Verbosity::Quiet behavior (silent on pass, loud on fail)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn quiet_suppresses_per_step_lines() {
-    let r = QuietReporter::new();
+fn pretty_quiet_suppresses_per_step_lines() {
+    // §6: at `-q`, per-step lines are suppressed (same rule as `Default`).
+    let r = PrettyReporter::new(Verbosity::Quiet);
     let s = step("Clone the repo", "git clone $REMOTE_FOO");
     let assertions = vec![assertion(true, "Exit code", None)];
     let report = StepReport {
@@ -653,23 +759,37 @@ fn quiet_suppresses_per_step_lines() {
 }
 
 #[test]
-fn quiet_still_emits_scenario_footer() {
-    let r = QuietReporter::new();
+fn pretty_quiet_suppresses_pass_footer_but_emits_fail_footer() {
+    // §6: at `-q`, the pass footer is suppressed entirely — failures are the
+    // only thing that surfaces inline. The FAIL footer + cleanup line still
+    // emit at `-q`, and the end-of-run summary block carries the detail.
+    let r = PrettyReporter::new(Verbosity::Quiet);
     let sc = scenario(
         "hooks:silent-job-logs",
         "tests/manual/scenarios/hooks/silent-job-logs.yml",
         vec![],
     );
-    let out = render(|buf| {
+    let pass = render(|buf| {
         r.scenario_footer(buf, &sc, ScenarioStatus::Pass, Duration::ZERO)
             .unwrap()
     });
-    assert!(out.starts_with("✓ hooks:silent-job-logs"));
+    assert!(
+        pass.is_empty(),
+        "expected no pass footer at `-q`, got: {pass:?}",
+    );
+    let fail = render(|buf| {
+        r.scenario_footer(buf, &sc, ScenarioStatus::Fail, Duration::ZERO)
+            .unwrap()
+    });
+    assert!(fail.starts_with("✗ hooks:silent-job-logs"));
 }
 
 #[test]
-fn quiet_run_summary_matches_pretty() {
-    let r = QuietReporter::new();
+fn pretty_quiet_run_summary_matches_pretty() {
+    // §6 + design language: the end-of-run summary block (failed-scenarios +
+    // reproduce) emits at every verbosity, including `-q`. It's how `-q`
+    // surfaces failures despite the inline stream being silent on pass.
+    let r = PrettyReporter::new(Verbosity::Quiet);
     let summary = RunSummary {
         scenarios_total: 1,
         scenarios_passed: 0,
@@ -694,4 +814,14 @@ fn quiet_run_summary_matches_pretty() {
     assert!(out.contains("Scenarios:  0 passed, 1 failed   (1 total)"));
     assert!(out.contains("Reproduce:"));
     assert!(out.contains("mise run test:manual -- --ci demo"));
+}
+
+#[test]
+fn pretty_quiet_emits_cleanup_on_fail() {
+    // CLAUDE.md §6: cleanup line emits on fail at every verbosity (including
+    // `-q`). The runner only calls cleanup_note after a failed scenario, so
+    // the reporter just needs to emit unconditionally when called.
+    let r = PrettyReporter::new(Verbosity::Quiet);
+    let out = render(|buf| r.cleanup_note(buf, "Cleaned up test environment.").unwrap());
+    assert!(out.contains("Cleaned up test environment."));
 }

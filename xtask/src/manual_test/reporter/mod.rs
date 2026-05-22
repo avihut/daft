@@ -11,7 +11,6 @@
 //! Mirrors the `CommandExecutor` port style established by #516.
 
 pub mod pretty;
-pub mod quiet;
 
 #[cfg(test)]
 mod tests;
@@ -177,12 +176,11 @@ pub trait Reporter: Send + Sync {
     fn run_summary(&self, out: &mut dyn Write, summary: &RunSummary<'_>) -> io::Result<()>;
 }
 
-/// Pick a reporter for the requested verbosity.
+/// Pick a reporter for the requested verbosity. `PrettyReporter` handles all
+/// four levels via internal verbosity gates (see `pretty.rs` helpers + §6
+/// of the design language).
 pub fn reporter_for(verbosity: Verbosity) -> Box<dyn Reporter> {
-    match verbosity {
-        Verbosity::Quiet => Box::new(quiet::QuietReporter::new()),
-        _ => Box::new(pretty::PrettyReporter::new(verbosity)),
-    }
+    Box::new(pretty::PrettyReporter::new(verbosity))
 }
 
 /// Derive the runner-addressable token for a scenario's source path.

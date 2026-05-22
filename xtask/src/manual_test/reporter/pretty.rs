@@ -1,14 +1,20 @@
-//! Default / verbose / very-verbose pretty reporter.
+//! Reporter for all four verbosity levels.
 //!
 //! Internal branching on `verbosity` keeps formatting differences local —
-//! three top-level structs would be near-duplicate code. The verbosity
-//! ladder:
+//! four top-level structs would be near-duplicate code. The verbosity ladder
+//! lives in `reporter/CLAUDE.md` §6 (authoritative); summarized here for the
+//! grep-from-code path:
 //!
-//! | level         | per-step lines | check icons (pass) | captured (pass) | captured (fail)        | expanded command |
-//! |---------------|----------------|--------------------|-----------------|------------------------|------------------|
-//! | `Default`     | yes            | no                 | no              | first 20 lines         | no               |
-//! | `Verbose`     | yes            | yes                | yes (20 lines)  | first 20 lines         | yes              |
-//! | `VeryVerbose` | yes            | yes                | yes (untrunc.)  | full, no line cap      | yes              |
+//! | level         | pass footer | fail footer | header + per-step | check icons | capture on fail | capture on pass | expanded cmd |
+//! |---------------|-------------|-------------|-------------------|-------------|-----------------|-----------------|--------------|
+//! | `Quiet`       | no          | yes         | no                | no          | no              | no              | no           |
+//! | `Default`     | yes         | yes         | no                | no          | no              | no              | no           |
+//! | `Verbose`     | yes         | yes         | yes               | no          | first 20 lines  | no              | no           |
+//! | `VeryVerbose` | yes         | yes         | yes               | yes         | uncapped        | uncapped        | yes          |
+//!
+//! Failures always surface — the end-of-run failures block emits at every
+//! level when there are failures, so `Quiet` / `Default` defer per-step
+//! detail to the summary rather than dropping it.
 
 use std::io::{self, Write};
 use std::time::Duration;
@@ -35,18 +41,48 @@ impl PrettyReporter {
         Self { verbosity }
     }
 
+    /// CLAUDE.md §6: scenario header (cyan name + dim path) ships from `-v`
+    /// upward. `Default` / `Quiet` collapse to one footer line per scenario.
+    fn show_scenario_header(&self) -> bool {
+        matches!(self.verbosity, Verbosity::Verbose | Verbosity::VeryVerbose)
+    }
+
+    /// CLAUDE.md §6: per-step lines (`[N/M] name ... ok | FAIL`, fail-step
+    /// assertion details + inline capture) ship from `-v` upward. The
+    /// end-of-run failures block still carries the full failure detail at
+    /// every level — `Default` / `Quiet` defer it, they don't drop it.
+    fn show_per_step_lines(&self) -> bool {
+        matches!(self.verbosity, Verbosity::Verbose | Verbosity::VeryVerbose)
+    }
+
+    /// CLAUDE.md §6: pass footer is everything but `Quiet`. The fail footer
+    /// is unconditional (see `scenario_footer`).
+    fn show_pass_footer(&self) -> bool {
+        !matches!(self.verbosity, Verbosity::Quiet)
+    }
+
+    /// CLAUDE.md §6: `$ expanded-command` is `-vv`-only. The expansion is
+    /// rarely the thing the reader needs; it's noise outside firehose mode.
     fn show_expanded_command(&self) -> bool {
-        matches!(self.verbosity, Verbosity::Verbose | Verbosity::VeryVerbose)
+        matches!(self.verbosity, Verbosity::VeryVerbose)
     }
 
+    /// CLAUDE.md §6: per-check `✓` icons on a passing step are `-vv`-only —
+    /// at `-v` the step-level `ok (N checks)` is enough.
     fn show_pass_check_icons(&self) -> bool {
-        matches!(self.verbosity, Verbosity::Verbose | Verbosity::VeryVerbose)
+        matches!(self.verbosity, Verbosity::VeryVerbose)
     }
 
+    /// CLAUDE.md §6: inline capture on a passing step is `-vv`-only.
+    /// On-fail capture is gated by `show_per_step_lines` (it lives inside
+    /// `step_fail`), and so emits at `-v` upward.
     fn show_pass_capture(&self) -> bool {
-        matches!(self.verbosity, Verbosity::Verbose | Verbosity::VeryVerbose)
+        matches!(self.verbosity, Verbosity::VeryVerbose)
     }
 
+    /// CLAUDE.md §6: capture line cap. `-v` caps at 20 lines; `-vv` uncapped.
+    /// Only consulted when capture is actually being emitted (per
+    /// `show_per_step_lines` for fail, `show_pass_capture` for pass).
     fn capture_cap(&self) -> Option<usize> {
         match self.verbosity {
             Verbosity::VeryVerbose => None,
@@ -57,6 +93,10 @@ impl PrettyReporter {
 
 impl Reporter for PrettyReporter {
     fn scenario_header(&self, out: &mut dyn Write, scenario: &Scenario) -> io::Result<()> {
+        // §6: scenario header ships from `-v` upward.
+        if !self.show_scenario_header() {
+            return Ok(());
+        }
         // Leading blank separates this scenario block from the previous one
         // (cleanup note + footer attach tight to the scenario above; the
         // breathing room lives here, owned by the next scenario's header).
@@ -80,6 +120,10 @@ impl Reporter for PrettyReporter {
         total: usize,
         step: &Step,
     ) -> io::Result<()> {
+        // §6: per-step lines ship from `-v` upward.
+        if !self.show_per_step_lines() {
+            return Ok(());
+        }
         // §1 budget: blue is not a daft color slot. §2: counters are
         // scaffolding (tertiary), dim.
         write!(
@@ -91,6 +135,11 @@ impl Reporter for PrettyReporter {
     }
 
     fn step_pass(&self, out: &mut dyn Write, report: &StepReport<'_>) -> io::Result<()> {
+        // §6: per-step lines (including this `ok` outcome line) ship from
+        // `-v` upward.
+        if !self.show_per_step_lines() {
+            return Ok(());
+        }
         let check_count = report.assertions.len();
         // §4 (pass-quiet/fail-loud): pass marker is minimal — lowercase `ok` in
         // plain green (not bold). The bold/loud stacking is reserved for FAIL.
@@ -130,6 +179,13 @@ impl Reporter for PrettyReporter {
     }
 
     fn step_fail(&self, out: &mut dyn Write, report: &StepReport<'_>) -> io::Result<()> {
+        // §6: per-step lines (including the `FAIL` outcome + inline assertion
+        // detail + on-fail capture) ship from `-v` upward. At `Default` /
+        // `Quiet` the user sees just the scenario footer inline; the full
+        // failure detail lands in the end-of-run failures block.
+        if !self.show_per_step_lines() {
+            return Ok(());
+        }
         let fail_count = report.assertions.iter().filter(|a| !a.passed).count();
         // §4 (pass-quiet/fail-loud): FAIL stacks signals — bold + red + uppercase.
         writeln!(
@@ -168,6 +224,12 @@ impl Reporter for PrettyReporter {
         status: ScenarioStatus,
         duration: Duration,
     ) -> io::Result<()> {
+        // §6: pass footer is everything but `-q`; fail footer is unconditional.
+        // The asymmetry is the §4 pass-quiet/fail-loud principle landing at
+        // the verbosity-flag level — `-q` runs read as "silent until red."
+        if matches!(status, ScenarioStatus::Pass) && !self.show_pass_footer() {
+            return Ok(());
+        }
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
         //

@@ -2,9 +2,9 @@
 
 This file constrains the _appearance_ of the YAML test runner's output: which
 colors, which weights, where in the hierarchy each string sits, how the output
-reads under each verbosity level. Anyone editing `reporter/pretty.rs`,
-`reporter/quiet.rs`, or anything that produces user-visible bytes through the
-`Reporter` trait must follow these rules.
+reads under each verbosity level. Anyone editing `reporter/pretty.rs` or
+anything that produces user-visible bytes through the `Reporter` trait must
+follow these rules.
 
 The rules are derived from the project-level `daft-tui-design` skill (color as a
 typed enum, three-level hierarchy, strip non-data ink) and adapted for stdout —
@@ -155,7 +155,7 @@ everything, uncapped" lives at `-vv`. `-q` collapses passing scenarios entirely.
 | `-q`      | no          | yes         | fail only    | no                     | no             | no                  | no (summary only)      | no                     | no                   |
 | (default) | yes         | yes         | fail only    | no                     | no             | no                  | no (summary only)      | no                     | no                   |
 | `-v`      | yes         | yes         | fail only    | yes                    | yes            | no                  | first 20 lines         | no                     | no                   |
-| `-vv`     | yes         | yes         | fail only    | yes                    | yes            | yes                 | uncapped               | first 20 lines         | yes                  |
+| `-vv`     | yes         | yes         | fail only    | yes                    | yes            | yes                 | uncapped               | uncapped               | yes                  |
 
 **Cleanup line.** `Cleaned up test environment.` is suppressed on pass at every
 verbosity (Principle 1: strip non-data ink). On fail it emits flush against the
