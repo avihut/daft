@@ -207,7 +207,11 @@ jobs:
           # (git-cliff + gen-man + gen-cli-docs), commit
           # "chore: release vNEXT_VER". --no-tag --no-push because the
           # workflow handles tagging on merge and the push is explicit.
-          cargo release "$NEXT_VER" --package daft --execute --no-confirm --no-tag --no-push
+          # --allow-branch release-pr overrides release.toml's
+          # allow-branch=["master"] (which stays as-is to protect local
+          # cargo-release runs from accidentally releasing off a random
+          # feature branch).
+          cargo release "$NEXT_VER" --package daft --execute --no-confirm --no-tag --no-push --allow-branch release-pr
 
           # Force-push — each run replaces the previous attempt cleanly.
           git push -f origin release-pr
