@@ -154,15 +154,15 @@ impl Reporter for PrettyReporter {
         }
         // §6 indent ladder: step opening line indents to col 2 (Layer 2
         // sits one indent under Layer 1 scenario). Backported to `-v`.
-        // §1 budget: blue is not a daft color slot. §2: counters are
-        // scaffolding (tertiary), dim.
-        // §6 `-vv` callout: step name bolds at `-vv` only — without Layer 3/4
-        // content between step lines at `-v`, bold there would just compete
-        // with the scenario header.
+        // §1 budget: `[N/M]` counter is scaffolding, dim.
+        // §1 + §6: step name uses bright purple (step-identity color);
+        // bolds at `-vv` for the Layer-2 anchor against Layer 3/4 content.
+        // At `-v` no bold — color alone is enough to mark step identity
+        // when no body content competes.
         let name = if self.show_bold_step_name() {
-            styles::bold(&step.name)
+            styles::bold_bright_purple(&step.name)
         } else {
-            step.name.clone()
+            styles::bright_purple(&step.name)
         };
         write!(
             out,
@@ -194,12 +194,7 @@ impl Reporter for PrettyReporter {
 
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                // §6 indent ladder: `$ command` is Layer 3 — col 6 under the
-                // step header at col 2.
-                // §6 `-vv` callout: `$ command` promotes from dim to default
-                // fg at `-vv` (where it's the only emission tier) — sitting
-                // adjacent to Layer 4 body, dim would render it invisible.
-                writeln!(out, "      $ {cmd}")?;
+                write_expanded_command(out, cmd)?;
             }
         }
         if self.show_pass_check_icons() {
@@ -234,8 +229,7 @@ impl Reporter for PrettyReporter {
         )?;
         if self.show_expanded_command() {
             if let Some(cmd) = report.expanded_command {
-                // §6 indent ladder: `$ command` at col 6 (Layer 3), default fg.
-                writeln!(out, "      $ {cmd}")?;
+                write_expanded_command(out, cmd)?;
             }
         }
         for a in report.assertions.iter().filter(|a| !a.passed) {
@@ -299,6 +293,21 @@ impl Reporter for PrettyReporter {
     }
 }
 
+/// Write the expanded `$ command` block at the Layer-3 indent (col 6).
+///
+/// §1: command body is blue (step-action color). Multi-line `run:` YAML
+/// fields produce multi-line expanded commands; each continuation line
+/// gets a `>` shell-prompt prefix at the same indent so the visual frame
+/// holds across line wraps and the reader can tell at a glance that the
+/// whole block is one command, not a sequence of step actions.
+fn write_expanded_command(out: &mut dyn Write, cmd: &str) -> io::Result<()> {
+    for (i, line) in cmd.lines().enumerate() {
+        let prefix = if i == 0 { '$' } else { '>' };
+        writeln!(out, "      {}", styles::blue(&format!("{prefix} {line}")))?;
+    }
+    Ok(())
+}
+
 /// Write captured stdout and stderr as two labeled blocks, honoring an
 /// optional per-stream line cap. Keeping the streams separate matches how
 /// other test runners (Vitest, pytest) surface failure detail — the reader
@@ -330,20 +339,20 @@ fn write_captured_section(
         return Ok(());
     }
     // §6 indent ladder + `-vv` callout: stream label at col 6 (Layer 4
-    // header, same indent as Layer 3 sibling content), default fg, no
-    // `--- {label} ---` decoration — the indent provides the framing now.
-    // Body lines at col 10 (Layer 4 body, one ladder step deeper).
-    writeln!(out, "      {label}")?;
+    // header), body at col 10. Both dim — the step-color above plus the
+    // indent provide the visual frame; color on the capture would compete
+    // with the step-identity signal. No `--- {label} ---` decoration; the
+    // indent does the framing now.
+    writeln!(out, "      {}", styles::dim(label))?;
     let limit = cap.unwrap_or(usize::MAX);
     let mut printed = 0usize;
     for line in trimmed.lines().take(limit) {
-        writeln!(out, "          {line}")?;
+        writeln!(out, "          {}", styles::dim(line))?;
         printed += 1;
     }
     if let Some(cap) = cap {
         let actual = trimmed.lines().count();
         if actual > cap {
-            // Truncation hint is metadata, not payload — stays dim.
             writeln!(
                 out,
                 "          {}",

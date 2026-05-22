@@ -185,12 +185,13 @@ fn pretty_default_step_pass_emits_nothing() {
 }
 
 #[test]
-fn pretty_very_verbose_promotes_step_name_and_body_for_legibility() {
-    // §6 `-vv` callout: at `-vv` the step name is bold, the check labels +
-    // capture body are default fg (no dim wrap), the dividers + `[N/M]`
-    // counter + `(N checks)` suffix remain dim. This is the only way the
-    // step block stays legible when uncapped capture bodies share the screen
-    // with check labels at the same indent.
+fn pretty_very_verbose_step_block_styling_per_layer() {
+    // §6 `-vv` callout: at `-vv` each Layer carries a distinct treatment so
+    // the four-layer block remains legible. This test pins all four:
+    //   Layer 2 step name → bold + bright purple (`\x1b[1m\x1b[95m`)
+    //   Layer 3 `$ command` body → blue (`\x1b[94m`)
+    //   Layer 3 `✓ check` label → default fg (no dim wrap)
+    //   Layer 4 capture stream label + body → dim (`\x1b[2m`)
     let r = PrettyReporter::new(Verbosity::VeryVerbose);
     let s = step("Clone the repo", "git clone /tmp/foo");
     let assertions = vec![assertion(true, "Exit code: expected 0, got 0", None)];
@@ -205,12 +206,17 @@ fn pretty_very_verbose_promotes_step_name_and_body_for_legibility() {
     r.step_pass(&mut buf, &report).unwrap();
     let raw = String::from_utf8(buf).expect("reporter output is valid UTF-8");
 
-    // Step name is bold default-fg (no color sequence, just bold).
+    // Step name is bold bright purple.
     assert!(
-        raw.contains("\x1b[1mClone the repo\x1b[0m"),
-        "step name not bold at -vv; got: {raw:?}",
+        raw.contains("\x1b[1m\x1b[95mClone the repo\x1b[0m"),
+        "step name not bold-bright-purple at -vv; got: {raw:?}",
     );
-    // Check label is default fg — must not be wrapped in dim (`\x1b[2m`).
+    // `$ command` body is blue.
+    assert!(
+        raw.contains("\x1b[94m$ git clone /tmp/foo\x1b[0m"),
+        "$ command not blue at -vv; got: {raw:?}",
+    );
+    // Check label is default fg — must NOT be wrapped in dim.
     let check_line = raw
         .lines()
         .find(|l| l.contains("Exit code: expected 0, got 0"))
@@ -219,27 +225,42 @@ fn pretty_very_verbose_promotes_step_name_and_body_for_legibility() {
         !check_line.contains("\x1b[2m"),
         "check label wrapped in dim; got: {check_line:?}",
     );
-    // Capture body line is default fg — same dim guard.
+    // Capture stream label + body line are BOTH dim — color would compete
+    // with the step-identity signal above (see §6 -vv callout).
+    let stream_label_line = raw
+        .lines()
+        .find(|l| l.contains("stdout") && !l.contains("Clone"))
+        .expect("stdout stream label emitted");
+    assert!(
+        stream_label_line.contains("\x1b[2m"),
+        "stream label not dim; got: {stream_label_line:?}",
+    );
     let body_line = raw
         .lines()
         .find(|l| l.contains("clone progress line"))
         .expect("capture body line emitted");
     assert!(
-        !body_line.contains("\x1b[2m"),
-        "capture body wrapped in dim; got: {body_line:?}",
+        body_line.contains("\x1b[2m"),
+        "capture body not dim; got: {body_line:?}",
     );
 }
 
 #[test]
-fn pretty_verbose_step_name_stays_plain() {
-    // The `-vv`-only step-name bolding must NOT leak to `-v`. At `-v` there's
-    // no intervening body content between step lines, so bold there would
-    // just compete with the scenario header for no payoff.
+fn pretty_verbose_step_name_is_bright_purple_not_bold() {
+    // §6: step-identity color backports to `-v` (bright purple) but the bold
+    // weight is reserved for `-vv`, where Layer 3/4 body content competes
+    // and the step name needs the extra anchor weight. At `-v` there's no
+    // body between step lines, so bold would just compete with the scenario
+    // header for no payoff — color alone is enough.
     let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("Clone the repo", "git clone /tmp/foo");
     let mut buf = Vec::new();
     r.step_start(&mut buf, 0, 3, &s).unwrap();
     let raw = String::from_utf8(buf).unwrap();
+    assert!(
+        raw.contains("\x1b[95mClone the repo\x1b[0m"),
+        "step name not bright purple at -v; got: {raw:?}",
+    );
     assert!(
         !raw.contains("\x1b[1m"),
         "step name must not be bold at -v; got: {raw:?}",
