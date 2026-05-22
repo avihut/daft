@@ -187,10 +187,11 @@ fn pretty_default_step_pass_emits_nothing() {
 #[test]
 fn pretty_very_verbose_step_block_styling_per_layer() {
     // §6 `-vv` callout: at `-vv` each Layer carries a distinct treatment so
-    // the four-layer block remains legible. This test pins all four:
-    //   Layer 2 step name → plain cyan (`\x1b[36m`) — same hue as the
-    //                       bold-cyan scenario header, weight marks the
-    //                       level shift
+    // the four-layer block remains legible. This test pins all of them:
+    //   Layer 2 `[N/M]` counter → plain cyan (`\x1b[36m`) — structural
+    //                              anchor at the step boundary
+    //   Layer 2 step name → bold bright purple (`\x1b[1m\x1b[95m`) —
+    //                       Layer-2 anchor against the body content below
     //   Layer 3 `$ command` body → blue (`\x1b[94m`)
     //   Layer 3 `✓ check` label → default fg (no dim wrap)
     //   Layer 4 capture stream label + body → dim (`\x1b[2m`)
@@ -208,19 +209,16 @@ fn pretty_very_verbose_step_block_styling_per_layer() {
     r.step_pass(&mut buf, &report).unwrap();
     let raw = String::from_utf8(buf).expect("reporter output is valid UTF-8");
 
-    // Step name is plain cyan (no bold; bold belongs to the scenario header
-    // at Level 1 — weight is what distinguishes Level 1 from Level 2).
+    // `[N/M]` counter is plain cyan (structural anchor — same hue family as
+    // the bold-cyan scenario header).
     assert!(
-        raw.contains("\x1b[36mClone the repo\x1b[0m"),
-        "step name not cyan at -vv; got: {raw:?}",
+        raw.contains("\x1b[36m[1/3]\x1b[0m"),
+        "[N/M] counter not cyan; got: {raw:?}",
     );
-    let step_line = raw
-        .lines()
-        .find(|l| l.contains("Clone the repo"))
-        .expect("step opening line emitted");
+    // Step name is bold bright purple — Layer-2 anchor.
     assert!(
-        !step_line.contains("\x1b[1m"),
-        "step name must not be bold; bold reserves for scenario header: {step_line:?}",
+        raw.contains("\x1b[1m\x1b[95mClone the repo\x1b[0m"),
+        "step name not bold-bright-purple at -vv; got: {raw:?}",
     );
     // `$ command` body is blue.
     assert!(
@@ -257,18 +255,24 @@ fn pretty_very_verbose_step_block_styling_per_layer() {
 }
 
 #[test]
-fn pretty_verbose_step_name_is_cyan_not_bold() {
-    // §6: step name uses plain cyan at both `-v` and `-vv` — same hue as the
-    // bold-cyan scenario above, with the bold/plain weight marking the
-    // Level 1 vs Level 2 shift. Bold belongs to the scenario header.
+fn pretty_verbose_step_line_has_cyan_counter_and_purple_name() {
+    // §6: step opening line pairs a cyan `[N/M]` counter (structural anchor
+    // at the step boundary) with a bright-purple step name (step identity).
+    // At `-v` the name is plain bright purple — bold is reserved for `-vv`
+    // where the step line needs extra anchor weight against Layer 3/4
+    // content.
     let r = PrettyReporter::new(Verbosity::Verbose);
     let s = step("Clone the repo", "git clone /tmp/foo");
     let mut buf = Vec::new();
     r.step_start(&mut buf, 0, 3, &s).unwrap();
     let raw = String::from_utf8(buf).unwrap();
     assert!(
-        raw.contains("\x1b[36mClone the repo\x1b[0m"),
-        "step name not cyan at -v; got: {raw:?}",
+        raw.contains("\x1b[36m[1/3]\x1b[0m"),
+        "[N/M] counter not cyan at -v; got: {raw:?}",
+    );
+    assert!(
+        raw.contains("\x1b[95mClone the repo\x1b[0m"),
+        "step name not bright purple at -v; got: {raw:?}",
     );
     assert!(
         !raw.contains("\x1b[1m"),

@@ -90,6 +90,15 @@ impl PrettyReporter {
         }
     }
 
+    /// CLAUDE.md §6 `-vv` callout: at `-vv` the step opening line bolds the
+    /// step name so each step block has a Level-2 anchor against the
+    /// surrounding body content. At `-v` step names stay plain — without
+    /// body content between step lines, bold would just compete with the
+    /// scenario header.
+    fn show_bold_step_name(&self) -> bool {
+        matches!(self.verbosity, Verbosity::VeryVerbose)
+    }
+
     /// CLAUDE.md §6 `-vv` callout: at `-vv` step blocks are separated by a
     /// blank line — Layer 3 + 4 content otherwise floods consecutive steps
     /// into a wall of text. At `-v` step blocks stack densely (Layer 2
@@ -145,17 +154,21 @@ impl Reporter for PrettyReporter {
         }
         // §6 indent ladder: step opening line indents to col 2 (Layer 2
         // sits one indent under Layer 1 scenario). Backported to `-v`.
-        // §1 budget: `[N/M]` counter is scaffolding, dim.
-        // §1 + §6: step name uses plain cyan — same structural color as the
-        // bold-cyan scenario header above, with the bold/plain weight
-        // marking the Level 1 vs Level 2 shift. Applies at both `-v` and
-        // `-vv` (color alone is enough; bold would compete with the
-        // scenario header).
+        // §1 budget: `[N/M]` counter is structural, plain cyan — same hue
+        // as the bold-cyan scenario header above, marking the step boundary
+        // at a glance without competing with the step name itself.
+        // §1 + §6: step name uses bright purple (step-identity color); bold
+        // at `-vv` for the Layer-2 anchor, plain at `-v`.
+        let name = if self.show_bold_step_name() {
+            styles::bold_bright_purple(&step.name)
+        } else {
+            styles::bright_purple(&step.name)
+        };
         write!(
             out,
             "  {} {} ... ",
-            styles::dim(&format!("[{}/{}]", idx + 1, total)),
-            styles::cyan(&step.name),
+            styles::cyan(&format!("[{}/{}]", idx + 1, total)),
+            name,
         )
     }
 

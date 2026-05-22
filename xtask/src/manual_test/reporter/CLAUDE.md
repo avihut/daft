@@ -27,23 +27,27 @@ gradients, viewers learn each accent fast and get confused fast if you reuse
 one. Each slot below answers exactly one question; any future "I want to make
 this stand out" gets answered by looking up the right slot.
 
-| Slot                    | Reserved for                                                                                                                                                                                                                                               | Anti-meaning                         |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **bold green**          | Diff label: `expected:` / `unexpected:` (failure payload, accent at concentrated weight)                                                                                                                                                                   | Never the pass icon                  |
-| **green** (not bold)    | Pass marker: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                                                                                                        | Never "selected" or "in progress"    |
-| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                                                                           | Never warnings                       |
-| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                                                                              | Never errors                         |
-| **cyan**                | Structural marker. **Bold cyan** = scenario name (Level 1). **Plain cyan** = step name in per-step opening lines (Level 2). The bold/plain weight distinguishes the two levels — same precedent as bold green vs plain green for diff label vs pass marker | Never status, never expanded command |
-| **blue**                | Step action: `$ command` body (including `>` continuation lines on multi-line commands)                                                                                                                                                                    | Never the pass / fail outcome        |
-| **dim** / **dark grey** | Pure scaffolding: counters (`[N/M]`, `(N checks)`), scenario-header path, durations under threshold, banner rules, `step N/M` in failure block, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint  | Never the failure payload            |
-| **default fg**          | Body content + failure payload: assertion labels, summary labels, reproduce command body, **assertion `detail` lines under a failed assertion**, failure-block location pointer (`path:line`)                                                              | Never decoration                     |
+| Slot                    | Reserved for                                                                                                                                                                                                                                                | Anti-meaning                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **bold green**          | Diff label: `expected:` / `unexpected:` (failure payload, accent at concentrated weight)                                                                                                                                                                    | Never the pass icon                  |
+| **green** (not bold)    | Pass marker: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                                                                                                         | Never "selected" or "in progress"    |
+| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                                                                            | Never warnings                       |
+| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                                                                               | Never errors                         |
+| **cyan**                | Structural anchors. **Bold cyan** = scenario name (Level 1). **Plain cyan** = `[N/M]` step counter at the start of each step line (Level 2 boundary marker — names the step block to the eye while the bright-purple step name carries the identity)        | Never status, never expanded command |
+| **bright purple**       | Step identity: step name in the per-step opening line (bold at `-vv` for the Layer-2 anchor against Layer 3/4 content, plain at `-v`)                                                                                                                       | Never assertion content              |
+| **blue**                | Step action: `$ command` body (including `>` continuation lines on multi-line commands)                                                                                                                                                                     | Never the pass / fail outcome        |
+| **dim** / **dark grey** | Pure scaffolding: `(N checks)` / `(N failed)` suffix, scenario-header path, durations under threshold, banner rules, `step N/M` in failure block, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint | Never the failure payload            |
+| **default fg**          | Body content + failure payload: assertion labels, summary labels, reproduce command body, **assertion `detail` lines under a failed assertion**, failure-block location pointer (`path:line`)                                                               | Never decoration                     |
 
 **Cyan repurposed from `daft-tui-design`.** The TUI budget reserves cyan for
-focus/selection. Stdout has no focus, so cyan covers "structural marker" here —
-bold cyan for the scenario anchor at the top of each block, plain cyan for each
-step's opening line. The bold/plain split is the only thing distinguishing Level
-1 from Level 2; treat it as one slot with a weight dimension, not two slots that
-happen to share a hue.
+focus/selection. Stdout has no focus, so cyan covers "structural anchor" — bold
+cyan on the scenario name at Level 1, plain cyan on the `[N/M]` step counter at
+Level 2. The counter sits to the left of the step name and acts as a
+column-aligned boundary marker the eye can run down to count steps and spot
+where each block begins; the step name itself carries identity in bright purple
+(a separate slot, separate meaning). Treat the two cyan uses as one slot —
+"structural anchor at the start of each block" — with bold marking the bigger
+block.
 
 **Never combine dim with color.** Most terminals implement dim as
 half-brightness on top of whatever color is set — `dim + green` and `dim + red`
@@ -63,12 +67,12 @@ Three levels carry the entire visual weight system. Monospace forbids size
 shifts; weight + color + position is the whole toolkit. **Pick one mechanism per
 level and stop** — adding bold to a secondary item collapses the hierarchy.
 
-| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer on FAIL (whole `✗ name` span bold red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                                                                                                                                                   |
-| **Secondary** | default fg, no styling       | **Scenario name on a PASSING footer** (default fg, not bold), assertion labels (`✓ Exit code: …` check labels included), summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body, **assertion `detail` lines under a failed assertion** (the failure payload), failure-block location pointer (`path:line`) |
-| **Tertiary**  | dim                          | `[N/M]` step counter, `(N checks)` / `(N failed)`, scenario-header path, `step N/M` inside failure block, banner rule chars, durations under threshold, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint                                                                                                                                    |
-| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (`✓` green not bold, `✗` bold red, `❯` bold red), diff labels (`expected:` bold green, `actual:` bold red), **step name in per-step lines** (plain cyan at both `-v` and `-vv`), **`$ command` body** (blue, multi-line with `>` continuation lines)                                                       |
+| Level         | Mechanism                    | What lives here                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Primary**   | bold + named color           | Scenario header (bold cyan), scenario footer on FAIL (whole `✗ name` span bold red), `FAIL` word, banner label, `1) ✗ name` in failures block, focal step name in failures block (bold default-fg)                                                                                                                                                                                                       |
+| **Secondary** | default fg, no styling       | **Scenario name on a PASSING footer** (default fg, not bold), assertion labels (`✓ Exit code: …` check labels included), summary labels (`Scenarios:`/`Steps:`/`Duration:`/`Reproduce:`), numbered prefix (`1)`), "passed"/"failed"/"total" words, reproduce command body, **assertion `detail` lines under a failed assertion** (the failure payload), failure-block location pointer (`path:line`)     |
+| **Tertiary**  | dim                          | `(N checks)` / `(N failed)` suffix, scenario-header path, `step N/M` inside failure block, banner rule chars, durations under threshold, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint                                                                                                                                                       |
+| **Accent**    | named color (may layer bold) | Count numbers (green for passed > 0, red for failed > 0), `(slow)` yellow, semantic icons (`✓` green not bold, `✗` bold red, `❯` bold red), diff labels (`expected:` bold green, `actual:` bold red), **`[N/M]` step counter** (plain cyan — structural anchor at each step boundary), **step name in per-step lines** (bright purple at `-v`, bold bright purple at `-vv`), **`$ command` body** (blue) |
 
 **The decision rule.** "Should this be bold?" → look up its level in the table.
 "What color?" → look up the slot in §1. If a string fits no row, it probably
@@ -193,15 +197,16 @@ reaches for `-v`. Anyone who wants full capture without truncation reaches for
 
 **`-vv` re-styles existing elements to keep four data layers on screen at once**
 (scenario / step / step action / capture body). The indent ladder gives each
-layer its own column; the step opening name picks up plain cyan at both `-v` and
-`-vv` — same hue as the bold-cyan scenario above, with the bold/plain weight
-marking the level shift; `$ command` body is blue with `>` continuation prefixes
-when the YAML `run:` field is multi-line (shell prompt convention keeps the
-visual frame across line wraps); capture stream label (`stdout` / `stderr`, no
-`--- ---` decoration — the indent carries the framing) and capture body both
-stay dim — they're context that the indent already frames, and color would
-compete with the cyan step-color signal above. A blank line separates step
-blocks at `-vv`.
+layer its own column; each step opening line pairs a plain-cyan `[N/M]` counter
+(structural anchor at the step boundary, same hue family as the bold-cyan
+scenario above) with a bright-purple step name (bold at `-vv` for the Layer-2
+anchor against the body content below, plain at `-v` where no body content
+competes); `$ command` body is blue with `>` continuation prefixes when the YAML
+`run:` field is multi-line (shell prompt convention keeps the visual frame
+across line wraps); capture stream label (`stdout` / `stderr`, no `--- ---`
+decoration — the indent carries the framing) and capture body both stay dim —
+they're context that the indent already frames, and color would compete with the
+cyan/purple anchors above. A blank line separates step blocks at `-vv`.
 
 ---
 
