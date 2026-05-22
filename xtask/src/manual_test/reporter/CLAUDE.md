@@ -113,6 +113,12 @@ The only place the asymmetry breaks is the summary stats line:
 counts the reader is comparing. The colored numbers carry the loud/quiet
 distinction.
 
+The same asymmetry lands at the **verbosity-flag level** in §6: the default
+ladder emits one footer line per scenario (pass-quiet) and reserves the expanded
+per-step / capture detail for `-v` and above; `-q` goes one further and emits
+nothing inline for passing scenarios. Failures stay loud at every level — the
+fail footer + the end-of-run summary block always surface.
+
 ---
 
 ## 5. Microcopy
@@ -139,22 +145,35 @@ capitalize a label, look up the right row instead.
 
 The `-q` / default / `-v` / `-vv` ladder is the contract between the user and
 the reporter. Each level subtracts or adds _whole categories_ of output — not
-just "more detail."
+just "more detail." The default sits where `cargo test`, vitest, and pytest sit:
+one line per leaf unit (here, one footer per scenario). Old-default detail
+(header, path, per-step lines, inline capture on fail) lives at `-v`; "firehose
+everything, uncapped" lives at `-vv`. `-q` collapses passing scenarios entirely.
 
-| Flag      | Per-step lines | Per-check icons on pass | Captured on pass | Captured on fail | Expanded command | Cleanup line  |
-| --------- | -------------- | ----------------------- | ---------------- | ---------------- | ---------------- | ------------- |
-| `-q`      | suppressed     | no                      | no               | summary only     | no               | suppressed    |
-| (default) | shown          | no                      | no               | first 20 lines   | no               | **fail only** |
-| `-v`      | + check icons  | yes                     | first 20 lines   | first 20 lines   | yes              | fail only     |
-| `-vv`     | + check icons  | yes                     | uncapped         | uncapped         | yes              | fail only     |
+| Flag      | Pass footer | Fail footer | Cleanup line | Scenario header + path | Per-step lines | Check icons on pass | Inline capture on fail | Inline capture on pass | Expanded `$ command` |
+| --------- | ----------- | ----------- | ------------ | ---------------------- | -------------- | ------------------- | ---------------------- | ---------------------- | -------------------- |
+| `-q`      | no          | yes         | fail only    | no                     | no             | no                  | no (summary only)      | no                     | no                   |
+| (default) | yes         | yes         | fail only    | no                     | no             | no                  | no (summary only)      | no                     | no                   |
+| `-v`      | yes         | yes         | fail only    | yes                    | yes            | no                  | first 20 lines         | no                     | no                   |
+| `-vv`     | yes         | yes         | fail only    | yes                    | yes            | yes                 | uncapped               | first 20 lines         | yes                  |
 
-**Cleanup line.** `Cleaned up test environment.` is suppressed on green at every
-verbosity (Principle 1: strip non-data ink). On fail it always emits flush
-against the footer — it's part of the failure block's visual context.
+**Cleanup line.** `Cleaned up test environment.` is suppressed on pass at every
+verbosity (Principle 1: strip non-data ink). On fail it emits flush against the
+footer at every verbosity — it's part of the failure block's visual context, and
+the rule is identical across `-q` / default / `-v` / `-vv`.
 
-**`-q` failures still surface.** The summary block (failed-scenarios + the
-reproduce block) is shared across reporters; `-q` doesn't hide failures, it just
-suppresses the per-step chatter that precedes them.
+**Failures always surface.** The summary block (failed-scenarios + the reproduce
+block) emits whenever there are failures, at every verbosity. `-q` and default
+don't hide failures, they defer the per-step detail from "inline as it happens"
+to "in the end-of-run summary block." A default-quiet run that hits a failure
+still gives the reader the focal step, the failed assertions, the diff labels at
+full saturation, the terminal-clickable `path:line`, and the capture — all in
+the failures block.
+
+**`-v` is the diagnostic tier.** Anyone who wants live "which step in which
+scenario" feedback as the run progresses (a sequential debug run, a flake hunt)
+reaches for `-v`. Anyone who wants full capture without truncation reaches for
+`-vv`.
 
 ---
 
