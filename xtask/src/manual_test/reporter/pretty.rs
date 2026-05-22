@@ -89,6 +89,15 @@ impl PrettyReporter {
             _ => Some(CAPTURE_LINE_CAP),
         }
     }
+
+    /// CLAUDE.md §6 `-vv` callout: at `-vv` the step opening line bolds the
+    /// step name so each step block has a Level-2 anchor against the
+    /// surrounding body content (check labels + uncapped capture, all
+    /// default fg). At `-v` step names stay plain — without body content
+    /// between step lines, bold would just compete with the scenario header.
+    fn show_bold_step_name(&self) -> bool {
+        matches!(self.verbosity, Verbosity::VeryVerbose)
+    }
 }
 
 impl Reporter for PrettyReporter {
@@ -126,11 +135,19 @@ impl Reporter for PrettyReporter {
         }
         // §1 budget: blue is not a daft color slot. §2: counters are
         // scaffolding (tertiary), dim.
+        // §6 `-vv` callout: at `-vv` the step name is bold default-fg so each
+        // step block has a Level-2 anchor against the uncapped body content
+        // emitted below it.
+        let name = if self.show_bold_step_name() {
+            styles::bold(&step.name)
+        } else {
+            step.name.clone()
+        };
         write!(
             out,
             "{} {} ... ",
             styles::dim(&format!("[{}/{}]", idx + 1, total)),
-            &step.name
+            name,
         )
     }
 
@@ -165,7 +182,9 @@ impl Reporter for PrettyReporter {
             for a in report.assertions {
                 // §3 + §4: `✓` is plain green (not bold) at every level —
                 // pass markers don't stack signals.
-                writeln!(out, "  {} {}", styles::green("✓"), styles::dim(&a.label))?;
+                // §2: assertion labels are secondary (default fg, not dim).
+                // Only the `✓` carries the accent; the label is the payload.
+                writeln!(out, "  {} {}", styles::green("✓"), &a.label)?;
             }
         }
         if self.show_pass_capture() {
@@ -285,16 +304,20 @@ fn write_captured_section(
     if trimmed.is_empty() {
         return Ok(());
     }
+    // §2: divider is tertiary (dim) — it's orientation only. Body lines are
+    // secondary (default fg) — when capture is emitted inline at `-v`+ it's
+    // the payload the user opted in for; dimming it works against the user.
     writeln!(out, "  {}", styles::dim(&format!("--- {label} ---")))?;
     let limit = cap.unwrap_or(usize::MAX);
     let mut printed = 0usize;
     for line in trimmed.lines().take(limit) {
-        writeln!(out, "  {}", styles::dim(line))?;
+        writeln!(out, "  {line}")?;
         printed += 1;
     }
     if let Some(cap) = cap {
         let actual = trimmed.lines().count();
         if actual > cap {
+            // Truncation hint is metadata, not payload — stays dim.
             writeln!(
                 out,
                 "  {}",

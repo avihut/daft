@@ -183,6 +183,68 @@ fn pretty_default_step_pass_emits_nothing() {
 }
 
 #[test]
+fn pretty_very_verbose_promotes_step_name_and_body_for_legibility() {
+    // §6 `-vv` callout: at `-vv` the step name is bold, the check labels +
+    // capture body are default fg (no dim wrap), the dividers + `[N/M]`
+    // counter + `(N checks)` suffix remain dim. This is the only way the
+    // step block stays legible when uncapped capture bodies share the screen
+    // with check labels at the same indent.
+    let r = PrettyReporter::new(Verbosity::VeryVerbose);
+    let s = step("Clone the repo", "git clone /tmp/foo");
+    let assertions = vec![assertion(true, "Exit code: expected 0, got 0", None)];
+    let report = StepReport {
+        expanded_command: Some("git clone /tmp/foo"),
+        assertions: &assertions,
+        stdout: Some("clone progress line\n"),
+        stderr: None,
+    };
+    let mut buf = Vec::new();
+    r.step_start(&mut buf, 0, 3, &s).unwrap();
+    r.step_pass(&mut buf, &report).unwrap();
+    let raw = String::from_utf8(buf).expect("reporter output is valid UTF-8");
+
+    // Step name is bold default-fg (no color sequence, just bold).
+    assert!(
+        raw.contains("\x1b[1mClone the repo\x1b[0m"),
+        "step name not bold at -vv; got: {raw:?}",
+    );
+    // Check label is default fg — must not be wrapped in dim (`\x1b[2m`).
+    let check_line = raw
+        .lines()
+        .find(|l| l.contains("Exit code: expected 0, got 0"))
+        .expect("check label line emitted");
+    assert!(
+        !check_line.contains("\x1b[2m"),
+        "check label wrapped in dim; got: {check_line:?}",
+    );
+    // Capture body line is default fg — same dim guard.
+    let body_line = raw
+        .lines()
+        .find(|l| l.contains("clone progress line"))
+        .expect("capture body line emitted");
+    assert!(
+        !body_line.contains("\x1b[2m"),
+        "capture body wrapped in dim; got: {body_line:?}",
+    );
+}
+
+#[test]
+fn pretty_verbose_step_name_stays_plain() {
+    // The `-vv`-only step-name bolding must NOT leak to `-v`. At `-v` there's
+    // no intervening body content between step lines, so bold there would
+    // just compete with the scenario header for no payoff.
+    let r = PrettyReporter::new(Verbosity::Verbose);
+    let s = step("Clone the repo", "git clone /tmp/foo");
+    let mut buf = Vec::new();
+    r.step_start(&mut buf, 0, 3, &s).unwrap();
+    let raw = String::from_utf8(buf).unwrap();
+    assert!(
+        !raw.contains("\x1b[1m"),
+        "step name must not be bold at -v; got: {raw:?}",
+    );
+}
+
+#[test]
 fn pretty_very_verbose_step_pass_emits_check_icons() {
     // §6: per-check `✓` icons + `$ expanded-command` ship only at `-vv`.
     let r = PrettyReporter::new(Verbosity::VeryVerbose);
