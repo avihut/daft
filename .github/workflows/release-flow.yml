@@ -1,0 +1,210 @@
+name: Release flow
+
+# Replaces .github/workflows/release-plz.yml. Reproduces release-plz's UX on
+# top of cargo-release primitives:
+#
+#  - Every push to master runs two jobs (serialized to avoid races):
+#      1. `tag-merged-release` — if HEAD is a `chore: release vX.Y.Z` commit
+#         (created by merging the release PR), tag the commit `vX.Y.Z` and
+#         push the tag. cargo-dist's release.yml picks it up from there.
+#      2. `maintain-release-pr` — compute the next version from conventional
+#         commits via `git-cliff --bumped-version`; if releasable commits
+#         exist since the last tag, force-rebuild the `release-pr` branch
+#         on top of master with the version bump + regenerated CHANGELOG +
+#         regenerated man pages + CLI docs, and open or update the release
+#         PR. If no releasable commits remain, close any open release PR.
+#
+# Why this exists (vs cargo-release's stock button-trigger shape): mirrors
+# the release-plz workflow we replaced — there's an auto-maintained PR
+# always waiting (when relevant) for the maintainer to merge whenever
+# they want to cut a release. Conventional commits drive the version bump
+# automatically. The cargo-package historical-tag failure that broke
+# release-plz (release-plz/release-plz#2595) is unreachable here because
+# cargo-release doesn't diff against historical state.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Serialize runs — two pushes back-to-back must not race on the release
+# branch or on tag creation.
+concurrency:
+  group: release-flow
+  cancel-in-progress: false
+
+jobs:
+  tag-merged-release:
+    name: Tag merged release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Tag if HEAD is a release commit
+        run: |
+          set -euo pipefail
+          # Read commit message from git (not from the event payload) so the
+          # value is never spliced into the shell — eliminates the
+          # command-injection vector documented in the GitHub Actions
+          # security guide.
+          FIRST_LINE=$(git log -1 --pretty=%s)
+          echo "HEAD commit subject: $FIRST_LINE"
+
+          # Match "chore: release vX.Y.Z" with optional pre-release suffix.
+          if [[ "$FIRST_LINE" =~ ^chore:\ release\ (v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
+            VER="${BASH_REMATCH[1]}"
+            echo "Release commit detected for $VER"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            # Tag may already exist if the workflow is re-run.
+            if git rev-parse -q --verify "refs/tags/$VER" >/dev/null; then
+              echo "Tag $VER already exists, nothing to do"
+              exit 0
+            fi
+
+            git tag -a "$VER" -m "Release $VER"
+            git push origin "$VER"
+            echo "Tag $VER pushed"
+          else
+            echo "Not a release commit, nothing to tag"
+          fi
+
+  maintain-release-pr:
+    name: Maintain release PR
+    # Serialize after the tag job so the release-pr maintenance sees the
+    # newly-pushed tag when computing the next version.
+    needs: tag-merged-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ secrets.WHEATLEY_BOT_APP_ID }}
+          private-key: ${{ secrets.WHEATLEY_BOT_PRIVATE_KEY }}
+
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          ref: master
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-release and git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-release,git-cliff
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version from conventional commits
+        id: nextver
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          CURRENT_VER=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          echo "Current version: $CURRENT_VER"
+
+          # `git-cliff --bumped-version` parses conventional commits since
+          # the last tag and outputs the next semver (vX.Y.Z). With no
+          # releasable commits since the tag, it echoes the current
+          # version unchanged.
+          NEXT_VER=$(git-cliff --bumped-version 2>/dev/null || echo "v$CURRENT_VER")
+          NEXT_VER_STRIPPED="${NEXT_VER#v}"
+          echo "Next version: $NEXT_VER_STRIPPED"
+
+          if [ "$NEXT_VER_STRIPPED" = "$CURRENT_VER" ]; then
+            echo "No releasable commits since last release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+
+            # Close any stale open release PR — nothing left to release.
+            EXISTING=$(gh pr list --head release-pr --state open --json number --jq '.[0].number // empty')
+            if [ -n "$EXISTING" ]; then
+              echo "Closing stale release PR #$EXISTING"
+              gh pr close "$EXISTING" --delete-branch \
+                --comment "No releasable commits remain since the last release; closing. A new release PR will open automatically when the next conventional-commit \`feat\`, \`fix\`, \`perf\`, or breaking change lands on master."
+            fi
+            exit 0
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "next_version=$NEXT_VER_STRIPPED" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild release-pr branch
+        if: steps.nextver.outputs.should_release == 'true'
+        env:
+          NEXT_VER: ${{ steps.nextver.outputs.next_version }}
+        run: |
+          set -euo pipefail
+          # Reset release-pr to master so each run is a clean rebuild on
+          # top of the latest master commit (no stacked drift).
+          git checkout -B release-pr master
+
+          # cargo-release: bump Cargo.toml + xtask's daft-path-dep version
+          # to NEXT_VER, run the pre-release-hook in release.toml
+          # (git-cliff + gen-man + gen-cli-docs), commit
+          # "chore: release vNEXT_VER". --no-tag --no-push because the
+          # workflow handles tagging on merge and the push is explicit.
+          cargo release "$NEXT_VER" --package daft --execute --no-confirm --no-tag --no-push
+
+          # Force-push — each run replaces the previous attempt cleanly.
+          git push -f origin release-pr
+
+      - name: Open or update release PR
+        if: steps.nextver.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEXT_VER: ${{ steps.nextver.outputs.next_version }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: release v$NEXT_VER"
+          BODY=$(cat <<EOF
+          Automatically maintained release PR. Merging this PR adds the \`chore: release v$NEXT_VER\` commit to \`master\`; the \`tag-merged-release\` job in \`.github/workflows/release-flow.yml\` then tags that commit \`v$NEXT_VER\` and pushes the tag, which triggers \`release.yml\` (cargo-dist) to build the binary release.
+
+          New commits to \`master\` update this PR continuously (force-pushed) — the version bump, changelog entries, man pages, and CLI docs all re-derive from current master state.
+
+          The next version was computed from conventional commits via \`git-cliff --bumped-version\`. When no releasable commits remain since the last tag, this PR is closed automatically.
+          EOF
+          )
+
+          EXISTING=$(gh pr list --head release-pr --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing release PR #$EXISTING"
+            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+          else
+            echo "Opening new release PR"
+            gh pr create --base master --head release-pr \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label release \
+              --assignee avihut
+          fi
