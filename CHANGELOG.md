@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.3](https://github.com/avihut/daft/compare/v1.14.2...v1.14.3) - 2026-05-22
+
+
+### Bug Fixes
+
+- **ci**: Allow squash-merge ' (#nnn)' suffix in tag-merged-release regex (#549)
 ## [1.14.2](https://github.com/avihut/daft/compare/v1.14.1...v1.14.2) - 2026-05-22
 
 
