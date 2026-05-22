@@ -162,6 +162,7 @@ jobs:
             fi
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "next_version=$NEXT_VER_STRIPPED" >> "$GITHUB_OUTPUT"
+            echo "current_version=$CURRENT_VER" >> "$GITHUB_OUTPUT"
             echo "::notice::Releasing v$NEXT_VER_STRIPPED via manual override (conventional-commit auto-compute would have picked something else)."
             exit 0
           fi
@@ -191,6 +192,7 @@ jobs:
 
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "next_version=$NEXT_VER_STRIPPED" >> "$GITHUB_OUTPUT"
+          echo "current_version=$CURRENT_VER" >> "$GITHUB_OUTPUT"
 
       - name: Rebuild release-pr branch
         if: steps.nextver.outputs.should_release == 'true'
@@ -221,15 +223,42 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEXT_VER: ${{ steps.nextver.outputs.next_version }}
+          CURRENT_VER: ${{ steps.nextver.outputs.current_version }}
         run: |
           set -euo pipefail
           TITLE="chore: release v$NEXT_VER"
+
+          # Extract just this release's section from the freshly-regenerated
+          # CHANGELOG.md (from `## [<NEXT_VER>]` to the line before the next
+          # `## [` heading) so reviewers can see exactly what's going into the
+          # release without leaving the PR. Mirrors the release-plz body
+          # format we used to have.
+          CHANGELOG_SECTION=$(awk -v ver="$NEXT_VER" '
+            $0 ~ "^## \\["ver"\\]" { found=1; print; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+
           BODY=$(cat <<EOF
-          Automatically maintained release PR. Merging this PR adds the \`chore: release v$NEXT_VER\` commit to \`master\`; the \`tag-merged-release\` job in \`.github/workflows/release-flow.yml\` then tags that commit \`v$NEXT_VER\` and pushes the tag, which triggers \`release.yml\` (cargo-dist) to build the binary release.
+          ## 🤖 New release
 
-          New commits to \`master\` update this PR continuously (force-pushed) — the version bump, changelog entries, man pages, and CLI docs all re-derive from current master state.
+          * \`daft\`: $CURRENT_VER -> $NEXT_VER
 
-          The next version was computed from conventional commits via \`git-cliff --bumped-version\`. When no releasable commits remain since the last tag, this PR is closed automatically.
+          <details><summary><i><b>Changelog</b></i></summary><p>
+
+          <blockquote>
+
+          $CHANGELOG_SECTION
+
+          </blockquote>
+
+          </p></details>
+
+          ---
+
+          Automatically maintained release PR. Merging adds the \`chore: release v$NEXT_VER\` commit to \`master\`; the \`tag-merged-release\` job in \`.github/workflows/release-flow.yml\` then tags that commit \`v$NEXT_VER\` and pushes the tag, which triggers \`release.yml\` (cargo-dist) to build the binary release.
+
+          New commits to \`master\` update this PR continuously (force-pushed) — the version bump, changelog entries, man pages, and CLI docs all re-derive from current master state. The next version was computed from conventional commits via \`git-cliff --bumped-version\`; when no releasable commits remain, this PR is closed automatically.
           EOF
           )
 
