@@ -26,6 +26,16 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      override_version:
+        description:
+          "Force an exact version (e.g. 1.14.3). Empty = auto-compute from
+          conventional commits. Use this to release a different version than the
+          one git-cliff would pick — e.g. demote a 1.15.0 minor bump to 1.14.3
+          because the feat: commit doesn't actually warrant a minor."
+        required: false
+        type: string
+        default: ""
 
 # Serialize runs — two pushes back-to-back must not race on the release
 # branch or on tag creation.
@@ -124,16 +134,39 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute next version from conventional commits
+      - name: Compute next version
         id: nextver
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OVERRIDE: ${{ inputs.override_version }}
         run: |
           set -euo pipefail
 
           CURRENT_VER=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
           echo "Current version: $CURRENT_VER"
 
+          # Manual override via workflow_dispatch input. When set, skip the
+          # conventional-commit-based computation entirely and use the given
+          # version verbatim. Override is per-run (not persistent) — the next
+          # push to master returns to auto-compute mode automatically.
+          if [ -n "$OVERRIDE" ]; then
+            NEXT_VER_STRIPPED="${OVERRIDE#v}"
+            echo "Manual override requested: $NEXT_VER_STRIPPED"
+            if ! [[ "$NEXT_VER_STRIPPED" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Override version '$NEXT_VER_STRIPPED' is not valid semver (expected X.Y.Z, optionally with a -prerelease suffix)"
+              exit 1
+            fi
+            if [ "$NEXT_VER_STRIPPED" = "$CURRENT_VER" ]; then
+              echo "::error::Override version $NEXT_VER_STRIPPED is the same as current ($CURRENT_VER). Pick a higher version."
+              exit 1
+            fi
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "next_version=$NEXT_VER_STRIPPED" >> "$GITHUB_OUTPUT"
+            echo "::notice::Releasing v$NEXT_VER_STRIPPED via manual override (conventional-commit auto-compute would have picked something else)."
+            exit 0
+          fi
+
+          # No override — compute from conventional commits.
           # `git-cliff --bumped-version` parses conventional commits since
           # the last tag and outputs the next semver (vX.Y.Z). With no
           # releasable commits since the tag, it echoes the current
