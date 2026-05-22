@@ -1,0 +1,51 @@
+# Workspace-level cargo-release configuration.
+#
+# Replaces release-plz.toml as the source of truth for version bumping +
+# tagging. cargo-dist (.github/workflows/release.yml) still handles binary
+# builds on tag push — it is the consumer of the tags created here.
+#
+# Trigger model: deliberate, via `workflow_dispatch` on
+# .github/workflows/release-cut.yml (or `cargo release patch --execute` locally).
+# Unlike release-plz, this tool does NOT auto-open a "release PR" on every
+# push and does NOT run `cargo package` to diff against historical tags —
+# avoiding the entire class of release-plz/release-plz#2595 failures for
+# root-package workspaces with internal path deps (the workaround that
+# unblocked v1.14.1 was unreliable; see issue #536).
+
+allow-branch = ["master"]
+sign-commit = false
+sign-tag = false
+
+# Daft is not published to crates.io (release-plz.toml had `publish = false`
+# at the workspace level too). Set both publish and verify explicitly so the
+# `cargo publish --verify` codepath that runs cargo-package is never reached.
+publish = false
+verify = false
+
+# One commit per workspace release, not one per crate.
+consolidate-commits = true
+
+# All released crates share a single version. Currently only `daft` is
+# `release = true`, so this is trivially true and unlocks `{{version}}` in
+# the consolidated commit/tag message templates.
+shared-version = true
+
+# Tag format matches the existing daft tags: v1.14.0, v1.14.1, ...
+# tag-prefix is "" so we get `vX.Y.Z` not `daft-vX.Y.Z`.
+tag = true
+tag-prefix = ""
+tag-name = "v{{version}}"
+tag-message = "Release v{{version}}"
+
+# Commit shape: matches release-plz's `chore: release v{version}` so the
+# commit parser in cliff.toml (`^chore: release` → skip) keeps working.
+pre-release-commit-message = "chore: release v{{version}}"
+
+push = true
+push-remote = "origin"
+
+# Pre-release-hook runs after version bump, before commit, in the workspace
+# root. We regenerate CHANGELOG.md (via the existing cliff.toml) and the man
+# pages + CLI docs (what the old release-plz workflow's man-page step did)
+# so they all land in the same release commit.
+pre-release-hook = ["bash", "-c", "git-cliff --tag v{{version}} --output CHANGELOG.md && cargo run --package xtask -- gen-man --output-dir=man && cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli"]
