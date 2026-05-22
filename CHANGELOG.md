@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.2](https://github.com/avihut/daft/compare/v1.14.1...v1.14.2) - 2026-05-22
+
+
+### Bug Fixes
+
+- **ci**: Allow cargo-release to run from release-pr branch in workflow (#544)
+- **ci**: Install Node 24 in docs deploy to satisfy wrangler 4 (#541)
+
+
+### Miscellaneous
+
+- Ignore .understand-anything/ knowledge graph artifacts
 ## [1.14.1](https://github.com/avihut/daft/compare/v1.14.0...v1.14.1) - 2026-05-21
 
 
