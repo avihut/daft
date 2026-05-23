@@ -91,6 +91,27 @@ and any captured stdout/stderr. Then come separate `Scenarios:` / `Steps:`
 lines, `Duration:`, an optional `parallel jobs: N` suffix, and a `Reproduce:`
 block with one `mise run test:manual -- --ci <token>` per failure.
 
+### TTY live progress region
+
+On a TTY, the runner shows a pinned live region at the bottom of the terminal
+during a parallel run: one row per in-flight scenario (carrying scenario name
+
+- step counter + step name + yellow `(slow)` once elapsed > 5s) plus a summary
+  bar (`⠋  [42/252]  4 running  ◆  1 failed  ◆  0:23`). Completed scenarios
+  stream their per-tier scrollback content above the region in **completion
+  order** as they finish.
+
+On non-TTY (CI logs, redirected output, `cargo run`, `| cat`), the region is
+suppressed entirely and output reverts to today's behavior: input-order drain at
+end, no live bar. CI logs stay byte-identical. The non-TTY path is also forced
+by `CI=1` or `NO_PROGRESS=1` even when stderr is a TTY (some CI runners flag
+stderr as a TTY but bar redraws still pollute the logs).
+
+The region is orthogonal to verbosity — all four tiers (`-q` / default / `-v` /
+`-vv`) get it on TTY. `-q` benefits the most, since its scrollback is silent on
+a fully green run; the bar is the entire heartbeat. Failures still surface in
+scrollback at `-q` (fail footer + cleanup line) so the contract holds.
+
 ## Benchmarks
 
 ```bash

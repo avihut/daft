@@ -232,6 +232,59 @@ These rules formalize the spacing-fix contract from commit `e54fa114`.
 
 ---
 
+## 8. Live progress region
+
+On a TTY, the runner shows a pinned multi-row region at the bottom of the
+terminal during a parallel run: one row per in-flight scenario plus a summary
+bar. Completed scenarios stream their full byte buffer into scrollback above the
+region in completion order; the bar clears before the final summary block
+prints, so end-of-run output is identical to the non-TTY path. On non-TTY (CI
+logs, redirected output, `cargo run`), the region is suppressed entirely and
+output reverts to today's input-order drain at end — byte-identical.
+
+The region uses **no new color slots** — every element re-uses §1's existing
+budget. The reuse is deliberate (§2's meta-rule: hierarchy is contextual to
+visible layers; the new live layer borrows existing slots so the budget stays a
+typed enum):
+
+- **Per-scenario in-flight row**: scenario name at default fg (matches the
+  passing-footer convention from §2), then `[N/M]` step counter in plain cyan
+  (the same structural-anchor slot used for the scrollback `[N/M]` counter),
+  step name in bright purple (same identity slot used in `-v`/`-vv` per-step
+  lines), and a yellow `(slow)` suffix once scenario elapsed crosses 5 s (same
+  threshold and slot as the footer's slow rule).
+- **Summary bar**:
+  `{spinner}  [{done}/{total}]  N running ◆ M failed  ◆ {elapsed}`. Spinner +
+  counter + label words at default fg, dim elapsed (scaffolding), and the
+  `M failed` segment goes bold red when `> 0` — the live equivalent of §4's
+  fail-loud rule. When `failed == 0` the count is default fg (pass-quiet — a
+  green wall of `0 failed` would dominate).
+
+**Indent**: 2 spaces (matches Layer 2 in §6, so the bar visually anchors at the
+same column as scenario headers). Per-row layout is
+`<scenario name>  [N/M] <step name>  <(slow)?>`; the bar's spinner sits in
+column 2 of the bar row.
+
+**Visibility ladder**: the region is orthogonal to verbosity — all four tiers
+(`-q` / default / `-v` / `-vv`) get it on TTY, because it tracks live state, not
+output volume. `-q` benefits the most: its scrollback is silent on green, so the
+bar is the entire heartbeat. Failures still surface in scrollback at `-q` with
+the fail footer + cleanup line.
+
+**Interactive and `--setup-only` skip the region.** Both bail to `run_serial`
+before the parallel scheduler runs and have semantics (TTY ownership for
+interactive, stdout work-dir capture for setup-only) incompatible with a pinned
+live area.
+
+**Implementation discipline.** ANSI codes inside bar messages are inlined
+(indicatif's template DSL has no conditional formatting hook for the
+`failed > 0` and `elapsed > 5s` cases). Inlining is acceptable **inside the
+progress module only**, because bar messages must be a single string at
+indicatif's API boundary. Everywhere else in the reporter, go through
+`term_styles` — see Anti-patterns.
+
+---
+
 ## Anti-patterns
 
 A flat list of things future PRs will be tempted to do. Each one is authorized
