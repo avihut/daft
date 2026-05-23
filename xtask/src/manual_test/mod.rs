@@ -1,6 +1,7 @@
 pub mod daft_executor;
 pub mod executor;
 pub mod interactive;
+pub mod progress;
 pub mod repo_gen;
 pub mod reporter;
 pub mod runner;
@@ -161,6 +162,7 @@ struct RunContext<'a> {
     project_root: &'a Path,
     fixtures_dir: &'a Path,
     reporter: &'a dyn reporter::Reporter,
+    progress: &'a dyn progress::ProgressSink,
     keep: bool,
 }
 
@@ -262,6 +264,10 @@ pub fn run(
     // Non-interactive CI path — always goes through the parallel scheduler,
     // even at `jobs == 1` (a 1-thread rayon pool). Output is buffered per
     // scenario and flushed in input order.
+    //
+    // Progress sink selection lives in run_parallel — its TTY / env-var
+    // decision is the same one that gates the live region's behavior.
+    let progress = progress::progress_sink_for(false);
     run_parallel(
         &scenario_files,
         &scenarios_dir,
@@ -269,6 +275,7 @@ pub fn run(
         &fixtures_dir,
         &cleanup_set,
         reporter.as_ref(),
+        progress.as_ref(),
         keep,
         jobs,
     )
@@ -282,6 +289,7 @@ fn run_parallel(
     fixtures_dir: &Path,
     cleanup_set: &CleanupSet,
     reporter: &dyn reporter::Reporter,
+    progress: &dyn progress::ProgressSink,
     keep: bool,
     jobs: usize,
 ) -> Result<()> {
@@ -289,6 +297,7 @@ fn run_parallel(
         project_root,
         fixtures_dir,
         reporter,
+        progress,
         keep,
     };
 
@@ -296,6 +305,8 @@ fn run_parallel(
         .num_threads(jobs)
         .build()
         .context("building rayon thread pool")?;
+
+    progress.run_started(scenario_files.len());
 
     let run_start = std::time::Instant::now();
     let mut outcomes: Vec<ScenarioOutcome> = pool.install(|| {
@@ -323,10 +334,12 @@ fn run_parallel(
 
     let total_failed = stats.summary.steps_failed;
     let error_count = stats.summary.errors.len();
-    {
+    progress::suspend_for_summary(progress, || -> Result<()> {
         let mut lock = stderr.lock();
         reporter.run_summary(&mut lock, &stats.summary)?;
-    }
+        Ok(())
+    })?;
+    progress.run_finished();
 
     if error_count > 0 {
         anyhow::bail!("{} scenario(s) hit a fatal error", error_count);
@@ -651,7 +664,14 @@ fn run_one_scenario_inner(
     sb.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
-    let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.reporter, &mut buf)?;
+    let result = runner::run_non_interactive(
+        scenario,
+        &sb,
+        &executor,
+        ctx.reporter,
+        ctx.progress,
+        &mut buf,
+    )?;
 
     // Opt-in per-scenario timing for the bench harness. Lines are
     // grep-friendly and live inside the scenario's buffered output so they

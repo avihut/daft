@@ -67,6 +67,7 @@ pub struct StepReport<'a> {
 }
 
 /// Scenario PASS/FAIL outcome.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ScenarioStatus {
     Pass,
     Fail,

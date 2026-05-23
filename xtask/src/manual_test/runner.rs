@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::executor::CommandExecutor;
+use super::progress::ProgressSink;
 use super::reporter::{FailingStep, Reporter, ScenarioStatus, StepReport};
 use super::sandbox::Sandbox;
 use super::schema::{Expectations, Scenario, Step};
@@ -498,11 +499,17 @@ pub fn check_step(
 /// render it based on verbosity. The first failing step's full detail is
 /// captured into the returned [`ScenarioResult`] so the orchestrator can
 /// surface it in the end-of-run summary block.
+///
+/// `progress` receives out-of-band lifecycle events (scenario started, step
+/// started, scenario finished) so the orchestrator's TTY progress region
+/// can reflect live state. A `NoopProgressSink` makes those calls free —
+/// the runner core never branches on progress.
 pub fn run_non_interactive(
     scenario: &Scenario,
     sandbox: &Sandbox,
     executor: &dyn CommandExecutor,
     reporter: &dyn Reporter,
+    progress: &dyn ProgressSink,
     out: &mut impl Write,
 ) -> Result<ScenarioResult> {
     reporter.scenario_header(out, scenario)?;
@@ -512,9 +519,11 @@ pub fn run_non_interactive(
     let mut failed = 0;
     let mut failing_step: Option<FailingStep> = None;
 
+    progress.scenario_started(&scenario.name, total);
     let started = Instant::now();
     for (i, step) in scenario.steps.iter().enumerate() {
         reporter.step_start(out, i, total, step)?;
+        progress.step_started(&scenario.name, i, total, &step.name);
 
         let result = execute_step(step, sandbox, executor, true)?;
         let expanded = sandbox.expand_vars(&step.run);
@@ -544,6 +553,7 @@ pub fn run_non_interactive(
         ScenarioStatus::Fail
     };
     reporter.scenario_footer(out, scenario, status, duration)?;
+    progress.scenario_finished(&scenario.name, status, duration);
 
     Ok(ScenarioResult {
         steps: total,
