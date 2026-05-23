@@ -7,18 +7,22 @@
 //! on, how many have completed, how many failed — and is called for its
 //! side effects.
 //!
-//! Two impls ship: `NoopProgressSink` for non-TTY runs (CI logs, redirected
-//! output, the runner-output YAML smoke that goes through `cargo run`), and
-//! `IndicatifProgressSink` (added in a later step) for TTY runs with a
+//! Two impls ship: [`NoopProgressSink`] for non-TTY runs (CI logs,
+//! redirected output, the runner-output YAML smoke that goes through
+//! `cargo run`), and [`IndicatifProgressSink`] for TTY runs with a
 //! pinned multi-row progress region at the bottom of the terminal.
 //!
 //! Both ports stay narrow on purpose. Mixing event-stream and byte-stream
 //! concerns into one trait would muddy the seam and make the non-TTY path
 //! (byte-identical to the pre-PR behavior) hard to preserve.
 
+mod indicatif_sink;
+
 use std::time::Duration;
 
 use super::reporter::ScenarioStatus;
+
+pub use indicatif_sink::IndicatifProgressSink;
 
 /// Receives lifecycle events from the runner.
 ///
@@ -43,6 +47,13 @@ pub trait ProgressSink: Send + Sync {
 
     /// Called once at the end of the run, after the summary block.
     fn run_finished(&self);
+
+    /// Suspend the live region (if any), invoke `f`, then redraw.
+    ///
+    /// The closure is `&mut dyn FnMut()` rather than `FnOnce` so the trait
+    /// stays object-safe. [`suspend_for_summary`] is the ergonomic wrapper
+    /// that lifts a `FnOnce() -> R` over this primitive.
+    fn suspend(&self, f: &mut dyn FnMut());
 }
 
 /// No-op sink for non-TTY runs.
@@ -58,6 +69,9 @@ impl ProgressSink for NoopProgressSink {
     fn step_started(&self, _scenario_name: &str, _idx: usize, _total: usize, _step_name: &str) {}
     fn scenario_finished(&self, _name: &str, _status: ScenarioStatus, _duration: Duration) {}
     fn run_finished(&self) {}
+    fn suspend(&self, f: &mut dyn FnMut()) {
+        f();
+    }
 }
 
 /// Pick a sink based on whether the runner should show live progress.
@@ -66,32 +80,35 @@ impl ProgressSink for NoopProgressSink {
 /// detection + `NO_PROGRESS` / `CI` env-var overrides); this function
 /// doesn't re-probe the environment.
 ///
-/// Returns `Box<dyn ProgressSink>` because the live impl (added in a later
-/// step) carries indicatif state that the no-op impl doesn't, so the two
-/// can't share a single concrete type.
+/// Returns `Box<dyn ProgressSink>` because the live impl carries indicatif
+/// state that the no-op impl doesn't, so the two can't share a single
+/// concrete type.
 pub fn progress_sink_for(show_progress: bool) -> Box<dyn ProgressSink> {
-    // Live sink lands in a follow-up commit. Until then both branches return
-    // the no-op — the call site is wired but behavior is unchanged.
-    let _ = show_progress;
-    Box::new(NoopProgressSink)
+    if show_progress {
+        Box::new(IndicatifProgressSink::new())
+    } else {
+        Box::new(NoopProgressSink)
+    }
 }
 
 /// Run `f` with the sink's live region suspended so a multi-line block can
 /// be written to stderr without bar tearing.
 ///
-/// Used by the orchestrator to print the final summary block. On
-/// `NoopProgressSink` this just calls `f` directly; on the live sink it
-/// hides the bars, runs `f`, redraws.
+/// Used by the orchestrator to print the final summary block. Returns the
+/// closure's result so callers can `?`-propagate errors from the writes
+/// inside it.
 ///
-/// Returns the closure's result so callers can `?`-propagate errors from
-/// the writes inside it. Default impl on the trait would be the natural
-/// shape, but trait methods can't take `FnOnce` closures generic in the
-/// impl without extra plumbing — a free function specializing on the
-/// concrete sink behind the trait object keeps the surface flat.
-pub fn suspend_for_summary<R>(_sink: &dyn ProgressSink, f: impl FnOnce() -> R) -> R {
-    // Live sink lands in a follow-up commit; for now Noop is the only impl
-    // and there's nothing to suspend.
-    f()
+/// The trait's `suspend` primitive takes `&mut dyn FnMut()` (to stay
+/// object-safe); this free function bridges to the more ergonomic
+/// `FnOnce() -> R` shape via a take-once Option dance.
+pub fn suspend_for_summary<R>(sink: &dyn ProgressSink, f: impl FnOnce() -> R) -> R {
+    let mut result: Option<R> = None;
+    let mut f = Some(f);
+    sink.suspend(&mut || {
+        let f = f.take().expect("suspend closure invoked more than once");
+        result = Some(f());
+    });
+    result.expect("suspend closure was never invoked")
 }
 
 #[cfg(test)]
@@ -112,10 +129,11 @@ mod tests {
     }
 
     #[test]
-    fn progress_sink_for_returns_noop_when_disabled() {
-        // Both branches currently return Noop; assert by exercising every
-        // method. Once the live sink lands, this test will be updated to
-        // distinguish the two impls.
+    fn progress_sink_for_picks_noop_when_disabled() {
+        // We can't easily assert "this is concretely a NoopProgressSink"
+        // through a dyn pointer; exercise every method instead and rely on
+        // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
+        // cover the live path.
         let sink = progress_sink_for(false);
         sink.run_started(0);
         sink.scenario_started("x", 1);
@@ -125,9 +143,17 @@ mod tests {
     }
 
     #[test]
-    fn suspend_for_summary_invokes_closure_on_noop() {
+    fn suspend_for_summary_returns_closure_result() {
         let sink = NoopProgressSink;
         let result = suspend_for_summary(&sink, || 42);
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn suspend_for_summary_propagates_errors() {
+        let sink = NoopProgressSink;
+        let result: std::io::Result<()> =
+            suspend_for_summary(&sink, || Err(std::io::Error::other("boom")));
+        assert!(result.is_err());
     }
 }
