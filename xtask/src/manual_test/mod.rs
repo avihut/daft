@@ -265,9 +265,15 @@ pub fn run(
     // even at `jobs == 1` (a 1-thread rayon pool). Output is buffered per
     // scenario and flushed in input order.
     //
-    // Progress sink selection lives in run_parallel — its TTY / env-var
-    // decision is the same one that gates the live region's behavior.
-    let progress = progress::progress_sink_for(false);
+    // The progress sink shows a pinned live region on TTY; on non-TTY (CI
+    // logs, redirected output, `cargo run`) it's a no-op so output stays
+    // byte-identical to the pre-progress behavior. CI=… is checked
+    // alongside TTY because GitHub Actions et al. flag stderr as a TTY but
+    // progress redraws still pollute the logs.
+    let show_progress = std::io::stderr().is_terminal()
+        && std::env::var_os("NO_PROGRESS").is_none()
+        && std::env::var_os("CI").is_none();
+    let progress = progress::progress_sink_for(show_progress);
     run_parallel(
         &scenario_files,
         &scenarios_dir,
