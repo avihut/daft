@@ -95,11 +95,10 @@ block with one `mise run test:manual -- --ci <token>` per failure.
 
 On a TTY, the runner shows a pinned live region at the bottom of the terminal
 during a parallel run: one row per in-flight scenario (carrying scenario name
-
-- step counter + step name + yellow `(slow)` once elapsed > 5s) plus a summary
-  bar (`⠋  [42/252]  4 running  ◆  1 failed  ◆  0:23`). Completed scenarios
-  stream their per-tier scrollback content above the region in **completion
-  order** as they finish.
+with step counter, step name, and a yellow `(slow)` annotation once elapsed
+crosses 5s) plus a summary bar (`⠋  [42/252]  4 running  ◆  1 failed  ◆  0:23`).
+Completed scenarios stream their per-tier scrollback content above the region in
+**completion order** as they finish.
 
 On non-TTY (CI logs, redirected output, `cargo run`, `| cat`), the region is
 suppressed entirely and output reverts to today's behavior: input-order drain at
