@@ -60,6 +60,14 @@ pub struct IndicatifProgressSink {
     summary: ProgressBar,
     rows: Mutex<HashMap<String, ProgressRow>>,
     failed: AtomicUsize,
+    /// Pre-computed widest scenario name across the run, in chars. Used
+    /// to right-pad the scenario name column in the row message so the
+    /// step label column lands at a stable position across rows.
+    name_col_width: usize,
+    /// Pre-computed widest `[N/M] step_name` label across the run, in
+    /// chars. Used to right-pad the step label column so the elapsed
+    /// counter on the right lands at a stable position across rows.
+    step_col_width: usize,
 }
 
 struct ProgressRow {
@@ -67,7 +75,7 @@ struct ProgressRow {
 }
 
 impl IndicatifProgressSink {
-    pub fn new() -> Self {
+    pub fn new(name_col_width: usize, step_col_width: usize) -> Self {
         let multi = MultiProgress::new();
         let summary = multi.add(ProgressBar::new(0));
         summary.set_style(
@@ -92,6 +100,8 @@ impl IndicatifProgressSink {
             summary,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
+            name_col_width,
+            step_col_width,
         }
     }
 
@@ -109,10 +119,41 @@ impl IndicatifProgressSink {
             .set_message(format!("{running} running ◆ {failed_segment}"));
     }
 
-    /// Rebuild a scenario row's message with its current step + (slow)
-    /// annotation. Reuses existing color slots — cyan `[N/M]`, bright
-    /// purple step name, default fg scenario name, dim elapsed (in
-    /// template), yellow `(slow)` when threshold crossed.
+    /// Right-pad a plain string to `width` chars using
+    /// `chars().count()`. Plain text only — caller must apply ANSI
+    /// styling AFTER padding so escape bytes don't get counted in the
+    /// width.
+    fn pad_to(text: &str, width: usize) -> String {
+        let len = text.chars().count();
+        if len < width {
+            let mut padded = String::with_capacity(text.len() + (width - len));
+            padded.push_str(text);
+            for _ in 0..(width - len) {
+                padded.push(' ');
+            }
+            padded
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// Rebuild a scenario row's message with its current step. The row
+    /// is laid out in three padded columns so multiple in-flight rows
+    /// stack into a grid:
+    ///
+    /// ```text
+    ///   <scenario name (col 1, pad to name_col_width)>  <[N/M] step (col 2, pad to step_col_width)>  <elapsed (col 3, template)>
+    /// ```
+    ///
+    /// The `(slow)` annotation, when present, attaches to the end of
+    /// column 2 (inside the padding zone) so it doesn't push the
+    /// elapsed column out of alignment. Slow rows extend into the pad
+    /// budget; only rows whose step label is already at max width can
+    /// shift the elapsed column, and at that point only by the (slow)
+    /// suffix's own width.
+    ///
+    /// Reuses existing color slots — default fg scenario name, cyan
+    /// `[N/M]`, bright purple step name, yellow `(slow)`.
     fn render_row_msg(
         &self,
         scenario_name: &str,
@@ -121,18 +162,26 @@ impl IndicatifProgressSink {
         step_name: &str,
         elapsed: Duration,
     ) -> String {
+        let name_padded = Self::pad_to(scenario_name, self.name_col_width);
+
+        // Build the step label as plain text first, then pad, then
+        // splice the ANSI codes back in over the un-styled segments.
+        // This keeps `pad_to` honest about visible width.
+        let counter = format!("[{}/{}]", step_idx + 1, step_total);
+        let plain_label = format!("{counter} {step_name}");
+        let label_padded = Self::pad_to(&plain_label, self.step_col_width);
+        // Re-apply styling to the counter and step name, leaving the
+        // trailing padding untouched.
+        let label_styled = label_padded
+            .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
+            .replacen(step_name, &format!("\x1b[95m{step_name}\x1b[0m"), 1);
+
         let slow_suffix = if elapsed > SLOW_THRESHOLD {
             "  \x1b[33m(slow)\x1b[0m"
         } else {
             ""
         };
-        format!(
-            "{scenario}  \x1b[36m[{idx}/{total}]\x1b[0m \x1b[95m{step}\x1b[0m{slow_suffix}",
-            scenario = scenario_name,
-            idx = step_idx + 1,
-            total = step_total,
-            step = step_name,
-        )
+        format!("{name_padded}  {label_styled}{slow_suffix}")
     }
 }
 
@@ -165,9 +214,19 @@ impl ProgressSink for IndicatifProgressSink {
                     },
                 ),
         );
-        bar.set_message(format!(
-            "{name}  \x1b[36m[0/{total_steps}]\x1b[0m \x1b[2mstarting…\x1b[0m"
-        ));
+        // Initial message uses the same column layout as render_row_msg
+        // (scenario name padded → step label padded → elapsed via
+        // template) so the bar doesn't jump on the first step_started.
+        // `starting…` is dim because no step has actually fired yet —
+        // it's a placeholder, not a real step name.
+        let name_padded = Self::pad_to(name, self.name_col_width);
+        let counter = format!("[0/{total_steps}]");
+        let plain_label = format!("{counter} starting…");
+        let label_padded = Self::pad_to(&plain_label, self.step_col_width);
+        let label_styled = label_padded
+            .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
+            .replacen("starting…", "\x1b[2mstarting…\x1b[0m", 1);
+        bar.set_message(format!("{name_padded}  {label_styled}"));
         bar.enable_steady_tick(TICK_INTERVAL);
 
         if let Ok(mut rows) = self.rows.lock() {
@@ -251,6 +310,8 @@ mod tests {
             summary,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
+            name_col_width: 0,
+            step_col_width: 0,
         }
     }
 

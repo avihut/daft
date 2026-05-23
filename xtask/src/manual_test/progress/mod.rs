@@ -80,12 +80,22 @@ impl ProgressSink for NoopProgressSink {
 /// detection + `NO_PROGRESS` / `CI` env-var overrides); this function
 /// doesn't re-probe the environment.
 ///
+/// `name_col_width` and `step_col_width` are the widest scenario name
+/// and the widest `[N/M] step_name` label across the discovered scenario
+/// set. The live sink pads each in-flight row's columns to these widths
+/// so spinner+name, step label, and elapsed line up across rows. Pass
+/// `0` for either to disable that column's padding.
+///
 /// Returns `Box<dyn ProgressSink>` because the live impl carries indicatif
 /// state that the no-op impl doesn't, so the two can't share a single
 /// concrete type.
-pub fn progress_sink_for(show_progress: bool) -> Box<dyn ProgressSink> {
+pub fn progress_sink_for(
+    show_progress: bool,
+    name_col_width: usize,
+    step_col_width: usize,
+) -> Box<dyn ProgressSink> {
     if show_progress {
-        Box::new(IndicatifProgressSink::new())
+        Box::new(IndicatifProgressSink::new(name_col_width, step_col_width))
     } else {
         Box::new(NoopProgressSink)
     }
@@ -150,7 +160,7 @@ mod tests {
         // through a dyn pointer; exercise every method instead and rely on
         // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
         // cover the live path.
-        let sink = progress_sink_for(false);
+        let sink = progress_sink_for(false, 0, 0);
         sink.run_started(0);
         sink.scenario_started("x", 1);
         sink.step_started("x", 0, 1, "s");

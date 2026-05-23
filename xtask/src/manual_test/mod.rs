@@ -16,26 +16,78 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Cheaply extract a scenario's display name from its YAML without a full
-/// parse — scans the first 30 lines for `name: …`. Used by the orchestrator
-/// to compute the scenario-name column width once before workers start, so
-/// the reporter's footer can left-pad names into a stable column.
+/// Cheap scenario metadata extracted by [`peek_scenario_metadata`].
+/// Used purely for column-width sizing in the progress region and
+/// footer — full YAML parsing remains the worker's job.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScenarioMeta {
+    /// Top-level `name:` value, with surrounding quotes stripped.
+    pub name: Option<String>,
+    /// Step names in declaration order. Empty if the `steps:` block
+    /// couldn't be parsed.
+    pub step_names: Vec<String>,
+}
+
+/// Cheaply extract a scenario's display name and step names from its
+/// YAML without a full parse. Scans the file once with the same
+/// indent-aware logic as `extract_step_lines` so it doesn't confuse
+/// `- name:` keys inside the `repos:` block with step entries.
 ///
-/// Returns `None` on read error or if no `name:` key is found in the
-/// header. Conservative on quoting (strips `"` and `'`) — full YAML
-/// parsing is the worker's job, this is purely for column-width sizing.
-fn peek_scenario_name(path: &Path) -> Option<String> {
+/// Returns `Some` whenever the file is readable — the caller decides
+/// what to do with empty fields. Conservative on quoting (strips `"`
+/// and `'`).
+pub(crate) fn peek_scenario_metadata(path: &Path) -> Option<ScenarioMeta> {
     let content = std::fs::read_to_string(path).ok()?;
-    for line in content.lines().take(30) {
+    let mut meta = ScenarioMeta::default();
+    let mut steps_indent: Option<usize> = None;
+    let mut name_locked = false;
+
+    for line in content.lines() {
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("name:") {
-            let value = rest.trim().trim_matches('"').trim_matches('\'').to_string();
-            if !value.is_empty() {
-                return Some(value);
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+
+        // Top-level `name:` only — once we descend into a block, stop
+        // looking. This avoids matching the runner-output fixture's
+        // `name:` inside an embedded YAML literal.
+        if !name_locked && indent == 0 {
+            if let Some(rest) = trimmed.strip_prefix("name:") {
+                let value = rest.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    meta.name = Some(value.to_string());
+                    name_locked = true;
+                    continue;
+                }
+            }
+        }
+
+        match steps_indent {
+            None => {
+                if (trimmed == "steps:" || trimmed.starts_with("steps:"))
+                    && trimmed.trim_start_matches("steps:").trim().is_empty()
+                {
+                    steps_indent = Some(indent);
+                }
+            }
+            Some(block_indent) => {
+                if indent <= block_indent {
+                    // Returned to a same-or-shallower indent — end of
+                    // steps block.
+                    break;
+                }
+                if let Some(rest) = trimmed.strip_prefix("- name:") {
+                    let value = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !value.is_empty() {
+                        meta.step_names.push(value.to_string());
+                    }
+                }
             }
         }
     }
-    None
+
+    Some(meta)
 }
 
 /// Compute the widest scenario name across the discovered set, in
@@ -43,13 +95,48 @@ fn peek_scenario_name(path: &Path) -> Option<String> {
 /// column alignment, so `chars().count()` (codepoint count) is close
 /// enough — emoji-or-CJK-heavy names may misalign by a column or two,
 /// but the failure mode is cosmetic, not a panic.
-fn max_scenario_name_width(scenario_files: &[PathBuf]) -> usize {
-    scenario_files
+fn max_scenario_name_width(metas: &[ScenarioMeta]) -> usize {
+    metas
         .iter()
-        .filter_map(|p| peek_scenario_name(p))
+        .filter_map(|m| m.name.as_deref())
         .map(|n| n.chars().count())
         .max()
         .unwrap_or(0)
+}
+
+/// Compute the widest `[N/M] step_name` label across all
+/// (scenario, step) pairs. Used by the live progress region to pad the
+/// per-row step column so the elapsed counter to its right lands at a
+/// stable column across in-flight rows.
+fn max_step_label_width(metas: &[ScenarioMeta]) -> usize {
+    metas
+        .iter()
+        .flat_map(|m| {
+            let total = m.step_names.len();
+            m.step_names
+                .iter()
+                .enumerate()
+                .map(move |(i, name)| step_label_width(i + 1, total, name))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Visible width of a `[N/M] step_name` label (no styling, no padding).
+/// Single helper so `max_step_label_width` and the live sink agree on
+/// the formula.
+pub(crate) fn step_label_width(idx_one_based: usize, total: usize, step_name: &str) -> usize {
+    // "[{idx}/{total}] {step_name}" — counter brackets + slash + 1 space.
+    let counter_len = digit_count(idx_one_based) + 1 + digit_count(total) + 2;
+    counter_len + 1 + step_name.chars().count()
+}
+
+fn digit_count(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n.ilog10() as usize) + 1
+    }
 }
 
 /// Pick a base directory for a scenario sandbox.
@@ -275,12 +362,19 @@ pub fn run(
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
 
-    // Pre-scan scenario files for their display names to compute the
-    // column width the footer uses to align the duration suffix. Skipped
-    // when there's no scenario set context (interactive run_serial uses
-    // the same reporter handle but only ever footers one scenario at a
-    // time, so column alignment doesn't help — width = 0 is fine there).
-    let name_column_width = max_scenario_name_width(&scenario_files);
+    // Pre-scan scenario files once for column-width sizing: the footer
+    // pads the scenario name (so durations stack), and the live in-flight
+    // row pads both the scenario name and the `[N/M] step_name` label
+    // (so the elapsed column stacks across rows).
+    //
+    // The scan is `peek_scenario_metadata` — a cheap text scan, not a
+    // full YAML parse. ~200ms for 580 files on an SSD.
+    let metas: Vec<ScenarioMeta> = scenario_files
+        .iter()
+        .filter_map(|p| peek_scenario_metadata(p))
+        .collect();
+    let name_column_width = max_scenario_name_width(&metas);
+    let step_column_width = max_step_label_width(&metas);
     let reporter = reporter::reporter_for(verbosity, name_column_width);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
@@ -315,7 +409,7 @@ pub fn run(
     let show_progress = std::io::stderr().is_terminal()
         && std::env::var_os("NO_PROGRESS").is_none()
         && std::env::var_os("CI").is_none();
-    let progress = progress::progress_sink_for(show_progress);
+    let progress = progress::progress_sink_for(show_progress, name_column_width, step_column_width);
     run_parallel(
         &scenario_files,
         &scenarios_dir,
@@ -1284,8 +1378,11 @@ mod cleanup_guard_tests {
 }
 
 #[cfg(test)]
-mod peek_scenario_name_tests {
-    use super::{max_scenario_name_width, peek_scenario_name};
+mod peek_scenario_metadata_tests {
+    use super::{
+        max_scenario_name_width, max_step_label_width, peek_scenario_metadata, step_label_width,
+        ScenarioMeta,
+    };
     use std::io::Write;
 
     fn write_yaml(content: &str) -> tempfile::NamedTempFile {
@@ -1294,65 +1391,96 @@ mod peek_scenario_name_tests {
         f
     }
 
+    fn meta_from(yaml: &str) -> ScenarioMeta {
+        let f = write_yaml(yaml);
+        peek_scenario_metadata(f.path()).expect("readable yaml")
+    }
+
     #[test]
-    fn peeks_bare_name() {
-        let f = write_yaml("name: Hello world\nsteps:\n  - name: x\n");
+    fn peeks_name_and_step_names() {
+        let m = meta_from(
+            "name: Demo\nsteps:\n  - name: first\n    run: \"true\"\n  - name: second\n    run: \"true\"\n",
+        );
+        assert_eq!(m.name.as_deref(), Some("Demo"));
         assert_eq!(
-            peek_scenario_name(f.path()),
-            Some("Hello world".to_string())
+            m.step_names,
+            vec!["first".to_string(), "second".to_string()]
         );
     }
 
     #[test]
-    fn strips_double_quotes() {
-        let f = write_yaml("name: \"Quoted scenario\"\nsteps: []\n");
-        assert_eq!(
-            peek_scenario_name(f.path()),
-            Some("Quoted scenario".to_string())
-        );
+    fn strips_double_and_single_quotes_in_name() {
+        let m1 = meta_from("name: \"Quoted scenario\"\nsteps: []\n");
+        assert_eq!(m1.name.as_deref(), Some("Quoted scenario"));
+        let m2 = meta_from("name: 'Single quoted'\nsteps: []\n");
+        assert_eq!(m2.name.as_deref(), Some("Single quoted"));
     }
 
     #[test]
-    fn strips_single_quotes() {
-        let f = write_yaml("name: 'Single quoted'\nsteps: []\n");
-        assert_eq!(
-            peek_scenario_name(f.path()),
-            Some("Single quoted".to_string())
+    fn ignores_repos_block_name_keys() {
+        // Same indent-aware scan as extract_step_lines — `- name:`
+        // entries inside the `repos:` block are not steps.
+        let m = meta_from(
+            "name: scenario\nrepos:\n  - name: my-repo\n    use_fixture: standard\nsteps:\n  - name: only-step\n    run: \"true\"\n",
         );
+        assert_eq!(m.step_names, vec!["only-step".to_string()]);
     }
 
     #[test]
-    fn returns_none_when_no_name_key() {
-        let f = write_yaml("description: no name here\nsteps: []\n");
-        assert_eq!(peek_scenario_name(f.path()), None);
+    fn returns_default_meta_when_no_name() {
+        let m = meta_from("description: nothing here\nsteps: []\n");
+        assert_eq!(m.name, None);
+        assert!(m.step_names.is_empty());
     }
 
     #[test]
     fn returns_none_for_unreadable_path() {
-        assert_eq!(
-            peek_scenario_name(std::path::Path::new("/nonexistent-xyzzy.yml")),
-            None
-        );
+        assert!(peek_scenario_metadata(std::path::Path::new("/nonexistent-xyzzy.yml")).is_none());
     }
 
     #[test]
-    fn max_width_picks_longest_name() {
-        let a = write_yaml("name: short\nsteps: []\n");
-        let b = write_yaml("name: this is a much longer scenario name\nsteps: []\n");
-        let c = write_yaml("name: middle one\nsteps: []\n");
-        let files = vec![
-            a.path().to_path_buf(),
-            b.path().to_path_buf(),
-            c.path().to_path_buf(),
+    fn max_name_width_picks_longest() {
+        let metas = vec![
+            ScenarioMeta {
+                name: Some("short".into()),
+                step_names: vec![],
+            },
+            ScenarioMeta {
+                name: Some("this is a much longer scenario name".into()),
+                step_names: vec![],
+            },
+            ScenarioMeta {
+                name: Some("middle one".into()),
+                step_names: vec![],
+            },
         ];
         assert_eq!(
-            max_scenario_name_width(&files),
+            max_scenario_name_width(&metas),
             "this is a much longer scenario name".chars().count()
         );
     }
 
     #[test]
-    fn max_width_is_zero_on_empty_set() {
+    fn max_step_label_width_picks_longest_label() {
+        let metas = vec![ScenarioMeta {
+            name: Some("x".into()),
+            step_names: vec![
+                "a".into(),
+                "bb".into(),
+                "Foo Bar Baz".into(),
+                "ddd".into(),
+                "ee".into(),
+            ],
+        }];
+        let expected = step_label_width(3, 5, "Foo Bar Baz");
+        assert_eq!(max_step_label_width(&metas), expected);
+        // Sanity-check the formula: "[3/5] Foo Bar Baz" = 17 chars.
+        assert_eq!(expected, "[3/5] Foo Bar Baz".chars().count());
+    }
+
+    #[test]
+    fn widths_are_zero_on_empty_set() {
         assert_eq!(max_scenario_name_width(&[]), 0);
+        assert_eq!(max_step_label_width(&[]), 0);
     }
 }
