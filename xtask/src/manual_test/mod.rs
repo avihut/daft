@@ -282,6 +282,7 @@ pub fn run(
         &cleanup_set,
         reporter.as_ref(),
         progress.as_ref(),
+        show_progress,
         keep,
         jobs,
     )
@@ -296,6 +297,7 @@ fn run_parallel(
     cleanup_set: &CleanupSet,
     reporter: &dyn reporter::Reporter,
     progress: &dyn progress::ProgressSink,
+    show_progress: bool,
     keep: bool,
     jobs: usize,
 ) -> Result<()> {
@@ -314,33 +316,72 @@ fn run_parallel(
 
     progress.run_started(scenario_files.len());
 
+    // Rayon-channel pattern: a producer thread runs the par_iter, sending
+    // each completed outcome down a channel. The main thread drains the
+    // channel as outcomes arrive.
+    //
+    // - On TTY (`show_progress == true`), each completed outcome's buffer
+    //   streams to stderr immediately via `stream_completed_scenario`,
+    //   which suspends the live region so the writes don't tear. Result:
+    //   scrollback in completion order, live bar uninterrupted.
+    // - On non-TTY (`show_progress == false`), no streaming — outcomes
+    //   accumulate and drain in input order at end (byte-identical to the
+    //   pre-progress behavior; preserves the CI log contract).
+    let (tx, rx) = std::sync::mpsc::channel::<ScenarioOutcome>();
+    let mut all_outcomes: Vec<ScenarioOutcome> = Vec::with_capacity(scenario_files.len());
+
     let run_start = std::time::Instant::now();
-    let mut outcomes: Vec<ScenarioOutcome> = pool.install(|| {
-        scenario_files
-            .par_iter()
-            .enumerate()
-            .map(|(idx, path)| run_one_scenario(idx, path, &ctx, cleanup_set))
-            .collect()
-    });
+    std::thread::scope(|s| -> Result<()> {
+        let pool_ref = &pool;
+        let ctx_ref = &ctx;
+        let cleanup_ref = cleanup_set;
+        let files_ref = scenario_files;
+        s.spawn(move || {
+            pool_ref.install(|| {
+                files_ref
+                    .par_iter()
+                    .enumerate()
+                    .for_each_with(tx, |tx, (idx, path)| {
+                        let outcome = run_one_scenario(idx, path, ctx_ref, cleanup_ref);
+                        let _ = tx.send(outcome);
+                    });
+            });
+        });
+
+        while let Ok(mut outcome) = rx.recv() {
+            if show_progress {
+                progress::stream_completed_scenario(progress, &outcome.output)?;
+                // Buffer already streamed; free it so the aggregate doesn't
+                // hold the bytes alive needlessly. `aggregate_outcomes` only
+                // reads `result`, `error`, `name`, `source`, `index`.
+                outcome.output.clear();
+                outcome.output.shrink_to_fit();
+            }
+            all_outcomes.push(outcome);
+        }
+        Ok(())
+    })?;
     let duration = run_start.elapsed();
 
-    // Restore input order before printing and aggregating, so output and
-    // stats are deterministic regardless of completion order.
-    outcomes.sort_by_key(|o| o.index);
+    // Input-order sort: required for both deterministic non-TTY drain AND
+    // deterministic stats aggregation (FailedScenarioRecord ordering, etc.).
+    all_outcomes.sort_by_key(|o| o.index);
 
     let stderr = std::io::stderr();
-    {
+    if !show_progress {
+        // Non-TTY: drain buffers in input order at end (today's behavior,
+        // byte-identical for CI).
         let mut lock = stderr.lock();
-        for o in &outcomes {
+        for o in &all_outcomes {
             lock.write_all(&o.output)?;
         }
     }
 
-    let stats = aggregate_outcomes(&outcomes, scenarios_dir, duration, Some(jobs));
+    let stats = aggregate_outcomes(&all_outcomes, scenarios_dir, duration, Some(jobs));
 
     let total_failed = stats.summary.steps_failed;
     let error_count = stats.summary.errors.len();
-    progress::suspend_for_summary(progress, || -> Result<()> {
+    progress::with_region_suspended(progress, || -> Result<()> {
         let mut lock = stderr.lock();
         reporter.run_summary(&mut lock, &stats.summary)?;
         Ok(())

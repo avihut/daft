@@ -94,14 +94,15 @@ pub fn progress_sink_for(show_progress: bool) -> Box<dyn ProgressSink> {
 /// Run `f` with the sink's live region suspended so a multi-line block can
 /// be written to stderr without bar tearing.
 ///
-/// Used by the orchestrator to print the final summary block. Returns the
-/// closure's result so callers can `?`-propagate errors from the writes
-/// inside it.
+/// Used by the orchestrator both for the final summary block (one shot,
+/// at end of run) and for streaming completed-scenario buffers above the
+/// live region (one suspend per completed scenario). Returns the closure's
+/// result so callers can `?`-propagate errors from the writes inside it.
 ///
 /// The trait's `suspend` primitive takes `&mut dyn FnMut()` (to stay
 /// object-safe); this free function bridges to the more ergonomic
 /// `FnOnce() -> R` shape via a take-once Option dance.
-pub fn suspend_for_summary<R>(sink: &dyn ProgressSink, f: impl FnOnce() -> R) -> R {
+pub fn with_region_suspended<R>(sink: &dyn ProgressSink, f: impl FnOnce() -> R) -> R {
     let mut result: Option<R> = None;
     let mut f = Some(f);
     sink.suspend(&mut || {
@@ -109,6 +110,21 @@ pub fn suspend_for_summary<R>(sink: &dyn ProgressSink, f: impl FnOnce() -> R) ->
         result = Some(f());
     });
     result.expect("suspend closure was never invoked")
+}
+
+/// Write a completed scenario's buffered bytes to stderr above the live
+/// region, suspending the bars for the duration of the write so they
+/// don't tear.
+///
+/// On `NoopProgressSink` this collapses to a plain stderr write — no bar
+/// is active, no suspend needed.
+pub fn stream_completed_scenario(sink: &dyn ProgressSink, buf: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    with_region_suspended(sink, || {
+        let stderr = std::io::stderr();
+        let mut lock = stderr.lock();
+        lock.write_all(buf)
+    })
 }
 
 #[cfg(test)]
@@ -143,17 +159,27 @@ mod tests {
     }
 
     #[test]
-    fn suspend_for_summary_returns_closure_result() {
+    fn with_region_suspended_returns_closure_result() {
         let sink = NoopProgressSink;
-        let result = suspend_for_summary(&sink, || 42);
+        let result = with_region_suspended(&sink, || 42);
         assert_eq!(result, 42);
     }
 
     #[test]
-    fn suspend_for_summary_propagates_errors() {
+    fn with_region_suspended_propagates_errors() {
         let sink = NoopProgressSink;
         let result: std::io::Result<()> =
-            suspend_for_summary(&sink, || Err(std::io::Error::other("boom")));
+            with_region_suspended(&sink, || Err(std::io::Error::other("boom")));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn stream_completed_scenario_writes_buffer() {
+        // NoopProgressSink path: bytes go through stderr.write_all unobstructed.
+        // We can't easily capture stderr in a unit test, but we can assert no
+        // panic and Ok return for a normal buffer.
+        let sink = NoopProgressSink;
+        let result = stream_completed_scenario(&sink, b"hello\n");
+        assert!(result.is_ok());
     }
 }
