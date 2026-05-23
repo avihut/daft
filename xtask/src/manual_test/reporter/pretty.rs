@@ -442,19 +442,26 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         writeln!(out)?;
     }
 
+    // Right-align each column to the wider of its two values so the
+    // Scenarios/Steps rows stack into clean columns. `{:>w$}` is applied
+    // to the plain digits (NOT the styled span) so ANSI escape bytes
+    // don't get counted in the width.
+    let pass_w = digit_width(s.scenarios_passed.max(s.steps_passed));
+    let fail_w = digit_width(s.scenarios_failed.max(s.steps_failed));
+    let total_w = digit_width(s.scenarios_total.max(s.steps_total));
     writeln!(
         out,
         "Scenarios:  {} passed, {} failed   ({} total)",
-        styles::green(&s.scenarios_passed.to_string()),
-        render_failed_count(s.scenarios_failed),
-        s.scenarios_total
+        styles::green(&format!("{:>pass_w$}", s.scenarios_passed)),
+        render_failed_count_padded(s.scenarios_failed, fail_w),
+        format!("{:>total_w$}", s.scenarios_total),
     )?;
     writeln!(
         out,
         "Steps:      {} passed, {} failed   ({} total)",
-        styles::green(&s.steps_passed.to_string()),
-        render_failed_count(s.steps_failed),
-        s.steps_total
+        styles::green(&format!("{:>pass_w$}", s.steps_passed)),
+        render_failed_count_padded(s.steps_failed, fail_w),
+        format!("{:>total_w$}", s.steps_total),
     )?;
     let parallel_suffix = match s.parallel_jobs {
         Some(n) if n > 1 => format!(" (parallel jobs: {n})"),
@@ -560,11 +567,26 @@ fn write_summary_capture(out: &mut dyn Write, label: &str, content: &str) -> io:
     Ok(())
 }
 
-fn render_failed_count(n: usize) -> String {
+/// Render a failed-count cell for the summary stats line. Right-pads to
+/// `width` digits before styling so the failed column lines up between
+/// the Scenarios/Steps rows; switches to red only when `n > 0` so the
+/// pass-quiet/fail-loud asymmetry holds on the live counts (zero-failed
+/// is just default fg, matching §4 of the design language).
+fn render_failed_count_padded(n: usize, width: usize) -> String {
+    let padded = format!("{n:>width$}");
     if n > 0 {
-        styles::red(&n.to_string())
+        styles::red(&padded)
     } else {
-        "0".to_string()
+        padded
+    }
+}
+
+/// Number of decimal digits in `n` (minimum 1, for the `0` case).
+fn digit_width(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n.ilog10() as usize) + 1
     }
 }
 

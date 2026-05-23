@@ -786,7 +786,10 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
     assert!(out.contains("ASSERTION_FAILED: silent-ok-job log was not deleted"));
     // Captured output is split into stdout/stderr blocks.
     assert!(out.contains("--- stdout ---"));
-    assert!(out.contains("Scenarios:  570 passed, 2 failed   (572 total)"));
+    // Right-aligned columns: pass column = max(570, 2191) digits = 4,
+    // total column = max(572, 2193) digits = 4. Scenarios passed/total
+    // are 3-digit, so they pick up one leading space.
+    assert!(out.contains("Scenarios:   570 passed, 2 failed   ( 572 total)"));
     assert!(out.contains("Steps:      2191 passed, 2 failed   (2193 total)"));
     assert!(out.contains("Duration:   01:04 (parallel jobs: 4)"));
     assert!(out.contains("Reproduce:"));
@@ -811,7 +814,10 @@ fn pretty_run_summary_clean_when_all_passed() {
     let out = render(|buf| r.run_summary(buf, &summary).unwrap());
     assert!(!out.contains("Failed Scenarios"));
     assert!(!out.contains("Reproduce:"));
-    assert!(out.contains("Scenarios:  5 passed, 0 failed   (5 total)"));
+    // Right-aligned columns: pass column = max(5, 20) digits = 2,
+    // total column = max(5, 20) digits = 2. Single-digit values pick up
+    // one leading space; double-digit values fill the column exactly.
+    assert!(out.contains("Scenarios:   5 passed, 0 failed   ( 5 total)"));
     assert!(out.contains("Steps:      20 passed, 0 failed   (20 total)"));
     assert!(out.contains("Duration:   00:07"));
     assert!(!out.contains("parallel jobs"));
