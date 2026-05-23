@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 
 use super::super::reporter::ScenarioStatus;
 use super::ProgressSink;
@@ -37,6 +37,23 @@ const SPINNER_TICKS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ";
 /// How often each bar self-ticks (drives spinner animation and
 /// `{elapsed_precise}` updates without external prodding).
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Format a scenario-row elapsed: `Xms` while sub-second, `X.Ys` while
+/// sub-minute, `M:SS` beyond that. Matches the scrollback footer's
+/// `format_duration` rhythm (sub-second precision matters here because
+/// most scenarios finish before the second crosses over, so a row that
+/// always reads `0s` would be useless).
+fn format_row_elapsed(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if d.as_secs() < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else {
+        let total = d.as_secs();
+        format!("{}:{:02}", total / 60, total % 60)
+    }
+}
 
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
@@ -54,15 +71,18 @@ impl IndicatifProgressSink {
         let multi = MultiProgress::new();
         let summary = multi.add(ProgressBar::new(0));
         summary.set_style(
+            // Summary leads at column 0 — no leading indent — so the bar
+            // anchors at the same column as the scrollback `✓ name` /
+            // `✗ name` footers and the eye runs a single column down to
+            // count completed scenarios.
+            //
             // `{pos}/{len}` is the scenario counter; {msg} carries the
             // running / failed segments (rendered as a single string so the
             // failed count can pick up red via console styling when > 0).
             // `{elapsed_precise}` is dim so the structural counters lead.
-            ProgressStyle::with_template(
-                "  {spinner} [{pos}/{len}] {msg} ◆ {elapsed_precise:.dim}",
-            )
-            .expect("static template should be valid")
-            .tick_chars(SPINNER_TICKS),
+            ProgressStyle::with_template("{spinner} [{pos}/{len}] {msg} ◆ {elapsed_precise:.dim}")
+                .expect("static template should be valid")
+                .tick_chars(SPINNER_TICKS),
         );
         summary.set_message("0 running ◆ 0 failed");
         summary.enable_steady_tick(TICK_INTERVAL);
@@ -128,12 +148,22 @@ impl ProgressSink for IndicatifProgressSink {
             .multi
             .insert_before(&self.summary, ProgressBar::new_spinner());
         bar.set_style(
-            // Per-row: dim spinner so the row name leads visually,
-            // then the rendered message (which carries its own ANSI codes
-            // for [N/M] and step name colors).
-            ProgressStyle::with_template("  {spinner:.dim} {msg}")
+            // Per-row leads at column 0 so when the scenario completes its
+            // `✓ name  duration` footer (also at column 0) drops cleanly
+            // into the same column the live row was occupying.
+            //
+            // `{row_elapsed}` is a custom key (added below via `with_key`)
+            // that renders sub-second precision — most scenarios finish
+            // before `{elapsed}` would cross 1s and update to "1s".
+            ProgressStyle::with_template("{spinner:.dim} {msg} \x1b[2m{row_elapsed}\x1b[0m")
                 .expect("static template should be valid")
-                .tick_chars(SPINNER_TICKS),
+                .tick_chars(SPINNER_TICKS)
+                .with_key(
+                    "row_elapsed",
+                    |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let _ = write!(w, "{}", format_row_elapsed(state.elapsed()));
+                    },
+                ),
         );
         bar.set_message(format!(
             "{name}  \x1b[36m[0/{total_steps}]\x1b[0m \x1b[2mstarting…\x1b[0m"
@@ -266,5 +296,26 @@ mod tests {
         let mut count = 0;
         sink.suspend(&mut || count += 1);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn format_row_elapsed_ms_under_one_second() {
+        assert_eq!(format_row_elapsed(Duration::from_millis(0)), "0ms");
+        assert_eq!(format_row_elapsed(Duration::from_millis(42)), "42ms");
+        assert_eq!(format_row_elapsed(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_row_elapsed_seconds_under_one_minute() {
+        assert_eq!(format_row_elapsed(Duration::from_millis(1_000)), "1.0s");
+        assert_eq!(format_row_elapsed(Duration::from_millis(1_500)), "1.5s");
+        assert_eq!(format_row_elapsed(Duration::from_secs(59)), "59.0s");
+    }
+
+    #[test]
+    fn format_row_elapsed_mm_ss_past_one_minute() {
+        assert_eq!(format_row_elapsed(Duration::from_secs(60)), "1:00");
+        assert_eq!(format_row_elapsed(Duration::from_secs(65)), "1:05");
+        assert_eq!(format_row_elapsed(Duration::from_secs(3_605)), "60:05");
     }
 }
