@@ -180,8 +180,13 @@ pub trait Reporter: Send + Sync {
 /// Pick a reporter for the requested verbosity. `PrettyReporter` handles all
 /// four levels via internal verbosity gates (see `pretty.rs` helpers + §6
 /// of the design language).
-pub fn reporter_for(verbosity: Verbosity) -> Box<dyn Reporter> {
-    Box::new(pretty::PrettyReporter::new(verbosity))
+///
+/// `name_column_width` is the widest scenario name in the discovered set,
+/// used by the footer to left-pad names so the duration suffix lands in a
+/// stable column. Pass 0 to disable padding — appropriate when the caller
+/// doesn't have a scenario set context (interactive mode, tests).
+pub fn reporter_for(verbosity: Verbosity, name_column_width: usize) -> Box<dyn Reporter> {
+    Box::new(pretty::PrettyReporter::new(verbosity).with_name_column_width(name_column_width))
 }
 
 /// Derive the runner-addressable token for a scenario's source path.

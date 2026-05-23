@@ -16,6 +16,42 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Cheaply extract a scenario's display name from its YAML without a full
+/// parse — scans the first 30 lines for `name: …`. Used by the orchestrator
+/// to compute the scenario-name column width once before workers start, so
+/// the reporter's footer can left-pad names into a stable column.
+///
+/// Returns `None` on read error or if no `name:` key is found in the
+/// header. Conservative on quoting (strips `"` and `'`) — full YAML
+/// parsing is the worker's job, this is purely for column-width sizing.
+fn peek_scenario_name(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines().take(30) {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let value = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Compute the widest scenario name across the discovered set, in
+/// **grapheme-approximate** character count. Width is used purely for
+/// column alignment, so `chars().count()` (codepoint count) is close
+/// enough — emoji-or-CJK-heavy names may misalign by a column or two,
+/// but the failure mode is cosmetic, not a panic.
+fn max_scenario_name_width(scenario_files: &[PathBuf]) -> usize {
+    scenario_files
+        .iter()
+        .filter_map(|p| peek_scenario_name(p))
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
 /// Pick a base directory for a scenario sandbox.
 ///
 /// Honors the `DAFT_MANUAL_TEST_BASE` env var as an opt-in override for
@@ -239,7 +275,13 @@ pub fn run(
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
 
-    let reporter = reporter::reporter_for(verbosity);
+    // Pre-scan scenario files for their display names to compute the
+    // column width the footer uses to align the duration suffix. Skipped
+    // when there's no scenario set context (interactive run_serial uses
+    // the same reporter handle but only ever footers one scenario at a
+    // time, so column alignment doesn't help — width = 0 is fine there).
+    let name_column_width = max_scenario_name_width(&scenario_files);
+    let reporter = reporter::reporter_for(verbosity, name_column_width);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
     // have semantics — TTY ownership for interactive, `println!` of work_dir
@@ -1238,5 +1280,79 @@ mod cleanup_guard_tests {
             !set.lock().unwrap().contains(&path),
             "guard must unregister even when the worker panics"
         );
+    }
+}
+
+#[cfg(test)]
+mod peek_scenario_name_tests {
+    use super::{max_scenario_name_width, peek_scenario_name};
+    use std::io::Write;
+
+    fn write_yaml(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".yml").tempfile().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn peeks_bare_name() {
+        let f = write_yaml("name: Hello world\nsteps:\n  - name: x\n");
+        assert_eq!(
+            peek_scenario_name(f.path()),
+            Some("Hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn strips_double_quotes() {
+        let f = write_yaml("name: \"Quoted scenario\"\nsteps: []\n");
+        assert_eq!(
+            peek_scenario_name(f.path()),
+            Some("Quoted scenario".to_string())
+        );
+    }
+
+    #[test]
+    fn strips_single_quotes() {
+        let f = write_yaml("name: 'Single quoted'\nsteps: []\n");
+        assert_eq!(
+            peek_scenario_name(f.path()),
+            Some("Single quoted".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_name_key() {
+        let f = write_yaml("description: no name here\nsteps: []\n");
+        assert_eq!(peek_scenario_name(f.path()), None);
+    }
+
+    #[test]
+    fn returns_none_for_unreadable_path() {
+        assert_eq!(
+            peek_scenario_name(std::path::Path::new("/nonexistent-xyzzy.yml")),
+            None
+        );
+    }
+
+    #[test]
+    fn max_width_picks_longest_name() {
+        let a = write_yaml("name: short\nsteps: []\n");
+        let b = write_yaml("name: this is a much longer scenario name\nsteps: []\n");
+        let c = write_yaml("name: middle one\nsteps: []\n");
+        let files = vec![
+            a.path().to_path_buf(),
+            b.path().to_path_buf(),
+            c.path().to_path_buf(),
+        ];
+        assert_eq!(
+            max_scenario_name_width(&files),
+            "this is a much longer scenario name".chars().count()
+        );
+    }
+
+    #[test]
+    fn max_width_is_zero_on_empty_set() {
+        assert_eq!(max_scenario_name_width(&[]), 0);
     }
 }
