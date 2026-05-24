@@ -338,7 +338,19 @@ impl ProgressSink for IndicatifProgressSink {
         }
         if let Ok(mut rows) = self.rows.lock() {
             if let Some(row) = rows.remove(name) {
-                row.bar.finish_and_clear();
+                // `multi.remove`, NOT `bar.finish_and_clear`. The latter
+                // transitions the bar to `DoneHidden` and interacts with
+                // indicatif's zombie-line accounting: on drop, the bar's
+                // `mark_zombie` can feed non-zero line counts into
+                // `LineAdjust::Keep`, leaving the last-drawn row stuck
+                // in scrollback above subsequent `multi.println` calls.
+                // `multi.remove` unlinks the bar from the ordering and
+                // hides its draw target so the next `multi.println` does
+                // an atomic redraw that cleanly clears the row.
+                // See `src/output/hook_progress/interactive.rs:remove_job_bars`
+                // — the main daft binary hit the exact same bug and
+                // landed the same fix.
+                self.multi.remove(&row.bar);
             }
         }
         self.summary.inc(1);
@@ -346,7 +358,12 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn run_finished(&self) {
-        self.summary.finish_and_clear();
+        // Same zombie-line concern as in `scenario_finished`: prefer
+        // `multi.remove` over `summary.finish_and_clear` so the summary
+        // bar doesn't leave a trailing line above the final summary
+        // block. `multi.clear` then wipes any remaining draw-target
+        // content for a fully clean end-of-run frame.
+        self.multi.remove(&self.summary);
         let _ = self.multi.clear();
     }
 
