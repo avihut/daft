@@ -302,6 +302,7 @@ pub fn run(
     show: bool,
     checks: bool,
     jobs: usize,
+    jobs_explicit: bool,
 ) -> Result<()> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -345,7 +346,12 @@ pub fn run(
 
     let is_interactive = !no_interactive && std::io::stdin().is_terminal();
 
-    if jobs > 1 {
+    // Only bail when the user *explicitly* asked for parallel (via `--jobs`,
+    // `DAFT_MANUAL_TEST_JOBS`, or `--parallel`) and the mode forbids it. The
+    // auto-default also picks `jobs > 1`, but interactive / --setup-only runs
+    // should just silently fall through to run_serial in that case rather than
+    // erroring on a default the user didn't choose.
+    if jobs_explicit && jobs > 1 {
         if is_interactive {
             anyhow::bail!(
                 "--jobs/--parallel is only supported in non-interactive mode (pass --ci or run from a non-TTY)"
