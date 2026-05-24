@@ -582,8 +582,7 @@ pub fn run_non_interactive(
     let status = if cancelled {
         // Cancelled wins over Pass/Fail for the lifecycle event: the
         // scenario didn't complete, and that's the thing the live region
-        // and stats need to reflect. The scrollback footer for Cancelled
-        // is suppressed (see `pretty::scenario_footer`).
+        // and stats need to reflect.
         ScenarioStatus::Cancelled
     } else if failed == 0 {
         ScenarioStatus::Pass
@@ -591,7 +590,12 @@ pub fn run_non_interactive(
         ScenarioStatus::Fail
     };
     reporter.scenario_footer(out, scenario, status, duration)?;
-    progress.scenario_finished(&scenario.name, status, duration);
+    // We DO NOT call `progress.complete_scenario` here — the caller
+    // (`run_one_scenario_inner`) appends timing + cleanup-note bytes to
+    // the buffer after this returns, and the sink needs the full buffer
+    // to atomically `multi.println` it before removing the row. See the
+    // ordering comment on `IndicatifProgressSink::complete_scenario`
+    // for why print-then-remove on the same thread is load-bearing.
 
     Ok(Some(ScenarioResult {
         steps: steps_run,

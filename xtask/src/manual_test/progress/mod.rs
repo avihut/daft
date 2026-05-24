@@ -77,9 +77,31 @@ pub trait ProgressSink: Send + Sync {
     /// Called before each step's command runs. `idx` is zero-based.
     fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str);
 
-    /// Called when a scenario reaches its footer (pass or fail), with the
-    /// wall-clock duration of its step phase.
-    fn scenario_finished(&self, name: &str, status: ScenarioStatus, duration: Duration);
+    /// Called when a worker finishes a scenario, with the full buffered
+    /// output and the determined status.
+    ///
+    /// Replaces the earlier `scenario_finished` + `println` split, which
+    /// raced: `scenario_finished` ran on the worker thread (removed the
+    /// row from the multi) while `multi.println` for the footer ran on
+    /// the main thread (cleared lines based on the multi's current count).
+    /// Concurrent reordering left in-flight rows stranded in scrollback.
+    ///
+    /// The sink owns the atomic sequence:
+    ///   1. Print `buf` line-by-line above the live region.
+    ///   2. Remove the scenario's row from the live region.
+    ///   3. Update the running/failed/cancelled counters and tick the
+    ///      summary forward.
+    ///
+    /// All three steps land on the calling thread (the worker), so the
+    /// remove happens after the print — no cross-thread reordering, no
+    /// stranded ghost rows.
+    ///
+    /// `buf` is the scenario's accumulated stderr-style bytes (header +
+    /// step lines + footer + any cleanup note). On `NoopProgressSink` the
+    /// buf is *ignored* — the orchestrator drains buffers in input order
+    /// at end-of-run for the non-TTY path, so printing here would
+    /// duplicate output.
+    fn complete_scenario(&self, name: &str, status: ScenarioStatus, duration: Duration, buf: &[u8]);
 
     /// Called once at the end of the run, after the summary block.
     fn run_finished(&self);
@@ -89,21 +111,6 @@ pub trait ProgressSink: Send + Sync {
     /// Ctrl+C instead of waiting for the first worker to bail
     /// (potentially seconds on a slow step). No-op for the noop sink.
     fn notify_cancelling(&self);
-
-    /// Print a single line of content above the live region.
-    ///
-    /// Critical for the streaming path — using
-    /// `MultiProgress::suspend + write_all` doesn't move the cursor off
-    /// the bar's trailing whitespace before the user's content lands, so
-    /// a footer can end up on the same physical row as an in-flight bar
-    /// entry. `multi.println` is indicatif's documented way to insert
-    /// scrollback content alongside an active bar; it handles the
-    /// cursor/clear sequencing internally.
-    ///
-    /// The `&str` is expected NOT to contain a trailing newline — the
-    /// sink adds its own. NoopProgressSink uses `eprintln!` (writes line +
-    /// `\n` to stderr) to stay byte-identical to the pre-progress drain.
-    fn println(&self, line: &str);
 }
 
 /// No-op sink for non-TTY runs.
@@ -117,12 +124,19 @@ impl ProgressSink for NoopProgressSink {
     fn run_started(&self, _total_scenarios: usize) {}
     fn scenario_started(&self, _name: &str, _total_steps: usize) {}
     fn step_started(&self, _scenario_name: &str, _idx: usize, _total: usize, _step_name: &str) {}
-    fn scenario_finished(&self, _name: &str, _status: ScenarioStatus, _duration: Duration) {}
+    fn complete_scenario(
+        &self,
+        _name: &str,
+        _status: ScenarioStatus,
+        _duration: Duration,
+        _buf: &[u8],
+    ) {
+        // Intentional no-op. The orchestrator drains buffered outputs in
+        // input order at end-of-run for the non-TTY path; printing here
+        // would either duplicate or scramble the CI log output.
+    }
     fn run_finished(&self) {}
     fn notify_cancelling(&self) {}
-    fn println(&self, line: &str) {
-        eprintln!("{line}");
-    }
 }
 
 /// Pick a sink based on whether the runner should show live progress.
@@ -157,43 +171,6 @@ pub fn progress_sink_for(
     }
 }
 
-/// Write a completed scenario's buffered bytes to scrollback, line by
-/// line, via the sink's `println`.
-///
-/// On `IndicatifProgressSink` this dispatches each line through
-/// `MultiProgress::println`, which is indicatif's documented way to
-/// insert scrollback content alongside an active bar without bar/footer
-/// row collisions. On `NoopProgressSink` it falls back to plain
-/// `eprintln!` per line.
-///
-/// Non-UTF-8 buffers fall back to a single `write_all` to stderr — this
-/// path shouldn't be reached (every buffer is built from `write!` on
-/// `&str` content) but we don't want to silently drop bytes on a
-/// schema violation.
-pub fn stream_completed_scenario(sink: &dyn ProgressSink, buf: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    match std::str::from_utf8(buf) {
-        Ok(text) => {
-            // `split_inclusive('\n')` preserves whether each line is
-            // newline-terminated. We strip the trailing `\n` and let the
-            // sink add its own — that way an empty line in the buffer
-            // (e.g. between scenario blocks) stays empty rather than
-            // doubling. `split_inclusive` on a trailing-newline-terminated
-            // string yields no spurious empty tail.
-            for line in text.split_inclusive('\n') {
-                let trimmed = line.strip_suffix('\n').unwrap_or(line);
-                sink.println(trimmed);
-            }
-            Ok(())
-        }
-        Err(_) => {
-            let stderr = std::io::stderr();
-            let mut lock = stderr.lock();
-            lock.write_all(buf)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +182,12 @@ mod tests {
         sink.scenario_started("example", 3);
         sink.step_started("example", 0, 3, "first step");
         sink.step_started("example", 1, 3, "second step");
-        sink.scenario_finished("example", ScenarioStatus::Pass, Duration::from_millis(120));
+        sink.complete_scenario(
+            "example",
+            ScenarioStatus::Pass,
+            Duration::from_millis(120),
+            b"",
+        );
         sink.run_finished();
         // The contract is "no panic, no observable effect" — reaching this
         // line satisfies it.
@@ -221,7 +203,7 @@ mod tests {
         sink.run_started(0);
         sink.scenario_started("x", 1);
         sink.step_started("x", 0, 1, "s");
-        sink.scenario_finished("x", ScenarioStatus::Fail, Duration::ZERO);
+        sink.complete_scenario("x", ScenarioStatus::Fail, Duration::ZERO, b"");
         sink.run_finished();
     }
 
@@ -249,12 +231,12 @@ mod tests {
     }
 
     #[test]
-    fn stream_completed_scenario_writes_buffer() {
-        // NoopProgressSink path: bytes go through stderr.write_all unobstructed.
-        // We can't easily capture stderr in a unit test, but we can assert no
-        // panic and Ok return for a normal buffer.
+    fn noop_complete_scenario_ignores_buf() {
+        // NoopProgressSink intentionally drops the buf — the orchestrator
+        // drains buffers in input order at end-of-run for the non-TTY
+        // path, so a sink that printed here would duplicate output. The
+        // contract is "no panic, no observable effect".
         let sink = NoopProgressSink;
-        let result = stream_completed_scenario(&sink, b"hello\n");
-        assert!(result.is_ok());
+        sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"some content\n");
     }
 }

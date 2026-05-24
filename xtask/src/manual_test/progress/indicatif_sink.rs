@@ -373,7 +373,56 @@ impl ProgressSink for IndicatifProgressSink {
         }
     }
 
-    fn scenario_finished(&self, name: &str, status: ScenarioStatus, _duration: Duration) {
+    fn complete_scenario(
+        &self,
+        name: &str,
+        status: ScenarioStatus,
+        _duration: Duration,
+        buf: &[u8],
+    ) {
+        // CRITICAL ORDERING: println first, then remove. Both happen on
+        // the worker thread that called this method — no cross-thread
+        // race possible.
+        //
+        // Why this order matters: `multi.println` clears the bar region
+        // based on the multi's current draw state, then prints, then
+        // redraws. If we removed the row first, the draw state would say
+        // "N-1 rows" while the terminal still shows N rows from the
+        // previous tick — `multi.println` would under-clear and strand
+        // the bottom row in scrollback. With print-then-remove the
+        // clear+print operates on the still-correct N-row state, then
+        // the next redraw happens with N-1 rows.
+        //
+        // Previously the row removal lived in `scenario_finished` on the
+        // worker thread while `multi.println` lived in the orchestrator's
+        // rx loop on the main thread — they could reorder under load and
+        // leave in-flight rows stranded in scrollback. Putting both on
+        // the same thread in this order closes that race definitively.
+        if let Ok(text) = std::str::from_utf8(buf) {
+            for line in text.split_inclusive('\n') {
+                let trimmed = line.strip_suffix('\n').unwrap_or(line);
+                let _ = self.multi.println(trimmed);
+            }
+        } else {
+            // Fallback for non-UTF-8: write directly to stderr. Reaching
+            // this is a schema violation (every buffer is built from
+            // `write!` on `&str`) but we don't drop bytes silently.
+            use std::io::Write;
+            let stderr = std::io::stderr();
+            let mut lock = stderr.lock();
+            let _ = lock.write_all(buf);
+        }
+
+        if let Ok(mut rows) = self.rows.lock() {
+            if let Some(row) = rows.remove(name) {
+                // `multi.remove`, NOT `bar.finish_and_clear`. See the
+                // hook-progress comment in
+                // `src/output/hook_progress/interactive.rs:remove_job_bars`
+                // for the longer explanation of the zombie-line hazard.
+                self.multi.remove(&row.bar);
+            }
+        }
+
         match status {
             ScenarioStatus::Fail => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
@@ -386,23 +435,6 @@ impl ProgressSink for IndicatifProgressSink {
                 self.cancelled.fetch_add(1, Ordering::Relaxed);
             }
             ScenarioStatus::Pass => {}
-        }
-        if let Ok(mut rows) = self.rows.lock() {
-            if let Some(row) = rows.remove(name) {
-                // `multi.remove`, NOT `bar.finish_and_clear`. The latter
-                // transitions the bar to `DoneHidden` and interacts with
-                // indicatif's zombie-line accounting: on drop, the bar's
-                // `mark_zombie` can feed non-zero line counts into
-                // `LineAdjust::Keep`, leaving the last-drawn row stuck
-                // in scrollback above subsequent `multi.println` calls.
-                // `multi.remove` unlinks the bar from the ordering and
-                // hides its draw target so the next `multi.println` does
-                // an atomic redraw that cleanly clears the row.
-                // See `src/output/hook_progress/interactive.rs:remove_job_bars`
-                // — the main daft binary hit the exact same bug and
-                // landed the same fix.
-                self.multi.remove(&row.bar);
-            }
         }
         self.summary.inc(1);
         self.update_summary_msg();
@@ -423,17 +455,6 @@ impl ProgressSink for IndicatifProgressSink {
         // immediately. Without this call, the suffix wouldn't appear until
         // the first worker bails — which can be seconds on a slow step.
         self.update_summary_msg();
-    }
-
-    fn println(&self, line: &str) {
-        // multi.println handles the cursor/clear sequencing internally:
-        // hide the bar region, write the line above it, then redraw the
-        // region below. This is what the previous `suspend + write_all`
-        // path tried to do but got wrong — it left bar-row trailing
-        // whitespace on the cursor's physical line, so footers landed on
-        // the same row as in-flight bar entries ("ghost rows"). Letting
-        // indicatif own the sequencing fixes that.
-        let _ = self.multi.println(line);
     }
 }
 
@@ -479,9 +500,14 @@ mod tests {
         sink.scenario_started("alpha", 3);
         sink.step_started("alpha", 0, 3, "first");
         sink.step_started("alpha", 1, 3, "second");
-        sink.scenario_finished("alpha", ScenarioStatus::Pass, Duration::from_millis(120));
+        sink.complete_scenario(
+            "alpha",
+            ScenarioStatus::Pass,
+            Duration::from_millis(120),
+            b"",
+        );
         sink.scenario_started("beta", 2);
-        sink.scenario_finished("beta", ScenarioStatus::Fail, Duration::from_millis(80));
+        sink.complete_scenario("beta", ScenarioStatus::Fail, Duration::from_millis(80), b"");
         sink.run_finished();
     }
 
@@ -490,11 +516,11 @@ mod tests {
         let sink = hidden_sink();
         sink.run_started(3);
         sink.scenario_started("a", 1);
-        sink.scenario_finished("a", ScenarioStatus::Pass, Duration::ZERO);
+        sink.complete_scenario("a", ScenarioStatus::Pass, Duration::ZERO, b"");
         sink.scenario_started("b", 1);
-        sink.scenario_finished("b", ScenarioStatus::Fail, Duration::ZERO);
+        sink.complete_scenario("b", ScenarioStatus::Fail, Duration::ZERO, b"");
         sink.scenario_started("c", 1);
-        sink.scenario_finished("c", ScenarioStatus::Fail, Duration::ZERO);
+        sink.complete_scenario("c", ScenarioStatus::Fail, Duration::ZERO, b"");
         assert_eq!(sink.failed.load(Ordering::Relaxed), 2);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 0);
     }
@@ -542,7 +568,7 @@ mod tests {
 
         // Once running drops to 0 (last worker bailed), the suffix drops
         // away — nothing left to cancel.
-        sink.scenario_finished("a", ScenarioStatus::Cancelled, Duration::ZERO);
+        sink.complete_scenario("a", ScenarioStatus::Cancelled, Duration::ZERO, b"");
         assert!(!sink.summary.message().contains("(cancelling)"));
     }
 
@@ -555,13 +581,13 @@ mod tests {
         let sink = hidden_sink();
         sink.run_started(4);
         sink.scenario_started("a", 1);
-        sink.scenario_finished("a", ScenarioStatus::Pass, Duration::ZERO);
+        sink.complete_scenario("a", ScenarioStatus::Pass, Duration::ZERO, b"");
         sink.scenario_started("b", 1);
-        sink.scenario_finished("b", ScenarioStatus::Fail, Duration::ZERO);
+        sink.complete_scenario("b", ScenarioStatus::Fail, Duration::ZERO, b"");
         sink.scenario_started("c", 1);
-        sink.scenario_finished("c", ScenarioStatus::Cancelled, Duration::ZERO);
+        sink.complete_scenario("c", ScenarioStatus::Cancelled, Duration::ZERO, b"");
         sink.scenario_started("d", 1);
-        sink.scenario_finished("d", ScenarioStatus::Cancelled, Duration::ZERO);
+        sink.complete_scenario("d", ScenarioStatus::Cancelled, Duration::ZERO, b"");
         assert_eq!(sink.failed.load(Ordering::Relaxed), 1);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 2);
     }
@@ -572,7 +598,7 @@ mod tests {
         sink.run_started(1);
         sink.scenario_started("x", 1);
         assert_eq!(sink.rows.lock().unwrap().len(), 1);
-        sink.scenario_finished("x", ScenarioStatus::Pass, Duration::ZERO);
+        sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"");
         assert!(sink.rows.lock().unwrap().is_empty());
     }
 

@@ -578,17 +578,16 @@ fn run_parallel(
                 progress.notify_cancelling();
                 notified_cancelling = true;
             }
-            // Cancelled scenarios get their `⊘ name (cancelled)` footer
-            // streamed alongside the pass/fail footers so the user can see
-            // *which* scenarios were in flight when they hit Ctrl+C — not
-            // just an aggregate count. The runner already writes the
-            // cancelled footer at the buffer's tail (see runner.rs); we
-            // just have to not skip it here.
+            // For the TTY (live-region) path, the worker already printed
+            // this scenario's buffer atomically via
+            // `progress.complete_scenario` — `multi.println` for each
+            // line, then `multi.remove(row)`, all on the worker thread.
+            // That sequencing is what keeps in-flight bar rows from
+            // getting stranded in scrollback (the cross-thread race that
+            // earlier `multi.println`-on-main + `multi.remove`-on-worker
+            // designs all hit). Free the buf here so the aggregate
+            // doesn't hold the bytes alive needlessly.
             if show_progress {
-                progress::stream_completed_scenario(progress, &outcome.output)?;
-                // Buffer already streamed; free it so the aggregate doesn't
-                // hold the bytes alive needlessly. `aggregate_outcomes` only
-                // reads `result`, `error`, `name`, `source`, `index`.
                 outcome.output.clear();
                 outcome.output.shrink_to_fit();
             }
@@ -1116,6 +1115,27 @@ fn run_one_scenario_inner(
                 .cleanup_note(&mut buf, &format!("Warning: cleanup failed: {e}"))?,
         }
     }
+
+    // Hand the full buffer to the sink for atomic print-then-remove on
+    // the worker thread. This is the load-bearing call that prevents
+    // ghost rows: the previous design split it across threads (worker
+    // removed the row in `scenario_finished`, main thread printed the
+    // footer via `multi.println`) which reordered under load and
+    // stranded in-flight rows in scrollback. See the comment on
+    // `IndicatifProgressSink::complete_scenario` for the long version.
+    //
+    // For NoopProgressSink (non-TTY runs), this is a no-op — the
+    // orchestrator drains buffers in input order at end-of-run so a
+    // sink-side print here would duplicate output.
+    let status = if result.cancelled {
+        reporter::ScenarioStatus::Cancelled
+    } else if result.failed > 0 {
+        reporter::ScenarioStatus::Fail
+    } else {
+        reporter::ScenarioStatus::Pass
+    };
+    ctx.progress
+        .complete_scenario(&scenario.name, status, result.duration, &buf);
 
     Ok(Some((result, buf)))
 }
