@@ -72,11 +72,19 @@ pub struct StepReport<'a> {
     pub stderr: Option<&'a str>,
 }
 
-/// Scenario PASS/FAIL outcome.
+/// Scenario PASS / FAIL / CANCELLED outcome.
+///
+/// `Cancelled` means the worker bailed mid-scenario in response to a SIGINT
+/// (see [`super::progress::InterruptFlag`]). It is a distinct terminal state
+/// from `Pass` / `Fail` — a cancelled scenario did not complete, so its
+/// step-counter tallies are partial and it does not appear in the failed-
+/// scenarios summary block. It surfaces in the stats line's third count
+/// (`X passed, Y failed, Z cancelled`).
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ScenarioStatus {
     Pass,
     Fail,
+    Cancelled,
 }
 
 /// First failing step's full detail, captured for the summary block.
@@ -128,6 +136,10 @@ pub struct RunSummary<'a> {
     pub scenarios_total: usize,
     pub scenarios_passed: usize,
     pub scenarios_failed: usize,
+    /// Scenarios that started but were cancelled mid-run via SIGINT. They
+    /// do not appear in the failed-scenarios block; their only surface is
+    /// the stats line's third count.
+    pub scenarios_cancelled: usize,
     pub steps_total: usize,
     pub steps_passed: usize,
     pub steps_failed: usize,

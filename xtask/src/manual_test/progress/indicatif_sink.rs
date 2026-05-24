@@ -24,7 +24,7 @@ use std::time::Duration;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 
 use super::super::reporter::ScenarioStatus;
-use super::ProgressSink;
+use super::{InterruptFlag, ProgressSink};
 
 /// Threshold above which a scenario row gets a yellow `(slow)` suffix.
 /// Matches the footer's slow annotation rule.
@@ -60,6 +60,15 @@ pub struct IndicatifProgressSink {
     summary: ProgressBar,
     rows: Mutex<HashMap<String, ProgressRow>>,
     failed: AtomicUsize,
+    /// Scenarios that bailed mid-run via SIGINT. Surfaced as a separate
+    /// segment on the summary bar (yellow, attention-without-alarm slot)
+    /// so the reader can distinguish cancelled work from genuine failures
+    /// at a glance.
+    cancelled: AtomicUsize,
+    /// Cooperative cancellation flag. Set by the SIGINT handler; read here
+    /// to color the cancelled segment and (in the orchestrator's bookkeeping)
+    /// to gate the run's exit code. Held by `Arc` so a clone is cheap.
+    interrupt: InterruptFlag,
     /// Pre-computed widest scenario name across the run, in chars. Used
     /// to right-pad the scenario name column in the row message so the
     /// step label column lands at a stable position across rows.
@@ -75,7 +84,7 @@ struct ProgressRow {
 }
 
 impl IndicatifProgressSink {
-    pub fn new(name_col_width: usize, step_col_width: usize) -> Self {
+    pub fn new(name_col_width: usize, step_col_width: usize, interrupt: InterruptFlag) -> Self {
         let multi = MultiProgress::new();
         let summary = multi.add(ProgressBar::new(0));
         summary.set_style(
@@ -100,6 +109,8 @@ impl IndicatifProgressSink {
             summary,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
+            cancelled: AtomicUsize::new(0),
+            interrupt,
             name_col_width,
             step_col_width,
         }
@@ -108,6 +119,7 @@ impl IndicatifProgressSink {
     fn update_summary_msg(&self) {
         let running = self.rows.lock().map(|r| r.len()).unwrap_or(0);
         let failed = self.failed.load(Ordering::Relaxed);
+        let cancelled = self.cancelled.load(Ordering::Relaxed);
         let failed_segment = if failed > 0 {
             // Raw SGR bytes. Indicatif's template DSL (e.g. `{msg:.red}`)
             // doesn't expose a conditional hook for "red only when
@@ -120,8 +132,16 @@ impl IndicatifProgressSink {
         } else {
             format!("{failed} failed")
         };
-        self.summary
-            .set_message(format!("{running} running ◆ {failed_segment}"));
+        // §8 + §1: cancelled lives in the yellow slot ("attention without
+        // alarm") and only surfaces when > 0 — printing `0 cancelled` on
+        // every green run would add chrome. Once a run is cancelled, the
+        // segment always shows so the user can see the count grow as
+        // in-flight workers wind down.
+        let mut msg = format!("{running} running ◆ {failed_segment}");
+        if cancelled > 0 || self.interrupt.is_set() {
+            msg.push_str(&format!(" ◆ \x1b[33m{cancelled} cancelled\x1b[0m"));
+        }
+        self.summary.set_message(msg);
     }
 
     /// Right-pad a plain string to `width` chars using
@@ -294,8 +314,18 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn scenario_finished(&self, name: &str, status: ScenarioStatus, _duration: Duration) {
-        if status == ScenarioStatus::Fail {
-            self.failed.fetch_add(1, Ordering::Relaxed);
+        match status {
+            ScenarioStatus::Fail => {
+                self.failed.fetch_add(1, Ordering::Relaxed);
+            }
+            ScenarioStatus::Cancelled => {
+                // Cancelled doesn't bump the failed counter — it has its
+                // own yellow segment in the summary message so the eye
+                // doesn't conflate user-cancellation with genuine
+                // assertion failures.
+                self.cancelled.fetch_add(1, Ordering::Relaxed);
+            }
+            ScenarioStatus::Pass => {}
         }
         if let Ok(mut rows) = self.rows.lock() {
             if let Some(row) = rows.remove(name) {
@@ -341,6 +371,8 @@ mod tests {
             summary,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
+            cancelled: AtomicUsize::new(0),
+            interrupt: InterruptFlag::new(),
             name_col_width: 0,
             step_col_width: 0,
         }
@@ -370,6 +402,27 @@ mod tests {
         sink.scenario_started("c", 1);
         sink.scenario_finished("c", ScenarioStatus::Fail, Duration::ZERO);
         assert_eq!(sink.failed.load(Ordering::Relaxed), 2);
+        assert_eq!(sink.cancelled.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn cancelled_counter_increments_separately_from_failed() {
+        // Regression guard for the SIGINT bug: when a scenario is
+        // cancelled mid-run, the bar must not bump the failed counter.
+        // Polluting `failed` with cancelled work was the bug this whole
+        // path was introduced to fix.
+        let sink = hidden_sink();
+        sink.run_started(4);
+        sink.scenario_started("a", 1);
+        sink.scenario_finished("a", ScenarioStatus::Pass, Duration::ZERO);
+        sink.scenario_started("b", 1);
+        sink.scenario_finished("b", ScenarioStatus::Fail, Duration::ZERO);
+        sink.scenario_started("c", 1);
+        sink.scenario_finished("c", ScenarioStatus::Cancelled, Duration::ZERO);
+        sink.scenario_started("d", 1);
+        sink.scenario_finished("d", ScenarioStatus::Cancelled, Duration::ZERO);
+        assert_eq!(sink.failed.load(Ordering::Relaxed), 1);
+        assert_eq!(sink.cancelled.load(Ordering::Relaxed), 2);
     }
 
     #[test]

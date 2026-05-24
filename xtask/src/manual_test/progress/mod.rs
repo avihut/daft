@@ -18,11 +18,47 @@
 
 mod indicatif_sink;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::reporter::ScenarioStatus;
 
 pub use indicatif_sink::IndicatifProgressSink;
+
+/// Cooperative cancellation flag shared between the SIGINT handler and the
+/// runner / sink.
+///
+/// On first Ctrl+C the handler calls [`Self::set`]; the runner checks
+/// [`Self::is_set`] between scenario steps and bails with
+/// [`ScenarioStatus::Cancelled`] when it sees the flag flip. The flag is also
+/// passed to [`IndicatifProgressSink`] so the live region's `M cancelled`
+/// segment can render from the same source of truth as the runner's bail
+/// logic.
+///
+/// Cheap to clone — wraps a single `Arc<AtomicBool>`. All loads / stores use
+/// `Ordering::Relaxed`; the flag is one-way (`false` → `true`) and no other
+/// memory effects are ordered around it.
+#[derive(Clone, Default)]
+pub struct InterruptFlag(Arc<AtomicBool>);
+
+impl InterruptFlag {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `true` once a SIGINT has been observed.
+    pub fn is_set(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Mark the run as cancelled. Idempotent; further calls are no-ops.
+    /// Returns the prior value so the SIGINT handler can distinguish first
+    /// (soft cancel) from subsequent (hard exit) presses.
+    pub fn set(&self) -> bool {
+        self.0.swap(true, Ordering::Relaxed)
+    }
+}
 
 /// Receives lifecycle events from the runner.
 ///
@@ -93,9 +129,14 @@ pub fn progress_sink_for(
     show_progress: bool,
     name_col_width: usize,
     step_col_width: usize,
+    interrupt: InterruptFlag,
 ) -> Box<dyn ProgressSink> {
     if show_progress {
-        Box::new(IndicatifProgressSink::new(name_col_width, step_col_width))
+        Box::new(IndicatifProgressSink::new(
+            name_col_width,
+            step_col_width,
+            interrupt,
+        ))
     } else {
         Box::new(NoopProgressSink)
     }
@@ -160,12 +201,35 @@ mod tests {
         // through a dyn pointer; exercise every method instead and rely on
         // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
         // cover the live path.
-        let sink = progress_sink_for(false, 0, 0);
+        let sink = progress_sink_for(false, 0, 0, InterruptFlag::new());
         sink.run_started(0);
         sink.scenario_started("x", 1);
         sink.step_started("x", 0, 1, "s");
         sink.scenario_finished("x", ScenarioStatus::Fail, Duration::ZERO);
         sink.run_finished();
+    }
+
+    #[test]
+    fn interrupt_flag_is_set_after_set() {
+        let flag = InterruptFlag::new();
+        assert!(!flag.is_set());
+        let prior = flag.set();
+        assert!(!prior);
+        assert!(flag.is_set());
+        // Second set is a no-op; returns the prior value (true).
+        assert!(flag.set());
+        assert!(flag.is_set());
+    }
+
+    #[test]
+    fn interrupt_flag_clone_shares_state() {
+        let a = InterruptFlag::new();
+        let b = a.clone();
+        assert!(!a.is_set());
+        assert!(!b.is_set());
+        a.set();
+        assert!(a.is_set());
+        assert!(b.is_set());
     }
 
     #[test]

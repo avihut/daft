@@ -54,6 +54,12 @@ pub struct ScenarioResult {
     pub passed: usize,
     /// Number of steps with at least one failed assertion.
     pub failed: usize,
+    /// `true` when the worker bailed mid-scenario in response to SIGINT.
+    /// When set, `steps` reflects only the steps that ran (could be 0);
+    /// `passed` and `failed` reflect the assertions that completed before
+    /// cancellation. The scenario is counted as `scenarios_cancelled` in
+    /// the run summary, distinct from `scenarios_passed` / `scenarios_failed`.
+    pub cancelled: bool,
     /// Wall-clock duration of the scenario's step phase (excludes sandbox
     /// setup and cleanup). Surfaced on every footer and in the failed-
     /// scenarios block; the bench harness still reads it via the
@@ -510,6 +516,7 @@ pub fn run_non_interactive(
     executor: &dyn CommandExecutor,
     reporter: &dyn Reporter,
     progress: &dyn ProgressSink,
+    interrupt: &super::progress::InterruptFlag,
     out: &mut impl Write,
 ) -> Result<ScenarioResult> {
     reporter.scenario_header(out, scenario)?;
@@ -518,14 +525,28 @@ pub fn run_non_interactive(
     let mut passed = 0;
     let mut failed = 0;
     let mut failing_step: Option<FailingStep> = None;
+    let mut cancelled = false;
+    let mut steps_run = 0usize;
 
     progress.scenario_started(&scenario.name, total);
     let started = Instant::now();
     for (i, step) in scenario.steps.iter().enumerate() {
+        // Cooperative cancellation check at the start of each step. The
+        // current step (if one is in flight) finishes naturally — we only
+        // bail between steps so we never abandon a partially-executed step
+        // mid-subprocess. A scenario that's stuck inside a single slow
+        // step (e.g. a long git clone) won't react until that step
+        // returns; the SIGINT handler's second-press path is the escape
+        // hatch for that case.
+        if interrupt.is_set() {
+            cancelled = true;
+            break;
+        }
         reporter.step_start(out, i, total, step)?;
         progress.step_started(&scenario.name, i, total, &step.name);
 
         let result = execute_step(step, sandbox, executor, true)?;
+        steps_run += 1;
         let expanded = sandbox.expand_vars(&step.run);
         let report = StepReport {
             expanded_command: Some(&expanded),
@@ -547,7 +568,13 @@ pub fn run_non_interactive(
     }
     let duration = started.elapsed();
 
-    let status = if failed == 0 {
+    let status = if cancelled {
+        // Cancelled wins over Pass/Fail for the lifecycle event: the
+        // scenario didn't complete, and that's the thing the live region
+        // and stats need to reflect. The scrollback footer for Cancelled
+        // is suppressed (see `pretty::scenario_footer`).
+        ScenarioStatus::Cancelled
+    } else if failed == 0 {
         ScenarioStatus::Pass
     } else {
         ScenarioStatus::Fail
@@ -556,9 +583,10 @@ pub fn run_non_interactive(
     progress.scenario_finished(&scenario.name, status, duration);
 
     Ok(ScenarioResult {
-        steps: total,
+        steps: steps_run,
         passed,
         failed,
+        cancelled,
         duration,
         failing_step,
     })

@@ -264,6 +264,13 @@ impl Reporter for PrettyReporter {
         if matches!(status, ScenarioStatus::Pass) && !self.show_pass_footer() {
             return Ok(());
         }
+        // Cancelled scenarios are tallied in the stats line's third count; we
+        // don't print a per-scenario footer for them. Their buffer (header +
+        // any completed steps) was already suppressed by the orchestrator, so
+        // the only surface is the summary count.
+        if matches!(status, ScenarioStatus::Cancelled) {
+            return Ok(());
+        }
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
         //
@@ -279,6 +286,7 @@ impl Reporter for PrettyReporter {
                 format!("{} {}", styles::green("✓"), &scenario.name)
             }
             ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", scenario.name)),
+            ScenarioStatus::Cancelled => unreachable!("cancelled footer suppressed above"),
         };
         let suffix = scenario_duration_suffix(duration);
         writeln!(out, "{}{}", prefix, suffix)
@@ -452,11 +460,23 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
     let pass_w = digit_width(s.scenarios_passed.max(s.steps_passed));
     let fail_w = digit_width(s.scenarios_failed.max(s.steps_failed));
     let total_w = digit_width(s.scenarios_total.max(s.steps_total));
+    // §1 + design-language §3: cancelled lives in the yellow slot —
+    // attention without alarm. Only surfaces when > 0 so a normal
+    // (no-cancellation) run keeps the existing two-count line shape.
+    let cancelled_segment = if s.scenarios_cancelled > 0 {
+        format!(
+            ", {} cancelled",
+            styles::yellow(&s.scenarios_cancelled.to_string())
+        )
+    } else {
+        String::new()
+    };
     writeln!(
         out,
-        "Scenarios:  {} passed, {} failed   ({} total)",
+        "Scenarios:  {} passed, {} failed{}   ({} total)",
         styles::green(&format!("{:>pass_w$}", s.scenarios_passed)),
         render_failed_count_padded(s.scenarios_failed, fail_w),
+        cancelled_segment,
         format!("{:>total_w$}", s.scenarios_total),
     )?;
     writeln!(

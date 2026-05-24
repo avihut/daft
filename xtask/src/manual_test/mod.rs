@@ -194,42 +194,72 @@ impl Drop for CleanupGuard {
     }
 }
 
-/// Register a Ctrl+C handler that cleans up every live test environment.
+/// Register a Ctrl+C handler with two-press semantics.
+///
+/// **First press (soft cancel):** sets the shared [`progress::InterruptFlag`]
+/// and prints a short banner. The handler returns without exiting; the
+/// parallel scheduler's workers observe the flag between steps and bail with
+/// [`reporter::ScenarioStatus::Cancelled`], their `Sandbox::drop` cleans up
+/// each sandbox naturally, and the main thread reaches the run's end in
+/// `run_parallel` and falls through to the `process::exit(130)` at the
+/// bottom of `run`.
+///
+/// **Second press (hard exit):** the handler short-circuits to the legacy
+/// emergency-cleanup path — `rm -rf` every registered sandbox and
+/// `process::exit(130)`. This is the escape hatch when a worker is stuck
+/// inside a slow subprocess (e.g. a long git clone) and can't react to the
+/// interrupt flag in a reasonable time.
 ///
 /// Returns a shared registry the run loop populates as scenarios start and
-/// clears as they finish. On SIGINT the handler drains the set in a loop —
-/// `process::exit(130)` aborts worker threads mid-flight without running
-/// their `Drop` impls, so a single drain can miss workers that registered
-/// after the snapshot. Re-draining with a short sleep between passes catches
-/// those late registrations until the set stays empty.
-fn setup_cleanup_handler(keep: bool) -> CleanupSet {
+/// clears as they finish. The registry is read on the hard-exit path; under
+/// soft cancel it stays in sync via the workers' own `CleanupGuard` drops.
+fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> CleanupSet {
     let set: CleanupSet = Arc::new(Mutex::new(HashSet::new()));
     let handler_set = Arc::clone(&set);
 
     ctrlc::set_handler(move || {
-        // Restore terminal state in case interactive mode left raw mode on.
+        let already_interrupted = interrupt.set();
+        if !already_interrupted {
+            // First press: soft cancel. Workers see the flag between steps,
+            // bail with `Cancelled`, and their `Sandbox::drop` cleans up.
+            // No emergency cleanup, no `process::exit` — let the run wind
+            // down naturally so the cancelled count and final summary
+            // print correctly.
+            let _ = crossterm::terminal::disable_raw_mode();
+            eprintln!();
+            // Microcopy (reporter/CLAUDE.md §5): sentence-case prompt,
+            // verb-first, no trailing period after the parenthetical hint
+            // so it reads as one beat.
+            eprintln!(
+                "{}",
+                term_styles::dim("Cancelling run... (Ctrl+C again to force exit)")
+            );
+            return;
+        }
+
+        // Second press: hard exit. Restore terminal, drain the cleanup
+        // registry under the lock, and force-exit with 130.
+        //
+        // Workers in flight fall into two camps when we hard-exit:
+        //
+        // 1. Past `CleanupGuard::new` — their `base_dir` is in the set.
+        //    Drain captures it; we `rm -rf` to remove whatever they
+        //    built so far. Their subprocesses (`git`, `cp`) may still
+        //    be running and may RECREATE entries at the same path
+        //    between our `rm` and `process::exit` below, which is why
+        //    we re-rm in a short loop while holding the lock.
+        // 2. About to call `CleanupGuard::new` — they block at
+        //    `set.lock()` because we hold the lock to process exit,
+        //    then die with the process. They never touch disk, so no
+        //    leak.
+        //
+        // Holding the lock for the whole sequence prevents new
+        // registrations, so the `known` set captures the entire universe
+        // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
         eprintln!();
+        eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));
         if !keep {
-            // Workers in flight fall into two camps when SIGINT fires:
-            //
-            // 1. Past `CleanupGuard::new` — their `base_dir` is in the set.
-            //    Drain captures it; we `rm -rf` to remove whatever they
-            //    built so far. Their subprocesses (`git`, `cp`) may still
-            //    be running and may RECREATE entries at the same path
-            //    between our `rm` and `process::exit` below, which is why
-            //    we re-rm in a short loop while holding the lock.
-            // 2. About to call `CleanupGuard::new` — they block at
-            //    `set.lock()` because we hold the lock to process exit, then
-            //    die with the process. They never touch disk, so no leak.
-            //
-            // Holding the lock for the whole sequence prevents new
-            // registrations, so the `known` set captures the entire universe
-            // of paths that could possibly still have on-disk presence. The
-            // re-rm loop is bounded so the handler always finishes ahead of
-            // the main thread's rayon-iteration completion (which would
-            // otherwise short-circuit the closure via the natural anyhow
-            // bail with a non-130 exit code).
             let mut g = match handler_set.lock() {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
@@ -286,6 +316,10 @@ struct RunContext<'a> {
     fixtures_dir: &'a Path,
     reporter: &'a dyn reporter::Reporter,
     progress: &'a dyn progress::ProgressSink,
+    /// Cooperative cancellation flag. Workers check between steps inside
+    /// `run_non_interactive`; on transition false→true they bail with
+    /// [`reporter::ScenarioStatus::Cancelled`].
+    interrupt: &'a progress::InterruptFlag,
     keep: bool,
 }
 
@@ -362,7 +396,15 @@ pub fn run(
         }
     }
 
-    let cleanup_set = setup_cleanup_handler(keep);
+    // Single shared interrupt flag plumbed through:
+    //   1. SIGINT handler (sets it on first Ctrl+C),
+    //   2. workers in `run_non_interactive` (bail mid-scenario when set),
+    //   3. `IndicatifProgressSink` (colors the cancelled segment),
+    //   4. the orchestrator's exit-code decision below.
+    // One source of truth keeps the runner's "is this cancelled?" signal
+    // consistent across all three subsystems.
+    let interrupt = progress::InterruptFlag::new();
+    let cleanup_set = setup_cleanup_handler(keep, interrupt.clone());
 
     // No leading eprintln! here — the pretty reporter's scenario_header
     // owns the inter-scenario blank line, including the one before the very
@@ -389,7 +431,7 @@ pub fn run(
     // for shell capture in setup-only — that don't fit the buffered worker
     // model used by the parallel scheduler.
     if is_interactive || setup_only {
-        return run_serial(
+        let result = run_serial(
             &scenario_files,
             &project_root,
             &fixtures_dir,
@@ -398,10 +440,15 @@ pub fn run(
             verbosity,
             step,
             loop_count,
+            &interrupt,
             keep,
             setup_only,
             is_interactive,
         );
+        if interrupt.is_set() {
+            std::process::exit(130);
+        }
+        return result;
     }
 
     // Non-interactive CI path — always goes through the parallel scheduler,
@@ -416,8 +463,13 @@ pub fn run(
     let show_progress = std::io::stderr().is_terminal()
         && std::env::var_os("NO_PROGRESS").is_none()
         && std::env::var_os("CI").is_none();
-    let progress = progress::progress_sink_for(show_progress, name_column_width, step_column_width);
-    run_parallel(
+    let progress = progress::progress_sink_for(
+        show_progress,
+        name_column_width,
+        step_column_width,
+        interrupt.clone(),
+    );
+    let result = run_parallel(
         &scenario_files,
         &scenarios_dir,
         &project_root,
@@ -425,11 +477,21 @@ pub fn run(
         &cleanup_set,
         reporter.as_ref(),
         progress.as_ref(),
+        &interrupt,
         show_progress,
         keep,
         jobs,
         jobs_explicit,
-    )
+    );
+
+    // SIGINT convention: 128 + signal_number (2 for SIGINT). Bypass
+    // anyhow's exit path so the shell sees the conventional code (mise /
+    // shells / CI runners specifically test for 130 to distinguish
+    // user-cancellation from a test failure).
+    if interrupt.is_set() {
+        std::process::exit(130);
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -441,6 +503,7 @@ fn run_parallel(
     cleanup_set: &CleanupSet,
     reporter: &dyn reporter::Reporter,
     progress: &dyn progress::ProgressSink,
+    interrupt: &progress::InterruptFlag,
     show_progress: bool,
     keep: bool,
     jobs: usize,
@@ -451,6 +514,7 @@ fn run_parallel(
         fixtures_dir,
         reporter,
         progress,
+        interrupt,
         keep,
     };
 
@@ -500,11 +564,25 @@ fn run_parallel(
         });
 
         while let Ok(mut outcome) = rx.recv() {
-            if show_progress {
+            // Cancelled scenarios' buffers contain a header + any completed
+            // steps but no footer — printing them to scrollback is just
+            // noise. Their tally surfaces in the summary's third count.
+            let cancelled = outcome
+                .result
+                .as_ref()
+                .map(|r| r.cancelled)
+                .unwrap_or(false);
+            if show_progress && !cancelled {
                 progress::stream_completed_scenario(progress, &outcome.output)?;
                 // Buffer already streamed; free it so the aggregate doesn't
                 // hold the bytes alive needlessly. `aggregate_outcomes` only
                 // reads `result`, `error`, `name`, `source`, `index`.
+                outcome.output.clear();
+                outcome.output.shrink_to_fit();
+            }
+            if cancelled {
+                // Same byte-saving as above — the cancelled buffer never
+                // prints either way, so drop the bytes now.
                 outcome.output.clear();
                 outcome.output.shrink_to_fit();
             }
@@ -521,10 +599,32 @@ fn run_parallel(
     let stderr = std::io::stderr();
     if !show_progress {
         // Non-TTY: drain buffers in input order at end (today's behavior,
-        // byte-identical for CI).
+        // byte-identical for CI). Cancelled buffers are skipped here too —
+        // their partial output (header + maybe a step or two, no footer)
+        // would look like a truncated scenario in the CI log.
         let mut lock = stderr.lock();
         for o in &all_outcomes {
+            let cancelled = o.result.as_ref().map(|r| r.cancelled).unwrap_or(false);
+            if cancelled {
+                continue;
+            }
             lock.write_all(&o.output)?;
+        }
+    }
+
+    // Belt-and-suspenders cleanup. Workers' `Sandbox::drop` removes each
+    // sandbox at scenario end, so under a normal run (and under soft cancel
+    // where workers wind down naturally) the registry should be empty
+    // here. This catches the edge cases: a worker that panicked between
+    // `CleanupGuard::new` and `Sandbox::create_at`, or a directory the OS
+    // still reports as existing after `remove_dir_all` returned (NFS
+    // quirks, slow async unlinks). The hard-exit SIGINT path has its own
+    // `rm -rf` loop; this one is for the natural-end case.
+    if !keep {
+        if let Ok(mut g) = cleanup_set.lock() {
+            for dir in g.drain() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
         }
     }
 
@@ -610,6 +710,7 @@ fn aggregate_outcomes<'a>(
     let mut scenarios_total = 0usize;
     let mut scenarios_passed = 0usize;
     let mut scenarios_failed = 0usize;
+    let mut scenarios_cancelled = 0usize;
     let mut steps_total = 0usize;
     let mut steps_passed = 0usize;
     let mut steps_failed = 0usize;
@@ -623,7 +724,14 @@ fn aggregate_outcomes<'a>(
                 steps_total += sr.steps;
                 steps_passed += sr.passed;
                 steps_failed += sr.failed;
-                if sr.failed > 0 {
+                if sr.cancelled {
+                    // Cancelled is its own bucket — distinct from pass/fail.
+                    // A cancelled scenario may have had failing steps before
+                    // the cancellation; we still bucket it as cancelled
+                    // (precedence intentional: the run didn't complete, so
+                    // calling it "failed" misrepresents what happened).
+                    scenarios_cancelled += 1;
+                } else if sr.failed > 0 {
                     scenarios_failed += 1;
                     let display_path = o
                         .source
@@ -655,6 +763,7 @@ fn aggregate_outcomes<'a>(
             scenarios_total,
             scenarios_passed,
             scenarios_failed,
+            scenarios_cancelled,
             steps_total,
             steps_passed,
             steps_failed,
@@ -676,11 +785,20 @@ fn run_serial(
     verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
+    interrupt: &progress::InterruptFlag,
     keep: bool,
     setup_only: bool,
     is_interactive: bool,
 ) -> Result<()> {
     for path in scenario_files {
+        // Between-scenario interrupt check. A single scenario in serial mode
+        // is its own process, so we don't have the parallel path's
+        // cancelled-status tracking — we just stop iterating. The next
+        // scenario doesn't start; the run unwinds normally; the caller in
+        // `run` sees the interrupt flag and exits 130.
+        if interrupt.is_set() {
+            break;
+        }
         let scenario = load_scenario(path, fixtures_dir)?;
 
         // Register the sandbox path before touching disk so a SIGINT during
@@ -909,6 +1027,7 @@ fn run_one_scenario_inner(
         &executor,
         ctx.reporter,
         ctx.progress,
+        ctx.interrupt,
         &mut buf,
     )?;
 
