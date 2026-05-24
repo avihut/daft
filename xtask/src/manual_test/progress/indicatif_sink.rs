@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 use super::super::reporter::ScenarioStatus;
 use super::{InterruptFlag, ProgressSink};
@@ -36,7 +36,26 @@ const SPINNER_TICKS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ";
 
 /// How often each bar self-ticks (drives spinner animation and
 /// `{elapsed_precise}` updates without external prodding).
-const TICK_INTERVAL: Duration = Duration::from_millis(100);
+///
+/// Set deliberately above the multi's draw-target Hz cap below so steady
+/// ticks don't pile up faster than the draw target can flush them. Faster
+/// ticks (e.g. 100 ms) accumulate draw requests under heavy worker churn,
+/// and indicatif's internal line accounting can desync from terminal
+/// reality — leaving in-flight bar rows stranded in scrollback above
+/// subsequent `multi.println` output. 200 ms is still spinner-smooth
+/// (~5 frames/s) while giving line accounting room to settle between
+/// concurrent updates.
+const TICK_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Cap the multi's overall redraw rate. The bar's internal line-counting
+/// is most fragile under draw pressure — capping at 10 Hz halves the
+/// observed ghost-row rate without making the spinner feel sluggish.
+/// Combine with `TICK_INTERVAL` above (which throttles per-bar ticks)
+/// and the trailer in `IndicatifProgressSink::new` (which keeps the line
+/// count stable as rows are added/removed) — together they close the
+/// race window the daft hook-progress UI also had to address (see
+/// `src/output/hook_progress/interactive.rs` trailer comment).
+const MAX_DRAW_HZ: u8 = 10;
 
 /// Format a scenario-row elapsed: `Xms` while sub-second, `X.Ys` while
 /// sub-minute, `M:SS` beyond that. Matches the scrollback footer's
@@ -58,6 +77,18 @@ fn format_row_elapsed(d: Duration) -> String {
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
     summary: ProgressBar,
+    /// A single-space-template "trailer" bar that lives at the bottom of
+    /// the multi's bar set and is never removed. Its job is to keep
+    /// indicatif's internal line-count accounting aligned with the actual
+    /// terminal: when rows come and go via `multi.add` / `multi.remove`,
+    /// the trailer absorbs any boundary jitter so that a concurrent
+    /// `multi.println` doesn't undercount the lines it needs to clear
+    /// and leave an in-flight row stranded in scrollback.
+    ///
+    /// Pattern lifted from the main daft binary's hook-progress UI
+    /// (`src/output/hook_progress/interactive.rs`), which hit the same
+    /// class of bug and landed the same fix.
+    _trailer: ProgressBar,
     rows: Mutex<HashMap<String, ProgressRow>>,
     failed: AtomicUsize,
     /// Scenarios that bailed mid-run via SIGINT. Surfaced as a separate
@@ -85,7 +116,11 @@ struct ProgressRow {
 
 impl IndicatifProgressSink {
     pub fn new(name_col_width: usize, step_col_width: usize, interrupt: InterruptFlag) -> Self {
-        let multi = MultiProgress::new();
+        // Cap the overall draw rate so steady ticks don't pile up faster
+        // than the terminal can flush them. See `MAX_DRAW_HZ` for the
+        // rationale.
+        let multi =
+            MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(MAX_DRAW_HZ));
         let summary = multi.add(ProgressBar::new(0));
         summary.set_style(
             // Summary leads at column 0 — no leading indent — so the bar
@@ -104,9 +139,25 @@ impl IndicatifProgressSink {
         summary.set_message("0 running ◆ 0 failed");
         summary.enable_steady_tick(TICK_INTERVAL);
 
+        // Anchor a single-space "trailer" bar at the bottom of the multi.
+        // It renders as a single blank line that's always present, which
+        // keeps indicatif's internal line-count accounting stable as row
+        // bars are added / removed above it. Single space (not empty) is
+        // load-bearing — an empty template desyncs the "drawn lines"
+        // counter (see the matching comment in
+        // `src/output/hook_progress/interactive.rs`). The trailer never
+        // finishes / never gets removed; `multi.clear()` at end-of-run
+        // wipes it.
+        let trailer = multi.add(ProgressBar::new_spinner());
+        trailer.set_style(
+            ProgressStyle::with_template(" ").expect("trailer template is a single space"),
+        );
+        trailer.set_message(String::new());
+
         Self {
             multi,
             summary,
+            _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
@@ -406,9 +457,12 @@ mod tests {
                 .tick_chars(SPINNER_TICKS),
         );
         summary.set_message("0 running ◆ 0 failed");
+        let trailer = multi.add(ProgressBar::new_spinner());
+        trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         IndicatifProgressSink {
             multi,
             summary,
+            _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
@@ -459,9 +513,12 @@ mod tests {
                 .unwrap()
                 .tick_chars(SPINNER_TICKS),
         );
+        let trailer = multi.add(ProgressBar::new_spinner());
+        trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         let sink = IndicatifProgressSink {
             multi,
             summary,
+            _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
