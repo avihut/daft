@@ -171,7 +171,12 @@ impl IndicatifProgressSink {
         let plain_label = format!("{counter} {step_name}");
         let label_padded = Self::pad_to(&plain_label, self.step_col_width);
         // Re-apply styling to the counter and step name, leaving the
-        // trailing padding untouched.
+        // trailing padding untouched. `replacen(_, _, 1)` matches first
+        // occurrence: counter precedes step_name in plain_label and the
+        // two are disjoint, so each splice targets the right span even
+        // if step_name happens to contain the counter substring (the
+        // counter is wrapped in escape bytes after the first splice, so
+        // it can't false-match a literal step_name lookup).
         let label_styled = label_padded
             .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
             .replacen(step_name, &format!("\x1b[95m{step_name}\x1b[0m"), 1);
@@ -378,5 +383,55 @@ mod tests {
         assert_eq!(format_row_elapsed(Duration::from_secs(60)), "1:00");
         assert_eq!(format_row_elapsed(Duration::from_secs(65)), "1:05");
         assert_eq!(format_row_elapsed(Duration::from_secs(3_605)), "60:05");
+    }
+
+    #[test]
+    fn render_row_msg_label_width_matches_step_label_width_formula() {
+        // Lock the contract between the orchestrator's pre-scan formula
+        // (`step_label_width` in mod.rs) and the live renderer's actual
+        // output. If either side's format changes independently,
+        // in-flight rows silently misalign — and no other test catches it
+        // because the bars draw to a hidden target.
+        let sink = hidden_sink();
+        let cases = [
+            (0_usize, 1_usize, "first"),
+            (4, 5, "Inspect workspace"),
+            (9, 10, "Long step name with spaces"),
+        ];
+        for (idx, total, step) in cases {
+            let msg = sink.render_row_msg("anything", idx, total, step, Duration::ZERO);
+            let visible = strip_ansi(&msg);
+            // hidden_sink uses width 0 on both columns, so layout is
+            // "<name>  <label>" — name unpadded, two-space separator,
+            // unpadded label, no slow suffix at Duration::ZERO.
+            let label = visible
+                .strip_prefix("anything  ")
+                .expect("name + 2-space separator should lead the row");
+            assert_eq!(
+                label.chars().count(),
+                crate::manual_test::step_label_width(idx + 1, total, step),
+                "render_row_msg label width must match step_label_width formula",
+            );
+        }
+    }
+
+    /// Strip SGR escape sequences (`ESC [ … m`) so visible width can be
+    /// measured by `chars().count()`. Sufficient for the styles
+    /// `render_row_msg` emits (cyan/purple/yellow/dim/reset).
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for nc in chars.by_ref() {
+                    if nc == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 }

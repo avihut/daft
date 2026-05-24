@@ -517,12 +517,15 @@ fn run_parallel(
 
     let total_failed = stats.summary.steps_failed;
     let error_count = stats.summary.errors.len();
-    progress::with_region_suspended(progress, || -> Result<()> {
+    // Clear the live region first, then write the summary onto a clean
+    // canvas. Doing it the other way around (suspend → write → redraw →
+    // clear) briefly flashes the bars back on top of the freshly-written
+    // summary as `with_region_suspended` returns.
+    progress.run_finished();
+    {
         let mut lock = stderr.lock();
         reporter.run_summary(&mut lock, &stats.summary)?;
-        Ok(())
-    })?;
-    progress.run_finished();
+    }
 
     if error_count > 0 {
         anyhow::bail!("{} scenario(s) hit a fatal error", error_count);
