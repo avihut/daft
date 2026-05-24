@@ -428,6 +428,7 @@ pub fn run(
         show_progress,
         keep,
         jobs,
+        jobs_explicit,
     )
 }
 
@@ -443,6 +444,7 @@ fn run_parallel(
     show_progress: bool,
     keep: bool,
     jobs: usize,
+    jobs_explicit: bool,
 ) -> Result<()> {
     let ctx = RunContext {
         project_root,
@@ -456,6 +458,12 @@ fn run_parallel(
         .num_threads(jobs)
         .build()
         .context("building rayon thread pool")?;
+
+    // Pre-run banner — shows scenario count + worker count so the user
+    // knows up-front what's about to happen, and where the worker count
+    // came from. Dim because it's metadata, not data (design language §1).
+    // Blank line after to separate from the scenario stream.
+    write_run_banner(scenario_files.len(), jobs, jobs_explicit)?;
 
     progress.run_started(scenario_files.len());
 
@@ -553,6 +561,34 @@ fn run_parallel(
 /// the slice alive until the summary is consumed.
 struct OutcomeStats<'a> {
     summary: reporter::RunSummary<'a>,
+}
+
+/// Write the pre-run banner showing scenario count + worker count + whether
+/// the worker count was auto-detected. Goes straight to stderr (no Reporter
+/// dispatch) — it's framing metadata, not per-scenario content. Singular/
+/// plural forms keep the line grammatical for the 1-scenario and 1-worker
+/// edge cases.
+fn write_run_banner(scenarios_count: usize, jobs: usize, jobs_explicit: bool) -> Result<()> {
+    use std::io::Write;
+    let s_scen = if scenarios_count == 1 {
+        "scenario"
+    } else {
+        "scenarios"
+    };
+    let banner = if jobs == 1 {
+        format!("Running {scenarios_count} {s_scen} sequentially")
+    } else {
+        let suffix = if jobs_explicit {
+            ""
+        } else {
+            " (auto-detected)"
+        };
+        format!("Running {scenarios_count} {s_scen} with {jobs} parallel workers{suffix}")
+    };
+    let mut stderr = std::io::stderr().lock();
+    writeln!(stderr, "{}", term_styles::dim(&banner))?;
+    writeln!(stderr)?;
+    Ok(())
 }
 
 /// Aggregate parallel worker outcomes into a single summary.
