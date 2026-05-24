@@ -578,25 +578,17 @@ fn run_parallel(
                 progress.notify_cancelling();
                 notified_cancelling = true;
             }
-            // Cancelled scenarios' buffers contain a header + any completed
-            // steps but no footer — printing them to scrollback is just
-            // noise. Their tally surfaces in the summary's third count.
-            let cancelled = outcome
-                .result
-                .as_ref()
-                .map(|r| r.cancelled)
-                .unwrap_or(false);
-            if show_progress && !cancelled {
+            // Cancelled scenarios get their `⊘ name (cancelled)` footer
+            // streamed alongside the pass/fail footers so the user can see
+            // *which* scenarios were in flight when they hit Ctrl+C — not
+            // just an aggregate count. The runner already writes the
+            // cancelled footer at the buffer's tail (see runner.rs); we
+            // just have to not skip it here.
+            if show_progress {
                 progress::stream_completed_scenario(progress, &outcome.output)?;
                 // Buffer already streamed; free it so the aggregate doesn't
                 // hold the bytes alive needlessly. `aggregate_outcomes` only
                 // reads `result`, `error`, `name`, `source`, `index`.
-                outcome.output.clear();
-                outcome.output.shrink_to_fit();
-            }
-            if cancelled {
-                // Same byte-saving as above — the cancelled buffer never
-                // prints either way, so drop the bytes now.
                 outcome.output.clear();
                 outcome.output.shrink_to_fit();
             }
@@ -613,15 +605,12 @@ fn run_parallel(
     let stderr = std::io::stderr();
     if !show_progress {
         // Non-TTY: drain buffers in input order at end (today's behavior,
-        // byte-identical for CI). Cancelled buffers are skipped here too —
-        // their partial output (header + maybe a step or two, no footer)
-        // would look like a truncated scenario in the CI log.
+        // byte-identical for CI). Cancelled buffers carry the `⊘ name
+        // (cancelled)` footer just like pass/fail buffers carry their
+        // `✓`/`✗` footers — drain them all uniformly so a `--ci` log
+        // shows which scenarios were in flight at the moment of cancel.
         let mut lock = stderr.lock();
         for o in &all_outcomes {
-            let cancelled = o.result.as_ref().map(|r| r.cancelled).unwrap_or(false);
-            if cancelled {
-                continue;
-            }
             lock.write_all(&o.output)?;
         }
     }
@@ -647,9 +636,9 @@ fn run_parallel(
     let total_failed = stats.summary.steps_failed;
     let error_count = stats.summary.errors.len();
     // Clear the live region first, then write the summary onto a clean
-    // canvas. Doing it the other way around (suspend → write → redraw →
-    // clear) briefly flashes the bars back on top of the freshly-written
-    // summary as `with_region_suspended` returns.
+    // canvas. Doing it the other way around (any pause-then-redraw
+    // sequence) briefly flashes the bars back on top of the
+    // freshly-written summary as the redraw fires.
     progress.run_finished();
     {
         let mut lock = stderr.lock();

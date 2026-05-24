@@ -264,13 +264,6 @@ impl Reporter for PrettyReporter {
         if matches!(status, ScenarioStatus::Pass) && !self.show_pass_footer() {
             return Ok(());
         }
-        // Cancelled scenarios are tallied in the stats line's third count; we
-        // don't print a per-scenario footer for them. Their buffer (header +
-        // any completed steps) was already suppressed by the orchestrator, so
-        // the only surface is the summary count.
-        if matches!(status, ScenarioStatus::Cancelled) {
-            return Ok(());
-        }
         // No trailing blank: the cleanup_note (or next scenario_header)
         // attaches directly so the footer reads as part of its scenario block.
         //
@@ -281,12 +274,24 @@ impl Reporter for PrettyReporter {
         //     to skim past it. Plain green on the tiny `✓` glyph is enough.
         //   Fail: whole `✗ name` span bold red so a single red line jumps
         //     off a wall of quiet pass lines.
+        //   Cancelled: `⊘` glyph in yellow + name in default fg + dim
+        //     duration + explicit `(cancelled)` suffix in yellow. §1 yellow
+        //     slot ("attention without alarm") fits — the scenario didn't
+        //     complete, but it didn't *fail* either. The explicit suffix
+        //     removes any confusion that `⊘` might be a new failure marker.
         let prefix = match status {
             ScenarioStatus::Pass => {
                 format!("{} {}", styles::green("✓"), &scenario.name)
             }
             ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", scenario.name)),
-            ScenarioStatus::Cancelled => unreachable!("cancelled footer suppressed above"),
+            ScenarioStatus::Cancelled => {
+                format!(
+                    "{} {} {}",
+                    styles::yellow("⊘"),
+                    &scenario.name,
+                    styles::yellow("(cancelled)"),
+                )
+            }
         };
         let suffix = scenario_duration_suffix(duration);
         writeln!(out, "{}{}", prefix, suffix)

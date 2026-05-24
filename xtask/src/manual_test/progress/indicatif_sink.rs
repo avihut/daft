@@ -357,8 +357,15 @@ impl ProgressSink for IndicatifProgressSink {
         self.update_summary_msg();
     }
 
-    fn suspend(&self, f: &mut dyn FnMut()) {
-        self.multi.suspend(f);
+    fn println(&self, line: &str) {
+        // multi.println handles the cursor/clear sequencing internally:
+        // hide the bar region, write the line above it, then redraw the
+        // region below. This is what the previous `suspend + write_all`
+        // path tried to do but got wrong — it left bar-row trailing
+        // whitespace on the cursor's physical line, so footers landed on
+        // the same row as in-flight bar entries ("ghost rows"). Letting
+        // indicatif own the sequencing fixes that.
+        let _ = self.multi.println(line);
     }
 }
 
@@ -493,14 +500,6 @@ mod tests {
         assert_eq!(sink.rows.lock().unwrap().len(), 1);
         sink.scenario_finished("x", ScenarioStatus::Pass, Duration::ZERO);
         assert!(sink.rows.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn suspend_invokes_closure_exactly_once() {
-        let sink = hidden_sink();
-        let mut count = 0;
-        sink.suspend(&mut || count += 1);
-        assert_eq!(count, 1);
     }
 
     #[test]

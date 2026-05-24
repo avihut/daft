@@ -90,12 +90,20 @@ pub trait ProgressSink: Send + Sync {
     /// (potentially seconds on a slow step). No-op for the noop sink.
     fn notify_cancelling(&self);
 
-    /// Suspend the live region (if any), invoke `f`, then redraw.
+    /// Print a single line of content above the live region.
     ///
-    /// The closure is `&mut dyn FnMut()` rather than `FnOnce` so the trait
-    /// stays object-safe. [`suspend_for_summary`] is the ergonomic wrapper
-    /// that lifts a `FnOnce() -> R` over this primitive.
-    fn suspend(&self, f: &mut dyn FnMut());
+    /// Critical for the streaming path — using
+    /// `MultiProgress::suspend + write_all` doesn't move the cursor off
+    /// the bar's trailing whitespace before the user's content lands, so
+    /// a footer can end up on the same physical row as an in-flight bar
+    /// entry. `multi.println` is indicatif's documented way to insert
+    /// scrollback content alongside an active bar; it handles the
+    /// cursor/clear sequencing internally.
+    ///
+    /// The `&str` is expected NOT to contain a trailing newline — the
+    /// sink adds its own. NoopProgressSink uses `eprintln!` (writes line +
+    /// `\n` to stderr) to stay byte-identical to the pre-progress drain.
+    fn println(&self, line: &str);
 }
 
 /// No-op sink for non-TTY runs.
@@ -112,8 +120,8 @@ impl ProgressSink for NoopProgressSink {
     fn scenario_finished(&self, _name: &str, _status: ScenarioStatus, _duration: Duration) {}
     fn run_finished(&self) {}
     fn notify_cancelling(&self) {}
-    fn suspend(&self, f: &mut dyn FnMut()) {
-        f();
+    fn println(&self, line: &str) {
+        eprintln!("{line}");
     }
 }
 
@@ -149,40 +157,41 @@ pub fn progress_sink_for(
     }
 }
 
-/// Run `f` with the sink's live region suspended so a multi-line block can
-/// be written to stderr without bar tearing.
+/// Write a completed scenario's buffered bytes to scrollback, line by
+/// line, via the sink's `println`.
 ///
-/// Used by the orchestrator both for the final summary block (one shot,
-/// at end of run) and for streaming completed-scenario buffers above the
-/// live region (one suspend per completed scenario). Returns the closure's
-/// result so callers can `?`-propagate errors from the writes inside it.
+/// On `IndicatifProgressSink` this dispatches each line through
+/// `MultiProgress::println`, which is indicatif's documented way to
+/// insert scrollback content alongside an active bar without bar/footer
+/// row collisions. On `NoopProgressSink` it falls back to plain
+/// `eprintln!` per line.
 ///
-/// The trait's `suspend` primitive takes `&mut dyn FnMut()` (to stay
-/// object-safe); this free function bridges to the more ergonomic
-/// `FnOnce() -> R` shape via a take-once Option dance.
-pub fn with_region_suspended<R>(sink: &dyn ProgressSink, f: impl FnOnce() -> R) -> R {
-    let mut result: Option<R> = None;
-    let mut f = Some(f);
-    sink.suspend(&mut || {
-        let f = f.take().expect("suspend closure invoked more than once");
-        result = Some(f());
-    });
-    result.expect("suspend closure was never invoked")
-}
-
-/// Write a completed scenario's buffered bytes to stderr above the live
-/// region, suspending the bars for the duration of the write so they
-/// don't tear.
-///
-/// On `NoopProgressSink` this collapses to a plain stderr write — no bar
-/// is active, no suspend needed.
+/// Non-UTF-8 buffers fall back to a single `write_all` to stderr — this
+/// path shouldn't be reached (every buffer is built from `write!` on
+/// `&str` content) but we don't want to silently drop bytes on a
+/// schema violation.
 pub fn stream_completed_scenario(sink: &dyn ProgressSink, buf: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    with_region_suspended(sink, || {
-        let stderr = std::io::stderr();
-        let mut lock = stderr.lock();
-        lock.write_all(buf)
-    })
+    match std::str::from_utf8(buf) {
+        Ok(text) => {
+            // `split_inclusive('\n')` preserves whether each line is
+            // newline-terminated. We strip the trailing `\n` and let the
+            // sink add its own — that way an empty line in the buffer
+            // (e.g. between scenario blocks) stays empty rather than
+            // doubling. `split_inclusive` on a trailing-newline-terminated
+            // string yields no spurious empty tail.
+            for line in text.split_inclusive('\n') {
+                let trimmed = line.strip_suffix('\n').unwrap_or(line);
+                sink.println(trimmed);
+            }
+            Ok(())
+        }
+        Err(_) => {
+            let stderr = std::io::stderr();
+            let mut lock = stderr.lock();
+            lock.write_all(buf)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -237,21 +246,6 @@ mod tests {
         a.set();
         assert!(a.is_set());
         assert!(b.is_set());
-    }
-
-    #[test]
-    fn with_region_suspended_returns_closure_result() {
-        let sink = NoopProgressSink;
-        let result = with_region_suspended(&sink, || 42);
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn with_region_suspended_propagates_errors() {
-        let sink = NoopProgressSink;
-        let result: std::io::Result<()> =
-            with_region_suspended(&sink, || Err(std::io::Error::other("boom")));
-        assert!(result.is_err());
     }
 
     #[test]
