@@ -225,15 +225,19 @@ fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> Clea
             // No emergency cleanup, no `process::exit` — let the run wind
             // down naturally so the cancelled count and final summary
             // print correctly.
+            //
+            // Deliberately silent: any `eprintln!` here pushes the bar's
+            // current state into scrollback as "ghost" rows. Feedback that
+            // cancellation registered comes through two channels instead:
+            //   1. The bar's summary message gains a `(cancelling)` suffix
+            //      via `update_summary_msg` reading the flag (the bar's
+            //      steady_tick refreshes ~10/s).
+            //   2. The orchestrator calls `notify_cancelling` on the sink
+            //      to force the suffix to appear on the very next tick
+            //      rather than waiting for a worker to bail.
+            // `disable_raw_mode` stays — it's idempotent and writes nothing
+            // to the terminal.
             let _ = crossterm::terminal::disable_raw_mode();
-            eprintln!();
-            // Microcopy (reporter/CLAUDE.md §5): sentence-case prompt,
-            // verb-first, no trailing period after the parenthetical hint
-            // so it reads as one beat.
-            eprintln!(
-                "{}",
-                term_styles::dim("Cancelling run... (Ctrl+C again to force exit)")
-            );
             return;
         }
 
@@ -563,7 +567,17 @@ fn run_parallel(
             });
         });
 
+        // Tracks whether we've already poked the sink so the (cancelling)
+        // suffix lands as soon as Ctrl+C is observed. Without this nudge
+        // the suffix wouldn't appear until the first worker finishes its
+        // current step — which can be seconds — leaving the user wondering
+        // if the cancel registered.
+        let mut notified_cancelling = false;
         while let Ok(mut outcome) = rx.recv() {
+            if !notified_cancelling && interrupt.is_set() {
+                progress.notify_cancelling();
+                notified_cancelling = true;
+            }
             // Cancelled scenarios' buffers contain a header + any completed
             // steps but no footer — printing them to scrollback is just
             // noise. Their tally surfaces in the summary's third count.
@@ -711,6 +725,7 @@ fn aggregate_outcomes<'a>(
     let mut scenarios_passed = 0usize;
     let mut scenarios_failed = 0usize;
     let mut scenarios_cancelled = 0usize;
+    let mut scenarios_not_run = 0usize;
     let mut steps_total = 0usize;
     let mut steps_passed = 0usize;
     let mut steps_failed = 0usize;
@@ -754,7 +769,14 @@ fn aggregate_outcomes<'a>(
                 name: o.name.as_str(),
                 error: format!("{err:#}"),
             }),
-            (None, None) => {}
+            // Both None = the worker observed the interrupt flag and
+            // bailed before the scenario became visible to the user
+            // (either at the top of `run_one_scenario` or in the race
+            // window before `scenario_started`). These don't count as
+            // passed / failed / cancelled — the user never saw them as
+            // a row. They surface only as `scenarios_not_run`, which the
+            // reporter renders as a one-line "did not run" note when > 0.
+            (None, None) => scenarios_not_run += 1,
         }
     }
 
@@ -764,6 +786,7 @@ fn aggregate_outcomes<'a>(
             scenarios_passed,
             scenarios_failed,
             scenarios_cancelled,
+            scenarios_not_run,
             steps_total,
             steps_passed,
             steps_failed,
@@ -989,7 +1012,7 @@ fn run_one_scenario(
     }));
 
     match work {
-        Ok(Ok((sr, buf))) => ScenarioOutcome {
+        Ok(Ok(Some((sr, buf)))) => ScenarioOutcome {
             index,
             name,
             source,
@@ -997,6 +1020,20 @@ fn run_one_scenario(
             output: buf,
             error: None,
         },
+        Ok(Ok(None)) => {
+            // Race-window skip: the worker had loaded the scenario and
+            // created its sandbox before noticing the interrupt. Same
+            // no-op outcome as the early-bail at the top of this
+            // function — invisible to the user, invisible to the count.
+            ScenarioOutcome {
+                index,
+                name,
+                source,
+                result: None,
+                output: Vec::new(),
+                error: None,
+            }
+        }
         Ok(Err(err)) => ScenarioOutcome {
             index,
             name,
@@ -1023,7 +1060,7 @@ fn run_one_scenario_inner(
     scenario: &schema::Scenario,
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
-) -> Result<(runner::ScenarioResult, Vec<u8>)> {
+) -> Result<Option<(runner::ScenarioResult, Vec<u8>)>> {
     // Pre-register the sandbox path so a SIGINT during create_at still leaves
     // a tracked path the cleanup handler can `rm -rf`. See [`setup_cleanup_handler`]
     // for the matching drain-loop logic.
@@ -1039,7 +1076,12 @@ fn run_one_scenario_inner(
     sb.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
-    let result = runner::run_non_interactive(
+    // `None` = the runner saw the interrupt flag before `scenario_started`
+    // fired — the user never saw a row for this scenario, so we count it
+    // as "skipped" (invisible, no aggregate count) rather than cancelled.
+    // Sandbox drop on this function's exit cleans up the directory we
+    // already created.
+    let Some(result) = runner::run_non_interactive(
         scenario,
         &sb,
         &executor,
@@ -1047,7 +1089,10 @@ fn run_one_scenario_inner(
         ctx.progress,
         ctx.interrupt,
         &mut buf,
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
 
     // Opt-in per-scenario timing for the bench harness. Lines are
     // grep-friendly and live inside the scenario's buffered output so they
@@ -1083,7 +1128,7 @@ fn run_one_scenario_inner(
         }
     }
 
-    Ok((result, buf))
+    Ok(Some((result, buf)))
 }
 
 fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {

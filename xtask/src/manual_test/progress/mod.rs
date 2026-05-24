@@ -84,6 +84,12 @@ pub trait ProgressSink: Send + Sync {
     /// Called once at the end of the run, after the summary block.
     fn run_finished(&self);
 
+    /// Force a refresh of the summary's "running / failed / cancelled"
+    /// message so the `(cancelling)` suffix appears immediately after
+    /// Ctrl+C instead of waiting for the first worker to bail
+    /// (potentially seconds on a slow step). No-op for the noop sink.
+    fn notify_cancelling(&self);
+
     /// Suspend the live region (if any), invoke `f`, then redraw.
     ///
     /// The closure is `&mut dyn FnMut()` rather than `FnOnce` so the trait
@@ -105,6 +111,7 @@ impl ProgressSink for NoopProgressSink {
     fn step_started(&self, _scenario_name: &str, _idx: usize, _total: usize, _step_name: &str) {}
     fn scenario_finished(&self, _name: &str, _status: ScenarioStatus, _duration: Duration) {}
     fn run_finished(&self) {}
+    fn notify_cancelling(&self) {}
     fn suspend(&self, f: &mut dyn FnMut()) {
         f();
     }

@@ -138,8 +138,17 @@ impl IndicatifProgressSink {
         // segment always shows so the user can see the count grow as
         // in-flight workers wind down.
         let mut msg = format!("{running} running ◆ {failed_segment}");
-        if cancelled > 0 || self.interrupt.is_set() {
+        let interrupted = self.interrupt.is_set();
+        if cancelled > 0 || interrupted {
             msg.push_str(&format!(" ◆ \x1b[33m{cancelled} cancelled\x1b[0m"));
+        }
+        // Live feedback that Ctrl+C registered. The handler is deliberately
+        // silent (any stderr write pushes the bar into scrollback as ghost
+        // rows); the suffix here is how the user sees their cancel landed.
+        // Drops away once `running` reaches 0 — no point claiming we're
+        // "cancelling" when there's nothing left to cancel.
+        if interrupted && running > 0 {
+            msg.push_str(" \x1b[33m(cancelling)\x1b[0m");
         }
         self.summary.set_message(msg);
     }
@@ -341,6 +350,13 @@ impl ProgressSink for IndicatifProgressSink {
         let _ = self.multi.clear();
     }
 
+    fn notify_cancelling(&self) {
+        // Refresh the summary message so the `(cancelling)` suffix lands
+        // immediately. Without this call, the suffix wouldn't appear until
+        // the first worker bails — which can be seconds on a slow step.
+        self.update_summary_msg();
+    }
+
     fn suspend(&self, f: &mut dyn FnMut()) {
         self.multi.suspend(f);
     }
@@ -403,6 +419,50 @@ mod tests {
         sink.scenario_finished("c", ScenarioStatus::Fail, Duration::ZERO);
         assert_eq!(sink.failed.load(Ordering::Relaxed), 2);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn notify_cancelling_appends_cancelling_suffix_to_summary() {
+        // The orchestrator pokes the sink via notify_cancelling so the
+        // `(cancelling)` suffix appears immediately after Ctrl+C instead
+        // of waiting for the first worker to bail. Without the flag being
+        // set, the suffix shouldn't appear.
+        let interrupt = InterruptFlag::new();
+        let multi = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let summary = multi.add(ProgressBar::new(0));
+        summary.set_style(
+            ProgressStyle::with_template("{msg}")
+                .unwrap()
+                .tick_chars(SPINNER_TICKS),
+        );
+        let sink = IndicatifProgressSink {
+            multi,
+            summary,
+            rows: Mutex::new(HashMap::new()),
+            failed: AtomicUsize::new(0),
+            cancelled: AtomicUsize::new(0),
+            interrupt: interrupt.clone(),
+            name_col_width: 0,
+            step_col_width: 0,
+        };
+        sink.run_started(2);
+        sink.scenario_started("a", 1);
+
+        // Before the flag is set, notify_cancelling is a no-op effectively
+        // (suffix shouldn't appear).
+        sink.notify_cancelling();
+        assert!(!sink.summary.message().contains("(cancelling)"));
+
+        // After the flag is set, notify_cancelling refreshes the message
+        // so the suffix lands immediately.
+        interrupt.set();
+        sink.notify_cancelling();
+        assert!(sink.summary.message().contains("(cancelling)"));
+
+        // Once running drops to 0 (last worker bailed), the suffix drops
+        // away — nothing left to cancel.
+        sink.scenario_finished("a", ScenarioStatus::Cancelled, Duration::ZERO);
+        assert!(!sink.summary.message().contains("(cancelling)"));
     }
 
     #[test]

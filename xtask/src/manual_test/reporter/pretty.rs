@@ -463,13 +463,19 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
     // §1 + design-language §3: cancelled lives in the yellow slot —
     // attention without alarm. Only surfaces when > 0 so a normal
     // (no-cancellation) run keeps the existing two-count line shape.
-    let cancelled_segment = if s.scenarios_cancelled > 0 {
-        format!(
+    // The plain (un-styled) form is what we measure for padding the
+    // Steps line, because ANSI escape bytes don't render but still
+    // count in `len()`.
+    let (cancelled_segment, cancelled_pad) = if s.scenarios_cancelled > 0 {
+        let plain = format!(", {} cancelled", s.scenarios_cancelled);
+        let styled = format!(
             ", {} cancelled",
             styles::yellow(&s.scenarios_cancelled.to_string())
-        )
+        );
+        let pad = " ".repeat(plain.chars().count());
+        (styled, pad)
     } else {
-        String::new()
+        (String::new(), String::new())
     };
     writeln!(
         out,
@@ -479,11 +485,17 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         cancelled_segment,
         format!("{:>total_w$}", s.scenarios_total),
     )?;
+    // Pad the Steps line by the visible width of the cancelled segment so
+    // its `(total)` column aligns with the Scenarios line's. Without the
+    // pad, a `, N cancelled` segment pushes the Scenarios `(total)` right
+    // while Steps keeps its short form — readers have to chase the
+    // numbers across two columns instead of stacking them.
     writeln!(
         out,
-        "Steps:      {} passed, {} failed   ({} total)",
+        "Steps:      {} passed, {} failed{}   ({} total)",
         styles::green(&format!("{:>pass_w$}", s.steps_passed)),
         render_failed_count_padded(s.steps_failed, fail_w),
+        cancelled_pad,
         format!("{:>total_w$}", s.steps_total),
     )?;
     let parallel_suffix = match s.parallel_jobs {
@@ -495,6 +507,19 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         "Duration:   {}{parallel_suffix}",
         format_duration(s.duration)
     )?;
+    // §1 yellow slot: attention-without-alarm. Surfaces only after a
+    // cancellation when scenarios in the input never reached the live
+    // region. Lines up under "Scenarios:" / "Steps:" / "Duration:" as a
+    // peer stat; verb-first so it reads as a status, not a label.
+    if s.scenarios_not_run > 0 {
+        let total_in_input = s.scenarios_total + s.scenarios_not_run + s.errors.len();
+        writeln!(
+            out,
+            "Cancelled:  {} of {} scenarios did not run",
+            styles::yellow(&s.scenarios_not_run.to_string()),
+            total_in_input,
+        )?;
+    }
 
     if !s.failed.is_empty() {
         writeln!(out)?;

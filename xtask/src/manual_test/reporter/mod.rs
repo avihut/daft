@@ -140,6 +140,15 @@ pub struct RunSummary<'a> {
     /// do not appear in the failed-scenarios block; their only surface is
     /// the stats line's third count.
     pub scenarios_cancelled: usize,
+    /// Scenarios in the input that never made it as far as the live
+    /// region — either the worker pool got to the interrupt flag first
+    /// (most common) or a worker bailed in the race window between
+    /// `sandbox::create` and `scenario_started`. Distinct from
+    /// "scenarios_cancelled" so the reader can tell "I was watching this
+    /// scenario, the runner killed it" from "I never saw this scenario,
+    /// the runner never got to it." Surfaces as a one-line note below
+    /// the stats block when > 0.
+    pub scenarios_not_run: usize,
     pub steps_total: usize,
     pub steps_passed: usize,
     pub steps_failed: usize,

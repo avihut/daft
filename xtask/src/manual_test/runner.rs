@@ -518,7 +518,18 @@ pub fn run_non_interactive(
     progress: &dyn ProgressSink,
     interrupt: &super::progress::InterruptFlag,
     out: &mut impl Write,
-) -> Result<ScenarioResult> {
+) -> Result<Option<ScenarioResult>> {
+    // Last-chance interrupt check before the scenario becomes visible to
+    // the user (scenario_started adds a row to the bar). Anything caught
+    // here is "skipped" — never made it into the live region, never
+    // counted toward `cancelled`. This draws the cancel-vs-skip line at
+    // exactly the user's mental model: "what was I watching when I hit
+    // Ctrl+C?" The earlier check in `run_one_scenario` covers the
+    // pre-sandbox case; this one closes the race window between sandbox
+    // creation and `scenario_started`.
+    if interrupt.is_set() {
+        return Ok(None);
+    }
     reporter.scenario_header(out, scenario)?;
 
     let total = scenario.steps.len();
@@ -582,14 +593,14 @@ pub fn run_non_interactive(
     reporter.scenario_footer(out, scenario, status, duration)?;
     progress.scenario_finished(&scenario.name, status, duration);
 
-    Ok(ScenarioResult {
+    Ok(Some(ScenarioResult {
         steps: steps_run,
         passed,
         failed,
         cancelled,
         duration,
         failing_step,
-    })
+    }))
 }
 
 /// Copy the first failing step's detail into an owned snapshot the summary
