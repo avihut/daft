@@ -346,22 +346,25 @@ fn write_captured_section(
     writeln!(out, "      {}", styles::dim(label))?;
     let limit = cap.unwrap_or(usize::MAX);
     let mut printed = 0usize;
-    for line in trimmed.lines().take(limit) {
-        writeln!(out, "          {}", styles::dim(line))?;
-        printed += 1;
-    }
-    if let Some(cap) = cap {
-        let actual = trimmed.lines().count();
-        if actual > cap {
-            writeln!(
-                out,
-                "          {}",
-                styles::dim(&format!(
-                    "... {} more lines truncated (re-run with -vv for full output)",
-                    actual - printed
-                ))
-            )?;
+    let mut skipped = 0usize;
+    // Single-pass count: iterate every line once, write up to `limit`, tally
+    // the rest. Avoids a second `.lines().count()` traversal on big captures.
+    for line in trimmed.lines() {
+        if printed < limit {
+            writeln!(out, "          {}", styles::dim(line))?;
+            printed += 1;
+        } else {
+            skipped += 1;
         }
+    }
+    if cap.is_some() && skipped > 0 {
+        writeln!(
+            out,
+            "          {}",
+            styles::dim(&format!(
+                "... {skipped} more lines truncated (re-run with -vv for full output)"
+            ))
+        )?;
     }
     Ok(())
 }

@@ -109,8 +109,13 @@ impl IndicatifProgressSink {
         let running = self.rows.lock().map(|r| r.len()).unwrap_or(0);
         let failed = self.failed.load(Ordering::Relaxed);
         let failed_segment = if failed > 0 {
-            // console styling — owo/console respects NO_COLOR via
-            // indicatif's own detection.
+            // Raw SGR bytes. Indicatif's template DSL (e.g. `{msg:.red}`)
+            // doesn't expose a conditional hook for "red only when
+            // `failed > 0`", so the styling has to be inlined into the
+            // message string. Known limitation: the bar message bypasses
+            // `NO_COLOR` — bar templates honor it, but bytes inside
+            // `{msg}` are passed through verbatim. See `reporter/CLAUDE.md`
+            // §8's ANSI-inlining carve-out.
             format!("\x1b[1;31m{failed} failed\x1b[0m")
         } else {
             format!("{failed} failed")
@@ -172,11 +177,23 @@ impl IndicatifProgressSink {
         let label_padded = Self::pad_to(&plain_label, self.step_col_width);
         // Re-apply styling to the counter and step name, leaving the
         // trailing padding untouched. `replacen(_, _, 1)` matches first
-        // occurrence: counter precedes step_name in plain_label and the
-        // two are disjoint, so each splice targets the right span even
-        // if step_name happens to contain the counter substring (the
-        // counter is wrapped in escape bytes after the first splice, so
-        // it can't false-match a literal step_name lookup).
+        // occurrence:
+        //
+        // 1. Counter precedes step_name in plain_label, so the first
+        //    replacen targets the structural counter.
+        // 2. After splice #1, the counter's bytes still appear contiguously
+        //    inside the SGR escape (`\x1b[36m[N/M]\x1b[0m`). The second
+        //    replacen relies on step_name NOT being a literal counter-
+        //    shaped string — a step named `"[1/3]"` would match inside
+        //    the styled counter and corrupt the row.
+        //
+        // Real step names in `tests/manual/scenarios/` are human-readable
+        // prose (verbs/phrases), never counter strings; the debug_assert
+        // documents the assumption.
+        debug_assert!(
+            !step_name.is_empty(),
+            "step_name must be non-empty; empty triggers replacen at byte-0 corruption"
+        );
         let label_styled = label_padded
             .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
             .replacen(step_name, &format!("\x1b[95m{step_name}\x1b[0m"), 1);
@@ -241,7 +258,16 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str) {
-        // Read elapsed before re-locking to keep the lock window short.
+        // Two-phase lock: read elapsed under the lock, release while
+        // `render_row_msg` does ANSI string formatting (no shared state
+        // needed), then re-acquire briefly for `set_message`. Holding the
+        // mutex across the formatting would serialize every worker's
+        // step_started even though the formatting is pure-functional.
+        //
+        // The race window between the two locks is benign: if
+        // `scenario_finished` removes the row between phases, the second
+        // `if let Some(row)` simply skips the update — visually equivalent
+        // to a `set_message` that landed a frame before the row cleared.
         let (msg, found) = {
             let Ok(rows) = self.rows.lock() else {
                 return;

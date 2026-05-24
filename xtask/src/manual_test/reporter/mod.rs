@@ -23,15 +23,21 @@ use super::runner::AssertionResult;
 use super::schema::{Scenario, Step};
 
 /// User-facing verbosity ladder. Resolved once at the CLI boundary.
+///
+/// See `reporter/CLAUDE.md` §6 for the authoritative ladder table.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Verbosity {
-    /// `-q` / `--quiet`: scenario PASS/FAIL footer + final summary only.
+    /// `-q` / `--quiet`: scenario FAIL footer + final summary only (no
+    /// pass footers, no per-step lines).
     Quiet,
-    /// (no flag): scenario header, per-step lines, summary, captured output on fail.
+    /// (no flag): one PASS/FAIL footer per scenario + final summary.
+    /// Headers, per-step lines, and inline capture all defer to `-v`.
     Default,
-    /// `-v`: like `Default` plus per-check icons + captured output on pass.
+    /// `-v`: like `Default` plus scenario header + per-step lines + inline
+    /// capture on fail (capped at 20 lines per stream).
     Verbose,
-    /// `-vv`: like `Verbose` plus expanded commands + full untruncated captured output.
+    /// `-vv`: like `Verbose` plus per-check pass icons, inline capture on
+    /// pass, expanded `$ command` blocks, and uncapped capture.
     VeryVerbose,
 }
 

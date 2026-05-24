@@ -549,6 +549,16 @@ struct OutcomeStats<'a> {
     summary: reporter::RunSummary<'a>,
 }
 
+/// Aggregate parallel worker outcomes into a single summary.
+///
+/// Scenarios that hit a fatal error before running (YAML parse failure,
+/// sandbox creation error, captured panic) are accumulated into
+/// `summary.errors` and **do not** count toward `scenarios_total /
+/// scenarios_passed / scenarios_failed / steps_*`. The stats line
+/// describes what actually ran; errored scenarios surface in their own
+/// section above it with the underlying error. A run that hits 1 parse
+/// error + 9 passing scenarios reads as "9 total" in stats plus a
+/// separate `Errors:` block above — by design.
 fn aggregate_outcomes<'a>(
     outcomes: &'a [ScenarioOutcome],
     scenarios_dir: &Path,
