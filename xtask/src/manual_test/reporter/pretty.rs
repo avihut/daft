@@ -34,31 +34,11 @@ const SLOW_THRESHOLD: Duration = Duration::from_secs(5);
 
 pub struct PrettyReporter {
     verbosity: Verbosity,
-    /// When > 0, the scenario footer left-pads its name to this width so
-    /// the duration suffix lines up between scenarios with different name
-    /// lengths. The orchestrator computes this once (max YAML `name:`
-    /// across the discovered scenario set) and constructs the reporter
-    /// with [`Self::new_with_name_width`]. 0 = no padding (today's
-    /// behavior, used by every test that constructs the reporter
-    /// directly without a scenario-set context).
-    name_column_width: usize,
 }
 
 impl PrettyReporter {
     pub fn new(verbosity: Verbosity) -> Self {
-        Self {
-            verbosity,
-            name_column_width: 0,
-        }
-    }
-
-    /// Set the scenario-name column width so footers stack into a clean
-    /// grid. The orchestrator computes this once (widest YAML `name:`
-    /// across the discovered scenario set) and applies it before passing
-    /// the reporter to workers.
-    pub fn with_name_column_width(mut self, width: usize) -> Self {
-        self.name_column_width = width;
-        self
+        Self { verbosity }
     }
 
     /// CLAUDE.md §6: scenario header (cyan name + dim path) ships from `-v`
@@ -294,21 +274,11 @@ impl Reporter for PrettyReporter {
         //     to skim past it. Plain green on the tiny `✓` glyph is enough.
         //   Fail: whole `✗ name` span bold red so a single red line jumps
         //     off a wall of quiet pass lines.
-        // Left-pad the scenario name to the configured column width so the
-        // duration suffix lands in a stable column across scenarios with
-        // different name lengths. width == 0 ⇒ no padding (today's
-        // behavior, for tests that construct PrettyReporter directly).
-        let padded_name = if self.name_column_width > scenario.name.chars().count() {
-            let pad = self.name_column_width - scenario.name.chars().count();
-            format!("{}{}", scenario.name, " ".repeat(pad))
-        } else {
-            scenario.name.clone()
-        };
         let prefix = match status {
             ScenarioStatus::Pass => {
-                format!("{} {}", styles::green("✓"), padded_name)
+                format!("{} {}", styles::green("✓"), &scenario.name)
             }
-            ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", padded_name)),
+            ScenarioStatus::Fail => styles::bold_red(&format!("✗ {}", scenario.name)),
         };
         let suffix = scenario_duration_suffix(duration);
         writeln!(out, "{}{}", prefix, suffix)

@@ -362,10 +362,11 @@ pub fn run(
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
 
-    // Pre-scan scenario files once for column-width sizing: the footer
-    // pads the scenario name (so durations stack), and the live in-flight
-    // row pads both the scenario name and the `[N/M] step_name` label
-    // (so the elapsed column stacks across rows).
+    // Pre-scan scenario files once for column-width sizing in the live
+    // in-flight region: pad scenario names (column 1) and the
+    // `[N/M] step_name` label (column 2) so the elapsed counter (column 3)
+    // stacks across rows. Scrollback footers don't pad — durations sit
+    // directly after the scenario name.
     //
     // The scan is `peek_scenario_metadata` — a cheap text scan, not a
     // full YAML parse. ~200ms for 580 files on an SSD.
@@ -375,7 +376,7 @@ pub fn run(
         .collect();
     let name_column_width = max_scenario_name_width(&metas);
     let step_column_width = max_step_label_width(&metas);
-    let reporter = reporter::reporter_for(verbosity, name_column_width);
+    let reporter = reporter::reporter_for(verbosity);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
     // have semantics — TTY ownership for interactive, `println!` of work_dir
