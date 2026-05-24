@@ -946,6 +946,24 @@ fn run_one_scenario(
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
 ) -> ScenarioOutcome {
+    // After a SIGINT, rayon workers keep pulling scenarios off the queue —
+    // each one would be reported as `Cancelled` even though no step ran.
+    // That inflates the cancelled count beyond what the user actually saw
+    // running. Skip these so cancellation only counts scenarios that were
+    // truly in flight when the user pressed Ctrl+C. The outcome carries
+    // `result: None, error: None`, which `aggregate_outcomes` already
+    // treats as a no-op (its `(None, None) => {}` arm).
+    if ctx.interrupt.is_set() {
+        return ScenarioOutcome {
+            index,
+            name: path.display().to_string(),
+            source: path.to_path_buf(),
+            result: None,
+            output: Vec::new(),
+            error: None,
+        };
+    }
+
     let scenario = match load_scenario(path, ctx.fixtures_dir) {
         Ok(s) => s,
         Err(e) => {

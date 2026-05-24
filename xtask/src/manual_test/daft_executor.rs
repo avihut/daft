@@ -17,6 +17,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,7 +126,16 @@ impl DaftCommandExecutor {
 impl CommandExecutor for DaftCommandExecutor {
     fn execute(&self, command: &str, cwd: &Path, sandbox: &Sandbox) -> Result<CommandOutput> {
         let expanded = sandbox.expand_vars(command);
+        // process_group(0) puts the child in its own process group so the
+        // terminal's SIGINT (sent to the foreground process group) doesn't
+        // hit it. Without this, Ctrl+C delivered to the runner is also
+        // delivered to every in-flight bash subprocess and they exit with
+        // signal-killed status — the runner then sees a "step failed"
+        // (non-zero exit) and marks the scenario as Fail instead of
+        // Cancelled. The runner's own ctrlc handler is the sole intended
+        // observer of SIGINT; subprocesses must be insulated from it.
         let output = Command::new("bash")
+            .process_group(0)
             .args(["-c", &expanded])
             .current_dir(cwd)
             .envs(self.build_env(sandbox))

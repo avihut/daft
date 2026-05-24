@@ -4,14 +4,21 @@
 //! with the requested branches, files, commits, daft config, and hook scripts.
 
 use anyhow::{Context, Result};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use super::schema::{BranchSpec, RepoSpec};
 
 /// Build a `git` command pre-configured with test identity and config isolation.
+///
+/// `process_group(0)` insulates the child from terminal SIGINT so Ctrl+C
+/// during a scenario's setup phase doesn't kill `git init` / `git commit`
+/// mid-flight and turn the scenario into an `error:` row. See
+/// `DaftCommandExecutor::execute` for the longer explanation.
 fn git_cmd(work_dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(work_dir)
+    cmd.process_group(0)
+        .current_dir(work_dir)
         .env("GIT_AUTHOR_NAME", "Manual Test")
         .env("GIT_AUTHOR_EMAIL", "test@daft.test")
         .env("GIT_COMMITTER_NAME", "Manual Test")
