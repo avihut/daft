@@ -76,6 +76,18 @@ fn format_row_elapsed(d: Duration) -> String {
 
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
+    /// Global serializer for *all* state-mutating multi operations
+    /// (`add`/`remove`/`println`/`insert_before`). Indicatif's internal
+    /// `RwLock` makes each individual call thread-safe, but doesn't
+    /// prevent two threads' calls from interleaving with each other or
+    /// with an in-flight steady-tick redraw. That cross-call interleave
+    /// is what leaves in-flight rows stranded in scrollback under load:
+    /// e.g. `complete_scenario` does `println(footer); remove(row)` and
+    /// another thread's `scenario_started` slips between them, shifting
+    /// the row count out from under the remove. Holding this mutex for
+    /// the duration of every multi state change forces a total order on
+    /// those operations and closes the last race window.
+    state_lock: Mutex<()>,
     summary: ProgressBar,
     /// A single-space-template "trailer" bar that lives at the bottom of
     /// the multi's bar set and is never removed. Its job is to keep
@@ -156,6 +168,7 @@ impl IndicatifProgressSink {
 
         Self {
             multi,
+            state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
@@ -295,6 +308,11 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn scenario_started(&self, name: &str, total_steps: usize) {
+        // Hold state_lock for the entire add+style+insert sequence so it
+        // can't interleave with another worker's `complete_scenario` (or
+        // its own `scenario_started`) and shift the row count out from
+        // under either side. See the field doc on `state_lock`.
+        let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
         let bar = self
             .multi
             .insert_before(&self.summary, ProgressBar::new_spinner());
@@ -381,8 +399,9 @@ impl ProgressSink for IndicatifProgressSink {
         buf: &[u8],
     ) {
         // CRITICAL ORDERING: println first, then remove. Both happen on
-        // the worker thread that called this method — no cross-thread
-        // race possible.
+        // the worker thread that called this method, both inside the
+        // global `state_lock`, so no other thread's multi operation can
+        // interleave between the println loop and the remove.
         //
         // Why this order matters: `multi.println` clears the bar region
         // based on the multi's current draw state, then prints, then
@@ -393,11 +412,13 @@ impl ProgressSink for IndicatifProgressSink {
         // clear+print operates on the still-correct N-row state, then
         // the next redraw happens with N-1 rows.
         //
-        // Previously the row removal lived in `scenario_finished` on the
-        // worker thread while `multi.println` lived in the orchestrator's
-        // rx loop on the main thread — they could reorder under load and
-        // leave in-flight rows stranded in scrollback. Putting both on
-        // the same thread in this order closes that race definitively.
+        // Holding `state_lock` across the loop+remove pair closes the
+        // last race window — even another worker's `scenario_started`
+        // (which `multi.insert_before`-s a new row, also changing the
+        // count) is serialized against us. Without this, two threads'
+        // operations could land between our println and our remove.
+        let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+
         if let Ok(text) = std::str::from_utf8(buf) {
             for line in text.split_inclusive('\n') {
                 let trimmed = line.strip_suffix('\n').unwrap_or(line);
@@ -441,7 +462,12 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn run_finished(&self) {
-        // Same zombie-line concern as in `scenario_finished`: prefer
+        // Hold `state_lock` so any in-flight `complete_scenario` or
+        // `scenario_started` finishes before we wipe the region.
+        // Otherwise the `multi.clear` could land between another
+        // thread's println and remove, leaving partial frame content.
+        let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Same zombie-line concern as in `complete_scenario`: prefer
         // `multi.remove` over `summary.finish_and_clear` so the summary
         // bar doesn't leave a trailing line above the final summary
         // block. `multi.clear` then wipes any remaining draw-target
@@ -482,6 +508,7 @@ mod tests {
         trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         IndicatifProgressSink {
             multi,
+            state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
@@ -543,6 +570,7 @@ mod tests {
         trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         let sink = IndicatifProgressSink {
             multi,
+            state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
             rows: Mutex::new(HashMap::new()),
