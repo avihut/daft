@@ -1,7 +1,7 @@
 name: runner-output regression smoke
 description: |
   End-to-end smoke test for issue #518 output improvements. Shells out to
-  `cargo run -p xtask -- manual-test` against `_fixtures/fail.yml` (an
+  the pre-built xtask binary against `_fixtures/fail.yml` (an
   intentionally-failing fixture invisible to recursive discovery because
   the discoverer only descends one level) and asserts that the new failure
   output appears on stderr.
@@ -11,11 +11,19 @@ description: |
   wiring — that the reporter is actually plumbed through the runner, the
   CLI, and the summary block.
 
+  Uses `$BINARY_DIR/xtask` directly rather than `cargo run -p xtask`
+  because cargo run does a from-scratch dependency-resolution and
+  incremental-link pass each invocation. On a cold CI cargo cache that
+  was ~1 minute per invocation × 2 invocations = ~2 minutes added to
+  the YAML matrix wall-clock for what is logically one fast scenario.
+  The pre-built binary is the same binary `cargo run` would dispatch
+  to, so the wiring being verified is identical.
+
 steps:
   - name: invoke xtask against the intentional-failure fixture
     run: |
       cd "$BINARY_DIR/../.." && \
-        NO_COLOR=1 cargo run --quiet --package xtask -- \
+        NO_COLOR=1 "$BINARY_DIR/xtask" \
           manual-test --no-interactive \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \
           2>&1 || true
@@ -62,7 +70,7 @@ steps:
   - name: invoke xtask at -v to confirm per-step lines surface
     run: |
       cd "$BINARY_DIR/../.." && \
-        NO_COLOR=1 cargo run --quiet --package xtask -- \
+        NO_COLOR=1 "$BINARY_DIR/xtask" \
           manual-test --no-interactive -v \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \
           2>&1 || true
