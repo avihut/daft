@@ -416,10 +416,33 @@ pub fn execute_yaml_hook_with_rc(
         return job_results_to_hook_result(&fg_results);
     }
 
+    // Detect BG jobs whose ORIGINAL (pre-partition) `needs:` referenced a
+    // foreground job that did not succeed. The partitioner already stripped
+    // those names from `bg_specs[*].needs`, so we look at `specs` here to
+    // recover the original cross-partition deps. These names are passed to
+    // the coordinator as `prefailed_jobs` (or filtered out of the inline
+    // run path) so a BG job depending on a failed FG is recorded as
+    // `skipped` rather than executed.
+    let failed_fg_names: HashSet<&str> = fg_results
+        .iter()
+        .filter(|r| !matches!(r.status, crate::executor::NodeStatus::Succeeded))
+        .map(|r| r.name.as_str())
+        .collect();
+    let prefailed_bg: Vec<String> = if failed_fg_names.is_empty() {
+        Vec::new()
+    } else {
+        specs
+            .iter()
+            .filter(|s| s.background)
+            .filter(|s| s.needs.iter().any(|n| failed_fg_names.contains(n.as_str())))
+            .map(|s| s.name.clone())
+            .collect()
+    };
+
     // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
     if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
         let bg_results =
-            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
+            run_bg_inline_with_prefailed(&bg_specs, &prefailed_bg, exec_mode, presenter, &fg_sink)?;
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
@@ -439,7 +462,8 @@ pub fn execute_yaml_hook_with_rc(
     {
         let mut coord_state =
             crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
-                .with_metadata(&trigger_command, hook_name, &ctx.branch_name);
+                .with_metadata(&trigger_command, hook_name, &ctx.branch_name)
+                .with_prefailed(prefailed_bg);
         for spec in bg_specs {
             coord_state.add_job(spec);
         }
@@ -459,7 +483,7 @@ pub fn execute_yaml_hook_with_rc(
     #[cfg(not(unix))]
     {
         let bg_results =
-            crate::executor::runner::run_jobs(&bg_specs, exec_mode, presenter, Some(&fg_sink))?;
+            run_bg_inline_with_prefailed(&bg_specs, &prefailed_bg, exec_mode, presenter, &fg_sink)?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
         return job_results_to_hook_result(&all_results);
@@ -469,6 +493,53 @@ pub fn execute_yaml_hook_with_rc(
     // running in the forked coordinator and do not affect the hook outcome).
     #[cfg(unix)]
     job_results_to_hook_result(&fg_results)
+}
+
+/// Run background jobs inline (no coordinator), synthesizing `Skipped`
+/// results for any job in `prefailed_bg`. Used by the `DAFT_NO_BACKGROUND_JOBS`
+/// debug path and by the non-Unix fallback, both of which would otherwise
+/// silently run BG jobs whose FG dep failed (no coordinator to consult
+/// `prefailed_jobs`).
+///
+/// The skip semantic matches the coordinator: prefailed jobs surface as
+/// `NodeStatus::Skipped` in the returned `JobResult`s, so the hook outcome
+/// classifier sees the same failure shape regardless of execution path.
+fn run_bg_inline_with_prefailed(
+    bg_specs: &[crate::executor::JobSpec],
+    prefailed_bg: &[String],
+    exec_mode: crate::executor::ExecutionMode,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: &Arc<dyn crate::executor::log_sink::LogSink>,
+) -> Result<Vec<crate::executor::JobResult>> {
+    if prefailed_bg.is_empty() {
+        return crate::executor::runner::run_jobs(bg_specs, exec_mode, presenter, Some(sink));
+    }
+
+    let prefailed: HashSet<&str> = prefailed_bg.iter().map(String::as_str).collect();
+    let (skipped_specs, to_run): (Vec<_>, Vec<_>) = bg_specs
+        .iter()
+        .cloned()
+        .partition(|s| prefailed.contains(s.name.as_str()));
+
+    let mut results = crate::executor::runner::run_jobs(&to_run, exec_mode, presenter, Some(sink))?;
+    for spec in skipped_specs {
+        presenter.on_job_skipped(
+            &spec.name,
+            "foreground dependency failed",
+            std::time::Duration::ZERO,
+            false,
+            None,
+        );
+        results.push(crate::executor::JobResult {
+            name: spec.name,
+            status: crate::executor::NodeStatus::Skipped,
+            duration: std::time::Duration::ZERO,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: "foreground dependency failed".to_string(),
+        });
+    }
+    Ok(results)
 }
 
 /// Convert generic executor results into a `HookResult`.
@@ -1332,6 +1403,72 @@ mod tests {
         .unwrap();
 
         assert!(result.success);
+    }
+
+    /// Regression for #556: when a foreground job fails, BG jobs that
+    /// declared `needs:` on it must surface as `skipped` rather than
+    /// running. This exercises the `DAFT_NO_BACKGROUND_JOBS` inline path
+    /// (the coordinator path requires spawning a real child process; the
+    /// equivalent unit coverage for that path is in
+    /// `coordinator::process::tests::prefailed_*`).
+    ///
+    /// Detection uses a filesystem marker rather than captured output:
+    /// `TestOutput` does not see the job's shell stdout (the executor
+    /// routes it through the log sink), so the bg-dependent command
+    /// `touch`es a per-test marker file. If the cascade fires, the file
+    /// must not exist after the hook returns.
+    #[test]
+    fn test_bg_needs_failed_fg_skipped_in_inline_path() {
+        let marker_dir = TempDir::new().unwrap();
+        let marker = marker_dir.path().join("bg-ran.marker");
+        // The shell `touch` keeps quoting simple — the path lives inside
+        // a fresh tempdir, so no special characters to worry about.
+        let bg_cmd = format!("touch {}", marker.display());
+
+        // SAFETY: edition-2024 marks `set_var`/`remove_var` as unsafe;
+        // setting an env var in tests is the documented use. The matching
+        // `remove_var` below restores the prior state.
+        unsafe { std::env::set_var("DAFT_NO_BACKGROUND_JOBS", "1") };
+
+        let hook_def = HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("fg-fail".to_string()),
+                    run: Some(RunCommand::Simple("false".to_string())),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("bg-dependent".to_string()),
+                    run: Some(RunCommand::Simple(bg_cmd)),
+                    background: Some(true),
+                    needs: Some(vec!["fg-fail".to_string()]),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let mut output = TestOutput::default();
+
+        let result = execute_yaml_hook(
+            "test-hook",
+            &hook_def,
+            &ctx,
+            &mut output,
+            ".daft",
+            Path::new("/tmp"),
+            &HookOutputConfig::default(),
+        )
+        .unwrap();
+
+        unsafe { std::env::remove_var("DAFT_NO_BACKGROUND_JOBS") };
+
+        assert!(!result.success, "hook should fail because fg-fail failed");
+        assert!(
+            !marker.exists(),
+            "bg-dependent should have been skipped, but its `touch` ran (marker at {} exists)",
+            marker.display()
+        );
     }
 }
 
