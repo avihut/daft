@@ -217,7 +217,7 @@ pub fn reporter_for(verbosity: Verbosity) -> Box<dyn Reporter> {
 /// - `tests/manual/scenarios/hooks/silent-job-logs.yml` → `hooks:silent-job-logs`
 /// - `tests/manual/scenarios/clone-basic.yml` → `clone-basic`
 ///
-/// Used to print copy-pasteable `mise run test:manual -- --ci <token>` lines in
+/// Used to print copy-pasteable `mise run test:manual -- <token>` lines in
 /// the reproduce block.
 pub fn reproduce_token(source: &Path, scenarios_dir: &Path) -> String {
     let relative = source.strip_prefix(scenarios_dir).unwrap_or(source);

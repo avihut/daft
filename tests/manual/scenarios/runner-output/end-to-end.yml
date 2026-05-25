@@ -24,7 +24,7 @@ steps:
     run: |
       cd "$BINARY_DIR/../.." && \
         NO_COLOR=1 "$BINARY_DIR/xtask" \
-          manual-test --no-interactive \
+          manual-test \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \
           2>&1 || true
     expect:
@@ -71,7 +71,7 @@ steps:
     run: |
       cd "$BINARY_DIR/../.." && \
         NO_COLOR=1 "$BINARY_DIR/xtask" \
-          manual-test --no-interactive -v \
+          manual-test -v \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \
           2>&1 || true
     expect:

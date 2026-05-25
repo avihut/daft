@@ -41,7 +41,7 @@ echo
 echo "Running YAML manual tests..."
 yaml_start=$(ms_now)
 yaml_result=0
-"$REPO_ROOT/target/release/xtask" manual-test --ci "$REPO_ROOT/tests/manual/scenarios/$YAML_DIR/" || yaml_result=$?
+"$REPO_ROOT/target/release/xtask" manual-test "$REPO_ROOT/tests/manual/scenarios/$YAML_DIR/" || yaml_result=$?
 yaml_end=$(ms_now)
 yaml_ms=$((yaml_end - yaml_start))
 

@@ -358,15 +358,15 @@ enum Commands {
         parallel: bool,
     },
 
-    /// Run manual test scenarios interactively
+    /// Run manual test scenarios (automatic by default; use -i to step through)
     ManualTest {
         /// Scenario file(s) to run (default: all in tests/manual/scenarios/)
         #[arg(value_name = "SCENARIO")]
         scenarios: Vec<PathBuf>,
 
-        /// Run in non-interactive mode (auto-detected when not a TTY)
-        #[arg(long, alias = "ci")]
-        no_interactive: bool,
+        /// Step through scenarios interactively (default is automatic, parallel-buffered run)
+        #[arg(long, short = 'i')]
+        interactive: bool,
 
         /// Increase verbosity (-v for per-check icons + captured output on pass,
         /// -vv for expanded commands + untruncated captured output).
@@ -435,7 +435,7 @@ fn main() -> Result<()> {
         Commands::Bench { parallel } => bench::run(parallel),
         Commands::ManualTest {
             scenarios,
-            no_interactive,
+            interactive,
             verbose,
             quiet,
             step,
@@ -452,7 +452,7 @@ fn main() -> Result<()> {
             let verbosity = manual_test::reporter::Verbosity::from_flags(verbose, quiet);
             manual_test::run(
                 scenarios,
-                no_interactive,
+                interactive,
                 verbosity,
                 step,
                 loop_count,
@@ -1363,7 +1363,7 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
             let xtask_bin = std::env::current_exe()
                 .unwrap_or_else(|_| PathBuf::from("cargo run --package xtask --"));
             let yaml_status = Command::new(&xtask_bin)
-                .args(["manual-test", "--ci"])
+                .args(["manual-test"])
                 .env("GIT_CONFIG_GLOBAL", &config_path)
                 .env("DAFT_TESTING", "1")
                 .current_dir(&project_root)

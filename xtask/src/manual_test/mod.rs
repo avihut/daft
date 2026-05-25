@@ -330,7 +330,7 @@ struct RunContext<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     scenarios: Vec<PathBuf>,
-    no_interactive: bool,
+    interactive: bool,
     verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
@@ -365,6 +365,12 @@ pub fn run(
         return Ok(());
     }
 
+    if loop_count.is_some() && !interactive {
+        anyhow::bail!("--loop-count requires --interactive / -i");
+    }
+    if step.is_some() && !interactive && !setup_only {
+        anyhow::bail!("--step requires --interactive / -i (or --setup-only)");
+    }
     if loop_count.is_some() && step.is_none() {
         anyhow::bail!("--loop-count requires --step");
     }
@@ -382,7 +388,12 @@ pub fn run(
         anyhow::bail!("No scenario files found in {}", scenarios_dir.display());
     }
 
-    let is_interactive = !no_interactive && std::io::stdin().is_terminal();
+    // Explicit opt-in: the flag is the whole signal. TTY detection used to
+    // route mode here, but after #554 the runner is automatic-first; users
+    // who want step-through pass `-i`. TTY detection still gates the live
+    // progress region inside `run_parallel` (see reporter CLAUDE.md §8) —
+    // that's a rendering concern, not a routing one.
+    let is_interactive = interactive;
 
     // Only bail when the user *explicitly* asked for parallel (via `--jobs`,
     // `DAFT_MANUAL_TEST_JOBS`, or `--parallel`) and the mode forbids it. The
@@ -391,9 +402,7 @@ pub fn run(
     // erroring on a default the user didn't choose.
     if jobs_explicit && jobs > 1 {
         if is_interactive {
-            anyhow::bail!(
-                "--jobs/--parallel is only supported in non-interactive mode (pass --ci or run from a non-TTY)"
-            );
+            anyhow::bail!("--jobs/--parallel is incompatible with --interactive / -i");
         }
         if setup_only {
             anyhow::bail!("--jobs/--parallel is incompatible with --setup-only");
@@ -606,8 +615,8 @@ fn run_parallel(
         // Non-TTY: drain buffers in input order at end (today's behavior,
         // byte-identical for CI). Cancelled buffers carry the `⊘ name
         // (cancelled)` footer just like pass/fail buffers carry their
-        // `✓`/`✗` footers — drain them all uniformly so a `--ci` log
-        // shows which scenarios were in flight at the moment of cancel.
+        // `✓`/`✗` footers — drain them all uniformly so an automatic-mode
+        // log shows which scenarios were in flight at the moment of cancel.
         let mut lock = stderr.lock();
         for o in &all_outcomes {
             lock.write_all(&o.output)?;

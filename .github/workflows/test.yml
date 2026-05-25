@@ -483,7 +483,7 @@ jobs:
         # No `${{ github.event.* }}` substitutions touch the run: body.
         run: |
           GIT_CONFIG_GLOBAL="${{ steps.config.outputs.config_file }}" \
-            DAFT_TESTING=1 ./target/release/xtask manual-test --ci --jobs "$(nproc)"
+            DAFT_TESTING=1 ./target/release/xtask manual-test --jobs "$(nproc)"
 
       - name: Test shell completions
         if: matrix.suite == 'bash'

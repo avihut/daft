@@ -77,7 +77,7 @@ hyperfine \
     --command-name "jobs={jobs}" \
     --export-json "$JSON_OUT" \
     --export-markdown "${MD_OUT}.phase1" \
-    "$REPO_ROOT/target/release/xtask manual-test --ci --jobs {jobs}"
+    "$REPO_ROOT/target/release/xtask manual-test --jobs {jobs}"
 HF_STATUS=$?
 set -e
 if [[ $HF_STATUS -ne 0 ]]; then
@@ -98,13 +98,13 @@ if [[ -z "${BENCH_SKIP_TIMING:-}" ]]; then
     echo "=== Phase 2: per-scenario timing — jobs=1 ==="
     eval "$PREPARE"
     DAFT_MANUAL_TEST_EMIT_TIMING=1 \
-        "$REPO_ROOT/target/release/xtask" manual-test --ci --jobs 1 2>&1 \
+        "$REPO_ROOT/target/release/xtask" manual-test --jobs 1 2>&1 \
         | grep '^\[bench\] scenario=' > "$SERIAL_TIMINGS" || true
 
     echo "=== Phase 2: per-scenario timing — jobs=$DEFAULT_CAP ==="
     eval "$PREPARE"
     DAFT_MANUAL_TEST_EMIT_TIMING=1 \
-        "$REPO_ROOT/target/release/xtask" manual-test --ci --jobs "$DEFAULT_CAP" 2>&1 \
+        "$REPO_ROOT/target/release/xtask" manual-test --jobs "$DEFAULT_CAP" 2>&1 \
         | grep '^\[bench\] scenario=' > "$PARALLEL_TIMINGS" || true
 fi
 
