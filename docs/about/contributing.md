@@ -74,10 +74,10 @@ Declarative test scenarios in `tests/manual/scenarios/`. Each YAML file defines
 repos to create, steps to run, and expectations to verify.
 
 ```bash
-mise run test:manual -- --ci              # Run all 252 scenarios
-mise run test:manual -- --ci checkout     # Run one command's tests
-mise run test:manual -- checkout:basic    # Interactive mode for one scenario
-mise run test:manual -- --list            # List all available scenarios
+mise run test:manual                       # Run all 252 scenarios (automatic, default)
+mise run test:manual checkout              # Run one command's tests (automatic)
+mise run test:manual -- -i checkout:basic  # Step through one scenario interactively
+mise run test:manual -- --list             # List all available scenarios
 ```
 
 To add a new test, create a `.yml` file in the appropriate command directory:
