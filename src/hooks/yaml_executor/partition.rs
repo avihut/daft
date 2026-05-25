@@ -4,14 +4,30 @@
 //! are promoted to the foreground phase. This preserves DAG validity and
 //! ensures the daft command does not exit while a foreground job is still
 //! waiting for a background dependency.
+//!
+//! Cross-partition dependencies in the other direction — a background job
+//! declaring `needs:` on a foreground job — are stripped from the BG
+//! `JobSpec.needs` returned here. The coordinator only sees the background
+//! slice, so a `needs:` entry naming a foreground job would be a dangling
+//! reference and `DagGraph::new` would reject it with `MissingDependency`.
+//! FG-before-BG sequencing in the caller already guarantees the
+//! "happens-after" intent of such a dep, so dropping the name in the BG
+//! view is semantically a no-op for ordering. Failure cascade (skip the BG
+//! job when its FG dep failed) is handled by the caller, which has the FG
+//! outcomes and threads the affected BG names into
+//! `CoordinatorState::prefailed_jobs`.
 
 use crate::executor::JobSpec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Partition jobs into foreground and background phases.
 ///
 /// Background jobs that are transitively depended on by any foreground job
-/// are promoted to the foreground phase. Returns `(foreground, background)`.
+/// are promoted to the foreground phase. Background jobs that survive the
+/// partition have their `needs:` filtered to BG-only names (cross-partition
+/// references to foreground jobs are removed — see module docs).
+///
+/// Returns `(foreground, background)`.
 pub fn partition_foreground_background(jobs: &[JobSpec]) -> (Vec<JobSpec>, Vec<JobSpec>) {
     if jobs.is_empty() {
         return (Vec::new(), Vec::new());
@@ -47,6 +63,15 @@ pub fn partition_foreground_background(jobs: &[JobSpec]) -> (Vec<JobSpec>, Vec<J
         }
     }
 
+    // Names that landed in the background partition — used to strip
+    // cross-partition needs from BG `JobSpec`s below.
+    let bg_names: HashSet<&str> = jobs
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| !must_fg[i])
+        .map(|(_, j)| j.name.as_str())
+        .collect();
+
     // Partition
     let mut foreground = Vec::new();
     let mut background = Vec::new();
@@ -54,7 +79,9 @@ pub fn partition_foreground_background(jobs: &[JobSpec]) -> (Vec<JobSpec>, Vec<J
         if must_fg[i] {
             foreground.push(job.clone());
         } else {
-            background.push(job.clone());
+            let mut bg_job = job.clone();
+            bg_job.needs.retain(|n| bg_names.contains(n.as_str()));
+            background.push(bg_job);
         }
     }
 
@@ -138,5 +165,53 @@ mod partition_tests {
         assert!(fg.iter().any(|j| j.name == "types"));
         assert_eq!(bg.len(), 1);
         assert_eq!(bg[0].name, "assets");
+        // assets's needs: ["install"] crosses into the FG partition and
+        // must be stripped — the coordinator's DAG won't have an "install"
+        // node to satisfy the dep. FG-before-BG sequencing in the caller
+        // already guarantees the "happens-after" intent (see module docs).
+        assert!(
+            bg[0].needs.is_empty(),
+            "expected assets.needs to be empty after stripping FG names, got {:?}",
+            bg[0].needs
+        );
+    }
+
+    #[test]
+    fn test_partition_bg_needs_fg_is_stripped() {
+        // Regression for #556: a BG job whose only `needs:` entries are FG
+        // names must end up with empty `needs` in the BG slice, otherwise
+        // the coordinator's `DagGraph::new` rejects it with
+        // `MissingDependency` and the job silently never runs.
+        let jobs = vec![
+            spec("install", false, vec![]),
+            spec("warm", true, vec!["install"]),
+        ];
+        let (fg, bg) = partition_foreground_background(&jobs);
+        assert_eq!(fg.len(), 1);
+        assert_eq!(fg[0].name, "install");
+        assert_eq!(bg.len(), 1);
+        assert_eq!(bg[0].name, "warm");
+        assert!(
+            bg[0].needs.is_empty(),
+            "FG-only needs must be stripped from BG slice, got {:?}",
+            bg[0].needs
+        );
+    }
+
+    #[test]
+    fn test_partition_bg_needs_mix_keeps_bg_drops_fg() {
+        // A BG job that depends on one FG name AND one BG name should keep
+        // the BG name (so the coordinator's wave loop honors bg→bg ordering
+        // — see #454/#463) and drop the FG name (FG already ran).
+        let jobs = vec![
+            spec("install", false, vec![]),
+            spec("bg-a", true, vec![]),
+            spec("bg-b", true, vec!["install", "bg-a"]),
+        ];
+        let (fg, bg) = partition_foreground_background(&jobs);
+        assert_eq!(fg.len(), 1);
+        assert_eq!(bg.len(), 2);
+        let bg_b = bg.iter().find(|j| j.name == "bg-b").unwrap();
+        assert_eq!(bg_b.needs, vec!["bg-a".to_string()]);
     }
 }
