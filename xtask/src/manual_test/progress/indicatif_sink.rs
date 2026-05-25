@@ -398,26 +398,45 @@ impl ProgressSink for IndicatifProgressSink {
         _duration: Duration,
         buf: &[u8],
     ) {
-        // CRITICAL ORDERING: println first, then remove. Both happen on
-        // the worker thread that called this method, both inside the
-        // global `state_lock`, so no other thread's multi operation can
-        // interleave between the println loop and the remove.
+        // CRITICAL ORDERING: remove FIRST, then println. This matches the
+        // production pattern in `src/output/hook_progress/interactive.rs::
+        // finish_job`, which removes all job bars before calling
+        // `mp.println` for the heading. The reasoning is documented on
+        // `remove_job_bars` in that file; the short version follows.
         //
-        // Why this order matters: `multi.println` clears the bar region
-        // based on the multi's current draw state, then prints, then
-        // redraws. If we removed the row first, the draw state would say
-        // "N-1 rows" while the terminal still shows N rows from the
-        // previous tick — `multi.println` would under-clear and strand
-        // the bottom row in scrollback. With print-then-remove the
-        // clear+print operates on the still-correct N-row state, then
-        // the next redraw happens with N-1 rows.
+        // `mp.remove` sets the bar's draw_target to hidden and unlinks it
+        // from the multi's ordering — it does NOT trigger a redraw
+        // (see `MultiProgress::remove` in indicatif 0.18.4 `multi.rs:150`).
+        // The next `mp.println` then performs an atomic clear+orphan+redraw
+        // against the post-remove bar set, so the previously-occupied row
+        // gets covered by whatever shifts up into its slot (or by blank
+        // padding from the trailer).
         //
-        // Holding `state_lock` across the loop+remove pair closes the
-        // last race window — even another worker's `scenario_started`
-        // (which `multi.insert_before`-s a new row, also changing the
-        // count) is serialized against us. Without this, two threads'
-        // operations could land between our println and our remove.
+        // The reversed order (println-then-remove) leaves the doomed bar
+        // in the set during the println's redraw, so `last_line_count`
+        // gets set to N (all bars including the doomed one). The remove
+        // then drops the bar set to N-1 without redrawing. The next
+        // steady-tick redraw clears N lines but writes only N-1, leaving
+        // the bottom line stale — a stranded bar row in scrollback.
+        // That was the cause of the ghost-row bug; see indicatif issue
+        // #474 for the upstream discussion of the same class of issue.
+        //
+        // `state_lock` is still held for the whole sequence: hook_progress
+        // is single-threaded so it doesn't need one, but rayon workers
+        // here can hit `complete_scenario` and `scenario_started`
+        // concurrently, and two workers' per-scenario buffer prints
+        // interleaving on stderr would be far worse than the original ghost.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Ok(mut rows) = self.rows.lock() {
+            if let Some(row) = rows.remove(name) {
+                // `multi.remove`, NOT `bar.finish_and_clear`. See the
+                // hook-progress comment in
+                // `src/output/hook_progress/interactive.rs:remove_job_bars`
+                // for the longer explanation of the zombie-line hazard.
+                self.multi.remove(&row.bar);
+            }
+        }
 
         if let Ok(text) = std::str::from_utf8(buf) {
             for line in text.split_inclusive('\n') {
@@ -432,16 +451,6 @@ impl ProgressSink for IndicatifProgressSink {
             let stderr = std::io::stderr();
             let mut lock = stderr.lock();
             let _ = lock.write_all(buf);
-        }
-
-        if let Ok(mut rows) = self.rows.lock() {
-            if let Some(row) = rows.remove(name) {
-                // `multi.remove`, NOT `bar.finish_and_clear`. See the
-                // hook-progress comment in
-                // `src/output/hook_progress/interactive.rs:remove_job_bars`
-                // for the longer explanation of the zombie-line hazard.
-                self.multi.remove(&row.bar);
-            }
         }
 
         match status {

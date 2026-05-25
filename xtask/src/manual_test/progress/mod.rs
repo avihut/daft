@@ -87,14 +87,20 @@ pub trait ProgressSink: Send + Sync {
     /// Concurrent reordering left in-flight rows stranded in scrollback.
     ///
     /// The sink owns the atomic sequence:
-    ///   1. Print `buf` line-by-line above the live region.
-    ///   2. Remove the scenario's row from the live region.
+    ///   1. Remove the scenario's row from the live region.
+    ///   2. Print `buf` line-by-line above the live region.
     ///   3. Update the running/failed/cancelled counters and tick the
     ///      summary forward.
     ///
-    /// All three steps land on the calling thread (the worker), so the
-    /// remove happens after the print — no cross-thread reordering, no
-    /// stranded ghost rows.
+    /// Remove-then-print matches the production pattern in
+    /// `src/output/hook_progress/interactive.rs::finish_job` (the
+    /// implementation comment on `IndicatifProgressSink::
+    /// complete_scenario` has the full reasoning + an indicatif source
+    /// reference). All three steps land on the calling thread (the
+    /// worker), so no cross-thread reordering can interleave the
+    /// sequence — and the global `state_lock` inside the sink
+    /// serializes the sequence against other workers' scenario_started
+    /// / complete_scenario calls.
     ///
     /// `buf` is the scenario's accumulated stderr-style bytes (header +
     /// step lines + footer + any cleanup note). On `NoopProgressSink` the
