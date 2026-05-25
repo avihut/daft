@@ -41,7 +41,7 @@ else
     CPU_LOG=$CPU_PHYS
     CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || echo "?")
 fi
-DEFAULT_CAP=$((CPU_LOG / 2))
+DEFAULT_CAP=$CPU_LOG
 [ "$DEFAULT_CAP" -lt 1 ] && DEFAULT_CAP=1
 DAFT_SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
 DAFT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
@@ -51,7 +51,7 @@ echo "=== Manual-test scaling sweep ==="
 echo "  Daft:       $DAFT_BRANCH @ $DAFT_SHA"
 echo "  CPU:        $CPU_MODEL ($CPU_PHYS physical / $CPU_LOG logical)"
 echo "  Scenarios:  $SCENARIO_COUNT"
-echo "  Default cap: $DEFAULT_CAP (would be picked by --parallel)"
+echo "  Default cap: $DEFAULT_CAP (auto-default = available_parallelism())"
 echo "  Jobs values: $JOBS_VALUES"
 echo "  Trials:      $RUNS per value"
 echo
@@ -142,7 +142,7 @@ percentiles() {
     echo "- **Daft:** \`$DAFT_BRANCH @ $DAFT_SHA\`"
     echo "- **CPU:** $CPU_MODEL ($CPU_PHYS physical / $CPU_LOG logical)"
     echo "- **Scenarios in corpus:** $SCENARIO_COUNT"
-    echo "- **Default cap (\`--parallel\`):** $DEFAULT_CAP"
+    echo "- **Default cap (auto-default):** $DEFAULT_CAP"
     echo "- **Jobs swept:** \`$JOBS_VALUES\`"
     echo "- **Trials per jobs value:** $RUNS"
     echo

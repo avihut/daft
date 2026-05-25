@@ -48,6 +48,9 @@ docs/.vitepress/cache/
 # Understand-Anything knowledge graph artifacts (rebuildable via /understand)
 .understand-anything/
 
+# Skills CLI install cache — actual skill content lives under .claude/skills/
+.agents/
+
 # Benchmark artifacts
 benches/results/
 benches/fixtures/cache/

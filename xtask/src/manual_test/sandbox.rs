@@ -9,6 +9,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -223,7 +224,13 @@ impl Sandbox {
     /// Snapshot `remotes/` → `remotes-template/` so that `reset()` can
     /// restore the original state. Uses `cp -a` to preserve git objects.
     pub fn create_template(&self) -> Result<()> {
+        // `process_group(0)` insulates `cp` from terminal SIGINT — see the
+        // same explanation on `DaftCommandExecutor::execute`. Without it,
+        // Ctrl+C during a scenario's setup phase kills `cp` mid-copy and
+        // the scenario surfaces as an `error:` row instead of a clean
+        // cancellation.
         let status = std::process::Command::new("cp")
+            .process_group(0)
             .args(["-a"])
             .arg(&self.remotes_dir)
             .arg(&self.template_dir)
@@ -254,6 +261,7 @@ impl Sandbox {
             }
 
             let status = std::process::Command::new("cp")
+                .process_group(0)
                 .args(["-a"])
                 .arg(&self.template_dir)
                 .arg(&self.remotes_dir)
@@ -381,6 +389,7 @@ mod tests {
             repos: Vec::new(),
             env: HashMap::new(),
             steps: Vec::new(),
+            source_path: std::path::PathBuf::new(),
         };
 
         let mut paths = Vec::new();

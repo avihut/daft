@@ -1,7 +1,9 @@
 pub mod daft_executor;
 pub mod executor;
 pub mod interactive;
+pub mod progress;
 pub mod repo_gen;
+pub mod reporter;
 pub mod runner;
 pub mod sandbox;
 pub mod schema;
@@ -13,6 +15,129 @@ use std::io::{IsTerminal, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Cheap scenario metadata extracted by [`peek_scenario_metadata`].
+/// Used purely for column-width sizing in the progress region and
+/// footer — full YAML parsing remains the worker's job.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScenarioMeta {
+    /// Top-level `name:` value, with surrounding quotes stripped.
+    pub name: Option<String>,
+    /// Step names in declaration order. Empty if the `steps:` block
+    /// couldn't be parsed.
+    pub step_names: Vec<String>,
+}
+
+/// Cheaply extract a scenario's display name and step names from its
+/// YAML without a full parse. Scans the file once with the same
+/// indent-aware logic as `extract_step_lines` so it doesn't confuse
+/// `- name:` keys inside the `repos:` block with step entries.
+///
+/// Returns `Some` whenever the file is readable — the caller decides
+/// what to do with empty fields. Conservative on quoting (strips `"`
+/// and `'`).
+pub(crate) fn peek_scenario_metadata(path: &Path) -> Option<ScenarioMeta> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut meta = ScenarioMeta::default();
+    let mut steps_indent: Option<usize> = None;
+    let mut name_locked = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+
+        // Top-level `name:` only — once we descend into a block, stop
+        // looking. This avoids matching the runner-output fixture's
+        // `name:` inside an embedded YAML literal.
+        if !name_locked && indent == 0 {
+            if let Some(rest) = trimmed.strip_prefix("name:") {
+                let value = rest.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    meta.name = Some(value.to_string());
+                    name_locked = true;
+                    continue;
+                }
+            }
+        }
+
+        match steps_indent {
+            None => {
+                if (trimmed == "steps:" || trimmed.starts_with("steps:"))
+                    && trimmed.trim_start_matches("steps:").trim().is_empty()
+                {
+                    steps_indent = Some(indent);
+                }
+            }
+            Some(block_indent) => {
+                if indent <= block_indent {
+                    // Returned to a same-or-shallower indent — end of
+                    // steps block.
+                    break;
+                }
+                if let Some(rest) = trimmed.strip_prefix("- name:") {
+                    let value = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !value.is_empty() {
+                        meta.step_names.push(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Some(meta)
+}
+
+/// Compute the widest scenario name across the discovered set, in
+/// **grapheme-approximate** character count. Width is used purely for
+/// column alignment, so `chars().count()` (codepoint count) is close
+/// enough — emoji-or-CJK-heavy names may misalign by a column or two,
+/// but the failure mode is cosmetic, not a panic.
+fn max_scenario_name_width(metas: &[ScenarioMeta]) -> usize {
+    metas
+        .iter()
+        .filter_map(|m| m.name.as_deref())
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Compute the widest `[N/M] step_name` label across all
+/// (scenario, step) pairs. Used by the live progress region to pad the
+/// per-row step column so the elapsed counter to its right lands at a
+/// stable column across in-flight rows.
+fn max_step_label_width(metas: &[ScenarioMeta]) -> usize {
+    metas
+        .iter()
+        .flat_map(|m| {
+            let total = m.step_names.len();
+            m.step_names
+                .iter()
+                .enumerate()
+                .map(move |(i, name)| step_label_width(i + 1, total, name))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Visible width of a `[N/M] step_name` label (no styling, no padding).
+/// Single helper so `max_step_label_width` and the live sink agree on
+/// the formula.
+pub(crate) fn step_label_width(idx_one_based: usize, total: usize, step_name: &str) -> usize {
+    // "[{idx}/{total}] {step_name}" — counter brackets + slash + 1 space.
+    let counter_len = digit_count(idx_one_based) + 1 + digit_count(total) + 2;
+    counter_len + 1 + step_name.chars().count()
+}
+
+fn digit_count(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n.ilog10() as usize) + 1
+    }
+}
 
 /// Pick a base directory for a scenario sandbox.
 ///
@@ -69,42 +194,76 @@ impl Drop for CleanupGuard {
     }
 }
 
-/// Register a Ctrl+C handler that cleans up every live test environment.
+/// Register a Ctrl+C handler with two-press semantics.
+///
+/// **First press (soft cancel):** sets the shared [`progress::InterruptFlag`]
+/// and prints a short banner. The handler returns without exiting; the
+/// parallel scheduler's workers observe the flag between steps and bail with
+/// [`reporter::ScenarioStatus::Cancelled`], their `Sandbox::drop` cleans up
+/// each sandbox naturally, and the main thread reaches the run's end in
+/// `run_parallel` and falls through to the `process::exit(130)` at the
+/// bottom of `run`.
+///
+/// **Second press (hard exit):** the handler short-circuits to the legacy
+/// emergency-cleanup path — `rm -rf` every registered sandbox and
+/// `process::exit(130)`. This is the escape hatch when a worker is stuck
+/// inside a slow subprocess (e.g. a long git clone) and can't react to the
+/// interrupt flag in a reasonable time.
 ///
 /// Returns a shared registry the run loop populates as scenarios start and
-/// clears as they finish. On SIGINT the handler drains the set in a loop —
-/// `process::exit(130)` aborts worker threads mid-flight without running
-/// their `Drop` impls, so a single drain can miss workers that registered
-/// after the snapshot. Re-draining with a short sleep between passes catches
-/// those late registrations until the set stays empty.
-fn setup_cleanup_handler(keep: bool) -> CleanupSet {
+/// clears as they finish. The registry is read on the hard-exit path; under
+/// soft cancel it stays in sync via the workers' own `CleanupGuard` drops.
+fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> CleanupSet {
     let set: CleanupSet = Arc::new(Mutex::new(HashSet::new()));
     let handler_set = Arc::clone(&set);
 
     ctrlc::set_handler(move || {
-        // Restore terminal state in case interactive mode left raw mode on.
+        let already_interrupted = interrupt.set();
+        if !already_interrupted {
+            // First press: soft cancel. Workers see the flag between steps,
+            // bail with `Cancelled`, and their `Sandbox::drop` cleans up.
+            // No emergency cleanup, no `process::exit` — let the run wind
+            // down naturally so the cancelled count and final summary
+            // print correctly.
+            //
+            // Deliberately silent: any `eprintln!` here pushes the bar's
+            // current state into scrollback as "ghost" rows. Feedback that
+            // cancellation registered comes through two channels instead:
+            //   1. The bar's summary message gains a `(cancelling)` suffix
+            //      via `update_summary_msg` reading the flag (the bar's
+            //      steady_tick refreshes ~10/s).
+            //   2. The orchestrator calls `notify_cancelling` on the sink
+            //      to force the suffix to appear on the very next tick
+            //      rather than waiting for a worker to bail.
+            // `disable_raw_mode` stays — it's idempotent and writes nothing
+            // to the terminal.
+            let _ = crossterm::terminal::disable_raw_mode();
+            return;
+        }
+
+        // Second press: hard exit. Restore terminal, drain the cleanup
+        // registry under the lock, and force-exit with 130.
+        //
+        // Workers in flight fall into two camps when we hard-exit:
+        //
+        // 1. Past `CleanupGuard::new` — their `base_dir` is in the set.
+        //    Drain captures it; we `rm -rf` to remove whatever they
+        //    built so far. Their subprocesses (`git`, `cp`) may still
+        //    be running and may RECREATE entries at the same path
+        //    between our `rm` and `process::exit` below, which is why
+        //    we re-rm in a short loop while holding the lock.
+        // 2. About to call `CleanupGuard::new` — they block at
+        //    `set.lock()` because we hold the lock to process exit,
+        //    then die with the process. They never touch disk, so no
+        //    leak.
+        //
+        // Holding the lock for the whole sequence prevents new
+        // registrations, so the `known` set captures the entire universe
+        // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
         eprintln!();
+        eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));
         if !keep {
-            // Workers in flight fall into two camps when SIGINT fires:
-            //
-            // 1. Past `CleanupGuard::new` — their `base_dir` is in the set.
-            //    Drain captures it; we `rm -rf` to remove whatever they
-            //    built so far. Their subprocesses (`git`, `cp`) may still
-            //    be running and may RECREATE entries at the same path
-            //    between our `rm` and `process::exit` below, which is why
-            //    we re-rm in a short loop while holding the lock.
-            // 2. About to call `CleanupGuard::new` — they block at
-            //    `set.lock()` because we hold the lock to process exit, then
-            //    die with the process. They never touch disk, so no leak.
-            //
-            // Holding the lock for the whole sequence prevents new
-            // registrations, so the `known` set captures the entire universe
-            // of paths that could possibly still have on-disk presence. The
-            // re-rm loop is bounded so the handler always finishes ahead of
-            // the main thread's rayon-iteration completion (which would
-            // otherwise short-circuit the closure via the natural anyhow
-            // bail with a non-130 exit code).
             let mut g = match handler_set.lock() {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
@@ -142,6 +301,9 @@ struct ScenarioOutcome {
     /// Display name from the YAML (or the file path if parsing failed before
     /// the name could be read).
     name: String,
+    /// Source YAML path. Empty when execution short-circuited before
+    /// `load_scenario` ran successfully.
+    source: PathBuf,
     /// `None` when execution short-circuited before stats were computed
     /// (parse/setup error or panic); `Some(_)` after a normal run.
     result: Option<runner::ScenarioResult>,
@@ -156,7 +318,12 @@ struct ScenarioOutcome {
 struct RunContext<'a> {
     project_root: &'a Path,
     fixtures_dir: &'a Path,
-    verbose: bool,
+    reporter: &'a dyn reporter::Reporter,
+    progress: &'a dyn progress::ProgressSink,
+    /// Cooperative cancellation flag. Workers check between steps inside
+    /// `run_non_interactive`; on transition false→true they bail with
+    /// [`reporter::ScenarioStatus::Cancelled`].
+    interrupt: &'a progress::InterruptFlag,
     keep: bool,
 }
 
@@ -164,7 +331,7 @@ struct RunContext<'a> {
 pub fn run(
     scenarios: Vec<PathBuf>,
     no_interactive: bool,
-    verbose: bool,
+    verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
     keep: bool,
@@ -173,6 +340,7 @@ pub fn run(
     show: bool,
     checks: bool,
     jobs: usize,
+    jobs_explicit: bool,
 ) -> Result<()> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -216,7 +384,12 @@ pub fn run(
 
     let is_interactive = !no_interactive && std::io::stdin().is_terminal();
 
-    if jobs > 1 {
+    // Only bail when the user *explicitly* asked for parallel (via `--jobs`,
+    // `DAFT_MANUAL_TEST_JOBS`, or `--parallel`) and the mode forbids it. The
+    // auto-default also picks `jobs > 1`, but interactive / --setup-only runs
+    // should just silently fall through to run_serial in that case rather than
+    // erroring on a default the user didn't choose.
+    if jobs_explicit && jobs > 1 {
         if is_interactive {
             anyhow::bail!(
                 "--jobs/--parallel is only supported in non-interactive mode (pass --ci or run from a non-TTY)"
@@ -227,56 +400,125 @@ pub fn run(
         }
     }
 
-    let cleanup_set = setup_cleanup_handler(keep);
+    // Single shared interrupt flag plumbed through:
+    //   1. SIGINT handler (sets it on first Ctrl+C),
+    //   2. workers in `run_non_interactive` (bail mid-scenario when set),
+    //   3. `IndicatifProgressSink` (colors the cancelled segment),
+    //   4. the orchestrator's exit-code decision below.
+    // One source of truth keeps the runner's "is this cancelled?" signal
+    // consistent across all three subsystems.
+    let interrupt = progress::InterruptFlag::new();
+    let cleanup_set = setup_cleanup_handler(keep, interrupt.clone());
 
-    eprintln!();
+    // No leading eprintln! here — the pretty reporter's scenario_header
+    // owns the inter-scenario blank line, including the one before the very
+    // first scenario.
+
+    // Pre-scan scenario files once for column-width sizing in the live
+    // in-flight region: pad scenario names (column 1) and the
+    // `[N/M] step_name` label (column 2) so the elapsed counter (column 3)
+    // stacks across rows. Scrollback footers don't pad — durations sit
+    // directly after the scenario name.
+    //
+    // The scan is `peek_scenario_metadata` — a cheap text scan, not a
+    // full YAML parse. ~200ms for 580 files on an SSD.
+    let metas: Vec<ScenarioMeta> = scenario_files
+        .iter()
+        .filter_map(|p| peek_scenario_metadata(p))
+        .collect();
+    let name_column_width = max_scenario_name_width(&metas);
+    let step_column_width = max_step_label_width(&metas);
+    let reporter = reporter::reporter_for(verbosity);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
     // have semantics — TTY ownership for interactive, `println!` of work_dir
     // for shell capture in setup-only — that don't fit the buffered worker
     // model used by the parallel scheduler.
     if is_interactive || setup_only {
-        return run_serial(
+        let result = run_serial(
             &scenario_files,
             &project_root,
             &fixtures_dir,
             &cleanup_set,
+            reporter.as_ref(),
+            verbosity,
             step,
             loop_count,
-            verbose,
+            &interrupt,
             keep,
             setup_only,
             is_interactive,
         );
+        if interrupt.is_set() {
+            std::process::exit(130);
+        }
+        return result;
     }
 
     // Non-interactive CI path — always goes through the parallel scheduler,
     // even at `jobs == 1` (a 1-thread rayon pool). Output is buffered per
     // scenario and flushed in input order.
-    run_parallel(
+    //
+    // The progress sink shows a pinned live region on TTY; on non-TTY (CI
+    // logs, redirected output, `cargo run`) it's a no-op so output stays
+    // byte-identical to the pre-progress behavior. CI=… is checked
+    // alongside TTY because GitHub Actions et al. flag stderr as a TTY but
+    // progress redraws still pollute the logs.
+    let show_progress = std::io::stderr().is_terminal()
+        && std::env::var_os("NO_PROGRESS").is_none()
+        && std::env::var_os("CI").is_none();
+    let progress = progress::progress_sink_for(
+        show_progress,
+        name_column_width,
+        step_column_width,
+        interrupt.clone(),
+    );
+    let result = run_parallel(
         &scenario_files,
+        &scenarios_dir,
         &project_root,
         &fixtures_dir,
         &cleanup_set,
-        verbose,
+        reporter.as_ref(),
+        progress.as_ref(),
+        &interrupt,
+        show_progress,
         keep,
         jobs,
-    )
+        jobs_explicit,
+    );
+
+    // SIGINT convention: 128 + signal_number (2 for SIGINT). Bypass
+    // anyhow's exit path so the shell sees the conventional code (mise /
+    // shells / CI runners specifically test for 130 to distinguish
+    // user-cancellation from a test failure).
+    if interrupt.is_set() {
+        std::process::exit(130);
+    }
+    result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_parallel(
     scenario_files: &[PathBuf],
+    scenarios_dir: &Path,
     project_root: &Path,
     fixtures_dir: &Path,
     cleanup_set: &CleanupSet,
-    verbose: bool,
+    reporter: &dyn reporter::Reporter,
+    progress: &dyn progress::ProgressSink,
+    interrupt: &progress::InterruptFlag,
+    show_progress: bool,
     keep: bool,
     jobs: usize,
+    jobs_explicit: bool,
 ) -> Result<()> {
     let ctx = RunContext {
         project_root,
         fixtures_dir,
-        verbose,
+        reporter,
+        progress,
+        interrupt,
         keep,
     };
 
@@ -285,79 +527,263 @@ fn run_parallel(
         .build()
         .context("building rayon thread pool")?;
 
-    let mut outcomes: Vec<ScenarioOutcome> = pool.install(|| {
-        scenario_files
-            .par_iter()
-            .enumerate()
-            .map(|(idx, path)| run_one_scenario(idx, path, &ctx, cleanup_set))
-            .collect()
-    });
+    // Pre-run banner — shows scenario count + worker count so the user
+    // knows up-front what's about to happen, and where the worker count
+    // came from. Dim because it's metadata, not data (design language §1).
+    // Blank line after to separate from the scenario stream.
+    write_run_banner(scenario_files.len(), jobs, jobs_explicit)?;
 
-    // Restore input order before printing and aggregating, so output and
-    // stats are deterministic regardless of completion order.
-    outcomes.sort_by_key(|o| o.index);
+    progress.run_started(scenario_files.len());
+
+    // Rayon-channel pattern: a producer thread runs the par_iter, sending
+    // each completed outcome down a channel. The main thread drains the
+    // channel as outcomes arrive.
+    //
+    // - On TTY (`show_progress == true`), each completed outcome's buffer
+    //   streams to stderr immediately via `stream_completed_scenario`,
+    //   which suspends the live region so the writes don't tear. Result:
+    //   scrollback in completion order, live bar uninterrupted.
+    // - On non-TTY (`show_progress == false`), no streaming — outcomes
+    //   accumulate and drain in input order at end (byte-identical to the
+    //   pre-progress behavior; preserves the CI log contract).
+    let (tx, rx) = std::sync::mpsc::channel::<ScenarioOutcome>();
+    let mut all_outcomes: Vec<ScenarioOutcome> = Vec::with_capacity(scenario_files.len());
+
+    let run_start = std::time::Instant::now();
+    std::thread::scope(|s| -> Result<()> {
+        let pool_ref = &pool;
+        let ctx_ref = &ctx;
+        let cleanup_ref = cleanup_set;
+        let files_ref = scenario_files;
+        s.spawn(move || {
+            pool_ref.install(|| {
+                files_ref
+                    .par_iter()
+                    .enumerate()
+                    .for_each_with(tx, |tx, (idx, path)| {
+                        let outcome = run_one_scenario(idx, path, ctx_ref, cleanup_ref);
+                        let _ = tx.send(outcome);
+                    });
+            });
+        });
+
+        // Tracks whether we've already poked the sink so the (cancelling)
+        // suffix lands as soon as Ctrl+C is observed. Without this nudge
+        // the suffix wouldn't appear until the first worker finishes its
+        // current step — which can be seconds — leaving the user wondering
+        // if the cancel registered.
+        let mut notified_cancelling = false;
+        while let Ok(mut outcome) = rx.recv() {
+            if !notified_cancelling && interrupt.is_set() {
+                progress.notify_cancelling();
+                notified_cancelling = true;
+            }
+            // For the TTY (live-region) path, the worker already printed
+            // this scenario's buffer atomically via
+            // `progress.complete_scenario` — `multi.println` for each
+            // line, then `multi.remove(row)`, all on the worker thread.
+            // That sequencing is what keeps in-flight bar rows from
+            // getting stranded in scrollback (the cross-thread race that
+            // earlier `multi.println`-on-main + `multi.remove`-on-worker
+            // designs all hit). Free the buf here so the aggregate
+            // doesn't hold the bytes alive needlessly.
+            if show_progress {
+                outcome.output.clear();
+                outcome.output.shrink_to_fit();
+            }
+            all_outcomes.push(outcome);
+        }
+        Ok(())
+    })?;
+    let duration = run_start.elapsed();
+
+    // Input-order sort: required for both deterministic non-TTY drain AND
+    // deterministic stats aggregation (FailedScenarioRecord ordering, etc.).
+    all_outcomes.sort_by_key(|o| o.index);
 
     let stderr = std::io::stderr();
-    {
+    if !show_progress {
+        // Non-TTY: drain buffers in input order at end (today's behavior,
+        // byte-identical for CI). Cancelled buffers carry the `⊘ name
+        // (cancelled)` footer just like pass/fail buffers carry their
+        // `✓`/`✗` footers — drain them all uniformly so a `--ci` log
+        // shows which scenarios were in flight at the moment of cancel.
         let mut lock = stderr.lock();
-        for o in &outcomes {
+        for o in &all_outcomes {
             lock.write_all(&o.output)?;
         }
     }
 
-    let mut total_scenarios = 0usize;
-    let mut total_steps = 0usize;
-    let mut total_passed = 0usize;
-    let mut total_failed = 0usize;
-    let mut failed_scenarios: Vec<String> = Vec::new();
-    let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
-
-    for o in outcomes {
-        match (o.result, o.error) {
-            (Some(sr), _) => {
-                total_scenarios += 1;
-                total_steps += sr.steps;
-                total_passed += sr.passed;
-                total_failed += sr.failed;
-                if sr.failed > 0 {
-                    failed_scenarios.push(o.name);
-                }
+    // Belt-and-suspenders cleanup. Workers' `Sandbox::drop` removes each
+    // sandbox at scenario end, so under a normal run (and under soft cancel
+    // where workers wind down naturally) the registry should be empty
+    // here. This catches the edge cases: a worker that panicked between
+    // `CleanupGuard::new` and `Sandbox::create_at`, or a directory the OS
+    // still reports as existing after `remove_dir_all` returned (NFS
+    // quirks, slow async unlinks). The hard-exit SIGINT path has its own
+    // `rm -rf` loop; this one is for the natural-end case.
+    if !keep {
+        if let Ok(mut g) = cleanup_set.lock() {
+            for dir in g.drain() {
+                let _ = std::fs::remove_dir_all(&dir);
             }
-            (None, Some(err)) => errors.push((o.name, err)),
-            (None, None) => {}
         }
     }
 
-    use term_styles as styles;
+    let stats = aggregate_outcomes(&all_outcomes, scenarios_dir, duration, Some(jobs));
 
-    eprintln!();
-    eprintln!(
-        "{} scenarios, {} steps, {} passed, {} failed",
-        total_scenarios,
-        total_steps,
-        styles::green(&total_passed.to_string()),
-        if total_failed > 0 {
-            styles::red(&total_failed.to_string())
-        } else {
-            "0".into()
-        }
-    );
-    for name in &failed_scenarios {
-        eprintln!("{} {}", styles::red("x"), name);
+    let total_failed = stats.summary.steps_failed;
+    let error_count = stats.summary.errors.len();
+    // Clear the live region first, then write the summary onto a clean
+    // canvas. Doing it the other way around (any pause-then-redraw
+    // sequence) briefly flashes the bars back on top of the
+    // freshly-written summary as the redraw fires.
+    progress.run_finished();
+    {
+        let mut lock = stderr.lock();
+        reporter.run_summary(&mut lock, &stats.summary)?;
     }
-    for (name, err) in &errors {
-        eprintln!("{} {}: {err:#}", styles::red("ERROR"), name);
-    }
-    eprintln!();
 
-    if !errors.is_empty() {
-        anyhow::bail!("{} scenario(s) hit a fatal error", errors.len());
+    if error_count > 0 {
+        anyhow::bail!("{} scenario(s) hit a fatal error", error_count);
     }
     if total_failed > 0 {
-        anyhow::bail!("{total_failed} step(s) failed across {total_scenarios} scenarios");
+        anyhow::bail!(
+            "{total_failed} step(s) failed across {} scenarios",
+            stats.summary.scenarios_total
+        );
     }
 
     Ok(())
+}
+
+/// Aggregated counters + summary records derived from a sorted outcome list.
+///
+/// Output borrows lifetimes from the `outcomes` slice, so callers must keep
+/// the slice alive until the summary is consumed.
+struct OutcomeStats<'a> {
+    summary: reporter::RunSummary<'a>,
+}
+
+/// Write the pre-run banner showing scenario count + worker count + whether
+/// the worker count was auto-detected. Goes straight to stderr (no Reporter
+/// dispatch) — it's framing metadata, not per-scenario content. Singular/
+/// plural forms keep the line grammatical for the 1-scenario and 1-worker
+/// edge cases.
+fn write_run_banner(scenarios_count: usize, jobs: usize, jobs_explicit: bool) -> Result<()> {
+    use std::io::Write;
+    let s_scen = if scenarios_count == 1 {
+        "scenario"
+    } else {
+        "scenarios"
+    };
+    let banner = if jobs == 1 {
+        format!("Running {scenarios_count} {s_scen} sequentially")
+    } else {
+        let suffix = if jobs_explicit {
+            ""
+        } else {
+            " (auto-detected)"
+        };
+        format!("Running {scenarios_count} {s_scen} with {jobs} parallel workers{suffix}")
+    };
+    let mut stderr = std::io::stderr().lock();
+    writeln!(stderr, "{}", term_styles::dim(&banner))?;
+    writeln!(stderr)?;
+    Ok(())
+}
+
+/// Aggregate parallel worker outcomes into a single summary.
+///
+/// Scenarios that hit a fatal error before running (YAML parse failure,
+/// sandbox creation error, captured panic) are accumulated into
+/// `summary.errors` and **do not** count toward `scenarios_total /
+/// scenarios_passed / scenarios_failed / steps_*`. The stats line
+/// describes what actually ran; errored scenarios surface in their own
+/// section above it with the underlying error. A run that hits 1 parse
+/// error + 9 passing scenarios reads as "9 total" in stats plus a
+/// separate `Errors:` block above — by design.
+fn aggregate_outcomes<'a>(
+    outcomes: &'a [ScenarioOutcome],
+    scenarios_dir: &Path,
+    duration: std::time::Duration,
+    parallel_jobs: Option<usize>,
+) -> OutcomeStats<'a> {
+    let mut scenarios_total = 0usize;
+    let mut scenarios_passed = 0usize;
+    let mut scenarios_failed = 0usize;
+    let mut scenarios_cancelled = 0usize;
+    let mut scenarios_not_run = 0usize;
+    let mut steps_total = 0usize;
+    let mut steps_passed = 0usize;
+    let mut steps_failed = 0usize;
+    let mut failed = Vec::new();
+    let mut errors = Vec::new();
+
+    for o in outcomes {
+        match (&o.result, &o.error) {
+            (Some(sr), _) => {
+                scenarios_total += 1;
+                steps_total += sr.steps;
+                steps_passed += sr.passed;
+                steps_failed += sr.failed;
+                if sr.cancelled {
+                    // Cancelled is its own bucket — distinct from pass/fail.
+                    // A cancelled scenario may have had failing steps before
+                    // the cancellation; we still bucket it as cancelled
+                    // (precedence intentional: the run didn't complete, so
+                    // calling it "failed" misrepresents what happened).
+                    scenarios_cancelled += 1;
+                } else if sr.failed > 0 {
+                    scenarios_failed += 1;
+                    let display_path = o
+                        .source
+                        .strip_prefix(scenarios_dir)
+                        .unwrap_or(&o.source)
+                        .display()
+                        .to_string();
+                    failed.push(reporter::FailedScenarioRecord {
+                        name: o.name.as_str(),
+                        display_path,
+                        reproduce_token: reporter::reproduce_token(&o.source, scenarios_dir),
+                        duration: sr.duration,
+                        failing_step: sr.failing_step.as_ref(),
+                    });
+                } else {
+                    scenarios_passed += 1;
+                }
+            }
+            (None, Some(err)) => errors.push(reporter::ScenarioErrorRecord {
+                name: o.name.as_str(),
+                error: format!("{err:#}"),
+            }),
+            // Both None = the worker observed the interrupt flag and
+            // bailed before the scenario became visible to the user
+            // (either at the top of `run_one_scenario` or in the race
+            // window before `scenario_started`). These don't count as
+            // passed / failed / cancelled — the user never saw them as
+            // a row. They surface only as `scenarios_not_run`, which the
+            // reporter renders as a one-line "did not run" note when > 0.
+            (None, None) => scenarios_not_run += 1,
+        }
+    }
+
+    OutcomeStats {
+        summary: reporter::RunSummary {
+            scenarios_total,
+            scenarios_passed,
+            scenarios_failed,
+            scenarios_cancelled,
+            scenarios_not_run,
+            steps_total,
+            steps_passed,
+            steps_failed,
+            duration,
+            parallel_jobs,
+            failed,
+            errors,
+        },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,14 +792,24 @@ fn run_serial(
     project_root: &Path,
     fixtures_dir: &Path,
     cleanup_set: &CleanupSet,
+    reporter: &dyn reporter::Reporter,
+    verbosity: reporter::Verbosity,
     step: Option<usize>,
     loop_count: Option<usize>,
-    verbose: bool,
+    interrupt: &progress::InterruptFlag,
     keep: bool,
     setup_only: bool,
     is_interactive: bool,
 ) -> Result<()> {
     for path in scenario_files {
+        // Between-scenario interrupt check. A single scenario in serial mode
+        // is its own process, so we don't have the parallel path's
+        // cancelled-status tracking — we just stop iterating. The next
+        // scenario doesn't start; the run unwinds normally; the caller in
+        // `run` sees the interrupt flag and exits 130.
+        if interrupt.is_set() {
+            break;
+        }
         let scenario = load_scenario(path, fixtures_dir)?;
 
         // Register the sandbox path before touching disk so a SIGINT during
@@ -411,15 +847,23 @@ fn run_serial(
         }
 
         if is_interactive {
-            interactive::run_interactive(&scenario, &sb, &executor, step, loop_count, verbose)?;
+            interactive::run_interactive(
+                &scenario, &sb, &executor, reporter, verbosity, step, loop_count,
+            )?;
         }
 
+        let mut stderr = std::io::stderr().lock();
         if keep {
-            eprintln!("  Test environment kept at: {}", sb.base_dir.display());
+            reporter.cleanup_note(
+                &mut stderr,
+                &format!("Test environment kept at: {}", sb.base_dir.display()),
+            )?;
         } else {
             match sb.cleanup() {
-                Ok(()) => eprintln!("Cleaned up test environment."),
-                Err(e) => eprintln!("  Warning: cleanup failed: {e}"),
+                Ok(()) => reporter.cleanup_note(&mut stderr, "Cleaned up test environment.")?,
+                Err(e) => {
+                    reporter.cleanup_note(&mut stderr, &format!("Warning: cleanup failed: {e}"))?
+                }
             }
         }
     }
@@ -434,13 +878,77 @@ fn load_scenario(path: &Path, fixtures_dir: &Path) -> Result<schema::Scenario> {
         .with_context(|| format!("Failed to parse scenario: {}", path.display()))?;
     let repos = resolve_repos(raw.repos, fixtures_dir)
         .with_context(|| format!("Failed to resolve repos in: {}", path.display()))?;
+    // Canonicalize so `reproduce_token` can reliably strip the absolute
+    // scenarios_dir prefix regardless of how the path was spelled on the
+    // command line (relative, absolute, `..`-laden). Fall back to the raw
+    // path if canonicalize fails for any reason — we'd rather report a
+    // funny-looking reproduce token than refuse to load the scenario.
+    let source_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let step_lines = extract_step_lines(&content);
+    let mut steps = raw.steps;
+    for (i, step) in steps.iter_mut().enumerate() {
+        step.line = step_lines.get(i).copied();
+    }
     Ok(schema::Scenario {
         name: raw.name,
         description: raw.description,
         repos,
         env: raw.env,
-        steps: raw.steps,
+        steps,
+        source_path,
     })
+}
+
+/// Extract 1-indexed line numbers for each step in the scenario YAML.
+///
+/// Walks the file once. Locates the top-level `steps:` key, captures its
+/// indent column, then records every subsequent line whose trimmed prefix is
+/// `- name:` at indent strictly greater than the steps block. Stops when a
+/// non-blank, non-comment line returns to the steps-block indent (start of
+/// the next top-level key).
+///
+/// Pragmatic, not a YAML parser — we own every scenario file, the schema
+/// requires `name:` on every step, and `- name:` does not appear at the
+/// steps-list indent anywhere else (it can appear deeper, inside `repos:`
+/// blocks for example, but the indent check rules those out). If the scan
+/// returns fewer lines than the parsed step count, trailing steps get
+/// `line: None` — better than panicking on a YAML the parser already
+/// accepted.
+fn extract_step_lines(yaml_text: &str) -> Vec<usize> {
+    let mut step_lines = Vec::new();
+    let mut steps_indent: Option<usize> = None;
+
+    for (idx, line) in yaml_text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+
+        match steps_indent {
+            None => {
+                // Looking for the `steps:` block. Top-level only — accept any
+                // indent (canonical scenarios use 0, but be flexible).
+                if trimmed == "steps:" || trimmed.starts_with("steps:") {
+                    let rest = trimmed.trim_start_matches("steps:").trim();
+                    if rest.is_empty() {
+                        steps_indent = Some(indent);
+                    }
+                }
+            }
+            Some(block_indent) => {
+                if indent <= block_indent {
+                    // Returned to top level — done with the steps block.
+                    break;
+                }
+                if trimmed.starts_with("- name:") {
+                    step_lines.push(idx + 1);
+                }
+            }
+        }
+    }
+
+    step_lines
 }
 
 fn run_one_scenario(
@@ -449,12 +957,31 @@ fn run_one_scenario(
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
 ) -> ScenarioOutcome {
+    // After a SIGINT, rayon workers keep pulling scenarios off the queue —
+    // each one would be reported as `Cancelled` even though no step ran.
+    // That inflates the cancelled count beyond what the user actually saw
+    // running. Skip these so cancellation only counts scenarios that were
+    // truly in flight when the user pressed Ctrl+C. The outcome carries
+    // `result: None, error: None`, which `aggregate_outcomes` already
+    // treats as a no-op (its `(None, None) => {}` arm).
+    if ctx.interrupt.is_set() {
+        return ScenarioOutcome {
+            index,
+            name: path.display().to_string(),
+            source: path.to_path_buf(),
+            result: None,
+            output: Vec::new(),
+            error: None,
+        };
+    }
+
     let scenario = match load_scenario(path, ctx.fixtures_dir) {
         Ok(s) => s,
         Err(e) => {
             return ScenarioOutcome {
                 index,
                 name: path.display().to_string(),
+                source: path.to_path_buf(),
                 result: None,
                 output: Vec::new(),
                 error: Some(e),
@@ -463,6 +990,7 @@ fn run_one_scenario(
     };
 
     let name = scenario.name.clone();
+    let source = scenario.source_path.clone();
 
     // `catch_unwind` so a single panicking scenario doesn't poison the rayon
     // pool — the worker reports the panic and the pool keeps draining the
@@ -472,16 +1000,32 @@ fn run_one_scenario(
     }));
 
     match work {
-        Ok(Ok((sr, buf))) => ScenarioOutcome {
+        Ok(Ok(Some((sr, buf)))) => ScenarioOutcome {
             index,
             name,
+            source,
             result: Some(sr),
             output: buf,
             error: None,
         },
+        Ok(Ok(None)) => {
+            // Race-window skip: the worker had loaded the scenario and
+            // created its sandbox before noticing the interrupt. Same
+            // no-op outcome as the early-bail at the top of this
+            // function — invisible to the user, invisible to the count.
+            ScenarioOutcome {
+                index,
+                name,
+                source,
+                result: None,
+                output: Vec::new(),
+                error: None,
+            }
+        }
         Ok(Err(err)) => ScenarioOutcome {
             index,
             name,
+            source,
             result: None,
             output: Vec::new(),
             error: Some(err),
@@ -491,6 +1035,7 @@ fn run_one_scenario(
             ScenarioOutcome {
                 index,
                 name,
+                source,
                 result: None,
                 output: Vec::new(),
                 error: Some(anyhow::anyhow!("scenario panicked: {msg}")),
@@ -503,7 +1048,7 @@ fn run_one_scenario_inner(
     scenario: &schema::Scenario,
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
-) -> Result<(runner::ScenarioResult, Vec<u8>)> {
+) -> Result<Option<(runner::ScenarioResult, Vec<u8>)>> {
     // Pre-register the sandbox path so a SIGINT during create_at still leaves
     // a tracked path the cleanup handler can `rm -rf`. See [`setup_cleanup_handler`]
     // for the matching drain-loop logic.
@@ -519,35 +1064,80 @@ fn run_one_scenario_inner(
     sb.create_template()?;
 
     let mut buf: Vec<u8> = Vec::new();
-    let scenario_start = std::time::Instant::now();
-    let result = runner::run_non_interactive(scenario, &sb, &executor, ctx.verbose, &mut buf)?;
-    let elapsed_ms = scenario_start.elapsed().as_millis();
+    // `None` = the runner saw the interrupt flag before `scenario_started`
+    // fired — the user never saw a row for this scenario, so we count it
+    // as "skipped" (invisible, no aggregate count) rather than cancelled.
+    // Sandbox drop on this function's exit cleans up the directory we
+    // already created.
+    let Some(result) = runner::run_non_interactive(
+        scenario,
+        &sb,
+        &executor,
+        ctx.reporter,
+        ctx.progress,
+        ctx.interrupt,
+        &mut buf,
+    )?
+    else {
+        return Ok(None);
+    };
 
     // Opt-in per-scenario timing for the bench harness. Lines are
     // grep-friendly and live inside the scenario's buffered output so they
-    // print in input order alongside the scenario's own report.
+    // print in input order alongside the scenario's own report. Reuses the
+    // duration the runner already tracks so we have a single source of truth.
     if std::env::var_os("DAFT_MANUAL_TEST_EMIT_TIMING").is_some() {
         writeln!(
             &mut buf,
-            "[bench] scenario={:?} elapsed_ms={elapsed_ms}",
-            scenario.name
+            "[bench] scenario={:?} elapsed_ms={}",
+            scenario.name,
+            result.duration.as_millis()
         )?;
     }
 
     if ctx.keep {
-        writeln!(
+        ctx.reporter.cleanup_note(
             &mut buf,
-            "  Test environment kept at: {}",
-            sb.base_dir.display()
+            &format!("Test environment kept at: {}", sb.base_dir.display()),
         )?;
     } else {
         match sb.cleanup() {
-            Ok(()) => writeln!(&mut buf, "Cleaned up test environment.")?,
-            Err(e) => writeln!(&mut buf, "  Warning: cleanup failed: {e}")?,
+            // Suppress the "Cleaned up..." chatter on green scenarios — the
+            // cleanup still happens, but the line was noise on the happy path.
+            // Failures keep it so the failure-detail block visibly attaches to
+            // its scenario rather than running into the next one.
+            Ok(()) if result.failed == 0 => {}
+            Ok(()) => ctx
+                .reporter
+                .cleanup_note(&mut buf, "Cleaned up test environment.")?,
+            Err(e) => ctx
+                .reporter
+                .cleanup_note(&mut buf, &format!("Warning: cleanup failed: {e}"))?,
         }
     }
 
-    Ok((result, buf))
+    // Hand the full buffer to the sink for atomic print-then-remove on
+    // the worker thread. This is the load-bearing call that prevents
+    // ghost rows: the previous design split it across threads (worker
+    // removed the row in `scenario_finished`, main thread printed the
+    // footer via `multi.println`) which reordered under load and
+    // stranded in-flight rows in scrollback. See the comment on
+    // `IndicatifProgressSink::complete_scenario` for the long version.
+    //
+    // For NoopProgressSink (non-TTY runs), this is a no-op — the
+    // orchestrator drains buffers in input order at end-of-run so a
+    // sink-side print here would duplicate output.
+    let status = if result.cancelled {
+        reporter::ScenarioStatus::Cancelled
+    } else if result.failed > 0 {
+        reporter::ScenarioStatus::Fail
+    } else {
+        reporter::ScenarioStatus::Pass
+    };
+    ctx.progress
+        .complete_scenario(&scenario.name, status, result.duration, &buf);
+
+    Ok(Some((result, buf)))
 }
 
 fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
@@ -886,6 +1476,91 @@ fn discover_scenarios_recursive(dir: &PathBuf) -> Result<Vec<(String, PathBuf)>>
 }
 
 #[cfg(test)]
+mod extract_step_lines_tests {
+    use super::extract_step_lines;
+
+    #[test]
+    fn returns_each_step_start_line() {
+        let yaml = "\
+name: example
+steps:
+  - name: first
+    run: \"true\"
+  - name: second
+    run: \"true\"
+  - name: third
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        // Line 1: `name: example`. Line 2: `steps:`. Step `- name:` lines are 3, 5, 7.
+        assert_eq!(lines, vec![3, 5, 7]);
+    }
+
+    #[test]
+    fn skips_comments_and_blank_lines() {
+        let yaml = "\
+name: example
+
+# explanatory comment
+
+steps:
+  # first step
+  - name: first
+    run: \"true\"
+
+  - name: second
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![7, 10]);
+    }
+
+    #[test]
+    fn ignores_nested_name_keys_inside_repos_block() {
+        // Phase 3.2's text scan must not confuse `- name:` entries in the
+        // `repos:` block with step entries. The indent check (and the
+        // `steps:` anchor) is what protects us.
+        let yaml = "\
+name: scenario
+repos:
+  - name: my-repo
+    use_fixture: standard-remote
+  - name: other-repo
+    use_fixture: standard-remote
+steps:
+  - name: only-step
+    run: \"true\"
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![8]);
+    }
+
+    #[test]
+    fn stops_at_end_of_steps_block() {
+        // A trailing top-level key after `steps:` must not get scanned for
+        // pseudo-steps.
+        let yaml = "\
+name: scenario
+steps:
+  - name: only-step
+    run: \"true\"
+env:
+  FOO: bar
+";
+        let lines = extract_step_lines(yaml);
+        assert_eq!(lines, vec![3]);
+    }
+
+    #[test]
+    fn returns_empty_for_scenarios_without_steps_block() {
+        // Defensive: if the YAML somehow parses but has no `steps:` key,
+        // the scan yields an empty Vec and every Step gets `line: None`.
+        let yaml = "name: malformed\n";
+        assert!(extract_step_lines(yaml).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod cleanup_guard_tests {
     use super::*;
 
@@ -946,5 +1621,113 @@ mod cleanup_guard_tests {
             !set.lock().unwrap().contains(&path),
             "guard must unregister even when the worker panics"
         );
+    }
+}
+
+#[cfg(test)]
+mod peek_scenario_metadata_tests {
+    use super::{
+        max_scenario_name_width, max_step_label_width, peek_scenario_metadata, step_label_width,
+        ScenarioMeta,
+    };
+    use std::io::Write;
+
+    fn write_yaml(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".yml").tempfile().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    fn meta_from(yaml: &str) -> ScenarioMeta {
+        let f = write_yaml(yaml);
+        peek_scenario_metadata(f.path()).expect("readable yaml")
+    }
+
+    #[test]
+    fn peeks_name_and_step_names() {
+        let m = meta_from(
+            "name: Demo\nsteps:\n  - name: first\n    run: \"true\"\n  - name: second\n    run: \"true\"\n",
+        );
+        assert_eq!(m.name.as_deref(), Some("Demo"));
+        assert_eq!(
+            m.step_names,
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    #[test]
+    fn strips_double_and_single_quotes_in_name() {
+        let m1 = meta_from("name: \"Quoted scenario\"\nsteps: []\n");
+        assert_eq!(m1.name.as_deref(), Some("Quoted scenario"));
+        let m2 = meta_from("name: 'Single quoted'\nsteps: []\n");
+        assert_eq!(m2.name.as_deref(), Some("Single quoted"));
+    }
+
+    #[test]
+    fn ignores_repos_block_name_keys() {
+        // Same indent-aware scan as extract_step_lines — `- name:`
+        // entries inside the `repos:` block are not steps.
+        let m = meta_from(
+            "name: scenario\nrepos:\n  - name: my-repo\n    use_fixture: standard\nsteps:\n  - name: only-step\n    run: \"true\"\n",
+        );
+        assert_eq!(m.step_names, vec!["only-step".to_string()]);
+    }
+
+    #[test]
+    fn returns_default_meta_when_no_name() {
+        let m = meta_from("description: nothing here\nsteps: []\n");
+        assert_eq!(m.name, None);
+        assert!(m.step_names.is_empty());
+    }
+
+    #[test]
+    fn returns_none_for_unreadable_path() {
+        assert!(peek_scenario_metadata(std::path::Path::new("/nonexistent-xyzzy.yml")).is_none());
+    }
+
+    #[test]
+    fn max_name_width_picks_longest() {
+        let metas = vec![
+            ScenarioMeta {
+                name: Some("short".into()),
+                step_names: vec![],
+            },
+            ScenarioMeta {
+                name: Some("this is a much longer scenario name".into()),
+                step_names: vec![],
+            },
+            ScenarioMeta {
+                name: Some("middle one".into()),
+                step_names: vec![],
+            },
+        ];
+        assert_eq!(
+            max_scenario_name_width(&metas),
+            "this is a much longer scenario name".chars().count()
+        );
+    }
+
+    #[test]
+    fn max_step_label_width_picks_longest_label() {
+        let metas = vec![ScenarioMeta {
+            name: Some("x".into()),
+            step_names: vec![
+                "a".into(),
+                "bb".into(),
+                "Foo Bar Baz".into(),
+                "ddd".into(),
+                "ee".into(),
+            ],
+        }];
+        let expected = step_label_width(3, 5, "Foo Bar Baz");
+        assert_eq!(max_step_label_width(&metas), expected);
+        // Sanity-check the formula: "[3/5] Foo Bar Baz" = 17 chars.
+        assert_eq!(expected, "[3/5] Foo Bar Baz".chars().count());
+    }
+
+    #[test]
+    fn widths_are_zero_on_empty_set() {
+        assert_eq!(max_scenario_name_width(&[]), 0);
+        assert_eq!(max_step_label_width(&[]), 0);
     }
 }

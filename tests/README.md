@@ -51,6 +51,66 @@ mise run test:manual -- checkout:basic
 mise run test:manual -- --list
 ```
 
+### Verbosity ladder
+
+Per #518, the runner output has four levels (`-q` / default / `-v` / `-vv`):
+
+| Flag   | Pass footer | Fail footer | Cleanup line | Header + path | Per-step lines | Check icons | Capture on fail   | Capture on pass   | Expanded `$ command` |
+| ------ | ----------- | ----------- | ------------ | ------------- | -------------- | ----------- | ----------------- | ----------------- | -------------------- |
+| `-q`   | no          | yes         | fail only    | no            | no             | no          | no (summary only) | no                | no                   |
+| (none) | yes         | yes         | fail only    | no            | no             | no          | no (summary only) | no                | no                   |
+| `-v`   | yes         | yes         | fail only    | yes           | yes            | no          | first 20 lines    | no                | no                   |
+| `-vv`  | yes         | yes         | fail only    | yes           | yes            | yes         | full, no line cap | full, no line cap | yes                  |
+
+Default sits where `cargo test`, vitest, and pytest sit: one footer line per
+scenario, with the duration + optional `(slow)` annotation doing at-a-glance
+outlier work. Old default detail (header, dim path, per-step
+`[N/M] name ... ok | FAIL`, inline capture on fail) lives at `-v`; "firehose
+everything, uncapped" lives at `-vv`. `-q` collapses passing scenarios entirely
+— only failed footers + the cleanup line + the shared summary block surface.
+
+The "Cleanup line" column is the `Cleaned up test environment.` message — it
+emits flush against the footer on a failed scenario at every verbosity (`-q`
+included), and is suppressed entirely on green to avoid noise on the happy path.
+The "Capture on fail" cells say "no (summary only)" at `-q` / default because
+the inline per-step capture is suppressed there, but the end-of-run failures
+block still carries the full capture so the reader gets the failure payload
+either way.
+
+Each scenario ends with a `✓` / `✗` footer carrying its wall-clock duration
+(`✓ name  142ms` / `✗ name  2.3s`). Scenarios over 5s get a `(slow)` annotation
+so slow tests are visible at a glance even at default verbosity. Per-step
+captured output (at `-v` upward) is rendered as separate `--- stdout ---` and
+`--- stderr ---` blocks so the reader can tell which stream produced the noise.
+
+At the end of a run the summary shows a `⎯⎯⎯ Failed Scenarios (N) ⎯⎯⎯` banner
+(when there are failures) followed by numbered entries — each with the
+scenario-relative `path:line` location pointer on its own line
+(terminal-clickable), a `❯` marker on the failing step, the failed assertions,
+and any captured stdout/stderr. Then come separate `Scenarios:` / `Steps:`
+lines, `Duration:`, an optional `parallel jobs: N` suffix, and a `Reproduce:`
+block with one `mise run test:manual -- --ci <token>` per failure.
+
+### TTY live progress region
+
+On a TTY, the runner shows a pinned live region at the bottom of the terminal
+during a parallel run: one row per in-flight scenario (carrying scenario name
+with step counter, step name, and a yellow `(slow)` annotation once elapsed
+crosses 5s) plus a summary bar (`⠋  [42/252]  4 running  ◆  1 failed  ◆  0:23`).
+Completed scenarios stream their per-tier scrollback content above the region in
+**completion order** as they finish.
+
+On non-TTY (CI logs, redirected output, `cargo run`, `| cat`), the region is
+suppressed entirely and output reverts to today's behavior: input-order drain at
+end, no live bar. CI logs stay byte-identical. The non-TTY path is also forced
+by `CI=1` or `NO_PROGRESS=1` even when stderr is a TTY (some CI runners flag
+stderr as a TTY but bar redraws still pollute the logs).
+
+The region is orthogonal to verbosity — all four tiers (`-q` / default / `-v` /
+`-vv`) get it on TTY. `-q` benefits the most, since its scrollback is silent on
+a fully green run; the bar is the entire heartbeat. Failures still surface in
+scrollback at `-q` (fail footer + cleanup line) so the contract holds.
+
 ## Benchmarks
 
 ```bash

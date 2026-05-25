@@ -368,9 +368,15 @@ enum Commands {
         #[arg(long, alias = "ci")]
         no_interactive: bool,
 
-        /// Show verbose output (full check details, command output)
-        #[arg(short, long)]
-        verbose: bool,
+        /// Increase verbosity (-v for per-check icons + captured output on pass,
+        /// -vv for expanded commands + untruncated captured output).
+        #[arg(short, long, action = clap::ArgAction::Count)]
+        verbose: u8,
+
+        /// Suppress per-step output; print only scenario PASS/FAIL plus the
+        /// final summary (CI green-path, benches).
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
 
         /// Jump to a specific step number (1-based)
         #[arg(long)]
@@ -400,15 +406,15 @@ enum Commands {
         #[arg(long, requires = "show")]
         checks: bool,
 
-        /// Run scenarios in parallel. Output is buffered per scenario and
-        /// flushed in input order once all scenarios finish — runs concurrently,
-        /// reports deterministically.
+        /// Redundant — parallel execution is the default. Kept for back-compat
+        /// with bench scripts; equivalent to passing no flag.
         #[arg(long)]
         parallel: bool,
 
         /// Cap on concurrent scenarios. Overrides --parallel and
         /// DAFT_MANUAL_TEST_JOBS. `--jobs 1` forces serial execution.
-        #[arg(long, value_name = "N")]
+        /// Default: `available_parallelism()` (one worker per logical CPU).
+        #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
     },
 }
@@ -431,6 +437,7 @@ fn main() -> Result<()> {
             scenarios,
             no_interactive,
             verbose,
+            quiet,
             step,
             loop_count,
             keep,
@@ -441,11 +448,12 @@ fn main() -> Result<()> {
             parallel,
             jobs,
         } => {
-            let jobs = resolve_jobs(jobs, parallel)?;
+            let (jobs, jobs_explicit) = resolve_jobs(jobs, parallel)?;
+            let verbosity = manual_test::reporter::Verbosity::from_flags(verbose, quiet);
             manual_test::run(
                 scenarios,
                 no_interactive,
-                verbose,
+                verbosity,
                 step,
                 loop_count,
                 keep,
@@ -454,40 +462,52 @@ fn main() -> Result<()> {
                 show,
                 checks,
                 jobs,
+                jobs_explicit,
             )
         }
     }
 }
 
-/// Resolve the parallel-job cap for the manual-test runner.
+/// Resolve the parallel-job count for the manual-test runner.
 ///
-/// Precedence: `--jobs N` > `DAFT_MANUAL_TEST_JOBS` > (`--parallel` ?
-/// `default_cap()` : 1). Returning `1` keeps today's serial behavior as the
-/// default; the rollout plan flips this to `default_cap()` in a follow-up PR
-/// after a week of `--parallel` use surfaces no new flakes.
-fn resolve_jobs(jobs_flag: Option<usize>, parallel_flag: bool) -> Result<usize> {
+/// Returns `(jobs, explicit)` — the resolved worker count and whether the
+/// caller asked for it specifically. The explicit bit lets the runner
+/// distinguish "user explicitly wanted parallel" (worth bailing on if the
+/// run is interactive) from "auto-default picked parallel" (silently fall
+/// back to serial in interactive mode).
+///
+/// Precedence: `--jobs N` > `DAFT_MANUAL_TEST_JOBS` > `--parallel` >
+/// auto-default. The first three are explicit; the auto-default is not.
+/// The auto-default and `--parallel` both pick `default_cap()` =
+/// `available_parallelism()`, so `--parallel` is now redundant — kept for
+/// back-compat with bench scripts that still pass it.
+fn resolve_jobs(jobs_flag: Option<usize>, parallel_flag: bool) -> Result<(usize, bool)> {
     if let Some(n) = jobs_flag {
-        return Ok(n.max(1));
+        return Ok((n.max(1), true));
     }
     if let Ok(raw) = std::env::var("DAFT_MANUAL_TEST_JOBS") {
         let parsed: usize = raw
             .parse()
             .with_context(|| format!("DAFT_MANUAL_TEST_JOBS must be a usize, got {raw:?}"))?;
-        return Ok(parsed.max(1));
+        return Ok((parsed.max(1), true));
     }
     if parallel_flag {
-        return Ok(default_cap());
+        return Ok((default_cap(), true));
     }
-    Ok(1)
+    Ok((default_cap(), false))
 }
 
-/// Default parallel-job cap. Aims for `available_parallelism() / 2` to leave
-/// headroom for the two-worktree scenarios that spawn child `daft` processes.
+/// Default parallel-job count: one worker per logical CPU.
+///
+/// Empirically the sweet spot — on a 10-core machine, suite wall-clock
+/// drops monotonically from `--jobs 1` (~7m30s) through `--jobs 4` (~2m10s)
+/// to `--jobs 10` (~85-90s), then plateaus and gradually rises past that
+/// as oversubscription costs dominate. Matching available_parallelism keeps
+/// every core busy without scheduling thrash.
 fn default_cap() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .saturating_div(2)
         .max(1)
 }
 
@@ -505,43 +525,48 @@ mod jobs_resolution_tests {
     fn resolve_jobs_flag_wins_over_env_and_parallel() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("DAFT_MANUAL_TEST_JOBS", "9");
-        let r = resolve_jobs(Some(4), true).unwrap();
+        let (n, explicit) = resolve_jobs(Some(4), true).unwrap();
         std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
-        assert_eq!(r, 4);
+        assert_eq!(n, 4);
+        assert!(explicit);
     }
 
     #[test]
     fn resolve_jobs_env_wins_over_parallel_flag() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("DAFT_MANUAL_TEST_JOBS", "7");
-        let r = resolve_jobs(None, true).unwrap();
+        let (n, explicit) = resolve_jobs(None, true).unwrap();
         std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
-        assert_eq!(r, 7);
+        assert_eq!(n, 7);
+        assert!(explicit);
     }
 
     #[test]
-    fn resolve_jobs_parallel_flag_uses_default_cap() {
+    fn resolve_jobs_parallel_flag_uses_default_cap_and_is_explicit() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
-        let r = resolve_jobs(None, true).unwrap();
-        assert_eq!(r, default_cap());
-        assert!(r >= 1);
+        let (n, explicit) = resolve_jobs(None, true).unwrap();
+        assert_eq!(n, default_cap());
+        assert!(n >= 1);
+        assert!(explicit);
     }
 
     #[test]
-    fn resolve_jobs_default_is_one() {
+    fn resolve_jobs_no_flags_picks_default_cap_implicitly() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
-        let r = resolve_jobs(None, false).unwrap();
-        assert_eq!(r, 1);
+        let (n, explicit) = resolve_jobs(None, false).unwrap();
+        assert_eq!(n, default_cap());
+        assert!(!explicit, "auto-default must report as implicit");
     }
 
     #[test]
     fn resolve_jobs_zero_coerced_to_one() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("DAFT_MANUAL_TEST_JOBS");
-        let r = resolve_jobs(Some(0), false).unwrap();
-        assert_eq!(r, 1);
+        let (n, explicit) = resolve_jobs(Some(0), false).unwrap();
+        assert_eq!(n, 1);
+        assert!(explicit, "--jobs 0 is still an explicit user request");
     }
 
     #[test]
@@ -554,8 +579,12 @@ mod jobs_resolution_tests {
     }
 
     #[test]
-    fn default_cap_is_at_least_one() {
-        assert!(default_cap() >= 1);
+    fn default_cap_matches_available_parallelism() {
+        let expected = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
+        assert_eq!(default_cap(), expected);
     }
 }
 

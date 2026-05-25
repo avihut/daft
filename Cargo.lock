@@ -5684,6 +5684,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "daft",
+ "indicatif",
  "nix",
  "rayon",
  "serde",

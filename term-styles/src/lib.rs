@@ -112,6 +112,25 @@ pub fn dim_underline(text: &str) -> String {
     format!("{DIM}{UNDERLINE}{text}{RESET}")
 }
 
+/// Wraps text in bold + red styling. Used for primary failure markers
+/// (`✗`, `❯`, `FAIL`, failed-scenario footers) per the test runner reporter's
+/// design language (`xtask/src/manual_test/reporter/CLAUDE.md`).
+pub fn bold_red(text: &str) -> String {
+    format!("{BOLD}{RED}{text}{RESET}")
+}
+
+/// Wraps text in bold + green styling. Used for primary pass markers
+/// (`✓` icons, passed-scenario footers).
+pub fn bold_green(text: &str) -> String {
+    format!("{BOLD}{GREEN}{text}{RESET}")
+}
+
+/// Wraps text in bold + cyan styling. Used for section-heading primary
+/// content (scenario name at the top of a scenario block).
+pub fn bold_cyan(text: &str) -> String {
+    format!("{BOLD}{CYAN}{text}{RESET}")
+}
+
 /// Wraps text in green styling.
 pub fn green(text: &str) -> String {
     format!("{GREEN}{text}{RESET}")
@@ -145,6 +164,12 @@ pub fn orange(text: &str) -> String {
 /// Wraps text in bright purple styling.
 pub fn bright_purple(text: &str) -> String {
     format!("{BRIGHT_PURPLE}{text}{RESET}")
+}
+
+/// Wraps text in bold + bright purple styling. Used by the test runner
+/// reporter for the step-name Level-2 anchor at `-vv` (`pretty.rs`).
+pub fn bold_bright_purple(text: &str) -> String {
+    format!("{BOLD}{BRIGHT_PURPLE}{text}{RESET}")
 }
 
 /// Wraps text in dark gray styling (bright black).

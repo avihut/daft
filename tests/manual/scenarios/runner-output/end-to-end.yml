@@ -1,0 +1,87 @@
+name: runner-output regression smoke
+description: |
+  End-to-end smoke test for issue #518 output improvements. Shells out to
+  the pre-built xtask binary against `_fixtures/fail.yml` (an
+  intentionally-failing fixture invisible to recursive discovery because
+  the discoverer only descends one level) and asserts that the new failure
+  output appears on stderr.
+
+  Per-byte formatting fidelity is owned by the Rust golden tests in
+  xtask/src/manual_test/reporter/tests.rs; this scenario only verifies the
+  wiring — that the reporter is actually plumbed through the runner, the
+  CLI, and the summary block.
+
+  Uses `$BINARY_DIR/xtask` directly rather than `cargo run -p xtask`
+  because cargo run does a from-scratch dependency-resolution and
+  incremental-link pass each invocation. On a cold CI cargo cache that
+  was ~1 minute per invocation × 2 invocations = ~2 minutes added to
+  the YAML matrix wall-clock for what is logically one fast scenario.
+  The pre-built binary is the same binary `cargo run` would dispatch
+  to, so the wiring being verified is identical.
+
+steps:
+  - name: invoke xtask against the intentional-failure fixture
+    run: |
+      cd "$BINARY_DIR/../.." && \
+        NO_COLOR=1 "$BINARY_DIR/xtask" \
+          manual-test --no-interactive \
+          tests/manual/scenarios/runner-output/_fixtures/fail.yml \
+          2>&1 || true
+    expect:
+      exit_code: 0
+      # Substrings deliberately avoid spanning ANSI escape boundaries
+      # (term_styles always emits color codes today, even with NO_COLOR set —
+      # tracked separately from this issue). Pick substrings that fall between
+      # color spans.
+      output_contains:
+        - "runner-output fixture (intentional failure)"
+        # Phase 1.2: section banner with rule chars + failure count.
+        - "Failed Scenarios (1)"
+        - "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"
+        # Phase 1.3: numbered entry.
+        - "1) "
+        # Phase 1.5 + S2: ❯ marker on the failing-step line.
+        - "step 2/2"
+        - "Exit code: expected 0, got 1"
+        - "Scenarios:  "
+        - " passed, "
+        - " failed   (1 total)"
+        # Failure-block location pointer: scenarios-relative `path:line` on
+        # its own line (terminal-clickable). Replaces the prior basename-only
+        # `at fail.yml:N` citation that sat at the right of the focal-step line.
+        - "runner-output/_fixtures/fail.yml:"
+        # Reporter design language §3: failure icon is `✗`, never lowercase `x`.
+        - "✗ "
+        - "Reproduce:"
+        - "runner-output:_fixtures:fail"
+      output_not_contains:
+        # Reporter design language §3: lowercase `x` as a failure icon is
+        # banned. Asserting absence catches accidental regressions.
+        - "x Exit code:"
+        # The old basename-only inline citation must not reappear; the
+        # location now lives on its own line as the full relative path.
+        - "at fail.yml:"
+        # §6 shift: at default verbosity, per-step lines are suppressed. The
+        # `[N/M]` counter only appears at `-v` and above. Regression guard
+        # for the ladder shift.
+        - "[1/2]"
+        - "[2/2]"
+
+  - name: invoke xtask at -v to confirm per-step lines surface
+    run: |
+      cd "$BINARY_DIR/../.." && \
+        NO_COLOR=1 "$BINARY_DIR/xtask" \
+          manual-test --no-interactive -v \
+          tests/manual/scenarios/runner-output/_fixtures/fail.yml \
+          2>&1 || true
+    expect:
+      exit_code: 0
+      output_contains:
+        # §6: at -v, per-step lines (with [N/M] counter) appear inline before
+        # the scenario footer.
+        - "[1/2]"
+        - "[2/2]"
+        - "step that succeeds"
+        - "step that fails"
+        # The failures block at end still emits at -v (unchanged from default).
+        - "Failed Scenarios (1)"

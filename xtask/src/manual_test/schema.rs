@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// A complete test scenario parsed from a YAML file.
 #[derive(Debug, Clone, Deserialize)]
@@ -27,6 +28,11 @@ pub struct Scenario {
 
     /// Ordered list of steps to execute.
     pub steps: Vec<Step>,
+
+    /// Source YAML path the scenario was loaded from. Populated by
+    /// `load_scenario`; empty when a `Scenario` is built directly in tests.
+    #[serde(default, skip)]
+    pub source_path: PathBuf,
 }
 
 /// Specification for a git repository to create.
@@ -181,6 +187,13 @@ pub struct Step {
     /// Optional expectations to verify after the command completes.
     #[serde(default)]
     pub expect: Option<Expectations>,
+
+    /// 1-indexed source line where this step begins in the scenario YAML.
+    /// Populated by `load_scenario` via a post-parse text scan; not part of
+    /// the YAML schema (skipped on serialize/deserialize). Surfaces in the
+    /// failed-scenarios summary block as `at file.yml:N`.
+    #[serde(default, skip)]
+    pub line: Option<usize>,
 }
 
 /// Expectations to verify after a step completes.

@@ -1,0 +1,19 @@
+name: runner-output fixture (intentional failure)
+description: |
+  Fixture scenario invoked by tests/manual/scenarios/runner-output/end-to-end.yml.
+  Lives under `_fixtures/` so the recursive scenario discoverer (which only
+  reaches one level deep) skips it during normal runs. Intentionally fails so
+  the regression scenario can assert on the runner's failure output.
+
+steps:
+  - name: step that succeeds
+    run: "true"
+    expect:
+      exit_code: 0
+
+  - name: step that fails — exit code mismatch
+    run: "false"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "RUNNER_OUTPUT_FIXTURE_NEVER_FOUND"

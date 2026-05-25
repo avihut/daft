@@ -9,8 +9,11 @@
 use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use super::executor::CommandExecutor;
+use super::progress::ProgressSink;
+use super::reporter::{FailingStep, Reporter, ScenarioStatus, StepReport};
 use super::sandbox::Sandbox;
 use super::schema::{Expectations, Scenario, Step};
 
@@ -51,25 +54,24 @@ pub struct ScenarioResult {
     pub passed: usize,
     /// Number of steps with at least one failed assertion.
     pub failed: usize,
+    /// `true` when the worker bailed mid-scenario in response to SIGINT.
+    /// When set, `steps` reflects only the steps that ran (could be 0);
+    /// `passed` and `failed` reflect the assertions that completed before
+    /// cancellation. The scenario is counted as `scenarios_cancelled` in
+    /// the run summary, distinct from `scenarios_passed` / `scenarios_failed`.
+    pub cancelled: bool,
+    /// Wall-clock duration of the scenario's step phase (excludes sandbox
+    /// setup and cleanup). Surfaced on every footer and in the failed-
+    /// scenarios block; the bench harness still reads it via the
+    /// `DAFT_MANUAL_TEST_EMIT_TIMING` opt-in.
+    pub duration: Duration,
+    /// The first failing step (full detail), captured for the run summary.
+    pub failing_step: Option<FailingStep>,
 }
 
 // ---------------------------------------------------------------------------
 // Individual assertion functions
 // ---------------------------------------------------------------------------
-
-/// Truncate content for display in failure messages.
-/// Escapes newlines and trims to `max_len` characters (by char count, not bytes,
-/// to avoid panicking on multi-byte UTF-8 sequences such as box-drawing glyphs).
-fn truncate_content(s: &str, max_len: usize) -> String {
-    let escaped = s.replace('\n', "\\n").replace('\r', "\\r");
-    let char_count = escaped.chars().count();
-    if char_count <= max_len {
-        escaped
-    } else {
-        let truncated: String = escaped.chars().take(max_len).collect();
-        format!("{truncated}...")
-    }
-}
 
 pub fn check_exit_code(actual: i32, expected: i32) -> AssertionResult {
     AssertionResult {
@@ -130,10 +132,7 @@ pub fn check_file_contains(path: &str, content: &str) -> AssertionResult {
                 passed: found,
                 label: format!("File contains \"{content}\": {path}"),
                 detail: if !found {
-                    Some(format!(
-                        "expected: \"{content}\"\n        actual: \"{}\"",
-                        truncate_content(&data, 200)
-                    ))
+                    Some(format_diff_detail("expected", content, &data))
                 } else {
                     None
                 },
@@ -155,10 +154,7 @@ pub fn check_file_not_contains(path: &str, content: &str) -> AssertionResult {
                 passed: !found,
                 label: format!("File not contains \"{content}\": {path}"),
                 detail: if found {
-                    Some(format!(
-                        "unexpected: \"{content}\"\n        actual: \"{}\"",
-                        truncate_content(&data, 200)
-                    ))
+                    Some(format_diff_detail("unexpected", content, &data))
                 } else {
                     None
                 },
@@ -215,10 +211,7 @@ pub fn check_output_contains(output: &str, expected: &str) -> AssertionResult {
         passed: found,
         label: format!("Output contains \"{expected}\""),
         detail: if !found {
-            Some(format!(
-                "expected: \"{expected}\"\n        actual: \"{}\"",
-                truncate_content(output, 200)
-            ))
+            Some(format_diff_detail("expected", expected, output))
         } else {
             None
         },
@@ -231,14 +224,47 @@ pub fn check_output_not_contains(output: &str, unexpected: &str) -> AssertionRes
         passed: !found,
         label: format!("Output not contains \"{unexpected}\""),
         detail: if found {
-            Some(format!(
-                "unexpected: \"{unexpected}\"\n        actual: \"{}\"",
-                truncate_content(output, 200)
-            ))
+            Some(format_diff_detail("unexpected", unexpected, output))
         } else {
             None
         },
     }
+}
+
+/// Format an `expected: …` / `actual: …` block for substring assertions.
+///
+/// Single-line content stays on one line. Multi-line `actual` content is
+/// rendered as `actual:` followed by each line indented. The reporter
+/// owns the outer indent (per-line `    ` prefix), so this helper produces
+/// content with no leading whitespace.
+///
+/// Per the reporter design language (§1, §2): the label segments are accent —
+/// `bold_green` for `expected:` / `unexpected:` (what we were looking for),
+/// `bold_red` for `actual:` (the failure state). The reporter emits these
+/// lines at default fg (NOT inside a dim wrap) — dim + colored collapses to
+/// muddy grey-X on most terminals.
+fn format_diff_detail(label: &str, needle: &str, actual: &str) -> String {
+    let mut out = format!("{}: {needle}\n", term_styles::bold_green(label));
+    let actual_label = term_styles::bold_red("actual");
+    if actual.is_empty() {
+        out.push_str(&format!("{actual_label}:   <empty>"));
+    } else if actual.contains('\n') {
+        out.push_str(&format!("{actual_label}:\n"));
+        for line in actual.lines() {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        // Strip the trailing newline we just added so the reporter's per-line
+        // emitter doesn't print a blank trailing row.
+        if out.ends_with('\n') {
+            out.pop();
+        }
+    } else {
+        out.push_str(&format!("{actual_label}:   "));
+        out.push_str(actual);
+    }
+    out
 }
 
 pub fn check_branch_exists(repo: &str, branch: &str) -> AssertionResult {
@@ -473,86 +499,148 @@ pub fn check_step(
 // Non-interactive runner
 // ---------------------------------------------------------------------------
 
-/// Run all steps in a scenario sequentially, printing a concise test report.
+/// Run all steps in a scenario sequentially, emitting through `reporter`.
 ///
-/// Command output is captured (not shown) unless a step fails, in which case
-/// captured output is printed for debugging. Returns a [`ScenarioResult`] with
-/// pass/fail counts.
+/// Command output is always captured; the reporter decides whether/how to
+/// render it based on verbosity. The first failing step's full detail is
+/// captured into the returned [`ScenarioResult`] so the orchestrator can
+/// surface it in the end-of-run summary block.
+///
+/// `progress` receives out-of-band lifecycle events (scenario started, step
+/// started, scenario finished) so the orchestrator's TTY progress region
+/// can reflect live state. A `NoopProgressSink` makes those calls free —
+/// the runner core never branches on progress.
 pub fn run_non_interactive(
     scenario: &Scenario,
     sandbox: &Sandbox,
     executor: &dyn CommandExecutor,
-    verbose: bool,
+    reporter: &dyn Reporter,
+    progress: &dyn ProgressSink,
+    interrupt: &super::progress::InterruptFlag,
     out: &mut impl Write,
-) -> Result<ScenarioResult> {
-    use term_styles as styles;
+) -> Result<Option<ScenarioResult>> {
+    // Last-chance interrupt check before the scenario becomes visible to
+    // the user (scenario_started adds a row to the bar). Anything caught
+    // here is "skipped" — never made it into the live region, never
+    // counted toward `cancelled`. This draws the cancel-vs-skip line at
+    // exactly the user's mental model: "what was I watching when I hit
+    // Ctrl+C?" The earlier check in `run_one_scenario` covers the
+    // pre-sandbox case; this one closes the race window between sandbox
+    // creation and `scenario_started`.
+    if interrupt.is_set() {
+        return Ok(None);
+    }
+    reporter.scenario_header(out, scenario)?;
 
-    writeln!(out, "{}", styles::cyan(&scenario.name))?;
-
+    let total = scenario.steps.len();
     let mut passed = 0;
     let mut failed = 0;
+    let mut failing_step: Option<FailingStep> = None;
+    let mut cancelled = false;
+    let mut steps_run = 0usize;
 
+    progress.scenario_started(&scenario.name, total);
+    let started = Instant::now();
     for (i, step) in scenario.steps.iter().enumerate() {
-        write!(
-            out,
-            "{} {} ... ",
-            styles::blue(&format!("[{}/{}]", i + 1, scenario.steps.len())),
-            &step.name
-        )?;
+        // Cooperative cancellation check at the start of each step. The
+        // current step (if one is in flight) finishes naturally — we only
+        // bail between steps so we never abandon a partially-executed step
+        // mid-subprocess. A scenario that's stuck inside a single slow
+        // step (e.g. a long git clone) won't react until that step
+        // returns; the SIGINT handler's second-press path is the escape
+        // hatch for that case.
+        if interrupt.is_set() {
+            cancelled = true;
+            break;
+        }
+        reporter.step_start(out, i, total, step)?;
+        progress.step_started(&scenario.name, i, total, &step.name);
 
         let result = execute_step(step, sandbox, executor, true)?;
+        steps_run += 1;
+        let expanded = sandbox.expand_vars(&step.run);
+        let report = StepReport {
+            expanded_command: Some(&expanded),
+            assertions: &result.assertions,
+            stdout: result.stdout.as_deref(),
+            stderr: result.stderr.as_deref(),
+        };
 
         if result.all_passed {
-            let check_count = result.assertions.len();
-            if check_count > 0 {
-                writeln!(
-                    out,
-                    "{} {}",
-                    styles::green("ok"),
-                    styles::dim(&format!("({check_count} checks)"))
-                )?;
-            } else {
-                writeln!(out, "{}", styles::green("ok"))?;
-            }
-            if verbose {
-                for a in &result.assertions {
-                    writeln!(out, "  {} {}", styles::green("✓"), styles::dim(&a.label))?;
-                }
-            }
+            reporter.step_pass(out, &report)?;
             passed += 1;
         } else {
-            let fail_count = result.assertions.iter().filter(|a| !a.passed).count();
-            writeln!(
-                out,
-                "{} {}",
-                styles::red("FAIL"),
-                styles::dim(&format!("({fail_count} failed)"))
-            )?;
-            for a in &result.assertions {
-                if !a.passed {
-                    writeln!(out, "  {} {}", styles::red("x"), a.label)?;
-                    if let Some(detail) = &a.detail {
-                        writeln!(out, "    {}", styles::dim(detail))?;
-                    }
-                }
-            }
-            // Show captured output for debugging.
-            let captured = combine_captured(&result.stdout, &result.stderr);
-            if !captured.is_empty() {
-                writeln!(out, "  {}", styles::dim("--- captured output ---"))?;
-                for line in captured.lines().take(20) {
-                    writeln!(out, "  {}", styles::dim(line))?;
-                }
+            reporter.step_fail(out, &report)?;
+            if failing_step.is_none() {
+                failing_step = Some(snapshot_failing_step(&result, step, i, total));
             }
             failed += 1;
         }
     }
+    let duration = started.elapsed();
 
-    Ok(ScenarioResult {
-        steps: scenario.steps.len(),
+    let status = if cancelled {
+        // Cancelled wins over Pass/Fail for the lifecycle event: the
+        // scenario didn't complete, and that's the thing the live region
+        // and stats need to reflect.
+        ScenarioStatus::Cancelled
+    } else if failed == 0 {
+        ScenarioStatus::Pass
+    } else {
+        ScenarioStatus::Fail
+    };
+    reporter.scenario_footer(out, scenario, status, duration)?;
+    // We DO NOT call `progress.complete_scenario` here — the caller
+    // (`run_one_scenario_inner`) appends timing + cleanup-note bytes to
+    // the buffer after this returns, and the sink needs the full buffer
+    // to atomically `multi.println` it before removing the row. See the
+    // ordering comment on `IndicatifProgressSink::complete_scenario`
+    // for why print-then-remove on the same thread is load-bearing.
+
+    Ok(Some(ScenarioResult {
+        steps: steps_run,
         passed,
         failed,
-    })
+        cancelled,
+        duration,
+        failing_step,
+    }))
+}
+
+/// Copy the first failing step's detail into an owned snapshot the summary
+/// block can render even after the per-scenario buffers are dropped.
+fn snapshot_failing_step(
+    result: &StepResult,
+    step: &Step,
+    index: usize,
+    total: usize,
+) -> FailingStep {
+    let failed_assertions = result
+        .assertions
+        .iter()
+        .filter(|a| !a.passed)
+        .map(|a| AssertionResult {
+            passed: a.passed,
+            label: a.label.clone(),
+            detail: a.detail.clone(),
+        })
+        .collect();
+    FailingStep {
+        index,
+        total,
+        step_name: step.name.clone(),
+        line: step.line,
+        failed_assertions,
+        captured_stdout: trim_or_empty(&result.stdout),
+        captured_stderr: trim_or_empty(&result.stderr),
+    }
+}
+
+/// Trim trailing whitespace, returning an empty string when the source is
+/// missing. Kept separate from `combine_captured` so the FailingStep snapshot
+/// can preserve the stdout/stderr split for the summary block.
+fn trim_or_empty(s: &Option<String>) -> String {
+    s.as_ref().map(|v| v.trim().to_string()).unwrap_or_default()
 }
 
 /// Combine captured stdout/stderr, trimming trailing whitespace.
@@ -810,6 +898,7 @@ mod tests {
             run: run.to_string(),
             cwd: None,
             expect: None,
+            line: None,
         }
     }
 
