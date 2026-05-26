@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.4](https://github.com/avihut/daft/compare/v1.14.3...v1.14.4) - 2026-05-26
+
+
+### Bug Fixes
+
+- **hooks**: Support background jobs depending on foreground jobs (#558)
+
+
+### Features
+
+- **test-runner**: Default to automatic; add --interactive (-i) for step-through (#557)
+- **test-runner**: Test runner output improvements (#518) (#551)
 ## [1.14.3](https://github.com/avihut/daft/compare/v1.14.2...v1.14.3) - 2026-05-22
 
 
