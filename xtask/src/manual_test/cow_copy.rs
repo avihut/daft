@@ -154,4 +154,14 @@ mod tests {
 
         assert!(copy_dir(&src, &dst).is_err());
     }
+
+    #[test]
+    fn errors_when_source_is_a_file() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("not-a-dir");
+        let dst = tmp.path().join("dst");
+        write_file(&src, b"hi");
+
+        assert!(copy_dir(&src, &dst).is_err());
+    }
 }
