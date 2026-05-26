@@ -8,8 +8,8 @@
 //! the [`super::executor::CommandExecutor`] port.
 
 use anyhow::{Context, Result};
+use daft::cow_copy;
 use std::collections::HashMap;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -222,23 +222,13 @@ impl Sandbox {
     }
 
     /// Snapshot `remotes/` → `remotes-template/` so that `reset()` can
-    /// restore the original state. Uses `cp -a` to preserve git objects.
+    /// restore the original state. Uses reflink (APFS clonefile on macOS,
+    /// `ioctl(FICLONE)` on reflink-capable Linux filesystems) where the
+    /// filesystem supports it, with a transparent byte-copy fallback
+    /// elsewhere.
     pub fn create_template(&self) -> Result<()> {
-        // `process_group(0)` insulates `cp` from terminal SIGINT — see the
-        // same explanation on `DaftCommandExecutor::execute`. Without it,
-        // Ctrl+C during a scenario's setup phase kills `cp` mid-copy and
-        // the scenario surfaces as an `error:` row instead of a clean
-        // cancellation.
-        let status = std::process::Command::new("cp")
-            .process_group(0)
-            .args(["-a"])
-            .arg(&self.remotes_dir)
-            .arg(&self.template_dir)
-            .status()
-            .context("failed to run cp -a for template creation")?;
-
-        anyhow::ensure!(status.success(), "cp -a failed with status {status}");
-        Ok(())
+        cow_copy::copy_dir(&self.remotes_dir, &self.template_dir)
+            .context("snapshotting remotes/ to remotes-template/")
     }
 
     /// Reset the sandbox to its initial state: clear `work/`, restore
@@ -260,15 +250,8 @@ impl Sandbox {
                 })?;
             }
 
-            let status = std::process::Command::new("cp")
-                .process_group(0)
-                .args(["-a"])
-                .arg(&self.template_dir)
-                .arg(&self.remotes_dir)
-                .status()
-                .context("failed to run cp -a for reset")?;
-
-            anyhow::ensure!(status.success(), "cp -a failed with status {status}");
+            cow_copy::copy_dir(&self.template_dir, &self.remotes_dir)
+                .context("restoring remotes/ from remotes-template/")?;
         }
 
         Ok(())
