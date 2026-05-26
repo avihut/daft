@@ -35,17 +35,17 @@ mise run test:unit
 # Bash integration tests (full matrix: default + gitoxide)
 mise run test:integration
 
-# YAML manual tests (all 252 scenarios)
-mise run test:manual -- --ci
+# YAML manual tests (all 252 scenarios, automatic — default)
+mise run test:manual
 
-# YAML tests for a specific command
-mise run test:manual -- --ci tests/manual/scenarios/checkout/
+# YAML tests for a specific command (automatic)
+mise run test:manual tests/manual/scenarios/checkout/
 
-# YAML tests by namespace
-mise run test:manual -- --ci checkout:basic
+# YAML tests by namespace (automatic)
+mise run test:manual checkout:basic
 
 # Interactive mode (step through with prompts)
-mise run test:manual -- checkout:basic
+mise run test:manual -- -i checkout:basic
 
 # List all available scenarios
 mise run test:manual -- --list
@@ -89,7 +89,7 @@ scenario-relative `path:line` location pointer on its own line
 (terminal-clickable), a `❯` marker on the failing step, the failed assertions,
 and any captured stdout/stderr. Then come separate `Scenarios:` / `Steps:`
 lines, `Duration:`, an optional `parallel jobs: N` suffix, and a `Reproduce:`
-block with one `mise run test:manual -- --ci <token>` per failure.
+block with one `mise run test:manual -- <token>` per failure.
 
 ### TTY live progress region
 
@@ -214,7 +214,7 @@ dirs_exist:
 
 1. Create `tests/manual/scenarios/<command>/<test-name>.yml`
 2. Use `standard-remote` fixture or define inline repos
-3. Run: `mise run test:manual -- --ci <command>:<test-name>`
+3. Run: `mise run test:manual <command>:<test-name>`
 
 ### Bash integration test
 
@@ -228,6 +228,6 @@ The GitHub Actions workflow runs both test systems for each matrix entry
 (default + gitoxide config):
 
 1. Bash: `test_all.sh` with `GIT_CONFIG_GLOBAL`
-2. YAML: `xtask manual-test --ci` with same config
+2. YAML: `xtask manual-test` with same config
 3. Shell completions: `test_completions.sh`
 4. Help commands: verify all binaries respond to `--help`

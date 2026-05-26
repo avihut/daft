@@ -33,9 +33,9 @@ echo
 start=$(ms_now)
 result=0
 if [ -n "$scenario_arg" ]; then
-    "$REPO_ROOT/target/release/xtask" manual-test --ci "$scenario_arg" || result=$?
+    "$REPO_ROOT/target/release/xtask" manual-test "$scenario_arg" || result=$?
 else
-    "$REPO_ROOT/target/release/xtask" manual-test --ci || result=$?
+    "$REPO_ROOT/target/release/xtask" manual-test || result=$?
 fi
 end=$(ms_now)
 duration=$((end - start))

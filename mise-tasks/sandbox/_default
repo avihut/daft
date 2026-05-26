@@ -325,8 +325,7 @@ _manual-test() {
     fi
 
     _arguments -s \
-        '--ci[Run in non-interactive mode]' \
-        '--no-interactive[Run in non-interactive mode]' \
+        {-i,--interactive}'[Step through scenarios interactively]' \
         {-v,--verbose}'[Show verbose output]' \
         '--step[Jump to a specific step number]:step number:' \
         '--loop-count[Re-run a specific step N times]:count:' \
@@ -340,7 +339,7 @@ cat > "${bin_dir}/completions/manual-test.bash" <<'BASH_COMP'
 _manual_test() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--ci --no-interactive -v --verbose --step --loop-count --keep --list" -- "$cur"))
+        COMPREPLY=($(compgen -W "-i --interactive -v --verbose --step --loop-count --keep --list" -- "$cur"))
         return
     fi
     local scenarios_dir="${DAFT_WORKTREE}/tests/manual/scenarios"
@@ -595,7 +594,8 @@ Initialize completions and daft shell integration:
     help                     Show this guide
     help --env               Show currently-set sandbox DAFT_* and GIT_* env vars
     test-plan [name]         Open branch test plan in neovim (auto-detects branch)
-    manual-test <scenario>   Run a manual test scenario interactively
+    manual-test <scenario>   Run a manual test scenario (automatic by default)
+    manual-test -i <scen>    Step through a scenario interactively
     manual-test --list       List available scenarios
     show-test <scenario>     Show test steps and commands for a scenario
     setup-test <scenario>    Set up a test environment for manual exploration

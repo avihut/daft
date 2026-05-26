@@ -394,7 +394,7 @@ fn write_captured_section(
 ///   Duration:   MM:SS (parallel jobs: N)
 ///   <blank>
 ///   Reproduce:
-///     mise run test:manual -- --ci <token>
+///     mise run test:manual -- <token>
 ///     ...
 fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> {
     writeln!(out)?;
@@ -530,7 +530,7 @@ fn write_run_summary(out: &mut dyn Write, s: &RunSummary<'_>) -> io::Result<()> 
         writeln!(out)?;
         writeln!(out, "Reproduce:")?;
         for f in &s.failed {
-            writeln!(out, "  mise run test:manual -- --ci {}", f.reproduce_token)?;
+            writeln!(out, "  mise run test:manual -- {}", f.reproduce_token)?;
         }
     }
     writeln!(out)?;

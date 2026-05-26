@@ -325,7 +325,7 @@ fn run_yaml_test(
     let start = Instant::now();
     let scenarios_path = project_root.join("tests/manual/scenarios").join(yaml_dir);
     let status = Command::new(xtask_bin)
-        .args(["manual-test", "--ci"])
+        .args(["manual-test"])
         .arg(&scenarios_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

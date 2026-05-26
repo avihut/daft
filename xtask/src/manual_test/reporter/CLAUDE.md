@@ -152,7 +152,7 @@ fail footer + the end-of-run summary block always surface.
 | Diff label                        | lowercase + colon                        | `expected:`, `actual:`                            |
 | Capture block divider             | `--- {stream} ---` lowercase             | `--- stdout ---`, `--- stderr ---`                |
 | Source citation                   | `at <file>:<line>` lowercase preposition | `at fail.yml:14`                                  |
-| Reproduce hint                    | Imperative, copy-pasteable               | `mise run test:manual -- --ci <token>`            |
+| Reproduce hint                    | Imperative, copy-pasteable               | `mise run test:manual -- <token>`                 |
 | Slow annotation                   | lowercase parenthetical                  | `(slow)`                                          |
 
 **Rule of thumb.** Titles announce, labels anchor, outcomes report, errors

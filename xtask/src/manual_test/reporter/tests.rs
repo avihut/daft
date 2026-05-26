@@ -795,7 +795,7 @@ fn pretty_run_summary_includes_failed_scenarios_and_reproduce_block() {
     assert!(out.contains("Steps:      2191 passed, 2 failed   (2193 total)"));
     assert!(out.contains("Duration:   01:04 (parallel jobs: 4)"));
     assert!(out.contains("Reproduce:"));
-    assert!(out.contains("mise run test:manual -- --ci hooks:silent-job-logs"));
+    assert!(out.contains("mise run test:manual -- hooks:silent-job-logs"));
 }
 
 #[test]
@@ -970,7 +970,7 @@ fn pretty_quiet_run_summary_matches_pretty() {
     assert!(out.contains("1) ✗ demo"));
     assert!(out.contains("Scenarios:  0 passed, 1 failed   (1 total)"));
     assert!(out.contains("Reproduce:"));
-    assert!(out.contains("mise run test:manual -- --ci demo"));
+    assert!(out.contains("mise run test:manual -- demo"));
 }
 
 #[test]
