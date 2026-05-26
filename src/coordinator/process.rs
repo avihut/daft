@@ -73,6 +73,19 @@ pub struct CoordinatorState {
     pub trigger_command: String,
     pub hook_type: String,
     pub worktree: String,
+    /// Names of background jobs that must be recorded as `DepFailed`
+    /// before the wave loop starts. Populated by the caller from the
+    /// foreground `JobResult`s: a BG job whose original (pre-partition)
+    /// `needs:` referenced a foreground job that did not succeed lands
+    /// here so it is not run, and its dependents cascade through the
+    /// same `DepFailed` path that handles runtime failures.
+    ///
+    /// `#[serde(default)]` is load-bearing: older parents that haven't
+    /// learned this field serialize a payload without it, and a freshly
+    /// spawned coordinator deserializes them as an empty list (i.e. no
+    /// prefailed jobs).
+    #[serde(default)]
+    pub prefailed_jobs: Vec<String>,
 }
 
 /// Wire format for state passed from parent to spawned `__coordinator`
@@ -94,6 +107,7 @@ impl CoordinatorState {
             trigger_command: String::new(),
             hook_type: String::new(),
             worktree: String::new(),
+            prefailed_jobs: Vec::new(),
         }
     }
 
@@ -101,6 +115,13 @@ impl CoordinatorState {
         self.trigger_command = trigger_command.to_string();
         self.hook_type = hook_type.to_string();
         self.worktree = worktree.to_string();
+        self
+    }
+
+    /// Set the list of background-job names that should be recorded as
+    /// `DepFailed` before the wave loop starts (see [`Self::prefailed_jobs`]).
+    pub fn with_prefailed(mut self, names: Vec<String>) -> Self {
+        self.prefailed_jobs = names;
         self
     }
 
@@ -170,8 +191,40 @@ impl CoordinatorState {
         // malloc-arena constraint, which is moot post-spawn.
         let n = graph.len();
         let mut statuses = vec![NodeStatus::Pending; n];
-        let mut in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
-        let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+        let in_degree: Vec<usize> = (0..n).map(|i| graph.dependencies_of(i).len()).collect();
+
+        // Apply prefailed cascade before computing the initial ready set.
+        // A name in `prefailed_jobs` is treated identically to a runtime
+        // failure in this DAG: the node itself is marked `DepFailed` (the
+        // wave loop and the post-loop synthesis loop both already handle
+        // that variant) and the same transitive cascade used inside the
+        // wave loop fans out to all Pending dependents. The names come
+        // from the caller's view of foreground outcomes; missing names
+        // are ignored (a stale list from an upgrade racing with a config
+        // edit shouldn't crash the coordinator).
+        if !self.prefailed_jobs.is_empty() {
+            let prefailed: HashSet<&str> = self.prefailed_jobs.iter().map(String::as_str).collect();
+            for (idx, job) in self.jobs.iter().enumerate() {
+                if !prefailed.contains(job.name.as_str()) {
+                    continue;
+                }
+                statuses[idx] = NodeStatus::DepFailed;
+                let mut stack = vec![idx];
+                while let Some(i) = stack.pop() {
+                    for &d in graph.dependents_of(i) {
+                        if statuses[d] == NodeStatus::Pending {
+                            statuses[d] = NodeStatus::DepFailed;
+                            stack.push(d);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut in_degree = in_degree;
+        let mut ready: Vec<usize> = (0..n)
+            .filter(|&i| statuses[i] == NodeStatus::Pending && in_degree[i] == 0)
+            .collect();
 
         // Each iteration of this loop is one wave: every ready node is
         // spawned in parallel and the loop blocks until ALL of them finish
@@ -2646,6 +2699,14 @@ mod tests {
 
     #[test]
     fn bg_missing_dep_in_needs_returns_error() {
+        // Defensive: the partitioner now strips foreground names from BG
+        // `needs:` before the slice reaches the coordinator (see #556 /
+        // `partition::partition_foreground_background`), so the only way
+        // to reach this code path in production is a typoed name —
+        // already rejected by the config validator. The behavior still
+        // matters as a contract: if some caller does hand the coordinator
+        // a dangling reference, surface it as a hard error rather than
+        // silently dropping the job.
         let (_tmp, store, _job_store, child_pids, cancel_all, cancelled_jobs, _results) =
             make_test_state();
 
@@ -2669,5 +2730,148 @@ mod tests {
             result.is_err(),
             "missing dep should be reported as an error"
         );
+    }
+
+    #[test]
+    fn prefailed_job_recorded_as_skipped_without_running() {
+        // Regression for #556: a BG job pre-marked as DepFailed by the
+        // caller (because its FG dep failed) must not be executed, but
+        // must still be persisted to SQLite so `daft hooks jobs` shows
+        // it as `skipped` rather than silently vanishing.
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-prefail-1")
+            .with_metadata("worktree-post-create", "worktree-post-create", "feat/x")
+            .with_prefailed(vec!["doomed".to_string()]);
+
+        // The command is `false` (always fails) so that if the cascade
+        // misbehaves and the job actually runs, the test catches it via
+        // the recorded status being `failed` rather than `skipped`.
+        state.add_job(JobSpec {
+            name: "doomed".to_string(),
+            command: "false".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
+            .unwrap();
+
+        use crate::coordinator::ports::JobsStorePort;
+        let row = job_store
+            .get_job("test-repo", "inv-prefail-1", "doomed")
+            .unwrap()
+            .expect("doomed row should exist");
+        assert_eq!(
+            row.status, "skipped",
+            "prefailed BG job should be recorded as skipped, got {}",
+            row.status
+        );
+        assert!(
+            row.pid.is_none(),
+            "prefailed BG job must not have spawned a child process (pid={:?})",
+            row.pid
+        );
+    }
+
+    #[test]
+    fn prefailed_cascade_skips_transitive_bg_dependents() {
+        // Regression for #556: a BG job that itself depends on a
+        // prefailed BG job must also be recorded as skipped, matching
+        // the cascade the wave loop applies for runtime failures.
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-prefail-2")
+            .with_metadata("worktree-post-create", "worktree-post-create", "feat/x")
+            .with_prefailed(vec!["doomed".to_string()]);
+
+        state.add_job(JobSpec {
+            name: "doomed".to_string(),
+            command: "true".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "downstream".to_string(),
+            command: "true".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            needs: vec!["doomed".to_string()],
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
+            .unwrap();
+
+        use crate::coordinator::ports::JobsStorePort;
+        let down = job_store
+            .get_job("test-repo", "inv-prefail-2", "downstream")
+            .unwrap()
+            .expect("downstream row should exist");
+        assert_eq!(down.status, "skipped");
+        assert!(down.pid.is_none());
+    }
+
+    #[test]
+    fn prefailed_does_not_block_unrelated_bg_jobs() {
+        // A prefailed BG job must not poison BG jobs in a different
+        // dependency subtree. Sibling BG jobs that don't depend on the
+        // prefailed name run normally.
+        let (_tmp, store, job_store, child_pids, cancel_all, cancelled_jobs, _results) =
+            make_test_state();
+
+        let mut state = CoordinatorState::new("test-repo", "inv-prefail-3")
+            .with_metadata("worktree-post-create", "worktree-post-create", "feat/x")
+            .with_prefailed(vec!["doomed".to_string()]);
+
+        state.add_job(JobSpec {
+            name: "doomed".to_string(),
+            command: "true".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+        state.add_job(JobSpec {
+            name: "sibling".to_string(),
+            command: "true".to_string(),
+            working_dir: std::env::temp_dir(),
+            background: true,
+            ..Default::default()
+        });
+
+        state
+            .run_all_with_cancel(
+                &store,
+                &child_pids,
+                &cancel_all,
+                &cancelled_jobs,
+                Some(&job_store),
+            )
+            .unwrap();
+
+        use crate::coordinator::ports::JobsStorePort;
+        let sib = job_store
+            .get_job("test-repo", "inv-prefail-3", "sibling")
+            .unwrap()
+            .expect("sibling row should exist");
+        assert_eq!(sib.status, "completed");
     }
 }
