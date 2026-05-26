@@ -5751,10 +5751,12 @@ dependencies = [
  "indicatif",
  "nix",
  "rayon",
+ "reflink-copy",
  "serde",
  "serde_yaml",
  "tempfile",
  "term-styles",
+ "walkdir",
 ]
 
 [[package]]

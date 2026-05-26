@@ -1,3 +1,4 @@
+pub mod cow_copy;
 pub mod daft_executor;
 pub mod executor;
 pub mod interactive;

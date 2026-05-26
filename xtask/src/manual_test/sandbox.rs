@@ -8,12 +8,12 @@
 //! the [`super::executor::CommandExecutor`] port.
 
 use anyhow::{Context, Result};
-use daft::cow_copy;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::cow_copy;
 use super::schema::Scenario;
 
 /// Within-process counter that guarantees [`alloc_default_base_dir`] produces
@@ -358,6 +358,67 @@ mod tests {
         let mut sb = Sandbox::new_with_vars(HashMap::new());
         sb.register_var("MY_VAR", "/some/path".into());
         assert_eq!(sb.expand_vars("$MY_VAR/foo"), "/some/path/foo");
+    }
+
+    /// End-to-end check for the create_template / reset lifecycle, with
+    /// the live `cow_copy` integration. Confirms reflinked snapshots are
+    /// independent of subsequent source mutation (CoW guarantee) and that
+    /// reset restores the template byte-for-byte after the live remotes are
+    /// scrambled.
+    #[test]
+    fn test_create_template_and_reset_lifecycle() {
+        let scenario = Scenario {
+            name: "lifecycle-test".to_string(),
+            description: None,
+            repos: Vec::new(),
+            env: HashMap::new(),
+            steps: Vec::new(),
+            source_path: std::path::PathBuf::new(),
+        };
+        let base_dir = alloc_default_base_dir().expect("alloc base dir");
+        let sb = Sandbox::create_at(&scenario, base_dir, false).expect("create sandbox");
+
+        // Populate remotes/ with a minimal directory shape mirroring what a
+        // generated bare-git fixture would have: nested dirs, regular files,
+        // and an executable.
+        std::fs::create_dir(sb.remotes_dir.join("hooks")).unwrap();
+        std::fs::write(sb.remotes_dir.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+        std::fs::write(sb.remotes_dir.join("hooks/post-receive"), b"#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            sb.remotes_dir.join("hooks/post-receive"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        sb.create_template().expect("create_template");
+        assert!(sb.template_dir.join("HEAD").exists());
+        assert_eq!(
+            std::fs::read(sb.template_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+
+        // Scramble remotes/ and confirm the template is unaffected (CoW).
+        std::fs::write(sb.remotes_dir.join("HEAD"), b"SCRAMBLED\n").unwrap();
+        std::fs::remove_file(sb.remotes_dir.join("hooks/post-receive")).unwrap();
+        assert_eq!(
+            std::fs::read(sb.template_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+
+        sb.reset().expect("reset");
+        assert_eq!(
+            std::fs::read(sb.remotes_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+        let post_receive = sb.remotes_dir.join("hooks/post-receive");
+        assert!(post_receive.exists());
+        let mode = std::fs::metadata(&post_receive)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 
     /// Regression test for the millisecond-timestamp collision bug:
