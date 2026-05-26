@@ -14,7 +14,6 @@
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -71,10 +70,25 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
             fs::set_permissions(&dst_path, meta.permissions())
                 .with_context(|| format!("setting mode of {}", dst_path.display()))?;
         } else if ftype.is_symlink() {
-            let target = fs::read_link(entry.path())
-                .with_context(|| format!("reading symlink {}", entry.path().display()))?;
-            symlink(target, &dst_path)
-                .with_context(|| format!("creating symlink {}", dst_path.display()))?;
+            #[cfg(unix)]
+            {
+                let target = fs::read_link(entry.path())
+                    .with_context(|| format!("reading symlink {}", entry.path().display()))?;
+                std::os::unix::fs::symlink(target, &dst_path)
+                    .with_context(|| format!("creating symlink {}", dst_path.display()))?;
+            }
+            #[cfg(not(unix))]
+            {
+                // Windows / non-Unix targets: symlink replication needs the
+                // file-vs-dir distinction up front (`symlink_file` /
+                // `symlink_dir`) and admin/dev-mode privileges. Daft's
+                // current consumers don't produce symlinks in their copy
+                // trees; #387's `copy_paths:` work will revisit if needed.
+                anyhow::bail!(
+                    "symlink replication not yet implemented on this platform: {}",
+                    entry.path().display()
+                );
+            }
         } else if ftype.is_file() {
             copy_file(entry.path(), &dst_path)?;
         }
@@ -89,8 +103,10 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn write_file(path: &Path, content: &[u8]) {
         if let Some(parent) = path.parent() {
@@ -113,6 +129,7 @@ mod tests {
         assert_eq!(fs::read(&dst).unwrap(), b"original");
     }
 
+    #[cfg(unix)]
     #[test]
     fn copy_file_preserves_mode_bits() {
         let tmp = TempDir::new().unwrap();
@@ -148,6 +165,7 @@ mod tests {
         assert_eq!(fs::read(dst.join("nested/b.txt")).unwrap(), b"beta");
     }
 
+    #[cfg(unix)]
     #[test]
     fn copy_dir_recreates_symlinks_without_dereferencing() {
         let tmp = TempDir::new().unwrap();
@@ -167,6 +185,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn copy_dir_preserves_directory_mode_bits() {
         let tmp = TempDir::new().unwrap();
