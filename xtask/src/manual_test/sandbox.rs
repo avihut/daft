@@ -9,11 +9,11 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::cow_copy;
 use super::schema::Scenario;
 
 /// Within-process counter that guarantees [`alloc_default_base_dir`] produces
@@ -222,23 +222,13 @@ impl Sandbox {
     }
 
     /// Snapshot `remotes/` → `remotes-template/` so that `reset()` can
-    /// restore the original state. Uses `cp -a` to preserve git objects.
+    /// restore the original state. Uses reflink (APFS clonefile on macOS,
+    /// `ioctl(FICLONE)` on reflink-capable Linux filesystems) where the
+    /// filesystem supports it, with a transparent byte-copy fallback
+    /// elsewhere.
     pub fn create_template(&self) -> Result<()> {
-        // `process_group(0)` insulates `cp` from terminal SIGINT — see the
-        // same explanation on `DaftCommandExecutor::execute`. Without it,
-        // Ctrl+C during a scenario's setup phase kills `cp` mid-copy and
-        // the scenario surfaces as an `error:` row instead of a clean
-        // cancellation.
-        let status = std::process::Command::new("cp")
-            .process_group(0)
-            .args(["-a"])
-            .arg(&self.remotes_dir)
-            .arg(&self.template_dir)
-            .status()
-            .context("failed to run cp -a for template creation")?;
-
-        anyhow::ensure!(status.success(), "cp -a failed with status {status}");
-        Ok(())
+        cow_copy::copy_dir(&self.remotes_dir, &self.template_dir)
+            .context("snapshotting remotes/ to remotes-template/")
     }
 
     /// Reset the sandbox to its initial state: clear `work/`, restore
@@ -260,15 +250,8 @@ impl Sandbox {
                 })?;
             }
 
-            let status = std::process::Command::new("cp")
-                .process_group(0)
-                .args(["-a"])
-                .arg(&self.template_dir)
-                .arg(&self.remotes_dir)
-                .status()
-                .context("failed to run cp -a for reset")?;
-
-            anyhow::ensure!(status.success(), "cp -a failed with status {status}");
+            cow_copy::copy_dir(&self.template_dir, &self.remotes_dir)
+                .context("restoring remotes/ from remotes-template/")?;
         }
 
         Ok(())
@@ -375,6 +358,67 @@ mod tests {
         let mut sb = Sandbox::new_with_vars(HashMap::new());
         sb.register_var("MY_VAR", "/some/path".into());
         assert_eq!(sb.expand_vars("$MY_VAR/foo"), "/some/path/foo");
+    }
+
+    /// End-to-end check for the create_template / reset lifecycle, with
+    /// the live `cow_copy` integration. Confirms reflinked snapshots are
+    /// independent of subsequent source mutation (CoW guarantee) and that
+    /// reset restores the template byte-for-byte after the live remotes are
+    /// scrambled.
+    #[test]
+    fn test_create_template_and_reset_lifecycle() {
+        let scenario = Scenario {
+            name: "lifecycle-test".to_string(),
+            description: None,
+            repos: Vec::new(),
+            env: HashMap::new(),
+            steps: Vec::new(),
+            source_path: std::path::PathBuf::new(),
+        };
+        let base_dir = alloc_default_base_dir().expect("alloc base dir");
+        let sb = Sandbox::create_at(&scenario, base_dir, false).expect("create sandbox");
+
+        // Populate remotes/ with a minimal directory shape mirroring what a
+        // generated bare-git fixture would have: nested dirs, regular files,
+        // and an executable.
+        std::fs::create_dir(sb.remotes_dir.join("hooks")).unwrap();
+        std::fs::write(sb.remotes_dir.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+        std::fs::write(sb.remotes_dir.join("hooks/post-receive"), b"#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            sb.remotes_dir.join("hooks/post-receive"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        sb.create_template().expect("create_template");
+        assert!(sb.template_dir.join("HEAD").exists());
+        assert_eq!(
+            std::fs::read(sb.template_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+
+        // Scramble remotes/ and confirm the template is unaffected (CoW).
+        std::fs::write(sb.remotes_dir.join("HEAD"), b"SCRAMBLED\n").unwrap();
+        std::fs::remove_file(sb.remotes_dir.join("hooks/post-receive")).unwrap();
+        assert_eq!(
+            std::fs::read(sb.template_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+
+        sb.reset().expect("reset");
+        assert_eq!(
+            std::fs::read(sb.remotes_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+        let post_receive = sb.remotes_dir.join("hooks/post-receive");
+        assert!(post_receive.exists());
+        let mode = std::fs::metadata(&post_receive)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 
     /// Regression test for the millisecond-timestamp collision bug:

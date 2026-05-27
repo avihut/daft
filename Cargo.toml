@@ -130,6 +130,14 @@ shlex = "1.3"
 uuid = { version = "1", features = ["v7"] }
 fs2 = "0.4"
 walkdir = "2.5"
+# Copy-on-write file copy (APFS clonefile on macOS, ioctl(FICLONE) on Linux
+# btrfs/XFS/ZFS, ReFS block-clone on Windows). Falls back to byte-copy on
+# unsupported filesystems via `reflink_or_copy`. Used by `src/cow_copy.rs`
+# and consumed from xtask's manual-test runner; future home of #387's
+# `copy_paths:` implementation. Public API is fully safe (`unsafe` is
+# confined to the crate's internal sys layer), so `forbid(unsafe_code)`
+# stays intact — same precedent as `rusqlite` over `heed`.
+reflink-copy = "0.1.29"
 # `bundled` compiles SQLite from source into the daft binary (~+1 MB on
 # release builds, +C compiler at build time). The rationale is in CLAUDE.md
 # under "Database & Storage" — every daft installation gets the same SQLite

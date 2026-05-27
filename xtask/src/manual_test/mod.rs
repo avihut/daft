@@ -1,3 +1,4 @@
+pub mod cow_copy;
 pub mod daft_executor;
 pub mod executor;
 pub mod interactive;
@@ -1058,6 +1059,11 @@ fn run_one_scenario_inner(
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
 ) -> Result<Option<(runner::ScenarioResult, Vec<u8>)>> {
+    // Per-phase wall-clock — emitted alongside the existing `elapsed_ms` step
+    // duration under `DAFT_MANUAL_TEST_EMIT_TIMING` for the bench harness.
+    // Lets a #509 perf investigation attribute per-scenario cost to setup vs
+    // fixture gen vs template snapshot vs the step phase itself.
+    let setup_started = std::time::Instant::now();
     // Pre-register the sandbox path so a SIGINT during create_at still leaves
     // a tracked path the cleanup handler can `rm -rf`. See [`setup_cleanup_handler`]
     // for the matching drain-loop logic.
@@ -1065,12 +1071,18 @@ fn run_one_scenario_inner(
     let _guard = CleanupGuard::new(Arc::clone(cleanup_set), base_dir.clone());
     let mut sb = sandbox::Sandbox::create_at(scenario, base_dir, ctx.keep)?;
     let executor = daft_executor::DaftCommandExecutor::new_for_sandbox(&mut sb, ctx.project_root)?;
+    let setup_ms = setup_started.elapsed().as_millis();
 
+    let fixture_started = std::time::Instant::now();
     for repo_spec in &scenario.repos {
         repo_gen::generate_repo(repo_spec, &sb.remotes_dir)?;
         sb.register_remote(&repo_spec.name);
     }
+    let fixture_ms = fixture_started.elapsed().as_millis();
+
+    let template_started = std::time::Instant::now();
     sb.create_template()?;
+    let template_ms = template_started.elapsed().as_millis();
 
     let mut buf: Vec<u8> = Vec::new();
     // `None` = the runner saw the interrupt flag before `scenario_started`
@@ -1093,14 +1105,20 @@ fn run_one_scenario_inner(
 
     // Opt-in per-scenario timing for the bench harness. Lines are
     // grep-friendly and live inside the scenario's buffered output so they
-    // print in input order alongside the scenario's own report. Reuses the
-    // duration the runner already tracks so we have a single source of truth.
+    // print in input order alongside the scenario's own report. `elapsed_ms`
+    // stays compatible with the percentiles script
+    // (`benches/scenarios/test_manual_scale.sh`); the per-phase fields
+    // (`setup_ms`, `fixture_ms`, `template_ms`) are additional diagnostics
+    // for #509 bottleneck attribution.
     if std::env::var_os("DAFT_MANUAL_TEST_EMIT_TIMING").is_some() {
         writeln!(
             &mut buf,
-            "[bench] scenario={:?} elapsed_ms={}",
+            "[bench] scenario={:?} elapsed_ms={} setup_ms={} fixture_ms={} template_ms={}",
             scenario.name,
-            result.duration.as_millis()
+            result.duration.as_millis(),
+            setup_ms,
+            fixture_ms,
+            template_ms,
         )?;
     }
 

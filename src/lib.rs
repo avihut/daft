@@ -185,6 +185,7 @@ pub mod commands;
 pub mod completion_spinner;
 pub mod coordinator;
 pub mod core;
+pub mod cow_copy;
 pub mod doctor;
 pub mod exec;
 pub mod executor;
