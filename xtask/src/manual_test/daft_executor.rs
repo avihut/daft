@@ -149,6 +149,60 @@ impl DaftCommandExecutor {
     }
 }
 
+/// Strip a trailing `2>&1` (with optional surrounding whitespace) and
+/// return the rest of the command alongside a flag indicating whether the
+/// redirect was present. The fast path simulates the redirect after exec
+/// by appending the child's stderr buffer onto its stdout buffer; bash
+/// would have interleaved the streams at write time. For our assertion
+/// patterns (`output_contains` against substrings) this is good enough.
+///
+/// Without this, every command ending in `2>&1` would bail to bash on the
+/// `&` byte-scan — that's ~200 scenario steps, the single biggest source
+/// of bash fallbacks.
+fn strip_trailing_stderr_redirect(command: &str) -> (String, bool) {
+    let trimmed = command.trim_end();
+    if let Some(rest) = trimmed.strip_suffix("2>&1") {
+        return (rest.trim_end().to_string(), true);
+    }
+    (command.to_string(), false)
+}
+
+/// Split a leading run of `NAME=VALUE` tokens off `argv`. Each leading
+/// token whose pre-`=` portion is a valid identifier (alpha-underscore
+/// start, alpha-numeric-underscore continuation) becomes an env-var
+/// override on the child; the remaining argv starts at the first
+/// non-env-prefix token. Matches bash's `NAME=VALUE cmd …` syntax.
+///
+/// Returns `None` if the remaining argv is empty — i.e. the command was
+/// nothing but env assignments. Those need bash because bash assigns
+/// them into the shell's own env and exits 0; direct exec has no
+/// equivalent.
+fn split_env_prefix(argv: Vec<String>) -> Option<(Vec<(String, String)>, Vec<String>)> {
+    let mut env_overrides = Vec::new();
+    let mut iter = argv.into_iter();
+    let mut rest: Vec<String> = Vec::new();
+    while let Some(tok) = iter.next() {
+        if let Some((name, value)) = tok.split_once('=') {
+            let mut chars = name.chars();
+            let first_ok = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            let rest_ok = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if first_ok && rest_ok {
+                env_overrides.push((name.to_string(), value.to_string()));
+                continue;
+            }
+        }
+        rest.push(tok);
+        rest.extend(iter);
+        break;
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    Some((env_overrides, rest))
+}
+
 /// Decide whether `command` can be exec'd directly, skipping the `bash -c`
 /// wrapper. Returns `Some(argv)` iff a cheap byte-scan finds no shell
 /// metacharacter and `shlex::split` produces a non-empty argv.
@@ -185,20 +239,35 @@ impl CommandExecutor for DaftCommandExecutor {
         let expanded = sandbox.expand_vars(command);
         // Fast path: when the command is a plain invocation with no shell
         // features and its binary resolves on our composed PATH, skip the
-        // `bash -c` wrapper. Bash spawn costs ~17ms on macOS M1 Max;
-        // across ~2.2k suite steps that's ~38s of serial CPU. See #560.
-        let mut cmd = try_direct_argv(&expanded)
-            .and_then(|argv| {
+        // `bash -c` wrapper. Bash spawn costs ~17ms on macOS M1 Max. See
+        // #560 for the full motivation.
+        //
+        // Two pre-passes widen the fast-path catchment beyond `try_direct_argv`'s
+        // strict metachar reject. Both preserve current behaviour; neither
+        // expands the runner's contract:
+        //   - Trailing `2>&1` is stripped and faked after exec by appending
+        //     the child's stderr buffer onto stdout. The `&` byte that would
+        //     otherwise force bash is removed before the scan.
+        //   - Leading `NAME=VALUE` tokens become `Command::env` overrides on
+        //     the child rather than running through bash's env-prefix syntax.
+        let (stripped, merge_stderr_into_stdout) = strip_trailing_stderr_redirect(&expanded);
+        let fast_cmd = try_direct_argv(&stripped)
+            .and_then(split_env_prefix)
+            .and_then(|(env_overrides, argv)| {
                 let bin = self.resolve_binary(&argv[0])?;
                 let mut c = Command::new(bin);
                 c.args(&argv[1..]);
+                for (k, v) in env_overrides {
+                    c.env(k, v);
+                }
                 Some(c)
-            })
-            .unwrap_or_else(|| {
-                let mut c = Command::new("bash");
-                c.args(["-c", &expanded]);
-                c
             });
+        let took_fast_path = fast_cmd.is_some();
+        let mut cmd = fast_cmd.unwrap_or_else(|| {
+            let mut c = Command::new("bash");
+            c.args(["-c", &expanded]);
+            c
+        });
         // process_group(0) puts the child in its own process group so the
         // terminal's SIGINT (sent to the foreground process group) doesn't
         // hit it. Without this, Ctrl+C delivered to the runner is also
@@ -214,10 +283,15 @@ impl CommandExecutor for DaftCommandExecutor {
             .output()
             .with_context(|| format!("Failed to execute: {expanded}"))?;
 
+        let mut stdout = output.stdout;
+        let mut stderr = output.stderr;
+        if took_fast_path && merge_stderr_into_stdout {
+            stdout.append(&mut stderr);
+        }
         Ok(CommandOutput {
             exit_code: output.status.code().unwrap_or(-1),
-            stdout: output.stdout,
-            stderr: output.stderr,
+            stdout,
+            stderr,
         })
     }
 }
@@ -382,6 +456,90 @@ mod tests {
 
         assert_eq!(out.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi-from-fast");
+    }
+
+    #[test]
+    fn strip_trailing_stderr_redirect_handles_2_amp_1() {
+        let (rest, had) = strip_trailing_stderr_redirect("daft list 2>&1");
+        assert!(had);
+        assert_eq!(rest, "daft list");
+
+        let (rest, had) = strip_trailing_stderr_redirect("daft list   2>&1   ");
+        assert!(had);
+        assert_eq!(rest, "daft list");
+
+        let (rest, had) = strip_trailing_stderr_redirect("daft list");
+        assert!(!had);
+        assert_eq!(rest, "daft list");
+
+        // Embedded `2>&1` mid-command stays in the command (will route to
+        // bash via the `&` byte-scan); only trailing strips.
+        let (rest, had) = strip_trailing_stderr_redirect("daft list 2>&1 | grep x");
+        assert!(!had);
+        assert_eq!(rest, "daft list 2>&1 | grep x");
+    }
+
+    #[test]
+    fn split_env_prefix_peels_leading_assignments() {
+        let argv = vec![
+            "NO_COLOR=1".to_string(),
+            "daft".to_string(),
+            "list".to_string(),
+        ];
+        let (env, rest) = split_env_prefix(argv).unwrap();
+        assert_eq!(env, vec![("NO_COLOR".to_string(), "1".to_string())]);
+        assert_eq!(rest, vec!["daft", "list"]);
+
+        let argv = vec![
+            "FOO=a".to_string(),
+            "BAR=b".to_string(),
+            "cmd".to_string(),
+            "--flag".to_string(),
+        ];
+        let (env, rest) = split_env_prefix(argv).unwrap();
+        assert_eq!(env.len(), 2);
+        assert_eq!(rest, vec!["cmd", "--flag"]);
+
+        // No env prefix — pass through unchanged.
+        let argv = vec!["daft".to_string(), "list".to_string()];
+        let (env, rest) = split_env_prefix(argv).unwrap();
+        assert!(env.is_empty());
+        assert_eq!(rest, vec!["daft", "list"]);
+
+        // First token contains `=` but invalid identifier — treated as
+        // binary argument, not env prefix. (Defensive — should be rare.)
+        let argv = vec!["1BAD=x".to_string(), "cmd".to_string()];
+        let (env, rest) = split_env_prefix(argv).unwrap();
+        assert!(env.is_empty());
+        assert_eq!(rest, vec!["1BAD=x", "cmd"]);
+
+        // All-env, no command — caller routes to bash.
+        let argv = vec!["FOO=1".to_string()];
+        assert!(split_env_prefix(argv).is_none());
+    }
+
+    #[test]
+    fn execute_runs_fast_path_with_stderr_redirect_and_env_prefix() {
+        // Covers both extensions in one shot: leading env-var prefix plus
+        // trailing `2>&1`. The command writes "to-stdout" to stdout and
+        // "to-stderr" to stderr; under the simulated `2>&1`, both bytes
+        // end up in the runner's stdout buffer and stderr is empty.
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
+        let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
+
+        let out = exec
+            .execute(
+                "MY_VAR=hi sh -c \"echo to-stdout; echo to-stderr 1>&2\" 2>&1",
+                &sandbox.base_dir,
+                &sandbox,
+            )
+            .unwrap();
+
+        assert_eq!(out.exit_code, 0);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("to-stdout"), "stdout: {stdout}");
+        assert!(stdout.contains("to-stderr"), "stdout: {stdout}");
+        assert!(out.stderr.is_empty(), "stderr should be empty after merge");
     }
 
     #[test]
