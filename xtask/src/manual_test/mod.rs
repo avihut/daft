@@ -581,7 +581,20 @@ fn run_parallel(
     // can verify per-thread namespace mix without altering normal output.
     // Read once outside the closure — `std::env::var_os` synchronizes on a
     // global lock, no point paying for it per scenario.
-    let debug_dispatch = std::env::var_os("DAFT_MANUAL_TEST_DEBUG_DISPATCH").is_some();
+    //
+    // Suppress on TTY: `eprintln!` from worker threads races indicatif's
+    // live-region redraws and garbles the terminal. Pair the env var with
+    // `CI=1` or `NO_PROGRESS=1` (both already disable `show_progress`) to
+    // see the lines cleanly. If the user set the env on a TTY, warn once so
+    // they know why nothing is appearing.
+    let debug_dispatch_requested = std::env::var_os("DAFT_MANUAL_TEST_DEBUG_DISPATCH").is_some();
+    let debug_dispatch = debug_dispatch_requested && !show_progress;
+    if debug_dispatch_requested && show_progress {
+        eprintln!(
+            "[dispatch] DAFT_MANUAL_TEST_DEBUG_DISPATCH set but TTY progress is on; \
+             suppressing per-scenario output. Re-run with CI=1 or NO_PROGRESS=1 to see it.",
+        );
+    }
 
     let run_start = std::time::Instant::now();
     std::thread::scope(|s| -> Result<()> {
