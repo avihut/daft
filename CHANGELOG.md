@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.5](https://github.com/avihut/daft/compare/v1.14.4...v1.14.5) - 2026-05-27
+
+
+### Bug Fixes
+
+- **sync**: Refresh remote ahead/behind after Update task (#568)
+- **deps**: Bump shlex constraint to 2 and prevent grouped major-bump drift (#569)
+
+
+### Performance
+
+- **test-runner**: Interleave scenarios across workers to flatten the parallel tail (#564)
+- **test-runner**: Use APFS clonefile / Linux FICLONE for sandbox template snapshots (#562)
 ## [1.14.4](https://github.com/avihut/daft/compare/v1.14.3...v1.14.4) - 2026-05-26
 
 
