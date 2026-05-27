@@ -11,7 +11,7 @@ pub mod schema;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::{IsTerminal, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -1266,6 +1266,73 @@ fn find_scenario_recursive(dir: &Path, name: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// Extract the namespace portion of a scenario label (`"namespace:stem"` →
+/// `"namespace"`, bare `"stem"` → `""`). Top-level scenarios share the empty
+/// namespace, which keeps them in their own round-robin bucket below.
+fn namespace_of(label: &str) -> &str {
+    match label.split_once(':') {
+        Some((ns, _)) => ns,
+        None => "",
+    }
+}
+
+/// Compute an interleaved dispatch order over `labels`: returns indices into
+/// `labels` arranged so that consecutive items come from different namespaces.
+///
+/// Rayon's `par_iter` partitions its slice into contiguous per-worker chunks
+/// and only work-steals when a worker finishes its chunk. With scenarios sorted
+/// alphabetically by `"namespace:stem"`, that puts every `layout:*` scenario
+/// on the same worker — and if a heavy namespace lands contiguously on one
+/// worker, the tail of the suite is that worker grinding while every other
+/// worker is idle. Interleaving by namespace ensures each worker's initial
+/// chunk is a mix, so per-namespace cost variance distributes evenly.
+///
+/// Deterministic by construction: a `BTreeMap` iterates by sorted namespace
+/// key, and `VecDeque::pop_front` over input-ordered indices preserves
+/// within-namespace order. No RNG.
+fn interleave_by_namespace(labels: &[String]) -> Vec<usize> {
+    let mut by_namespace: BTreeMap<&str, VecDeque<usize>> = BTreeMap::new();
+    for (i, label) in labels.iter().enumerate() {
+        by_namespace
+            .entry(namespace_of(label))
+            .or_default()
+            .push_back(i);
+    }
+
+    let mut interleaved = Vec::with_capacity(labels.len());
+    let mut keys: Vec<&str> = by_namespace.keys().copied().collect();
+    while !keys.is_empty() {
+        keys.retain(|key| {
+            if let Some(idx) = by_namespace.get_mut(key).and_then(VecDeque::pop_front) {
+                interleaved.push(idx);
+                by_namespace.get(key).is_some_and(|q| !q.is_empty())
+            } else {
+                false
+            }
+        });
+    }
+    interleaved
+}
+
+/// Derive a `"namespace:stem"` label from a scenario `PathBuf` for the explicit
+/// `--scenarios <name>` path, mirroring how `discover_scenarios_recursive`
+/// labels scenarios under `scenarios_dir`. Used so the dispatch interleave can
+/// still group user-named scenarios by namespace.
+fn label_from_path(path: &Path, scenarios_dir: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    match path.parent() {
+        Some(parent) if parent != scenarios_dir => parent
+            .file_name()
+            .map(|ns| format!("{}:{}", ns.to_string_lossy(), stem))
+            .unwrap_or(stem),
+        _ => stem,
+    }
+}
+
 /// Discover all `.yml` and `.yaml` files in the scenarios directory.
 fn discover_scenarios(dir: &PathBuf) -> Result<Vec<PathBuf>> {
     if !dir.exists() {
@@ -1500,6 +1567,105 @@ fn discover_scenarios_recursive(dir: &PathBuf) -> Result<Vec<(String, PathBuf)>>
     }
     scenarios.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(scenarios)
+}
+
+#[cfg(test)]
+mod dispatch_order_tests {
+    use super::{interleave_by_namespace, label_from_path, namespace_of};
+    use std::path::Path;
+
+    fn labels(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn namespace_splits_on_first_colon() {
+        assert_eq!(namespace_of("checkout:basic"), "checkout");
+        assert_eq!(namespace_of("a:b:c"), "a");
+        assert_eq!(namespace_of("bare"), "");
+        assert_eq!(namespace_of(""), "");
+    }
+
+    #[test]
+    fn interleave_round_robins_two_namespaces() {
+        let input = labels(&["a:1", "a:2", "a:3", "b:1"]);
+        // a, b alternate; b runs out first, then a:2, a:3 trail.
+        assert_eq!(interleave_by_namespace(&input), vec![0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn interleave_round_robins_three_namespaces_uneven() {
+        let input = labels(&["a:1", "a:2", "b:1", "c:1", "c:2"]);
+        // Round 1: a:1, b:1, c:1. Round 2: a:2, c:2 (b exhausted).
+        assert_eq!(interleave_by_namespace(&input), vec![0, 2, 3, 1, 4]);
+    }
+
+    #[test]
+    fn interleave_single_namespace_is_identity() {
+        let input = labels(&["a:1", "a:2", "a:3"]);
+        assert_eq!(interleave_by_namespace(&input), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn interleave_empty_input_is_empty() {
+        assert_eq!(interleave_by_namespace(&[]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn interleave_preserves_within_namespace_order() {
+        let input = labels(&["a:1", "b:1", "a:2", "b:2", "a:3"]);
+        let order = interleave_by_namespace(&input);
+        let a_positions: Vec<_> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, &idx)| input[idx].starts_with("a:"))
+            .map(|(pos, _)| pos)
+            .collect();
+        let a_indices: Vec<usize> = a_positions.iter().map(|&p| order[p]).collect();
+        assert_eq!(a_indices, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn interleave_is_deterministic() {
+        let input = labels(&["b:2", "a:1", "c:1", "b:1", "a:2"]);
+        assert_eq!(
+            interleave_by_namespace(&input),
+            interleave_by_namespace(&input)
+        );
+    }
+
+    #[test]
+    fn interleave_groups_top_level_scenarios_together() {
+        // Bare labels share the "" namespace bucket — they round-robin against
+        // namespaced ones, not against each other internally.
+        let input = labels(&["bare1", "a:1", "bare2", "a:2"]);
+        // Round 1: "" -> bare1, "a" -> a:1. Round 2: "" -> bare2, "a" -> a:2.
+        assert_eq!(interleave_by_namespace(&input), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn label_from_path_uses_parent_dir_as_namespace() {
+        let scenarios_dir = Path::new("/repo/tests/manual/scenarios");
+        assert_eq!(
+            label_from_path(
+                Path::new("/repo/tests/manual/scenarios/checkout/basic.yml"),
+                scenarios_dir,
+            ),
+            "checkout:basic"
+        );
+    }
+
+    #[test]
+    fn label_from_path_top_level_returns_bare_stem() {
+        let scenarios_dir = Path::new("/repo/tests/manual/scenarios");
+        assert_eq!(
+            label_from_path(
+                Path::new("/repo/tests/manual/scenarios/quickcheck.yml"),
+                scenarios_dir,
+            ),
+            "quickcheck"
+        );
+    }
 }
 
 #[cfg(test)]
