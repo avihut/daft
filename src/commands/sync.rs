@@ -754,9 +754,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             spawn_post_task_refresh(
                                 branch_name,
                                 OperationPhase::Update,
-                                FieldSet::BASE_AHEAD_BEHIND
-                                    | FieldSet::LAST_COMMIT
-                                    | FieldSet::CHANGES,
+                                update_post_task_fields(),
                                 &shared_worktree_map,
                                 &orch_settings,
                                 &orch_base_branch,
@@ -950,6 +948,14 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 // ── DAG task execution functions ───────────────────────────────────────────
+
+/// Must include `REMOTE_AHEAD_BEHIND` — fast-forward clears it, otherwise the post-fetch value persists.
+fn update_post_task_fields() -> FieldSet {
+    FieldSet::BASE_AHEAD_BEHIND
+        | FieldSet::LAST_COMMIT
+        | FieldSet::CHANGES
+        | FieldSet::REMOTE_AHEAD_BEHIND
+}
 
 /// Spawn a streaming-collector run that re-emits the given `fields` for
 /// `branch_name` as `PatchSource::PostTask(phase)` patches. Blocks until the
@@ -1935,5 +1941,15 @@ mod tests {
             None,
             &[IncludeFilter::Branch("feat/x".into())],
         ));
+    }
+
+    // Regression: #567 — Update fast-forward must clear the PostFetch REMOTE_AHEAD_BEHIND value.
+    #[test]
+    fn update_post_task_fields_includes_remote_ahead_behind() {
+        let fields = update_post_task_fields();
+        assert!(fields.contains(FieldSet::REMOTE_AHEAD_BEHIND));
+        assert!(fields.contains(FieldSet::BASE_AHEAD_BEHIND));
+        assert!(fields.contains(FieldSet::LAST_COMMIT));
+        assert!(fields.contains(FieldSet::CHANGES));
     }
 }
