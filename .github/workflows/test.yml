@@ -199,7 +199,7 @@ jobs:
     if: >-
       !contains(github.event.pull_request.labels.*.name, 'release') &&
       (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true')
+      'true' || needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -225,7 +225,7 @@ jobs:
     if: >-
       !contains(github.event.pull_request.labels.*.name, 'release') &&
       (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true')
+      'true' || needs.changes.outputs.xtask == 'true')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -337,7 +337,8 @@ jobs:
     if: >-
       !contains(github.event.pull_request.labels.*.name, 'release') &&
       (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
-      'true' || needs.changes.outputs.tests == 'true')
+      'true' || needs.changes.outputs.tests == 'true' ||
+      needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

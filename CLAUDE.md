@@ -282,9 +282,10 @@ Hard rules:
   evaluation are candidates for future ports. Extracting them speculatively is
   the trap; wait for a downstream PR with a concrete reason.
 - **Intentional exception:** `DAFT_MANUAL_TEST_BASE`,
-  `DAFT_MANUAL_TEST_EMIT_TIMING`, and `DAFT_MANUAL_TEST_JOBS` are the runner's
-  own config knobs and live in `mod.rs` / `main.rs`. Renaming the namespace is a
-  spin-out concern, not a coupling concern.
+  `DAFT_MANUAL_TEST_EMIT_TIMING`, `DAFT_MANUAL_TEST_JOBS`, and
+  `DAFT_MANUAL_TEST_DEBUG_DISPATCH` are the runner's own config knobs and live
+  in `mod.rs` / `main.rs`. Renaming the namespace is a spin-out concern, not a
+  coupling concern.
 
 **Design language**: `xtask/src/manual_test/reporter/CLAUDE.md` constrains the
 output's appearance (color budget, hierarchy, iconography, microcopy, rhythm).
