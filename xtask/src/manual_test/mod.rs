@@ -1355,11 +1355,15 @@ fn interleave_by_namespace(labels: &[String]) -> Vec<usize> {
     let mut keys: Vec<&str> = by_namespace.keys().copied().collect();
     while !keys.is_empty() {
         keys.retain(|key| {
-            if let Some(idx) = by_namespace.get_mut(key).and_then(VecDeque::pop_front) {
-                interleaved.push(idx);
-                by_namespace.get(key).is_some_and(|q| !q.is_empty())
-            } else {
-                false
+            let Some(queue) = by_namespace.get_mut(key) else {
+                return false;
+            };
+            match queue.pop_front() {
+                Some(idx) => {
+                    interleaved.push(idx);
+                    !queue.is_empty()
+                }
+                None => false,
             }
         });
     }
@@ -1370,6 +1374,14 @@ fn interleave_by_namespace(labels: &[String]) -> Vec<usize> {
 /// `--scenarios <name>` path, mirroring how `discover_scenarios_recursive`
 /// labels scenarios under `scenarios_dir`. Used so the dispatch interleave can
 /// still group user-named scenarios by namespace.
+///
+/// Assumes the one-level layout `scenarios_dir/<namespace>/<stem>.yml` that
+/// `discover_scenarios_recursive` itself enforces. A path nested deeper, e.g.
+/// `scenarios_dir/checkout/subdir/scenario.yml`, is labeled with the
+/// *immediate* parent (`subdir:scenario`) rather than the top-level namespace
+/// (`checkout:...`) — those scenarios would then form their own interleave
+/// bucket. Acceptable because the discovery side never produces such layouts;
+/// only explicit user paths could.
 fn label_from_path(path: &Path, scenarios_dir: &Path) -> String {
     let stem = path
         .file_stem()
@@ -1687,9 +1699,9 @@ mod dispatch_order_tests {
     }
 
     #[test]
-    fn interleave_groups_top_level_scenarios_together() {
+    fn interleave_bare_scenarios_alternate_with_namespaced() {
         // Bare labels share the "" namespace bucket — they round-robin against
-        // namespaced ones, not against each other internally.
+        // namespaced ones one-per-round, not against each other internally.
         let input = labels(&["bare1", "a:1", "bare2", "a:2"]);
         // Round 1: "" -> bare1, "a" -> a:1. Round 2: "" -> bare2, "a" -> a:2.
         assert_eq!(interleave_by_namespace(&input), vec![0, 1, 2, 3]);
