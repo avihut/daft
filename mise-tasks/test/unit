@@ -9,4 +9,4 @@ echo "Running Rust unit tests..."
 # git::oxide, store::{migrate,pool}, and hooks::yaml_executor cases — and
 # flaking the pre-push hook. --test-threads=4 keeps wall-clock close to the
 # uncapped run (~+2s on ~1800 tests) and eliminates the flake.
-cargo test --lib --tests -- --test-threads=4
+cargo test --lib --tests --locked -- --test-threads=4

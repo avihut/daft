@@ -2,4 +2,4 @@
 #MISE description="Run Rust clippy linter (zero warnings)"
 set -euo pipefail
 
-cargo clippy --tests -- -D warnings
+cargo clippy --tests --locked -- -D warnings
