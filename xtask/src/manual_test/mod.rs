@@ -376,18 +376,32 @@ pub fn run(
         anyhow::bail!("--loop-count requires --step");
     }
 
-    let scenario_files = if scenarios.is_empty() {
+    // `scenarios_with_labels` carries `(label, path)` pairs in alphabetical
+    // order — the user-visible ordering preserved for the non-TTY summary.
+    // `dispatch_order` (computed below) is the *parallel-dispatch* permutation
+    // that breaks the alphabetical clustering for rayon's chunked partition.
+    let scenarios_with_labels: Vec<(String, PathBuf)> = if scenarios.is_empty() {
         discover_scenarios_recursive(&scenarios_dir)?
-            .into_iter()
-            .map(|(_, path)| path)
-            .collect()
     } else {
         resolve_scenario_paths(&scenarios, &scenarios_dir)?
+            .into_iter()
+            .map(|p| {
+                let label = label_from_path(&p, &scenarios_dir);
+                (label, p)
+            })
+            .collect()
     };
 
-    if scenario_files.is_empty() {
+    if scenarios_with_labels.is_empty() {
         anyhow::bail!("No scenario files found in {}", scenarios_dir.display());
     }
+
+    let labels: Vec<String> = scenarios_with_labels
+        .iter()
+        .map(|(l, _)| l.clone())
+        .collect();
+    let scenario_files: Vec<PathBuf> = scenarios_with_labels.into_iter().map(|(_, p)| p).collect();
+    let dispatch_order = interleave_by_namespace(&labels);
 
     // Explicit opt-in: the flag is the whole signal. TTY detection used to
     // route mode here, but after #554 the runner is automatic-first; users
@@ -485,6 +499,8 @@ pub fn run(
     );
     let result = run_parallel(
         &scenario_files,
+        &labels,
+        &dispatch_order,
         &scenarios_dir,
         &project_root,
         &fixtures_dir,
@@ -511,6 +527,8 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 fn run_parallel(
     scenario_files: &[PathBuf],
+    labels: &[String],
+    dispatch_order: &[usize],
     scenarios_dir: &Path,
     project_root: &Path,
     fixtures_dir: &Path,
@@ -559,19 +577,40 @@ fn run_parallel(
     let (tx, rx) = std::sync::mpsc::channel::<ScenarioOutcome>();
     let mut all_outcomes: Vec<ScenarioOutcome> = Vec::with_capacity(scenario_files.len());
 
+    // Acceptance #1 from #559: dispatch debug print behind an env flag so we
+    // can verify per-thread namespace mix without altering normal output.
+    // Read once outside the closure — `std::env::var_os` synchronizes on a
+    // global lock, no point paying for it per scenario.
+    let debug_dispatch = std::env::var_os("DAFT_MANUAL_TEST_DEBUG_DISPATCH").is_some();
+
     let run_start = std::time::Instant::now();
     std::thread::scope(|s| -> Result<()> {
         let pool_ref = &pool;
         let ctx_ref = &ctx;
         let cleanup_ref = cleanup_set;
         let files_ref = scenario_files;
+        let labels_ref = labels;
+        let dispatch_ref = dispatch_order;
         s.spawn(move || {
             pool_ref.install(|| {
-                files_ref
+                // Iterate `dispatch_order` (an interleaved permutation of
+                // 0..N) rather than `scenario_files` directly. The carried
+                // `display_idx` is the *alphabetical* position — passed
+                // through as `ScenarioOutcome.index` so the post-run sort at
+                // line ~639 still produces alphabetical non-TTY output.
+                dispatch_ref
                     .par_iter()
-                    .enumerate()
-                    .for_each_with(tx, |tx, (idx, path)| {
-                        let outcome = run_one_scenario(idx, path, ctx_ref, cleanup_ref);
+                    .for_each_with(tx, |tx, &display_idx| {
+                        let path = &files_ref[display_idx];
+                        if debug_dispatch {
+                            eprintln!(
+                                "[dispatch] thread={:?} idx={} ns={}",
+                                rayon::current_thread_index(),
+                                display_idx,
+                                namespace_of(&labels_ref[display_idx]),
+                            );
+                        }
+                        let outcome = run_one_scenario(display_idx, path, ctx_ref, cleanup_ref);
                         let _ = tx.send(outcome);
                     });
             });
