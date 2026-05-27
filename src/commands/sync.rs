@@ -754,9 +754,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             spawn_post_task_refresh(
                                 branch_name,
                                 OperationPhase::Update,
-                                FieldSet::BASE_AHEAD_BEHIND
-                                    | FieldSet::LAST_COMMIT
-                                    | FieldSet::CHANGES,
+                                update_post_task_fields(),
                                 &shared_worktree_map,
                                 &orch_settings,
                                 &orch_base_branch,
@@ -950,6 +948,19 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 // ── DAG task execution functions ───────────────────────────────────────────
+
+/// Fields to refresh after a successful `Update` task. An Update is a pull /
+/// fast-forward, so it changes the branch's relationship to its base, its
+/// last commit, its working-tree state, and — critically — its position
+/// relative to upstream (`REMOTE_AHEAD_BEHIND`). Without re-collecting the
+/// remote ahead/behind here, the value written by the post-fetch refresh
+/// (e.g. `⇣3`) persists on screen even after the fast-forward has cleared it.
+fn update_post_task_fields() -> FieldSet {
+    FieldSet::BASE_AHEAD_BEHIND
+        | FieldSet::LAST_COMMIT
+        | FieldSet::CHANGES
+        | FieldSet::REMOTE_AHEAD_BEHIND
+}
 
 /// Spawn a streaming-collector run that re-emits the given `fields` for
 /// `branch_name` as `PatchSource::PostTask(phase)` patches. Blocks until the
@@ -1935,5 +1946,18 @@ mod tests {
             None,
             &[IncludeFilter::Branch("feat/x".into())],
         ));
+    }
+
+    // Regression for #567. A successful Update fast-forwards the branch
+    // toward upstream, so REMOTE_AHEAD_BEHIND must be re-collected by the
+    // post-task refresh — otherwise the PostFetch-written value (e.g. ⇣3)
+    // persists in the live table even after the fast-forward clears it.
+    #[test]
+    fn update_post_task_fields_includes_remote_ahead_behind() {
+        let fields = update_post_task_fields();
+        assert!(fields.contains(FieldSet::REMOTE_AHEAD_BEHIND));
+        assert!(fields.contains(FieldSet::BASE_AHEAD_BEHIND));
+        assert!(fields.contains(FieldSet::LAST_COMMIT));
+        assert!(fields.contains(FieldSet::CHANGES));
     }
 }
