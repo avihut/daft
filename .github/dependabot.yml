@@ -17,11 +17,25 @@ updates:
       timezone: "Asia/Jerusalem"
     cooldown:
       default-days: 7
-    # Group all Cargo updates into a single PR when possible
+    # Group Cargo minor/patch updates into a single PR. Major bumps are
+    # excluded so each one opens an individual PR — Dependabot's cargo
+    # handler has a known interaction where grouped major bumps update
+    # Cargo.lock but not Cargo.toml, leaving the workspace with a
+    # constraint (e.g. `shlex = "1.3"`) that doesn't permit the locked
+    # version (`shlex 2.0.1`). The next `cargo` invocation silently
+    # rewrites Cargo.lock back, which trips the `git_dirty` pre-flight in
+    # `cargo release` and breaks `release-flow.yml` on master. Individual
+    # major-bump PRs go through the non-grouped codepath, which updates
+    # the manifest. The `cargo check --locked` guards in
+    # `.github/workflows/test.yml` (msrv-check, windows-check) are the
+    # backstop if this ever regresses.
     groups:
       cargo-dependencies:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
     # Automatically add labels to PRs
     labels:
       - "dependencies"

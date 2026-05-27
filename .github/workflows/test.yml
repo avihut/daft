@@ -212,8 +212,13 @@ jobs:
         with:
           key: msrv-1.93
 
+      # `--locked` refuses to rewrite Cargo.lock, so a manifest/lockfile
+      # mismatch (e.g. a Dependabot grouped-update PR that bumps Cargo.lock
+      # past the Cargo.toml constraint) fails here instead of being silently
+      # auto-fixed at build time and tripping the release-flow `git_dirty`
+      # check on master.
       - name: Cargo check at MSRV
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
   # Windows compile check — ensures the codebase still builds for the
   # x86_64-pc-windows-msvc target that the release workflow ships. This
@@ -237,7 +242,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo check (Windows)
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
   # Test xtask man page generation
   xtask-test:
