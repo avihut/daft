@@ -17,6 +17,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -136,17 +137,29 @@ impl DaftCommandExecutor {
     fn resolve_binary(&self, name: &str) -> Option<PathBuf> {
         if name.contains('/') {
             let p = Path::new(name);
-            return p.is_file().then(|| p.to_path_buf());
+            return is_executable(p).then(|| p.to_path_buf());
         }
         let direct = self.binary_dir.join(name);
-        if direct.is_file() {
+        if is_executable(&direct) {
             return Some(direct);
         }
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
             .map(|dir| dir.join(name))
-            .find(|p| p.is_file())
+            .find(|p| is_executable(p))
     }
+}
+
+/// Whether `p` is a regular file with at least one execute bit set
+/// (owner/group/other). Matches `execvp`'s "would this succeed?" check
+/// — without it, `resolve_binary` could return a non-executable regular
+/// file (a data file, a config) that happens to share the command name,
+/// the fast path would take it, and `spawn` would fail with `EPERM`
+/// rather than gracefully falling back to bash.
+fn is_executable(p: &Path) -> bool {
+    p.metadata()
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 /// Strip a trailing `2>&1` (with optional surrounding whitespace) and
@@ -257,6 +270,10 @@ impl CommandExecutor for DaftCommandExecutor {
                 let bin = self.resolve_binary(&argv[0])?;
                 let mut c = Command::new(bin);
                 c.args(&argv[1..]);
+                // Apply env-prefix overrides BEFORE `.envs(build_env(...))`
+                // below. The safety layer (`DAFT_TESTING`, `GIT_AUTHOR_*`, …)
+                // intentionally wins on conflict — same precedence bash sees
+                // because `build_env` runs after the prefix in either path.
                 for (k, v) in env_overrides {
                     c.env(k, v);
                 }
@@ -426,6 +443,9 @@ mod tests {
         std::fs::create_dir_all(&binary_dir).unwrap();
         let fake_bin = binary_dir.join("daft-560-shim");
         std::fs::write(&fake_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_bin, perms).unwrap();
 
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, project_tmp.path()).unwrap();
@@ -434,6 +454,24 @@ mod tests {
             .resolve_binary("daft-560-shim")
             .expect("must resolve from binary_dir");
         assert_eq!(resolved, fake_bin);
+    }
+
+    #[test]
+    fn resolve_binary_skips_non_executable_regular_files() {
+        // Defensive: a regular file with the right name but no execute bit
+        // must NOT resolve. Without the `is_executable` check, the fast
+        // path would take this path and spawn would fail with EPERM rather
+        // than gracefully falling back to bash.
+        let project_tmp = tempfile::tempdir().expect("create project root tempdir");
+        let binary_dir = project_tmp.path().join("target/release");
+        std::fs::create_dir_all(&binary_dir).unwrap();
+        let non_exec = binary_dir.join("daft-560-no-exec");
+        std::fs::write(&non_exec, b"not-a-binary").unwrap();
+        // Permissions default to 0o644 — no execute bit. No chmod.
+
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
+        let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, project_tmp.path()).unwrap();
+        assert!(exec.resolve_binary("daft-560-no-exec").is_none());
     }
 
     #[test]
@@ -519,11 +557,42 @@ mod tests {
     }
 
     #[test]
-    fn execute_runs_fast_path_with_stderr_redirect_and_env_prefix() {
-        // Covers both extensions in one shot: leading env-var prefix plus
-        // trailing `2>&1`. The command writes "to-stdout" to stdout and
-        // "to-stderr" to stderr; under the simulated `2>&1`, both bytes
-        // end up in the runner's stdout buffer and stderr is empty.
+    fn execute_fast_path_merges_stderr_into_stdout_on_2_amp_1() {
+        // Real coverage for the `merge_stderr_into_stdout` branch. After
+        // stripping `2>&1`, the remaining `ls /definitely-nonexistent-...`
+        // has no shell metacharacters, so `try_direct_argv` succeeds and
+        // we take the fast path. `ls` exits 1 and writes its error to
+        // stderr; the merge should land the error in stdout and leave
+        // stderr empty.
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
+        let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
+
+        let out = exec
+            .execute(
+                "ls /definitely-nonexistent-daft-test-path 2>&1",
+                &sandbox.base_dir,
+                &sandbox,
+            )
+            .unwrap();
+
+        assert_ne!(out.exit_code, 0, "ls of missing path should fail");
+        assert!(
+            !out.stdout.is_empty(),
+            "fast-path merge must put ls's error message into stdout"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "stderr should be empty after the merge"
+        );
+    }
+
+    #[test]
+    fn execute_bash_fallback_preserves_native_2_amp_1_semantics() {
+        // Inner `sh -c "...; ...; ..."` contains `;` and `>` in `1>&2`,
+        // so even after stripping trailing `2>&1` the byte-scan still
+        // bails and routes to bash. Bash then natively handles `2>&1`
+        // on the outer command. This locks in that mixed env-prefix +
+        // shell-feature commands still work end-to-end.
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
 
@@ -539,7 +608,6 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("to-stdout"), "stdout: {stdout}");
         assert!(stdout.contains("to-stderr"), "stdout: {stdout}");
-        assert!(out.stderr.is_empty(), "stderr should be empty after merge");
     }
 
     #[test]
