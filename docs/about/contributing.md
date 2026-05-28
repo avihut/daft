@@ -80,6 +80,30 @@ mise run test:manual -- -i checkout:basic  # Step through one scenario interacti
 mise run test:manual -- --list             # List all available scenarios
 ```
 
+#### Ephemeral RAM-disk sandbox
+
+When the dev box is IO-bound (especially running two worktree suites
+concurrently), swap in the RAM-backed sandbox:
+
+```bash
+mise run test:manual:ramdisk               # All scenarios, ephemeral RAM mount
+mise run test:manual:ramdisk -- -j 4       # CLI args flow through to xtask
+```
+
+The task allocates a per-run RAM volume (macOS:
+`/Volumes/daft-ramdisk-test-<PID>` via `hdiutil`/`diskutil`; Linux:
+`/dev/shm/daft-ramdisk-test-<PID>`), exports `DAFT_MANUAL_TEST_BASE` so the
+runner uses it, and tears the mount down on EXIT, INT, or TERM. Two concurrent
+shells get two independent mounts. SIGKILL leaks one mount per crash; recover
+with `diskutil eject /Volumes/daft-ramdisk-test-*` (macOS) or
+`rm -rf /dev/shm/daft-ramdisk-test-*` (Linux).
+
+Configure with `DAFT_RAMDISK_SIZE_MB` (macOS only, default 4096; Linux tmpfs is
+kernel-sized). This does **not** replace the default `test:manual` task — it's
+an opt-in alternative. Unit tests for daft's filesystem-physical primitives
+(`cow_copy`, `store::connection`) use `tempfile::tempdir()` and aren't affected
+by `DAFT_MANUAL_TEST_BASE`, so real-disk coverage is preserved separately.
+
 To add a new test, create a `.yml` file in the appropriate command directory:
 
 ```yaml

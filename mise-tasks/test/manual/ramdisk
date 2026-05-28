@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Run YAML manual tests under an ephemeral RAM-backed sandbox (per-run, auto-torn-down on exit)"
+#MISE depends=["dev"]
+set -euo pipefail
+
+# Source the platform-branching helpers so this script stays thin and the
+# macOS/Linux divergence lives in one reviewable place.
+source "$(dirname "$0")/_ramdisk_lib.sh"
+
+mount_path=$(ramdisk_alloc)
+
+# EXIT covers normal completion and `set -e` aborts; INT covers Ctrl+C; TERM
+# covers `kill`. SIGKILL is the only path that leaks a mount — see the README
+# section on cleanup in the recipe page for the manual recovery command.
+trap 'ramdisk_free "$mount_path"' EXIT INT TERM
+
+echo "ramdisk: allocated $mount_path"
+export DAFT_MANUAL_TEST_BASE="$mount_path"
+
+cargo run --package xtask -- manual-test "$@"

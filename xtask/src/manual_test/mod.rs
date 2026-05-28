@@ -144,20 +144,55 @@ fn digit_count(n: usize) -> usize {
 ///
 /// Honors the `DAFT_MANUAL_TEST_BASE` env var as an opt-in override for
 /// managed test directories (e.g. a ramdisk under `sandbox/test/`). When set,
-/// the path is `<base>/<slug>` where the slug is the lowercased scenario name
-/// — callers using `--jobs > 1` must ensure scenario names are unique.
-/// Otherwise falls back to a unique `/tmp/daft-manual-test-*` path allocated
-/// by [`sandbox::alloc_default_base_dir`].
+/// the path is `<base>/<slug>` where the slug is a shell-safe normalization
+/// of the lowercased scenario name — callers using `--jobs > 1` must ensure
+/// scenario names are unique. Otherwise falls back to a unique
+/// `/tmp/daft-manual-test-*` path allocated by
+/// [`sandbox::alloc_default_base_dir`].
 ///
 /// Lives at this layer (not in `sandbox::`) so the runner core stays free of
 /// daft-named env vars; renaming `DAFT_MANUAL_TEST_BASE` is a concern for the
 /// eventual runner spin-out.
 fn pick_sandbox_base_dir(scenario: &schema::Scenario) -> Result<PathBuf> {
     if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
-        let slug = scenario.name.to_lowercase().replace(' ', "-");
-        return Ok(PathBuf::from(base).join(slug));
+        return Ok(PathBuf::from(base).join(shell_safe_slug(&scenario.name)));
     }
     sandbox::alloc_default_base_dir()
+}
+
+/// Normalise a scenario name into a directory component safe to embed in a
+/// `bash -c "cd <path> && …"` step. Scenarios contain parentheses, slashes,
+/// colons, and other shell-active characters in their human-readable names
+/// (e.g. `"Transform sanitizes branch slashes (contained to contained-flat)"`).
+/// Default `/tmp/daft-manual-test-*` sandboxes never see these because the
+/// path is timestamp/PID based, but any caller that points
+/// `DAFT_MANUAL_TEST_BASE` somewhere stable and joins the scenario name
+/// (`#512`'s RAM-disk task is the first such caller in tree) needs the
+/// component scrubbed.
+///
+/// Rules: lower-case, lossy ASCII; any character outside `[a-z0-9._]` becomes
+/// `-`; runs of `-` collapse to a single `-`; leading and trailing `-` are
+/// trimmed. Empty input yields `unnamed-scenario` so the caller still gets a
+/// valid path component.
+fn shell_safe_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for ch in name.chars().flat_map(|c| c.to_lowercase()) {
+        let safe = matches!(ch, 'a'..='z' | '0'..='9' | '.' | '_');
+        if safe {
+            out.push(ch);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unnamed-scenario".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Shared registry of live sandbox directories.
@@ -1729,6 +1764,60 @@ mod dispatch_order_tests {
             ),
             "quickcheck"
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_safe_slug_tests {
+    use super::shell_safe_slug;
+
+    #[test]
+    fn simple_lowercase_and_dash() {
+        assert_eq!(shell_safe_slug("Checkout basic"), "checkout-basic");
+    }
+
+    #[test]
+    fn parens_become_dashes() {
+        // Regression for the #512 ramdisk path: scenario names with `(` and
+        // `)` are common, and an unsanitised slug landed inside a `bash -c
+        // "cd <path>"` step that failed with `syntax error near unexpected
+        // token '('` because bash treats the unquoted `(` as a subshell.
+        assert_eq!(
+            shell_safe_slug("Owner strategy recency-plurality (default)"),
+            "owner-strategy-recency-plurality-default"
+        );
+    }
+
+    #[test]
+    fn collapses_runs_of_dashes() {
+        // Three unsafe chars in a row should produce one `-`, not three.
+        assert_eq!(shell_safe_slug("a   b"), "a-b");
+        assert_eq!(shell_safe_slug("a()b"), "a-b");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_dashes() {
+        assert_eq!(shell_safe_slug("(wrapped)"), "wrapped");
+    }
+
+    #[test]
+    fn preserves_safe_punctuation() {
+        // Dots and underscores are shell-safe in unquoted paths; preserved.
+        assert_eq!(shell_safe_slug("v1.2_release"), "v1.2_release");
+    }
+
+    #[test]
+    fn empty_yields_unnamed_scenario() {
+        // A degenerate name still must produce a valid path component.
+        assert_eq!(shell_safe_slug(""), "unnamed-scenario");
+        assert_eq!(shell_safe_slug("()"), "unnamed-scenario");
+    }
+
+    #[test]
+    fn non_ascii_collapses_to_dash() {
+        // Lossy ASCII normalisation: emoji and other non-ASCII map to `-`
+        // rather than landing untransformed in the path component.
+        assert_eq!(shell_safe_slug("name with émoji ✨"), "name-with-moji");
     }
 }
 
