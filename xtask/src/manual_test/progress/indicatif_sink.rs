@@ -57,6 +57,23 @@ const TICK_INTERVAL: Duration = Duration::from_millis(200);
 /// `src/output/hook_progress/interactive.rs` trailer comment).
 const MAX_DRAW_HZ: u8 = 10;
 
+/// Shared fixed width (in cols) of the progress bars on both the summary
+/// line and the per-worker rows, so every bar stacks into one left column.
+/// Kept modest so the bar + counter + time prefix leaves room for the
+/// truncating text tail on narrow terminals.
+const BAR_WIDTH: usize = 14;
+
+/// Decimal digit count of `n` (`0` → 1). Used to right-pad the `pos`
+/// half of a `pos/len` counter so the column to its right (the time
+/// counter) sits at a stable position as `pos` grows digits.
+fn digit_count(n: u64) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n.ilog10() as usize) + 1
+    }
+}
+
 /// Format a scenario-row elapsed: `Xms` while sub-second, `X.Ys` while
 /// sub-minute, `M:SS` beyond that. Matches the scrollback footer's
 /// `format_duration` rhythm (sub-second precision matters here because
@@ -72,6 +89,43 @@ fn format_row_elapsed(d: Duration) -> String {
         let total = d.as_secs();
         format!("{}:{:02}", total / 60, total % 60)
     }
+}
+
+/// Build the summary (totals) bar's style.
+///
+/// Layout follows the live region's `[bar] → [counter] → [time] → rest`
+/// motif, shared with the worker rows:
+///
+/// ```text
+///   [████████░░░░░░] 3/8  0:05  2/4 running ◆ 0 failed
+/// ```
+///
+/// - `{bar}` — scenario completion, fixed [`BAR_WIDTH`]; filled default fg,
+///   unfilled `dim` (`./dim`) so it reuses existing ink (no new color slot).
+/// - `{scenario_counter}` — a custom key rendering `done/total` with `done`
+///   right-padded to `total`'s digit width, so the time column doesn't shift
+///   as the count grows digits.
+/// - `{elapsed_precise}` — dim run elapsed (scaffolding), same data as before.
+/// - `{wide_msg}` — the running/failed/cancelled segments built in
+///   `update_summary_msg`. `wide_msg` truncates (never wraps) to the terminal
+///   width, which keeps the line exactly one row tall on narrow terminals —
+///   a correctness requirement for indicatif's line accounting, not just
+///   cosmetics. Truncation is ANSI-aware, so the inlined red/yellow segments
+///   survive a cut.
+fn summary_style() -> ProgressStyle {
+    ProgressStyle::with_template(&format!(
+        "{{bar:{BAR_WIDTH}./dim}}  {{scenario_counter}}  {{elapsed_precise:.dim}}  {{wide_msg}}"
+    ))
+    .expect("static summary template should be valid")
+    .with_key(
+        "scenario_counter",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let len = state.len().unwrap_or(0);
+            let pos = state.pos();
+            let width = digit_count(len);
+            let _ = write!(w, "{pos:>width$}/{len}");
+        },
+    )
 }
 
 pub struct IndicatifProgressSink {
@@ -143,21 +197,14 @@ impl IndicatifProgressSink {
         let multi =
             MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(MAX_DRAW_HZ));
         let summary = multi.add(ProgressBar::new(0));
-        summary.set_style(
-            // Summary leads at column 0 — no leading indent — so the bar
-            // anchors at the same column as the scrollback `✓ name` /
-            // `✗ name` footers and the eye runs a single column down to
-            // count completed scenarios.
-            //
-            // `{pos}/{len}` is the scenario counter; {msg} carries the
-            // running / failed segments (rendered as a single string so the
-            // failed count can pick up red via console styling when > 0).
-            // `{elapsed_precise}` is dim so the structural counters lead.
-            ProgressStyle::with_template("{spinner} [{pos}/{len}] {msg} ◆ {elapsed_precise:.dim}")
-                .expect("static template should be valid")
-                .tick_chars(SPINNER_TICKS),
-        );
-        summary.set_message("0 running ◆ 0 failed");
+        // Totals line leads with the completion bar at column 0 (so it
+        // anchors at the same column as the scrollback `✓ name` / `✗ name`
+        // footers) followed by the scenario counter, run elapsed, and the
+        // running/failed/cancelled segments. See [`summary_style`] for the
+        // layout rationale. The steady tick refreshes `{elapsed_precise}`
+        // and the bar even when no scenario completes.
+        summary.set_style(summary_style());
+        summary.set_message("0/0 running ◆ 0 failed");
         summary.enable_steady_tick(TICK_INTERVAL);
 
         // Anchor a single-space "trailer" bar at the bottom of the multi.
@@ -660,6 +707,23 @@ mod tests {
         assert_eq!(sink.rows.lock().unwrap().len(), 1);
         sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"");
         assert!(sink.rows.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn summary_style_template_parses() {
+        // `summary_style()` is only reached through `new()` at runtime —
+        // `hidden_sink()` builds its own style — so the `.expect()` on the
+        // template parse is otherwise never exercised by `cargo test`. This
+        // locks the template (and the `{bar:N./dim}` style spec) valid.
+        let _ = summary_style();
+    }
+
+    #[test]
+    fn digit_count_matches_decimal_width() {
+        assert_eq!(digit_count(0), 1);
+        assert_eq!(digit_count(9), 1);
+        assert_eq!(digit_count(10), 2);
+        assert_eq!(digit_count(580), 3);
     }
 
     #[test]
