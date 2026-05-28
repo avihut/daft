@@ -5,10 +5,12 @@
 //!     system install).
 //!   - `DAFT_CONFIG_DIR` and `DAFT_DATA_DIR` are per-sandbox so suites running
 //!     in parallel never read each other's trust / repo state.
-//!   - The daemon-suppression flags (`DAFT_TESTING`, `DAFT_NO_UPDATE_CHECK`,
-//!     `DAFT_NO_TRUST_PRUNE`, `DAFT_NO_LOG_CLEAN`) prevent orphaned background
-//!     processes from accumulating across a parallel suite — load average
-//!     used to climb into the hundreds without them.
+//!   - `DAFT_TESTING=1` prevents orphaned background processes from
+//!     accumulating across a parallel suite — load average used to climb
+//!     into the hundreds without it. The flag flips daft's central
+//!     `should_skip_background_tasks` gate in `src/main.rs`, which is the
+//!     single source of truth for update-check / trust-prune / log-clean
+//!     suppression under tests.
 //!
 //! Keeping all of this in the adapter is what lets the runner core compile
 //! and run against a non-daft executor (see [`super::runner`]'s `FakeExecutor`
@@ -94,15 +96,19 @@ impl DaftCommandExecutor {
             sandbox.git_config_path.to_string_lossy().into_owned(),
         );
 
-        // Daft feature flags. Disable every daemon-style background spawn:
-        // the test harness invokes `daft` many times back-to-back, and any
-        // detached child that survives its parent (e.g. `daft __clean-logs`)
-        // accumulates as init-reparented orphans and steals CPU — visible as
-        // load-average climbing into the hundreds during parallel runs.
+        // Disable every daemon-style background spawn: the test harness
+        // invokes `daft` many times back-to-back, and any detached child that
+        // survives its parent (e.g. `daft __clean-logs`) accumulates as
+        // init-reparented orphans and steals CPU — visible as load-average
+        // climbing into the hundreds during parallel runs.
+        //
+        // `DAFT_TESTING` alone is sufficient: it flips daft's central
+        // `should_skip_background_tasks` gate in main.rs, which suppresses
+        // every `maybe_*` spawn helper before it runs. The per-feature env
+        // vars (`DAFT_NO_UPDATE_CHECK` / `DAFT_NO_TRUST_PRUNE` /
+        // `DAFT_NO_LOG_CLEAN`) remain as user-facing opt-outs but are
+        // redundant for the test runner.
         env.insert("DAFT_TESTING".into(), "1".into());
-        env.insert("DAFT_NO_UPDATE_CHECK".into(), "1".into());
-        env.insert("DAFT_NO_TRUST_PRUNE".into(), "1".into());
-        env.insert("DAFT_NO_LOG_CLEAN".into(), "1".into());
         env.insert(
             "DAFT_CONFIG_DIR".into(),
             self.daft_config_dir.to_string_lossy().into_owned(),
@@ -343,8 +349,30 @@ mod tests {
         let env = exec.build_env(&sandbox);
 
         assert_eq!(env.get("GIT_AUTHOR_NAME").unwrap(), "Manual Test");
+        // `DAFT_TESTING=1` is the single daemon-suppression contract — it
+        // trips daft's central `should_skip_background_tasks` gate, which
+        // makes the per-feature `DAFT_NO_UPDATE_CHECK` / `DAFT_NO_TRUST_PRUNE`
+        // / `DAFT_NO_LOG_CLEAN` flags redundant for the test runner.
         assert_eq!(env.get("DAFT_TESTING").unwrap(), "1");
-        assert_eq!(env.get("DAFT_NO_UPDATE_CHECK").unwrap(), "1");
+        // The runner intentionally stops setting per-feature suppression
+        // flags; DAFT_TESTING=1 alone gates all three maybe_* startup helpers
+        // via daft::should_skip_background_tasks. Symmetric messages so any
+        // future regression points straight at the contract.
+        const SINGLE_FLAG_CONTRACT: &str =
+            "DAFT_TESTING=1 is the single daemon-suppression contract; per-feature \
+             DAFT_NO_* flags must not be reintroduced by the runner adapter";
+        assert!(
+            !env.contains_key("DAFT_NO_UPDATE_CHECK"),
+            "{SINGLE_FLAG_CONTRACT}"
+        );
+        assert!(
+            !env.contains_key("DAFT_NO_TRUST_PRUNE"),
+            "{SINGLE_FLAG_CONTRACT}"
+        );
+        assert!(
+            !env.contains_key("DAFT_NO_LOG_CLEAN"),
+            "{SINGLE_FLAG_CONTRACT}"
+        );
         assert!(env.get("PATH").unwrap().contains("target/release"));
         assert!(env.get("DAFT_CONFIG_DIR").unwrap().contains("daft-config"));
         assert!(env.get("DAFT_DATA_DIR").unwrap().contains("daft-data"));

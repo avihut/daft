@@ -172,12 +172,49 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
 /// tab completion responsive.
 ///
 /// New commands with similar constraints should be added here rather than
-/// introducing a parallel gate at the call sites.
+/// introducing a parallel gate at the call sites. Callers that need the
+/// composed test-mode/coordinator gates as well should use
+/// [`should_skip_background_tasks`] instead.
 pub fn skip_startup_tasks_for(args: &[String]) -> bool {
     let Some(sub) = args.get(1).map(String::as_str) else {
         return false;
     };
     sub.starts_with("__") || matches!(sub, "shell-init" | "completions")
+}
+
+/// Whether daft's startup-time background work should be skipped for this
+/// invocation. Composes three independent gates, each of which is sufficient
+/// on its own:
+///
+/// 1. [`skip_startup_tasks_for`] — argv-driven gate for invocations whose
+///    codepaths must stay lean (shell-init, completions, `__*` background
+///    tasks). See its doc comment for the security/perf rationale.
+/// 2. `DAFT_IS_COORDINATOR` — set by the hook coordinator process when it
+///    spawns daft children, so daemons don't spawn further daemons.
+/// 3. `DAFT_TESTING` — set by the YAML manual-test runner on every step.
+///    Suppresses update-check/trust-prune/log-clean spawns that would
+///    otherwise reparent under PID 1 and pile up as orphans across the
+///    suite's ~2000 invocations.
+///
+/// Each gate has its own surface: argv shape, coordinator env var, runner env
+/// var. Composing them here means main.rs makes the dispatch decision once,
+/// instead of every `maybe_*` background-spawn helper re-deriving the same
+/// "should I run?" condition from per-feature env vars (`DAFT_NO_UPDATE_CHECK`
+/// etc.). Those per-feature flags remain as user-facing opt-outs.
+pub fn should_skip_background_tasks(args: &[String]) -> bool {
+    should_skip_background_tasks_impl(
+        skip_startup_tasks_for(args),
+        std::env::var("DAFT_IS_COORDINATOR").is_ok(),
+        std::env::var("DAFT_TESTING").is_ok(),
+    )
+}
+
+fn should_skip_background_tasks_impl(
+    skip_startup_tasks: bool,
+    is_coordinator: bool,
+    is_test_mode: bool,
+) -> bool {
+    skip_startup_tasks || is_coordinator || is_test_mode
 }
 
 pub mod cli;
@@ -486,5 +523,35 @@ mod tests {
             "daft",
             "shell-init-something"
         ])));
+    }
+
+    #[test]
+    fn test_should_skip_background_all_false_is_false() {
+        assert!(!should_skip_background_tasks_impl(false, false, false));
+    }
+
+    #[test]
+    fn test_should_skip_background_argv_gate_is_sufficient() {
+        // skip_startup_tasks_for already returned true (e.g. `shell-init`).
+        assert!(should_skip_background_tasks_impl(true, false, false));
+    }
+
+    #[test]
+    fn test_should_skip_background_coordinator_is_sufficient() {
+        // DAFT_IS_COORDINATOR alone is sufficient — coordinator children must
+        // not recursively spawn more background work.
+        assert!(should_skip_background_tasks_impl(false, true, false));
+    }
+
+    #[test]
+    fn test_should_skip_background_test_mode_is_sufficient() {
+        // DAFT_TESTING alone is sufficient — the YAML test runner sets this on
+        // every step to suppress orphaned background spawns.
+        assert!(should_skip_background_tasks_impl(false, false, true));
+    }
+
+    #[test]
+    fn test_should_skip_background_all_true_is_true() {
+        assert!(should_skip_background_tasks_impl(true, true, true));
     }
 }
