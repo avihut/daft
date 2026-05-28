@@ -62,13 +62,22 @@ shared_bin_ensure() {
 # — editing a workspace crate's source must invalidate the cache.
 _shared_bin_state_hash() {
   local root="$1"
+  # Prefer the POSIX `sha256sum` (always present on Linux); fall back to
+  # macOS's `shasum -a 256`. Avoids depending on `libdigest-sha-perl`
+  # being installed on Linux CI images.
+  local sha
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha="sha256sum"
+  else
+    sha="shasum -a 256"
+  fi
   {
     git -C "$root" rev-parse HEAD
     git -C "$root" ls-files -- '*.rs' '**/Cargo.toml' Cargo.toml Cargo.lock \
       | while IFS= read -r f; do
           git -C "$root" hash-object "$f"
         done
-  } | shasum -a 256 | awk '{print $1}'
+  } | $sha | awk '{print $1}'
 }
 
 _shared_bin_build_and_publish() {
@@ -96,8 +105,13 @@ _shared_bin_build_and_publish() {
   source "$lib_dir/../../setup/_rust_symlink_lib.sh"
   create_daft_symlinks "$staging/target/release"
 
-  # Atomic publish. If another worker won, mv fails and we cleanup.
-  if mv "$staging" "$cache_dir" 2>/dev/null; then
+  # Atomic publish. GNU `mv dir_a dir_b` does *not* fail when `dir_b`
+  # is a non-empty existing directory — it falls back to moving `dir_a`
+  # INSIDE `dir_b` (producing `dir_b/<basename(dir_a)>/`) and exits 0,
+  # which would silently leave staging detritus under the cache root.
+  # Guard with an explicit existence check so the "I won the race" branch
+  # is only taken when the cache slot was genuinely empty.
+  if [[ ! -d "$cache_dir" ]] && mv "$staging" "$cache_dir" 2>/dev/null; then
     echo "shared-bin: published $cache_dir"
     return 0
   fi

@@ -135,8 +135,10 @@ space):
 rm -rf "$(git rev-parse --git-common-dir)/.daft-shared-bin"
 ```
 
-The cache lives under `.git/common-dir/.daft-shared-bin/` so it goes away with
-the project, never under XDG state.
+The cache lives under `$(git rev-parse --git-common-dir)/.daft-shared-bin/` (the
+repo's shared `.git/` directory — the bare repo at the project root in daft's
+worktree layout, not the per-worktree `.git/` file), so it goes away with the
+project, never under XDG state.
 
 To add a new test, create a `.yml` file in the appropriate command directory:
 
