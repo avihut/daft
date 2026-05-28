@@ -144,20 +144,83 @@ fn digit_count(n: usize) -> usize {
 ///
 /// Honors the `DAFT_MANUAL_TEST_BASE` env var as an opt-in override for
 /// managed test directories (e.g. a ramdisk under `sandbox/test/`). When set,
-/// the path is `<base>/<slug>` where the slug is the lowercased scenario name
-/// — callers using `--jobs > 1` must ensure scenario names are unique.
-/// Otherwise falls back to a unique `/tmp/daft-manual-test-*` path allocated
-/// by [`sandbox::alloc_default_base_dir`].
+/// the path is `<base>/<slug>` where the slug is derived from the scenario's
+/// source path (`<parent-dir>-<file-stem>`), making it unique even when two
+/// scenarios share the same `name:` field — which they do today, see
+/// `layout/transform-matrix-nested-to-sibling.yml` and
+/// `layout/transform-nested-to-sibling.yml`, both named "Transform nested to
+/// sibling". Otherwise falls back to a unique `/tmp/daft-manual-test-*` path
+/// allocated by [`sandbox::alloc_default_base_dir`].
 ///
 /// Lives at this layer (not in `sandbox::`) so the runner core stays free of
 /// daft-named env vars; renaming `DAFT_MANUAL_TEST_BASE` is a concern for the
 /// eventual runner spin-out.
 fn pick_sandbox_base_dir(scenario: &schema::Scenario) -> Result<PathBuf> {
     if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
-        let slug = scenario.name.to_lowercase().replace(' ', "-");
-        return Ok(PathBuf::from(base).join(slug));
+        return Ok(PathBuf::from(base).join(scenario_base_slug(scenario)));
     }
     sandbox::alloc_default_base_dir()
+}
+
+/// Build a stable, collision-free path component for a scenario's sandbox
+/// directory under `DAFT_MANUAL_TEST_BASE`. Prefers a source-path slug
+/// (`<parent-dir>-<file-stem>`) since scenario file paths are unique by
+/// construction. Falls back to the scenario name for unit tests that build
+/// `Scenario` directly without populating `source_path`.
+fn scenario_base_slug(scenario: &schema::Scenario) -> String {
+    if !scenario.source_path.as_os_str().is_empty() {
+        let parent = scenario
+            .source_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let stem = scenario
+            .source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        // Both pieces feed into `shell_safe_slug` so any path-component
+        // surprise (rare but possible — e.g. branch-named scenario files)
+        // still produces a safe path.
+        return shell_safe_slug(&format!("{parent}-{stem}"));
+    }
+    shell_safe_slug(&scenario.name)
+}
+
+/// Normalise a scenario name into a directory component safe to embed in a
+/// `bash -c "cd <path> && …"` step. Scenarios contain parentheses, slashes,
+/// colons, and other shell-active characters in their human-readable names
+/// (e.g. `"Transform sanitizes branch slashes (contained to contained-flat)"`).
+/// Default `/tmp/daft-manual-test-*` sandboxes never see these because the
+/// path is timestamp/PID based, but any caller that points
+/// `DAFT_MANUAL_TEST_BASE` somewhere stable and joins the scenario name
+/// (`#512`'s RAM-disk task is the first such caller in tree) needs the
+/// component scrubbed.
+///
+/// Rules: lower-case, lossy ASCII; any character outside `[a-z0-9._]` becomes
+/// `-`; runs of `-` collapse to a single `-`; leading and trailing `-` are
+/// trimmed. Empty input yields `unnamed-scenario` so the caller still gets a
+/// valid path component.
+fn shell_safe_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for ch in name.chars().flat_map(|c| c.to_lowercase()) {
+        let safe = matches!(ch, 'a'..='z' | '0'..='9' | '.' | '_');
+        if safe {
+            out.push(ch);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unnamed-scenario".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Shared registry of live sandbox directories.
@@ -1729,6 +1792,142 @@ mod dispatch_order_tests {
             ),
             "quickcheck"
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_safe_slug_tests {
+    use super::shell_safe_slug;
+
+    #[test]
+    fn simple_lowercase_and_dash() {
+        assert_eq!(shell_safe_slug("Checkout basic"), "checkout-basic");
+    }
+
+    #[test]
+    fn parens_become_dashes() {
+        // Regression for the #512 ramdisk path: scenario names with `(` and
+        // `)` are common, and an unsanitised slug landed inside a `bash -c
+        // "cd <path>"` step that failed with `syntax error near unexpected
+        // token '('` because bash treats the unquoted `(` as a subshell.
+        assert_eq!(
+            shell_safe_slug("Owner strategy recency-plurality (default)"),
+            "owner-strategy-recency-plurality-default"
+        );
+    }
+
+    #[test]
+    fn collapses_runs_of_dashes() {
+        // Three unsafe chars in a row should produce one `-`, not three.
+        assert_eq!(shell_safe_slug("a   b"), "a-b");
+        assert_eq!(shell_safe_slug("a()b"), "a-b");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_dashes() {
+        assert_eq!(shell_safe_slug("(wrapped)"), "wrapped");
+    }
+
+    #[test]
+    fn preserves_safe_punctuation() {
+        // Dots and underscores are shell-safe in unquoted paths; preserved.
+        assert_eq!(shell_safe_slug("v1.2_release"), "v1.2_release");
+    }
+
+    #[test]
+    fn empty_yields_unnamed_scenario() {
+        // A degenerate name still must produce a valid path component.
+        assert_eq!(shell_safe_slug(""), "unnamed-scenario");
+        assert_eq!(shell_safe_slug("()"), "unnamed-scenario");
+    }
+
+    #[test]
+    fn non_ascii_collapses_to_dash() {
+        // Lossy ASCII normalisation: each non-ASCII char (e.g. `é`, `✨`)
+        // maps to `-` rather than landing untransformed in the path
+        // component. Here `é` becomes `-` and collapses with the preceding
+        // space, while the ASCII `moji` survives intact and the trailing
+        // ` ✨` collapses to a single `-` that's then trimmed.
+        assert_eq!(shell_safe_slug("name with émoji ✨"), "name-with-moji");
+    }
+
+    #[test]
+    fn leading_dot_is_preserved_but_documented() {
+        // `.` is in the safe-character set so a YAML scenario whose name
+        // started with `.` would produce a hidden directory under
+        // `DAFT_MANUAL_TEST_BASE`. No scenarios do this today; the test
+        // pins the behaviour so a future audit catches it if it starts to
+        // matter.
+        assert_eq!(shell_safe_slug(".hidden"), ".hidden");
+    }
+}
+
+#[cfg(test)]
+mod scenario_base_slug_tests {
+    use super::{scenario_base_slug, schema};
+    use std::path::PathBuf;
+
+    fn scenario_with_path(name: &str, path: &str) -> schema::Scenario {
+        schema::Scenario {
+            name: name.to_string(),
+            description: None,
+            repos: vec![],
+            env: Default::default(),
+            steps: vec![],
+            source_path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn source_path_disambiguates_duplicate_names() {
+        // Regression for #512: two scenarios share `name: "Transform nested
+        // to sibling"`. The default `/tmp/daft-manual-test-*-PID` base
+        // tolerated this because it's timestamp/PID unique. Pointing
+        // `DAFT_MANUAL_TEST_BASE` at a stable path (like the RAM disk) ate
+        // the duplicate name and produced one collision per parallel pair.
+        let a = scenario_with_path(
+            "Transform nested to sibling",
+            "tests/manual/scenarios/layout/transform-matrix-nested-to-sibling.yml",
+        );
+        let b = scenario_with_path(
+            "Transform nested to sibling",
+            "tests/manual/scenarios/layout/transform-nested-to-sibling.yml",
+        );
+        assert_eq!(
+            scenario_base_slug(&a),
+            "layout-transform-matrix-nested-to-sibling"
+        );
+        assert_eq!(scenario_base_slug(&b), "layout-transform-nested-to-sibling");
+        assert_ne!(scenario_base_slug(&a), scenario_base_slug(&b));
+    }
+
+    #[test]
+    fn empty_source_path_falls_back_to_name() {
+        // Unit tests that construct `Scenario` directly leave source_path
+        // empty (`#[serde(default, skip)]`). Those code paths still need a
+        // slug; fall back to the name field via `shell_safe_slug`.
+        let s = scenario_with_path("My scenario", "");
+        assert_eq!(scenario_base_slug(&s), "my-scenario");
+    }
+
+    #[test]
+    fn nested_source_path_uses_immediate_parent() {
+        // `<parent-dir>-<stem>`, not `<full-path>-<stem>`. Keeps slugs
+        // human-readable; deeper nesting (rare today) collides at the
+        // parent-dir level but real paths are unique even at that resolution.
+        let s = scenario_with_path("Anything", "a/b/c/d.yml");
+        assert_eq!(scenario_base_slug(&s), "c-d");
+    }
+
+    #[test]
+    fn bare_filename_with_no_parent_falls_back_to_stem() {
+        // `PathBuf::from("scenario.yml").parent()` is `Some("")` whose
+        // `file_name()` is `None`; the parent component then resolves to
+        // the empty string and `shell_safe_slug("-scenario")` trims the
+        // leading dash. Covers the "path-derived branch is taken but the
+        // parent piece is empty" edge.
+        let s = scenario_with_path("Doesn't matter", "scenario.yml");
+        assert_eq!(scenario_base_slug(&s), "scenario");
     }
 }
 
