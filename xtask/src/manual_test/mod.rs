@@ -634,6 +634,7 @@ pub fn run(
         show_progress,
         name_column_width,
         step_column_width,
+        jobs,
         interrupt.clone(),
     );
     let result = run_parallel(

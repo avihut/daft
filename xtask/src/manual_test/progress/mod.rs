@@ -157,6 +157,10 @@ impl ProgressSink for NoopProgressSink {
 /// so spinner+name, step label, and elapsed line up across rows. Pass
 /// `0` for either to disable that column's padding.
 ///
+/// `total_workers` is the size of the rayon pool (the resolved `jobs`
+/// count). The summary bar renders the in-flight count against it as
+/// `R/A running` so the reader can see how saturated the pool is.
+///
 /// Returns `Box<dyn ProgressSink>` because the live impl carries indicatif
 /// state that the no-op impl doesn't, so the two can't share a single
 /// concrete type.
@@ -164,12 +168,14 @@ pub fn progress_sink_for(
     show_progress: bool,
     name_col_width: usize,
     step_col_width: usize,
+    total_workers: usize,
     interrupt: InterruptFlag,
 ) -> Box<dyn ProgressSink> {
     if show_progress {
         Box::new(IndicatifProgressSink::new(
             name_col_width,
             step_col_width,
+            total_workers,
             interrupt,
         ))
     } else {
@@ -205,7 +211,7 @@ mod tests {
         // through a dyn pointer; exercise every method instead and rely on
         // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
         // cover the live path.
-        let sink = progress_sink_for(false, 0, 0, InterruptFlag::new());
+        let sink = progress_sink_for(false, 0, 0, 4, InterruptFlag::new());
         sink.run_started(0);
         sink.scenario_started("x", 1);
         sink.step_started("x", 0, 1, "s");

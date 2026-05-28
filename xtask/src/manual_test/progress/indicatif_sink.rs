@@ -120,6 +120,10 @@ pub struct IndicatifProgressSink {
     /// chars. Used to right-pad the step label column so the elapsed
     /// counter on the right lands at a stable position across rows.
     step_col_width: usize,
+    /// Size of the rayon worker pool (resolved `jobs`). Rendered on the
+    /// summary as `R/A running` (`R` in-flight, `A` = this) so the reader
+    /// can see how saturated the pool is.
+    total_workers: usize,
 }
 
 struct ProgressRow {
@@ -127,7 +131,12 @@ struct ProgressRow {
 }
 
 impl IndicatifProgressSink {
-    pub fn new(name_col_width: usize, step_col_width: usize, interrupt: InterruptFlag) -> Self {
+    pub fn new(
+        name_col_width: usize,
+        step_col_width: usize,
+        total_workers: usize,
+        interrupt: InterruptFlag,
+    ) -> Self {
         // Cap the overall draw rate so steady ticks don't pile up faster
         // than the terminal can flush them. See `MAX_DRAW_HZ` for the
         // rationale.
@@ -177,6 +186,7 @@ impl IndicatifProgressSink {
             interrupt,
             name_col_width,
             step_col_width,
+            total_workers,
         }
     }
 
@@ -201,7 +211,10 @@ impl IndicatifProgressSink {
         // every green run would add chrome. Once a run is cancelled, the
         // segment always shows so the user can see the count grow as
         // in-flight workers wind down.
-        let mut msg = format!("{running} running ◆ {failed_segment}");
+        let mut msg = format!(
+            "{running}/{} running ◆ {failed_segment}",
+            self.total_workers
+        );
         let interrupted = self.interrupt.is_set();
         if cancelled > 0 || interrupted {
             msg.push_str(&format!(" ◆ \x1b[33m{cancelled} cancelled\x1b[0m"));
@@ -526,6 +539,7 @@ mod tests {
             interrupt: InterruptFlag::new(),
             name_col_width: 0,
             step_col_width: 0,
+            total_workers: 4,
         }
     }
 
@@ -588,6 +602,7 @@ mod tests {
             interrupt: interrupt.clone(),
             name_col_width: 0,
             step_col_width: 0,
+            total_workers: 4,
         };
         sink.run_started(2);
         sink.scenario_started("a", 1);
