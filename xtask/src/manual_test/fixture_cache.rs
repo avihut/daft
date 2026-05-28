@@ -99,14 +99,12 @@ impl FixtureCache {
             .with_context(|| format!("creating fixture cache root: {}", root.display()))?;
 
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs.max(1))
+            .num_threads(jobs)
             .build()
             .context("building fixture-prime thread pool")?;
 
         let entries: Vec<(FixtureKey, PathBuf)> = pool.install(|| {
-            keys.iter()
-                .collect::<Vec<_>>()
-                .into_par_iter()
+            keys.par_iter()
                 .map(|key| prime_one(fixtures_dir, &root, key))
                 .collect::<Result<Vec<_>>>()
         })?;
