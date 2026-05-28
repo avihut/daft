@@ -555,7 +555,7 @@ pub fn run(
         }
     }
     let fixture_cache =
-        fixture_cache::FixtureCache::prime(&fixture_keys, &fixtures_dir, cache_root)?;
+        fixture_cache::FixtureCache::prime(&fixture_keys, &fixtures_dir, cache_root, jobs)?;
 
     // No leading eprintln! here — the pretty reporter's scenario_header
     // owns the inter-scenario blank line, including the one before the very

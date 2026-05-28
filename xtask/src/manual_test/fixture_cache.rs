@@ -20,6 +20,7 @@
 //! different `name:` values produce different bare-repo contents.
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -79,27 +80,38 @@ impl FixtureCache {
     /// under `<root>/<use_fixture>/<name>/`. The two-level layout keeps
     /// multiple fixtures isolated without prefix collisions on the inner
     /// directory name.
-    pub fn prime(keys: &BTreeSet<FixtureKey>, fixtures_dir: &Path, root: PathBuf) -> Result<Self> {
+    ///
+    /// Each key generates into its own subdir via an independent
+    /// `generate_repo`, so priming is embarrassingly parallel. It runs across
+    /// a pool sized to `jobs` — the same knob that throttles the scenario run
+    /// — so `--jobs 1` (or a contended machine) still serialises it. Without
+    /// this, the deduplicated generations run serially *before* the
+    /// reported-duration timer starts, hiding ~12s of wall-clock from the
+    /// suite total (see #577). `collect` into a `Result` preserves the
+    /// original first-error-aborts behaviour.
+    pub fn prime(
+        keys: &BTreeSet<FixtureKey>,
+        fixtures_dir: &Path,
+        root: PathBuf,
+        jobs: usize,
+    ) -> Result<Self> {
         std::fs::create_dir_all(&root)
             .with_context(|| format!("creating fixture cache root: {}", root.display()))?;
 
-        let mut paths = HashMap::with_capacity(keys.len());
-        for (use_fixture, name) in keys {
-            let parent = root.join(use_fixture);
-            std::fs::create_dir_all(&parent)
-                .with_context(|| format!("creating fixture cache subdir: {}", parent.display()))?;
-            let spec = resolve_fixture_spec(fixtures_dir, use_fixture, name.clone())?;
-            let bare_path = repo_gen::generate_repo(&spec, &parent).with_context(|| {
-                format!(
-                    "priming fixture '{}' for repo '{}' under {}",
-                    use_fixture,
-                    name,
-                    parent.display()
-                )
-            })?;
-            paths.insert((use_fixture.clone(), name.clone()), bare_path);
-        }
-        Ok(Self { paths })
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build()
+            .context("building fixture-prime thread pool")?;
+
+        let entries: Vec<(FixtureKey, PathBuf)> = pool.install(|| {
+            keys.par_iter()
+                .map(|key| prime_one(fixtures_dir, &root, key))
+                .collect::<Result<Vec<_>>>()
+        })?;
+
+        Ok(Self {
+            paths: entries.into_iter().collect(),
+        })
     }
 
     /// Materialise a per-scenario copy of the cached fixture at `key` into
@@ -122,6 +134,29 @@ impl FixtureCache {
             )
         })
     }
+}
+
+/// Generate a single fixture into `<root>/<use_fixture>/<name>/` and return
+/// its cache entry. Pulled out of [`FixtureCache::prime`] so the parallel map
+/// body stays a plain `Fn` shared across rayon workers. Concurrent
+/// `create_dir_all` on a shared `<root>/<use_fixture>` parent (two keys, same
+/// fixture, different name) is safe — `create_dir_all` treats an existing
+/// directory as success.
+fn prime_one(fixtures_dir: &Path, root: &Path, key: &FixtureKey) -> Result<(FixtureKey, PathBuf)> {
+    let (use_fixture, name) = key;
+    let parent = root.join(use_fixture);
+    std::fs::create_dir_all(&parent)
+        .with_context(|| format!("creating fixture cache subdir: {}", parent.display()))?;
+    let spec = resolve_fixture_spec(fixtures_dir, use_fixture, name.clone())?;
+    let bare_path = repo_gen::generate_repo(&spec, &parent).with_context(|| {
+        format!(
+            "priming fixture '{}' for repo '{}' under {}",
+            use_fixture,
+            name,
+            parent.display()
+        )
+    })?;
+    Ok((key.clone(), bare_path))
 }
 
 #[cfg(test)]
@@ -272,7 +307,8 @@ steps:
         keys.insert(("standard-remote".to_string(), "alpha".to_string()));
         keys.insert(("standard-remote".to_string(), "beta".to_string()));
 
-        let cache = FixtureCache::prime(&keys, &fixtures_dir(), root_path.clone()).unwrap();
+        // jobs=4 with 2 keys exercises the parallel prime path.
+        let cache = FixtureCache::prime(&keys, &fixtures_dir(), root_path.clone(), 4).unwrap();
 
         assert_eq!(cache.paths.len(), 2);
         assert!(root_path.join("standard-remote/alpha").is_dir());
@@ -282,6 +318,49 @@ steps:
         // sharing state across them.
         assert!(root_path.join("standard-remote/alpha/HEAD").is_file());
         assert!(root_path.join("standard-remote/beta/HEAD").is_file());
+    }
+
+    #[test]
+    fn prime_parallel_matches_serial_key_set() {
+        // Distinct keys, all sharing one `use_fixture` parent dir, to
+        // exercise concurrent `create_dir_all` on the shared subdir. The set
+        // of indexed keys must be identical whether primed on 1 or many
+        // threads — parallelism must not drop or duplicate entries.
+        let mut keys = BTreeSet::new();
+        keys.insert(("standard-remote".to_string(), "alpha".to_string()));
+        keys.insert(("standard-remote".to_string(), "beta".to_string()));
+        keys.insert(("standard-remote".to_string(), "gamma".to_string()));
+
+        let serial_root = tempfile::tempdir().unwrap();
+        let serial =
+            FixtureCache::prime(&keys, &fixtures_dir(), serial_root.path().to_path_buf(), 1)
+                .unwrap();
+
+        let parallel_root = tempfile::tempdir().unwrap();
+        let parallel = FixtureCache::prime(
+            &keys,
+            &fixtures_dir(),
+            parallel_root.path().to_path_buf(),
+            4,
+        )
+        .unwrap();
+
+        let serial_keys: BTreeSet<_> = serial.paths.keys().cloned().collect();
+        let parallel_keys: BTreeSet<_> = parallel.paths.keys().cloned().collect();
+        assert_eq!(
+            serial_keys, parallel_keys,
+            "key set must not depend on jobs"
+        );
+        assert_eq!(parallel_keys.len(), 3);
+        for (uf, name) in &keys {
+            assert!(
+                parallel_root
+                    .path()
+                    .join(format!("{uf}/{name}/HEAD"))
+                    .is_file(),
+                "parallel prime must produce a bare repo for ({uf}, {name})",
+            );
+        }
     }
 
     #[test]
@@ -317,8 +396,8 @@ steps:
         let cache_root = tempfile::tempdir().unwrap();
         let mut keys = BTreeSet::new();
         keys.insert(("standard-remote".to_string(), "origin".to_string()));
-        let cache =
-            FixtureCache::prime(&keys, &fixtures_dir(), cache_root.path().to_path_buf()).unwrap();
+        let cache = FixtureCache::prime(&keys, &fixtures_dir(), cache_root.path().to_path_buf(), 1)
+            .unwrap();
 
         // Clone the cached fixture into a fresh destination ...
         let dst_parent = tempfile::tempdir().unwrap();
