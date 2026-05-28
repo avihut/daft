@@ -326,9 +326,17 @@ impl ProgressSink for IndicatifProgressSink {
         // its own `scenario_started`) and shift the row count out from
         // under either side. See the field doc on `state_lock`.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Insert worker rows *below* the summary (between it and the
+        // never-removed trailer) so the totals bar sits on top of the
+        // in-flight rows. The multi's order is `summary` (added first,
+        // top) → worker rows → `_trailer` (added last, bottom);
+        // `insert_before(&self._trailer)` lands each new row just above
+        // the trailer. The trailer staying last is what keeps indicatif's
+        // line accounting stable as rows come and go — do not insert after
+        // it.
         let bar = self
             .multi
-            .insert_before(&self.summary, ProgressBar::new_spinner());
+            .insert_before(&self._trailer, ProgressBar::new_spinner());
         bar.set_style(
             // Per-row leads at column 0 so when the scenario completes its
             // `✓ name  duration` footer (also at column 0) drops cleanly
