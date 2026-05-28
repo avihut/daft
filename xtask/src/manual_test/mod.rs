@@ -122,6 +122,9 @@ fn max_step_counter_width(metas: &[ScenarioMeta]) -> usize {
         .unwrap_or(0)
 }
 
+// Twin of `digit_count` in `progress/indicatif_sink.rs` (which takes `u64`
+// to match indicatif's counters). Keep the two in sync if the formula
+// changes.
 fn digit_count(n: usize) -> usize {
     if n == 0 {
         1

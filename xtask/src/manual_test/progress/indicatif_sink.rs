@@ -78,6 +78,10 @@ const ROW_ELAPSED_WIDTH: usize = 6;
 /// Decimal digit count of `n` (`0` → 1). Used to right-pad the `pos`
 /// half of a `pos/len` counter so the column to its right (the time
 /// counter) sits at a stable position as `pos` grows digits.
+///
+/// Takes `u64` to match indicatif's `ProgressState::pos`/`len`. There is a
+/// `usize` twin in `manual_test::mod.rs` (used for the pre-scan over step
+/// counts) — keep the two in sync if the formula ever changes.
 fn digit_count(n: u64) -> usize {
     if n == 0 {
         1
@@ -162,6 +166,13 @@ fn summary_style() -> ProgressStyle {
 ///   line accounting. Truncation is ANSI-aware, so the bright-purple step
 ///   name and yellow `(slow)` survive a cut without bleeding color.
 fn row_style() -> ProgressStyle {
+    // The `\x1b[2m … \x1b[0m` wrapping `{row_elapsed}` is raw dim SGR, which
+    // (unlike the template's `:.dim` modifier on built-in keys) bypasses
+    // `NO_COLOR` — bytes inside a custom key are passed through verbatim.
+    // There's no alternative: indicatif's style modifiers only apply to
+    // built-in keys, and `row_elapsed` is custom (sub-second precision).
+    // Same ANSI-inlining carve-out as `update_summary_msg`; see
+    // `reporter/CLAUDE.md` §8.
     ProgressStyle::with_template(&format!(
         "{{bar:{BAR_WIDTH}./dim}}  {{prefix}}  \x1b[2m{{row_elapsed}}\x1b[0m  {{wide_msg}}"
     ))
@@ -254,7 +265,10 @@ impl IndicatifProgressSink {
         // layout rationale. The steady tick refreshes `{elapsed_precise}`
         // and the bar even when no scenario completes.
         summary.set_style(summary_style());
-        summary.set_message("0/0 running ◆ 0 failed");
+        // Accurate placeholder until `run_started` → `update_summary_msg`
+        // overwrites it (sub-frame, but the steady tick could draw once in
+        // between, so seed it with the real worker count rather than `0/0`).
+        summary.set_message(format!("0/{total_workers} running ◆ 0 failed"));
         summary.enable_steady_tick(TICK_INTERVAL);
 
         // Anchor a single-space "trailer" bar at the bottom of the multi.
@@ -428,34 +442,29 @@ impl ProgressSink for IndicatifProgressSink {
         // steps are already complete — that's both the bar position and
         // the `done` half of the `done/total` counter.
         //
-        // Two-phase lock: read elapsed under the lock, release while
-        // `render_row_tail` does ANSI string formatting (no shared state
-        // needed), then re-acquire briefly to update the bar. Holding the
-        // mutex across the formatting would serialize every worker's
-        // step_started even though the formatting is pure-functional.
+        // Two-phase lock: read *only* the elapsed under the lock, drop it,
+        // then format the tail/counter (pure-functional over immutable
+        // `self` fields — no shared state), then re-acquire briefly to push
+        // the update onto the bar. Keeping the formatting outside the lock
+        // means concurrent workers' `step_started` calls don't serialize on
+        // each other's string building.
         //
         // The race window between the two locks is benign: if
-        // `scenario_finished` removes the row between phases, the second
+        // `complete_scenario` removes the row between phases, the second
         // `if let Some(row)` simply skips the update — visually equivalent
         // to a `set_message` that landed a frame before the row cleared.
-        let (update, found) = {
+        let elapsed = {
             let Ok(rows) = self.rows.lock() else {
                 return;
             };
             match rows.get(scenario_name) {
-                Some(row) => {
-                    let elapsed = row.bar.elapsed();
-                    let tail = self.render_row_tail(scenario_name, step_name, elapsed);
-                    let counter = self.render_row_counter(idx, total);
-                    (Some((tail, counter)), true)
-                }
-                None => (None, false),
+                Some(row) => row.bar.elapsed(),
+                None => return,
             }
         };
-        if !found {
-            return;
-        }
-        if let (Some((tail, counter)), Ok(rows)) = (update, self.rows.lock()) {
+        let tail = self.render_row_tail(scenario_name, step_name, elapsed);
+        let counter = self.render_row_counter(idx, total);
+        if let Ok(rows) = self.rows.lock() {
             if let Some(row) = rows.get(scenario_name) {
                 row.bar.set_position(idx as u64);
                 row.bar.set_prefix(counter);
