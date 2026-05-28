@@ -354,13 +354,25 @@ mod tests {
         // makes the per-feature `DAFT_NO_UPDATE_CHECK` / `DAFT_NO_TRUST_PRUNE`
         // / `DAFT_NO_LOG_CLEAN` flags redundant for the test runner.
         assert_eq!(env.get("DAFT_TESTING").unwrap(), "1");
+        // The runner intentionally stops setting per-feature suppression
+        // flags; DAFT_TESTING=1 alone gates all three maybe_* startup helpers
+        // via daft::should_skip_background_tasks. Symmetric messages so any
+        // future regression points straight at the contract.
+        const SINGLE_FLAG_CONTRACT: &str =
+            "DAFT_TESTING=1 is the single daemon-suppression contract; per-feature \
+             DAFT_NO_* flags must not be reintroduced by the runner adapter";
         assert!(
             !env.contains_key("DAFT_NO_UPDATE_CHECK"),
-            "the runner intentionally stops setting per-feature suppression flags; \
-             DAFT_TESTING=1 alone gates all three maybe_* startup helpers"
+            "{SINGLE_FLAG_CONTRACT}"
         );
-        assert!(!env.contains_key("DAFT_NO_TRUST_PRUNE"));
-        assert!(!env.contains_key("DAFT_NO_LOG_CLEAN"));
+        assert!(
+            !env.contains_key("DAFT_NO_TRUST_PRUNE"),
+            "{SINGLE_FLAG_CONTRACT}"
+        );
+        assert!(
+            !env.contains_key("DAFT_NO_LOG_CLEAN"),
+            "{SINGLE_FLAG_CONTRACT}"
+        );
         assert!(env.get("PATH").unwrap().contains("target/release"));
         assert!(env.get("DAFT_CONFIG_DIR").unwrap().contains("daft-config"));
         assert!(env.get("DAFT_DATA_DIR").unwrap().contains("daft-data"));
