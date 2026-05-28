@@ -1,6 +1,7 @@
 pub mod cow_copy;
 pub mod daft_executor;
 pub mod executor;
+pub mod fixture_cache;
 pub mod interactive;
 pub mod progress;
 pub mod repo_gen;
@@ -160,6 +161,34 @@ fn pick_sandbox_base_dir(scenario: &schema::Scenario) -> Result<PathBuf> {
         return Ok(PathBuf::from(base).join(scenario_base_slug(scenario)));
     }
     sandbox::alloc_default_base_dir()
+}
+
+/// Allocate the run-wide fixture-cache root directory.
+///
+/// When `DAFT_MANUAL_TEST_BASE` is set, the cache lives under that root with
+/// a leading-underscore prefix so it sorts above the per-scenario sandbox
+/// directories in a listing and is visually distinct. The PID suffix makes
+/// two concurrent runs against the same base happy. Otherwise the cache
+/// gets its own timestamp-PID-counter path under `/tmp`, mirroring the
+/// shape of [`sandbox::alloc_default_base_dir`].
+///
+/// Lives in this layer (not in `sandbox::`) for the same reason as
+/// [`pick_sandbox_base_dir`]: the runner's daft-named env-var awareness
+/// stays out of the sandbox module so the spin-out story is clean.
+fn alloc_fixture_cache_dir() -> Result<PathBuf> {
+    if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
+        let pid = std::process::id();
+        return Ok(PathBuf::from(base).join(format!("_fixture-cache-{pid}")));
+    }
+    let base = sandbox::alloc_default_base_dir()?;
+    // Reuse the timestamp-PID-counter slug from the default-base helper but
+    // tag the suffix so a stray cache directory is identifiable in `/tmp`.
+    let file_name = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("daft-manual-test-fixture-cache");
+    let parent = base.parent().unwrap_or(Path::new("/tmp"));
+    Ok(parent.join(format!("{file_name}-fixture-cache")))
 }
 
 /// Build a stable, collision-free path component for a scenario's sandbox
@@ -382,6 +411,11 @@ struct ScenarioOutcome {
 struct RunContext<'a> {
     project_root: &'a Path,
     fixtures_dir: &'a Path,
+    /// Run-wide cache of pre-generated fixture remotes. Each
+    /// `RepoSpec` carrying `fixture_source = Some(...)` is materialised by
+    /// `cow_copy`-ing from the cache into the scenario sandbox; inline
+    /// specs still go through [`repo_gen::generate_repo`].
+    fixture_cache: &'a fixture_cache::FixtureCache,
     reporter: &'a dyn reporter::Reporter,
     progress: &'a dyn progress::ProgressSink,
     /// Cooperative cancellation flag. Workers check between steps inside
@@ -497,6 +531,26 @@ pub fn run(
     let interrupt = progress::InterruptFlag::new();
     let cleanup_set = setup_cleanup_handler(keep, interrupt.clone());
 
+    // Prime the run-wide fixture cache. See [`fixture_cache`] for the
+    // shape: walk every scenario file's raw YAML, collect unique
+    // `(use_fixture, name)` tuples, generate each into the cache once, then
+    // workers `cow_copy` from the cache into their sandboxes instead of
+    // regenerating the same fixture for every scenario that references it.
+    //
+    // Register the cache root with the cleanup set *before* priming so a
+    // SIGINT during `generate_repo` still leaves a tracked path the
+    // handler can `rm -rf` — matching the same pre-create registration
+    // pattern the per-scenario sandbox path uses.
+    let fixture_keys = fixture_cache::collect_fixture_keys(&scenario_files);
+    let cache_root = alloc_fixture_cache_dir()?;
+    if !keep {
+        if let Ok(mut g) = cleanup_set.lock() {
+            g.insert(cache_root.clone());
+        }
+    }
+    let fixture_cache =
+        fixture_cache::FixtureCache::prime(&fixture_keys, &fixtures_dir, cache_root)?;
+
     // No leading eprintln! here — the pretty reporter's scenario_header
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
@@ -526,6 +580,7 @@ pub fn run(
             &scenario_files,
             &project_root,
             &fixtures_dir,
+            &fixture_cache,
             &cleanup_set,
             reporter.as_ref(),
             verbosity,
@@ -567,6 +622,7 @@ pub fn run(
         &scenarios_dir,
         &project_root,
         &fixtures_dir,
+        &fixture_cache,
         &cleanup_set,
         reporter.as_ref(),
         progress.as_ref(),
@@ -595,6 +651,7 @@ fn run_parallel(
     scenarios_dir: &Path,
     project_root: &Path,
     fixtures_dir: &Path,
+    fixture_cache: &fixture_cache::FixtureCache,
     cleanup_set: &CleanupSet,
     reporter: &dyn reporter::Reporter,
     progress: &dyn progress::ProgressSink,
@@ -607,6 +664,7 @@ fn run_parallel(
     let ctx = RunContext {
         project_root,
         fixtures_dir,
+        fixture_cache,
         reporter,
         progress,
         interrupt,
@@ -912,10 +970,12 @@ fn aggregate_outcomes<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn run_serial(
     scenario_files: &[PathBuf],
     project_root: &Path,
     fixtures_dir: &Path,
+    fixture_cache: &fixture_cache::FixtureCache,
     cleanup_set: &CleanupSet,
     reporter: &dyn reporter::Reporter,
     verbosity: reporter::Verbosity,
@@ -946,7 +1006,7 @@ fn run_serial(
         let executor = daft_executor::DaftCommandExecutor::new_for_sandbox(&mut sb, project_root)?;
 
         for repo_spec in &scenario.repos {
-            repo_gen::generate_repo(repo_spec, &sb.remotes_dir)?;
+            provision_repo(fixture_cache, repo_spec, &sb.remotes_dir)?;
             sb.register_remote(&repo_spec.name);
         }
         sb.create_template()?;
@@ -1190,7 +1250,7 @@ fn run_one_scenario_inner(
 
     let fixture_started = std::time::Instant::now();
     for repo_spec in &scenario.repos {
-        repo_gen::generate_repo(repo_spec, &sb.remotes_dir)?;
+        provision_repo(ctx.fixture_cache, repo_spec, &sb.remotes_dir)?;
         sb.register_remote(&repo_spec.name);
     }
     let fixture_ms = fixture_started.elapsed().as_millis();
@@ -1493,34 +1553,60 @@ fn resolve_repos(
         match entry {
             schema::RepoEntry::Inline(spec) => resolved.push(spec),
             schema::RepoEntry::Fixture(fixture_ref) => {
-                let fixture_path = fixtures_dir
-                    .join(&fixture_ref.use_fixture)
-                    .with_extension("yml");
-                let raw_yaml = std::fs::read_to_string(&fixture_path).with_context(|| {
-                    format!(
-                        "reading fixture '{}' for repo '{}'",
-                        fixture_ref.use_fixture, fixture_ref.name
-                    )
-                })?;
-                let substituted = raw_yaml.replace("{{NAME}}", &fixture_ref.name);
-                let fixture: schema::RepoFixture = serde_yaml::from_str(&substituted)
-                    .with_context(|| {
-                        format!(
-                            "parsing fixture '{}' for repo '{}'",
-                            fixture_ref.use_fixture, fixture_ref.name
-                        )
-                    })?;
-                resolved.push(schema::RepoSpec {
-                    name: fixture_ref.name,
-                    default_branch: fixture.default_branch,
-                    branches: fixture.branches,
-                    daft_yml: fixture.daft_yml,
-                    hook_scripts: fixture.hook_scripts,
-                });
+                resolved.push(resolve_fixture_spec(
+                    fixtures_dir,
+                    &fixture_ref.use_fixture,
+                    fixture_ref.name,
+                )?);
             }
         }
     }
     Ok(resolved)
+}
+
+/// Materialise a single repo into the scenario's `remotes_dir`.
+///
+/// Fixture-derived specs (`fixture_source = Some(_)`) `cow_copy` from the
+/// run-wide cache — O(1) on APFS / reflink-capable Linux, byte-copy fallback
+/// elsewhere. Inline specs hit `repo_gen::generate_repo` per scenario since
+/// they have no caching identity to share against.
+fn provision_repo(
+    cache: &fixture_cache::FixtureCache,
+    repo_spec: &schema::RepoSpec,
+    remotes_dir: &Path,
+) -> Result<()> {
+    if let Some(use_fixture) = &repo_spec.fixture_source {
+        let key = (use_fixture.clone(), repo_spec.name.clone());
+        let dst = remotes_dir.join(&repo_spec.name);
+        cache.clone_into(&key, &dst)
+    } else {
+        repo_gen::generate_repo(repo_spec, remotes_dir).map(|_| ())
+    }
+}
+
+/// Resolve a single `use_fixture` reference into a fully-substituted
+/// [`schema::RepoSpec`]. Shared between scenario resolution and the
+/// fixture-cache primer so both paths apply identical `{{NAME}}` substitution
+/// and identical error messages.
+pub(crate) fn resolve_fixture_spec(
+    fixtures_dir: &Path,
+    use_fixture: &str,
+    name: String,
+) -> Result<schema::RepoSpec> {
+    let fixture_path = fixtures_dir.join(use_fixture).with_extension("yml");
+    let raw_yaml = std::fs::read_to_string(&fixture_path)
+        .with_context(|| format!("reading fixture '{}' for repo '{}'", use_fixture, name))?;
+    let substituted = raw_yaml.replace("{{NAME}}", &name);
+    let fixture: schema::RepoFixture = serde_yaml::from_str(&substituted)
+        .with_context(|| format!("parsing fixture '{}' for repo '{}'", use_fixture, name))?;
+    Ok(schema::RepoSpec {
+        name,
+        default_branch: fixture.default_branch,
+        branches: fixture.branches,
+        daft_yml: fixture.daft_yml,
+        hook_scripts: fixture.hook_scripts,
+        fixture_source: Some(use_fixture.to_string()),
+    })
 }
 
 /// List available scenarios with their name and description.
