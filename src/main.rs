@@ -39,15 +39,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Skip startup-time background work for invocations that must stay lean:
-    // - `__*` background tasks (__check-update, __prune-trust, etc.) — spawning
-    //   further background processes from them would recursively fan out into a
-    //   fork bomb.
-    // - `shell-init` — sourced from the user's shell rc files on every
-    //   interactive shell startup; any subprocess call, file IO, network
-    //   request, or background spawn here adds latency to every new shell, and
-    //   stderr output (e.g., the update banner) leaks past `eval`'s stdout
-    //   capture into the user's terminal.
+    // Skip startup-time background work for invocations that must stay lean.
+    // Three independent gates compose here; see
+    // `daft::should_skip_background_tasks` for the per-gate rationale.
     //
     // If a fork bomb occurs (hundreds of daft processes consuming all CPU):
     //   pkill -9 -f "daft.*__check-update"
@@ -55,12 +49,7 @@ fn main() -> Result<()> {
     // Or more broadly:
     //   pkill -9 -f "<worktree-path>/target/release"
     // Repeat until `ps aux | grep __check-update | wc -l` returns 0.
-    let skip_startup_tasks = daft::skip_startup_tasks_for(argv);
-
-    // Also skip background spawning if we're inside a coordinator process
-    let is_coordinator = std::env::var("DAFT_IS_COORDINATOR").is_ok();
-
-    let skip_background = skip_startup_tasks || is_coordinator;
+    let skip_background = daft::should_skip_background_tasks(argv);
 
     // Warn if config directory is overridden (security measure against trust DB hijacking).
     // Only in dev builds — release builds ignore DAFT_CONFIG_DIR entirely.

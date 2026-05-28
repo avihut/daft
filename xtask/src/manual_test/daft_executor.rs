@@ -94,15 +94,19 @@ impl DaftCommandExecutor {
             sandbox.git_config_path.to_string_lossy().into_owned(),
         );
 
-        // Daft feature flags. Disable every daemon-style background spawn:
-        // the test harness invokes `daft` many times back-to-back, and any
-        // detached child that survives its parent (e.g. `daft __clean-logs`)
-        // accumulates as init-reparented orphans and steals CPU — visible as
-        // load-average climbing into the hundreds during parallel runs.
+        // Disable every daemon-style background spawn: the test harness
+        // invokes `daft` many times back-to-back, and any detached child that
+        // survives its parent (e.g. `daft __clean-logs`) accumulates as
+        // init-reparented orphans and steals CPU — visible as load-average
+        // climbing into the hundreds during parallel runs.
+        //
+        // `DAFT_TESTING` alone is sufficient: it flips daft's central
+        // `should_skip_background_tasks` gate in main.rs, which suppresses
+        // every `maybe_*` spawn helper before it runs. The per-feature env
+        // vars (`DAFT_NO_UPDATE_CHECK` / `DAFT_NO_TRUST_PRUNE` /
+        // `DAFT_NO_LOG_CLEAN`) remain as user-facing opt-outs but are
+        // redundant for the test runner.
         env.insert("DAFT_TESTING".into(), "1".into());
-        env.insert("DAFT_NO_UPDATE_CHECK".into(), "1".into());
-        env.insert("DAFT_NO_TRUST_PRUNE".into(), "1".into());
-        env.insert("DAFT_NO_LOG_CLEAN".into(), "1".into());
         env.insert(
             "DAFT_CONFIG_DIR".into(),
             self.daft_config_dir.to_string_lossy().into_owned(),
