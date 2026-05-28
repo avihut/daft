@@ -96,7 +96,8 @@ pointing at the layer interaction that motivated them.
 | `✗`     | Fail — at every level: step assertion, scenario footer, failures-block entries, failures-block per-assertion | bold red                  |
 | `❯`     | Focal failing step in the failures block (one per failure entry)                                             | bold red                  |
 | `⎯`     | Section rule (banner only — twelve per side, fixed width)                                                    | dim                       |
-| `[N/M]` | Step counter — the only counter form                                                                         | dim                       |
+| `[N/M]` | Step counter in scrollback (per-step lines)                                                                  | dim                       |
+| `N/M`   | `done/total` counter in the live region (no brackets — the bar to its left is the visual frame); see §8      | default fg                |
 | `$`     | Expanded-command prefix (under `-v`+ verbosity)                                                              | dim                       |
 
 **Never use lowercase `x` for failure**, even at the assertion-detail level.
@@ -235,41 +236,77 @@ These rules formalize the spacing-fix contract from commit `e54fa114`.
 ## 8. Live progress region
 
 On a TTY, the runner shows a pinned multi-row region at the bottom of the
-terminal during a parallel run: one row per in-flight scenario plus a summary
-bar. Completed scenarios stream their full byte buffer into scrollback above the
-region in completion order; the bar clears before the final summary block
-prints, so end-of-run output is identical to the non-TTY path. On non-TTY (CI
-logs, redirected output, `cargo run`), the region is suppressed entirely and
-output reverts to today's input-order drain at end — byte-identical.
+terminal during a parallel run: a **summary (totals) bar on top, then one row
+per in-flight scenario below it**. Completed scenarios stream their full byte
+buffer into scrollback above the region in completion order; the region clears
+before the final summary block prints, so end-of-run output is identical to the
+non-TTY path. On non-TTY (CI logs, redirected output, `cargo run`), the region
+is suppressed entirely and output reverts to the input-order drain at end —
+byte-identical.
 
-The region uses **no new color slots** — every element re-uses §1's existing
-budget. The reuse is deliberate (§2's meta-rule: hierarchy is contextual to
-visible layers; the new live layer borrows existing slots so the budget stays a
-typed enum):
+```text
+  [██████░░░░░░░░] 3/8  0:05  2/4 running ◆ 0 failed
+  [████░░░░░░] 2/5  1.2s  checkout-basic   Inspect workspace
+  [██░░░░░░░░] 1/3  0.4s  clone-remote     Clone repository
+```
 
-- **Per-scenario in-flight row**: scenario name at default fg (matches the
-  passing-footer convention from §2), then `[N/M]` step counter in plain cyan
-  (the same structural-anchor slot used for the scrollback `[N/M]` counter),
-  step name in bright purple (same identity slot used in `-v`/`-vv` per-step
-  lines), and a yellow `(slow)` suffix once scenario elapsed crosses 5 s (same
-  threshold and slot as the footer's slow rule).
-- **Summary bar**:
-  `{spinner}  [{done}/{total}]  N running ◆ M failed  ◆ {elapsed}`. Spinner +
-  counter + label words at default fg, dim elapsed (scaffolding), and the
-  `M failed` segment goes bold red when `> 0` — the live equivalent of §4's
-  fail-loud rule. When `failed == 0` the count is default fg (pass-quiet — a
-  green wall of `0 failed` would dominate).
+**Shared `[bar] → [counter] → [time] → tail` layout.** Both the totals line and
+each worker row read left to right as: a fixed-width progress bar, then the
+`done/total` counter of whatever that bar measures, then the elapsed time, then
+the rest. The bars share one width so they stack into a single left column the
+eye runs down. The counter and time are template keys (the steady tick refreshes
+them); the variable text rides in a single trailing `{wide_msg}` per line.
 
-**Indent**: 2 spaces (matches Layer 2 in §6, so the bar visually anchors at the
-same column as scenario headers). Per-row layout is
-`<scenario name>  [N/M] <step name>  <(slow)?>`; the bar's spinner sits in
-column 2 of the bar row.
+- **Totals line**: bar = completed **scenarios**; counter = `done/total`
+  scenarios (the `done` half right-padded to `total`'s digit width); time = run
+  elapsed; tail = `R/A running ◆ M failed [◆ C cancelled] [(cancelling)]`, where
+  `R` is the in-flight count and `A` the worker-pool size.
+- **Worker row**: bar = completed **steps** for that scenario; counter =
+  `done/total` steps (padded to the run's widest counter); time = per-scenario
+  elapsed; tail = the scenario name (padded to the widest name so step names
+  align) followed by the current step name.
+
+The region uses **no new color slots** — every element re-uses §1's budget (§2's
+meta-rule: hierarchy is contextual to visible layers, so the live layer borrows
+existing slots). The **bar is the structural anchor** here (it leads each line),
+so the live counters drop to **default fg** rather than the scrollback's cyan
+`[N/M]` — the bar already frames them, and a second cyan slot on screen would
+dilute the anchor. Specifically:
+
+- **Bar**: filled at default fg, unfilled `dim` (`{bar:N./dim}`) — scaffolding
+  shape, no color.
+- **Counter** (`done/total`) and **time**: default fg counter, dim elapsed
+  (scaffolding).
+- **Step name** (worker tail): bright purple (the identity slot from the
+  `-v`/`-vv` per-step lines); **scenario name**: default fg (the passing-footer
+  convention from §2); **`(slow)`** suffix: yellow once scenario elapsed crosses
+  5 s (same threshold and slot as the footer's slow rule).
+- **`M failed`** goes bold red when `> 0` (live equivalent of §4's fail-loud);
+  default fg at `0` (a green/red wall of `0 failed` would dominate). **Cancel
+  mode is a derivative of this same line**: `C cancelled` and `(cancelling)`
+  ride in the totals tail in the yellow slot (attention-without-alarm), and the
+  worker rows keep the same layout as they wind down.
+
+**Narrow-display safety is a correctness property, not cosmetics.** The variable
+tail of each line is a single `{wide_msg}`, which indicatif **truncates** (never
+wraps) to the terminal width — and the fixed bar + counter + time prefix is the
+only non-truncating content. A wrapped row would desync indicatif's line-count
+accounting and strand a ghost row in scrollback (the hazard the whole
+`indicatif_sink.rs` trailer / `state_lock` / remove-then-println machinery
+exists to prevent), so keeping every row exactly one line tall at any width is
+load-bearing. `{wide_msg}` truncation is ANSI-aware, so the inlined purple /
+yellow / red segments survive a cut without bleeding color past it. On very
+narrow terminals the step name truncates first, then the scenario name; the bar,
+counter, and time always remain.
+
+**Indent**: the bar leads at column 0, anchoring at the same column as the
+scrollback `✓ name` / `✗ name` footers.
 
 **Visibility ladder**: the region is orthogonal to verbosity — all four tiers
 (`-q` / default / `-v` / `-vv`) get it on TTY, because it tracks live state, not
 output volume. `-q` benefits the most: its scrollback is silent on green, so the
-bar is the entire heartbeat. Failures still surface in scrollback at `-q` with
-the fail footer + cleanup line.
+region is the entire heartbeat. Failures still surface in scrollback at `-q`
+with the fail footer + cleanup line.
 
 **Interactive and `--setup-only` skip the region.** Both bail to `run_serial`
 before the parallel scheduler runs and have semantics (TTY ownership for
