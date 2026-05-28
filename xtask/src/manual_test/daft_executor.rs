@@ -1,8 +1,13 @@
 //! Daft-specific adapter for the [`CommandExecutor`] port.
 //!
 //! Owns every assumption the runner makes about daft itself:
-//!   - `target/release/` is on `PATH` (locally-built `daft` wins over any
-//!     system install).
+//!   - `target/release/` is on `PATH` so locally-built `daft` wins over
+//!     any system install. The directory is resolvable via
+//!     `DAFT_BINARY_DIR=<path>` (#514) so a worktree can point at a
+//!     shared bin that was already built somewhere else — under
+//!     `<git-common-dir>/.daft-shared-bin/<hash>/target/release/` by
+//!     the helper `mise-tasks/test/manual/_shared_bin_lib.sh`.
+//!     Default when unset stays at `<project_root>/target/release`.
 //!   - `DAFT_CONFIG_DIR` and `DAFT_DATA_DIR` are per-sandbox so suites running
 //!     in parallel never read each other's trust / repo state.
 //!   - `DAFT_TESTING=1` prevents orphaned background processes from
@@ -14,8 +19,7 @@
 //!
 //! Keeping all of this in the adapter is what lets the runner core compile
 //! and run against a non-daft executor (see [`super::runner`]'s `FakeExecutor`
-//! tests). Future #509 sub-tasks (e.g. `DAFT_BINARY_DIR=` for #514) extend the
-//! constructor here, not the runner.
+//! tests).
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -46,7 +50,7 @@ impl DaftCommandExecutor {
     /// variables (`$BINARY_DIR`, `$DAFT_DATA_DIR`) on the sandbox so scenario
     /// commands can refer to them.
     pub fn new_for_sandbox(sandbox: &mut Sandbox, project_root: &Path) -> Result<Self> {
-        let binary_dir = project_root.join("target/release");
+        let binary_dir = resolve_binary_dir(project_root);
         let daft_config_dir = sandbox.base_dir.join("daft-config");
         let daft_data_dir = sandbox.base_dir.join("daft-data");
 
@@ -59,6 +63,20 @@ impl DaftCommandExecutor {
         // historically baked into the sandbox's own var store; keeping them
         // here is what lets the sandbox stay daft-agnostic.
         sandbox.register_var("BINARY_DIR", binary_dir.to_string_lossy().into_owned());
+        // `$WORKSPACE_ROOT` is the canonical absolute path to the daft
+        // checkout that hosts the test runner. Most scenarios don't need
+        // it — `$BINARY_DIR` is enough for running daft against a
+        // sandbox. But `runner-output:end-to-end` re-invokes `xtask`
+        // against a fixture under `tests/manual/scenarios/.../_fixtures/`,
+        // and after #514 `$BINARY_DIR` may live under
+        // `<git-common-dir>/.daft-shared-bin/<hash>/target/release/`
+        // (not `<workspace>/target/release/`), so `$BINARY_DIR/../..`
+        // is no longer a valid workspace anchor. Scenarios that need
+        // a workspace-relative path must `cd "$WORKSPACE_ROOT"` first.
+        sandbox.register_var(
+            "WORKSPACE_ROOT",
+            project_root.to_string_lossy().into_owned(),
+        );
         sandbox.register_var(
             "DAFT_DATA_DIR",
             daft_data_dir.to_string_lossy().into_owned(),
@@ -153,6 +171,26 @@ impl DaftCommandExecutor {
         std::env::split_paths(&path)
             .map(|dir| dir.join(name))
             .find(|p| is_executable(p))
+    }
+}
+
+/// Pick the directory that holds the `daft` binary (plus its multicall
+/// symlinks) the test runner will use.
+///
+/// `DAFT_BINARY_DIR=<path>` overrides; otherwise default to
+/// `<project_root>/target/release/`. The override lets `mise run
+/// test:manual` build into a shared content-hashed location under
+/// `<git-common-dir>/.daft-shared-bin/<hash>/target/release/` so that
+/// sibling worktrees at the same source state share a single build
+/// (see `mise-tasks/test/manual/_shared_bin_lib.sh`).
+///
+/// Lives in the daft-specific adapter rather than `env.rs` so the
+/// `DAFT_BINARY_DIR` env var name does not leak into the runner core
+/// (per CLAUDE.md's "runner core never names daft" boundary).
+fn resolve_binary_dir(project_root: &Path) -> PathBuf {
+    match std::env::var("DAFT_BINARY_DIR") {
+        Ok(value) if !value.is_empty() => PathBuf::from(value),
+        _ => project_root.join("target/release"),
     }
 }
 
@@ -322,7 +360,59 @@ impl CommandExecutor for DaftCommandExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Serialises every test in this module that constructs a
+    /// `DaftCommandExecutor`. `new_for_sandbox` reads `DAFT_BINARY_DIR`
+    /// (via `resolve_binary_dir`), and `cargo test` runs tests in
+    /// parallel within a single binary — without a process-wide lock,
+    /// the env-var override test could race the no-override fallback
+    /// tests and flip the assertions on either side.
+    ///
+    /// Pairs with the helpers below: every test that hits the
+    /// constructor acquires this lock first and explicitly establishes
+    /// the env-var state it expects.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that holds [`ENV_LOCK`], snapshots `DAFT_BINARY_DIR`'s
+    /// state on construction, and restores it on drop. Lets each test
+    /// freely set / unset the env var without leaking the change to
+    /// other tests.
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn acquire() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let prev = std::env::var("DAFT_BINARY_DIR").ok();
+            // SAFETY: edition 2024 marks `remove_var`/`set_var` as
+            // `unsafe fn` because env mutation is process-global and
+            // not thread-safe. Held lock serialises every constructor
+            // test in this module against itself; no other test in
+            // xtask reads/writes `DAFT_BINARY_DIR`. CLAUDE.md allows
+            // unsafe in tests.
+            unsafe { std::env::remove_var("DAFT_BINARY_DIR") };
+            Self { _lock: lock, prev }
+        }
+
+        fn set(&self, value: &Path) {
+            unsafe { std::env::set_var("DAFT_BINARY_DIR", value) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var("DAFT_BINARY_DIR", v),
+                    None => std::env::remove_var("DAFT_BINARY_DIR"),
+                }
+            }
+        }
+    }
 
     /// Dummy `project_root` value. The adapter only uses it to compute
     /// `project_root.join("target/release")` for PATH construction — no I/O
@@ -343,6 +433,7 @@ mod tests {
 
     #[test]
     fn build_env_has_git_identity_and_daft_flags() {
+        let _env = EnvGuard::acquire();
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
 
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
@@ -380,6 +471,7 @@ mod tests {
 
     #[test]
     fn registers_binary_dir_and_data_dir_vars_on_sandbox() {
+        let _env = EnvGuard::acquire();
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
 
         let _exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
@@ -460,6 +552,7 @@ mod tests {
 
     #[test]
     fn resolve_binary_prefers_binary_dir_over_ambient_path() {
+        let _env = EnvGuard::acquire();
         // Regression for the field-test bug behind #560's first run: the
         // fast path's `Command::new(name)` defers to libc `execvp`, which
         // searches the runner's ambient PATH and so cannot find locally
@@ -486,6 +579,7 @@ mod tests {
 
     #[test]
     fn resolve_binary_skips_non_executable_regular_files() {
+        let _env = EnvGuard::acquire();
         // Defensive: a regular file with the right name but no execute bit
         // must NOT resolve. Without the `is_executable` check, the fast
         // path would take this path and spawn would fail with EPERM rather
@@ -504,6 +598,7 @@ mod tests {
 
     #[test]
     fn resolve_binary_returns_none_for_missing() {
+        let _env = EnvGuard::acquire();
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
         assert!(exec
@@ -513,6 +608,7 @@ mod tests {
 
     #[test]
     fn execute_runs_fast_path_command_directly() {
+        let _env = EnvGuard::acquire();
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
 
@@ -586,6 +682,7 @@ mod tests {
 
     #[test]
     fn execute_fast_path_merges_stderr_into_stdout_on_2_amp_1() {
+        let _env = EnvGuard::acquire();
         // Real coverage for the `merge_stderr_into_stdout` branch. After
         // stripping `2>&1`, the remaining `ls /definitely-nonexistent-...`
         // has no shell metacharacters, so `try_direct_argv` succeeds and
@@ -616,6 +713,7 @@ mod tests {
 
     #[test]
     fn execute_bash_fallback_preserves_native_2_amp_1_semantics() {
+        let _env = EnvGuard::acquire();
         // Inner `sh -c "...; ...; ..."` contains `;` and `>` in `1>&2`,
         // so even after stripping trailing `2>&1` the byte-scan still
         // bails and routes to bash. Bash then natively handles `2>&1`
@@ -640,6 +738,7 @@ mod tests {
 
     #[test]
     fn execute_falls_back_to_bash_when_command_uses_shell_features() {
+        let _env = EnvGuard::acquire();
         let (mut sandbox, _tmp) = sandbox_with_tempdir();
         let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
 
@@ -660,5 +759,70 @@ mod tests {
         assert_eq!(lines.next(), Some("hi-from-bash"));
         assert_eq!(lines.next(), Some("and-again"));
         assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn resolve_binary_dir_falls_back_to_project_root_release() {
+        // No env override → today's behaviour: `<project_root>/target/release/`.
+        // Verifies the pre-#514 contract isn't lost for users who haven't
+        // adopted shared-bin (e.g. ad-hoc `cargo build --release` followed
+        // by a direct `cargo run --package xtask -- manual-test`).
+        let _env = EnvGuard::acquire();
+        let root = PathBuf::from("/projects/example-daft");
+        assert_eq!(
+            resolve_binary_dir(&root),
+            PathBuf::from("/projects/example-daft/target/release"),
+        );
+    }
+
+    #[test]
+    fn resolve_binary_dir_honors_daft_binary_dir_env_var() {
+        // Override semantics: `DAFT_BINARY_DIR=<path>` wins over the
+        // project_root-derived default. Lets `mise run test:manual` point
+        // the runner at a content-hashed shared cache instead of the
+        // per-worktree `target/release/`.
+        let env = EnvGuard::acquire();
+        let override_dir = Path::new("/var/cache/daft-shared-bin/abc123/target/release");
+        env.set(override_dir);
+        assert_eq!(
+            resolve_binary_dir(&PathBuf::from("/projects/example-daft")),
+            override_dir.to_path_buf(),
+        );
+    }
+
+    #[test]
+    fn resolve_binary_dir_treats_empty_env_as_unset() {
+        // An empty `DAFT_BINARY_DIR=` (common from `unset`-emulating
+        // shell idioms) should fall through to the project-root default
+        // rather than resolving to the workspace root + an empty join.
+        let env = EnvGuard::acquire();
+        env.set(Path::new(""));
+        let root = PathBuf::from("/projects/example-daft");
+        assert_eq!(
+            resolve_binary_dir(&root),
+            PathBuf::from("/projects/example-daft/target/release"),
+        );
+    }
+
+    #[test]
+    fn new_for_sandbox_honors_daft_binary_dir_env_var() {
+        // End-to-end: the env override propagates through the constructor
+        // and lands in both the sandbox-registered `$BINARY_DIR` and the
+        // subprocess `PATH` that scenario steps see.
+        let env = EnvGuard::acquire();
+        let override_dir = tempfile::tempdir().expect("create override tempdir");
+        env.set(override_dir.path());
+
+        let (mut sandbox, _tmp) = sandbox_with_tempdir();
+        let exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
+
+        let expanded = sandbox.expand_vars("$BINARY_DIR");
+        assert_eq!(expanded, override_dir.path().to_string_lossy());
+
+        let path = exec.build_env(&sandbox).remove("PATH").unwrap();
+        assert!(
+            path.starts_with(override_dir.path().to_string_lossy().as_ref()),
+            "PATH should begin with the override dir: {path}",
+        );
     }
 }

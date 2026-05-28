@@ -19,10 +19,16 @@ description: |
   The pre-built binary is the same binary `cargo run` would dispatch
   to, so the wiring being verified is identical.
 
+  Anchors to `$WORKSPACE_ROOT` (the daft checkout that owns the test
+  runner) rather than `$BINARY_DIR/../..` because after #514 the binary
+  may live under `<git-common-dir>/.daft-shared-bin/<hash>/target/release/`
+  when the cross-worktree shared bin is in play, and `../..` no longer
+  reaches the workspace.
+
 steps:
   - name: invoke xtask against the intentional-failure fixture
     run: |
-      cd "$BINARY_DIR/../.." && \
+      cd "$WORKSPACE_ROOT" && \
         NO_COLOR=1 "$BINARY_DIR/xtask" \
           manual-test \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \
@@ -69,7 +75,7 @@ steps:
 
   - name: invoke xtask at -v to confirm per-step lines surface
     run: |
-      cd "$BINARY_DIR/../.." && \
+      cd "$WORKSPACE_ROOT" && \
         NO_COLOR=1 "$BINARY_DIR/xtask" \
           manual-test -v \
           tests/manual/scenarios/runner-output/_fixtures/fail.yml \

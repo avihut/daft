@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
-#MISE description="Run manual test scenarios"
-#MISE depends=["dev"]
+#MISE description="Run YAML manual tests (shares the daft binary across worktrees at matching source state)"
 set -euo pipefail
 
-cargo run --package xtask -- manual-test "$@"
+# Resolve a content-hashed shared daft binary under
+# <git-common-dir>/.daft-shared-bin/<hash>/. Sibling worktrees at the
+# same source state hit the cache instead of rebuilding the release
+# binary. See `_shared_bin_lib.sh` for the cache shape and the race-
+# safe publish strategy.
+#
+# Escape hatch: `DAFT_BINARY_DIR=$(pwd)/target/release mise run test:manual`
+# bypasses the helper entirely; the adapter
+# (xtask/src/manual_test/daft_executor.rs::resolve_binary_dir) honours
+# the env var verbatim.
+source "$(dirname "$0")/_shared_bin_lib.sh"
+shared_bin=$(shared_bin_ensure)
+export DAFT_BINARY_DIR="$shared_bin"
+
+exec cargo run --package xtask -- manual-test "$@"
