@@ -144,20 +144,48 @@ fn digit_count(n: usize) -> usize {
 ///
 /// Honors the `DAFT_MANUAL_TEST_BASE` env var as an opt-in override for
 /// managed test directories (e.g. a ramdisk under `sandbox/test/`). When set,
-/// the path is `<base>/<slug>` where the slug is a shell-safe normalization
-/// of the lowercased scenario name — callers using `--jobs > 1` must ensure
-/// scenario names are unique. Otherwise falls back to a unique
-/// `/tmp/daft-manual-test-*` path allocated by
-/// [`sandbox::alloc_default_base_dir`].
+/// the path is `<base>/<slug>` where the slug is derived from the scenario's
+/// source path (`<parent-dir>-<file-stem>`), making it unique even when two
+/// scenarios share the same `name:` field — which they do today, see
+/// `layout/transform-matrix-nested-to-sibling.yml` and
+/// `layout/transform-nested-to-sibling.yml`, both named "Transform nested to
+/// sibling". Otherwise falls back to a unique `/tmp/daft-manual-test-*` path
+/// allocated by [`sandbox::alloc_default_base_dir`].
 ///
 /// Lives at this layer (not in `sandbox::`) so the runner core stays free of
 /// daft-named env vars; renaming `DAFT_MANUAL_TEST_BASE` is a concern for the
 /// eventual runner spin-out.
 fn pick_sandbox_base_dir(scenario: &schema::Scenario) -> Result<PathBuf> {
     if let Ok(base) = std::env::var("DAFT_MANUAL_TEST_BASE") {
-        return Ok(PathBuf::from(base).join(shell_safe_slug(&scenario.name)));
+        return Ok(PathBuf::from(base).join(scenario_base_slug(scenario)));
     }
     sandbox::alloc_default_base_dir()
+}
+
+/// Build a stable, collision-free path component for a scenario's sandbox
+/// directory under `DAFT_MANUAL_TEST_BASE`. Prefers a source-path slug
+/// (`<parent-dir>-<file-stem>`) since scenario file paths are unique by
+/// construction. Falls back to the scenario name for unit tests that build
+/// `Scenario` directly without populating `source_path`.
+fn scenario_base_slug(scenario: &schema::Scenario) -> String {
+    if !scenario.source_path.as_os_str().is_empty() {
+        let parent = scenario
+            .source_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let stem = scenario
+            .source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        // Both pieces feed into `shell_safe_slug` so any path-component
+        // surprise (rare but possible — e.g. branch-named scenario files)
+        // still produces a safe path.
+        return shell_safe_slug(&format!("{parent}-{stem}"));
+    }
+    shell_safe_slug(&scenario.name)
 }
 
 /// Normalise a scenario name into a directory component safe to embed in a
@@ -1818,6 +1846,64 @@ mod shell_safe_slug_tests {
         // Lossy ASCII normalisation: emoji and other non-ASCII map to `-`
         // rather than landing untransformed in the path component.
         assert_eq!(shell_safe_slug("name with émoji ✨"), "name-with-moji");
+    }
+}
+
+#[cfg(test)]
+mod scenario_base_slug_tests {
+    use super::{scenario_base_slug, schema};
+    use std::path::PathBuf;
+
+    fn scenario_with_path(name: &str, path: &str) -> schema::Scenario {
+        schema::Scenario {
+            name: name.to_string(),
+            description: None,
+            repos: vec![],
+            env: Default::default(),
+            steps: vec![],
+            source_path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn source_path_disambiguates_duplicate_names() {
+        // Regression for #512: two scenarios share `name: "Transform nested
+        // to sibling"`. The default `/tmp/daft-manual-test-*-PID` base
+        // tolerated this because it's timestamp/PID unique. Pointing
+        // `DAFT_MANUAL_TEST_BASE` at a stable path (like the RAM disk) ate
+        // the duplicate name and produced one collision per parallel pair.
+        let a = scenario_with_path(
+            "Transform nested to sibling",
+            "tests/manual/scenarios/layout/transform-matrix-nested-to-sibling.yml",
+        );
+        let b = scenario_with_path(
+            "Transform nested to sibling",
+            "tests/manual/scenarios/layout/transform-nested-to-sibling.yml",
+        );
+        assert_eq!(
+            scenario_base_slug(&a),
+            "layout-transform-matrix-nested-to-sibling"
+        );
+        assert_eq!(scenario_base_slug(&b), "layout-transform-nested-to-sibling");
+        assert_ne!(scenario_base_slug(&a), scenario_base_slug(&b));
+    }
+
+    #[test]
+    fn empty_source_path_falls_back_to_name() {
+        // Unit tests that construct `Scenario` directly leave source_path
+        // empty (`#[serde(default, skip)]`). Those code paths still need a
+        // slug; fall back to the name field via `shell_safe_slug`.
+        let s = scenario_with_path("My scenario", "");
+        assert_eq!(scenario_base_slug(&s), "my-scenario");
+    }
+
+    #[test]
+    fn nested_source_path_uses_immediate_parent() {
+        // `<parent-dir>-<stem>`, not `<full-path>-<stem>`. Keeps slugs
+        // human-readable; deeper nesting (rare today) collides at the
+        // parent-dir level but real paths are unique even at that resolution.
+        let s = scenario_with_path("Anything", "a/b/c/d.yml");
+        assert_eq!(scenario_base_slug(&s), "c-d");
     }
 }
 
