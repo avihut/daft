@@ -5760,6 +5760,7 @@ dependencies = [
  "reflink-copy",
  "serde",
  "serde_yaml",
+ "shlex 2.0.1",
  "tempfile",
  "term-styles",
  "walkdir",
