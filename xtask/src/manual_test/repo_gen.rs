@@ -235,6 +235,7 @@ mod tests {
             }],
             daft_yml: None,
             hook_scripts: vec![],
+            fixture_source: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let repo_path = generate_repo(&spec, dir.path()).unwrap();
@@ -279,6 +280,7 @@ mod tests {
             ],
             daft_yml: None,
             hook_scripts: vec![],
+            fixture_source: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let repo_path = generate_repo(&spec, dir.path()).unwrap();
@@ -313,6 +315,7 @@ mod tests {
                     .into(),
             ),
             hook_scripts: vec![],
+            fixture_source: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let repo_path = generate_repo(&spec, dir.path()).unwrap();

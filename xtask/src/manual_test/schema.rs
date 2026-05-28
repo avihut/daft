@@ -57,6 +57,13 @@ pub struct RepoSpec {
     /// Hook scripts to install in `.daft/hooks/`.
     #[serde(default)]
     pub hook_scripts: Vec<HookScriptSpec>,
+
+    /// Origin of this spec: `None` for an inline `repos:` entry, `Some(name)`
+    /// for a `use_fixture: <name>` reference resolved by `resolve_repos`.
+    /// Populated post-deserialisation; the per-scenario worker keys the
+    /// fixture cache on `(fixture_source, name)` when this is `Some`.
+    #[serde(default, skip)]
+    pub fixture_source: Option<String>,
 }
 
 fn default_branch_name() -> String {
