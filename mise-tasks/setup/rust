@@ -6,39 +6,8 @@ set -euo pipefail
 echo "Setting up Rust development environment..."
 chmod +x tests/integration/*.sh
 echo "Creating symlinks in target/release/..."
-cd target/release
-# Core command symlinks
-ln -sf daft git-worktree-clone
-ln -sf daft git-worktree-init
-ln -sf daft git-worktree-checkout
-ln -sf daft git-worktree-checkout-branch
-ln -sf daft git-worktree-prune
-ln -sf daft git-worktree-carry
-ln -sf daft git-worktree-branch
-ln -sf daft git-worktree-branch-delete
-ln -sf daft git-worktree-fetch
-ln -sf daft git-worktree-exec
-ln -sf daft git-worktree-flow-adopt
-ln -sf daft git-worktree-flow-eject
-ln -sf daft git-worktree-sync
-ln -sf daft git-worktree-list
-ln -sf daft git-worktree-merge
-ln -sf daft git-daft
-ln -sf daft daft-remove
-ln -sf daft daft-rename
-ln -sf daft daft-start
-ln -sf daft daft-go
-# Git-style shortcuts (default for development)
-ln -sf daft gwtclone
-ln -sf daft gwtinit
-ln -sf daft gwtco
-ln -sf daft gwtcb
-ln -sf daft gwtprune
-ln -sf daft gwtcarry
-ln -sf daft gwtbd
-ln -sf daft gwtfetch
-ln -sf daft gwtsync
-cd ../..
+source "$(dirname "$0")/_rust_symlink_lib.sh"
+create_daft_symlinks target/release
 echo "Development environment ready!"
 echo ""
 # Cross-platform binary size display

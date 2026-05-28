@@ -104,6 +104,42 @@ an opt-in alternative. Unit tests for daft's filesystem-physical primitives
 (`cow_copy`, `store::connection`) use `tempfile::tempdir()` and aren't affected
 by `DAFT_MANUAL_TEST_BASE`, so real-disk coverage is preserved separately.
 
+#### Cross-worktree shared daft binary
+
+`mise run test:manual` (and the `:ramdisk` variant) automatically builds the
+`daft` and `xtask` binaries into a content-hashed location under
+`.git/.daft-shared-bin/<state-hash>/`, then points the test runner at it via
+`DAFT_BINARY_DIR`. Sibling worktrees at the same source state skip the build
+entirely and reuse the same binary — the most visible win is on the second
+concurrent worktree run, which used to pay the full release-build cost before
+any test could start.
+
+The state hash covers HEAD plus the working-tree blob hash of every tracked
+`*.rs` file, every `Cargo.toml`, and `Cargo.lock`, so editing any workspace
+crate (including `term-styles`) invalidates the cache cleanly. Concurrent
+populate attempts publish atomically (`rename(2)` of the staging directory) so
+two simultaneous fresh-state runs never corrupt the cache — the loser cleans up
+its staging dir and re-uses the winner's binary.
+
+To bypass the shared bin for a single run (e.g. to test a hand-built binary with
+custom features), set `DAFT_BINARY_DIR` explicitly:
+
+```bash
+DAFT_BINARY_DIR="$(pwd)/target/release" mise run test:manual
+```
+
+To wipe the cache entirely (e.g. accumulated state-hash directories taking disk
+space):
+
+```bash
+rm -rf "$(git rev-parse --git-common-dir)/.daft-shared-bin"
+```
+
+The cache lives under `$(git rev-parse --git-common-dir)/.daft-shared-bin/` (the
+repo's shared `.git/` directory — the bare repo at the project root in daft's
+worktree layout, not the per-worktree `.git/` file), so it goes away with the
+project, never under XDG state.
+
 To add a new test, create a `.yml` file in the appropriate command directory:
 
 ```yaml
