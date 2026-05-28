@@ -1843,9 +1843,22 @@ mod shell_safe_slug_tests {
 
     #[test]
     fn non_ascii_collapses_to_dash() {
-        // Lossy ASCII normalisation: emoji and other non-ASCII map to `-`
-        // rather than landing untransformed in the path component.
+        // Lossy ASCII normalisation: each non-ASCII char (e.g. `é`, `✨`)
+        // maps to `-` rather than landing untransformed in the path
+        // component. Here `é` becomes `-` and collapses with the preceding
+        // space, while the ASCII `moji` survives intact and the trailing
+        // ` ✨` collapses to a single `-` that's then trimmed.
         assert_eq!(shell_safe_slug("name with émoji ✨"), "name-with-moji");
+    }
+
+    #[test]
+    fn leading_dot_is_preserved_but_documented() {
+        // `.` is in the safe-character set so a YAML scenario whose name
+        // started with `.` would produce a hidden directory under
+        // `DAFT_MANUAL_TEST_BASE`. No scenarios do this today; the test
+        // pins the behaviour so a future audit catches it if it starts to
+        // matter.
+        assert_eq!(shell_safe_slug(".hidden"), ".hidden");
     }
 }
 
@@ -1904,6 +1917,17 @@ mod scenario_base_slug_tests {
         // parent-dir level but real paths are unique even at that resolution.
         let s = scenario_with_path("Anything", "a/b/c/d.yml");
         assert_eq!(scenario_base_slug(&s), "c-d");
+    }
+
+    #[test]
+    fn bare_filename_with_no_parent_falls_back_to_stem() {
+        // `PathBuf::from("scenario.yml").parent()` is `Some("")` whose
+        // `file_name()` is `None`; the parent component then resolves to
+        // the empty string and `shell_safe_slug("-scenario")` trims the
+        // leading dash. Covers the "path-derived branch is taken but the
+        // parent piece is empty" edge.
+        let s = scenario_with_path("Doesn't matter", "scenario.yml");
+        assert_eq!(scenario_base_slug(&s), "scenario");
     }
 }
 

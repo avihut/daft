@@ -34,6 +34,13 @@ ramdisk_alloc() {
 
   case "$OSTYPE" in
     darwin*)
+      # Validate up-front so a non-numeric `DAFT_RAMDISK_SIZE_MB` produces a
+      # readable error instead of bash's `syntax error in expression` abort
+      # from the arithmetic expansion below.
+      if ! [[ "$DAFT_RAMDISK_SIZE_MB" =~ ^[0-9]+$ ]]; then
+        echo "ramdisk: DAFT_RAMDISK_SIZE_MB must be a positive integer (got '$DAFT_RAMDISK_SIZE_MB')" >&2
+        return 1
+      fi
       # Sectors are 512 bytes each. `hdiutil attach -nomount ram://N` returns
       # a device path on stdout followed by trailing whitespace.
       local sectors=$((DAFT_RAMDISK_SIZE_MB * 1024 * 1024 / 512))
@@ -84,7 +91,9 @@ ramdisk_free() {
           # prints the device as the first field for the matching row.
           local dev
           dev=$(df "$mount" 2>/dev/null | awk 'NR==2 {print $1}')
-          [ -n "$dev" ] && hdiutil detach "$dev" >/dev/null 2>&1 || true
+          if [ -n "$dev" ]; then
+            hdiutil detach "$dev" >/dev/null 2>&1 || true
+          fi
         fi
       fi
       ;;
