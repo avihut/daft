@@ -285,6 +285,34 @@ steps:
     }
 
     #[test]
+    fn clone_into_returns_err_on_cache_miss() {
+        // The cache-miss path is a "programming error" trip-wire — if a
+        // worker ever encounters a fixture-derived RepoSpec whose key wasn't
+        // indexed by collect_fixture_keys, the runner must surface it
+        // explicitly rather than silently regenerating. Construct an empty
+        // cache directly and confirm the lookup fails with the documented
+        // error message.
+        let cache = FixtureCache {
+            paths: HashMap::new(),
+        };
+        let dst_parent = tempfile::tempdir().unwrap();
+        let result = cache.clone_into(
+            &("nonexistent-fixture".into(), "ghost-repo".into()),
+            &dst_parent.path().join("ghost-repo"),
+        );
+        let err = result.expect_err("cache miss must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("programming error"),
+            "error chain should surface the programming-error label: {msg}",
+        );
+        assert!(
+            msg.contains("nonexistent-fixture") && msg.contains("ghost-repo"),
+            "error should name the missing key: {msg}",
+        );
+    }
+
+    #[test]
     fn clone_into_produces_equivalent_history() {
         let cache_root = tempfile::tempdir().unwrap();
         let mut keys = BTreeSet::new();

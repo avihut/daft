@@ -180,9 +180,15 @@ fn alloc_fixture_cache_dir() -> Result<PathBuf> {
         let pid = std::process::id();
         return Ok(PathBuf::from(base).join(format!("_fixture-cache-{pid}")));
     }
-    let base = sandbox::alloc_default_base_dir()?;
     // Reuse the timestamp-PID-counter slug from the default-base helper but
     // tag the suffix so a stray cache directory is identifiable in `/tmp`.
+    // This intentionally burns one `SANDBOX_COUNTER` slot — the returned
+    // path is never materialised under that name, only used to compose a
+    // sibling-with-suffix path. Accounting-counted sandboxes will run one
+    // ahead of the visible scenario count; the trade-off is keeping the
+    // uniqueness contract centralised in `alloc_default_base_dir` rather
+    // than duplicating the nanos-PID-counter logic here.
+    let base = sandbox::alloc_default_base_dir()?;
     let file_name = base
         .file_name()
         .and_then(|s| s.to_str())
@@ -591,6 +597,21 @@ pub fn run(
             setup_only,
             is_interactive,
         );
+        // Drain the cleanup set — `run_parallel` does this internally
+        // (see line ~808's "belt-and-suspenders cleanup" block), but the
+        // serial path otherwise leaks the fixture-cache root: per-scenario
+        // sandboxes are cleaned up by their CleanupGuards' Drop impls, but
+        // the cache root is registered manually with no guard. Without this
+        // drain a single `mise run test:manual -- -i <scenario>` leaves a
+        // `_fixture-cache-<pid>/` directory behind every time — particularly
+        // visible under `DAFT_MANUAL_TEST_BASE` (e.g. the RAM-disk task).
+        if !keep {
+            if let Ok(mut g) = cleanup_set.lock() {
+                for dir in g.drain() {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+            }
+        }
         if interrupt.is_set() {
             std::process::exit(130);
         }
@@ -969,7 +990,6 @@ fn aggregate_outcomes<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn run_serial(
     scenario_files: &[PathBuf],
