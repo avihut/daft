@@ -1,9 +1,17 @@
 //! Indicatif-backed `ProgressSink` implementation.
 //!
-//! Renders a pinned multi-row region at the bottom of the terminal: one
-//! row per in-flight scenario (carrying scenario name + step counter +
-//! step name + elapsed) plus a summary bar
-//! (`[done/total] N running ◆ M failed ◆ mm:ss`).
+//! Renders a pinned multi-row region at the bottom of the terminal: a
+//! summary (totals) bar on top, then one row per in-flight scenario below
+//! it. Both lines share a `[bar] → [counter] → [time] → tail` layout so
+//! the bars stack into one left column:
+//!
+//! ```text
+//!   [██████░░░░░░░░] 3/8  0:05  2/4 running ◆ 0 failed   <- summary
+//!   [████░░░░░░] 2/5  1.2s  checkout-basic   Inspect …    <- worker row
+//! ```
+//!
+//! See [`summary_style`] and [`row_style`] for the per-line layout, and
+//! `reporter/CLAUDE.md` §8 for the design rationale.
 //!
 //! Concurrency: every method may be called from any rayon worker thread.
 //! `MultiProgress` and `ProgressBar` are internally `Send + Sync` via
@@ -11,10 +19,13 @@
 //! because indicatif's per-bar API can't be keyed by scenario name
 //! externally.
 //!
-//! Styling follows `reporter/CLAUDE.md` §8: no new color slots — the
-//! in-flight area re-uses cyan `[N/M]` (counter), bright_purple step name
-//! (identity), default fg scenario name, dim elapsed. `(slow)` annotation
-//! in yellow when scenario elapsed > 5s, matching the footer's slow rule.
+//! Styling reuses `reporter/CLAUDE.md` §1's budget — no new color slots:
+//! bar fill default fg / unfilled dim, default-fg counters, dim elapsed,
+//! bright-purple step name (identity), and a yellow `(slow)` suffix once a
+//! scenario's elapsed crosses 5 s. The variable text tail rides in
+//! `{wide_msg}`, whose ANSI-aware truncation keeps every row exactly one
+//! terminal line tall on narrow displays — a hard requirement for
+//! indicatif's line accounting, not just cosmetics.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,21 +41,17 @@ use super::{InterruptFlag, ProgressSink};
 /// Matches the footer's slow annotation rule.
 const SLOW_THRESHOLD: Duration = Duration::from_secs(5);
 
-/// Spinner tick characters. The trailing space is the "rest" frame
-/// indicatif cycles to when nothing's animating.
-const SPINNER_TICKS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ";
-
-/// How often each bar self-ticks (drives spinner animation and
-/// `{elapsed_precise}` updates without external prodding).
+/// How often each bar self-ticks (drives the live `{elapsed}` /
+/// `{row_elapsed}` counters forward without external prodding).
 ///
 /// Set deliberately above the multi's draw-target Hz cap below so steady
 /// ticks don't pile up faster than the draw target can flush them. Faster
 /// ticks (e.g. 100 ms) accumulate draw requests under heavy worker churn,
 /// and indicatif's internal line accounting can desync from terminal
 /// reality — leaving in-flight bar rows stranded in scrollback above
-/// subsequent `multi.println` output. 200 ms is still spinner-smooth
-/// (~5 frames/s) while giving line accounting room to settle between
-/// concurrent updates.
+/// subsequent `multi.println` output. 200 ms keeps the elapsed counters
+/// visibly moving (~5 updates/s) while giving line accounting room to
+/// settle between concurrent updates.
 const TICK_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Cap the multi's overall redraw rate. The bar's internal line-counting
@@ -62,6 +69,11 @@ const MAX_DRAW_HZ: u8 = 10;
 /// Kept modest so the bar + counter + time prefix leaves room for the
 /// truncating text tail on narrow terminals.
 const BAR_WIDTH: usize = 14;
+
+/// Fixed width (in cols) of a worker row's time counter, so the
+/// step-name tail to its right starts at a stable column across rows.
+/// Covers the widest [`format_row_elapsed`] output (`999ms`, `12:34`).
+const ROW_ELAPSED_WIDTH: usize = 6;
 
 /// Decimal digit count of `n` (`0` → 1). Used to right-pad the `pos`
 /// half of a `pos/len` counter so the column to its right (the time
@@ -128,6 +140,44 @@ fn summary_style() -> ProgressStyle {
     )
 }
 
+/// Build a worker row's style.
+///
+/// Mirrors the summary's `[bar] → [counter] → [time] → tail` motif so the
+/// bars on both lines stack into one left column:
+///
+/// ```text
+///   [████░░░░░░] 2/5  1.2s  checkout-basic   Inspect workspace
+/// ```
+///
+/// - `{bar}` — completed-step progress for this scenario, fixed
+///   [`BAR_WIDTH`]; filled default fg, unfilled `dim` (no new color slot).
+/// - `{prefix}` — the `done/total` step counter, padded to the run's
+///   widest counter (set via `set_prefix`).
+/// - `{row_elapsed}` — a custom key with sub-second precision, dim and
+///   padded to [`ROW_ELAPSED_WIDTH`] so the tail starts at a stable column.
+/// - `{wide_msg}` — `"<scenario name (padded)>  <current step name>"`,
+///   set via `set_message`. `wide_msg` truncates (never wraps) to the
+///   terminal width, so the row stays exactly one line tall regardless of
+///   how long the names are — a correctness requirement for indicatif's
+///   line accounting. Truncation is ANSI-aware, so the bright-purple step
+///   name and yellow `(slow)` survive a cut without bleeding color.
+fn row_style() -> ProgressStyle {
+    ProgressStyle::with_template(&format!(
+        "{{bar:{BAR_WIDTH}./dim}}  {{prefix}}  \x1b[2m{{row_elapsed}}\x1b[0m  {{wide_msg}}"
+    ))
+    .expect("static row template should be valid")
+    .with_key(
+        "row_elapsed",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let _ = write!(
+                w,
+                "{:<ROW_ELAPSED_WIDTH$}",
+                format_row_elapsed(state.elapsed())
+            );
+        },
+    )
+}
+
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
     /// Global serializer for *all* state-mutating multi operations
@@ -167,13 +217,13 @@ pub struct IndicatifProgressSink {
     /// to gate the run's exit code. Held by `Arc` so a clone is cheap.
     interrupt: InterruptFlag,
     /// Pre-computed widest scenario name across the run, in chars. Used
-    /// to right-pad the scenario name column in the row message so the
-    /// step label column lands at a stable position across rows.
+    /// to right-pad the scenario name in each worker row's tail so the
+    /// step name lands at a stable position across rows.
     name_col_width: usize,
-    /// Pre-computed widest `[N/M] step_name` label across the run, in
-    /// chars. Used to right-pad the step label column so the elapsed
-    /// counter on the right lands at a stable position across rows.
-    step_col_width: usize,
+    /// Pre-computed widest `done/total` step counter across the run, in
+    /// chars. Used to right-pad each worker row's counter so the time
+    /// counter to its right lands at a stable position across rows.
+    step_counter_width: usize,
     /// Size of the rayon worker pool (resolved `jobs`). Rendered on the
     /// summary as `R/A running` (`R` in-flight, `A` = this) so the reader
     /// can see how saturated the pool is.
@@ -187,7 +237,7 @@ struct ProgressRow {
 impl IndicatifProgressSink {
     pub fn new(
         name_col_width: usize,
-        step_col_width: usize,
+        step_counter_width: usize,
         total_workers: usize,
         interrupt: InterruptFlag,
     ) -> Self {
@@ -232,7 +282,7 @@ impl IndicatifProgressSink {
             cancelled: AtomicUsize::new(0),
             interrupt,
             name_col_width,
-            step_col_width,
+            step_counter_width,
             total_workers,
         }
     }
@@ -295,68 +345,37 @@ impl IndicatifProgressSink {
         }
     }
 
-    /// Rebuild a scenario row's message with its current step. The row
-    /// is laid out in three padded columns so multiple in-flight rows
-    /// stack into a grid:
+    /// Build the `{wide_msg}` tail of a worker row: the padded scenario
+    /// name followed by the current step name, plus a `(slow)` suffix once
+    /// the scenario crosses [`SLOW_THRESHOLD`].
     ///
     /// ```text
-    ///   <scenario name (col 1, pad to name_col_width)>  <[N/M] step (col 2, pad to step_col_width)>  <elapsed (col 3, template)>
+    ///   checkout-basic   Inspect workspace
     /// ```
     ///
-    /// The `(slow)` annotation, when present, attaches to the end of
-    /// column 2 (inside the padding zone) so it doesn't push the
-    /// elapsed column out of alignment. Slow rows extend into the pad
-    /// budget; only rows whose step label is already at max width can
-    /// shift the elapsed column, and at that point only by the (slow)
-    /// suffix's own width.
-    ///
-    /// Reuses existing color slots — default fg scenario name, cyan
-    /// `[N/M]`, bright purple step name, yellow `(slow)`.
-    fn render_row_msg(
-        &self,
-        scenario_name: &str,
-        step_idx: usize,
-        step_total: usize,
-        step_name: &str,
-        elapsed: Duration,
-    ) -> String {
+    /// The scenario name is padded to `name_col_width` (default fg, matching
+    /// the passing-footer convention) so step names align across rows; the
+    /// step name is bright purple (the identity slot) and the `(slow)`
+    /// suffix yellow. All three reuse existing color slots. The whole tail
+    /// rides in `{wide_msg}`, whose ANSI-aware truncation cuts the step
+    /// name (then the scenario name) on narrow terminals without ever
+    /// wrapping the row or letting a color bleed past the cut.
+    fn render_row_tail(&self, scenario_name: &str, step_name: &str, elapsed: Duration) -> String {
         let name_padded = Self::pad_to(scenario_name, self.name_col_width);
-
-        // Build the step label as plain text first, then pad, then
-        // splice the ANSI codes back in over the un-styled segments.
-        // This keeps `pad_to` honest about visible width.
-        let counter = format!("[{}/{}]", step_idx + 1, step_total);
-        let plain_label = format!("{counter} {step_name}");
-        let label_padded = Self::pad_to(&plain_label, self.step_col_width);
-        // Re-apply styling to the counter and step name, leaving the
-        // trailing padding untouched. `replacen(_, _, 1)` matches first
-        // occurrence:
-        //
-        // 1. Counter precedes step_name in plain_label, so the first
-        //    replacen targets the structural counter.
-        // 2. After splice #1, the counter's bytes still appear contiguously
-        //    inside the SGR escape (`\x1b[36m[N/M]\x1b[0m`). The second
-        //    replacen relies on step_name NOT being a literal counter-
-        //    shaped string — a step named `"[1/3]"` would match inside
-        //    the styled counter and corrupt the row.
-        //
-        // Real step names in `tests/manual/scenarios/` are human-readable
-        // prose (verbs/phrases), never counter strings; the debug_assert
-        // documents the assumption.
-        debug_assert!(
-            !step_name.is_empty(),
-            "step_name must be non-empty; empty triggers replacen at byte-0 corruption"
-        );
-        let label_styled = label_padded
-            .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
-            .replacen(step_name, &format!("\x1b[95m{step_name}\x1b[0m"), 1);
-
         let slow_suffix = if elapsed > SLOW_THRESHOLD {
             "  \x1b[33m(slow)\x1b[0m"
         } else {
             ""
         };
-        format!("{name_padded}  {label_styled}{slow_suffix}")
+        format!("{name_padded}  \x1b[95m{step_name}\x1b[0m{slow_suffix}")
+    }
+
+    /// Build the `{prefix}` step counter for a worker row: `done/total`
+    /// padded to the run's widest counter so the time column to its right
+    /// stays put across rows. Plain text (default fg) — the bar to its left
+    /// is the visual anchor.
+    fn render_row_counter(&self, done: usize, total: usize) -> String {
+        Self::pad_to(&format!("{done}/{total}"), self.step_counter_width)
     }
 }
 
@@ -383,38 +402,19 @@ impl ProgressSink for IndicatifProgressSink {
         // it.
         let bar = self
             .multi
-            .insert_before(&self._trailer, ProgressBar::new_spinner());
-        bar.set_style(
-            // Per-row leads at column 0 so when the scenario completes its
-            // `✓ name  duration` footer (also at column 0) drops cleanly
-            // into the same column the live row was occupying.
-            //
-            // `{row_elapsed}` is a custom key (added below via `with_key`)
-            // that renders sub-second precision — most scenarios finish
-            // before `{elapsed}` would cross 1s and update to "1s".
-            ProgressStyle::with_template("{spinner:.dim} {msg} \x1b[2m{row_elapsed}\x1b[0m")
-                .expect("static template should be valid")
-                .tick_chars(SPINNER_TICKS)
-                .with_key(
-                    "row_elapsed",
-                    |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let _ = write!(w, "{}", format_row_elapsed(state.elapsed()));
-                    },
-                ),
-        );
-        // Initial message uses the same column layout as render_row_msg
-        // (scenario name padded → step label padded → elapsed via
-        // template) so the bar doesn't jump on the first step_started.
-        // `starting…` is dim because no step has actually fired yet —
-        // it's a placeholder, not a real step name.
+            .insert_before(&self._trailer, ProgressBar::new(total_steps as u64));
+        // Row leads with a completed-step bar at column 0 (so the scenario's
+        // `✓ name  duration` footer drops cleanly into the same column when
+        // it completes), then the step counter, the dim elapsed, and the
+        // scenario/step tail. See [`row_style`] for the layout.
+        bar.set_style(row_style());
+        bar.set_position(0);
+        // Initial state: 0 steps done, `starting…` as a dim placeholder
+        // until the first `step_started` names a real step. Same column
+        // layout as a stepped row so the bar doesn't jump on the first step.
         let name_padded = Self::pad_to(name, self.name_col_width);
-        let counter = format!("[0/{total_steps}]");
-        let plain_label = format!("{counter} starting…");
-        let label_padded = Self::pad_to(&plain_label, self.step_col_width);
-        let label_styled = label_padded
-            .replacen(&counter, &format!("\x1b[36m{counter}\x1b[0m"), 1)
-            .replacen("starting…", "\x1b[2mstarting…\x1b[0m", 1);
-        bar.set_message(format!("{name_padded}  {label_styled}"));
+        bar.set_prefix(self.render_row_counter(0, total_steps));
+        bar.set_message(format!("{name_padded}  \x1b[2mstarting…\x1b[0m"));
         bar.enable_steady_tick(TICK_INTERVAL);
 
         if let Ok(mut rows) = self.rows.lock() {
@@ -424,9 +424,13 @@ impl ProgressSink for IndicatifProgressSink {
     }
 
     fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str) {
+        // `idx` is the 0-based index of the step now starting, so `idx`
+        // steps are already complete — that's both the bar position and
+        // the `done` half of the `done/total` counter.
+        //
         // Two-phase lock: read elapsed under the lock, release while
-        // `render_row_msg` does ANSI string formatting (no shared state
-        // needed), then re-acquire briefly for `set_message`. Holding the
+        // `render_row_tail` does ANSI string formatting (no shared state
+        // needed), then re-acquire briefly to update the bar. Holding the
         // mutex across the formatting would serialize every worker's
         // step_started even though the formatting is pure-functional.
         //
@@ -434,17 +438,16 @@ impl ProgressSink for IndicatifProgressSink {
         // `scenario_finished` removes the row between phases, the second
         // `if let Some(row)` simply skips the update — visually equivalent
         // to a `set_message` that landed a frame before the row cleared.
-        let (msg, found) = {
+        let (update, found) = {
             let Ok(rows) = self.rows.lock() else {
                 return;
             };
             match rows.get(scenario_name) {
                 Some(row) => {
                     let elapsed = row.bar.elapsed();
-                    (
-                        Some(self.render_row_msg(scenario_name, idx, total, step_name, elapsed)),
-                        true,
-                    )
+                    let tail = self.render_row_tail(scenario_name, step_name, elapsed);
+                    let counter = self.render_row_counter(idx, total);
+                    (Some((tail, counter)), true)
                 }
                 None => (None, false),
             }
@@ -452,9 +455,11 @@ impl ProgressSink for IndicatifProgressSink {
         if !found {
             return;
         }
-        if let (Some(msg), Ok(rows)) = (msg, self.rows.lock()) {
+        if let (Some((tail, counter)), Ok(rows)) = (update, self.rows.lock()) {
             if let Some(row) = rows.get(scenario_name) {
-                row.bar.set_message(msg);
+                row.bar.set_position(idx as u64);
+                row.bar.set_prefix(counter);
+                row.bar.set_message(tail);
             }
         }
     }
@@ -575,12 +580,11 @@ mod tests {
     fn hidden_sink() -> IndicatifProgressSink {
         let multi = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
         let summary = multi.add(ProgressBar::new(0));
-        summary.set_style(
-            ProgressStyle::with_template("  {spinner} [{pos}/{len}] {msg}")
-                .unwrap()
-                .tick_chars(SPINNER_TICKS),
-        );
-        summary.set_message("0 running ◆ 0 failed");
+        // Use the real production styles so the lifecycle tests exercise
+        // `summary_style()` (and, via `scenario_started`, `row_style()`)
+        // rather than ad-hoc templates that could drift from production.
+        summary.set_style(summary_style());
+        summary.set_message("0/0 running ◆ 0 failed");
         let trailer = multi.add(ProgressBar::new_spinner());
         trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         IndicatifProgressSink {
@@ -593,7 +597,7 @@ mod tests {
             cancelled: AtomicUsize::new(0),
             interrupt: InterruptFlag::new(),
             name_col_width: 0,
-            step_col_width: 0,
+            step_counter_width: 0,
             total_workers: 4,
         }
     }
@@ -639,11 +643,7 @@ mod tests {
         let interrupt = InterruptFlag::new();
         let multi = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
         let summary = multi.add(ProgressBar::new(0));
-        summary.set_style(
-            ProgressStyle::with_template("{msg}")
-                .unwrap()
-                .tick_chars(SPINNER_TICKS),
-        );
+        summary.set_style(summary_style());
         let trailer = multi.add(ProgressBar::new_spinner());
         trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         let sink = IndicatifProgressSink {
@@ -656,7 +656,7 @@ mod tests {
             cancelled: AtomicUsize::new(0),
             interrupt: interrupt.clone(),
             name_col_width: 0,
-            step_col_width: 0,
+            step_counter_width: 0,
             total_workers: 4,
         };
         sink.run_started(2);
@@ -748,38 +748,46 @@ mod tests {
     }
 
     #[test]
-    fn render_row_msg_label_width_matches_step_label_width_formula() {
-        // Lock the contract between the orchestrator's pre-scan formula
-        // (`step_label_width` in mod.rs) and the live renderer's actual
-        // output. If either side's format changes independently,
-        // in-flight rows silently misalign — and no other test catches it
-        // because the bars draw to a hidden target.
+    fn row_tail_pads_name_and_styles_step() {
+        // hidden_sink uses width 0, so the scenario name isn't padded:
+        // the tail is "<name>  <ESC>step<ESC>". Lock the column layout
+        // (two-space separator) and that the step name carries styling.
         let sink = hidden_sink();
-        let cases = [
-            (0_usize, 1_usize, "first"),
-            (4, 5, "Inspect workspace"),
-            (9, 10, "Long step name with spaces"),
-        ];
-        for (idx, total, step) in cases {
-            let msg = sink.render_row_msg("anything", idx, total, step, Duration::ZERO);
-            let visible = strip_ansi(&msg);
-            // hidden_sink uses width 0 on both columns, so layout is
-            // "<name>  <label>" — name unpadded, two-space separator,
-            // unpadded label, no slow suffix at Duration::ZERO.
-            let label = visible
-                .strip_prefix("anything  ")
-                .expect("name + 2-space separator should lead the row");
-            assert_eq!(
-                label.chars().count(),
-                crate::manual_test::step_label_width(idx + 1, total, step),
-                "render_row_msg label width must match step_label_width formula",
-            );
-        }
+        let tail = sink.render_row_tail("checkout-basic", "Inspect workspace", Duration::ZERO);
+        let visible = strip_ansi(&tail);
+        assert_eq!(visible, "checkout-basic  Inspect workspace");
+        // Style bytes are present around the step name (no styling on the
+        // scenario name), and no `(slow)` suffix below the threshold.
+        assert!(tail.contains("\x1b[95mInspect workspace\x1b[0m"));
+        assert!(!visible.contains("(slow)"));
+    }
+
+    #[test]
+    fn row_tail_appends_slow_past_threshold() {
+        let sink = hidden_sink();
+        let tail = sink.render_row_tail("s", "step", SLOW_THRESHOLD + Duration::from_secs(1));
+        assert!(strip_ansi(&tail).ends_with("(slow)"));
+    }
+
+    #[test]
+    fn row_counter_is_done_over_total_padded() {
+        // step_counter_width 0 (hidden_sink) → no padding: bare "done/total".
+        let sink = hidden_sink();
+        assert_eq!(sink.render_row_counter(0, 5), "0/5");
+        assert_eq!(sink.render_row_counter(2, 5), "2/5");
+    }
+
+    #[test]
+    fn row_counter_pads_to_width() {
+        let mut sink = hidden_sink();
+        sink.step_counter_width = 6;
+        // "2/5" is 3 chars, padded with trailing spaces to 6.
+        assert_eq!(sink.render_row_counter(2, 5), "2/5   ");
     }
 
     /// Strip SGR escape sequences (`ESC [ … m`) so visible width can be
-    /// measured by `chars().count()`. Sufficient for the styles
-    /// `render_row_msg` emits (cyan/purple/yellow/dim/reset).
+    /// measured by `chars().count()`. Sufficient for the styles the row
+    /// renderer emits (purple/yellow/dim/reset).
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars();

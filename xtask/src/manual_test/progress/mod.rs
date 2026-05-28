@@ -151,11 +151,12 @@ impl ProgressSink for NoopProgressSink {
 /// detection + `NO_PROGRESS` / `CI` env-var overrides); this function
 /// doesn't re-probe the environment.
 ///
-/// `name_col_width` and `step_col_width` are the widest scenario name
-/// and the widest `[N/M] step_name` label across the discovered scenario
-/// set. The live sink pads each in-flight row's columns to these widths
-/// so spinner+name, step label, and elapsed line up across rows. Pass
-/// `0` for either to disable that column's padding.
+/// `name_col_width` and `step_counter_width` are the widest scenario name
+/// and the widest `done/total` step counter across the discovered scenario
+/// set. The live sink pads each in-flight worker row's scenario name and
+/// step counter to these widths so the columns to their right (time, then
+/// the truncating step-name tail) line up across rows. Pass `0` for either
+/// to disable that column's padding.
 ///
 /// `total_workers` is the size of the rayon pool (the resolved `jobs`
 /// count). The summary bar renders the in-flight count against it as
@@ -167,14 +168,14 @@ impl ProgressSink for NoopProgressSink {
 pub fn progress_sink_for(
     show_progress: bool,
     name_col_width: usize,
-    step_col_width: usize,
+    step_counter_width: usize,
     total_workers: usize,
     interrupt: InterruptFlag,
 ) -> Box<dyn ProgressSink> {
     if show_progress {
         Box::new(IndicatifProgressSink::new(
             name_col_width,
-            step_col_width,
+            step_counter_width,
             total_workers,
             interrupt,
         ))

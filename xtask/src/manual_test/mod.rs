@@ -106,31 +106,20 @@ fn max_scenario_name_width(metas: &[ScenarioMeta]) -> usize {
         .unwrap_or(0)
 }
 
-/// Compute the widest `[N/M] step_name` label across all
-/// (scenario, step) pairs. Used by the live progress region to pad the
-/// per-row step column so the elapsed counter to its right lands at a
-/// stable column across in-flight rows.
-fn max_step_label_width(metas: &[ScenarioMeta]) -> usize {
+/// Compute the widest `done/total` step counter across the discovered
+/// set, in chars. Used by the live progress region to pad each worker
+/// row's step counter so the time counter to its right lands at a stable
+/// column across in-flight rows. The widest counter for a `T`-step
+/// scenario is `T/T`, so its width is `2 * digit_count(T) + 1`.
+fn max_step_counter_width(metas: &[ScenarioMeta]) -> usize {
     metas
         .iter()
-        .flat_map(|m| {
-            let total = m.step_names.len();
-            m.step_names
-                .iter()
-                .enumerate()
-                .map(move |(i, name)| step_label_width(i + 1, total, name))
+        .map(|m| {
+            let d = digit_count(m.step_names.len());
+            2 * d + 1
         })
         .max()
         .unwrap_or(0)
-}
-
-/// Visible width of a `[N/M] step_name` label (no styling, no padding).
-/// Single helper so `max_step_label_width` and the live sink agree on
-/// the formula.
-pub(crate) fn step_label_width(idx_one_based: usize, total: usize, step_name: &str) -> usize {
-    // "[{idx}/{total}] {step_name}" — counter brackets + slash + 1 space.
-    let counter_len = digit_count(idx_one_based) + 1 + digit_count(total) + 2;
-    counter_len + 1 + step_name.chars().count()
 }
 
 fn digit_count(n: usize) -> usize {
@@ -562,10 +551,10 @@ pub fn run(
     // first scenario.
 
     // Pre-scan scenario files once for column-width sizing in the live
-    // in-flight region: pad scenario names (column 1) and the
-    // `[N/M] step_name` label (column 2) so the elapsed counter (column 3)
-    // stacks across rows. Scrollback footers don't pad — durations sit
-    // directly after the scenario name.
+    // in-flight region: pad each worker row's scenario name and its
+    // `done/total` step counter so the columns to their right (time, then
+    // the truncating step-name tail) stack across rows. Scrollback footers
+    // don't pad — durations sit directly after the scenario name.
     //
     // The scan is `peek_scenario_metadata` — a cheap text scan, not a
     // full YAML parse. ~200ms for 580 files on an SSD.
@@ -574,7 +563,7 @@ pub fn run(
         .filter_map(|p| peek_scenario_metadata(p))
         .collect();
     let name_column_width = max_scenario_name_width(&metas);
-    let step_column_width = max_step_label_width(&metas);
+    let step_counter_width = max_step_counter_width(&metas);
     let reporter = reporter::reporter_for(verbosity);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
@@ -633,7 +622,7 @@ pub fn run(
     let progress = progress::progress_sink_for(
         show_progress,
         name_column_width,
-        step_column_width,
+        step_counter_width,
         jobs,
         interrupt.clone(),
     );
@@ -2271,8 +2260,7 @@ mod non_interactive_template_tests {
 #[cfg(test)]
 mod peek_scenario_metadata_tests {
     use super::{
-        max_scenario_name_width, max_step_label_width, peek_scenario_metadata, step_label_width,
-        ScenarioMeta,
+        max_scenario_name_width, max_step_counter_width, peek_scenario_metadata, ScenarioMeta,
     };
     use std::io::Write;
 
@@ -2352,26 +2340,26 @@ mod peek_scenario_metadata_tests {
     }
 
     #[test]
-    fn max_step_label_width_picks_longest_label() {
-        let metas = vec![ScenarioMeta {
-            name: Some("x".into()),
-            step_names: vec![
-                "a".into(),
-                "bb".into(),
-                "Foo Bar Baz".into(),
-                "ddd".into(),
-                "ee".into(),
-            ],
-        }];
-        let expected = step_label_width(3, 5, "Foo Bar Baz");
-        assert_eq!(max_step_label_width(&metas), expected);
-        // Sanity-check the formula: "[3/5] Foo Bar Baz" = 17 chars.
-        assert_eq!(expected, "[3/5] Foo Bar Baz".chars().count());
+    fn max_step_counter_width_picks_widest_counter() {
+        // Counter width is `2 * digit_count(total) + 1` (the widest counter
+        // for a T-step scenario is `T/T`). The 12-step scenario wins:
+        // "12/12" = 5 chars, vs "3/3" = 3 for the 3-step one.
+        let metas = vec![
+            ScenarioMeta {
+                name: Some("a".into()),
+                step_names: vec!["s".into(); 3],
+            },
+            ScenarioMeta {
+                name: Some("b".into()),
+                step_names: vec!["s".into(); 12],
+            },
+        ];
+        assert_eq!(max_step_counter_width(&metas), "12/12".chars().count());
     }
 
     #[test]
     fn widths_are_zero_on_empty_set() {
         assert_eq!(max_scenario_name_width(&[]), 0);
-        assert_eq!(max_step_label_width(&[]), 0);
+        assert_eq!(max_step_counter_width(&[]), 0);
     }
 }
