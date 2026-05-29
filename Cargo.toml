@@ -169,3 +169,19 @@ panic = "abort"      # Abort on panic (smaller binary)
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Profiling build: release optimization with full debug symbols so samply /
+# Instruments can resolve inline frames and source. Tuned for readable
+# flamegraphs and fast compiles (-O2, no LTO, many codegen units) rather than
+# faithfulness to the size-optimized shipped binary. See the `profiling-daft`
+# skill. Build: `cargo build --profile profiling`. Don't `cargo clean` between
+# build and profile — unpacked split-debuginfo lives in target/**/*.o on macOS.
+# `panic = "abort"` is inherited from release — switch to "unwind" if profiling
+# error/unwind paths.
+[profile.profiling]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 16
+debug = true
+strip = false
