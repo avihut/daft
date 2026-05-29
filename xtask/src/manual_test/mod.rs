@@ -1194,7 +1194,7 @@ fn run_one_scenario(
     // pool — the worker reports the panic and the pool keeps draining the
     // remaining scenarios.
     let work = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        run_one_scenario_inner(&scenario, ctx, cleanup_set)
+        run_one_scenario_inner(&scenario, index, ctx, cleanup_set)
     }));
 
     match work {
@@ -1244,6 +1244,7 @@ fn run_one_scenario(
 
 fn run_one_scenario_inner(
     scenario: &schema::Scenario,
+    index: usize,
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
 ) -> Result<Option<(runner::ScenarioResult, Vec<u8>)>> {
@@ -1285,6 +1286,7 @@ fn run_one_scenario_inner(
     // already created.
     let Some(result) = runner::run_non_interactive(
         scenario,
+        index,
         &sb,
         &executor,
         ctx.reporter,
@@ -1355,7 +1357,7 @@ fn run_one_scenario_inner(
         reporter::ScenarioStatus::Pass
     };
     ctx.progress
-        .complete_scenario(&scenario.name, status, result.duration, &buf);
+        .complete_scenario(index, status, result.duration, &buf);
 
     Ok(Some((result, buf)))
 }

@@ -71,11 +71,16 @@ pub trait ProgressSink: Send + Sync {
     /// Called once before any scenarios start, with the total to expect.
     fn run_started(&self, total_scenarios: usize);
 
-    /// Called when a worker picks up a scenario.
-    fn scenario_started(&self, name: &str, total_steps: usize);
+    /// Called when a worker picks up a scenario. `index` is the scenario's
+    /// stable position in the discovered (alphabetically-sorted) list — the
+    /// live region keys its in-flight rows by it (scenario *names* are not
+    /// unique) and maps it to a dot in the totals completion-map.
+    fn scenario_started(&self, index: usize, name: &str, total_steps: usize);
 
-    /// Called before each step's command runs. `idx` is zero-based.
-    fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str);
+    /// Called before each step's command runs. `index` identifies the
+    /// scenario (see [`Self::scenario_started`]); `step_idx` is the zero-based
+    /// step within it.
+    fn step_started(&self, index: usize, step_idx: usize, total_steps: usize, step_name: &str);
 
     /// Called when a worker finishes a scenario, with the full buffered
     /// output and the determined status.
@@ -106,8 +111,16 @@ pub trait ProgressSink: Send + Sync {
     /// step lines + footer + any cleanup note). On `NoopProgressSink` the
     /// buf is *ignored* — the orchestrator drains buffers in input order
     /// at end-of-run for the non-TTY path, so printing here would
-    /// duplicate output.
-    fn complete_scenario(&self, name: &str, status: ScenarioStatus, duration: Duration, buf: &[u8]);
+    /// duplicate output. `index` identifies the scenario (see
+    /// [`Self::scenario_started`]) so the row can be removed and its
+    /// completion-map dot lit.
+    fn complete_scenario(
+        &self,
+        index: usize,
+        status: ScenarioStatus,
+        duration: Duration,
+        buf: &[u8],
+    );
 
     /// Called once at the end of the run, after the summary block.
     fn run_finished(&self);
@@ -128,11 +141,12 @@ pub struct NoopProgressSink;
 
 impl ProgressSink for NoopProgressSink {
     fn run_started(&self, _total_scenarios: usize) {}
-    fn scenario_started(&self, _name: &str, _total_steps: usize) {}
-    fn step_started(&self, _scenario_name: &str, _idx: usize, _total: usize, _step_name: &str) {}
+    fn scenario_started(&self, _index: usize, _name: &str, _total_steps: usize) {}
+    fn step_started(&self, _index: usize, _step_idx: usize, _total_steps: usize, _step_name: &str) {
+    }
     fn complete_scenario(
         &self,
-        _name: &str,
+        _index: usize,
         _status: ScenarioStatus,
         _duration: Duration,
         _buf: &[u8],
@@ -192,15 +206,10 @@ mod tests {
     fn noop_sink_swallows_every_call() {
         let sink = NoopProgressSink;
         sink.run_started(10);
-        sink.scenario_started("example", 3);
-        sink.step_started("example", 0, 3, "first step");
-        sink.step_started("example", 1, 3, "second step");
-        sink.complete_scenario(
-            "example",
-            ScenarioStatus::Pass,
-            Duration::from_millis(120),
-            b"",
-        );
+        sink.scenario_started(0, "example", 3);
+        sink.step_started(0, 0, 3, "first step");
+        sink.step_started(0, 1, 3, "second step");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::from_millis(120), b"");
         sink.run_finished();
         // The contract is "no panic, no observable effect" — reaching this
         // line satisfies it.
@@ -214,9 +223,9 @@ mod tests {
         // cover the live path.
         let sink = progress_sink_for(false, 0, 0, 4, InterruptFlag::new());
         sink.run_started(0);
-        sink.scenario_started("x", 1);
-        sink.step_started("x", 0, 1, "s");
-        sink.complete_scenario("x", ScenarioStatus::Fail, Duration::ZERO, b"");
+        sink.scenario_started(0, "x", 1);
+        sink.step_started(0, 0, 1, "s");
+        sink.complete_scenario(0, ScenarioStatus::Fail, Duration::ZERO, b"");
         sink.run_finished();
     }
 
@@ -250,6 +259,6 @@ mod tests {
         // path, so a sink that printed here would duplicate output. The
         // contract is "no panic, no observable effect".
         let sink = NoopProgressSink;
-        sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"some content\n");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"some content\n");
     }
 }

@@ -216,7 +216,11 @@ pub struct IndicatifProgressSink {
     /// (`src/output/hook_progress/interactive.rs`), which hit the same
     /// class of bug and landed the same fix.
     _trailer: ProgressBar,
-    rows: Mutex<HashMap<String, ProgressRow>>,
+    /// In-flight worker rows, keyed by the scenario's stable **index** (its
+    /// position in the discovered list) — *not* its name, because scenario
+    /// names are not unique (two scenarios can share a `name:`), and a
+    /// name-keyed map would let one in-flight scenario clobber another's row.
+    rows: Mutex<HashMap<usize, ProgressRow>>,
     failed: AtomicUsize,
     /// Scenarios that bailed mid-run via SIGINT. Surfaced as a separate
     /// segment on the summary bar (yellow, attention-without-alarm slot)
@@ -243,6 +247,9 @@ pub struct IndicatifProgressSink {
 
 struct ProgressRow {
     bar: ProgressBar,
+    /// The scenario's display name, stored so `step_started` (which is keyed
+    /// by index) can render the row tail without the caller re-passing it.
+    name: String,
 }
 
 impl IndicatifProgressSink {
@@ -400,7 +407,7 @@ impl ProgressSink for IndicatifProgressSink {
         self.update_summary_msg();
     }
 
-    fn scenario_started(&self, name: &str, total_steps: usize) {
+    fn scenario_started(&self, index: usize, name: &str, total_steps: usize) {
         // Hold state_lock for the entire add+style+insert sequence so it
         // can't interleave with another worker's `complete_scenario` (or
         // its own `scenario_started`) and shift the row count out from
@@ -432,41 +439,47 @@ impl ProgressSink for IndicatifProgressSink {
         bar.enable_steady_tick(TICK_INTERVAL);
 
         if let Ok(mut rows) = self.rows.lock() {
-            rows.insert(name.to_string(), ProgressRow { bar });
+            rows.insert(
+                index,
+                ProgressRow {
+                    bar,
+                    name: name.to_string(),
+                },
+            );
         }
         self.update_summary_msg();
     }
 
-    fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str) {
-        // `idx` is the 0-based index of the step now starting, so `idx`
-        // steps are already complete — that's both the bar position and
-        // the `done` half of the `done/total` counter.
+    fn step_started(&self, index: usize, step_idx: usize, total_steps: usize, step_name: &str) {
+        // `step_idx` is the 0-based index of the step now starting, so
+        // `step_idx` steps are already complete — that's both the bar
+        // position and the `done` half of the `done/total` counter.
         //
-        // Two-phase lock: read *only* the elapsed under the lock, drop it,
-        // then format the tail/counter (pure-functional over immutable
-        // `self` fields — no shared state), then re-acquire briefly to push
-        // the update onto the bar. Keeping the formatting outside the lock
-        // means concurrent workers' `step_started` calls don't serialize on
-        // each other's string building.
+        // Two-phase lock: read *only* the scenario name + elapsed under the
+        // lock, drop it, then format the tail/counter (pure-functional over
+        // immutable `self` fields — no shared state), then re-acquire briefly
+        // to push the update onto the bar. Keeping the formatting outside the
+        // lock means concurrent workers' `step_started` calls don't serialize
+        // on each other's string building.
         //
         // The race window between the two locks is benign: if
         // `complete_scenario` removes the row between phases, the second
         // `if let Some(row)` simply skips the update — visually equivalent
         // to a `set_message` that landed a frame before the row cleared.
-        let elapsed = {
+        let (scenario_name, elapsed) = {
             let Ok(rows) = self.rows.lock() else {
                 return;
             };
-            match rows.get(scenario_name) {
-                Some(row) => row.bar.elapsed(),
+            match rows.get(&index) {
+                Some(row) => (row.name.clone(), row.bar.elapsed()),
                 None => return,
             }
         };
-        let tail = self.render_row_tail(scenario_name, step_name, elapsed);
-        let counter = self.render_row_counter(idx, total);
+        let tail = self.render_row_tail(&scenario_name, step_name, elapsed);
+        let counter = self.render_row_counter(step_idx, total_steps);
         if let Ok(rows) = self.rows.lock() {
-            if let Some(row) = rows.get(scenario_name) {
-                row.bar.set_position(idx as u64);
+            if let Some(row) = rows.get(&index) {
+                row.bar.set_position(step_idx as u64);
                 row.bar.set_prefix(counter);
                 row.bar.set_message(tail);
             }
@@ -475,7 +488,7 @@ impl ProgressSink for IndicatifProgressSink {
 
     fn complete_scenario(
         &self,
-        name: &str,
+        index: usize,
         status: ScenarioStatus,
         _duration: Duration,
         buf: &[u8],
@@ -511,7 +524,7 @@ impl ProgressSink for IndicatifProgressSink {
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Ok(mut rows) = self.rows.lock() {
-            if let Some(row) = rows.remove(name) {
+            if let Some(row) = rows.remove(&index) {
                 // `multi.remove`, NOT `bar.finish_and_clear`. See the
                 // hook-progress comment in
                 // `src/output/hook_progress/interactive.rs:remove_job_bars`
@@ -615,17 +628,12 @@ mod tests {
     fn lifecycle_methods_do_not_panic() {
         let sink = hidden_sink();
         sink.run_started(2);
-        sink.scenario_started("alpha", 3);
-        sink.step_started("alpha", 0, 3, "first");
-        sink.step_started("alpha", 1, 3, "second");
-        sink.complete_scenario(
-            "alpha",
-            ScenarioStatus::Pass,
-            Duration::from_millis(120),
-            b"",
-        );
-        sink.scenario_started("beta", 2);
-        sink.complete_scenario("beta", ScenarioStatus::Fail, Duration::from_millis(80), b"");
+        sink.scenario_started(0, "alpha", 3);
+        sink.step_started(0, 0, 3, "first");
+        sink.step_started(0, 1, 3, "second");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::from_millis(120), b"");
+        sink.scenario_started(1, "beta", 2);
+        sink.complete_scenario(1, ScenarioStatus::Fail, Duration::from_millis(80), b"");
         sink.run_finished();
     }
 
@@ -633,12 +641,12 @@ mod tests {
     fn failed_counter_increments_on_fail_only() {
         let sink = hidden_sink();
         sink.run_started(3);
-        sink.scenario_started("a", 1);
-        sink.complete_scenario("a", ScenarioStatus::Pass, Duration::ZERO, b"");
-        sink.scenario_started("b", 1);
-        sink.complete_scenario("b", ScenarioStatus::Fail, Duration::ZERO, b"");
-        sink.scenario_started("c", 1);
-        sink.complete_scenario("c", ScenarioStatus::Fail, Duration::ZERO, b"");
+        sink.scenario_started(0, "a", 1);
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        sink.scenario_started(1, "b", 1);
+        sink.complete_scenario(1, ScenarioStatus::Fail, Duration::ZERO, b"");
+        sink.scenario_started(2, "c", 1);
+        sink.complete_scenario(2, ScenarioStatus::Fail, Duration::ZERO, b"");
         assert_eq!(sink.failed.load(Ordering::Relaxed), 2);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 0);
     }
@@ -669,7 +677,7 @@ mod tests {
             total_workers: 4,
         };
         sink.run_started(2);
-        sink.scenario_started("a", 1);
+        sink.scenario_started(0, "a", 1);
 
         // Before the flag is set, notify_cancelling is a no-op effectively
         // (suffix shouldn't appear).
@@ -684,7 +692,7 @@ mod tests {
 
         // Once running drops to 0 (last worker bailed), the suffix drops
         // away — nothing left to cancel.
-        sink.complete_scenario("a", ScenarioStatus::Cancelled, Duration::ZERO, b"");
+        sink.complete_scenario(0, ScenarioStatus::Cancelled, Duration::ZERO, b"");
         assert!(!sink.summary.message().contains("(cancelling)"));
     }
 
@@ -696,14 +704,14 @@ mod tests {
         // path was introduced to fix.
         let sink = hidden_sink();
         sink.run_started(4);
-        sink.scenario_started("a", 1);
-        sink.complete_scenario("a", ScenarioStatus::Pass, Duration::ZERO, b"");
-        sink.scenario_started("b", 1);
-        sink.complete_scenario("b", ScenarioStatus::Fail, Duration::ZERO, b"");
-        sink.scenario_started("c", 1);
-        sink.complete_scenario("c", ScenarioStatus::Cancelled, Duration::ZERO, b"");
-        sink.scenario_started("d", 1);
-        sink.complete_scenario("d", ScenarioStatus::Cancelled, Duration::ZERO, b"");
+        sink.scenario_started(0, "a", 1);
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        sink.scenario_started(1, "b", 1);
+        sink.complete_scenario(1, ScenarioStatus::Fail, Duration::ZERO, b"");
+        sink.scenario_started(2, "c", 1);
+        sink.complete_scenario(2, ScenarioStatus::Cancelled, Duration::ZERO, b"");
+        sink.scenario_started(3, "d", 1);
+        sink.complete_scenario(3, ScenarioStatus::Cancelled, Duration::ZERO, b"");
         assert_eq!(sink.failed.load(Ordering::Relaxed), 1);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 2);
     }
@@ -712,9 +720,9 @@ mod tests {
     fn rows_clear_on_scenario_finished() {
         let sink = hidden_sink();
         sink.run_started(1);
-        sink.scenario_started("x", 1);
+        sink.scenario_started(0, "x", 1);
         assert_eq!(sink.rows.lock().unwrap().len(), 1);
-        sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
         assert!(sink.rows.lock().unwrap().is_empty());
     }
 

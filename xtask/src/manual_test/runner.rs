@@ -510,8 +510,10 @@ pub fn check_step(
 /// started, scenario finished) so the orchestrator's TTY progress region
 /// can reflect live state. A `NoopProgressSink` makes those calls free —
 /// the runner core never branches on progress.
+#[allow(clippy::too_many_arguments)] // a sequential runner with many distinct collaborators; bundling them into a struct would obscure more than it helps
 pub fn run_non_interactive(
     scenario: &Scenario,
+    index: usize,
     sandbox: &Sandbox,
     executor: &dyn CommandExecutor,
     reporter: &dyn Reporter,
@@ -539,7 +541,7 @@ pub fn run_non_interactive(
     let mut cancelled = false;
     let mut steps_run = 0usize;
 
-    progress.scenario_started(&scenario.name, total);
+    progress.scenario_started(index, &scenario.name, total);
     let started = Instant::now();
     for (i, step) in scenario.steps.iter().enumerate() {
         // Cooperative cancellation check at the start of each step. The
@@ -554,7 +556,7 @@ pub fn run_non_interactive(
             break;
         }
         reporter.step_start(out, i, total, step)?;
-        progress.step_started(&scenario.name, i, total, &step.name);
+        progress.step_started(index, i, total, &step.name);
 
         let result = execute_step(step, sandbox, executor, true)?;
         steps_run += 1;
