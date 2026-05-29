@@ -27,17 +27,17 @@ gradients, viewers learn each accent fast and get confused fast if you reuse
 one. Each slot below answers exactly one question; any future "I want to make
 this stand out" gets answered by looking up the right slot.
 
-| Slot                    | Reserved for                                                                                                                                                                                                                                                                                                                                                                        | Anti-meaning                         |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **bold green**          | Diff label: `expected:` / `unexpected:` (failure payload, accent at concentrated weight)                                                                                                                                                                                                                                                                                            | Never the pass icon                  |
-| **green** (not bold)    | Pass marker: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                                                                                                                                                                                                                                 | Never "selected" or "in progress"    |
-| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                                                                                                                                                                                                    | Never warnings                       |
-| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                                                                                                                                                                                                       | Never errors                         |
-| **cyan**                | Structural anchors. **Bold cyan** = scenario name (Level 1). **Plain cyan** = `[N/M]` step counter at the start of each step line (Level 2 boundary marker — names the step block to the eye while the bright-purple step name carries the identity); **also the live totals completion-map** (the braille field of finished scenarios — totals is the top-level structure; see §8) | Never status, never expanded command |
-| **bright purple**       | Step identity: step name in the per-step opening line (bold at `-vv` for the Layer-2 anchor against Layer 3/4 content, plain at `-v`)                                                                                                                                                                                                                                               | Never assertion content              |
-| **blue**                | Step action: `$ command` body (including `>` continuation lines on multi-line commands)                                                                                                                                                                                                                                                                                             | Never the pass / fail outcome        |
-| **dim** / **dark grey** | Pure scaffolding: `(N checks)` / `(N failed)` suffix, scenario-header path, durations under threshold, banner rules, `step N/M` in failure block, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint                                                                                                                         | Never the failure payload            |
-| **default fg**          | Body content + failure payload: assertion labels, summary labels, reproduce command body, **assertion `detail` lines under a failed assertion**, failure-block location pointer (`path:line`)                                                                                                                                                                                       | Never decoration                     |
+| Slot                    | Reserved for                                                                                                                                                                                                                                                                                                                                                              | Anti-meaning                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **bold green**          | Diff label: `expected:` / `unexpected:` (failure payload, accent at concentrated weight)                                                                                                                                                                                                                                                                                  | Never the pass icon                  |
+| **green** (not bold)    | Pass marker: `✓` step pass, `✓` scenario footer, "passed" count > 0                                                                                                                                                                                                                                                                                                       | Never "selected" or "in progress"    |
+| **bold red**            | Failure outcome: `✗`, `❯` focal-step marker, `FAIL` word, banner label, "failed" count > 0; `actual:` diff label                                                                                                                                                                                                                                                          | Never warnings                       |
+| **yellow**              | Attention without alarm: `(slow)`, future "skipped" / "flaky"                                                                                                                                                                                                                                                                                                             | Never errors                         |
+| **cyan**                | Structural anchors. **Bold cyan** = scenario name (Level 1). **Plain cyan** = `[N/M]` step counter at the start of each step line (Level 2 boundary marker — names the step block to the eye while the bright-purple step name carries the identity); **also the live totals completion-map** (the braille progress dissolve — totals is the top-level structure; see §8) | Never status, never expanded command |
+| **bright purple**       | Step identity: step name in the per-step opening line (bold at `-vv` for the Layer-2 anchor against Layer 3/4 content, plain at `-v`)                                                                                                                                                                                                                                     | Never assertion content              |
+| **blue**                | Step action: `$ command` body (including `>` continuation lines on multi-line commands)                                                                                                                                                                                                                                                                                   | Never the pass / fail outcome        |
+| **dim** / **dark grey** | Pure scaffolding: `(N checks)` / `(N failed)` suffix, scenario-header path, durations under threshold, banner rules, `step N/M` in failure block, capture-block stream label (`stdout` / `stderr`), capture-block body lines, capture-block truncation hint                                                                                                               | Never the failure payload            |
+| **default fg**          | Body content + failure payload: assertion labels, summary labels, reproduce command body, **assertion `detail` lines under a failed assertion**, failure-block location pointer (`path:line`)                                                                                                                                                                             | Never decoration                     |
 
 **Cyan repurposed from `daft-tui-design`.** The TUI budget reserves cyan for
 focus/selection. Stdout has no focus, so cyan covers "structural anchor" — bold
@@ -96,19 +96,19 @@ pointing at the layer interaction that motivated them.
 
 ## 3. Iconography
 
-| Glyph   | Meaning                                                                                                                                            | Styling                   |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `✓`     | Pass — applies at both step level and scenario footer                                                                                              | green (not bold) — see §4 |
-| `✗`     | Fail — at every level: step assertion, scenario footer, failures-block entries, failures-block per-assertion                                       | bold red                  |
-| `❯`     | Focal failing step in the failures block (one per failure entry)                                                                                   | bold red                  |
-| `⎯`     | Section rule (banner only — twelve per side, fixed width)                                                                                          | dim                       |
-| `[N/M]` | Step counter in scrollback (per-step lines)                                                                                                        | dim                       |
-| `N/M`   | `done/total` counter in the live region (no brackets — the field/bar to its left is the visual frame); see §8                                      | default fg                |
-| `⟨⣿⡇…⟩` | Totals completion-map: `⟨ ⟩`-framed braille field, one dot per finished scenario cluster — live, then persisted into scrollback at end-of-run (§8) | dim frame, cyan dots      |
-| `▬`/`─` | Live worker-row step bar (`▬` fill over `─` track); see §8                                                                                         | `▬` default fg, `─` dim   |
-| `idle`  | A worker slot with no scenario in flight (empty `─` track, no counter/clock); see §8                                                               | dim                       |
-| `◆`     | Segment separator in the live totals tail (`running ◆ failed ◆ cancelled`)                                                                         | dim                       |
-| `$`     | Expanded-command prefix (under `-v`+ verbosity)                                                                                                    | dim                       |
+| Glyph   | Meaning                                                                                                                                                         | Styling                   |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `✓`     | Pass — applies at both step level and scenario footer                                                                                                           | green (not bold) — see §4 |
+| `✗`     | Fail — at every level: step assertion, scenario footer, failures-block entries, failures-block per-assertion                                                    | bold red                  |
+| `❯`     | Focal failing step in the failures block (one per failure entry)                                                                                                | bold red                  |
+| `⎯`     | Section rule (banner only — twelve per side, fixed width)                                                                                                       | dim                       |
+| `[N/M]` | Step counter in scrollback (per-step lines)                                                                                                                     | dim                       |
+| `N/M`   | `done/total` counter in the live region (no brackets — the field/bar to its left is the visual frame); see §8                                                   | default fg                |
+| `⟨⣿⡇…⟩` | Totals completion-map: `⟨ ⟩`-framed braille field, lit dots ∝ completed fraction (scattered dissolve) — live, then persisted into scrollback at end-of-run (§8) | dim frame, cyan dots      |
+| `▬`/`─` | Live worker-row step bar (`▬` fill over `─` track); see §8                                                                                                      | `▬` default fg, `─` dim   |
+| `idle`  | A worker slot with no scenario in flight (empty `─` track, no counter/clock); see §8                                                                            | dim                       |
+| `◆`     | Segment separator in the live totals tail (`running ◆ failed ◆ cancelled`)                                                                                      | dim                       |
+| `$`     | Expanded-command prefix (under `-v`+ verbosity)                                                                                                                 | dim                       |
 
 **Never use lowercase `x` for failure**, even at the assertion-detail level.
 Every fail icon is `✗`. (Pre-styling-pass code used `x` in one site — that was a
@@ -281,21 +281,28 @@ isn't running would read as activity where there is none) — when the scenario
 finishes. A free slot always exists to claim because the worker pool has exactly
 that many threads.
 
-**Totals line — a spatial completion-map** (not a percentage gauge, not a
-time-series). A braille **field** where each dot owns a fixed cluster of
-scenarios _by index_ and lights once that cluster finishes. Because the
-scheduler hands work out non-linearly (workers chew the beginning, middle, and
-end at once), the field fills _scattered_ — a developing-photo view of which
-parts of the scenario set are done, which a left-to-right fill bar can't show.
+**Totals line — a completion-map rendered as a scattered dissolve** (a progress
+indicator shown spatially, not a percentage gauge and not per-scenario
+coverage). A braille **field** that lights `round(done/total × num_dots)` dots —
+so the lit fraction tracks the completed fraction **linearly** — in a fixed
+scattered, gently bottom-left → top-right reveal order. The field fills evenly
+as the run progresses and reads as a "developing photo," full exactly at the
+end.
 
-- **Field** — `FIELD_WIDTH` braille chars × 8 dots; each dot ≈
-  `total / (FIELD_WIDTH·8)` scenarios by index (small runs drop to one scenario
-  per dot). Dots fill bottom-left → top-right within a cell. The four braille
-  rows are _resolution_, not a y-axis, so the field stays **one line** — no
-  vertical real estate spent. Dots **cyan**, `⟨ ⟩` frame **dim**.
+- **Honest framing.** A lit dot is _not_ a specific finished scenario; only the
+  field's overall fill fraction is meaningful. An earlier version lit dots by
+  per-index cluster completion, but with a breadth-first scheduler every cluster
+  sat partway done for most of the run, so the field stayed near-empty until a
+  late burst — misleading, and the reason it was rebuilt as a dissolve. If you
+  reintroduce per-dot semantics, prove (against a real run) that the fill stays
+  roughly linear in progress first.
+- **Field** — `FIELD_WIDTH` braille chars × 8 dots (small runs drop to one dot
+  per scenario). The four braille rows are _resolution_, not a y-axis, so the
+  field stays **one line** — no vertical real estate spent. Dots **cyan**, `⟨ ⟩`
+  frame **dim**.
 - Then `done/total` scenarios (default fg) · run `elapsed` (dim) · `R/A running`
-  (R in-flight, A = worker-pool size) · `M failed` · `C cancelled` ·
-  `(cancelling)`. Segment separators are **dim** `◆`.
+  (R in-flight, A = worker-pool size) · `M failed` · `C cancelled`. Segment
+  separators are **dim** `◆`.
 
 **The completion-map persists past the run.** When the region tears down, the
 finished field is printed into scrollback (a frozen `⟨…⟩  done/total scenarios`
@@ -327,10 +334,23 @@ the live counters stay **default fg** rather than scrollback's cyan `[N/M]` so a
 second cyan slot doesn't dilute the anchor. Everything on the worker rows reuses
 default fg (bar fill, scenario name, counter) and dim (track, elapsed,
 separator, step name). `M failed` is bold red once `> 0` (live fail-loud) and
-**hidden at `0`** — a ticking `0 failed` on every green run is chrome. **Cancel
-mode is a derivative of this same line**: `C cancelled` and `(cancelling)` ride
-the totals tail in the yellow slot (attention-without-alarm), and the worker
-rows keep their layout as they wind down.
+**hidden at `0`** — a ticking `0 failed` on every green run is chrome.
+
+**Cancellation collapses the region; it doesn't keep redrawing it.** On the
+first Ctrl+C the region is torn down _once_ — every bar removed, the area
+cleared — and a single dim notice
+(`Interrupted — finishing in-flight scenarios (Ctrl+C again to force-quit)…`) is
+printed; the remaining in-flight scenarios then stream their `⊘ (cancelled)`
+footers as plain lines, and `run_finished` persists the partial completion-map
+above the summary. This is a correctness choice, not just aesthetics: the old
+design left the region live and redrew it through the burst of bailing workers,
+and the rapid redraw-plus-`println` churn desynced indicatif's line accounting
+and stranded frame after frame in scrollback. With the region gone the moment
+cancellation starts, there is nothing left to strand. The forced-exit
+(second-press) path — which the cooperative teardown can't reach when every
+worker is wedged in a slow subprocess — wipes the region the same way via a
+process-global handle before printing its notice. The yellow-slot `C cancelled`
+count lives on in the end-of-run summary block (`pretty.rs`), not the live tail.
 
 **Narrow-display safety is a correctness property, not cosmetics.** Each line's
 variable tail is a single `{wide_msg}`, which indicatif **truncates** (never
