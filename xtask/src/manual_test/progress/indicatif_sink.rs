@@ -490,25 +490,49 @@ fn unregister_exit_handle() {
     *g = None;
 }
 
-/// Collapse the live region from the SIGINT hard-exit handler and return the
-/// totals end-screen lines to print where the stranded live line was. Removes
-/// every bar (stopping its steady tick — see [`ExitHandle`]) then clears and
-/// hides the draw target, mirroring [`IndicatifProgressSink::tear_down_region`].
-/// Returns an empty `Vec` when no region is registered (non-TTY, or already torn
-/// down), in which case the caller prints nothing extra.
-pub fn finalize_region_for_exit() -> Vec<String> {
+/// Collapse the live region from the SIGINT hard-exit handler and print the
+/// totals end screen where the stranded live line was. A no-op when no region is
+/// registered (non-TTY, or already torn down).
+///
+/// The erase is driven by `multi.println`, NOT `multi.clear()`. `remove` only
+/// hides each bar's own draw target and unlinks it (`multi.rs::remove`) — it
+/// does **not** redraw, so the drawn region stays on screen until the next draw
+/// op. `clear()` then erases only `last_line_count` lines, and that count
+/// desyncs under load: during a high-completion run the summary's steady tick
+/// redraws concurrently with our teardown, so `clear()` wipes fewer lines than
+/// were drawn and the live totals frame (`…N/M running`) is left stranded above
+/// the forced-exit notice. `println`'s redraw path explicitly clears stale lines
+/// instead — this is daft's proven hook-progress teardown
+/// (`src/output/hook_progress/interactive.rs::remove_job_bars`: "the next
+/// `mp.println` does an atomic redraw that cleanly clears the old bar lines").
+///
+/// Order matters: disable every steady tick first (so no concurrent tick can
+/// desync the line count or repaint mid-teardown), then unlink the bars, then
+/// `println` the end screen (a leading blank separates it from the streamed
+/// footers above), then hide the target so nothing repaints before
+/// `process::exit`.
+pub fn finalize_region_for_exit() {
     let guard = EXIT_HANDLE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(handle) = guard.as_ref() else {
-        return Vec::new();
+        return;
     };
+    for bar in &handle.bars {
+        bar.disable_steady_tick();
+    }
     for bar in &handle.bars {
         handle.multi.remove(bar);
     }
-    let _ = handle.multi.clear();
+    let lines = handle.summary.lock().map(|s| s.clone()).unwrap_or_default();
+    // Leading blank + the end-screen lines, all via `println` so the first one's
+    // atomic redraw erases the just-removed region. Always print the blank even
+    // when there are no end-screen lines, so the region is still erased.
+    let _ = handle.multi.println("");
+    for line in &lines {
+        let _ = handle.multi.println(line);
+    }
     handle.multi.set_draw_target(ProgressDrawTarget::hidden());
-    handle.summary.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
 /// Build the totals "end screen" a force-quit prints in place of the stranded
@@ -1533,9 +1557,9 @@ mod tests {
     #[test]
     fn finalize_region_for_exit_is_safe_with_no_region() {
         // Non-TTY / already-torn-down: with no handle registered (unit tests
-        // never register the process-global), it returns nothing and never
-        // panics, so the hard-exit handler prints no extra lines.
-        assert!(finalize_region_for_exit().is_empty());
+        // never register the process-global), it's a no-op and never panics
+        // (so the hard-exit handler can call it unconditionally).
+        finalize_region_for_exit();
     }
 
     #[test]

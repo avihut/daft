@@ -338,24 +338,17 @@ fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> Clea
         // registrations, so the `known` set captures the entire universe
         // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
-        // Collapse the live progress region first — removing every bar so its
-        // 200 ms steady tick can't repaint over the clear while the cleanup loop
-        // below runs (the stranded live-totals-line bug). This is the path the
+        // Collapse the live progress region first, so the forced-exit notice and
+        // cleanup messages below land on a clean canvas. This is the path the
         // cooperative teardown can't reach: when every worker is wedged in a slow
         // subprocess, no completion fires `notify_cancelling`, so the region is
-        // still up when this second-press handler runs. `finalize_region_for_exit`
-        // returns the totals "end screen" (completion-map + passed/failed/
-        // cancelled breakdown, no live `running` count) to print where the live
-        // line was; empty on a non-TTY run or if a soft cancel already tore the
-        // region down.
-        let totals = progress::finalize_region_for_exit();
+        // still drawn when this second-press handler runs. `finalize_region_for_exit`
+        // erases it and prints the totals "end screen" (completion-map +
+        // passed/failed/cancelled breakdown, no live `running` count) in its place
+        // via the multi's redraw path — a no-op on a non-TTY run or if a soft
+        // cancel already tore the region down.
+        progress::finalize_region_for_exit();
         eprintln!();
-        for line in &totals {
-            eprintln!("{line}");
-        }
-        if !totals.is_empty() {
-            eprintln!();
-        }
         eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));
         if !keep {
             let mut g = match handler_set.lock() {

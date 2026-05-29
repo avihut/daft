@@ -349,12 +349,18 @@ and stranded frame after frame in scrollback. With the region gone the moment
 cancellation starts, there is nothing left to strand. The forced-exit
 (second-press) path — which the cooperative teardown can't reach when every
 worker is wedged in a slow subprocess, so no completion fires the soft collapse
-— tears the region down the **same way the soft path does**, via a
-process-global handle: it removes _every_ bar (not merely `clear()`s the drawn
-lines), so the per-bar steady tick has no source to repaint over the clear while
-the `rm -rf` cleanup loop runs — the line-accounting desync that can strand the
-live totals line above the forced-exit notice under load. In that line's place
-it prints the totals **end screen**: the same persisted completion-map line
+— collapses the region via a process-global handle and must erase it through
+`multi.println`, **not** `multi.clear()`. `clear()` erases only its own tracked
+line count, and that count desyncs under load: during a high-completion run the
+totals line's steady tick redraws concurrently with the teardown, so `clear()`
+wipes fewer lines than were drawn and the live totals frame (`…N/M running`) is
+left stranded above the forced-exit notice — visibly duplicating the totals once
+the end screen prints below it. The fix mirrors daft's proven hook-progress
+teardown (`src/output/hook_progress/interactive.rs::remove_job_bars`): disable
+every bar's steady tick (so no concurrent tick can desync the count), unlink the
+bars, then drive an atomic redraw with `multi.println` — whose redraw path
+clears stale lines outright — to erase the region and print the totals **end
+screen** in its place. The end screen is the same persisted completion-map line
 (`⟨…⟩  done/total scenarios`) plus a one-line
 `stopped at done/total · N passed · M failed · K cancelled · J not run`
 breakdown, both built from the sink's counters. It drops the live-only `running`
