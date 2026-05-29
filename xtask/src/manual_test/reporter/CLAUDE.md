@@ -348,9 +348,19 @@ and the rapid redraw-plus-`println` churn desynced indicatif's line accounting
 and stranded frame after frame in scrollback. With the region gone the moment
 cancellation starts, there is nothing left to strand. The forced-exit
 (second-press) path — which the cooperative teardown can't reach when every
-worker is wedged in a slow subprocess — wipes the region the same way via a
-process-global handle before printing its notice. The yellow-slot `C cancelled`
-count lives on in the end-of-run summary block (`pretty.rs`), not the live tail.
+worker is wedged in a slow subprocess, so no completion fires the soft collapse
+— tears the region down the **same way the soft path does**, via a
+process-global handle: it removes _every_ bar (not merely `clear()`s the drawn
+lines), so the per-bar steady tick has no source to repaint over the clear while
+the `rm -rf` cleanup loop runs — the line-accounting desync that can strand the
+live totals line above the forced-exit notice under load. In that line's place
+it prints the totals **end screen**: the same persisted completion-map line
+(`⟨…⟩  done/total scenarios`) plus a one-line
+`stopped at done/total · N passed · M failed · K cancelled · J not run`
+breakdown, both built from the sink's counters. It drops the live-only `running`
+count and ticking elapsed — meaningless once the run has stopped. The
+yellow-slot `C cancelled` count lives on in the end-of-run summary block
+(`pretty.rs`), not the live tail.
 
 **Narrow-display safety is a correctness property, not cosmetics.** Each line's
 variable tail is a single `{wide_msg}`, which indicatif **truncates** (never

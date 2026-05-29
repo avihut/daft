@@ -44,7 +44,7 @@
 //! not just cosmetics.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
@@ -417,50 +417,137 @@ fn idle_row_style() -> ProgressStyle {
     .progress_chars("▬─")
 }
 
-/// A process-global handle to the live region's `MultiProgress`, so the SIGINT
-/// hard-exit handler (which runs on the `ctrlc` crate's own thread and has no
-/// reference to the sink) can wipe the region before printing its forced-exit
-/// notice. Set when the live sink is built, cleared when the region is torn
-/// down. `None` whenever there is no live region (non-TTY runs, or after
-/// teardown), so the handler's clear is then a safe no-op.
+/// State the SIGINT hard-exit handler needs to collapse the live region from the
+/// `ctrlc` crate's own thread (it has no reference to the sink): the
+/// `MultiProgress`, a clone of every bar in it, and the totals "end screen" lines
+/// to print where the live totals line was.
 ///
 /// This is the one case the soft-cancel teardown can't cover: when every worker
 /// is wedged in a slow subprocess, no `complete_scenario` / `notify_cancelling`
 /// fires to collapse the region, so a second Ctrl+C reaches the hard-exit path
-/// with the region still drawn. Clearing it here keeps that path from stranding
-/// the live frames behind the forced-exit messages.
-static LIVE_REGION: Mutex<Option<MultiProgress>> = Mutex::new(None);
-
-/// Publish the live region's multi for the hard-exit handler. Idempotent;
-/// overwrites any prior handle (only one run/sink is live at a time).
-fn register_live_region(multi: &MultiProgress) {
-    let mut g = LIVE_REGION
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *g = Some(multi.clone());
+/// with the region still drawn.
+///
+/// Tearing it down must **remove every bar**, not merely `clear()` the drawn
+/// lines: each bar carries a 200 ms steady tick, and after a bare `clear()`
+/// (even with the draw target hidden) an in-flight tick repaints the region —
+/// which is exactly what stranded the live totals line above the forced-exit
+/// notice while the `rm -rf` cleanup loop ran for ~120 ms+. Removing the bars
+/// stops the ticks at the source, mirroring
+/// [`IndicatifProgressSink::tear_down_region`]. The handles are `ProgressBar`
+/// clones (an `Arc` inside), so removing via these removes the same underlying
+/// bars the sink holds.
+struct ExitHandle {
+    multi: MultiProgress,
+    /// summary + trailer + every slot bar. Empty until `run_started` builds the
+    /// slot pool; a hard exit before then has nothing drawn to strand.
+    bars: Vec<ProgressBar>,
+    /// The totals end-screen lines (completion-map + a passed/failed/cancelled
+    /// breakdown), shared with the sink, which refreshes them as scenarios
+    /// finish. Carries no live-only `running` count or ticking elapsed — both
+    /// meaningless once the run has stopped.
+    summary: Arc<Mutex<Vec<String>>>,
 }
 
-/// Drop the live-region handle once the region is gone, so a later stray signal
-/// doesn't clear a dead multi.
-fn unregister_live_region() {
-    if let Ok(mut g) = LIVE_REGION.lock() {
-        *g = None;
+/// Process-global force-quit handle. `None` whenever there is no live region
+/// (non-TTY runs, or after teardown), so the handler's call is a safe no-op.
+static EXIT_HANDLE: Mutex<Option<ExitHandle>> = Mutex::new(None);
+
+/// Publish the force-quit handle when the live sink is built. The `summary` Arc
+/// is shared with the sink so its later refreshes are visible here without
+/// re-registering. Bars are filled by [`set_exit_handle_bars`] once
+/// `run_started` builds the pool. Idempotent; overwrites any prior handle (only
+/// one run/sink is live at a time).
+fn register_exit_handle(multi: &MultiProgress, summary: Arc<Mutex<Vec<String>>>) {
+    let mut g = EXIT_HANDLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *g = Some(ExitHandle {
+        multi: multi.clone(),
+        bars: Vec::new(),
+        summary,
+    });
+}
+
+/// Record the live region's bars on the registered handle so a force-quit can
+/// remove them. No-op when no handle is registered — the `hidden_sink` test
+/// fixture builds the sink struct directly (bypassing `new`), so unit tests
+/// never touch this global.
+fn set_exit_handle_bars(bars: Vec<ProgressBar>) {
+    let mut g = EXIT_HANDLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(handle) = g.as_mut() {
+        handle.bars = bars;
     }
 }
 
-/// Emergency teardown of the live region, callable from the SIGINT handler
-/// thread. Clears the drawn lines, then hides the draw target so the steady
-/// tick can't repaint them before `process::exit`. A no-op when no region is
-/// registered. Order matters: `clear` erases via the current stderr target,
-/// then `hidden` stops further draws.
-pub fn clear_live_region_for_exit() {
-    let guard = LIVE_REGION
+/// Drop the force-quit handle once the region is gone, so a later stray signal
+/// doesn't tear down a dead region or reprint a stale summary.
+fn unregister_exit_handle() {
+    let mut g = EXIT_HANDLE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(multi) = guard.as_ref() {
-        let _ = multi.clear();
-        multi.set_draw_target(ProgressDrawTarget::hidden());
+    *g = None;
+}
+
+/// Collapse the live region from the SIGINT hard-exit handler and return the
+/// totals end-screen lines to print where the stranded live line was. Removes
+/// every bar (stopping its steady tick — see [`ExitHandle`]) then clears and
+/// hides the draw target, mirroring [`IndicatifProgressSink::tear_down_region`].
+/// Returns an empty `Vec` when no region is registered (non-TTY, or already torn
+/// down), in which case the caller prints nothing extra.
+pub fn finalize_region_for_exit() -> Vec<String> {
+    let guard = EXIT_HANDLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(handle) = guard.as_ref() else {
+        return Vec::new();
+    };
+    for bar in &handle.bars {
+        handle.multi.remove(bar);
     }
+    let _ = handle.multi.clear();
+    handle.multi.set_draw_target(ProgressDrawTarget::hidden());
+    handle.summary.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+/// Build the totals "end screen" a force-quit prints in place of the stranded
+/// live totals line: the completion-map line (cyan field + `done/total
+/// scenarios`, the same line `run_finished` persists) plus a one-line
+/// passed/failed/cancelled/not-run breakdown of what actually finished. Drops
+/// the live-only `running` count and ticking elapsed — meaningless once the run
+/// has stopped. Empty for a run that never sized (nothing to show).
+fn forced_exit_lines(field: &FieldData, failed: usize, cancelled: usize) -> Vec<String> {
+    let Some(map) = final_completion_line(field) else {
+        return Vec::new();
+    };
+    let done = field.done;
+    // `done` counts every scenario that reached a terminal state; the remainder
+    // are passes. `saturating_sub` guards the (impossible) over-count from a
+    // torn counter rather than panicking inside a signal-driven teardown.
+    let passed = done.saturating_sub(failed + cancelled);
+    let not_run = field.total.saturating_sub(done);
+    // Dim-anchored, mirroring the live summary's palette: failed bold-red,
+    // cancelled yellow, the structural words dim. Inlined SGR (same NO_COLOR
+    // carve-out as the rest of the region; see `reporter/CLAUDE.md` §8).
+    let mut stats = format!(
+        "\x1b[2mstopped at\x1b[0m {done}/{} \x1b[2m·\x1b[0m {passed} passed",
+        field.total
+    );
+    if failed > 0 {
+        stats.push_str(&format!(
+            " \x1b[2m·\x1b[0m \x1b[1;31m{failed} failed\x1b[0m"
+        ));
+    }
+    if cancelled > 0 {
+        stats.push_str(&format!(
+            " \x1b[2m·\x1b[0m \x1b[33m{cancelled} cancelled\x1b[0m"
+        ));
+    }
+    if not_run > 0 {
+        stats.push_str(&format!(" \x1b[2m· {not_run} not run\x1b[0m"));
+    }
+    vec![map, stats]
 }
 
 pub struct IndicatifProgressSink {
@@ -535,6 +622,13 @@ pub struct IndicatifProgressSink {
     /// stranding frame after frame in scrollback. Guarded by `state_lock` (the
     /// atomic is only for `Sync`; every read/write happens under the lock).
     active: AtomicBool,
+    /// The totals "end screen" lines a force-quit prints in place of the
+    /// stranded live totals line — refreshed on `run_started` and each
+    /// `complete_scenario` from [`forced_exit_lines`]. Held behind an `Arc` and
+    /// registered on the process-global [`ExitHandle`] so the SIGINT hard-exit
+    /// handler (which has no reference to this sink) can read the latest totals
+    /// after tearing the region down.
+    exit_summary: Arc<Mutex<Vec<String>>>,
 }
 
 /// One row in the fixed worker pool: a persistent bar plus the scenario that
@@ -561,10 +655,13 @@ impl IndicatifProgressSink {
         // rationale.
         let multi =
             MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(MAX_DRAW_HZ));
-        // Publish the region for the SIGINT hard-exit handler to wipe if a
-        // stuck run can't reach the cooperative teardown. Cleared in
-        // `tear_down_region`.
-        register_live_region(&multi);
+        // Publish the region for the SIGINT hard-exit handler to tear down if a
+        // stuck run can't reach the cooperative teardown. The shared
+        // `exit_summary` lets that handler print the totals end screen after the
+        // teardown; bars are attached once `run_started` builds the pool.
+        // Cleared in `tear_down_region`.
+        let exit_summary: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        register_exit_handle(&multi, Arc::clone(&exit_summary));
         let summary = multi.add(ProgressBar::new(0));
         // Totals line leads with the completion-map at column 0 (so it anchors
         // at the same column as the scrollback `✓ name` / `✗ name` footers)
@@ -608,6 +705,7 @@ impl IndicatifProgressSink {
             step_counter_width,
             total_workers,
             active: AtomicBool::new(true),
+            exit_summary,
         }
     }
 
@@ -753,9 +851,9 @@ impl IndicatifProgressSink {
         self.multi.remove(&self.summary);
         self.multi.remove(&self._trailer);
         let _ = self.multi.clear();
-        // The region is gone now — drop the hard-exit handle so a later stray
-        // signal can't try to clear a dead multi.
-        unregister_live_region();
+        // The region is gone now — drop the force-quit handle so a later stray
+        // signal can't try to tear down a dead region or reprint stale totals.
+        unregister_exit_handle();
     }
 
     /// Collapse the live region on cancellation. Tears the region down once and
@@ -788,6 +886,12 @@ impl ProgressSink for IndicatifProgressSink {
         if let Ok(mut field) = self.field.lock() {
             *field = FieldData::sized(total_scenarios);
             self.summary.set_prefix(render_field(&field));
+            // Seed the force-quit snapshot so a hard exit before the first
+            // completion still shows a (zero-progress) totals end screen rather
+            // than a stranded live line.
+            if let Ok(mut snap) = self.exit_summary.lock() {
+                *snap = forced_exit_lines(&field, 0, 0);
+            }
         }
 
         // Build the fixed worker-row pool. One slot per worker, but never more
@@ -800,6 +904,10 @@ impl ProgressSink for IndicatifProgressSink {
         // ahead into `scenario_started` can't observe a half-built pool.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
         let num_slots = self.total_workers.min(total_scenarios);
+        // The full bar set a force-quit must remove to stop the steady ticks
+        // that would otherwise repaint over its `clear()` (see `ExitHandle`):
+        // summary + trailer + every slot bar.
+        let mut exit_bars = vec![self.summary.clone(), self._trailer.clone()];
         if let Ok(mut slots) = self.slots.lock() {
             if slots.is_empty() {
                 for _ in 0..num_slots {
@@ -812,13 +920,19 @@ impl ProgressSink for IndicatifProgressSink {
                     // idle style has no time token so the same tick is a no-op
                     // redraw while the slot waits — no per-claim toggling.
                     bar.enable_steady_tick(TICK_INTERVAL);
+                    exit_bars.push(bar.clone());
                     slots.push(Slot {
                         bar,
                         occupant: None,
                     });
                 }
+            } else {
+                exit_bars.extend(slots.iter().map(|slot| slot.bar.clone()));
             }
         }
+        // Hand the bars to the force-quit handle (no-op if none registered, e.g.
+        // unit tests that bypass `new`).
+        set_exit_handle_bars(exit_bars);
         drop(_state);
 
         self.update_summary_msg();
@@ -999,6 +1113,18 @@ impl ProgressSink for IndicatifProgressSink {
             if region_live {
                 self.summary.set_prefix(render_field(&field));
             }
+            // Refresh the force-quit snapshot from the same locked field and the
+            // counters bumped just above, so a hard exit (even after the region
+            // was torn down by a soft cancel) prints accurate totals. Runs
+            // regardless of `region_live` — the snapshot is read at exit, not
+            // drawn now.
+            if let Ok(mut snap) = self.exit_summary.lock() {
+                *snap = forced_exit_lines(
+                    &field,
+                    self.failed.load(Ordering::Relaxed),
+                    self.cancelled.load(Ordering::Relaxed),
+                );
+            }
         }
         if region_live {
             self.update_summary_msg();
@@ -1076,6 +1202,9 @@ mod tests {
             step_counter_width: 0,
             total_workers: 4,
             active: AtomicBool::new(true),
+            // Bypasses `new`, so this sink is not registered on the process-global
+            // `EXIT_HANDLE`; tests read `exit_summary` directly.
+            exit_summary: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1331,6 +1460,82 @@ mod tests {
         // Nothing ran → nothing to map.
         assert!(final_completion_line(&FieldData::empty()).is_none());
         assert!(final_completion_line(&FieldData::sized(0)).is_none());
+    }
+
+    #[test]
+    fn forced_exit_lines_break_down_done_into_pass_fail_cancel() {
+        // A force-quit at 33/581 finished — 2 failed, 1 cancelled → 30 passed,
+        // 548 not run. Line 1 is the persisted completion-map (identical to what
+        // `run_finished` writes); line 2 breaks down `done` with no live count.
+        let mut f = FieldData::sized(581);
+        for _ in 0..33 {
+            f.complete();
+        }
+        let lines = forced_exit_lines(&f, 2, 1);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            strip_ansi(&lines[0]),
+            strip_ansi(&final_completion_line(&f).unwrap())
+        );
+        assert!(strip_ansi(&lines[0]).ends_with("33/581 scenarios"));
+        let stats = strip_ansi(&lines[1]);
+        assert_eq!(
+            stats,
+            "stopped at 33/581 · 30 passed · 2 failed · 1 cancelled · 548 not run"
+        );
+        // The live-only "running" count is gone — it's meaningless once stopped.
+        assert!(!stats.contains("running"));
+        // Same palette as the live summary: failed bold-red, cancelled yellow.
+        assert!(lines[1].contains("\x1b[1;31m2 failed\x1b[0m"));
+        assert!(lines[1].contains("\x1b[33m1 cancelled\x1b[0m"));
+    }
+
+    #[test]
+    fn forced_exit_lines_omit_zero_segments() {
+        // A force-quit on an all-green run: no failed/cancelled/not-run noise,
+        // just the pass count.
+        let mut f = FieldData::sized(8);
+        for _ in 0..8 {
+            f.complete();
+        }
+        let stats = strip_ansi(&forced_exit_lines(&f, 0, 0)[1]);
+        assert_eq!(stats, "stopped at 8/8 · 8 passed");
+        assert!(!stats.contains("failed"));
+        assert!(!stats.contains("cancelled"));
+        assert!(!stats.contains("not run"));
+    }
+
+    #[test]
+    fn forced_exit_lines_empty_for_unsized_run() {
+        // Nothing sized/ran → nothing to show (parallels final_completion_line).
+        assert!(forced_exit_lines(&FieldData::empty(), 0, 0).is_empty());
+        assert!(forced_exit_lines(&FieldData::sized(0), 0, 0).is_empty());
+    }
+
+    #[test]
+    fn complete_scenario_refreshes_force_quit_snapshot() {
+        // The snapshot the SIGINT hard-exit handler reads is kept current as
+        // scenarios finish. Seeded zero-progress at `run_started`, then after a
+        // pass and a fail it reads 2 done / 1 passed / 1 failed — with no live
+        // `running` count.
+        let sink = hidden_sink();
+        sink.run_started(4);
+        assert!(strip_ansi(&sink.exit_summary.lock().unwrap()[1]).starts_with("stopped at 0/4"));
+        sink.scenario_started(0, "a", 1);
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        sink.scenario_started(1, "b", 1);
+        sink.complete_scenario(1, ScenarioStatus::Fail, Duration::ZERO, b"");
+        let stats = strip_ansi(&sink.exit_summary.lock().unwrap()[1]);
+        assert_eq!(stats, "stopped at 2/4 · 1 passed · 1 failed · 2 not run");
+        assert!(!stats.contains("running"));
+    }
+
+    #[test]
+    fn finalize_region_for_exit_is_safe_with_no_region() {
+        // Non-TTY / already-torn-down: with no handle registered (unit tests
+        // never register the process-global), it returns nothing and never
+        // panics, so the hard-exit handler prints no extra lines.
+        assert!(finalize_region_for_exit().is_empty());
     }
 
     #[test]
