@@ -339,14 +339,14 @@ fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> Clea
         // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
         // Collapse the live progress region first, so the forced-exit notice and
-        // cleanup messages below land on a clean canvas. This is the path the
-        // cooperative teardown can't reach: when every worker is wedged in a slow
-        // subprocess, no completion fires `notify_cancelling`, so the region is
-        // still drawn when this second-press handler runs. `finalize_region_for_exit`
-        // erases it and prints the totals "end screen" (completion-map +
-        // passed/failed/cancelled breakdown, no live `running` count) in its place
-        // via the multi's redraw path — a no-op on a non-TTY run or if a soft
-        // cancel already tore the region down.
+        // cleanup messages below don't fight a steady-tick repaint. This is the
+        // path the cooperative teardown can't reach: when every worker is wedged
+        // in a slow subprocess, no completion fires `notify_cancelling`, so the
+        // region is still drawn when this second-press handler runs.
+        // `finalize_region_for_exit` stops the ticks and best-effort collapses the
+        // region — it deliberately prints nothing (an earlier totals "end screen"
+        // here duplicated the stranded summary line; see its doc comment). A no-op
+        // on a non-TTY run or if a soft cancel already tore the region down.
         progress::finalize_region_for_exit();
         eprintln!();
         eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));

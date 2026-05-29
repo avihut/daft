@@ -349,24 +349,26 @@ and stranded frame after frame in scrollback. With the region gone the moment
 cancellation starts, there is nothing left to strand. The forced-exit
 (second-press) path — which the cooperative teardown can't reach when every
 worker is wedged in a slow subprocess, so no completion fires the soft collapse
-— collapses the region via a process-global handle and must erase it through
-`multi.println`, **not** `multi.clear()`. `clear()` erases only its own tracked
-line count, and that count desyncs under load: during a high-completion run the
-totals line's steady tick redraws concurrently with the teardown, so `clear()`
-wipes fewer lines than were drawn and the live totals frame (`…N/M running`) is
-left stranded above the forced-exit notice — visibly duplicating the totals once
-the end screen prints below it. The fix mirrors daft's proven hook-progress
-teardown (`src/output/hook_progress/interactive.rs::remove_job_bars`): disable
-every bar's steady tick (so no concurrent tick can desync the count), unlink the
-bars, then drive an atomic redraw with `multi.println` — whose redraw path
-clears stale lines outright — to erase the region and print the totals **end
-screen** in its place. The end screen is the same persisted completion-map line
-(`⟨…⟩  done/total scenarios`) plus a one-line
+— collapses the region via a process-global handle and then **prints nothing**.
+It deliberately does _not_ render a totals "end screen." An earlier version did
+(the persisted completion-map line plus a
 `stopped at done/total · N passed · M failed · K cancelled · J not run`
-breakdown, both built from the sink's counters. It drops the live-only `running`
-count and ticking elapsed — meaningless once the run has stopped. The
-yellow-slot `C cancelled` count lives on in the end-of-run summary block
-(`pretty.rs`), not the live tail.
+breakdown), but it duplicated: this path runs on the `ctrlc` thread,
+asynchronous to the totals line's 200 ms steady tick, and indicatif's erase is
+count-based — both `multi.clear()` and `multi.println` clear only the draw
+target's tracked line count, which is off-by-one here (the concurrent tick
+redraws the summary during the teardown), so the live totals frame
+(`…N/M running`) survives the erase and gets stranded. An end screen printed
+below that stranded line reads as a second, conflicting totals line. Per the
+maintainer's call, a single stranded line beats a duplicate, so the end-screen
+print was removed: the path disables every bar's steady tick (so no tick
+repaints after we hide the target), unlinks the bars, drives one
+`multi.println("")` to collapse the slot rows, and hides the draw target —
+leaving at most the one stranded summary line and never a duplicate. (Fully
+erasing that leftover would need a raw-cursor teardown that bypasses indicatif's
+line accounting; not worth the risk for a force-quit corner.) The `C cancelled`
+count still lives on in the end-of-run summary block (`pretty.rs`) on the
+cooperative path; a force-quit shows only the cleanup notices.
 
 **Narrow-display safety is a correctness property, not cosmetics.** Each line's
 variable tail is a single `{wide_msg}`, which indicatif **truncates** (never
