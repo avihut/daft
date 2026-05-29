@@ -43,7 +43,7 @@
 //! narrow displays — a hard requirement for indicatif's line accounting,
 //! not just cosmetics.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -474,10 +474,21 @@ pub struct IndicatifProgressSink {
     /// can see how saturated the pool is.
     total_workers: usize,
     /// The totals line's completion-map state. Sized in `run_started` and
-    /// lit in `complete_scenario`; rendered into the summary's `{prefix}`.
-    /// Behind its own `Mutex` (not `state_lock`) so lighting a dot doesn't
+    /// advanced in `complete_scenario`; rendered into the summary's `{prefix}`.
+    /// Behind its own `Mutex` (not `state_lock`) so advancing it doesn't
     /// contend with the row add/remove ordering lock.
     field: Mutex<FieldData>,
+    /// Whether the pinned live region is still on screen. Starts `true`; flips
+    /// `false` exactly once when the region is torn down — either normally in
+    /// `run_finished`, or early via [`enter_cancelled_mode`] on the first
+    /// SIGINT. Once `false`, `complete_scenario` stops touching the bars and
+    /// just streams scenario buffers as plain lines. This is what stops the
+    /// cancel wind-down from ghosting: the old design kept redrawing the region
+    /// as a burst of bailing workers streamed footers, and the rapid
+    /// `println`-plus-redraw churn desynced indicatif's line accounting,
+    /// stranding frame after frame in scrollback. Guarded by `state_lock` (the
+    /// atomic is only for `Sync`; every read/write happens under the lock).
+    active: AtomicBool,
 }
 
 /// One row in the fixed worker pool: a persistent bar plus the scenario that
@@ -505,20 +516,19 @@ impl IndicatifProgressSink {
         let multi =
             MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(MAX_DRAW_HZ));
         let summary = multi.add(ProgressBar::new(0));
-        // Totals line leads with the completion bar at column 0 (so it
-        // anchors at the same column as the scrollback `✓ name` / `✗ name`
-        // footers) followed by the scenario counter, run elapsed, and the
+        // Totals line leads with the completion-map at column 0 (so it anchors
+        // at the same column as the scrollback `✓ name` / `✗ name` footers)
+        // followed by the scenario counter, run elapsed, and the
         // running/failed/cancelled segments. See [`summary_style`] for the
-        // layout rationale. The steady tick refreshes `{elapsed_precise}`
-        // and the bar even when no scenario completes.
+        // layout rationale.
         summary.set_style(summary_style());
-        // Accurate placeholders until `run_started` (which knows the
-        // scenario count) overwrites them — sub-frame, but the steady tick
-        // could draw once in between, so seed the real worker count and an
-        // empty completion-map rather than blanks.
-        summary.set_message(format!("0/{total_workers} running"));
-        summary.set_prefix(render_field(&FieldData::empty()));
-        summary.enable_steady_tick(TICK_INTERVAL);
+        // Deliberately no `set_message` / `set_prefix` / `enable_steady_tick`
+        // here: those would draw the summary the instant the sink is built,
+        // which is *before* the run banner is written to raw stderr — and the
+        // banner write then strands that first frame above it. `run_started`
+        // (called after the banner) seeds the real content and starts the
+        // steady tick, so the region's first draw lands cleanly below the
+        // banner.
 
         // Anchor a single-space "trailer" bar at the bottom of the multi.
         // It renders as a single blank line that's always present, which
@@ -547,6 +557,7 @@ impl IndicatifProgressSink {
             field: Mutex::new(FieldData::empty()),
             step_counter_width,
             total_workers,
+            active: AtomicBool::new(true),
         }
     }
 
@@ -661,12 +672,58 @@ impl IndicatifProgressSink {
         bar.set_message(name.to_string());
     }
 
-    /// Return a slot's bar to the quiet idle placeholder. `set_position(0)`
-    /// renders the track empty rather than leaving it full from the scenario
-    /// that just finished. Caller holds the `slots` lock.
+    /// Return a slot's bar to the quiet idle placeholder: an empty `─` track.
+    /// `set_length(1)` + `set_position(0)` renders `0/1` → empty; without a
+    /// non-zero length a never-claimed slot keeps `ProgressBar::new`'s length 0,
+    /// and indicatif draws `0/0` as a *full* bar (the bug where idle rows showed
+    /// solid `▬▬▬` before any scenario claimed them). Caller holds the `slots`
+    /// lock.
     fn dress_idle(bar: &ProgressBar) {
         bar.set_style(idle_row_style());
+        bar.set_length(1);
         bar.set_position(0);
+    }
+
+    /// Remove every bar from the multi and wipe the drawn region, leaving the
+    /// terminal clean for plain `println`s to follow. Flips `active` to `false`
+    /// so `complete_scenario` stops touching the (now-gone) bars. Idempotent:
+    /// a no-op once `active` is already `false`. Caller holds `state_lock`.
+    fn tear_down_region(&self) {
+        if !self.active.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        // Remove the slot bars first, then the framing bars, so nothing is left
+        // for a steady tick to redraw, then clear the drawn lines. After this
+        // the multi owns no bars and `multi.println` writes plainly.
+        if let Ok(slots) = self.slots.lock() {
+            for slot in slots.iter() {
+                self.multi.remove(&slot.bar);
+            }
+        }
+        self.multi.remove(&self.summary);
+        self.multi.remove(&self._trailer);
+        let _ = self.multi.clear();
+    }
+
+    /// Collapse the live region on cancellation. Tears the region down once and
+    /// prints a one-line notice explaining why scenario footers keep streaming
+    /// (the in-flight workers are finishing their current step before bailing).
+    /// From here on the run streams plain footers, then `run_finished` persists
+    /// the partial completion-map above the summary. Idempotent — called from
+    /// both the main thread (`notify_cancelling`) and worker threads
+    /// (`complete_scenario`), whichever observes the interrupt first. Caller
+    /// holds `state_lock`.
+    fn enter_cancelled_mode(&self) {
+        if !self.active.load(Ordering::Relaxed) {
+            return;
+        }
+        self.tear_down_region();
+        // Dim notice (inlined SGR, same NO_COLOR carve-out as the rest of the
+        // region). Printed once, on a now-clean canvas, so the streaming
+        // footers below read as deliberate wind-down rather than ghosting.
+        let _ = self.multi.println(
+            "\x1b[2mInterrupted — finishing in-flight scenarios (Ctrl+C again to force-quit)…\x1b[0m",
+        );
     }
 }
 
@@ -712,6 +769,12 @@ impl ProgressSink for IndicatifProgressSink {
         drop(_state);
 
         self.update_summary_msg();
+        // Start the summary's steady tick now — after the banner has been
+        // written and the region built — so its first draw lands cleanly below
+        // the banner instead of stranding a `0/0` frame above it. The tick
+        // refreshes `{elapsed_precise}` and the completion-map between
+        // completions.
+        self.summary.enable_steady_tick(TICK_INTERVAL);
     }
 
     fn scenario_started(&self, index: usize, name: &str, total_steps: usize) {
@@ -816,19 +879,32 @@ impl ProgressSink for IndicatifProgressSink {
         // belt-and-suspenders for the steady-tick redraw path.)
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Release this scenario's slot back to idle *before* printing its
-        // buffer, so by the time the scenario's `✓ name` footer scrolls into
-        // place above the region the live row already reads `idle` — no frame
-        // where a just-finished scenario still shows as running. The dress
-        // happens under the `slots` lock so it can't interleave with a
-        // concurrent `scenario_started` re-claiming the same slot.
-        if let Ok(mut slots) = self.slots.lock() {
-            if let Some(slot) = slots
-                .iter_mut()
-                .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
-            {
-                slot.occupant = None;
-                Self::dress_idle(&slot.bar);
+        // First worker to observe the interrupt collapses the live region (the
+        // main thread also does this via `notify_cancelling`, whichever wins).
+        // After this, the region is gone and the rest of this call just streams
+        // the footer as a plain line — no bar redraws to strand during the
+        // wind-down burst.
+        if self.interrupt.is_set() {
+            self.enter_cancelled_mode();
+        }
+        let region_live = self.active.load(Ordering::Relaxed);
+
+        // While the region is live, release this scenario's slot back to idle
+        // *before* printing its buffer, so by the time the scenario's `✓ name`
+        // footer scrolls into place above the region the live row already reads
+        // `idle` — no frame where a just-finished scenario still shows as
+        // running. The dress happens under the `slots` lock so it can't
+        // interleave with a concurrent `scenario_started` re-claiming the slot.
+        // Once cancelled (region torn down) there are no bars to touch.
+        if region_live {
+            if let Ok(mut slots) = self.slots.lock() {
+                if let Some(slot) = slots
+                    .iter_mut()
+                    .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
+                {
+                    slot.occupant = None;
+                    Self::dress_idle(&slot.bar);
+                }
             }
         }
 
@@ -861,15 +937,19 @@ impl ProgressSink for IndicatifProgressSink {
             ScenarioStatus::Pass => {}
         }
         self.summary.inc(1);
-        // Advance the completion-map by one. Done for every terminal status
-        // (pass / fail / cancelled) so the field's fill fraction stays in step
-        // with the `done/total` counter — both count "finished being
-        // processed," not "passed."
+        // Advance the completion-map by one — always, even after cancellation,
+        // so the partial map `run_finished` persists reflects everything that
+        // actually finished. Only the *redraw* into the (now-gone) summary bar
+        // is gated on the region still being live.
         if let Ok(mut field) = self.field.lock() {
             field.complete();
-            self.summary.set_prefix(render_field(&field));
+            if region_live {
+                self.summary.set_prefix(render_field(&field));
+            }
         }
-        self.update_summary_msg();
+        if region_live {
+            self.update_summary_msg();
+        }
     }
 
     fn run_finished(&self) {
@@ -879,13 +959,16 @@ impl ProgressSink for IndicatifProgressSink {
         // thread's println and slot release, leaving partial frame content.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Persist the finished completion-map into scrollback before the live
-        // region is torn down — otherwise the map the reader watched fill in
-        // just vanishes. Printed as a plain `multi.println` line (not a bar),
-        // so it survives the `multi.clear` below and lands directly above the
-        // reporter's summary block. `field.done` is the completed count (==
-        // total on a clean run, fewer after a cancel). Built under the `field`
-        // lock, which is released before the println.
+        // Tear the live region down first (a no-op if a cancel already did it),
+        // so the persisted map and the reporter's summary land on a clean
+        // canvas with no bars left to redraw underneath them.
+        self.tear_down_region();
+
+        // Persist the finished completion-map into scrollback — otherwise the
+        // map the reader watched fill in just vanishes. Plain `multi.println`
+        // (the region is gone), landing directly above the reporter's summary
+        // block. `field.done` is the completed count (== total on a clean run,
+        // fewer after a cancel, so the partial map reads "this far we got").
         let persisted = self
             .field
             .lock()
@@ -894,22 +977,15 @@ impl ProgressSink for IndicatifProgressSink {
         if let Some(line) = persisted {
             let _ = self.multi.println(line);
         }
-
-        // Same zombie-line concern as in `complete_scenario`: prefer
-        // `multi.remove` over `summary.finish_and_clear` so the summary
-        // bar doesn't leave a trailing line above the final summary
-        // block. `multi.clear` then wipes any remaining draw-target
-        // content (the summary, the worker slots, the trailer) for a fully
-        // clean end-of-run frame.
-        self.multi.remove(&self.summary);
-        let _ = self.multi.clear();
     }
 
     fn notify_cancelling(&self) {
-        // Refresh the summary message so the `(cancelling)` suffix lands
-        // immediately. Without this call, the suffix wouldn't appear until
-        // the first worker bails — which can be seconds on a slow step.
-        self.update_summary_msg();
+        // Main-thread entry point for cancellation: collapse the live region
+        // promptly so the wind-down streams cleanly. Idempotent with the
+        // worker-thread trigger in `complete_scenario` — whichever observes the
+        // interrupt first tears the region down; the other is a no-op.
+        let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.enter_cancelled_mode();
     }
 }
 
@@ -946,6 +1022,7 @@ mod tests {
             field: Mutex::new(FieldData::empty()),
             step_counter_width: 0,
             total_workers: 4,
+            active: AtomicBool::new(true),
         }
     }
 
@@ -977,48 +1054,50 @@ mod tests {
     }
 
     #[test]
-    fn notify_cancelling_appends_cancelling_suffix_to_summary() {
-        // The orchestrator pokes the sink via notify_cancelling so the
-        // `(cancelling)` suffix appears immediately after Ctrl+C instead
-        // of waiting for the first worker to bail. Without the flag being
-        // set, the suffix shouldn't appear.
-        let interrupt = InterruptFlag::new();
-        let multi = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
-        let summary = multi.add(ProgressBar::new(0));
-        summary.set_style(summary_style());
-        let trailer = multi.add(ProgressBar::new_spinner());
-        trailer.set_style(ProgressStyle::with_template(" ").unwrap());
-        let sink = IndicatifProgressSink {
-            multi,
-            state_lock: Mutex::new(()),
-            summary,
-            _trailer: trailer,
-            slots: Mutex::new(Vec::new()),
-            failed: AtomicUsize::new(0),
-            cancelled: AtomicUsize::new(0),
-            interrupt: interrupt.clone(),
-            field: Mutex::new(FieldData::empty()),
-            step_counter_width: 0,
-            total_workers: 4,
-        };
+    fn notify_cancelling_tears_down_the_region() {
+        // On cancellation the orchestrator pokes the sink via
+        // notify_cancelling, which collapses the live region exactly once so
+        // the wind-down streams cleanly instead of the old design's redraw
+        // burst stranding ghost frames. notify_cancelling is idempotent and
+        // safe to call before any interrupt too.
+        let sink = hidden_sink();
         sink.run_started(2);
         sink.scenario_started(0, "a", 1);
+        assert!(sink.active.load(Ordering::Relaxed));
 
-        // Before the flag is set, notify_cancelling is a no-op effectively
-        // (suffix shouldn't appear).
+        // First cancel notification flips the region off…
         sink.notify_cancelling();
-        assert!(!sink.summary.message().contains("(cancelling)"));
-
-        // After the flag is set, notify_cancelling refreshes the message
-        // so the suffix lands immediately.
-        interrupt.set();
+        assert!(!sink.active.load(Ordering::Relaxed));
+        // …and a second is a harmless no-op (no double teardown / panic).
         sink.notify_cancelling();
-        assert!(sink.summary.message().contains("(cancelling)"));
+        assert!(!sink.active.load(Ordering::Relaxed));
 
-        // Once running drops to 0 (last worker bailed), the suffix drops
-        // away — nothing left to cancel.
+        // A scenario completing after cancellation still bumps the counters
+        // and the completion-map (so the persisted map is accurate) without
+        // touching the torn-down bars.
         sink.complete_scenario(0, ScenarioStatus::Cancelled, Duration::ZERO, b"");
-        assert!(!sink.summary.message().contains("(cancelling)"));
+        assert_eq!(sink.cancelled.load(Ordering::Relaxed), 1);
+        assert_eq!(sink.field.lock().unwrap().done, 1);
+    }
+
+    #[test]
+    fn complete_scenario_enters_cancelled_mode_on_interrupt() {
+        // A worker observing the interrupt in complete_scenario is the other
+        // teardown trigger (when the main thread's notify_cancelling hasn't run
+        // yet). The region collapses on that first post-interrupt completion.
+        let interrupt = InterruptFlag::new();
+        let sink = {
+            let mut s = hidden_sink();
+            s.interrupt = interrupt.clone();
+            s
+        };
+        sink.run_started(3);
+        sink.scenario_started(0, "a", 1);
+        sink.scenario_started(1, "b", 1);
+        assert!(sink.active.load(Ordering::Relaxed));
+        interrupt.set();
+        sink.complete_scenario(0, ScenarioStatus::Cancelled, Duration::ZERO, b"");
+        assert!(!sink.active.load(Ordering::Relaxed));
     }
 
     #[test]
