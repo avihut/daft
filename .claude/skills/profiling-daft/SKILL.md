@@ -48,7 +48,7 @@ suite — and how to A/B-validate a fix. Read before any perf/optimization work.
 | `hyperfine` | wall-clock A/B of a CLI | Runs each command in a *block* (not interleaved) — **idle-gate it**. `--warmup`, `-N` (no shell), `--export-json`. |
 | `samply` | CPU flamegraph of daft / the runner | `cargo binstall samply` (or `cargo install`). Needs debug symbols → build `--profile profiling`. Browser-based; follows child processes. |
 | `/usr/bin/sample` | quick text call-tree | Built-in, no install; needs a process living long enough to attach. |
-| `cargo-instruments` | off-CPU / syscall / exec trace | Needs full Xcode. Only when CPU sampling proves the cost is "spawn + wait." |
+| `cargo-instruments` | off-CPU / syscall / exec trace | Needs **full Xcode** (Command Line Tools / `xcode-select --install` is not enough). Only when CPU sampling proves the cost is "spawn + wait." |
 | `criterion` / `divan` | in-process microbench | For isolating one op (e.g. `generate_repo`). Per-process sampling is hopeless at tens-of-ms — bench the op directly. |
 | ~~`dtrace` / `dtruss`~~ | — | **SIP-restricted on macOS; do not rely on it.** Use samply. |
 

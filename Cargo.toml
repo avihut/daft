@@ -176,6 +176,8 @@ lto = "thin"
 # faithfulness to the size-optimized shipped binary. See the `profiling-daft`
 # skill. Build: `cargo build --profile profiling`. Don't `cargo clean` between
 # build and profile — unpacked split-debuginfo lives in target/**/*.o on macOS.
+# `panic = "abort"` is inherited from release — switch to "unwind" if profiling
+# error/unwind paths.
 [profile.profiling]
 inherits = "release"
 opt-level = 2
