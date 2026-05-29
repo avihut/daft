@@ -338,6 +338,13 @@ fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> Clea
         // registrations, so the `known` set captures the entire universe
         // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
+        // Wipe the live progress region first, so the forced-exit notice and
+        // cleanup messages below land on a clean canvas instead of fighting the
+        // still-drawn bars. This is the path the cooperative teardown can't
+        // reach: when every worker is wedged in a slow subprocess, the region
+        // is still up when this second-press handler runs. No-op if a soft
+        // cancel already collapsed the region, or on a non-TTY run.
+        progress::clear_live_region_for_exit();
         eprintln!();
         eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));
         if !keep {
@@ -1306,8 +1313,11 @@ fn run_one_scenario_inner(
             // Suppress the "Cleaned up..." chatter on green scenarios — the
             // cleanup still happens, but the line was noise on the happy path.
             // Failures keep it so the failure-detail block visibly attaches to
-            // its scenario rather than running into the next one.
-            Ok(()) if result.failed == 0 => {}
+            // its scenario rather than running into the next one. Cancelled
+            // scenarios suppress it too: the wind-down already streams a `⊘
+            // (cancelled)` footer per scenario, and an extra cleanup line on
+            // each would just be interrupt-time chatter.
+            Ok(()) if result.failed == 0 || result.cancelled => {}
             Ok(()) => ctx
                 .reporter
                 .cleanup_note(&mut buf, "Cleaned up test environment.")?,

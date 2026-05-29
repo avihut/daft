@@ -417,6 +417,52 @@ fn idle_row_style() -> ProgressStyle {
     .progress_chars("▬─")
 }
 
+/// A process-global handle to the live region's `MultiProgress`, so the SIGINT
+/// hard-exit handler (which runs on the `ctrlc` crate's own thread and has no
+/// reference to the sink) can wipe the region before printing its forced-exit
+/// notice. Set when the live sink is built, cleared when the region is torn
+/// down. `None` whenever there is no live region (non-TTY runs, or after
+/// teardown), so the handler's clear is then a safe no-op.
+///
+/// This is the one case the soft-cancel teardown can't cover: when every worker
+/// is wedged in a slow subprocess, no `complete_scenario` / `notify_cancelling`
+/// fires to collapse the region, so a second Ctrl+C reaches the hard-exit path
+/// with the region still drawn. Clearing it here keeps that path from stranding
+/// the live frames behind the forced-exit messages.
+static LIVE_REGION: Mutex<Option<MultiProgress>> = Mutex::new(None);
+
+/// Publish the live region's multi for the hard-exit handler. Idempotent;
+/// overwrites any prior handle (only one run/sink is live at a time).
+fn register_live_region(multi: &MultiProgress) {
+    let mut g = LIVE_REGION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *g = Some(multi.clone());
+}
+
+/// Drop the live-region handle once the region is gone, so a later stray signal
+/// doesn't clear a dead multi.
+fn unregister_live_region() {
+    if let Ok(mut g) = LIVE_REGION.lock() {
+        *g = None;
+    }
+}
+
+/// Emergency teardown of the live region, callable from the SIGINT handler
+/// thread. Clears the drawn lines, then hides the draw target so the steady
+/// tick can't repaint them before `process::exit`. A no-op when no region is
+/// registered. Order matters: `clear` erases via the current stderr target,
+/// then `hidden` stops further draws.
+pub fn clear_live_region_for_exit() {
+    let guard = LIVE_REGION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(multi) = guard.as_ref() {
+        let _ = multi.clear();
+        multi.set_draw_target(ProgressDrawTarget::hidden());
+    }
+}
+
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
     /// Global serializer for *all* state-mutating multi operations
@@ -515,6 +561,10 @@ impl IndicatifProgressSink {
         // rationale.
         let multi =
             MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(MAX_DRAW_HZ));
+        // Publish the region for the SIGINT hard-exit handler to wipe if a
+        // stuck run can't reach the cooperative teardown. Cleared in
+        // `tear_down_region`.
+        register_live_region(&multi);
         let summary = multi.add(ProgressBar::new(0));
         // Totals line leads with the completion-map at column 0 (so it anchors
         // at the same column as the scrollback `✓ name` / `✗ name` footers)
@@ -703,6 +753,9 @@ impl IndicatifProgressSink {
         self.multi.remove(&self.summary);
         self.multi.remove(&self._trailer);
         let _ = self.multi.clear();
+        // The region is gone now — drop the hard-exit handle so a later stray
+        // signal can't try to clear a dead multi.
+        unregister_live_region();
     }
 
     /// Collapse the live region on cancellation. Tears the region down once and

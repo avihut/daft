@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use super::reporter::ScenarioStatus;
 
-pub use indicatif_sink::IndicatifProgressSink;
+pub use indicatif_sink::{clear_live_region_for_exit, IndicatifProgressSink};
 
 /// Cooperative cancellation flag shared between the SIGINT handler and the
 /// runner / sink.
