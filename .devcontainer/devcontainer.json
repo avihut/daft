@@ -1,0 +1,46 @@
+{
+  "name": "daft",
+  "build": { "dockerfile": "Dockerfile" },
+
+  // Reproduce daft.yml's post-clone hook (mise install + lefthook) plus the
+  // bun deps and rustfmt/clippy components the git hooks rely on.
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  "containerEnv": {
+    // cargo-cooldown is a local-dev supply-chain guard that wraps cargo
+    // build/check/test/run. It costs a ~2-min from-source build at `mise
+    // install`. daft's own CI disables it for the same reason (the lockfile
+    // age check enforces the same policy at the PR boundary). Uncomment to
+    // make container creation faster; leave commented for full dev fidelity.
+    // "MISE_DISABLE_TOOLS": "cargo:cargo-cooldown"
+  },
+
+  // VitePress docs site (docs/) defaults to 5173 — handy for live-previewing
+  // docs from an iPad. daft itself is a CLI, so nothing else to forward.
+  "forwardPorts": [5173],
+  "portsAttributes": {
+    "5173": { "label": "VitePress docs", "onAutoForward": "silent" }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "fill-labs.dependi",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        // Match the project's lint: rust-analyzer runs clippy on save,
+        // across the whole workspace (., term-styles, xtask) and all targets.
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.check.allTargets": true,
+        "rust-analyzer.cargo.buildScripts.enable": true,
+        "editor.formatOnSave": true,
+        "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" }
+      }
+    }
+  },
+
+  "remoteUser": "vscode"
+}
