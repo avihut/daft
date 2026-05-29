@@ -75,6 +75,16 @@ IMPORTANT: Every bug fix must include a regression test that reproduces the
 issue. Add a YAML scenario in `tests/manual/scenarios/` or a unit test that
 fails without the fix and passes with it.
 
+## Profiling
+
+Benchmarking (prove a change is faster) uses the existing `mise run bench:*` /
+`bench:tests:*` infra and `DAFT_MANUAL_TEST_EMIT_TIMING`. For _profiling_ (find
+where the time goes) and any perf optimization work, read the `profiling-daft`
+skill (`.claude/skills/profiling-daft/`): it covers the macOS toolchain
+(samply/hyperfine, why dtrace is out), idle-gating, the shared-bin/
+`DAFT_BINARY_DIR` A/B trick, and a baseline map of the suite's runtime. Build
+for a profiler with `cargo build --profile profiling`.
+
 ## XDG Conventions
 
 This project follows the XDG Base Directory Specification. Use the `dirs` crate
