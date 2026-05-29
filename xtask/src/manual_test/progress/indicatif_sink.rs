@@ -1,26 +1,37 @@
 //! Indicatif-backed `ProgressSink` implementation.
 //!
 //! Renders a pinned multi-row region at the bottom of the terminal: a
-//! totals line on top, then one row per in-flight scenario below it:
+//! totals line on top, then **one fixed row per worker** below it:
 //!
 //! ```text
 //!   ⟨⣿⡇⣿ ⣧ … ⟩  211/581  0:05  9/10 running        <- totals
-//!   ▬▬▬▬───────  2/5  1.2s  checkout-basic · Inspect …  <- worker row
+//!   ▬▬▬▬───────  2/5  1.2s  checkout-basic · Inspect …  <- busy worker
+//!   ─────────────  idle                                  <- idle worker
 //! ```
 //!
 //! The totals line leads with a cyan braille **completion-map** (one dot per
 //! finished scenario, lit *by index*, so it fills scattered as the scheduler
 //! works the run non-linearly) followed by the `done/total` counter, run
-//! elapsed, and the running/failed/cancelled stats. Each worker row is a
-//! light medium-rect step bar with a flowing `scenario · step` tail. See
-//! [`summary_style`] / [`render_field`] and [`row_style`] for the per-line
-//! layout, and `reporter/CLAUDE.md` §8 for the design rationale.
+//! elapsed, and the running/failed/cancelled stats. See [`summary_style`] /
+//! [`render_field`] for its layout.
+//!
+//! The worker rows are a **fixed pool of slots** sized to the worker count
+//! (capped at the scenario count), created once at [`ProgressSink::run_started`]
+//! and never added or removed for the rest of the run — so the region's height
+//! is constant and the rows never shift under the reader. A slot is *claimed*
+//! when a worker picks up a scenario (rendered as a light medium-rect step bar
+//! with a flowing `scenario · step` tail, see [`row_style`]) and *released*
+//! back to a quiet `idle` placeholder ([`idle_row_style`]) when the scenario
+//! finishes. Because the rayon pool has exactly `total_workers` threads, at
+//! most that many scenarios are ever in flight, so a free slot always exists
+//! to claim. See `reporter/CLAUDE.md` §8 for the design rationale.
 //!
 //! Concurrency: every method may be called from any rayon worker thread.
 //! `MultiProgress` and `ProgressBar` are internally `Send + Sync` via
-//! indicatif's own locking; the `rows` map is wrapped in `Mutex` because
-//! indicatif's per-bar API can't be keyed by scenario index externally, and
-//! the completion-map `field` is behind its own `Mutex`.
+//! indicatif's own locking; the slot pool is wrapped in `Mutex` (claim/release
+//! must be atomic against concurrent workers) and the completion-map `field`
+//! is behind its own `Mutex`. Lock order is `state_lock` outermost; `slots` and
+//! `field` are never held simultaneously.
 //!
 //! Styling reuses `reporter/CLAUDE.md` §1's budget — no new color slots:
 //! medium-rect `▬` bar fill (default fg) over a dim `─` track, default-fg
@@ -31,7 +42,6 @@
 //! narrow displays — a hard requirement for indicatif's line accounting,
 //! not just cosmetics.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -298,6 +308,25 @@ fn row_style() -> ProgressStyle {
     )
 }
 
+/// The style for a slot that currently has no scenario: a dim empty `─` track
+/// (so its left edge lines up with the busy rows' bars) and a dim `idle`
+/// label. Deliberately omits the `{prefix}` counter and `{row_elapsed}` time
+/// of [`row_style`] — there's no scenario to count steps for, and a ticking
+/// clock on a worker that isn't running would read as activity where there is
+/// none. With no time token, the steady tick redraws an identical line, so it
+/// stays idempotent (no flicker) while the slot waits.
+///
+/// The `\x1b[2m…\x1b[0m` around `idle` is raw dim SGR (same `NO_COLOR`
+/// carve-out as [`row_style`]'s `{row_elapsed}` and the summary separators):
+/// `idle` is template text, not a styled built-in key, so the dim is inlined.
+fn idle_row_style() -> ProgressStyle {
+    ProgressStyle::with_template(&format!(
+        "{{bar:{RUNNER_BAR_WIDTH}./dim}}  \x1b[2midle\x1b[0m"
+    ))
+    .expect("static idle row template should be valid")
+    .progress_chars("▬─")
+}
+
 pub struct IndicatifProgressSink {
     multi: MultiProgress,
     /// Global serializer for *all* state-mutating multi operations
@@ -325,11 +354,17 @@ pub struct IndicatifProgressSink {
     /// (`src/output/hook_progress/interactive.rs`), which hit the same
     /// class of bug and landed the same fix.
     _trailer: ProgressBar,
-    /// In-flight worker rows, keyed by the scenario's stable **index** (its
-    /// position in the discovered list) — *not* its name, because scenario
-    /// names are not unique (two scenarios can share a `name:`), and a
-    /// name-keyed map would let one in-flight scenario clobber another's row.
-    rows: Mutex<HashMap<usize, ProgressRow>>,
+    /// The fixed pool of worker rows. Created once in `run_started` (one slot
+    /// per worker, capped at the scenario count) and never resized, so the
+    /// region's height — and every row's screen position — is stable for the
+    /// whole run. Each slot is idle until a worker claims it in
+    /// `scenario_started` and returns to idle in `complete_scenario`. A scenario
+    /// is matched to its slot by the slot's `occupant` index (scenario *names*
+    /// aren't unique, so a name match could collide two in-flight scenarios).
+    /// Behind a `Mutex` because claim/release must be atomic against concurrent
+    /// workers, and the bar's style swap (busy ↔ idle) must not interleave with
+    /// another worker re-claiming the same freed slot.
+    slots: Mutex<Vec<Slot>>,
     failed: AtomicUsize,
     /// Scenarios that bailed mid-run via SIGINT. Surfaced as a separate
     /// segment on the summary bar (yellow, attention-without-alarm slot)
@@ -355,10 +390,20 @@ pub struct IndicatifProgressSink {
     field: Mutex<FieldData>,
 }
 
-struct ProgressRow {
+/// One row in the fixed worker pool: a persistent bar plus the scenario that
+/// currently occupies it (or `None` when idle).
+struct Slot {
     bar: ProgressBar,
-    /// The scenario's display name, stored so `step_started` (which is keyed
-    /// by index) can render the row tail without the caller re-passing it.
+    occupant: Option<SlotOccupant>,
+}
+
+struct SlotOccupant {
+    /// The scenario's stable index — how `step_started` / `complete_scenario`
+    /// re-find this slot (find-by-occupant, never a cached slot position,
+    /// since a slot can be released and re-claimed between two calls).
+    index: usize,
+    /// The scenario's display name, stored so `step_started` can render the
+    /// row tail without the caller re-passing it.
     name: String,
 }
 
@@ -405,7 +450,7 @@ impl IndicatifProgressSink {
             state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
-            rows: Mutex::new(HashMap::new()),
+            slots: Mutex::new(Vec::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt,
@@ -416,7 +461,14 @@ impl IndicatifProgressSink {
     }
 
     fn update_summary_msg(&self) {
-        let running = self.rows.lock().map(|r| r.len()).unwrap_or(0);
+        // `running` = claimed slots, not the slot-pool size — an idle slot is a
+        // waiting worker, not a running one. Must not be called while holding
+        // `slots` (this re-locks it); every caller drops `slots` first.
+        let running = self
+            .slots
+            .lock()
+            .map(|s| s.iter().filter(|slot| slot.occupant.is_some()).count())
+            .unwrap_or(0);
         let failed = self.failed.load(Ordering::Relaxed);
         let cancelled = self.cancelled.load(Ordering::Relaxed);
         let interrupted = self.interrupt.is_set();
@@ -504,6 +556,28 @@ impl IndicatifProgressSink {
     fn render_row_counter(&self, done: usize, total: usize) -> String {
         Self::pad_to(&format!("{done}/{total}"), self.step_counter_width)
     }
+
+    /// Dress a freshly-claimed slot's bar for an active scenario: the full
+    /// [`row_style`], its step bar reset to empty, and the scenario name in the
+    /// tail. `reset()` restarts the bar's elapsed timer (so a reused slot's
+    /// `{row_elapsed}` counts from this scenario, not the prior occupant) and
+    /// zeroes the position; it leaves the steady tick running and doesn't touch
+    /// the length we set next. Caller holds the `slots` lock.
+    fn dress_busy(&self, bar: &ProgressBar, name: &str, total_steps: usize) {
+        bar.set_style(row_style());
+        bar.reset();
+        bar.set_length(total_steps as u64);
+        bar.set_prefix(self.render_row_counter(0, total_steps));
+        bar.set_message(name.to_string());
+    }
+
+    /// Return a slot's bar to the quiet idle placeholder. `set_position(0)`
+    /// renders the track empty rather than leaving it full from the scenario
+    /// that just finished. Caller holds the `slots` lock.
+    fn dress_idle(bar: &ProgressBar) {
+        bar.set_style(idle_row_style());
+        bar.set_position(0);
+    }
 }
 
 impl ProgressSink for IndicatifProgressSink {
@@ -515,49 +589,70 @@ impl ProgressSink for IndicatifProgressSink {
             *field = FieldData::sized(total_scenarios);
             self.summary.set_prefix(render_field(&field));
         }
+
+        // Build the fixed worker-row pool. One slot per worker, but never more
+        // than the scenario count (a 2-scenario run can't keep 10 workers busy,
+        // so 10 idle rows would be a wall of nothing). Each slot starts idle and
+        // is inserted just above the trailer so the order is
+        // summary → slots → trailer; the trailer staying last is what keeps
+        // indicatif's line accounting stable (see the `_trailer` field doc).
+        // Hold `state_lock` for the whole insert sweep so a worker that races
+        // ahead into `scenario_started` can't observe a half-built pool.
+        let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let num_slots = self.total_workers.min(total_scenarios);
+        if let Ok(mut slots) = self.slots.lock() {
+            if slots.is_empty() {
+                for _ in 0..num_slots {
+                    let bar = self
+                        .multi
+                        .insert_before(&self._trailer, ProgressBar::new(0));
+                    Self::dress_idle(&bar);
+                    // One steady tick per slot, enabled once and left on: the
+                    // busy style's `{row_elapsed}` needs it to advance, and the
+                    // idle style has no time token so the same tick is a no-op
+                    // redraw while the slot waits — no per-claim toggling.
+                    bar.enable_steady_tick(TICK_INTERVAL);
+                    slots.push(Slot {
+                        bar,
+                        occupant: None,
+                    });
+                }
+            }
+        }
+        drop(_state);
+
         self.update_summary_msg();
     }
 
     fn scenario_started(&self, index: usize, name: &str, total_steps: usize) {
-        // Hold state_lock for the entire add+style+insert sequence so it
-        // can't interleave with another worker's `complete_scenario` (or
-        // its own `scenario_started`) and shift the row count out from
-        // under either side. See the field doc on `state_lock`.
+        // Claim the lowest free slot for this scenario. `state_lock` stays held
+        // across the claim+dress so the buffer prints in `complete_scenario`
+        // (which also takes it) can't interleave a redraw mid-style-swap; the
+        // dress itself happens under the `slots` lock so a concurrent
+        // `complete_scenario` releasing this same slot can't race the busy ↔
+        // idle style swap. No row is added — the pool is fixed — so unlike the
+        // old design there's no add/remove for a concurrent `println` to
+        // mis-count against. Drop both locks before `update_summary_msg`, which
+        // re-locks `slots`.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Insert worker rows *below* the summary (between it and the
-        // never-removed trailer) so the totals bar sits on top of the
-        // in-flight rows. The multi's order is `summary` (added first,
-        // top) → worker rows → `_trailer` (added last, bottom);
-        // `insert_before(&self._trailer)` lands each new row just above
-        // the trailer. The trailer staying last is what keeps indicatif's
-        // line accounting stable as rows come and go — do not insert after
-        // it.
-        let bar = self
-            .multi
-            .insert_before(&self._trailer, ProgressBar::new(total_steps as u64));
-        // Row leads with a completed-step bar at column 0 (so the scenario's
-        // `✓ name  duration` footer drops cleanly into the same column when
-        // it completes), then the step counter, the dim elapsed, and the
-        // scenario/step tail. See [`row_style`] for the layout.
-        bar.set_style(row_style());
-        bar.set_position(0);
-        // Initial state: 0 steps done, just the scenario name in the tail
-        // until the first `step_started` appends a step. No `starting…`
-        // placeholder — the bar-at-0 + `0/N` counter already say "just
-        // started," and an ellipsis label is the §5 microcopy anti-pattern.
-        bar.set_prefix(self.render_row_counter(0, total_steps));
-        bar.set_message(name.to_string());
-        bar.enable_steady_tick(TICK_INTERVAL);
-
-        if let Ok(mut rows) = self.rows.lock() {
-            rows.insert(
-                index,
-                ProgressRow {
-                    bar,
+        if let Ok(mut slots) = self.slots.lock() {
+            if let Some(slot) = slots.iter_mut().find(|s| s.occupant.is_none()) {
+                // No `starting…` placeholder — the bar-at-0 + `0/N` counter
+                // already say "just started," and an ellipsis label is the §5
+                // microcopy anti-pattern.
+                self.dress_busy(&slot.bar, name, total_steps);
+                slot.occupant = Some(SlotOccupant {
+                    index,
                     name: name.to_string(),
-                },
-            );
+                });
+            }
+            // No free slot is unreachable in practice (the rayon pool has
+            // exactly `total_workers` threads and the pool is sized to match),
+            // but if it ever happens the scenario simply runs without a live
+            // row — its buffer still prints and its completion-map dot still
+            // lights on `complete_scenario`.
         }
+        drop(_state);
         self.update_summary_msg();
     }
 
@@ -573,26 +668,41 @@ impl ProgressSink for IndicatifProgressSink {
         // lock means concurrent workers' `step_started` calls don't serialize
         // on each other's string building.
         //
-        // The race window between the two locks is benign: if
-        // `complete_scenario` removes the row between phases, the second
-        // `if let Some(row)` simply skips the update — visually equivalent
-        // to a `set_message` that landed a frame before the row cleared.
+        // Both phases re-resolve the slot by `occupant.index == index` rather
+        // than caching a slot position across the gap: between the two locks
+        // `complete_scenario` can release this scenario's slot and another
+        // worker can re-claim it, so a cached position could stamp this step
+        // onto a *different* scenario's row. If the occupant is gone by phase
+        // two, skip the update — visually equivalent to a `set_message` that
+        // landed a frame before the slot was released.
         let (scenario_name, elapsed) = {
-            let Ok(rows) = self.rows.lock() else {
+            let Ok(slots) = self.slots.lock() else {
                 return;
             };
-            match rows.get(&index) {
-                Some(row) => (row.name.clone(), row.bar.elapsed()),
+            match slots
+                .iter()
+                .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
+            {
+                Some(slot) => (
+                    slot.occupant
+                        .as_ref()
+                        .map(|o| o.name.clone())
+                        .unwrap_or_default(),
+                    slot.bar.elapsed(),
+                ),
                 None => return,
             }
         };
         let tail = self.render_row_tail(&scenario_name, step_name, elapsed);
         let counter = self.render_row_counter(step_idx, total_steps);
-        if let Ok(rows) = self.rows.lock() {
-            if let Some(row) = rows.get(&index) {
-                row.bar.set_position(step_idx as u64);
-                row.bar.set_prefix(counter);
-                row.bar.set_message(tail);
+        if let Ok(slots) = self.slots.lock() {
+            if let Some(slot) = slots
+                .iter()
+                .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
+            {
+                slot.bar.set_position(step_idx as u64);
+                slot.bar.set_prefix(counter);
+                slot.bar.set_message(tail);
             }
         }
     }
@@ -604,43 +714,31 @@ impl ProgressSink for IndicatifProgressSink {
         _duration: Duration,
         buf: &[u8],
     ) {
-        // CRITICAL ORDERING: remove FIRST, then println. This matches the
-        // production pattern in `src/output/hook_progress/interactive.rs::
-        // finish_job`, which removes all job bars before calling
-        // `mp.println` for the heading. The reasoning is documented on
-        // `remove_job_bars` in that file; the short version follows.
-        //
-        // `mp.remove` sets the bar's draw_target to hidden and unlinks it
-        // from the multi's ordering — it does NOT trigger a redraw
-        // (see `MultiProgress::remove` in indicatif 0.18.4 `multi.rs:150`).
-        // The next `mp.println` then performs an atomic clear+orphan+redraw
-        // against the post-remove bar set, so the previously-occupied row
-        // gets covered by whatever shifts up into its slot (or by blank
-        // padding from the trailer).
-        //
-        // The reversed order (println-then-remove) leaves the doomed bar
-        // in the set during the println's redraw, so `last_line_count`
-        // gets set to N (all bars including the doomed one). The remove
-        // then drops the bar set to N-1 without redrawing. The next
-        // steady-tick redraw clears N lines but writes only N-1, leaving
-        // the bottom line stale — a stranded bar row in scrollback.
-        // That was the cause of the ghost-row bug; see indicatif issue
-        // #474 for the upstream discussion of the same class of issue.
-        //
-        // `state_lock` is still held for the whole sequence: hook_progress
-        // is single-threaded so it doesn't need one, but rayon workers
-        // here can hit `complete_scenario` and `scenario_started`
-        // concurrently, and two workers' per-scenario buffer prints
-        // interleaving on stderr would be far worse than the original ghost.
+        // `state_lock` is held for the whole sequence. The fixed slot pool
+        // means the region's line count never changes here (we release a slot
+        // to idle, we don't remove a row), so the add/remove vs `println`
+        // miscount that the old design fought — and indicatif issue #474's
+        // stranded-bar class — can't arise: there's no row coming or going for
+        // a concurrent redraw to mis-count against. What the lock still buys is
+        // serialization of the buffer prints: two rayon workers' multi-line
+        // `multi.println` output interleaving on stderr would garble both
+        // scenarios' scrollback. (The trailer + draw-rate cap remain as
+        // belt-and-suspenders for the steady-tick redraw path.)
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Ok(mut rows) = self.rows.lock() {
-            if let Some(row) = rows.remove(&index) {
-                // `multi.remove`, NOT `bar.finish_and_clear`. See the
-                // hook-progress comment in
-                // `src/output/hook_progress/interactive.rs:remove_job_bars`
-                // for the longer explanation of the zombie-line hazard.
-                self.multi.remove(&row.bar);
+        // Release this scenario's slot back to idle *before* printing its
+        // buffer, so by the time the scenario's `✓ name` footer scrolls into
+        // place above the region the live row already reads `idle` — no frame
+        // where a just-finished scenario still shows as running. The dress
+        // happens under the `slots` lock so it can't interleave with a
+        // concurrent `scenario_started` re-claiming the same slot.
+        if let Ok(mut slots) = self.slots.lock() {
+            if let Some(slot) = slots
+                .iter_mut()
+                .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
+            {
+                slot.occupant = None;
+                Self::dress_idle(&slot.bar);
             }
         }
 
@@ -688,13 +786,14 @@ impl ProgressSink for IndicatifProgressSink {
         // Hold `state_lock` so any in-flight `complete_scenario` or
         // `scenario_started` finishes before we wipe the region.
         // Otherwise the `multi.clear` could land between another
-        // thread's println and remove, leaving partial frame content.
+        // thread's println and slot release, leaving partial frame content.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
         // Same zombie-line concern as in `complete_scenario`: prefer
         // `multi.remove` over `summary.finish_and_clear` so the summary
         // bar doesn't leave a trailing line above the final summary
         // block. `multi.clear` then wipes any remaining draw-target
-        // content for a fully clean end-of-run frame.
+        // content (the summary, the worker slots, the trailer) for a fully
+        // clean end-of-run frame.
         self.multi.remove(&self.summary);
         let _ = self.multi.clear();
     }
@@ -733,7 +832,7 @@ mod tests {
             state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
-            rows: Mutex::new(HashMap::new()),
+            slots: Mutex::new(Vec::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: InterruptFlag::new(),
@@ -787,7 +886,7 @@ mod tests {
             state_lock: Mutex::new(()),
             summary,
             _trailer: trailer,
-            rows: Mutex::new(HashMap::new()),
+            slots: Mutex::new(Vec::new()),
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: interrupt.clone(),
@@ -852,14 +951,96 @@ mod tests {
         assert!(msg.contains("\x1b[2m◆\x1b[0m"));
     }
 
+    /// Count the slots currently occupied by a scenario.
+    fn busy_slots(sink: &IndicatifProgressSink) -> usize {
+        sink.slots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.occupant.is_some())
+            .count()
+    }
+
     #[test]
-    fn rows_clear_on_scenario_finished() {
+    fn run_started_sizes_slot_pool_to_min_of_workers_and_scenarios() {
+        // hidden_sink has total_workers = 4. A 2-scenario run needs only 2
+        // rows — 4 idle rows for 2 scenarios would be a wall of nothing.
+        let sink = hidden_sink();
+        sink.run_started(2);
+        assert_eq!(sink.slots.lock().unwrap().len(), 2);
+        // A run with more scenarios than workers caps at the worker count.
+        let sink = hidden_sink();
+        sink.run_started(50);
+        assert_eq!(sink.slots.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn slot_is_claimed_then_released_to_idle() {
+        let sink = hidden_sink();
+        sink.run_started(3);
+        assert_eq!(busy_slots(&sink), 0);
+        sink.scenario_started(0, "alpha", 2);
+        assert_eq!(busy_slots(&sink), 1);
+        sink.scenario_started(1, "beta", 2);
+        assert_eq!(busy_slots(&sink), 2);
+        // Completing a scenario frees its slot (back to idle), but the pool
+        // size — and so the region height — is unchanged.
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        assert_eq!(busy_slots(&sink), 1);
+        assert_eq!(sink.slots.lock().unwrap().len(), 3);
+        sink.complete_scenario(1, ScenarioStatus::Pass, Duration::ZERO, b"");
+        assert_eq!(busy_slots(&sink), 0);
+        assert_eq!(sink.slots.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn freed_slot_is_reused_by_the_next_scenario() {
+        // The pool is fixed: a third scenario after two finished must reuse a
+        // freed slot, never grow the pool past its sized count.
+        let sink = hidden_sink();
+        sink.run_started(3);
+        sink.scenario_started(0, "a", 1);
+        sink.scenario_started(1, "b", 1);
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        sink.scenario_started(2, "c", 1);
+        assert_eq!(busy_slots(&sink), 2);
+        assert_eq!(sink.slots.lock().unwrap().len(), 3);
+        // The reused slot now belongs to scenario 2, and a step lands on it.
+        sink.step_started(2, 0, 1, "only step");
+        let occupied: Vec<usize> = sink
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.occupant.as_ref().map(|o| o.index))
+            .collect();
+        assert!(occupied.contains(&2));
+        assert!(occupied.contains(&1));
+    }
+
+    #[test]
+    fn running_count_reflects_busy_slots() {
+        let sink = hidden_sink();
+        sink.run_started(4);
+        sink.scenario_started(0, "a", 1);
+        sink.scenario_started(1, "b", 1);
+        // total_workers is 4, two claimed → "2/4 running".
+        assert!(sink.summary.message().starts_with("2/4 running"));
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        assert!(sink.summary.message().starts_with("1/4 running"));
+    }
+
+    #[test]
+    fn freed_slot_bar_renders_empty() {
+        // A released slot's bar must read empty (position 0), not stay full
+        // from the scenario that just completed all its steps.
         let sink = hidden_sink();
         sink.run_started(1);
-        sink.scenario_started(0, "x", 1);
-        assert_eq!(sink.rows.lock().unwrap().len(), 1);
+        sink.scenario_started(0, "a", 4);
+        sink.step_started(0, 4, 4, "done"); // bar at full
         sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
-        assert!(sink.rows.lock().unwrap().is_empty());
+        let pos = sink.slots.lock().unwrap()[0].bar.position();
+        assert_eq!(pos, 0);
     }
 
     #[test]
@@ -870,6 +1051,14 @@ mod tests {
         // locks the `{prefix} {scenario_counter} {elapsed} {wide_msg}`
         // template valid.
         let _ = summary_style();
+    }
+
+    #[test]
+    fn idle_row_style_template_parses() {
+        // `idle_row_style()` is only reached through `run_started` /
+        // `complete_scenario` at runtime, so its template `.expect()` is
+        // otherwise unexercised by `cargo test`. Lock it valid.
+        let _ = idle_row_style();
     }
 
     #[test]
