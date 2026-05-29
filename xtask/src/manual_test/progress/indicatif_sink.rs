@@ -261,6 +261,28 @@ fn render_field(field: &FieldData) -> String {
     format!("\x1b[2m⟨\x1b[0m\x1b[36m{body}\x1b[0m\x1b[2m⟩\x1b[0m")
 }
 
+/// Build the line that persists the completion-map into scrollback at
+/// end-of-run, so the filled map doesn't vanish when the live region is torn
+/// down. It freezes the totals line's left half — the `⟨ ⟩`-framed field plus
+/// a `done/total scenarios` caption — and drops the live-only segments
+/// (elapsed, running/failed/cancelled): the reporter's summary block lands
+/// directly below this line and already owns the precise duration and
+/// pass/fail tally, so repeating them here would just duplicate. `done` is the
+/// completed count (`== total` on a clean run, fewer after a cancel, so the
+/// partially-lit map reads as "this is how far we got"). `scenarios` is dim —
+/// the field is the data, the caption is a label. Returns `None` for an empty
+/// run (nothing to map).
+fn final_completion_line(field: &FieldData, done: usize) -> Option<String> {
+    if field.total == 0 {
+        return None;
+    }
+    Some(format!(
+        "{}  {done}/{} \x1b[2mscenarios\x1b[0m",
+        render_field(field),
+        field.total,
+    ))
+}
+
 /// Build a worker row's style — light and quiet, so N stacked rows never
 /// read as a solid block wall:
 ///
@@ -788,6 +810,23 @@ impl ProgressSink for IndicatifProgressSink {
         // Otherwise the `multi.clear` could land between another
         // thread's println and slot release, leaving partial frame content.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Persist the finished completion-map into scrollback before the live
+        // region is torn down — otherwise the map the reader watched fill in
+        // just vanishes. Printed as a plain `multi.println` line (not a bar),
+        // so it survives the `multi.clear` below and lands directly above the
+        // reporter's summary block. `summary.position()` is the completed
+        // count (== total on a clean run, fewer after a cancel). Built under
+        // the `field` lock, which is released before the println.
+        let persisted = self
+            .field
+            .lock()
+            .ok()
+            .and_then(|field| final_completion_line(&field, self.summary.position() as usize));
+        if let Some(line) = persisted {
+            let _ = self.multi.println(line);
+        }
+
         // Same zombie-line concern as in `complete_scenario`: prefer
         // `multi.remove` over `summary.finish_and_clear` so the summary
         // bar doesn't leave a trailing line above the final summary
@@ -1059,6 +1098,39 @@ mod tests {
         // `complete_scenario` at runtime, so its template `.expect()` is
         // otherwise unexercised by `cargo test`. Lock it valid.
         let _ = idle_row_style();
+    }
+
+    #[test]
+    fn final_line_freezes_field_with_caption() {
+        // A full 8-scenario run: the persisted line carries the fully-lit
+        // single-cell field (⣿) and an `8/8 scenarios` caption (dim caption,
+        // default-fg count).
+        let mut f = FieldData::sized(8);
+        for i in 0..8 {
+            f.complete(i);
+        }
+        let line = final_completion_line(&f, 8).expect("non-empty run yields a line");
+        let visible = strip_ansi(&line);
+        assert_eq!(visible, "⟨⣿⟩  8/8 scenarios");
+    }
+
+    #[test]
+    fn final_line_shows_partial_coverage_after_cancel() {
+        // Cancelled mid-run: done < total, so the caption reads how far we got
+        // and the field is only partly lit.
+        let mut f = FieldData::sized(8);
+        for i in 0..3 {
+            f.complete(i);
+        }
+        let line = final_completion_line(&f, 3).expect("non-empty run yields a line");
+        assert!(strip_ansi(&line).ends_with("3/8 scenarios"));
+    }
+
+    #[test]
+    fn final_line_is_none_for_empty_run() {
+        // Nothing ran → nothing to map.
+        assert!(final_completion_line(&FieldData::empty(), 0).is_none());
+        assert!(final_completion_line(&FieldData::sized(0), 0).is_none());
     }
 
     #[test]
