@@ -381,7 +381,7 @@ impl IndicatifProgressSink {
         // scenario count) overwrites them — sub-frame, but the steady tick
         // could draw once in between, so seed the real worker count and an
         // empty completion-map rather than blanks.
-        summary.set_message(format!("0/{total_workers} running ◆ 0 failed"));
+        summary.set_message(format!("0/{total_workers} running"));
         summary.set_prefix(render_field(&FieldData::empty()));
         summary.enable_steady_tick(TICK_INTERVAL);
 
@@ -419,30 +419,28 @@ impl IndicatifProgressSink {
         let running = self.rows.lock().map(|r| r.len()).unwrap_or(0);
         let failed = self.failed.load(Ordering::Relaxed);
         let cancelled = self.cancelled.load(Ordering::Relaxed);
-        let failed_segment = if failed > 0 {
-            // Raw SGR bytes. Indicatif's template DSL (e.g. `{msg:.red}`)
-            // doesn't expose a conditional hook for "red only when
-            // `failed > 0`", so the styling has to be inlined into the
-            // message string. Known limitation: the bar message bypasses
-            // `NO_COLOR` — bar templates honor it, but bytes inside
-            // `{msg}` are passed through verbatim. See `reporter/CLAUDE.md`
-            // §8's ANSI-inlining carve-out.
-            format!("\x1b[1;31m{failed} failed\x1b[0m")
-        } else {
-            format!("{failed} failed")
-        };
-        // §8 + §1: cancelled lives in the yellow slot ("attention without
-        // alarm") and only surfaces when > 0 — printing `0 cancelled` on
-        // every green run would add chrome. Once a run is cancelled, the
-        // segment always shows so the user can see the count grow as
-        // in-flight workers wind down.
-        let mut msg = format!(
-            "{running}/{} running ◆ {failed_segment}",
-            self.total_workers
-        );
         let interrupted = self.interrupt.is_set();
+
+        // Dim diamond between segments — decoration, so it stays dim and
+        // never takes a color slot. Inlined SGR: like the segment colors
+        // below, bytes inside the bar message bypass `NO_COLOR` (the bar
+        // *template* honors it, but `{msg}` is passed through verbatim);
+        // see `reporter/CLAUDE.md` §8's ANSI-inlining carve-out.
+        const SEP: &str = " \x1b[2m◆\x1b[0m ";
+
+        let mut msg = format!("{running}/{} running", self.total_workers);
+        // Pass-quiet (§4): only surface `failed` once there's a failure —
+        // a ticking `0 failed` on every green run is chrome. Bold red when
+        // it appears (live equivalent of the fail-loud footer).
+        if failed > 0 {
+            msg.push_str(&format!("{SEP}\x1b[1;31m{failed} failed\x1b[0m"));
+        }
+        // Cancelled lives in the yellow slot ("attention without alarm").
+        // Surfaces once there's a cancellation or the run is being
+        // interrupted, so the user watches the count grow as in-flight
+        // workers wind down.
         if cancelled > 0 || interrupted {
-            msg.push_str(&format!(" ◆ \x1b[33m{cancelled} cancelled\x1b[0m"));
+            msg.push_str(&format!("{SEP}\x1b[33m{cancelled} cancelled\x1b[0m"));
         }
         // Live feedback that Ctrl+C registered. The handler is deliberately
         // silent (any stderr write pushes the bar into scrollback as ghost
@@ -727,7 +725,7 @@ mod tests {
         // `summary_style()` (and, via `scenario_started`, `row_style()`)
         // rather than ad-hoc templates that could drift from production.
         summary.set_style(summary_style());
-        summary.set_message("0/0 running ◆ 0 failed");
+        summary.set_message("0/0 running");
         let trailer = multi.add(ProgressBar::new_spinner());
         trailer.set_style(ProgressStyle::with_template(" ").unwrap());
         IndicatifProgressSink {
@@ -835,6 +833,23 @@ mod tests {
         sink.complete_scenario(3, ScenarioStatus::Cancelled, Duration::ZERO, b"");
         assert_eq!(sink.failed.load(Ordering::Relaxed), 1);
         assert_eq!(sink.cancelled.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn summary_hides_failed_until_a_failure() {
+        // Pass-quiet: `failed` is absent from the totals message while the
+        // count is 0, and appears bold-red once a scenario fails.
+        let sink = hidden_sink();
+        sink.run_started(2);
+        sink.scenario_started(0, "a", 1);
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
+        assert!(!sink.summary.message().contains("failed"));
+        sink.scenario_started(1, "b", 1);
+        sink.complete_scenario(1, ScenarioStatus::Fail, Duration::ZERO, b"");
+        let msg = sink.summary.message();
+        assert!(msg.contains("\x1b[1;31m1 failed\x1b[0m"));
+        // The segment separator is a dim diamond, never a colored one.
+        assert!(msg.contains("\x1b[2m◆\x1b[0m"));
     }
 
     #[test]
