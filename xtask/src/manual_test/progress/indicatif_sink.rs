@@ -9,11 +9,12 @@
 //!   ─────────────  idle                                  <- idle worker
 //! ```
 //!
-//! The totals line leads with a cyan braille **completion-map** (one dot per
-//! finished scenario, lit *by index*, so it fills scattered as the scheduler
-//! works the run non-linearly) followed by the `done/total` counter, run
-//! elapsed, and the running/failed/cancelled stats. See [`summary_style`] /
-//! [`render_field`] for its layout.
+//! The totals line leads with a cyan braille **completion-map**: a scattered
+//! dissolve that lights `round(done/total × num_dots)` dots in a fixed
+//! scattered, gently bottom-left → top-right order, so the field fills evenly
+//! ("develops") as the run progresses. It's followed by the `done/total`
+//! counter, run elapsed, and the running/failed/cancelled stats. See
+//! [`summary_style`] / [`FieldData`] / [`render_field`] for its layout.
 //!
 //! The worker rows are a **fixed pool of slots** sized to the worker count
 //! (capped at the scenario count), created once at [`ProgressSink::run_started`]
@@ -80,19 +81,40 @@ const MAX_DRAW_HZ: u8 = 10;
 
 /// Width (in chars) of the totals line's braille completion-map. Each char
 /// is a 2×4 braille cell = 8 dots, so the field holds `FIELD_WIDTH * 8`
-/// dots; each dot owns a cluster of scenarios *by index* and lights when
-/// that cluster finishes (see [`FieldData`]).
+/// dots; the field lights `round(done/total × num_dots)` of them in a fixed
+/// scattered order (see [`FieldData`]).
 const FIELD_WIDTH: usize = 16;
 
 /// Unicode base of the braille patterns block (`U+2800`). A cell's glyph is
 /// `BRAILLE_BASE + <8-bit dot mask>`.
 const BRAILLE_BASE: u32 = 0x2800;
 
-/// Dot-bit order within a 2×4 braille cell, **bottom-left → top-right**:
-/// left column bottom-up (dots 7,3,2,1), then right column bottom-up
-/// (dots 8,6,5,4). `DOT_ORDER[k]` is the bit for the k-th cluster a cell
-/// owns, so a cell fills from its bottom-left corner upward and rightward.
+/// Dot-bit order within a 2×4 braille cell. `DOT_ORDER[k]` is the braille bit
+/// for the k-th dot index within a cell; `DOT_XY[k]` is that dot's position
+/// `(col, row)` (col 0 = left, row 0 = top). The two stay parallel — `k` indexes
+/// both — so the reveal-order math can place a global dot at its true 2-D spot.
 const DOT_ORDER: [u8; 8] = [0x40, 0x04, 0x02, 0x01, 0x80, 0x20, 0x10, 0x08];
+
+/// `(col, row)` of each `DOT_ORDER[k]` within its 2×4 cell (col 0 = left
+/// column, row 0 = top). Parallel to [`DOT_ORDER`]: index `k` is the same dot
+/// in both. Used to give every global dot a field position for the reveal
+/// gradient.
+const DOT_XY: [(u32, u32); 8] = [
+    (0, 3),
+    (0, 2),
+    (0, 1),
+    (0, 0),
+    (1, 3),
+    (1, 2),
+    (1, 1),
+    (1, 0),
+];
+
+/// How strongly the dissolve's reveal order follows the bottom-left → top-right
+/// gradient vs. scatters. `0.0` = pure scatter (no direction), `1.0` = a hard
+/// directional wipe. `0.45` reads as a scattered "developing photo" that still
+/// tends to fill from the bottom-left — tuned by eye against real runs.
+const REVEAL_DIRECTION_BIAS: f64 = 0.45;
 
 /// Width (in cols) of each in-flight worker row's step bar. Kept modest so
 /// the bar + counter + time prefix leaves room for the truncating
@@ -178,18 +200,56 @@ fn summary_style() -> ProgressStyle {
         )
 }
 
-/// The totals line's spatial completion-map state.
+/// Aperiodic hash of a dot index into `[0, 1)` — the scatter component of the
+/// reveal order. A plain integer bit-mix (no `rand` dep, deterministic across
+/// runs); the point is only that adjacent dots get unrelated values so the
+/// dissolve looks organic rather than tiled/periodic.
+fn dot_jitter(d: usize) -> f64 {
+    let mut x = (d as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(0x1234_5678);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    // Top 24 bits → [0, 1). Plenty of resolution to break ties among 128 dots.
+    ((x >> 40) as f64) / ((1u64 << 24) as f64)
+}
+
+/// The reveal-order sort key for global dot `d` over a `num_cells`-wide field.
+/// Combines a bottom-left → top-right gradient with [`dot_jitter`]; sorting
+/// dots ascending by this key yields the scattered, gently-directional reveal
+/// order the dissolve lights in. Lower = lit earlier.
+fn reveal_key(d: usize, num_cells: usize) -> f64 {
+    let (col, row) = DOT_XY[d % 8];
+    let x = (d / 8) as u32 * 2 + col; // global column, 0 = leftmost
+    let max_x = (num_cells.max(1) as u32 * 2).saturating_sub(1).max(1) as f64;
+    // Gradient 0 at bottom-left (x=0, row=bottom=3) → 1 at top-right.
+    let left_to_right = x as f64 / max_x;
+    let bottom_to_top = (3 - row) as f64 / 3.0;
+    let gradient = (left_to_right + bottom_to_top) / 2.0;
+    gradient * REVEAL_DIRECTION_BIAS + dot_jitter(d) * (1.0 - REVEAL_DIRECTION_BIAS)
+}
+
+/// The totals line's completion-map state — a **scattered dissolve**.
 ///
-/// The map is a field of `done.len()` dots (≤ `FIELD_WIDTH * 8`). Each dot
-/// owns a contiguous cluster of scenarios *by index*; `target[d]` is how
-/// many scenarios map to dot `d`, and the dot lights once `done[d]` reaches
-/// it. Mapping is `index * num_dots / total`, so for a 640-scenario run with
-/// 128 dots each dot owns ~5 scenarios. Small runs (`total < FIELD_WIDTH*8`)
-/// drop to one scenario per dot — no fake resolution.
+/// The field is `reveal.len()` dots (≤ `FIELD_WIDTH * 8`). It lights exactly
+/// `round(done / total × num_dots)` of them, so the lit fraction tracks the
+/// completed fraction **linearly** — the field fills evenly over the run rather
+/// than staying dark until the end. *Which* dots light is a fixed scattered
+/// order ([`reveal`], built once in [`sized`] from [`reveal_key`]): a gently
+/// bottom-left → top-right "developing photo," not a left-to-right wipe.
+///
+/// This is honest about being a **progress** indicator rendered spatially — a
+/// lit dot is not a specific finished scenario. The earlier design lit dots by
+/// per-index cluster completion, which (with a breadth-first scheduler) left
+/// every cluster partway done for most of the run, so the field stayed near-
+/// empty until a late burst — misleading, and the reason this was rebuilt.
 struct FieldData {
     total: usize,
-    done: Vec<u32>,
-    target: Vec<u32>,
+    done: usize,
+    /// Dot indices in reveal order (lit earliest first). Length is the field's
+    /// dot count, `min(total, FIELD_WIDTH*8)`.
+    reveal: Vec<u16>,
 }
 
 impl FieldData {
@@ -197,62 +257,69 @@ impl FieldData {
     fn empty() -> Self {
         Self {
             total: 0,
-            done: Vec::new(),
-            target: Vec::new(),
+            done: 0,
+            reveal: Vec::new(),
         }
     }
 
-    /// Size the field for a `total`-scenario run and tally each dot's
-    /// cluster size. `num_dots = min(total, FIELD_WIDTH*8)`, so every dot
-    /// owns at least one scenario (`target[d] >= 1`).
+    /// Size the field for a `total`-scenario run and precompute the scattered
+    /// reveal order. `num_dots = min(total, FIELD_WIDTH*8)`.
     fn sized(total: usize) -> Self {
         let num_dots = total.min(FIELD_WIDTH * 8);
-        let mut target = vec![0u32; num_dots];
-        for i in 0..total {
-            // num_dots <= total and i < total, so this index is in range.
-            target[i * num_dots / total] += 1;
-        }
+        let num_cells = num_dots.div_ceil(8);
+        let mut reveal: Vec<u16> = (0..num_dots as u16).collect();
+        // Stable sort by the reveal key; `total_cmp` because the keys are
+        // finite f64s and we want a deterministic, panic-free ordering.
+        reveal.sort_by(|&a, &b| {
+            reveal_key(a as usize, num_cells).total_cmp(&reveal_key(b as usize, num_cells))
+        });
         Self {
             total,
-            done: vec![0u32; num_dots],
-            target,
+            done: 0,
+            reveal,
         }
     }
 
-    /// Record that scenario `index` finished, lighting progress toward its
-    /// dot. Out-of-range indices (e.g. before sizing) are ignored.
-    fn complete(&mut self, index: usize) {
-        let num_dots = self.done.len();
-        if num_dots == 0 || self.total == 0 {
-            return;
+    /// Record that one scenario reached a terminal state. The dissolve is
+    /// count-based, so the scenario's identity/index doesn't matter — only how
+    /// many have finished.
+    fn complete(&mut self) {
+        if self.done < self.total {
+            self.done += 1;
         }
-        let dot = index.min(self.total - 1) * num_dots / self.total;
-        self.done[dot] += 1;
+    }
+
+    /// How many dots are lit: `round(done / total × num_dots)`. Proportional,
+    /// so the field fills linearly with progress and is full exactly at
+    /// `done == total`.
+    fn lit_count(&self) -> usize {
+        let num_dots = self.reveal.len();
+        if self.total == 0 || num_dots == 0 {
+            return 0;
+        }
+        // Rounded integer division: (done·num_dots + total/2) / total.
+        (self.done * num_dots + self.total / 2) / self.total
     }
 }
 
-/// Render the completion-map prefix: a cyan, `⟨ ⟩`-framed braille field where
-/// each lit dot is a finished scenario-cluster.
+/// Render the completion-map prefix: a cyan, `⟨ ⟩`-framed braille field with the
+/// first `lit_count` dots of the scattered reveal order lit.
 ///
-/// A dot lights once its whole cluster is done (`done >= target`), and dots
-/// fill within each cell bottom-left → top-right per [`DOT_ORDER`]. The
-/// `⟨ ⟩` frame is dim, the dots cyan — inlined ANSI (the same `NO_COLOR`
-/// carve-out as the bar messages; see `reporter/CLAUDE.md` §8) because the
-/// field is a hand-built string, not a styled built-in key. An unsized field
-/// renders as `FIELD_WIDTH` blank cells so the placeholder reads as an empty
-/// gauge.
+/// The `⟨ ⟩` frame is dim, the dots cyan — inlined ANSI (the same `NO_COLOR`
+/// carve-out as the bar messages; see `reporter/CLAUDE.md` §8) because the field
+/// is a hand-built string, not a styled built-in key. An unsized field renders
+/// as `FIELD_WIDTH` blank cells so the placeholder reads as an empty gauge.
 fn render_field(field: &FieldData) -> String {
-    let num_dots = field.done.len();
+    let num_dots = field.reveal.len();
     let cell_count = if num_dots == 0 {
         FIELD_WIDTH
     } else {
         num_dots.div_ceil(8)
     };
     let mut cells = vec![0u8; cell_count];
-    for d in 0..num_dots {
-        if field.done[d] >= field.target[d] {
-            cells[d / 8] |= DOT_ORDER[d % 8];
-        }
+    for &d in field.reveal.iter().take(field.lit_count()) {
+        let d = d as usize;
+        cells[d / 8] |= DOT_ORDER[d % 8];
     }
     let body: String = cells
         .iter()
@@ -267,18 +334,19 @@ fn render_field(field: &FieldData) -> String {
 /// a `done/total scenarios` caption — and drops the live-only segments
 /// (elapsed, running/failed/cancelled): the reporter's summary block lands
 /// directly below this line and already owns the precise duration and
-/// pass/fail tally, so repeating them here would just duplicate. `done` is the
-/// completed count (`== total` on a clean run, fewer after a cancel, so the
-/// partially-lit map reads as "this is how far we got"). `scenarios` is dim —
-/// the field is the data, the caption is a label. Returns `None` for an empty
-/// run (nothing to map).
-fn final_completion_line(field: &FieldData, done: usize) -> Option<String> {
+/// pass/fail tally, so repeating them here would just duplicate. `field.done`
+/// is the completed count (`== total` on a clean run, fewer after a cancel, so
+/// the partially-filled map reads as "this is how far we got"). `scenarios` is
+/// dim — the field is the data, the caption is a label. Returns `None` for an
+/// empty run (nothing to map).
+fn final_completion_line(field: &FieldData) -> Option<String> {
     if field.total == 0 {
         return None;
     }
     Some(format!(
-        "{}  {done}/{} \x1b[2mscenarios\x1b[0m",
+        "{}  {}/{} \x1b[2mscenarios\x1b[0m",
         render_field(field),
+        field.done,
         field.total,
     ))
 }
@@ -793,12 +861,12 @@ impl ProgressSink for IndicatifProgressSink {
             ScenarioStatus::Pass => {}
         }
         self.summary.inc(1);
-        // Light this scenario's dot in the completion-map. Done for every
-        // terminal status (pass / fail / cancelled) so the map stays in step
+        // Advance the completion-map by one. Done for every terminal status
+        // (pass / fail / cancelled) so the field's fill fraction stays in step
         // with the `done/total` counter — both count "finished being
         // processed," not "passed."
         if let Ok(mut field) = self.field.lock() {
-            field.complete(index);
+            field.complete();
             self.summary.set_prefix(render_field(&field));
         }
         self.update_summary_msg();
@@ -815,14 +883,14 @@ impl ProgressSink for IndicatifProgressSink {
         // region is torn down — otherwise the map the reader watched fill in
         // just vanishes. Printed as a plain `multi.println` line (not a bar),
         // so it survives the `multi.clear` below and lands directly above the
-        // reporter's summary block. `summary.position()` is the completed
-        // count (== total on a clean run, fewer after a cancel). Built under
-        // the `field` lock, which is released before the println.
+        // reporter's summary block. `field.done` is the completed count (==
+        // total on a clean run, fewer after a cancel). Built under the `field`
+        // lock, which is released before the println.
         let persisted = self
             .field
             .lock()
             .ok()
-            .and_then(|field| final_completion_line(&field, self.summary.position() as usize));
+            .and_then(|field| final_completion_line(&field));
         if let Some(line) = persisted {
             let _ = self.multi.println(line);
         }
@@ -1106,10 +1174,10 @@ mod tests {
         // single-cell field (⣿) and an `8/8 scenarios` caption (dim caption,
         // default-fg count).
         let mut f = FieldData::sized(8);
-        for i in 0..8 {
-            f.complete(i);
+        for _ in 0..8 {
+            f.complete();
         }
-        let line = final_completion_line(&f, 8).expect("non-empty run yields a line");
+        let line = final_completion_line(&f).expect("non-empty run yields a line");
         let visible = strip_ansi(&line);
         assert_eq!(visible, "⟨⣿⟩  8/8 scenarios");
     }
@@ -1119,56 +1187,73 @@ mod tests {
         // Cancelled mid-run: done < total, so the caption reads how far we got
         // and the field is only partly lit.
         let mut f = FieldData::sized(8);
-        for i in 0..3 {
-            f.complete(i);
+        for _ in 0..3 {
+            f.complete();
         }
-        let line = final_completion_line(&f, 3).expect("non-empty run yields a line");
+        let line = final_completion_line(&f).expect("non-empty run yields a line");
         assert!(strip_ansi(&line).ends_with("3/8 scenarios"));
     }
 
     #[test]
     fn final_line_is_none_for_empty_run() {
         // Nothing ran → nothing to map.
-        assert!(final_completion_line(&FieldData::empty(), 0).is_none());
-        assert!(final_completion_line(&FieldData::sized(0), 0).is_none());
+        assert!(final_completion_line(&FieldData::empty()).is_none());
+        assert!(final_completion_line(&FieldData::sized(0)).is_none());
     }
 
     #[test]
-    fn field_maps_indices_across_dots() {
-        // 640 scenarios over the full 128-dot field: 5 scenarios per dot.
-        // First index maps to dot 0, last to dot 127, midpoint to the middle.
+    fn field_sizes_dots_and_reveal_order() {
+        // 640 scenarios cap at the 128-dot field; the reveal order is a
+        // permutation of every dot (each lit exactly once over the run).
         let f = FieldData::sized(640);
-        assert_eq!(f.done.len(), 128);
-        assert_eq!(f.target.iter().sum::<u32>(), 640);
-        assert!(f.target.iter().all(|&t| t >= 1)); // every dot owns ≥1 scenario
+        assert_eq!(f.reveal.len(), 128);
+        let mut seen = f.reveal.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..128u16).collect::<Vec<_>>());
+        // Small run: fewer scenarios than dots → one dot per scenario.
+        assert_eq!(FieldData::sized(8).reveal.len(), 8);
     }
 
     #[test]
-    fn field_small_run_is_one_scenario_per_dot() {
-        // Fewer scenarios than dots → one per dot, no fake resolution.
-        let f = FieldData::sized(8);
-        assert_eq!(f.done.len(), 8);
-        assert!(f.target.iter().all(|&t| t == 1));
+    fn field_fills_proportionally_to_progress() {
+        // The lit count tracks the completed fraction linearly — the whole
+        // point of the dissolve (the old per-cluster scheme stayed near-empty
+        // until a late burst). 64 of 128 dots at the halfway mark.
+        let mut f = FieldData::sized(581);
+        let num_dots = f.reveal.len();
+        for _ in 0..(581 / 2) {
+            f.complete();
+        }
+        let lit = f.lit_count();
+        let expected = (290 * num_dots + 581 / 2) / 581;
+        assert_eq!(lit, expected);
+        assert!(
+            (60..=68).contains(&lit),
+            "≈half the 128 dots lit at halfway, got {lit}"
+        );
     }
 
     #[test]
-    fn field_dot_lights_only_when_cluster_complete() {
-        // 16 scenarios = 16 dots, one each. Completing index 0 lights the
-        // bottom-left dot of cell 0 (DOT_ORDER[0] = 0x40 → braille ⡀).
-        let mut f = FieldData::sized(16);
-        f.complete(0);
-        let rendered = render_field(&f);
-        let body = strip_ansi(&rendered);
-        let first_cell = body.chars().nth(1).unwrap(); // skip the ⟨ frame
-        assert_eq!(first_cell as u32, BRAILLE_BASE + 0x40);
+    fn field_reveal_is_scattered_not_a_left_to_right_prefix() {
+        // The first dots to light must NOT be the contiguous prefix 0,1,2,…
+        // (that would be a left-to-right wipe). The scattered reveal order
+        // means the early-lit set jumps around the field.
+        let f = FieldData::sized(128);
+        let first16: Vec<u16> = f.reveal.iter().copied().take(16).collect();
+        let contiguous: Vec<u16> = (0..16u16).collect();
+        assert_ne!(first16, contiguous);
+        // Sanity: the reveal does still pull toward the bottom-left early —
+        // dot 0 (cell 0, bottom-left corner) is lit within the first quarter.
+        let pos0 = f.reveal.iter().position(|&d| d == 0).unwrap();
+        assert!(pos0 < 32, "bottom-left corner lights early, pos {pos0}");
     }
 
     #[test]
     fn field_full_run_lights_every_dot() {
         // 8 scenarios = 8 dots = one full cell. Completing all → ⣿ (0xFF).
         let mut f = FieldData::sized(8);
-        for i in 0..8 {
-            f.complete(i);
+        for _ in 0..8 {
+            f.complete();
         }
         let body = strip_ansi(&render_field(&f));
         assert_eq!(body.chars().nth(1).unwrap() as u32, BRAILLE_BASE + 0xFF);
