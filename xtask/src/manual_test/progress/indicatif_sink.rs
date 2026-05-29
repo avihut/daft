@@ -1,23 +1,26 @@
 //! Indicatif-backed `ProgressSink` implementation.
 //!
 //! Renders a pinned multi-row region at the bottom of the terminal: a
-//! summary (totals) bar on top, then one row per in-flight scenario below
-//! it. Both lines share a `[bar] → [counter] → [time] → tail` layout so
-//! the bars stack into one left column:
+//! totals line on top, then one row per in-flight scenario below it:
 //!
 //! ```text
-//!   [██████░░░░░░░░] 3/8  0:05  2/4 running ◆ 0 failed   <- summary
-//!   [████░░░░░░] 2/5  1.2s  checkout-basic   Inspect …    <- worker row
+//!   ⟨⣿⡇⣿ ⣧ … ⟩  211/581  0:05  9/10 running        <- totals
+//!   ▬▬▬▬───────  2/5  1.2s  checkout-basic · Inspect …  <- worker row
 //! ```
 //!
-//! See [`summary_style`] and [`row_style`] for the per-line layout, and
-//! `reporter/CLAUDE.md` §8 for the design rationale.
+//! The totals line leads with a cyan braille **completion-map** (one dot per
+//! finished scenario, lit *by index*, so it fills scattered as the scheduler
+//! works the run non-linearly) followed by the `done/total` counter, run
+//! elapsed, and the running/failed/cancelled stats. Each worker row is a
+//! light medium-rect step bar with a flowing `scenario · step` tail. See
+//! [`summary_style`] / [`render_field`] and [`row_style`] for the per-line
+//! layout, and `reporter/CLAUDE.md` §8 for the design rationale.
 //!
 //! Concurrency: every method may be called from any rayon worker thread.
 //! `MultiProgress` and `ProgressBar` are internally `Send + Sync` via
-//! indicatif's own locking; the `rows` HashMap is wrapped in `Mutex`
-//! because indicatif's per-bar API can't be keyed by scenario name
-//! externally.
+//! indicatif's own locking; the `rows` map is wrapped in `Mutex` because
+//! indicatif's per-bar API can't be keyed by scenario index externally, and
+//! the completion-map `field` is behind its own `Mutex`.
 //!
 //! Styling reuses `reporter/CLAUDE.md` §1's budget — no new color slots:
 //! medium-rect `▬` bar fill (default fg) over a dim `─` track, default-fg
@@ -65,10 +68,21 @@ const TICK_INTERVAL: Duration = Duration::from_millis(200);
 /// `src/output/hook_progress/interactive.rs` trailer comment).
 const MAX_DRAW_HZ: u8 = 10;
 
-/// Width (in cols) of the summary line's progress bar. The summary is the
-/// one place that still uses indicatif's built-in `{bar}` until the
-/// completion-map field replaces it.
-const BAR_WIDTH: usize = 14;
+/// Width (in chars) of the totals line's braille completion-map. Each char
+/// is a 2×4 braille cell = 8 dots, so the field holds `FIELD_WIDTH * 8`
+/// dots; each dot owns a cluster of scenarios *by index* and lights when
+/// that cluster finishes (see [`FieldData`]).
+const FIELD_WIDTH: usize = 16;
+
+/// Unicode base of the braille patterns block (`U+2800`). A cell's glyph is
+/// `BRAILLE_BASE + <8-bit dot mask>`.
+const BRAILLE_BASE: u32 = 0x2800;
+
+/// Dot-bit order within a 2×4 braille cell, **bottom-left → top-right**:
+/// left column bottom-up (dots 7,3,2,1), then right column bottom-up
+/// (dots 8,6,5,4). `DOT_ORDER[k]` is the bit for the k-th cluster a cell
+/// owns, so a cell fills from its bottom-left corner upward and rightward.
+const DOT_ORDER: [u8; 8] = [0x40, 0x04, 0x02, 0x01, 0x80, 0x20, 0x10, 0x08];
 
 /// Width (in cols) of each in-flight worker row's step bar. Kept modest so
 /// the bar + counter + time prefix leaves room for the truncating
@@ -112,21 +126,28 @@ fn format_row_elapsed(d: Duration) -> String {
     }
 }
 
-/// Build the summary (totals) bar's style.
+/// Build the summary (totals) line's style.
 ///
-/// Layout follows the live region's `[bar] → [counter] → [time] → rest`
-/// motif, shared with the worker rows:
+/// The totals line leads with the braille **completion-map** (a spatial
+/// field of finished scenarios, see [`FieldData`] / [`render_field`]) rather
+/// than indicatif's count-based `{bar}` — a `{bar}` can only fill
+/// left-to-right by count, but the map lights dots *by scenario index*, so
+/// it fills scattered as a non-linear scheduler chews the run. The field is
+/// pushed into `{prefix}` (recomputed only when a scenario completes, so the
+/// steady tick is cheap); the rest follows the `counter → time → rest`
+/// motif:
 ///
 /// ```text
-///   [████████░░░░░░] 3/8  0:05  2/4 running ◆ 0 failed
+///   ⟨⣿⡇⣿ ⣧ … ⟩  211/581  0:05  9/10 running
 /// ```
 ///
-/// - `{bar}` — scenario completion, fixed [`BAR_WIDTH`]; filled default fg,
-///   unfilled `dim` (`./dim`) so it reuses existing ink (no new color slot).
+/// - `{prefix}` — the cyan, `⟨ ⟩`-framed completion-map (set via
+///   `set_prefix`). Its char width is fixed for a given run, so it behaves
+///   like a stable left column.
 /// - `{scenario_counter}` — a custom key rendering `done/total` with `done`
 ///   right-padded to `total`'s digit width, so the time column doesn't shift
 ///   as the count grows digits.
-/// - `{elapsed_precise}` — dim run elapsed (scaffolding), same data as before.
+/// - `{elapsed_precise}` — dim run elapsed (scaffolding).
 /// - `{wide_msg}` — the running/failed/cancelled segments built in
 ///   `update_summary_msg`. `wide_msg` truncates (never wraps) to the terminal
 ///   width, which keeps the line exactly one row tall on narrow terminals —
@@ -134,19 +155,100 @@ fn format_row_elapsed(d: Duration) -> String {
 ///   cosmetics. Truncation is ANSI-aware, so the inlined red/yellow segments
 ///   survive a cut.
 fn summary_style() -> ProgressStyle {
-    ProgressStyle::with_template(&format!(
-        "{{bar:{BAR_WIDTH}./dim}}  {{scenario_counter}}  {{elapsed_precise:.dim}}  {{wide_msg}}"
-    ))
-    .expect("static summary template should be valid")
-    .with_key(
-        "scenario_counter",
-        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            let len = state.len().unwrap_or(0);
-            let pos = state.pos();
-            let width = digit_count(len);
-            let _ = write!(w, "{pos:>width$}/{len}");
-        },
-    )
+    ProgressStyle::with_template("{prefix}  {scenario_counter}  {elapsed_precise:.dim}  {wide_msg}")
+        .expect("static summary template should be valid")
+        .with_key(
+            "scenario_counter",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let len = state.len().unwrap_or(0);
+                let pos = state.pos();
+                let width = digit_count(len);
+                let _ = write!(w, "{pos:>width$}/{len}");
+            },
+        )
+}
+
+/// The totals line's spatial completion-map state.
+///
+/// The map is a field of `done.len()` dots (≤ `FIELD_WIDTH * 8`). Each dot
+/// owns a contiguous cluster of scenarios *by index*; `target[d]` is how
+/// many scenarios map to dot `d`, and the dot lights once `done[d]` reaches
+/// it. Mapping is `index * num_dots / total`, so for a 640-scenario run with
+/// 128 dots each dot owns ~5 scenarios. Small runs (`total < FIELD_WIDTH*8`)
+/// drop to one scenario per dot — no fake resolution.
+struct FieldData {
+    total: usize,
+    done: Vec<u32>,
+    target: Vec<u32>,
+}
+
+impl FieldData {
+    /// An unsized field (before `run_started` knows the scenario count).
+    fn empty() -> Self {
+        Self {
+            total: 0,
+            done: Vec::new(),
+            target: Vec::new(),
+        }
+    }
+
+    /// Size the field for a `total`-scenario run and tally each dot's
+    /// cluster size. `num_dots = min(total, FIELD_WIDTH*8)`, so every dot
+    /// owns at least one scenario (`target[d] >= 1`).
+    fn sized(total: usize) -> Self {
+        let num_dots = total.min(FIELD_WIDTH * 8);
+        let mut target = vec![0u32; num_dots];
+        for i in 0..total {
+            // num_dots <= total and i < total, so this index is in range.
+            target[i * num_dots / total] += 1;
+        }
+        Self {
+            total,
+            done: vec![0u32; num_dots],
+            target,
+        }
+    }
+
+    /// Record that scenario `index` finished, lighting progress toward its
+    /// dot. Out-of-range indices (e.g. before sizing) are ignored.
+    fn complete(&mut self, index: usize) {
+        let num_dots = self.done.len();
+        if num_dots == 0 || self.total == 0 {
+            return;
+        }
+        let dot = index.min(self.total - 1) * num_dots / self.total;
+        self.done[dot] += 1;
+    }
+}
+
+/// Render the completion-map prefix: a cyan, `⟨ ⟩`-framed braille field where
+/// each lit dot is a finished scenario-cluster.
+///
+/// A dot lights once its whole cluster is done (`done >= target`), and dots
+/// fill within each cell bottom-left → top-right per [`DOT_ORDER`]. The
+/// `⟨ ⟩` frame is dim, the dots cyan — inlined ANSI (the same `NO_COLOR`
+/// carve-out as the bar messages; see `reporter/CLAUDE.md` §8) because the
+/// field is a hand-built string, not a styled built-in key. An unsized field
+/// renders as `FIELD_WIDTH` blank cells so the placeholder reads as an empty
+/// gauge.
+fn render_field(field: &FieldData) -> String {
+    let num_dots = field.done.len();
+    let cell_count = if num_dots == 0 {
+        FIELD_WIDTH
+    } else {
+        num_dots.div_ceil(8)
+    };
+    let mut cells = vec![0u8; cell_count];
+    for d in 0..num_dots {
+        if field.done[d] >= field.target[d] {
+            cells[d / 8] |= DOT_ORDER[d % 8];
+        }
+    }
+    let body: String = cells
+        .iter()
+        .map(|&c| char::from_u32(BRAILLE_BASE + c as u32).expect("braille codepoint is valid"))
+        .collect();
+    format!("\x1b[2m⟨\x1b[0m\x1b[36m{body}\x1b[0m\x1b[2m⟩\x1b[0m")
 }
 
 /// Build a worker row's style — light and quiet, so N stacked rows never
@@ -246,6 +348,11 @@ pub struct IndicatifProgressSink {
     /// summary as `R/A running` (`R` in-flight, `A` = this) so the reader
     /// can see how saturated the pool is.
     total_workers: usize,
+    /// The totals line's completion-map state. Sized in `run_started` and
+    /// lit in `complete_scenario`; rendered into the summary's `{prefix}`.
+    /// Behind its own `Mutex` (not `state_lock`) so lighting a dot doesn't
+    /// contend with the row add/remove ordering lock.
+    field: Mutex<FieldData>,
 }
 
 struct ProgressRow {
@@ -270,10 +377,12 @@ impl IndicatifProgressSink {
         // layout rationale. The steady tick refreshes `{elapsed_precise}`
         // and the bar even when no scenario completes.
         summary.set_style(summary_style());
-        // Accurate placeholder until `run_started` → `update_summary_msg`
-        // overwrites it (sub-frame, but the steady tick could draw once in
-        // between, so seed it with the real worker count rather than `0/0`).
+        // Accurate placeholders until `run_started` (which knows the
+        // scenario count) overwrites them — sub-frame, but the steady tick
+        // could draw once in between, so seed the real worker count and an
+        // empty completion-map rather than blanks.
         summary.set_message(format!("0/{total_workers} running ◆ 0 failed"));
+        summary.set_prefix(render_field(&FieldData::empty()));
         summary.enable_steady_tick(TICK_INTERVAL);
 
         // Anchor a single-space "trailer" bar at the bottom of the multi.
@@ -300,6 +409,7 @@ impl IndicatifProgressSink {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt,
+            field: Mutex::new(FieldData::empty()),
             step_counter_width,
             total_workers,
         }
@@ -402,6 +512,11 @@ impl ProgressSink for IndicatifProgressSink {
     fn run_started(&self, total_scenarios: usize) {
         self.summary.set_length(total_scenarios as u64);
         self.summary.set_position(0);
+        // Size the completion-map for this run and paint the empty field.
+        if let Ok(mut field) = self.field.lock() {
+            *field = FieldData::sized(total_scenarios);
+            self.summary.set_prefix(render_field(&field));
+        }
         self.update_summary_msg();
     }
 
@@ -560,6 +675,14 @@ impl ProgressSink for IndicatifProgressSink {
             ScenarioStatus::Pass => {}
         }
         self.summary.inc(1);
+        // Light this scenario's dot in the completion-map. Done for every
+        // terminal status (pass / fail / cancelled) so the map stays in step
+        // with the `done/total` counter — both count "finished being
+        // processed," not "passed."
+        if let Ok(mut field) = self.field.lock() {
+            field.complete(index);
+            self.summary.set_prefix(render_field(&field));
+        }
         self.update_summary_msg();
     }
 
@@ -616,6 +739,7 @@ mod tests {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: InterruptFlag::new(),
+            field: Mutex::new(FieldData::empty()),
             step_counter_width: 0,
             total_workers: 4,
         }
@@ -669,6 +793,7 @@ mod tests {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: interrupt.clone(),
+            field: Mutex::new(FieldData::empty()),
             step_counter_width: 0,
             total_workers: 4,
         };
@@ -727,8 +852,61 @@ mod tests {
         // `summary_style()` is only reached through `new()` at runtime —
         // `hidden_sink()` builds its own style — so the `.expect()` on the
         // template parse is otherwise never exercised by `cargo test`. This
-        // locks the template (and the `{bar:N./dim}` style spec) valid.
+        // locks the `{prefix} {scenario_counter} {elapsed} {wide_msg}`
+        // template valid.
         let _ = summary_style();
+    }
+
+    #[test]
+    fn field_maps_indices_across_dots() {
+        // 640 scenarios over the full 128-dot field: 5 scenarios per dot.
+        // First index maps to dot 0, last to dot 127, midpoint to the middle.
+        let f = FieldData::sized(640);
+        assert_eq!(f.done.len(), 128);
+        assert_eq!(f.target.iter().sum::<u32>(), 640);
+        assert!(f.target.iter().all(|&t| t >= 1)); // every dot owns ≥1 scenario
+    }
+
+    #[test]
+    fn field_small_run_is_one_scenario_per_dot() {
+        // Fewer scenarios than dots → one per dot, no fake resolution.
+        let f = FieldData::sized(8);
+        assert_eq!(f.done.len(), 8);
+        assert!(f.target.iter().all(|&t| t == 1));
+    }
+
+    #[test]
+    fn field_dot_lights_only_when_cluster_complete() {
+        // 16 scenarios = 16 dots, one each. Completing index 0 lights the
+        // bottom-left dot of cell 0 (DOT_ORDER[0] = 0x40 → braille ⡀).
+        let mut f = FieldData::sized(16);
+        f.complete(0);
+        let rendered = render_field(&f);
+        let body = strip_ansi(&rendered);
+        let first_cell = body.chars().nth(1).unwrap(); // skip the ⟨ frame
+        assert_eq!(first_cell as u32, BRAILLE_BASE + 0x40);
+    }
+
+    #[test]
+    fn field_full_run_lights_every_dot() {
+        // 8 scenarios = 8 dots = one full cell. Completing all → ⣿ (0xFF).
+        let mut f = FieldData::sized(8);
+        for i in 0..8 {
+            f.complete(i);
+        }
+        let body = strip_ansi(&render_field(&f));
+        assert_eq!(body.chars().nth(1).unwrap() as u32, BRAILLE_BASE + 0xFF);
+    }
+
+    #[test]
+    fn field_empty_renders_blank_framed_cells() {
+        // An unsized field is the pre-`run_started` placeholder: FIELD_WIDTH
+        // blank braille cells inside the ⟨ ⟩ frame.
+        let body = strip_ansi(&render_field(&FieldData::empty()));
+        assert_eq!(body.chars().next().unwrap(), '⟨');
+        assert_eq!(body.chars().last().unwrap(), '⟩');
+        assert_eq!(body.chars().count(), FIELD_WIDTH + 2); // frame + cells
+        assert!(body.chars().skip(1).take(FIELD_WIDTH).all(|c| c == '⠀'));
     }
 
     #[test]
