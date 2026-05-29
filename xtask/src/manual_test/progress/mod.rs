@@ -165,15 +165,13 @@ impl ProgressSink for NoopProgressSink {
 /// detection + `NO_PROGRESS` / `CI` env-var overrides); this function
 /// doesn't re-probe the environment.
 ///
-/// `name_col_width` and `step_counter_width` are the widest scenario name
-/// and the widest `done/total` step counter across the discovered scenario
-/// set. The live sink pads each in-flight worker row's scenario name and
-/// step counter to these widths so the columns to their right (time, then
-/// the truncating step-name tail) line up across rows. Pass `0` for either
-/// to disable that column's padding.
+/// `step_counter_width` is the widest `done/total` step counter across the
+/// discovered scenario set. The live sink pads each in-flight worker row's
+/// step counter to it so the time column to its right lines up across rows.
+/// Pass `0` to disable that padding.
 ///
 /// `total_workers` is the size of the rayon pool (the resolved `jobs`
-/// count). The summary bar renders the in-flight count against it as
+/// count). The summary line renders the in-flight count against it as
 /// `R/A running` so the reader can see how saturated the pool is.
 ///
 /// Returns `Box<dyn ProgressSink>` because the live impl carries indicatif
@@ -181,14 +179,12 @@ impl ProgressSink for NoopProgressSink {
 /// concrete type.
 pub fn progress_sink_for(
     show_progress: bool,
-    name_col_width: usize,
     step_counter_width: usize,
     total_workers: usize,
     interrupt: InterruptFlag,
 ) -> Box<dyn ProgressSink> {
     if show_progress {
         Box::new(IndicatifProgressSink::new(
-            name_col_width,
             step_counter_width,
             total_workers,
             interrupt,
@@ -221,7 +217,7 @@ mod tests {
         // through a dyn pointer; exercise every method instead and rely on
         // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
         // cover the live path.
-        let sink = progress_sink_for(false, 0, 0, 4, InterruptFlag::new());
+        let sink = progress_sink_for(false, 0, 4, InterruptFlag::new());
         sink.run_started(0);
         sink.scenario_started(0, "x", 1);
         sink.step_started(0, 0, 1, "s");

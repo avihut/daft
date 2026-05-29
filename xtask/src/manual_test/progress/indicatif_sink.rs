@@ -20,12 +20,13 @@
 //! externally.
 //!
 //! Styling reuses `reporter/CLAUDE.md` §1's budget — no new color slots:
-//! bar fill default fg / unfilled dim, default-fg counters, dim elapsed,
-//! bright-purple step name (identity), and a yellow `(slow)` suffix once a
-//! scenario's elapsed crosses 5 s. The variable text tail rides in
-//! `{wide_msg}`, whose ANSI-aware truncation keeps every row exactly one
-//! terminal line tall on narrow displays — a hard requirement for
-//! indicatif's line accounting, not just cosmetics.
+//! medium-rect `▬` bar fill (default fg) over a dim `─` track, default-fg
+//! counters, dim elapsed, a default-fg scenario name with a dim ` · step`
+//! flowing after it, and a yellow `(slow)` suffix once a scenario's elapsed
+//! crosses 5 s. The variable text tail rides in `{wide_msg}`, whose
+//! ANSI-aware truncation keeps every row exactly one terminal line tall on
+//! narrow displays — a hard requirement for indicatif's line accounting,
+//! not just cosmetics.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,11 +65,15 @@ const TICK_INTERVAL: Duration = Duration::from_millis(200);
 /// `src/output/hook_progress/interactive.rs` trailer comment).
 const MAX_DRAW_HZ: u8 = 10;
 
-/// Shared fixed width (in cols) of the progress bars on both the summary
-/// line and the per-worker rows, so every bar stacks into one left column.
-/// Kept modest so the bar + counter + time prefix leaves room for the
-/// truncating text tail on narrow terminals.
+/// Width (in cols) of the summary line's progress bar. The summary is the
+/// one place that still uses indicatif's built-in `{bar}` until the
+/// completion-map field replaces it.
 const BAR_WIDTH: usize = 14;
+
+/// Width (in cols) of each in-flight worker row's step bar. Kept modest so
+/// the bar + counter + time prefix leaves room for the truncating
+/// `scenario · step` tail on narrow terminals.
+const RUNNER_BAR_WIDTH: usize = 14;
 
 /// Fixed width (in cols) of a worker row's time counter, so the
 /// step-name tail to its right starts at a stable column across rows.
@@ -144,27 +149,28 @@ fn summary_style() -> ProgressStyle {
     )
 }
 
-/// Build a worker row's style.
-///
-/// Mirrors the summary's `[bar] → [counter] → [time] → tail` motif so the
-/// bars on both lines stack into one left column:
+/// Build a worker row's style — light and quiet, so N stacked rows never
+/// read as a solid block wall:
 ///
 /// ```text
-///   [████░░░░░░] 2/5  1.2s  checkout-basic   Inspect workspace
+///   ▬▬▬▬─────── 2/5  1.2s  checkout-basic · Inspect workspace
 /// ```
 ///
-/// - `{bar}` — completed-step progress for this scenario, fixed
-///   [`BAR_WIDTH`]; filled default fg, unfilled `dim` (no new color slot).
-/// - `{prefix}` — the `done/total` step counter, padded to the run's
-///   widest counter (set via `set_prefix`).
+/// - `{bar}` — completed-step progress, fixed [`RUNNER_BAR_WIDTH`], with
+///   `progress_chars("▬─")`: a medium-rect `▬` fill (default fg) over a thin
+///   `─` track (dim). Heavier than a hairline rule but never the full-cell
+///   block — no new color slot.
+/// - `{prefix}` — the `done/total` step counter, padded to the run's widest
+///   counter (set via `set_prefix`).
 /// - `{row_elapsed}` — a custom key with sub-second precision, dim and
 ///   padded to [`ROW_ELAPSED_WIDTH`] so the tail starts at a stable column.
-/// - `{wide_msg}` — `"<scenario name (padded)>  <current step name>"`,
-///   set via `set_message`. `wide_msg` truncates (never wraps) to the
+/// - `{wide_msg}` — `"<scenario> · <current step>"` (set via `set_message`):
+///   scenario name default fg, ` · ` and step name dim, flowing naturally
+///   with no fixed step column. `wide_msg` truncates (never wraps) to the
 ///   terminal width, so the row stays exactly one line tall regardless of
-///   how long the names are — a correctness requirement for indicatif's
-///   line accounting. Truncation is ANSI-aware, so the bright-purple step
-///   name and yellow `(slow)` survive a cut without bleeding color.
+///   name length — a correctness requirement for indicatif's line
+///   accounting. Truncation is ANSI-aware, so the dim step and yellow
+///   `(slow)` survive a cut without bleeding color.
 fn row_style() -> ProgressStyle {
     // The `\x1b[2m … \x1b[0m` wrapping `{row_elapsed}` is raw dim SGR, which
     // (unlike the template's `:.dim` modifier on built-in keys) bypasses
@@ -174,9 +180,10 @@ fn row_style() -> ProgressStyle {
     // Same ANSI-inlining carve-out as `update_summary_msg`; see
     // `reporter/CLAUDE.md` §8.
     ProgressStyle::with_template(&format!(
-        "{{bar:{BAR_WIDTH}./dim}}  {{prefix}}  \x1b[2m{{row_elapsed}}\x1b[0m  {{wide_msg}}"
+        "{{bar:{RUNNER_BAR_WIDTH}./dim}}  {{prefix}}  \x1b[2m{{row_elapsed}}\x1b[0m  {{wide_msg}}"
     ))
     .expect("static row template should be valid")
+    .progress_chars("▬─")
     .with_key(
         "row_elapsed",
         |state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -231,10 +238,6 @@ pub struct IndicatifProgressSink {
     /// to color the cancelled segment and (in the orchestrator's bookkeeping)
     /// to gate the run's exit code. Held by `Arc` so a clone is cheap.
     interrupt: InterruptFlag,
-    /// Pre-computed widest scenario name across the run, in chars. Used
-    /// to right-pad the scenario name in each worker row's tail so the
-    /// step name lands at a stable position across rows.
-    name_col_width: usize,
     /// Pre-computed widest `done/total` step counter across the run, in
     /// chars. Used to right-pad each worker row's counter so the time
     /// counter to its right lands at a stable position across rows.
@@ -253,12 +256,7 @@ struct ProgressRow {
 }
 
 impl IndicatifProgressSink {
-    pub fn new(
-        name_col_width: usize,
-        step_counter_width: usize,
-        total_workers: usize,
-        interrupt: InterruptFlag,
-    ) -> Self {
+    pub fn new(step_counter_width: usize, total_workers: usize, interrupt: InterruptFlag) -> Self {
         // Cap the overall draw rate so steady ticks don't pile up faster
         // than the terminal can flush them. See `MAX_DRAW_HZ` for the
         // rationale.
@@ -302,7 +300,6 @@ impl IndicatifProgressSink {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt,
-            name_col_width,
             step_counter_width,
             total_workers,
         }
@@ -366,29 +363,30 @@ impl IndicatifProgressSink {
         }
     }
 
-    /// Build the `{wide_msg}` tail of a worker row: the padded scenario
-    /// name followed by the current step name, plus a `(slow)` suffix once
+    /// Build the `{wide_msg}` tail of a worker row: the scenario name with
+    /// the current step flowing right after it, plus a `(slow)` suffix once
     /// the scenario crosses [`SLOW_THRESHOLD`].
     ///
     /// ```text
-    ///   checkout-basic   Inspect workspace
+    ///   checkout-basic · Inspect workspace
     /// ```
     ///
-    /// The scenario name is padded to `name_col_width` (default fg, matching
-    /// the passing-footer convention) so step names align across rows; the
-    /// step name is bright purple (the identity slot) and the `(slow)`
-    /// suffix yellow. All three reuse existing color slots. The whole tail
-    /// rides in `{wide_msg}`, whose ANSI-aware truncation cuts the step
-    /// name (then the scenario name) on narrow terminals without ever
+    /// The scenario name carries the row's identity at default fg (the
+    /// scannable anchor); the ` · ` separator and the step name are **dim**
+    /// — the step changes every step, so keeping it quiet stops it from
+    /// flicker-grabbing the eye, and reserves color for the totals line. No
+    /// fixed step column: the step sits directly after the name so it never
+    /// feels detached. The `(slow)` suffix is yellow (attention without
+    /// alarm). The whole tail rides in `{wide_msg}`, whose ANSI-aware
+    /// truncation cuts the step (then the name) on narrow terminals without
     /// wrapping the row or letting a color bleed past the cut.
     fn render_row_tail(&self, scenario_name: &str, step_name: &str, elapsed: Duration) -> String {
-        let name_padded = Self::pad_to(scenario_name, self.name_col_width);
         let slow_suffix = if elapsed > SLOW_THRESHOLD {
             "  \x1b[33m(slow)\x1b[0m"
         } else {
             ""
         };
-        format!("{name_padded}  \x1b[95m{step_name}\x1b[0m{slow_suffix}")
+        format!("{scenario_name}\x1b[2m · {step_name}\x1b[0m{slow_suffix}")
     }
 
     /// Build the `{prefix}` step counter for a worker row: `done/total`
@@ -430,12 +428,12 @@ impl ProgressSink for IndicatifProgressSink {
         // scenario/step tail. See [`row_style`] for the layout.
         bar.set_style(row_style());
         bar.set_position(0);
-        // Initial state: 0 steps done, `starting…` as a dim placeholder
-        // until the first `step_started` names a real step. Same column
-        // layout as a stepped row so the bar doesn't jump on the first step.
-        let name_padded = Self::pad_to(name, self.name_col_width);
+        // Initial state: 0 steps done, just the scenario name in the tail
+        // until the first `step_started` appends a step. No `starting…`
+        // placeholder — the bar-at-0 + `0/N` counter already say "just
+        // started," and an ellipsis label is the §5 microcopy anti-pattern.
         bar.set_prefix(self.render_row_counter(0, total_steps));
-        bar.set_message(format!("{name_padded}  \x1b[2mstarting…\x1b[0m"));
+        bar.set_message(name.to_string());
         bar.enable_steady_tick(TICK_INTERVAL);
 
         if let Ok(mut rows) = self.rows.lock() {
@@ -618,7 +616,6 @@ mod tests {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: InterruptFlag::new(),
-            name_col_width: 0,
             step_counter_width: 0,
             total_workers: 4,
         }
@@ -672,7 +669,6 @@ mod tests {
             failed: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             interrupt: interrupt.clone(),
-            name_col_width: 0,
             step_counter_width: 0,
             total_workers: 4,
         };
@@ -765,17 +761,18 @@ mod tests {
     }
 
     #[test]
-    fn row_tail_pads_name_and_styles_step() {
-        // hidden_sink uses width 0, so the scenario name isn't padded:
-        // the tail is "<name>  <ESC>step<ESC>". Lock the column layout
-        // (two-space separator) and that the step name carries styling.
+    fn row_tail_flows_step_after_name() {
+        // The step flows right after the name with a ` · ` separator (no
+        // fixed column). Scenario name is plain; the separator + step are
+        // dim; there is no bright-purple step any more.
         let sink = hidden_sink();
         let tail = sink.render_row_tail("checkout-basic", "Inspect workspace", Duration::ZERO);
         let visible = strip_ansi(&tail);
-        assert_eq!(visible, "checkout-basic  Inspect workspace");
-        // Style bytes are present around the step name (no styling on the
-        // scenario name), and no `(slow)` suffix below the threshold.
-        assert!(tail.contains("\x1b[95mInspect workspace\x1b[0m"));
+        assert_eq!(visible, "checkout-basic · Inspect workspace");
+        // Separator + step are dim (one span); scenario name carries no
+        // styling; no purple; no `(slow)` suffix below the threshold.
+        assert!(tail.contains("\x1b[2m · Inspect workspace\x1b[0m"));
+        assert!(!tail.contains("\x1b[95m"));
         assert!(!visible.contains("(slow)"));
     }
 

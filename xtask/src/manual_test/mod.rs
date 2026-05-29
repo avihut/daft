@@ -92,20 +92,6 @@ pub(crate) fn peek_scenario_metadata(path: &Path) -> Option<ScenarioMeta> {
     Some(meta)
 }
 
-/// Compute the widest scenario name across the discovered set, in
-/// **grapheme-approximate** character count. Width is used purely for
-/// column alignment, so `chars().count()` (codepoint count) is close
-/// enough — emoji-or-CJK-heavy names may misalign by a column or two,
-/// but the failure mode is cosmetic, not a panic.
-fn max_scenario_name_width(metas: &[ScenarioMeta]) -> usize {
-    metas
-        .iter()
-        .filter_map(|m| m.name.as_deref())
-        .map(|n| n.chars().count())
-        .max()
-        .unwrap_or(0)
-}
-
 /// Compute the widest `done/total` step counter across the discovered
 /// set, in chars. Used by the live progress region to pad each worker
 /// row's step counter so the time counter to its right lands at a stable
@@ -553,11 +539,10 @@ pub fn run(
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
 
-    // Pre-scan scenario files once for column-width sizing in the live
-    // in-flight region: pad each worker row's scenario name and its
-    // `done/total` step counter so the columns to their right (time, then
-    // the truncating step-name tail) stack across rows. Scrollback footers
-    // don't pad — durations sit directly after the scenario name.
+    // Pre-scan scenario files once to size the live region's step-counter
+    // column: pad each worker row's `done/total` step counter so the time
+    // column to its right stacks across in-flight rows. (Scenario/step names
+    // flow naturally and truncate — they aren't padded.)
     //
     // The scan is `peek_scenario_metadata` — a cheap text scan, not a
     // full YAML parse. ~200ms for 580 files on an SSD.
@@ -565,7 +550,6 @@ pub fn run(
         .iter()
         .filter_map(|p| peek_scenario_metadata(p))
         .collect();
-    let name_column_width = max_scenario_name_width(&metas);
     let step_counter_width = max_step_counter_width(&metas);
     let reporter = reporter::reporter_for(verbosity);
 
@@ -622,13 +606,8 @@ pub fn run(
     let show_progress = std::io::stderr().is_terminal()
         && std::env::var_os("NO_PROGRESS").is_none()
         && std::env::var_os("CI").is_none();
-    let progress = progress::progress_sink_for(
-        show_progress,
-        name_column_width,
-        step_counter_width,
-        jobs,
-        interrupt.clone(),
-    );
+    let progress =
+        progress::progress_sink_for(show_progress, step_counter_width, jobs, interrupt.clone());
     let result = run_parallel(
         &scenario_files,
         &labels,
@@ -2264,9 +2243,7 @@ mod non_interactive_template_tests {
 
 #[cfg(test)]
 mod peek_scenario_metadata_tests {
-    use super::{
-        max_scenario_name_width, max_step_counter_width, peek_scenario_metadata, ScenarioMeta,
-    };
+    use super::{max_step_counter_width, peek_scenario_metadata, ScenarioMeta};
     use std::io::Write;
 
     fn write_yaml(content: &str) -> tempfile::NamedTempFile {
@@ -2323,28 +2300,6 @@ mod peek_scenario_metadata_tests {
     }
 
     #[test]
-    fn max_name_width_picks_longest() {
-        let metas = vec![
-            ScenarioMeta {
-                name: Some("short".into()),
-                step_names: vec![],
-            },
-            ScenarioMeta {
-                name: Some("this is a much longer scenario name".into()),
-                step_names: vec![],
-            },
-            ScenarioMeta {
-                name: Some("middle one".into()),
-                step_names: vec![],
-            },
-        ];
-        assert_eq!(
-            max_scenario_name_width(&metas),
-            "this is a much longer scenario name".chars().count()
-        );
-    }
-
-    #[test]
     fn max_step_counter_width_picks_widest_counter() {
         // Counter width is `2 * digit_count(total) + 1` (the widest counter
         // for a T-step scenario is `T/T`). The 12-step scenario wins:
@@ -2364,7 +2319,6 @@ mod peek_scenario_metadata_tests {
 
     #[test]
     fn widths_are_zero_on_empty_set() {
-        assert_eq!(max_scenario_name_width(&[]), 0);
         assert_eq!(max_step_counter_width(&[]), 0);
     }
 }
