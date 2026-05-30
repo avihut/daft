@@ -142,7 +142,7 @@ pub struct Args {
 
     #[arg(
         long = "install",
-        help = "Run `daft install` in the new worktree(s) after a successful clone"
+        help = "Run `daft install` in the new worktree(s) after a successful clone (implies --trust-hooks)"
     )]
     install: bool,
 
@@ -154,11 +154,12 @@ pub struct Args {
 }
 
 pub fn run() -> Result<()> {
-    let args = Args::parse_from(crate::get_clap_args("git-worktree-clone"));
+    let mut args = Args::parse_from(crate::get_clap_args("git-worktree-clone"));
 
     init_logging(args.verbose >= 2);
 
     validate_arg_combinations(&args)?;
+    apply_install_trust(&mut args);
 
     let settings = DaftSettings::load_global()?;
 
@@ -207,6 +208,18 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
         anyhow::bail!("--git-exclude only applies together with --install.");
     }
     Ok(())
+}
+
+/// `--install` implies `--trust-hooks`: bootstrapping your own daft.yml in this
+/// clone is an implicit trust decision — the hooks you'll run are your own, and
+/// you shouldn't be prompted to trust your own config on the next worktree op.
+/// `--no-hooks` opts out of hooks entirely, so it wins (and keeps us clear of
+/// the `--trust-hooks`/`--no-hooks` conflict rejected in `validate_arg_combinations`).
+/// Applied after validation so it never trips that conflict check.
+fn apply_install_trust(args: &mut Args) {
+    if args.install && !args.no_hooks {
+        args.trust_hooks = true;
+    }
 }
 
 /// Reject `--no-checkout` for layouts where the resolved `repo_path` is also
@@ -1615,6 +1628,39 @@ mod tests {
             "--git-exclude",
         ]);
         assert!(validate_arg_combinations(&args).is_ok());
+    }
+
+    #[test]
+    fn install_implies_trust_hooks() {
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+        ]);
+        assert!(!args.trust_hooks);
+        apply_install_trust(&mut args);
+        assert!(args.trust_hooks, "--install should imply --trust-hooks");
+    }
+
+    #[test]
+    fn install_with_no_hooks_does_not_trust() {
+        // --no-hooks opts out of hooks entirely, so the trust implication
+        // must not fire (and must not create a --trust-hooks/--no-hooks conflict).
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--no-hooks",
+        ]);
+        apply_install_trust(&mut args);
+        assert!(!args.trust_hooks);
+    }
+
+    #[test]
+    fn clone_without_install_does_not_trust() {
+        let mut args = Args::parse_from(["git-worktree-clone", "https://example.com/r.git"]);
+        apply_install_trust(&mut args);
+        assert!(!args.trust_hooks);
     }
 
     #[test]
