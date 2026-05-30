@@ -198,12 +198,9 @@ fn should_use_live(args: &Args) -> bool {
         && std::io::stdout().is_terminal()
 }
 
-/// Resolve the branch that worktrees/branches are compared against, honoring the
-/// configured `daft.remote` (not a hardcoded `origin`), with a `master` fallback
-/// when it can't be determined. Both `daft list` rendering paths (`run_blocking`
-/// here and `list_live::run_live`) route through this so they can't drift on which
-/// remote they consult — the blocking path previously hardcoded `origin`, ignoring
-/// `daft.remote` (#597).
+/// Resolve the base branch to compare against, honoring `daft.remote` (not a
+/// hardcoded `origin`) with a `master` fallback. Both list paths route through
+/// this so they can't drift again (#597).
 pub(crate) fn resolve_base_branch(
     git_common_dir: &std::path::Path,
     settings: &DaftSettings,
@@ -1119,13 +1116,9 @@ fn size_column_index(selected_columns: &[ListColumn], show_annotations: bool) ->
 mod tests {
     use super::*;
 
-    /// #597 regression: `daft list` must resolve the comparison base branch via
-    /// the configured `daft.remote`, not a hardcoded `origin`. With both remotes'
-    /// HEAD present, a repo configured with `upstream` resolves to upstream's
-    /// default branch, while the (previously hardcoded) `origin` points elsewhere
-    /// — so the old blocking path would have picked the wrong base. Deterministic:
-    /// both HEAD files exist, so resolution stays on the file-read path (no ambient
-    /// git, no `#[serial]` needed).
+    /// #597 regression: list must resolve the base branch via the configured
+    /// `daft.remote`, not a hardcoded `origin`. Both HEAD files exist so it stays
+    /// on the deterministic file-read path (no ambient git, no `#[serial]`).
     #[test]
     fn resolve_base_branch_honors_configured_remote_not_hardcoded_origin() {
         let tmp = tempfile::tempdir().unwrap();
