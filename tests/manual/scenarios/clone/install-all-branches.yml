@@ -1,0 +1,46 @@
+name: Clone --all-branches --install populates every worktree
+description:
+  With --all-branches, --install bootstraps daft.yml in the primary worktree and
+  propagates it to every sibling worktree, so all worktrees are symmetric.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+        files:
+          - path: dev.txt
+            content: "dev"
+        commits:
+          - message: "Add develop"
+      - name: feature
+        from: main
+        files:
+          - path: feat.txt
+            content: "feat"
+        commits:
+          - message: "Add feature"
+
+steps:
+  - name: Clone all branches with --install
+    run:
+      git-worktree-clone --layout contained --all-branches --install
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+        - "$WORK_DIR/test-repo/develop/daft.yml"
+        - "$WORK_DIR/test-repo/feature/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+        - path: "$WORK_DIR/test-repo/feature/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."

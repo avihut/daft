@@ -1465,10 +1465,14 @@ fn run_post_create_hook(
 /// Installs once in the primary (cd-target) worktree — where the shell lands and
 /// the `post-clone` hook runs — which writes daft.yml and (on a TTY, or
 /// unconditionally with `--git-exclude`) offers the repo-wide
-/// `.git/info/exclude` entry. The resolved visitor config is then propagated to
-/// every other worktree this clone created, so multi-branch clones are
-/// symmetric. Propagation reuses `visitor_propagation::propagate`, the same
-/// machinery that carries visitor configs across worktrees during normal use.
+/// `.git/info/exclude` entry. The just-installed daft.yml is then copied
+/// byte-for-byte into every other worktree this clone created, so multi-branch
+/// clones are symmetric. It is a plain copy rather than a
+/// `visitor_propagation::propagate` merge on purpose: the starter is a
+/// comment-only skeleton, and propagate()'s YAML parse→serialize roundtrip would
+/// strip every comment (turning it into canonical null-filled YAML). The exclude
+/// lives in the shared common dir, so it already covers all worktrees — no
+/// per-worktree offer is needed.
 ///
 /// If the cloned repository already ships a daft.yml (a tracked team baseline),
 /// there is nothing to bootstrap: skip with a note rather than failing.
@@ -1503,10 +1507,12 @@ fn run_clone_install(
     };
     crate::commands::install::install_at(primary, output, &opts, interactive)?;
 
-    // Propagate the just-installed visitor config to the other worktrees this
-    // clone created. Enumerate via `git worktree list` so it covers every layout
-    // and both the sequential and TUI satellite paths. A copy failure for one
-    // sibling is a warning, not a clone failure — the primary is already set up.
+    // Copy the just-installed daft.yml into the other worktrees this clone
+    // created. Enumerate via `git worktree list` so it covers every layout and
+    // both the sequential and `--all-branches` satellite paths. A byte-for-byte
+    // copy preserves the commented starter; a copy failure for one sibling is a
+    // warning, not a clone failure — the primary is already set up.
+    let source = primary.join("daft.yml");
     let primary_canon = std::fs::canonicalize(primary).unwrap_or_else(|_| primary.to_path_buf());
     let listing = crate::utils::git_command_at(primary)
         .args(["worktree", "list", "--porcelain"])
@@ -1518,17 +1524,31 @@ fn run_clone_install(
         return Ok(());
     }
     let porcelain = String::from_utf8_lossy(&listing.stdout);
+    let mut propagated = 0usize;
     for wt in crate::core::layout::detect::parse_worktree_list(&porcelain) {
         let wt_canon = std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
         if wt_canon == primary_canon {
             continue;
         }
-        if let Err(e) = crate::hooks::visitor_propagation::propagate(primary, &wt.path) {
-            output.warning(&format!(
-                "Could not propagate daft.yml to {}: {e}",
-                wt.path.display()
-            ));
+        let dest = wt.path.join("daft.yml");
+        if dest.exists() {
+            // A committed baseline (or other pre-existing file) on that branch —
+            // leave it untouched.
+            continue;
         }
+        match std::fs::copy(&source, &dest) {
+            Ok(_) => propagated += 1,
+            Err(e) => output.warning(&format!(
+                "Could not copy daft.yml to {}: {e}",
+                wt.path.display()
+            )),
+        }
+    }
+    if propagated > 0 {
+        output.step(&format!(
+            "Propagated daft.yml to {propagated} other worktree{}",
+            if propagated == 1 { "" } else { "s" }
+        ));
     }
 
     Ok(())

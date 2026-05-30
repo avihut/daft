@@ -1,0 +1,22 @@
+name: Clone --install bootstraps daft.yml
+description:
+  daft clone --install writes a starter daft.yml in the new worktree after a
+  successful clone. The runner is non-interactive, so it prints the exclude hint
+  and leaves git untouched.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with --install
+    run: git-worktree-clone --layout contained --install $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+      output_contains:
+        - "info/exclude"
