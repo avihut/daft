@@ -800,6 +800,13 @@ impl IndicatifProgressSink {
         // Remove the slot bars first, then the framing bars, so nothing is left
         // for a steady tick to redraw, then clear the drawn lines. After this
         // the multi owns no bars and `multi.println` writes plainly.
+        //
+        // No explicit `disable_steady_tick` here (unlike `finalize_region_for_exit`):
+        // a removed bar is unlinked from indicatif's draw loop, so an in-flight
+        // tick in the ≤200 ms window before `clear()` is a no-op. The force-quit
+        // path must disable ticks because it runs on the `ctrlc` thread; this
+        // path holds `state_lock`, but indicatif's tick thread isn't serialized
+        // by it either — the disable is simply unnecessary once bars are unlinked.
         if let Ok(slots) = self.slots.lock() {
             for slot in slots.iter() {
                 self.multi.remove(&slot.bar);
@@ -964,10 +971,14 @@ impl ProgressSink for IndicatifProgressSink {
                 .find(|s| s.occupant.as_ref().is_some_and(|o| o.index == index))
             {
                 Some(slot) => (
+                    // `find` matched on `occupant.index`, so `occupant` is Some
+                    // here — `expect` documents that invariant rather than
+                    // silently defaulting to an empty name on an impossible None.
                     slot.occupant
                         .as_ref()
-                        .map(|o| o.name.clone())
-                        .unwrap_or_default(),
+                        .expect("find matched on occupant.index, so occupant is Some")
+                        .name
+                        .clone(),
                     slot.bar.elapsed(),
                 ),
                 None => return,
