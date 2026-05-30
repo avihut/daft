@@ -50,10 +50,23 @@ steps:
         - path: "$WORK_DIR/test-repo/wip/daft.yml"
           content: "min_version:"
 
-  - name: Remove the unchanged worktree (divergence guard must not block it)
+  - name:
+      Remove the unchanged worktree (guard must not block, main must not be
+      rewritten)
     run: daft-remove --local wip
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       files_not_exist:
         - "$WORK_DIR/test-repo/wip"
+      # The merge-on-delete propagation must NOT rewrite main when the removed
+      # worktree adds nothing: main/daft.yml stays byte-for-byte intact (comments
+      # and shared preserved, never canonicalized into null-littered YAML).
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# my visitor config"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "shared: [.env]"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "min_version:"

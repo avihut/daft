@@ -954,6 +954,18 @@ fn delete_single_branch(
 
         if (has_local || has_visitor_daft_yml)
             && let Some(target_wt) = worktree_map.get(&ctx.default_branch)
+            // Only salvage when the source actually has in-scope content the
+            // target lacks. When it doesn't — the common case: an unchanged
+            // worktree whose daft files are a subset of the target's — there is
+            // nothing to copy, and running the merge would needlessly
+            // re-serialize the target's daft.yml, stripping its comments and
+            // littering it with `null`s. (A non-forced divergent removal is
+            // already blocked by the divergence guard with a "consolidate first"
+            // message; only a forced removal reaches here with real divergence.)
+            && matches!(
+                crate::hooks::visitor_propagation::has_inscope_divergence(wt_path, target_wt),
+                Ok(true)
+            )
         {
             let _ = crate::hooks::visitor_propagation::propagate(wt_path, target_wt);
         }
