@@ -11,6 +11,16 @@
 minimum_release_age = "7d"
 
 [tools]
+# cargo-binstall: bootstrap it first (prebuilt via the aqua backend) so the
+# `cargo:` tools below install from prebuilt GitHub-release binaries instead
+# of compiling from source. mise's `cargo.binstall` setting defaults to true
+# but only kicks in when cargo-binstall is on PATH — and mise does NOT
+# auto-install it. Without this line a cold machine spends >5min compiling
+# cargo-deny + cargo-cooldown, which blows the 300s post-clone /
+# worktree-post-create hook timeout (the failure that motivated this entry).
+# Pin the aqua backend explicitly so binstall itself never falls back to a
+# cargo-from-source build (chicken-and-egg).
+"aqua:cargo-bins/cargo-binstall" = "1.18.1"
 rust = "1.93"
 lefthook = "2.1.6"
 cocogitto = "7.0.0"

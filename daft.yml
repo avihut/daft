@@ -19,10 +19,14 @@ hooks:
         skip:
           - run: "command -v mise"
             desc: mise is already installed
+      - name: mise-trust
+        description: Trust the repo's mise config before installing tools
+        run: mise trust
+        needs: [install-mise]
       - name: mise-install
         description: Install tools from mise.toml (Rust, lefthook, bun, etc.)
         run: mise install
-        needs: [install-mise]
+        needs: [mise-trust]
       - name: install-lefthook-in-repo
         description: Set up lefthook git hooks in the repository
         run: lefthook install
