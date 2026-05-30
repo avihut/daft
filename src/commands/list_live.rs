@@ -79,8 +79,12 @@ fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
     entries
 }
 
-pub fn run_live(args: Args, settings: DaftSettings) -> Result<()> {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+pub fn run_live(args: Args) -> Result<()> {
+    // Construct the body `GitCommand` first and load settings through it so the
+    // repo is discovered once and reused for the command body (#584).
+    let git = GitCommand::new(false);
+    let settings = DaftSettings::load_with(&git)?;
+    let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let git_common_dir = get_git_common_dir()?;
     let base_branch =
