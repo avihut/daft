@@ -11,7 +11,6 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use crate::hooks::yaml_config::YamlConfig;
 use crate::hooks::yaml_config_loader::{
     ConfigStatus, classify_main_config, merge_configs, parse_yaml_config_str,
 };
@@ -59,26 +58,43 @@ fn propagate_one(
         return Ok(());
     }
 
-    let src_str = fs::read_to_string(&src_path)
-        .with_context(|| format!("Failed to read source {}", src_path.display()))?;
-    let src_cfg = parse_yaml_config_str(&src_str)
-        .with_context(|| format!("Failed to parse source {}", src_path.display()))?;
-
-    let base_cfg: YamlConfig = if tgt_path.is_file() {
+    if tgt_path.is_file() {
+        // The target already has this file: a genuine merge is needed (source
+        // overlaid on the target's existing config). Only the consolidation
+        // paths (`daft merge`) reach this — a freshly created worktree never has
+        // the file yet. Re-serializing to canonical YAML is acceptable when two
+        // real configs are being combined.
+        let src_str = fs::read_to_string(&src_path)
+            .with_context(|| format!("Failed to read source {}", src_path.display()))?;
+        let src_cfg = parse_yaml_config_str(&src_str)
+            .with_context(|| format!("Failed to parse source {}", src_path.display()))?;
         let tgt_str = fs::read_to_string(&tgt_path)
             .with_context(|| format!("Failed to read target {}", tgt_path.display()))?;
-        parse_yaml_config_str(&tgt_str)
-            .with_context(|| format!("Failed to parse target {}", tgt_path.display()))?
+        let base_cfg = parse_yaml_config_str(&tgt_str)
+            .with_context(|| format!("Failed to parse target {}", tgt_path.display()))?;
+
+        let merged = merge_configs(base_cfg, src_cfg);
+        let merged_str = serde_yaml::to_string(&merged)
+            .with_context(|| format!("Failed to serialize merged {}", filename))?;
+
+        fs::write(&tgt_path, merged_str)
+            .with_context(|| format!("Failed to write target {}", tgt_path.display()))?;
     } else {
-        Default::default()
-    };
-
-    let merged = merge_configs(base_cfg, src_cfg);
-    let merged_str = serde_yaml::to_string(&merged)
-        .with_context(|| format!("Failed to serialize merged {}", filename))?;
-
-    fs::write(&tgt_path, merged_str)
-        .with_context(|| format!("Failed to write target {}", tgt_path.display()))?;
+        // The target has no such file yet (the checkout case): copy the source
+        // verbatim. There is nothing to merge into, so a byte-for-byte copy
+        // preserves comments, formatting, and every field. Routing this case
+        // through merge_configs + serde serialization is what previously
+        // canonicalized the file — stripping comments, emitting `null` for every
+        // unset field, and (before the merge_configs fix) silently dropping
+        // `shared`/`extends`.
+        fs::copy(&src_path, &tgt_path).with_context(|| {
+            format!(
+                "Failed to copy {} to {}",
+                src_path.display(),
+                tgt_path.display()
+            )
+        })?;
+    }
 
     result.files_propagated.push(filename.to_string());
     Ok(())
@@ -111,13 +127,45 @@ pub fn has_inscope_divergence(source: &Path, target: &Path) -> Result<bool> {
         }
 
         if !tgt_path.is_file() {
+            // Source has a whole in-scope file the target lacks — removing the
+            // source would lose it.
             return Ok(true);
         }
 
         let src_str = fs::read_to_string(&src_path)?;
         let tgt_str = fs::read_to_string(&tgt_path)?;
-        if src_str != tgt_str {
-            return Ok(true);
+
+        // Compare semantically, not byte-for-byte. The guard's real question is
+        // "would removing `source` lose any config not already in `target`?" —
+        // a subset question, not equality. Overlay the source's config onto the
+        // target's; if the merge changes nothing, the source contributes nothing
+        // new and removal is safe. This is why formatting/comment/field-order
+        // differences do not count (e.g. a worktree whose daft.yml was written
+        // by an older canonicalizing propagate() is still recognised as
+        // non-divergent), while a real added/changed job or setting does.
+        //
+        // Correctness depends on merge_configs being complete: a merge that
+        // silently dropped a field would make a real refinement look like a
+        // no-op and false-allow the removal. That is why the merge_configs /
+        // merge_hook_defs field-drop fix is a prerequisite for this guard.
+        //
+        // Falls back to a byte comparison if either file fails to parse — we
+        // cannot reason about malformed YAML, so any difference is treated as
+        // divergence to stay on the safe side.
+        match (
+            parse_yaml_config_str(&src_str),
+            parse_yaml_config_str(&tgt_str),
+        ) {
+            (Ok(src_cfg), Ok(tgt_cfg)) => {
+                if merge_configs(tgt_cfg.clone(), src_cfg) != tgt_cfg {
+                    return Ok(true);
+                }
+            }
+            _ => {
+                if src_str != tgt_str {
+                    return Ok(true);
+                }
+            }
         }
     }
 
@@ -458,5 +506,105 @@ mod tests {
         .unwrap();
 
         assert!(has_inscope_divergence(&src, &tgt).unwrap());
+    }
+
+    #[test]
+    fn test_propagate_copies_source_verbatim_when_target_absent() {
+        // On checkout the new worktree has no daft file yet, so propagation must
+        // copy the source byte-for-byte: comments and clean formatting
+        // preserved, no `null`-littered canonicalization, no dropped fields.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        let original = "# my visitor config\nshared: [.env]\n\nhooks:\n  \
+                        worktree-post-create:\n    jobs:\n      - name: example\n        \
+                        run: echo hi\n";
+        fs::write(src.join("daft.yml"), original).unwrap();
+
+        let result = propagate(&src, &tgt).unwrap();
+        assert!(result.files_propagated.contains(&"daft.yml".to_string()));
+
+        let copied = fs::read_to_string(tgt.join("daft.yml")).unwrap();
+        assert_eq!(copied, original, "propagated file must be a verbatim copy");
+        assert!(
+            copied.contains("# my visitor config"),
+            "comments must be preserved"
+        );
+        assert!(
+            copied.contains("shared: [.env]"),
+            "`shared` must not be dropped"
+        );
+        assert!(!copied.contains("null"), "no null-litter");
+    }
+
+    #[test]
+    fn test_no_divergence_when_source_config_is_subset_of_target() {
+        // Reproduces the field report: the worktree being removed has a daft.yml
+        // that an older canonicalizing propagate() rewrote — it lost `shared`
+        // and is null-littered — but it adds nothing the merge target lacks.
+        // Removal must be allowed (no divergence).
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        // Source (worktree being removed): canonicalized / null-littered form,
+        // with `shared` already lost — exactly what was found on disk.
+        fs::write(
+            src.join("daft.yml"),
+            "min_version: null\nshared: null\nhooks:\n  worktree-post-create:\n    \
+             jobs:\n    - name: example\n      run: echo hi\n",
+        )
+        .unwrap();
+        // Target (merge target / main): the user's clean config.
+        fs::write(
+            tgt.join("daft.yml"),
+            "shared: [.env]\nhooks:\n  worktree-post-create:\n    jobs:\n      \
+             - name: example\n        run: echo hi\n",
+        )
+        .unwrap();
+
+        assert!(
+            !has_inscope_divergence(&src, &tgt).unwrap(),
+            "a source whose config is a subset of the target must not block removal"
+        );
+    }
+
+    #[test]
+    fn test_divergence_when_source_adds_named_job() {
+        // The source worktree has a real refinement (an extra named job) the
+        // target lacks — removing it would lose work, so the guard must block.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let tgt = dir.path().join("tgt");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&tgt).unwrap();
+        init_git(&src);
+        init_git(&tgt);
+
+        fs::write(
+            tgt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - name: a\n        run: echo a\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - name: a\n        \
+             run: echo a\n      - name: b\n        run: echo b\n",
+        )
+        .unwrap();
+
+        assert!(
+            has_inscope_divergence(&src, &tgt).unwrap(),
+            "a source that adds a named job the target lacks must block removal"
+        );
     }
 }
