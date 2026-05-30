@@ -325,6 +325,37 @@ Every PR must be tagged with:
   `refactor`, `style`, `perf`, `test`, `chore`, `ci`)
 - **Milestone**: `Public Launch` (current active milestone)
 
+### Labels
+
+Labels live on orthogonal axes — keep them from blurring:
+
+- **Kind** (issues): `bug`, `enhancement`, `documentation` — what the issue
+  _is_.
+- **Type** (PRs, conventional): `feat`, `fix`, `docs`, `perf`, `refactor`,
+  `chore`, `ci`, `style`, `test` — what the change _does_ (matches the commit
+  type).
+- **Area** (`area:*`): the code / conflict _zone_ a change touches —
+  `area:worktree`, `area:hooks`, `area:store`, `area:coordinator`, `area:git`,
+  `area:layout`, `area:config`, `area:commands`, `area:completions`,
+  `area:output`, `area:docs`, `area:ci`, `area:test-runner`, `area:term-styles`
+  (canonical list + globs: `.github/labeler.yml`). The `area:` prefix is
+  load-bearing — it keeps zones a distinct axis and avoids colliding with the
+  like-named `hooks`/`docs`/`ci` labels on other axes.
+- **Topic / triage**: `security`, `audit`, `dependencies`, `release`;
+  `high-priority`, `good first issue`, `help wanted`.
+
+**`area:*` is the parallelization + conflict signal.** PRs are auto-labeled by
+zone from their diff (`.github/labeler.yml`); label _issues_ by their
+**predicted** zone at triage. A PR carrying more zones than its issue predicted
+flags scope creep; two open PRs sharing a zone flag a likely rebase; the same
+zone on two in-progress items means serialize them.
+
+**Drift rule (same spirit as Shell Completions below):** `.github/labeler.yml`
+is the _only_ place the glob → zone map lives. When you add a top-level `src/`
+module or a new workspace crate, add its glob there and create the matching
+`area:*` label. Never duplicate the glob list into this file or the docs — they
+describe the scheme and point at `labeler.yml`.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/) format:

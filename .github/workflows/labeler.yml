@@ -1,0 +1,25 @@
+# Applies `area:*` zone labels to PRs from their changed files.
+# Map lives in .github/labeler.yml (the source of truth).
+#
+# Triggered on `pull_request` (NOT pull_request_target): daft PRs come from
+# same-repo branches (the worktree model), so the default token can label them,
+# and we avoid the privileged base-repo context. Minimal permissions; this
+# workflow is independent of and does not touch claude-pr-review.yml.
+#
+# Labels are ADDITIVE: actions/labeler defaults sync-labels to false, so zones
+# are added from the diff and manually-applied labels are never stripped
+# (intentional — the labeler should not fight manual overrides).
+name: Labeler
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213 # v6.1.0

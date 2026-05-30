@@ -233,6 +233,24 @@ docs: update installation instructions
 - Issue references go in the PR body, not the title: `Fixes #42`
 - All PRs target `master` and are squash-merged
 
+## Labels
+
+Issues and PRs are organized on a few orthogonal axes:
+
+- **Kind** (issues): `bug`, `enhancement`, `documentation`
+- **Type** (PRs): the conventional-commit type — `feat`, `fix`, `docs`, `perf`,
+  `refactor`, `chore`, `ci`, `style`, `test`
+- **Area** (`area:*`): the part of the codebase a change touches (e.g.
+  `area:worktree`, `area:hooks`, `area:store`, `area:docs`, `area:ci`). On PRs
+  these are **applied automatically** from the changed files — you don't add
+  them by hand. They make conflict-prone overlaps visible: two open PRs sharing
+  an `area:` are likely to need a rebase.
+- **Topic / triage**: `security`, `audit`, `release`, `high-priority`, and so on
+
+When filing an issue, add its kind and, if you know it, the `area:*` you expect
+the work to touch. The zone map is defined in
+[`.github/labeler.yml`](https://github.com/avihut/daft/blob/master/.github/labeler.yml).
+
 ## Branch Naming
 
 Follow the convention: `daft-<issue-number>/<short-description>`
