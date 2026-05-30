@@ -2237,7 +2237,9 @@ mod non_interactive_template_tests {
             keep: true,
         };
 
-        run_one_scenario_inner(&scenario, &ctx, &cleanup_set)
+        // Index 0: this test drives a single scenario, and the index only feeds
+        // the progress sink (a `NoopProgressSink` here, which ignores it).
+        run_one_scenario_inner(&scenario, 0, &ctx, &cleanup_set)
             .expect("non-interactive scenario run");
 
         std::env::remove_var("DAFT_MANUAL_TEST_BASE");
