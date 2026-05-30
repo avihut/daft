@@ -10,7 +10,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use crate::commands::install::run_with_output;
+use crate::commands::install::{InstallOptions, run_with_output};
 use crate::output::{CliOutput, OutputConfig};
 
 #[derive(Parser, Debug)]
@@ -28,8 +28,13 @@ alias that runs the same thing (so lefthook-style discovery keeps working).
 If daft.yml already exists, the command refuses without modifying anything;
 edit the existing file with your editor or a future `daft config` TUI.
 
-No git side effects: daft does not write to .gitignore or .git/info/exclude.
-Ignore rules are the user's responsibility.
+After writing daft.yml, daft checks whether git already ignores it. If not, it
+offers to add `/daft.yml` to .git/info/exclude — a local, per-clone exclude
+that is never committed, so a visitor config stays invisible to teammates. On a
+terminal it prompts (default No); --git-exclude adds it without prompting; a
+non-interactive run only prints a hint and changes nothing. Without
+--git-exclude, --quiet skips the check entirely. daft never touches the tracked
+.gitignore.
 "#)]
 pub struct Args {
     #[arg(short = 'q', long = "quiet", help = "Suppress progress reporting")]
@@ -37,6 +42,12 @@ pub struct Args {
 
     #[arg(short = 'v', long = "verbose", help = "Show detailed progress")]
     verbose: bool,
+
+    #[arg(
+        long = "git-exclude",
+        help = "Add /daft.yml to .git/info/exclude without prompting (keeps it private to this clone)"
+    )]
+    git_exclude: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -60,5 +71,10 @@ pub fn run() -> Result<()> {
         .collect();
     let args = Args::parse_from(argv);
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
-    run_with_output(&mut output)
+    run_with_output(
+        &mut output,
+        InstallOptions {
+            git_exclude: args.git_exclude,
+        },
+    )
 }

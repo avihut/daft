@@ -501,6 +501,11 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
                 description: "Show detailed progress".into(),
                 args: None,
             },
+            FigOption {
+                name: FigName::Single("--git-exclude".into()),
+                description: "Add /daft.yml to .git/info/exclude without prompting (keeps it private to this clone)".into(),
+                args: None,
+            },
         ]),
     };
 

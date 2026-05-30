@@ -690,7 +690,7 @@ _daft() {
         case "$words[3]" in
             install)
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -q --quiet -v --verbose -h --help
+                    compadd -- -q --quiet -v --verbose --git-exclude -h --help
                 fi
                 return
                 ;;

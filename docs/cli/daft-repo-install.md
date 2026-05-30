@@ -15,12 +15,13 @@ keeps working.
 
 ## Usage
 
-    daft repo install [--quiet | -q] [--verbose | -v]
+    daft repo install [--quiet | -q] [--verbose | -v] [--git-exclude]
 
-| Argument / flag   | Description                  |
-| ----------------- | ---------------------------- |
-| `--quiet`, `-q`   | Suppress progress reporting. |
-| `--verbose`, `-v` | Show detailed progress.      |
+| Argument / flag   | Description                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `--quiet`, `-q`   | Suppress progress reporting. Without `--git-exclude`, also skips the git-exclude check (no prompt, no hint). |
+| `--verbose`, `-v` | Show detailed progress.                                                                                   |
+| `--git-exclude`   | Add `/daft.yml` to `.git/info/exclude` without prompting (keeps it private locally). Takes precedence over `--quiet`: the entry is still added, just silently. |
 
 ## Behavior
 
@@ -29,15 +30,28 @@ keeps working.
   section.
 - If `daft.yml` already exists, the command refuses without modifying anything.
   Edit the existing file with your editor instead.
-- **No git side effects:** daft does not touch `.gitignore` or
-  `.git/info/exclude`. Whether the file is tracked (a team baseline) or
-  gitignored (your personal visitor config) is your call — see the comments in
-  the generated file.
+- **Offers to keep it private (visitor mode):** after writing `daft.yml`, daft
+  checks whether git already ignores it. If not, it offers to add `/daft.yml` to
+  `.git/info/exclude` — a local, per-clone exclude that is **never committed**,
+  so a visitor config stays invisible to teammates.
+  - Interactive (a TTY): you are prompted (default No).
+  - `--git-exclude`: adds the entry without prompting. This takes precedence
+    over `--quiet` — the entry is still added, just without the confirmation
+    message.
+  - Non-interactive (no TTY, scripts, hooks): nothing is changed; daft prints a
+    copy-pasteable hint instead.
+  - `--quiet` (without `--git-exclude`): the check is skipped entirely — no
+    prompt, no hint, no mutation.
+- daft **never** touches the tracked `.gitignore`. For a team baseline you would
+  commit `daft.yml` instead of excluding it.
 
 ## Examples
 
     # Bootstrap a starter daft.yml in the current worktree
     daft repo install
+
+    # Bootstrap a private (visitor) config and exclude it in one step
+    daft repo install --git-exclude
 
     # Same thing via the top-level alias
     daft install

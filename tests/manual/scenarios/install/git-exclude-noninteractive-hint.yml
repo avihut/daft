@@ -1,0 +1,32 @@
+name: Install hints (no mutation) when non-interactive
+description:
+  Regression — without a TTY and without --git-exclude, daft install must not
+  hang or touch git. It writes daft.yml, prints a copy-pasteable hint, and
+  leaves .git/info/exclude untouched, so daft.yml stays visible to git.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Run daft install with no flag (runner is non-interactive)
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+      output_contains:
+        - "info/exclude"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/.git/info/exclude"
+          content: "/daft.yml"
+
+  - name: git still sees daft.yml (not excluded)
+    run: git check-ignore daft.yml
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 1

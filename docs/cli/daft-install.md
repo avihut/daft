@@ -19,8 +19,13 @@ run the same thing. The alias is kept so lefthook-style discovery works.
 If daft.yml already exists, the command refuses without modifying anything;
 edit the existing file with your editor or a future `daft config` TUI.
 
-No git side effects: daft does not write to .gitignore or .git/info/exclude.
-Ignore rules are the user's responsibility.
+After writing daft.yml, daft checks whether git already ignores it. If not, it
+offers to add `/daft.yml` to .git/info/exclude — a local, per-clone exclude
+that is never committed, so a visitor config stays invisible to teammates. On a
+terminal it prompts (default No); --git-exclude adds it without prompting; a
+non-interactive run only prints a hint and changes nothing. Without
+--git-exclude, --quiet skips the check entirely. daft never touches the tracked
+.gitignore.
 
 ## Usage
 
@@ -34,6 +39,7 @@ daft install [OPTIONS]
 |--------|-------------|----------|
 | `-q, --quiet` | Suppress progress reporting |  |
 | `-v, --verbose` | Show detailed progress |  |
+| `--git-exclude` | Add /daft.yml to .git/info/exclude without prompting (keeps it private to this clone) |  |
 
 ## Global Options
 

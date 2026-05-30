@@ -1,0 +1,34 @@
+name: Repo install --git-exclude hides daft.yml from git
+description:
+  daft repo install --git-exclude writes daft.yml and adds /daft.yml to the
+  repo's local .git/info/exclude (never committed) without prompting, so a
+  visitor config stays invisible to git and teammates.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Run daft repo install --git-exclude
+    run: daft repo install --git-exclude 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+      output_contains:
+        - "private to this clone"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/.git/info/exclude"
+          content: "/daft.yml"
+
+  - name: git now ignores daft.yml
+    run: git check-ignore daft.yml
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft.yml"

@@ -383,6 +383,7 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subco
 # repo install: flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -l git-exclude -d 'Add /daft.yml to .git/info/exclude without prompting'
 # repo remove: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'

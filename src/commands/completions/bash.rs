@@ -517,7 +517,7 @@ _daft() {
         case "${words[2]}" in
             install)
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-q --quiet -v --verbose -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "-q --quiet -v --verbose --git-exclude -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;
