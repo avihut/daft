@@ -337,9 +337,10 @@ Labels live on orthogonal axes — keep them from blurring:
 - **Area** (`area:*`): the code / conflict _zone_ a change touches —
   `area:worktree`, `area:hooks`, `area:store`, `area:coordinator`, `area:git`,
   `area:layout`, `area:config`, `area:commands`, `area:completions`,
-  `area:output`, `area:docs`, `area:ci`, `area:test-runner`, `area:term-styles`.
-  The `area:` prefix is load-bearing — it keeps zones a distinct axis and avoids
-  colliding with the like-named `hooks`/`docs`/`ci` labels on other axes.
+  `area:output`, `area:docs`, `area:ci`, `area:test-runner`, `area:term-styles`
+  (canonical list + globs: `.github/labeler.yml`). The `area:` prefix is
+  load-bearing — it keeps zones a distinct axis and avoids colliding with the
+  like-named `hooks`/`docs`/`ci` labels on other axes.
 - **Topic / triage**: `security`, `audit`, `dependencies`, `release`;
   `high-priority`, `good first issue`, `help wanted`.
 

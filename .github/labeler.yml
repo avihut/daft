@@ -28,12 +28,15 @@
       - any-glob-to-any-file:
           - "src/core/config.rs"
           - "src/core/config/**"
+          - "src/commands/config/**" # config commands share the config zone
 
 "area:commands":
   - changed-files:
       - any-glob-to-any-file:
           - "src/commands/*.rs"
           - "src/commands/repo/**"
+          - "src/cli/**" # argv parsing layer
+          - "src/doctor/**" # doctor folded into commands (low-churn)
           - "src/main.rs"
           - "src/shortcuts.rs"
           - "src/exec.rs"

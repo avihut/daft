@@ -5,6 +5,10 @@
 # same-repo branches (the worktree model), so the default token can label them,
 # and we avoid the privileged base-repo context. Minimal permissions; this
 # workflow is independent of and does not touch claude-pr-review.yml.
+#
+# Labels are ADDITIVE: actions/labeler defaults sync-labels to false, so zones
+# are added from the diff and manually-applied labels are never stripped
+# (intentional — the labeler should not fight manual overrides).
 name: Labeler
 
 on:
