@@ -907,7 +907,21 @@ impl ProgressSink for IndicatifProgressSink {
         // re-locks `slots`.
         let _state = self.state_lock.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut slots) = self.slots.lock() {
-            if let Some(slot) = slots.iter_mut().find(|s| s.occupant.is_none()) {
+            let slot_count = slots.len();
+            let free = slots.iter_mut().find(|s| s.occupant.is_none());
+            // A free slot is guaranteed in practice (the rayon pool has exactly
+            // `total_workers` threads and the pool is sized to match), so a miss
+            // means the pool size and worker count have drifted out of sync — or
+            // `run_started` never ran. Catch that loudly in dev/test; in release
+            // the scenario simply runs without a live row (its buffer still
+            // prints and its completion-map dot still lights on
+            // `complete_scenario`).
+            debug_assert!(
+                free.is_some(),
+                "no free slot for scenario {index}: {slot_count} slots, none free \
+                 — pool/worker-count drift"
+            );
+            if let Some(slot) = free {
                 // No `starting…` placeholder — the bar-at-0 + `0/N` counter
                 // already say "just started," and an ellipsis label is the §5
                 // microcopy anti-pattern.
@@ -917,11 +931,6 @@ impl ProgressSink for IndicatifProgressSink {
                     name: name.to_string(),
                 });
             }
-            // No free slot is unreachable in practice (the rayon pool has
-            // exactly `total_workers` threads and the pool is sized to match),
-            // but if it ever happens the scenario simply runs without a live
-            // row — its buffer still prints and its completion-map dot still
-            // lights on `complete_scenario`.
         }
         drop(_state);
         self.update_summary_msg();
@@ -1345,8 +1354,14 @@ mod tests {
         sink.scenario_started(0, "a", 4);
         sink.step_started(0, 4, 4, "done"); // bar at full
         sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"");
-        let pos = sink.slots.lock().unwrap()[0].bar.position();
-        assert_eq!(pos, 0);
+        let slots = sink.slots.lock().unwrap();
+        assert_eq!(slots[0].bar.position(), 0);
+        // `length == Some(1)` is the load-bearing half of the fix: indicatif
+        // renders a 0-length bar as *full* (`0/0` shows as a solid block), so
+        // `dress_idle` sets length 1. Without this assert, flipping
+        // `set_length(1)` back to `(0)` silently reverts the bug while the
+        // position check still passes.
+        assert_eq!(slots[0].bar.length(), Some(1));
     }
 
     #[test]

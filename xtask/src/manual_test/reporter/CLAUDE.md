@@ -424,10 +424,12 @@ by an earlier section's rule it would violate.
   `✗ FAILED`. Violates §4.
 - **Coloring decoration** (rule chars, brackets, separators). Decoration is dim
   by definition; data carries the color.
-- **Hardcoding ANSI escapes inline.** Always go through `term_styles`. If you
-  need a combination the crate doesn't expose, add a helper to `term_styles`
-  (like the existing `bold_red`, `bold_green`, `bold_cyan`) rather than inlining
-  the bytes.
+- **Hardcoding ANSI escapes inline in `reporter/` code.** Always go through
+  `term_styles`. If you need a combination the crate doesn't expose, add a
+  helper to `term_styles` (like the existing `bold_red`, `bold_green`,
+  `bold_cyan`) rather than inlining the bytes. (Exception: the progress module's
+  hand-built `{prefix}`/`{msg}` strings inline SGR by necessity — indicatif's
+  template DSL modifiers apply only to built-in keys, not custom ones; see §8.)
 - **Coloring a span inside a dimmed line** ("FG-only reset so outer dim
   survives"). Don't. Most terminals render dim as half-brightness on top of the
   color and you get muddy grey-green / grey-red that's invisible at a glance. If
