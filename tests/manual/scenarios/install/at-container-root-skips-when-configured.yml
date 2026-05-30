@@ -1,0 +1,36 @@
+name: Install at the container root skips when the repo is already configured
+description: >
+  At the container root, if the repo already ships a daft.yml (here a committed
+  team baseline in the default worktree), `daft install` reports it and makes no
+  changes — and never writes a stray file at the container root.
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Commit a daft.yml in the default worktree (tracked)
+    run: |
+      echo "# committed team baseline" > daft.yml &&
+      git add daft.yml &&
+      git commit -m "Add daft.yml"
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Run daft install at the container root — it reports and skips
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already present"
+        - "tracked"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "# committed team baseline"

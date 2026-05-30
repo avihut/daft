@@ -30,7 +30,7 @@ steps:
     expect:
       output_contains:
         - "Config"
-        - "daft.yml tracked (team baseline)"
+        - "daft.yml tracked"
 
   - name: Doctor from the container root reports the same tracked config
     run: daft doctor -v 2>&1
@@ -38,4 +38,4 @@ steps:
     expect:
       output_contains:
         - "Config"
-        - "daft.yml tracked (team baseline)"
+        - "daft.yml tracked"

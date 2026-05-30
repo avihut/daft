@@ -1,0 +1,42 @@
+name: Install at the container root installs across all worktrees
+description: >
+  Running `daft install` at the bare container root of a contained layout is
+  valid: like a multi-branch `daft clone --install`, it writes the starter
+  daft.yml into the default worktree and copies it into the repo's other
+  worktrees. It never leaves a stray daft.yml at the (inert) container root.
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Make an initial commit so the default branch is born
+    run: |
+      echo hi > README.md &&
+      git add README.md &&
+      git commit -m "init"
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Create a second worktree from the default worktree
+    run: git-worktree-checkout -b feature
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature"
+
+  - name: Run daft install AT THE CONTAINER ROOT (a bare dir, not a worktree)
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+        - "$WORK_DIR/test-repo/feature/daft.yml"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/daft.yml"
