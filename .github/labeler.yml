@@ -1,0 +1,99 @@
+# Auto-applies `area:*` zone labels to PRs based on the files they touch.
+#
+# WHAT: each `area:*` label marks a code / conflict zone. PRs are labeled
+#   automatically from their diff here; issues are hand-labeled by *predicted*
+#   zone at triage. A PR carrying more zones than its issue predicted flags
+#   scope creep; two open PRs sharing a zone flag a likely rebase conflict.
+#   See CONTRIBUTING.md and CLAUDE.md ("### Labels") for the policy.
+#
+# SOURCE OF TRUTH: this file is the ONLY place the glob -> zone map lives.
+#   When you add a top-level `src/` module or a new workspace crate, add its
+#   glob here AND create the matching `area:*` label. Do not duplicate this
+#   list into CLAUDE.md or the docs — they describe the scheme and point here.
+#
+# Syntax: actions/labeler v5+ (changed-files / any-glob-to-any-file).
+
+"area:worktree":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/core/worktree/**"
+
+"area:layout":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/core/layout/**"
+
+"area:config":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/core/config.rs"
+          - "src/core/config/**"
+
+"area:commands":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/commands/*.rs"
+          - "src/commands/repo/**"
+          - "src/main.rs"
+          - "src/shortcuts.rs"
+          - "src/exec.rs"
+
+"area:completions":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/commands/completions/**"
+
+"area:hooks":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/hooks/**"
+          - "src/commands/hooks/**"
+          - "src/executor/**"
+          - "src/trust_prune.rs"
+
+"area:coordinator":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/coordinator/**"
+
+"area:store":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/store/**"
+
+"area:git":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/git/**"
+
+"area:output":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/output/**"
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "mise.toml"
+          - "release.toml"
+          - "cliff.toml"
+          - "cooldown.toml"
+          - "bunfig.toml"
+          - "scripts/**"
+          - ".dep-age-allowlist"
+
+"area:test-runner":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "xtask/**"
+
+"area:term-styles":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "term-styles/**"
