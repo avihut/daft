@@ -1,0 +1,30 @@
+name: Install writes to the worktree root even when run from a subdirectory
+description: >
+  daft.yml belongs at the worktree root. Run from a nested subdirectory of a
+  worktree, `daft install` resolves the worktree root and writes there — not
+  into the subdir (where daft would never look for it).
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Create a nested subdirectory inside the worktree
+    run: mkdir -p "$WORK_DIR/test-repo/master/nested/deep"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master/nested/deep"
+
+  - name: Run daft install from the subdirectory
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo/master/nested/deep"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/master/nested/deep/daft.yml"

@@ -1,7 +1,8 @@
-name: Repo install refuses on existing daft.yml
-description:
-  daft repo install exits non-zero and leaves daft.yml untouched when it already
-  exists
+name: Repo install guides on an existing daft.yml instead of failing
+description: >
+  `daft repo install` (the canonical name) mirrors `daft install`: an existing
+  daft.yml is reported (tracked vs. visitor) and left untouched with exit 0, not
+  a hard error. The pre-existing file here is untracked → visitor config.
 
 steps:
   - name: Initialize a fresh repo
@@ -11,20 +12,21 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-repo/master"
 
-  - name: Pre-create daft.yml with distinctive content
+  - name: Pre-create an untracked daft.yml with distinctive content
     run: echo "# pre-existing content" > $WORK_DIR/test-repo/master/daft.yml
     expect:
       exit_code: 0
       files_exist:
         - "$WORK_DIR/test-repo/master/daft.yml"
 
-  - name: Run daft repo install and expect refusal
+  - name: Run daft repo install — it guides, does not fail
     run: daft repo install 2>&1
     cwd: "$WORK_DIR/test-repo/master"
     expect:
-      exit_code: 1
+      exit_code: 0
       output_contains:
         - "already exists"
+        - "visitor"
       file_contains:
         - path: "$WORK_DIR/test-repo/master/daft.yml"
           content: "# pre-existing content"

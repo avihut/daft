@@ -1,0 +1,24 @@
+name: Install refuses at the bare container root of a contained layout
+description: >
+  In a contained layout the project/container root is a bare directory, not a
+  worktree. A daft.yml written there is inert (no worktree reads it), so `daft
+  install` must refuse with guidance and create no stray file. Regression for
+  the field report where install "worked" at the container root.
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Run daft install AT THE CONTAINER ROOT (a bare dir, not a worktree)
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "container root"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/daft.yml"
