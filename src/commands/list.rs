@@ -198,11 +198,26 @@ fn should_use_live(args: &Args) -> bool {
         && std::io::stdout().is_terminal()
 }
 
+/// Resolve the base branch to compare against, honoring `daft.remote` (not a
+/// hardcoded `origin`) with a `master` fallback. Both list paths route through
+/// this so they can't drift again (#597).
+pub(crate) fn resolve_base_branch(
+    git_common_dir: &std::path::Path,
+    settings: &DaftSettings,
+) -> String {
+    get_default_branch_local(git_common_dir, &settings.remote, settings.use_gitoxide)
+        .unwrap_or_else(|_| "master".to_string())
+}
+
 fn run_blocking(args: Args) -> Result<()> {
     // Construct the body `GitCommand` first and load settings through it so the
     // repo is discovered once and reused for the command body (#584).
     let git = GitCommand::new(false);
     let settings = DaftSettings::load_with(&git)?;
+    // Resolve the base branch before the `settings` field-moves below, since it
+    // borrows `&settings` (honoring `daft.remote` rather than a hardcoded remote).
+    let git_common_dir = get_git_common_dir()?;
+    let base_branch = resolve_base_branch(&git_common_dir, &settings);
     let stat = args.stat.unwrap_or(settings.list_stat);
     let columns_input = args.columns.or(settings.list_columns);
     let resolved = match columns_input {
@@ -223,9 +238,6 @@ fn run_blocking(args: Args) -> Result<()> {
     let compute_mtime = sort_spec.needs_mtime();
     let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
-    let git_common_dir = get_git_common_dir()?;
-    let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)
-        .unwrap_or_else(|_| "master".to_string());
     let current_path = get_current_worktree_path()
         .ok()
         .and_then(|p| p.canonicalize().ok());
@@ -1103,6 +1115,35 @@ fn size_column_index(selected_columns: &[ListColumn], show_annotations: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #597 regression: list must resolve the base branch via the configured
+    /// `daft.remote`, not a hardcoded `origin`. Both HEAD files exist so it stays
+    /// on the deterministic file-read path (no ambient git, no `#[serial]`).
+    #[test]
+    fn resolve_base_branch_honors_configured_remote_not_hardcoded_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gcd = tmp.path();
+        for (remote, branch) in [("upstream", "main"), ("origin", "wrongdefault")] {
+            let head = gcd.join("refs/remotes").join(remote).join("HEAD");
+            std::fs::create_dir_all(head.parent().unwrap()).unwrap();
+            std::fs::write(&head, format!("ref: refs/remotes/{remote}/{branch}\n")).unwrap();
+        }
+
+        // Honors settings.remote: a repo configured with `upstream` resolves to
+        // upstream's default branch.
+        let upstream = DaftSettings {
+            remote: "upstream".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_base_branch(gcd, &upstream), "main");
+
+        // Hardcoding `origin` (the #597 bug) would have resolved the wrong branch.
+        let origin = DaftSettings {
+            remote: "origin".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_base_branch(gcd, &origin), "wrongdefault");
+    }
 
     #[test]
     fn build_emit_table_headers_match_default_columns() {

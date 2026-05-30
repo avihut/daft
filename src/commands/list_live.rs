@@ -5,7 +5,7 @@
 //! in `list::run` falls back to `list::run_blocking` (today's behavior).
 
 use crate::{
-    commands::list::Args,
+    commands::list::{Args, resolve_base_branch},
     core::{
         columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns},
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
@@ -19,7 +19,6 @@ use crate::{
     },
     git::GitCommand,
     output::tui::{Column, TuiRenderer, TuiState},
-    remote::get_default_branch_local,
     settings::DaftSettings,
 };
 use anyhow::Result;
@@ -87,9 +86,7 @@ pub fn run_live(args: Args) -> Result<()> {
     let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let git_common_dir = get_git_common_dir()?;
-    let base_branch =
-        get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
-            .unwrap_or_else(|_| "master".to_string());
+    let base_branch = resolve_base_branch(&git_common_dir, &settings);
     let current_path = get_current_worktree_path()
         .ok()
         .and_then(|p| p.canonicalize().ok());
