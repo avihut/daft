@@ -1508,48 +1508,10 @@ fn run_clone_install(
     crate::commands::install::install_at(primary, output, &opts, interactive)?;
 
     // Copy the just-installed daft.yml into the other worktrees this clone
-    // created. Enumerate via `git worktree list` so it covers every layout and
-    // both the sequential and `--all-branches` satellite paths. A byte-for-byte
-    // copy preserves the commented starter; a copy failure for one sibling is a
-    // warning, not a clone failure — the primary is already set up.
-    let source = primary.join("daft.yml");
-    let primary_canon = std::fs::canonicalize(primary).unwrap_or_else(|_| primary.to_path_buf());
-    let listing = crate::utils::git_command_at(primary)
-        .args(["worktree", "list", "--porcelain"])
-        .output();
-    let Ok(listing) = listing else {
-        return Ok(());
-    };
-    if !listing.status.success() {
-        return Ok(());
-    }
-    let porcelain = String::from_utf8_lossy(&listing.stdout);
-    let mut propagated = 0usize;
-    for wt in crate::core::layout::detect::parse_worktree_list(&porcelain) {
-        let wt_canon = std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
-        if wt_canon == primary_canon {
-            continue;
-        }
-        let dest = wt.path.join("daft.yml");
-        if dest.exists() {
-            // A committed baseline (or other pre-existing file) on that branch —
-            // leave it untouched.
-            continue;
-        }
-        match std::fs::copy(&source, &dest) {
-            Ok(_) => propagated += 1,
-            Err(e) => output.warning(&format!(
-                "Could not copy daft.yml to {}: {e}",
-                wt.path.display()
-            )),
-        }
-    }
-    if propagated > 0 {
-        output.step(&format!(
-            "Propagated daft.yml to {propagated} other worktree{}",
-            if propagated == 1 { "" } else { "s" }
-        ));
-    }
+    // created (covers every layout and both the sequential and `--all-branches`
+    // satellite paths). Shared with `daft install` run at a contained-layout
+    // container root, which performs the same multi-worktree bootstrap.
+    crate::commands::install::propagate_starter_to_worktrees(primary, output);
 
     Ok(())
 }

@@ -16,12 +16,13 @@ covering the major sections (hooks, shared, layout). Modeled on
 This is a top-level alias for `daft repo install` (the canonical name); both
 run the same thing. The alias is kept so lefthook-style discovery works.
 
-daft.yml is a per-worktree file, so install is repo-aware. Run it inside a
-worktree: from a subdirectory it targets the worktree root, and it refuses
-outside a git repository or at the bare container root of a contained layout
-(where a daft.yml would be inert). If a daft.yml already exists it reports
-whether that file is tracked (a team baseline) or a visitor config (untracked)
-and stops without modifying it.
+daft.yml is a per-worktree file, so install is repo-aware. Inside a worktree it
+targets the worktree root (even from a subdirectory). At the bare container root
+of a contained layout it installs across the repo's worktrees — writing the
+starter into the default worktree and copying it into the others, like
+`daft clone --install`. It refuses only outside a git repository. If a daft.yml
+already exists it reports whether the file is tracked or a visitor config and
+stops without modifying it.
 
 After writing daft.yml, daft checks whether git already ignores it. If not, it
 offers to add `/daft.yml` to .git/info/exclude — a local, per-clone exclude
