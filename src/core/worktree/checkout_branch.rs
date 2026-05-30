@@ -285,38 +285,54 @@ fn resolve_base_branch(
 /// `preferred_branch`'s worktree (the base branch), then the default branch's.
 /// Falls back to cwd when none is found, so propagation simply no-ops as before.
 ///
-/// The in-worktree check uses the non-gitoxide CLI helper
-/// (`get_current_worktree_path`, the established "am I in a worktree" primitive)
-/// so the result is deterministic regardless of the gitoxide toggle —
-/// `find_worktree_for_branch` is likewise CLI-only.
+/// The structural "where am I" decision is delegated to
+/// [`crate::core::repo::resolve_worktree_position`] (the shared primitive that
+/// `daft install`/`daft doctor` also use, so the two resolvers can't drift).
+/// This adds the checkout-specific bias on top: prefer the `preferred_branch`'s
+/// worktree, then the default branch's (via the network-capable
+/// `get_default_branch_local`), then any worktree the local probe already found.
 pub(crate) fn resolve_source_worktree(
     git: &GitCommand,
     git_dir: &Path,
     remote_name: &str,
     preferred_branch: Option<&str>,
 ) -> Result<PathBuf> {
-    // Inside a worktree → its toplevel.
-    if let Ok(toplevel) = crate::core::repo::get_current_worktree_path() {
-        return Ok(toplevel);
-    }
+    use crate::core::repo::WorktreePosition;
 
-    // Not a worktree (bare container root): prefer the base branch's worktree.
-    if let Some(branch) = preferred_branch
-        && let Ok(Some(wt)) = git.find_worktree_for_branch(branch)
-    {
-        return Ok(wt);
-    }
+    match crate::core::repo::resolve_worktree_position(&get_current_directory()?) {
+        // Inside a worktree → its toplevel (also normalizes a subdir cwd).
+        WorktreePosition::InWorktree { root } => Ok(root),
 
-    // Then the default branch's worktree.
-    if let Ok(default_branch) =
-        crate::core::remote::get_default_branch_local(git_dir, remote_name, false)
-        && let Ok(Some(wt)) = git.find_worktree_for_branch(&default_branch)
-    {
-        return Ok(wt);
-    }
+        // Bare container root: bias toward the worktree that carries the user's
+        // visitor config before falling back to whatever the probe found.
+        WorktreePosition::ContainerRoot { representative } => {
+            // Prefer the base branch's worktree (the propagation source).
+            if let Some(branch) = preferred_branch
+                && let Ok(Some(wt)) = git.find_worktree_for_branch(branch)
+            {
+                return Ok(wt);
+            }
 
-    // Nothing resolvable — preserve prior behavior (propagation no-ops).
-    get_current_directory()
+            // Then the default branch's worktree.
+            if let Ok(default_branch) =
+                crate::core::remote::get_default_branch_local(git_dir, remote_name, false)
+                && let Ok(Some(wt)) = git.find_worktree_for_branch(&default_branch)
+            {
+                return Ok(wt);
+            }
+
+            // Then any worktree the local probe already resolved.
+            if let Some(wt) = representative {
+                return Ok(wt);
+            }
+
+            // Nothing resolvable — preserve prior behavior (propagation no-ops).
+            get_current_directory()
+        }
+
+        // Not in a repo — preserve prior behavior (propagation no-ops).
+        WorktreePosition::NotInRepo => get_current_directory(),
+    }
 }
 
 /// Fetch latest changes from the remote.
