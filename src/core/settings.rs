@@ -521,7 +521,14 @@ impl DaftSettings {
     ///
     /// Use this in commands that run inside a git repository.
     pub fn load() -> Result<Self> {
-        let git = GitCommand::new(true);
+        Self::load_with(&GitCommand::new(true))
+    }
+
+    /// Like [`DaftSettings::load`], but reuses a caller-provided [`GitCommand`]
+    /// so the `gix::discover()` it performs is shared with the caller's other
+    /// config reads (hooks-config load, command body) instead of each
+    /// constructing a throwaway instance that re-discovers the repo. See #584.
+    pub fn load_with(git: &GitCommand) -> Result<Self> {
         let mut settings = Self::default();
 
         if let Some(value) = git.config_get(keys::AUTOCD)? {
@@ -662,7 +669,7 @@ impl DaftSettings {
             }
         }
 
-        load_merge_settings(&git, &mut settings)?;
+        load_merge_settings(git, &mut settings)?;
         validate_merge_settings(settings.merge_commit, settings.merge_cleanup)?;
 
         Ok(settings)
@@ -977,7 +984,13 @@ impl Default for HookOutputConfig {
 /// This loads hooks settings from the current repository's config,
 /// falling back to global config and then to defaults.
 pub fn load_hooks_config() -> Result<HooksConfig> {
-    let git = GitCommand::new(true);
+    load_hooks_config_with(&GitCommand::new(true))
+}
+
+/// Like [`load_hooks_config`], but reuses a caller-provided [`GitCommand`] so
+/// the `gix::discover()` it performs is shared with the caller's settings load
+/// and command body rather than re-discovering the repo. See [`DaftSettings::load_with`].
+pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
     let mut config = HooksConfig::default();
 
     // Load global hooks settings
@@ -1034,7 +1047,7 @@ pub fn load_hooks_config() -> Result<HooksConfig> {
     // Load per-hook settings
     for hook_type in HookType::all() {
         let hook_config = config.get_hook_config_mut(*hook_type);
-        load_hook_type_config(&git, *hook_type, hook_config)?;
+        load_hook_type_config(git, *hook_type, hook_config)?;
     }
 
     Ok(config)

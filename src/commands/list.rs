@@ -182,12 +182,12 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Not inside a Git repository");
     }
 
-    let settings = DaftSettings::load()?;
-
+    // Settings are loaded inside `run_live`/`run_blocking`, co-located with each
+    // path's `GitCommand` so they share a single repo discovery (#584).
     if should_use_live(&args) {
-        crate::commands::list_live::run_live(args, settings)
+        crate::commands::list_live::run_live(args)
     } else {
-        run_blocking(args, settings)
+        run_blocking(args)
     }
 }
 
@@ -198,7 +198,11 @@ fn should_use_live(args: &Args) -> bool {
         && std::io::stdout().is_terminal()
 }
 
-fn run_blocking(args: Args, settings: DaftSettings) -> Result<()> {
+fn run_blocking(args: Args) -> Result<()> {
+    // Construct the body `GitCommand` first and load settings through it so the
+    // repo is discovered once and reused for the command body (#584).
+    let git = GitCommand::new(false);
+    let settings = DaftSettings::load_with(&git)?;
     let stat = args.stat.unwrap_or(settings.list_stat);
     let columns_input = args.columns.or(settings.list_columns);
     let resolved = match columns_input {
@@ -217,7 +221,7 @@ fn run_blocking(args: Args, settings: DaftSettings) -> Result<()> {
     };
     let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
     let compute_mtime = sort_spec.needs_mtime();
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let git_common_dir = get_git_common_dir()?;
     let base_branch = get_default_branch_local(&git_common_dir, "origin", settings.use_gitoxide)

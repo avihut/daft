@@ -372,7 +372,12 @@ fn run_with_args(args: Args) -> Result<()> {
         anyhow::bail!("<BASE_BRANCH_NAME> can only be used with -b/--create-branch");
     }
 
-    let settings = DaftSettings::load()?;
+    // Construct one `GitCommand` and load settings (and, in the run_checkout /
+    // run_create_branch bodies, the hooks config) through it so a checkout
+    // discovers the repo exactly once instead of per throwaway instance (#584).
+    let git = GitCommand::new(args.quiet);
+    let settings = DaftSettings::load_with(&git)?;
+    let git = git.with_gitoxide(settings.use_gitoxide);
 
     let autocd = settings.autocd && !args.no_cd;
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
@@ -384,9 +389,9 @@ fn run_with_args(args: Args) -> Result<()> {
     let source_worktree = get_current_worktree_path().ok();
 
     let result = if args.create_branch {
-        run_create_branch(&args, &settings, &mut output)
+        run_create_branch(&args, &settings, &git, &mut output)
     } else {
-        match run_checkout(&args, &settings, &mut output) {
+        match run_checkout(&args, &settings, &git, &mut output) {
             Ok(already_existed) => {
                 // --at is invalid when navigating to an existing worktree
                 // (it only applies when creating a new one)
@@ -412,7 +417,7 @@ fn run_with_args(args: Args) -> Result<()> {
                     output.result(&format!(
                         "Branch '{branch}' not found, creating new worktree..."
                     ));
-                    run_create_branch(&args, &settings, &mut output)
+                    run_create_branch(&args, &settings, &git, &mut output)
                 } else {
                     change_directory(&original_dir).ok();
                     // --at with a non-existent branch requires --start or autoStart
@@ -683,16 +688,16 @@ fn maybe_consolidate(chosen_layout: &Layout, output: &mut dyn Output) -> Result<
 fn run_checkout(
     args: &Args,
     settings: &DaftSettings,
+    git: &GitCommand,
     output: &mut dyn Output,
 ) -> Result<bool, checkout::CheckoutError> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (resolved_layout, source) = resolve_checkout_layout(git, output);
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
     if should_persist && let Ok(git_dir) = get_git_common_dir() {
@@ -720,7 +725,7 @@ fn run_checkout(
         at_path: args.at.clone(),
     };
 
-    let hooks_config = crate::core::settings::load_hooks_config()?;
+    let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -730,7 +735,7 @@ fn run_checkout(
     output.start_spinner("Preparing worktree...");
     let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let r = checkout::execute(&params, &git, &project_root, &mut bridge);
+        let r = checkout::execute(&params, git, &project_root, &mut bridge);
         (r, bridge.into_executor())
     };
     output.finish_spinner();
@@ -758,15 +763,19 @@ fn run_checkout(
     Ok(result.already_existed)
 }
 
-fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
+fn run_create_branch(
+    args: &Args,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
     let project_root = get_project_root()?;
 
-    let (resolved_layout, source) = resolve_checkout_layout(&git, output);
+    let (resolved_layout, source) = resolve_checkout_layout(git, output);
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
     if should_persist && let Ok(git_dir) = get_git_common_dir() {
@@ -799,7 +808,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
         at_path: args.at.clone(),
     };
 
-    let hooks_config = crate::core::settings::load_hooks_config()?;
+    let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -809,7 +818,7 @@ fn run_create_branch(args: &Args, settings: &DaftSettings, output: &mut dyn Outp
     output.start_spinner("Creating worktree...");
     let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let r = checkout_branch::execute(&params, &git, &project_root, &mut bridge);
+        let r = checkout_branch::execute(&params, git, &project_root, &mut bridge);
         (r, bridge.into_executor())
     };
     output.finish_spinner();
