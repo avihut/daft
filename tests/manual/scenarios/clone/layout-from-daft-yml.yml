@@ -5,16 +5,7 @@ description:
 
 repos:
   - name: test-repo
-    default_branch: main
-    branches:
-      - name: main
-        files:
-          - path: README.md
-            content: "# test-repo"
-        commits:
-          - message: "Initial commit"
-    daft_yml: |
-      layout: contained
+    use_fixture: daft-yml-contained-layout
 
 steps:
   - name: Clone without --layout flag

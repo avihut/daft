@@ -1,0 +1,24 @@
+# Single-branch repo whose daft.yml defines post-clone + worktree-post-create
+# marker hooks. NOTE: intentionally NO `layout:` field — the layout is chosen
+# per-scenario via the --layout flag, which only takes effect because daft.yml
+# does not pin one. Shared by the clone/layout-*-hooks scenarios. Use {{NAME}}
+# as a placeholder for the repo name.
+
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# {{NAME}}"
+    commits:
+      - message: "Initial commit"
+daft_yml: |
+  hooks:
+    post-clone:
+      jobs:
+        - name: clone-marker
+          run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
+    worktree-post-create:
+      jobs:
+        - name: create-marker
+          run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"

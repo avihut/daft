@@ -1,0 +1,19 @@
+# main + feature/test-feature (branched from main), no daft.yml. Shared by the
+# merge --rebase style scenarios, which create their own divergent main-side
+# commit in-step. Use {{NAME}} as a placeholder for the repo name.
+
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# {{NAME}}"
+    commits:
+      - message: "Initial commit"
+  - name: feature/test-feature
+    from: main
+    files:
+      - path: feature.txt
+        content: "feature content"
+    commits:
+      - message: "Add feature"

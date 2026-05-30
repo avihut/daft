@@ -364,6 +364,41 @@ steps:
     }
 
     #[test]
+    fn prime_same_repo_name_across_fixtures_does_not_collide() {
+        // Regression (#586): generate_repo's temp clone dir must be unique per
+        // call. Priming runs in parallel with `remotes_dir.parent()` = the
+        // shared cache root, so several fixtures that reuse one repo name would
+        // otherwise all target `<cache>/tmp-clone-<name>` — which lives for the
+        // whole generation — and collide on `git clone`. Prime three different
+        // fixtures under the same repo name concurrently; all must succeed.
+        let cache_root = tempfile::tempdir().unwrap();
+        let root_path = cache_root.path().to_path_buf();
+        let name = "test-repo";
+        let fixtures = [
+            "daft-yml-contained-layout",
+            "main-with-feature-branch",
+            "daft-yml-clone-hooks",
+        ];
+        let mut keys = BTreeSet::new();
+        for fx in fixtures {
+            keys.insert((fx.to_string(), name.to_string()));
+        }
+
+        // jobs == key count: all three generate_repo calls run concurrently, so
+        // a fixed temp-clone path collides deterministically (each temp dir is
+        // alive for its whole generation, not just an instant).
+        FixtureCache::prime(&keys, &fixtures_dir(), root_path.clone(), fixtures.len())
+            .expect("parallel prime of same-named repos across fixtures must not collide");
+
+        for fx in fixtures {
+            assert!(
+                root_path.join(format!("{fx}/{name}/HEAD")).is_file(),
+                "fixture {fx} bare repo should exist after priming",
+            );
+        }
+    }
+
+    #[test]
     fn clone_into_returns_err_on_cache_miss() {
         // The cache-miss path is a "programming error" trip-wire — if a
         // worker ever encounters a fixture-derived RepoSpec whose key wasn't
