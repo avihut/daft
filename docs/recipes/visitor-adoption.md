@@ -52,9 +52,13 @@ hooks that set up each worktree for you, without asking for anyone's permission.
 daft install
 ```
 
-This writes a commented `daft.yml` skeleton at the repo root and exits. It
-refuses if `daft.yml` already exists (the repo already has a team config — use
-`daft.local.yml` for personal overrides instead).
+This writes a commented `daft.yml` skeleton at the worktree root and exits. It
+is repo-aware: run from a worktree subdirectory it targets the worktree root,
+and run at the bare container root of a contained layout it installs across the
+repo's worktrees (like a multi-branch `daft clone --install`). If a `daft.yml`
+already exists it does not overwrite or error — it reports whether that file is
+tracked (a team baseline) or a visitor config and stops, pointing you at
+`daft.local.yml` for personal overrides.
 
 **2. Add `daft.yml` to your per-clone ignore list.**
 
@@ -184,8 +188,9 @@ to back up your file first.
 
 ## Idempotency & safety
 
-- `daft install` is idempotent — running it twice on a repo that already has
-  `daft.yml` refuses and exits cleanly rather than overwriting.
+- `daft install` is idempotent — running it on a repo that already has a
+  `daft.yml` reports the file's tracked/visitor status and exits cleanly rather
+  than overwriting it.
 - Visitor propagation copies are `merge_configs`-resolved, not blind copies. If
   the target worktree already has an untracked `daft.yml` with local edits, the
   source wins on conflicts but the target's content is the base — edits unique
