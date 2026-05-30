@@ -1275,9 +1275,14 @@ fn run_one_scenario_inner(
     }
     let fixture_ms = fixture_started.elapsed().as_millis();
 
-    let template_started = std::time::Instant::now();
-    sb.create_template()?;
-    let template_ms = template_started.elapsed().as_millis();
+    // The non-interactive path never calls `Sandbox::reset()` (reset is
+    // interactive/loop-only — see interactive.rs), so snapshotting
+    // `remotes/` -> `remotes-template/` here would be pure dead work
+    // (~5.6s core across the suite). Skip it; the interactive setup path
+    // (run_interactive) still snapshots. `template_ms` stays in the bench
+    // schema (always 0 now) so DAFT_MANUAL_TEST_EMIT_TIMING consumers don't
+    // break. See #585.
+    let template_ms = 0u128;
 
     let mut buf: Vec<u8> = Vec::new();
     // `None` = the runner saw the interrupt flag before `scenario_started`
@@ -2182,6 +2187,82 @@ mod cleanup_guard_tests {
         assert!(
             !set.lock().unwrap().contains(&path),
             "guard must unregister even when the worker panics"
+        );
+    }
+}
+
+#[cfg(test)]
+mod non_interactive_template_tests {
+    use super::*;
+    use std::collections::{BTreeSet, HashMap};
+
+    // Serializes the DAFT_MANUAL_TEST_BASE mutation against other env-mutating
+    // tests, mirroring the ENV_LOCK pattern in `main.rs`'s resolve_jobs tests.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// #585 regression: the non-interactive scenario runner
+    /// (`run_one_scenario_inner`) must NOT snapshot `remotes/` ->
+    /// `remotes-template/`. That snapshot is only consumed by
+    /// `Sandbox::reset()`, which runs solely in interactive mode, so taking it
+    /// on the parallel path is pure dead work (~5.6s across the suite). Guards
+    /// against anyone re-adding `sb.create_template()` to the hot path.
+    #[test]
+    fn non_interactive_run_does_not_snapshot_template() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let base = tempfile::tempdir().expect("tempdir");
+        // Make the per-scenario sandbox base deterministic so we can inspect
+        // it after the run (see `pick_sandbox_base_dir`).
+        std::env::set_var("DAFT_MANUAL_TEST_BASE", base.path());
+
+        let scenario = schema::Scenario {
+            name: "no-template-585".to_string(),
+            description: None,
+            repos: Vec::new(),
+            env: HashMap::new(),
+            steps: Vec::new(),
+            source_path: PathBuf::new(),
+        };
+
+        let fixtures_dir = base.path().join("fixtures");
+        std::fs::create_dir_all(&fixtures_dir).expect("fixtures dir");
+        let fixture_cache = fixture_cache::FixtureCache::prime(
+            &BTreeSet::new(),
+            &fixtures_dir,
+            base.path().join("cache"),
+            1,
+        )
+        .expect("prime empty fixture cache");
+
+        let reporter = reporter::pretty::PrettyReporter::new(reporter::Verbosity::Default);
+        let progress = progress::NoopProgressSink;
+        let interrupt = progress::InterruptFlag::new();
+        let cleanup_set: CleanupSet = Arc::new(Mutex::new(HashSet::new()));
+
+        let ctx = RunContext {
+            project_root: base.path(),
+            fixtures_dir: &fixtures_dir,
+            fixture_cache: &fixture_cache,
+            reporter: &reporter,
+            progress: &progress,
+            interrupt: &interrupt,
+            // Keep the sandbox on disk so we can assert on its contents.
+            keep: true,
+        };
+
+        run_one_scenario_inner(&scenario, &ctx, &cleanup_set)
+            .expect("non-interactive scenario run");
+
+        std::env::remove_var("DAFT_MANUAL_TEST_BASE");
+
+        let sandbox_base = base.path().join(scenario_base_slug(&scenario));
+        assert!(
+            sandbox_base.join("remotes").is_dir(),
+            "the sandbox should have been created (remotes/ present)"
+        );
+        assert!(
+            !sandbox_base.join("remotes-template").exists(),
+            "non-interactive run must not snapshot remotes-template/ (#585)"
         );
     }
 }
