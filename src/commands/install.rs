@@ -5,6 +5,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::core::repo::WorktreePosition;
+use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config, find_config_file};
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::utils::{get_current_directory, git_command_at};
 
@@ -13,15 +15,19 @@ use crate::utils::{get_current_directory, git_command_at};
 #[command(version = crate::VERSION)]
 #[command(about = "Install a starter daft.yml in the current worktree")]
 #[command(long_about = r#"
-Creates a starter daft.yml at the current worktree root with a commented
-skeleton covering the major sections (hooks, shared, layout). Modeled on
+Creates a starter daft.yml at the worktree root with a commented skeleton
+covering the major sections (hooks, shared, layout). Modeled on
 `lefthook install`.
 
 This is a top-level alias for `daft repo install` (the canonical name); both
 run the same thing. The alias is kept so lefthook-style discovery works.
 
-If daft.yml already exists, the command refuses without modifying anything;
-edit the existing file with your editor or a future `daft config` TUI.
+daft.yml is a per-worktree file, so install is repo-aware. Run it inside a
+worktree: from a subdirectory it targets the worktree root, and it refuses
+outside a git repository or at the bare container root of a contained layout
+(where a daft.yml would be inert). If a daft.yml already exists it reports
+whether that file is tracked (a team baseline) or a visitor config (untracked)
+and stops without modifying it.
 
 After writing daft.yml, daft checks whether git already ignores it. If not, it
 offers to add `/daft.yml` to .git/info/exclude — a local, per-clone exclude
@@ -81,7 +87,110 @@ pub fn run_with_output(output: &mut dyn Output, opts: InstallOptions) -> Result<
     // `dialoguer::Confirm`. Computing it here keeps the offer logic
     // deterministic for tests (which pass `interactive: false`).
     let interactive = std::io::stdin().is_terminal() && std::env::var("DAFT_TESTING").is_err();
-    install_at(&cwd, output, &opts, interactive)
+    install_in_position(&cwd, output, &opts, interactive)
+}
+
+/// Repo-aware dispatch for `daft install` / `daft repo install`.
+///
+/// `daft.yml` is a per-worktree file that daft reads from a worktree root, so
+/// install must first work out where `cwd` sits in the repo rather than writing
+/// blindly to the current directory:
+///
+/// - **Not in a repo** → refuse (a stray `daft.yml` on the bare filesystem is
+///   never read by daft).
+/// - **Container root** of a contained layout → refuse with guidance; it is not
+///   a worktree, so a `daft.yml` written there is inert. When the repo is
+///   already configured (a sibling worktree carries one), say so.
+/// - **Inside a worktree** (including a nested subdir) → target the worktree
+///   *root*. If it already has a `daft.yml`, don't overwrite or hard-error —
+///   report whether it is tracked or a visitor config and stop.
+///
+/// `cwd` and `interactive` are injected (not read from the process) so the
+/// whole dispatch is unit-testable without a TTY. The `daft clone --install`
+/// path bypasses this entirely: it calls [`install_at`] with the freshly
+/// created worktree it already knows.
+fn install_in_position(
+    cwd: &Path,
+    output: &mut dyn Output,
+    opts: &InstallOptions,
+    interactive: bool,
+) -> Result<()> {
+    match crate::core::repo::resolve_worktree_position(cwd) {
+        WorktreePosition::NotInRepo => anyhow::bail!(
+            "daft install must be run inside a git repository.\n\
+             cd into a repo, or use `daft clone --install` to bootstrap one on clone."
+        ),
+        WorktreePosition::ContainerRoot { representative } => {
+            Err(refuse_at_container_root(representative.as_deref()))
+        }
+        WorktreePosition::InWorktree { root } => {
+            if let Some((existing, _location)) = find_config_file(&root) {
+                guide_existing_config(&root, &existing, output);
+                return Ok(());
+            }
+            install_at(&root, output, opts, interactive)
+        }
+    }
+}
+
+/// Build the refusal for an install attempted at the bare container root of a
+/// contained layout. When a representative worktree already carries a
+/// `daft.yml`, fold its tracked/visitor status into the message so the user
+/// learns the repo is already configured (the field report's case).
+fn refuse_at_container_root(representative: Option<&Path>) -> anyhow::Error {
+    if let Some(rep) = representative
+        && find_config_file(rep).is_some()
+    {
+        let label = match classify_main_config(rep) {
+            ConfigStatus::Tracked => "tracked (a committed team baseline)",
+            ConfigStatus::Visitor => "a visitor config (untracked, private to this clone)",
+            ConfigStatus::Missing => "present",
+        };
+        return anyhow::anyhow!(
+            "This is the container root of a contained layout, not a worktree, and the \
+             repository already has a daft.yml ({label}).\n\
+             daft.yml is a per-worktree file — run `daft install` from inside a worktree."
+        );
+    }
+    anyhow::anyhow!(
+        "This is the container root of a contained layout, not a worktree.\n\
+         daft.yml is a per-worktree file — cd into a worktree (e.g. `main/`) and run \
+         `daft install` there."
+    )
+}
+
+/// Report an existing `daft.yml` instead of failing: state its tracking status
+/// (tracked team baseline vs. untracked visitor config) and what to do next.
+fn guide_existing_config(root: &Path, existing: &Path, output: &mut dyn Output) {
+    let rel = existing.strip_prefix(root).unwrap_or(existing);
+    match classify_main_config(root) {
+        ConfigStatus::Tracked => {
+            output.result(&format!(
+                "{} already exists here — it is tracked (a committed team baseline).",
+                rel.display()
+            ));
+            output.info(
+                "Nothing to install. For personal, uncommitted overrides, create daft.local.yml.",
+            );
+        }
+        ConfigStatus::Visitor => {
+            output.result(&format!(
+                "{} already exists here — it is a visitor config (untracked, private to this clone).",
+                rel.display()
+            ));
+            output.info(
+                "Nothing to install. Edit it directly, or commit it to share with your team.",
+            );
+        }
+        // find_config_file located a file but classify reports Missing — only
+        // reachable if it vanished between the two probes. Generic message.
+        ConfigStatus::Missing => {
+            output.result(&format!(
+                "{} already exists here. Nothing to install.",
+                rel.display()
+            ));
+        }
+    }
 }
 
 /// Install a starter daft.yml at `worktree_root`, then — when it would be
@@ -515,5 +624,151 @@ mod tests {
 
         assert!(output.successes().is_empty());
         assert!(output.infos().is_empty());
+    }
+
+    // ── Repo-aware dispatch (install_in_position) ────────────────────────────
+
+    /// Run git in `dir` with a fixed identity (no global config — Rule #1).
+    fn git_at(dir: &Path, args: &[&str]) {
+        let out = git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn no_exclude() -> InstallOptions {
+        InstallOptions { git_exclude: false }
+    }
+
+    #[test]
+    fn test_install_in_position_refuses_outside_repo() {
+        let dir = tempdir().unwrap();
+        let mut output = TestOutput::new();
+        let result = install_in_position(dir.path(), &mut output, &no_exclude(), false);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("inside a git repository")
+        );
+        assert!(
+            !dir.path().join("daft.yml").exists(),
+            "must not write a daft.yml outside a repo"
+        );
+    }
+
+    #[test]
+    fn test_install_in_position_writes_to_worktree_root_from_subdir() {
+        let dir = tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "-b", "main"]);
+        let sub = dir.path().join("nested/deep");
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut output = TestOutput::new();
+        install_in_position(&sub, &mut output, &no_exclude(), false).unwrap();
+
+        assert!(
+            dir.path().join("daft.yml").is_file(),
+            "must write to the worktree root"
+        );
+        assert!(
+            !sub.join("daft.yml").exists(),
+            "must not write into the subdir"
+        );
+    }
+
+    #[test]
+    fn test_install_in_position_guides_on_existing_visitor() {
+        let dir = tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "-b", "main"]);
+        // Untracked daft.yml → visitor.
+        fs::write(dir.path().join("daft.yml"), "hooks: {}\n").unwrap();
+
+        let mut output = TestOutput::new();
+        let result = install_in_position(dir.path(), &mut output, &no_exclude(), false);
+
+        assert!(result.is_ok(), "existing config must not hard-error");
+        assert!(
+            output.has_result("visitor"),
+            "expected a visitor guidance line, got: {:?}",
+            output.results()
+        );
+    }
+
+    #[test]
+    fn test_install_in_position_guides_on_existing_tracked() {
+        let dir = tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "-b", "main"]);
+        fs::write(dir.path().join("daft.yml"), "hooks: {}\n").unwrap();
+        git_at(dir.path(), &["add", "daft.yml"]);
+        git_at(dir.path(), &["commit", "-q", "-m", "add"]);
+
+        let mut output = TestOutput::new();
+        let result = install_in_position(dir.path(), &mut output, &no_exclude(), false);
+
+        assert!(result.is_ok());
+        assert!(
+            output.has_result("tracked"),
+            "expected a tracked guidance line, got: {:?}",
+            output.results()
+        );
+    }
+
+    #[test]
+    fn test_install_in_position_refuses_at_container_root() {
+        let base = tempdir().unwrap();
+        let src = base.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        git_at(&src, &["init", "-q", "-b", "main"]);
+        fs::write(src.join("daft.yml"), "hooks: {}\n").unwrap();
+        git_at(&src, &["add", "-A"]);
+        git_at(&src, &["commit", "-q", "-m", "init"]);
+
+        let proj = base.path().join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        git_at(
+            base.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                src.to_str().unwrap(),
+                proj.join(".git").to_str().unwrap(),
+            ],
+        );
+        git_at(
+            &proj,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+        git_at(&proj, &["fetch", "-q", "origin"]);
+        git_at(&proj, &["remote", "set-head", "origin", "main"]);
+        git_at(&proj, &["worktree", "add", "-q", "main", "main"]);
+
+        let mut output = TestOutput::new();
+        let result = install_in_position(&proj, &mut output, &no_exclude(), false);
+
+        assert!(result.is_err(), "container-root install must refuse");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("container root"), "got: {msg}");
+        // The default worktree carries a tracked daft.yml → the message says so.
+        assert!(msg.contains("tracked"), "got: {msg}");
+        assert!(
+            !proj.join("daft.yml").exists(),
+            "must not write a stray daft.yml at the container root"
+        );
     }
 }
