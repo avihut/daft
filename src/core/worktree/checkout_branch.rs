@@ -181,9 +181,6 @@ pub fn execute(
     // Push and set upstream
     let (push_set, push_skipped) = push_if_enabled(params, git, sink);
 
-    // Link shared files before hooks so hooks can depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
-
     // Propagate in-scope untracked daft files from source worktree to the new
     // worktree, so that user post-create hooks can read them.
     //
@@ -209,6 +206,15 @@ pub fn execute(
             sink.on_warning(&format!("visitor-config propagation failed: {}", e));
         }
     }
+
+    // Link shared files AFTER propagation and BEFORE post-create hooks.
+    // Order is load-bearing: a *visitor* daft.yml (untracked) reaches the new
+    // worktree only via the propagation step above, so reading `shared:` before
+    // propagation finds no config and silently links nothing. (A tracked daft.yml
+    // arrives via the git checkout regardless of order, which is why this bug was
+    // invisible until visitor configs existed — do not move this back above
+    // propagation.) Linking before hooks lets hooks depend on .env etc.
+    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(

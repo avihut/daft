@@ -1,0 +1,62 @@
+name: Shared file linked on create from a propagated visitor daft.yml
+description: >
+  Regression for the field report. A visitor daft.yml (untracked, hidden via
+  .git/info/exclude) declares a shared file that has already been collected into
+  shared storage. Unlike a tracked daft.yml, a visitor config reaches a new
+  worktree ONLY via the propagation step on checkout. Shared-file linking must
+  therefore run AFTER propagation: before the fix it ran first, read `shared:`
+  from a worktree that had no config yet, and silently linked nothing — so the
+  declared shared file was missing from every new worktree. (The sibling
+  link-on-create.yml uses a container-root daft.yml found via fallback, so it
+  passes regardless of ordering and never caught this.)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Collect a shared file and declare it in a visitor (ignored) daft.yml
+    run: |
+      mkdir -p "$WORK_DIR/test-repo/.git/.daft/shared"
+      printf 'ENVVAL=fromshared\n' > "$WORK_DIR/test-repo/.git/.daft/shared/env-file"
+      printf 'shared:\n- env-file\n' > daft.yml
+      printf '/daft.yml\n' >> "$(git rev-parse --git-path info/exclude)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Confirm daft.yml is now an ignored (visitor) file
+    run: git check-ignore daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft.yml"
+
+  - name: Create a new worktree from main (propagates the visitor daft.yml)
+    run: git-worktree-checkout -b wip
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/wip/daft.yml"
+
+  - name: The collected shared file must be symlinked in the new worktree
+    run: test -L "$WORK_DIR/test-repo/wip/env-file"
+    expect:
+      exit_code: 0
+
+  - name: The symlink must resolve to the shared content
+    run: "true"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/wip/env-file"
+          content: "ENVVAL=fromshared"
