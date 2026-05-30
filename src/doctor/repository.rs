@@ -128,10 +128,12 @@ pub fn get_repo_context() -> Option<RepoContext> {
 pub fn check_daft_config(ctx: &RepoContext) -> CheckResult {
     use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config};
 
+    // doctor renders a passing check as "Name (message)", so the message must
+    // not carry its own parentheses or it nests them. Use em-dashes instead.
     match classify_main_config(&ctx.current_worktree) {
-        ConfigStatus::Tracked => CheckResult::pass("Config", "daft.yml tracked (team baseline)"),
+        ConfigStatus::Tracked => CheckResult::pass("Config", "daft.yml tracked — team baseline"),
         ConfigStatus::Visitor => {
-            CheckResult::pass("Config", "daft.yml visitor (private to this clone)")
+            CheckResult::pass("Config", "daft.yml visitor — private to this clone")
         }
         ConfigStatus::Missing => CheckResult::pass("Config", "no daft.yml"),
     }
