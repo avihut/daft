@@ -76,7 +76,13 @@ pub fn run() -> Result<()> {
 pub fn run_with_output(output: &mut dyn Output, opts: InstallOptions) -> Result<()> {
     let cwd = get_current_directory()?;
     install_starter(&cwd, output)?;
-    maybe_offer_git_exclude(&cwd, output, &opts)?;
+    // Resolve interactivity at the boundary, not inside the offer logic. Reading
+    // `is_terminal()` deeper down makes the offer untestable: a unit test run
+    // from a real terminal inherits a TTY stdin and would block forever on
+    // `dialoguer::Confirm`. Computing it here keeps `maybe_offer_git_exclude`
+    // deterministic for tests (which pass `interactive: false`).
+    let interactive = std::io::stdin().is_terminal() && std::env::var("DAFT_TESTING").is_err();
+    maybe_offer_git_exclude(&cwd, output, &opts, interactive)?;
     Ok(())
 }
 
@@ -225,12 +231,18 @@ fn add_to_git_exclude(worktree_root: &Path, pattern: &str) -> Result<PathBuf> {
 ///
 /// - `--git-exclude`: add the exclude entry without prompting.
 /// - `--quiet`: do nothing — no prompt, no mutation (there is no consent to infer).
-/// - interactive TTY: prompt (default No).
-/// - non-interactive (no TTY, or DAFT_TESTING): print a copy-pasteable hint, change nothing.
+/// - `interactive == true`: prompt (default No).
+/// - `interactive == false`: print a copy-pasteable hint, change nothing.
+///
+/// `interactive` is decided by the caller (`run_with_output`) — typically
+/// `stdin().is_terminal() && DAFT_TESTING unset`. Passing it in keeps this
+/// function deterministic and unit-testable: a test that owns a TTY must never
+/// be able to reach `dialoguer::Confirm` and block.
 fn maybe_offer_git_exclude(
     worktree_root: &Path,
     output: &mut dyn Output,
     opts: &InstallOptions,
+    interactive: bool,
 ) -> Result<()> {
     if git_ignore_status(worktree_root, "daft.yml") != IgnoreStatus::Visible {
         return Ok(());
@@ -249,7 +261,6 @@ fn maybe_offer_git_exclude(
         return Ok(());
     }
 
-    let interactive = std::io::stdin().is_terminal() && std::env::var("DAFT_TESTING").is_err();
     if !interactive {
         output.info(
             "daft.yml is visible to git. To keep it private to this clone (never committed), run:",
@@ -360,6 +371,7 @@ mod tests {
             dir.path(),
             &mut output,
             &InstallOptions { git_exclude: true },
+            false,
         )
         .unwrap();
         assert!(output.successes().is_empty());
@@ -407,6 +419,7 @@ mod tests {
             dir.path(),
             &mut output,
             &InstallOptions { git_exclude: true },
+            false,
         )
         .unwrap();
 
@@ -428,6 +441,7 @@ mod tests {
             dir.path(),
             &mut output,
             &InstallOptions { git_exclude: false },
+            false,
         )
         .unwrap();
 
@@ -440,8 +454,10 @@ mod tests {
 
     #[test]
     fn test_maybe_offer_git_exclude_noninteractive_hints_without_mutating() {
-        // Under `cargo test`, stdin is not a TTY, so the interactive prompt is
-        // skipped and the hint branch runs — no prompt, no mutation, no hang.
+        // interactive=false forces the hint branch deterministically — no
+        // prompt, no mutation, and crucially no dependence on whether the test
+        // process owns a TTY (a real TTY would block dialoguer::Confirm, which
+        // is exactly why interactivity is injected rather than read in here).
         let dir = tempdir().unwrap();
         init_repo(dir.path());
         fs::write(dir.path().join("daft.yml"), STARTER_TEMPLATE).unwrap();
@@ -451,6 +467,7 @@ mod tests {
             dir.path(),
             &mut output,
             &InstallOptions { git_exclude: false },
+            false,
         )
         .unwrap();
 
@@ -478,6 +495,7 @@ mod tests {
             dir.path(),
             &mut output,
             &InstallOptions { git_exclude: true },
+            false,
         )
         .unwrap();
 
