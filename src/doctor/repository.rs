@@ -93,7 +93,21 @@ pub fn get_repo_context() -> Option<RepoContext> {
     let git_common_dir = crate::get_git_common_dir().ok()?;
     let project_root = git_common_dir.parent()?.to_path_buf();
     let is_bare = is_common_dir_bare(&git_common_dir);
-    let current_worktree = std::env::current_dir().ok()?;
+
+    // Resolve the worktree to inspect for config/hooks repo-awarely, not as the
+    // raw cwd. Running `daft doctor` from a worktree subdir, or from the bare
+    // container root of a contained layout, must still find the worktree where
+    // daft.yml actually lives — otherwise every config/hook check (and the
+    // Repository config check) goes blind and reports "no hooks configured"
+    // while a tracked/visitor daft.yml sits in a sibling worktree.
+    let cwd = std::env::current_dir().ok()?;
+    let current_worktree = match crate::core::repo::resolve_worktree_position(&cwd) {
+        crate::core::repo::WorktreePosition::InWorktree { root } => root,
+        crate::core::repo::WorktreePosition::ContainerRoot { representative } => {
+            representative.unwrap_or(cwd)
+        }
+        crate::core::repo::WorktreePosition::NotInRepo => cwd,
+    };
 
     Some(RepoContext {
         git_common_dir,
@@ -101,6 +115,26 @@ pub fn get_repo_context() -> Option<RepoContext> {
         current_worktree,
         is_bare,
     })
+}
+
+/// Report the main `daft.yml`'s presence and tracking classification.
+///
+/// daft.yml's tracked-vs-visitor status is a repository-configuration fact, not
+/// a hooks fact, so it lives here and is reported at *every* invocation point —
+/// from a worktree, a worktree subdir, or the bare container root — because
+/// `ctx.current_worktree` is resolved repo-awarely (see [`get_repo_context`]).
+/// Always informational (`pass`), in every state including no-config, so it
+/// never flips doctor's exit code on an ordinary repo.
+pub fn check_daft_config(ctx: &RepoContext) -> CheckResult {
+    use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config};
+
+    match classify_main_config(&ctx.current_worktree) {
+        ConfigStatus::Tracked => CheckResult::pass("Config", "daft.yml tracked (team baseline)"),
+        ConfigStatus::Visitor => {
+            CheckResult::pass("Config", "daft.yml visitor (private to this clone)")
+        }
+        ConfigStatus::Missing => CheckResult::pass("Config", "no daft.yml"),
+    }
 }
 
 /// Check that the repository uses a daft-compatible worktree layout.
@@ -359,6 +393,7 @@ pub fn dry_run_remote_head() -> Vec<FixAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doctor::CheckStatus;
 
     #[test]
     fn test_parse_worktree_entries_bare_repo() {
@@ -447,5 +482,67 @@ branch refs/heads/main";
         let actions = dry_run_remote_head();
         assert_eq!(actions.len(), 1);
         assert!(actions[0].description.contains("git remote set-head"));
+    }
+
+    // ── check_daft_config (tracked / visitor / missing) ──────────────────────
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+
+    fn ctx_for(worktree: &Path) -> RepoContext {
+        RepoContext {
+            git_common_dir: worktree.join(".git"),
+            project_root: worktree.to_path_buf(),
+            current_worktree: worktree.to_path_buf(),
+            is_bare: false,
+        }
+    }
+
+    #[test]
+    fn test_check_daft_config_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert_eq!(result.message, "no daft.yml");
+    }
+
+    #[test]
+    fn test_check_daft_config_visitor() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("visitor"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn test_check_daft_config_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
+        git(dir.path(), &["add", "daft.yml"]);
+        git(dir.path(), &["commit", "-q", "-m", "add"]);
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("tracked"),
+            "got: {}",
+            result.message
+        );
     }
 }

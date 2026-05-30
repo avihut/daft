@@ -4,7 +4,6 @@
 //! and configuration sources (daft.yml and shell hooks).
 
 use crate::doctor::{CheckResult, FixAction};
-use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config};
 use crate::hooks::{HookType, PROJECT_HOOKS_DIR, TrustDatabase, TrustLevel};
 use std::path::{Path, PathBuf};
 
@@ -57,9 +56,10 @@ fn has_yaml_config(worktree_root: &Path) -> bool {
 
 /// Check hooks configuration source (daft.yml and/or shell hooks).
 ///
-/// When a daft.yml is present, the message includes whether it is tracked
-/// (team baseline) or visitor (untracked personal overlay) — implements
-/// check 8.3 of the visitor-configuration feature.
+/// Reports only what the hooks come from and how many there are. The main
+/// daft.yml's tracked-vs-visitor classification is a repository-configuration
+/// fact, so it is reported by the Repository category's `check_daft_config`
+/// (consistently, from any cwd) rather than conflated with a hook count here.
 pub fn check_hooks_config(worktree_root: &Path, project_root: &Path) -> CheckResult {
     let has_yaml = has_yaml_config(worktree_root);
     let has_shell = has_shell_hooks(project_root);
@@ -68,20 +68,16 @@ pub fn check_hooks_config(worktree_root: &Path, project_root: &Path) -> CheckRes
         (true, true) => {
             let hook_count = count_yaml_hooks(worktree_root);
             let shell_count = count_shell_hooks(project_root);
-            let tracking = yaml_tracking_label(worktree_root);
             CheckResult::pass(
                 "Configuration",
-                &format!(
-                    "daft.yml ({tracking}) with {hook_count} hooks, {shell_count} shell hooks"
-                ),
+                &format!("daft.yml with {hook_count} hooks, {shell_count} shell hooks"),
             )
         }
         (true, false) => {
             let hook_count = count_yaml_hooks(worktree_root);
-            let tracking = yaml_tracking_label(worktree_root);
             CheckResult::pass(
                 "Configuration",
-                &format!("daft.yml ({tracking}) with {hook_count} hooks"),
+                &format!("daft.yml with {hook_count} hooks"),
             )
         }
         (false, true) => {
@@ -89,15 +85,6 @@ pub fn check_hooks_config(worktree_root: &Path, project_root: &Path) -> CheckRes
             CheckResult::pass("Configuration", &format!("{shell_count} shell hooks"))
         }
         (false, false) => CheckResult::pass("Configuration", "no hooks configured"),
-    }
-}
-
-/// Return a short label for whether the main daft.yml is tracked or visitor.
-fn yaml_tracking_label(worktree_root: &Path) -> &'static str {
-    match classify_main_config(worktree_root) {
-        ConfigStatus::Tracked => "tracked",
-        ConfigStatus::Visitor => "visitor",
-        ConfigStatus::Missing => "unknown",
     }
 }
 
@@ -716,52 +703,40 @@ mod tests {
         assert_eq!(result.status, CheckStatus::Pass);
     }
 
-    // ── Tests for check_hooks_config with tracking label (8.3) ───────────────
+    // ── Tests for check_hooks_config ─────────────────────────────────────────
 
     #[test]
-    fn test_check_hooks_config_visitor_label() {
+    fn test_check_hooks_config_reports_hook_count_not_tracking() {
+        // The hooks "Configuration" line reports the config source + hook count
+        // only; the tracked/visitor classification moved to the Repository
+        // category's check_daft_config. Guard against the label creeping back.
         let dir = tempdir().unwrap();
         init_git_repo(dir.path());
-        // Write daft.yml but don't track it → visitor
         std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
 
         let result = check_hooks_config(dir.path(), dir.path());
         assert_eq!(result.status, CheckStatus::Pass);
         assert!(
-            result.message.contains("visitor") || result.message.contains("unknown"),
-            "expected visitor or unknown label, got: {}",
+            result.message.contains("daft.yml") && result.message.contains("hooks"),
+            "expected a daft.yml hook-count message, got: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("tracked")
+                && !result.message.contains("visitor")
+                && !result.message.contains("unknown"),
+            "tracking classification must not appear in the hooks line, got: {}",
             result.message
         );
     }
 
     #[test]
-    fn test_check_hooks_config_tracked_label() {
+    fn test_check_hooks_config_no_config() {
         let dir = tempdir().unwrap();
         init_git_repo(dir.path());
-        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["add", "daft.yml"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["commit", "-m", "add"])
-            .env("GIT_AUTHOR_NAME", "T")
-            .env("GIT_AUTHOR_EMAIL", "t@t.com")
-            .env("GIT_COMMITTER_NAME", "T")
-            .env("GIT_COMMITTER_EMAIL", "t@t.com")
-            .output()
-            .unwrap();
 
         let result = check_hooks_config(dir.path(), dir.path());
         assert_eq!(result.status, CheckStatus::Pass);
-        assert!(
-            result.message.contains("tracked"),
-            "expected tracked label, got: {}",
-            result.message
-        );
+        assert_eq!(result.message, "no hooks configured");
     }
 }
