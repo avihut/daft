@@ -511,10 +511,16 @@ _daft() {
     # repo: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "remove" -- "$cur") )
+            COMPREPLY=( $(compgen -W "install remove" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
+            install)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-q --quiet -v --verbose -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
             remove)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "-y --force --dry-run -v --verbose -h --help" -- "$cur") )

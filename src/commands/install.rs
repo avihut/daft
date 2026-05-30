@@ -15,6 +15,9 @@ Creates a starter daft.yml at the current worktree root with a commented
 skeleton covering the major sections (hooks, shared, layout). Modeled on
 `lefthook install`.
 
+This is a top-level alias for `daft repo install` (the canonical name); both
+run the same thing. The alias is kept so lefthook-style discovery works.
+
 If daft.yml already exists, the command refuses without modifying anything;
 edit the existing file with your editor or a future `daft config` TUI.
 
@@ -32,10 +35,14 @@ pub struct Args {
 const STARTER_TEMPLATE: &str = include_str!("install/starter.yml");
 
 pub fn run() -> Result<()> {
-    // Skip argv[0] (binary name). When invoked as `daft install <flags>`,
-    // env::args() is ["daft", "install", ...] and skip(1) gives ["install", ...]
-    // so clap sees "install" as the program name and parses the rest correctly.
-    let args_raw: Vec<String> = std::env::args().skip(1).collect();
+    // Read the `-C`-stripped argv (not `std::env::args()`): the top-level
+    // `-C <path>` pair is consumed and applied by `cli::install_and_apply`
+    // before dispatch, so the raw args still contain it and clap would reject
+    // it. `crate::cli::argv()` has it removed. Skip argv[0] so clap sees
+    // "install" as the program name and parses the rest. This mirrors the
+    // canonical `repo::install::run()` and every sibling dispatcher (shared,
+    // layout, repo::remove) — keeping `daft -C <dir> install` working.
+    let args_raw: Vec<String> = crate::cli::argv().iter().skip(1).cloned().collect();
     let args = Args::parse_from(args_raw);
     let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);

@@ -425,6 +425,10 @@ export default defineConfig({
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
                   {
+                    text: "repo install",
+                    link: "/reference/cli/daft-repo-install",
+                  },
+                  {
                     text: "repo remove",
                     link: "/reference/cli/daft-repo-remove",
                   },

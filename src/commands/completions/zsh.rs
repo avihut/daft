@@ -684,10 +684,16 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd remove
+            compadd install remove
             return
         fi
         case "$words[3]" in
+            install)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -q --quiet -v --verbose -h --help
+                fi
+                return
+                ;;
             remove)
                 if [[ "$curword" == -* ]]; then
                     compadd -- -y --force --dry-run -v --verbose -h --help

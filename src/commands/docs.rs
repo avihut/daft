@@ -132,10 +132,16 @@ fn get_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "manage repositories",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "repo remove",
-                command: repo::remove::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "repo install",
+                    command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo remove",
+                    command: repo::remove::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "share configuration across worktrees",
@@ -279,10 +285,16 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "manage repositories",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "daft repo remove",
-                command: repo::remove::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft repo install",
+                    command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo remove",
+                    command: repo::remove::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "share configuration across worktrees",

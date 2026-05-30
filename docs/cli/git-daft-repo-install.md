@@ -1,9 +1,9 @@
 ---
-title: daft-install
+title: git-daft-repo-install
 description: Install a starter daft.yml in the current worktree
 ---
 
-# daft install
+# git daft-repo-install
 
 Install a starter daft.yml in the current worktree
 
@@ -13,8 +13,8 @@ Creates a starter daft.yml at the current worktree root with a commented
 skeleton covering the major sections (hooks, shared, layout). Modeled on
 `lefthook install`.
 
-This is a top-level alias for `daft repo install` (the canonical name); both
-run the same thing. The alias is kept so lefthook-style discovery works.
+This is the canonical name for the bootstrap; `daft install` is a top-level
+alias that runs the same thing (so lefthook-style discovery keeps working).
 
 If daft.yml already exists, the command refuses without modifying anything;
 edit the existing file with your editor or a future `daft config` TUI.
@@ -25,7 +25,7 @@ Ignore rules are the user's responsibility.
 ## Usage
 
 ```
-daft install [OPTIONS]
+git daft-repo-install [OPTIONS]
 ```
 
 ## Options

@@ -378,7 +378,11 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 # repo: subcommands
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+# repo install: flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
 # repo remove: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
