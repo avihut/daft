@@ -1104,6 +1104,43 @@ hooks:
     }
 
     #[test]
+    fn merged_config_serializes_sparsely_without_null_litter() {
+        // A merged/serialized config must be sparse: unset Option fields are
+        // omitted, never emitted as `field: null`. Regression for the
+        // visitor-config null-litter that `daft file merge` / `daft merge`
+        // wrote into user daft.yml files.
+        let mut hooks = HashMap::new();
+        hooks.insert(
+            "worktree-post-create".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("example".to_string()),
+                    run: Some(RunCommand::Simple("echo hi".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        let cfg = YamlConfig {
+            shared: Some(vec![".env".to_string()]),
+            hooks,
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        assert!(
+            !yaml.contains("null"),
+            "serialized config must not contain null litter:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("min_version"),
+            "unset scalar fields must be omitted entirely:\n{yaml}"
+        );
+        assert!(yaml.contains("shared:"), "set fields must survive:\n{yaml}");
+        assert!(yaml.contains("example"), "nested set fields must survive");
+    }
+
+    #[test]
     fn merge_hook_defs_preserves_background() {
         // `background` was the third silent-drop site (alongside
         // `shared`/`extends` in `merge_configs`). Merging a hook that sets only

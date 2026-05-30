@@ -28,27 +28,35 @@ pub const KNOWN_HOOK_NAMES: &[&str] = &[
 #[serde(default)]
 pub struct YamlConfig {
     /// Minimum daft version required to use this config.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_version: Option<String>,
 
     /// Whether to use colored output.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub colors: Option<bool>,
 
     /// Whether to disable TTY detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub no_tty: Option<bool>,
 
     /// Shell RC file to source before running hooks.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rc: Option<String>,
 
     /// Output settings (list of hook names to show output for, or false to suppress all).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputSetting>,
 
     /// List of additional config files to extend from.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extends: Option<Vec<String>>,
 
     /// Directory for script files (default: ".daft").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_dir: Option<String>,
 
     /// Directory for local (gitignored) script files (default: ".daft-local").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_dir_local: Option<String>,
 
     /// Layout suggestion for this repository.
@@ -56,6 +64,7 @@ pub struct YamlConfig {
     /// Accepts a named layout (e.g., "contained") or an inline template string.
     /// This is a team convention that can be overridden by the user's local
     /// config in repos.json.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
 
     /// Paths to share across worktrees via symlinks.
@@ -63,10 +72,11 @@ pub struct YamlConfig {
     /// Each entry is a path relative to the worktree root (e.g., ".env",
     /// ".idea", ".vscode/settings.json"). Daft centralizes these files in
     /// `.git/.daft/shared/` and creates symlinks in each worktree.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shared: Option<Vec<String>>,
 
     /// Log configuration (retention, etc.).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<LogConfig>,
 
     /// Hook definitions, keyed by hook name.
@@ -91,33 +101,43 @@ pub use crate::executor::{BackgroundOutput, LogConfig};
 #[serde(default)]
 pub struct HookDef {
     /// Whether jobs in this hook default to background execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
 
     /// Run jobs in parallel.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel: Option<bool>,
 
     /// Run jobs sequentially, stop on first failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub piped: Option<bool>,
 
     /// Run jobs sequentially, continue on failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub follow: Option<bool>,
 
     /// Tags to exclude at hook level.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_tags: Option<Vec<String>>,
 
     /// Glob patterns to exclude at hook level.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
 
     /// Skip condition at hook level.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<SkipCondition>,
 
     /// Only condition at hook level.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub only: Option<OnlyCondition>,
 
     /// List of jobs to execute.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub jobs: Option<Vec<JobDef>>,
 
     /// Legacy alias for jobs (commands map).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub commands: Option<HashMap<String, CommandDef>>,
 }
 
@@ -236,67 +256,88 @@ impl PlatformRunCommand {
 #[serde(default)]
 pub struct JobDef {
     /// Optional name for the job (used for merging and display).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
     /// Human-readable description of what this job does.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     /// Shell command to run (simple string or OS-keyed map).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<RunCommand>,
 
     /// Script file to run (relative to source_dir).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 
     /// Runner for script files (e.g., "bash", "python").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<String>,
 
     /// Arguments to pass to the script.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
 
     /// Working directory (relative to worktree root).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
 
     /// Tags for this job (for filtering).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
 
     /// Skip condition.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<SkipCondition>,
 
     /// Only condition.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub only: Option<OnlyCondition>,
 
     /// Restrict job to specific CPU architectures.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub arch: Option<PlatformConstraint<TargetArch>>,
 
     /// Extra environment variables.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
 
     /// Custom failure message.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_text: Option<String>,
 
     /// Whether this job needs TTY/stdin (forces sequential).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub interactive: Option<bool>,
 
     /// Priority for execution ordering (lower runs first).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
 
     /// Names of jobs that must complete before this job runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub needs: Option<Vec<String>>,
 
     /// Nested group of jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<GroupDef>,
 
     /// Worktree attributes this job tracks.
     /// When a tracked attribute changes, the job is re-run with teardown/setup semantics.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tracks: Option<Vec<TrackedAttribute>>,
 
     /// Run this job in the background (overrides hook-level default).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
 
     /// Output behavior for background execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background_output: Option<BackgroundOutput>,
 
     /// Log configuration for this job.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub log: Option<LogConfig>,
 }
 
@@ -304,11 +345,17 @@ pub struct JobDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct CommandDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<SkipCondition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -356,13 +403,16 @@ pub enum SkipRule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkipRuleStructured {
     /// Skip if current ref matches this pattern.
-    #[serde(rename = "ref")]
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub ref_pattern: Option<String>,
     /// Skip if this env var is set and truthy.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     /// Skip if this command exits 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
     /// Human-readable description of why this skip rule exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
 }
 
@@ -394,13 +444,16 @@ pub enum OnlyRule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OnlyRuleStructured {
     /// Only run if current ref matches this pattern.
-    #[serde(rename = "ref")]
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub ref_pattern: Option<String>,
     /// Only run if this env var is set and truthy.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     /// Only run if this command exits 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
     /// Human-readable description of why this only rule exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
 }
 
@@ -409,10 +462,13 @@ pub struct OnlyRuleStructured {
 #[serde(default)]
 pub struct GroupDef {
     /// Run grouped jobs in parallel.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel: Option<bool>,
     /// Run grouped jobs sequentially, stop on first failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub piped: Option<bool>,
     /// Nested jobs in this group.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub jobs: Option<Vec<JobDef>>,
 }
 
