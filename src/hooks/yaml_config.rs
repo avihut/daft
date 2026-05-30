@@ -24,7 +24,7 @@ pub const KNOWN_HOOK_NAMES: &[&str] = &[
 /// The main `daft.yml` file maps to this struct. Hook definitions are
 /// stored in the `hooks` map, keyed by hook name (e.g., "post-clone",
 /// "pre-commit").
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct YamlConfig {
     /// Minimum daft version required to use this config.
@@ -74,7 +74,7 @@ pub struct YamlConfig {
 }
 
 /// Output setting: either a list of hook names or false to suppress.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OutputSetting {
     /// Suppress all hook output.
@@ -87,7 +87,7 @@ pub enum OutputSetting {
 pub use crate::executor::{BackgroundOutput, LogConfig};
 
 /// Definition for a single hook type.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct HookDef {
     /// Whether jobs in this hook default to background execution.
@@ -160,7 +160,7 @@ impl TargetArch {
 }
 
 /// A platform constraint that can be a single value or a list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PlatformConstraint<T> {
     Single(T),
@@ -178,7 +178,7 @@ impl<T> PlatformConstraint<T> {
 }
 
 /// A run command that can be a simple string or OS-keyed map.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RunCommand {
     /// Simple string command (runs on all platforms).
@@ -188,7 +188,7 @@ pub enum RunCommand {
 }
 
 /// A platform-specific run command (string or list).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PlatformRunCommand {
     /// Single command string.
@@ -232,7 +232,7 @@ impl PlatformRunCommand {
 }
 
 /// A single job definition within a hook.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct JobDef {
     /// Optional name for the job (used for merging and display).
@@ -301,7 +301,7 @@ pub struct JobDef {
 }
 
 /// Legacy command definition (alias for JobDef).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct CommandDef {
     pub run: Option<String>,
@@ -329,7 +329,7 @@ impl CommandDef {
 }
 
 /// Skip condition: bool, string, platform map, or list of skip rules.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipCondition {
     /// Always skip (true) or never skip (false).
@@ -343,7 +343,7 @@ pub enum SkipCondition {
 }
 
 /// A single skip rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SkipRule {
     /// Named condition: "merge" or "rebase".
@@ -353,7 +353,7 @@ pub enum SkipRule {
 }
 
 /// Structured skip rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkipRuleStructured {
     /// Skip if current ref matches this pattern.
     #[serde(rename = "ref")]
@@ -367,7 +367,7 @@ pub struct SkipRuleStructured {
 }
 
 /// Only condition: mirrors SkipCondition but with inverse semantics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OnlyCondition {
     /// Only run if true, never run if false.
@@ -381,7 +381,7 @@ pub enum OnlyCondition {
 }
 
 /// A single only rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OnlyRule {
     /// Named condition: "merge" or "rebase".
@@ -391,7 +391,7 @@ pub enum OnlyRule {
 }
 
 /// Structured only rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OnlyRuleStructured {
     /// Only run if current ref matches this pattern.
     #[serde(rename = "ref")]
@@ -405,7 +405,7 @@ pub struct OnlyRuleStructured {
 }
 
 /// A group of jobs that runs as a unit.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct GroupDef {
     /// Run grouped jobs in parallel.

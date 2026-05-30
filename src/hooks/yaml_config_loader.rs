@@ -190,42 +190,70 @@ fn load_yaml_config(path: &Path) -> Result<YamlConfig> {
 
 /// Merge two configs, with `overlay` taking precedence over `base`.
 pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
+    // Destructure the overlay WITHOUT a `..` rest pattern so that adding a new
+    // field to `YamlConfig` fails to compile here until it is explicitly merged.
+    // This guards against the silent-drop bug class: `shared` and `extends` were
+    // previously omitted from this function, so they were discarded on every
+    // merge — corrupting `daft merge` / `daft file merge` output and (via the
+    // checkout-time propagation that used to route through here) destroying the
+    // user's untracked `daft.yml`.
+    let YamlConfig {
+        min_version,
+        colors,
+        no_tty,
+        rc,
+        output,
+        extends,
+        source_dir,
+        source_dir_local,
+        layout,
+        shared,
+        log,
+        hooks,
+    } = overlay;
+
     let mut merged = base;
 
-    // Scalar fields: overlay wins if set
-    if overlay.min_version.is_some() {
-        merged.min_version = overlay.min_version;
+    // Scalar / list fields: overlay wins if set.
+    if min_version.is_some() {
+        merged.min_version = min_version;
     }
-    if overlay.colors.is_some() {
-        merged.colors = overlay.colors;
+    if colors.is_some() {
+        merged.colors = colors;
     }
-    if overlay.no_tty.is_some() {
-        merged.no_tty = overlay.no_tty;
+    if no_tty.is_some() {
+        merged.no_tty = no_tty;
     }
-    if overlay.rc.is_some() {
-        merged.rc = overlay.rc;
+    if rc.is_some() {
+        merged.rc = rc;
     }
-    if overlay.output.is_some() {
-        merged.output = overlay.output;
+    if output.is_some() {
+        merged.output = output;
     }
-    if overlay.source_dir.is_some() {
-        merged.source_dir = overlay.source_dir;
+    if extends.is_some() {
+        merged.extends = extends;
     }
-    if overlay.source_dir_local.is_some() {
-        merged.source_dir_local = overlay.source_dir_local;
+    if source_dir.is_some() {
+        merged.source_dir = source_dir;
     }
-    if overlay.layout.is_some() {
-        merged.layout = overlay.layout;
+    if source_dir_local.is_some() {
+        merged.source_dir_local = source_dir_local;
+    }
+    if layout.is_some() {
+        merged.layout = layout;
+    }
+    if shared.is_some() {
+        merged.shared = shared;
     }
 
     // Merge log config (field-level merge)
-    merged.log = match (merged.log, overlay.log) {
+    merged.log = match (merged.log, log) {
         (Some(b), Some(o)) => Some(merge_log_configs(o, b)),
         (b, o) => o.or(b),
     };
 
     // Hooks: merge each hook definition
-    for (name, overlay_hook) in overlay.hooks {
+    for (name, overlay_hook) in hooks {
         if let Some(base_hook) = merged.hooks.remove(&name) {
             merged
                 .hooks
@@ -258,33 +286,53 @@ pub fn merge_log_configs(o: LogConfig, b: LogConfig) -> LogConfig {
 /// Named jobs merge by name (overlay replaces base with same name).
 /// Unnamed jobs from overlay are appended.
 pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
+    // Destructure WITHOUT a `..` rest pattern (see `merge_configs`): adding a
+    // field to `HookDef` must fail to compile here until it is handled.
+    // `background` was previously dropped exactly the way `shared`/`extends`
+    // were in `merge_configs`.
+    let HookDef {
+        background,
+        parallel,
+        piped,
+        follow,
+        exclude_tags,
+        exclude,
+        skip,
+        only,
+        jobs,
+        commands,
+    } = overlay;
+
     let mut merged = base;
 
     // Scalar fields: overlay wins if set
-    if overlay.parallel.is_some() {
-        merged.parallel = overlay.parallel;
+    if background.is_some() {
+        merged.background = background;
     }
-    if overlay.piped.is_some() {
-        merged.piped = overlay.piped;
+    if parallel.is_some() {
+        merged.parallel = parallel;
     }
-    if overlay.follow.is_some() {
-        merged.follow = overlay.follow;
+    if piped.is_some() {
+        merged.piped = piped;
     }
-    if overlay.exclude_tags.is_some() {
-        merged.exclude_tags = overlay.exclude_tags;
+    if follow.is_some() {
+        merged.follow = follow;
     }
-    if overlay.exclude.is_some() {
-        merged.exclude = overlay.exclude;
+    if exclude_tags.is_some() {
+        merged.exclude_tags = exclude_tags;
     }
-    if overlay.skip.is_some() {
-        merged.skip = overlay.skip;
+    if exclude.is_some() {
+        merged.exclude = exclude;
     }
-    if overlay.only.is_some() {
-        merged.only = overlay.only;
+    if skip.is_some() {
+        merged.skip = skip;
+    }
+    if only.is_some() {
+        merged.only = only;
     }
 
     // Jobs: merge named jobs by name, append unnamed
-    if let Some(overlay_jobs) = overlay.jobs {
+    if let Some(overlay_jobs) = jobs {
         let mut base_jobs = merged.jobs.unwrap_or_default();
         for overlay_job in overlay_jobs {
             if let Some(ref name) = overlay_job.name {
@@ -305,8 +353,8 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     }
 
     // Commands: overlay replaces entirely if set
-    if overlay.commands.is_some() {
-        merged.commands = overlay.commands;
+    if commands.is_some() {
+        merged.commands = commands;
     }
 
     merged
@@ -1005,6 +1053,67 @@ hooks:
         };
         let merged = merge_configs(base, overlay);
         assert_eq!(merged.log.unwrap().retention, Some("14d".to_string()));
+    }
+
+    #[test]
+    fn merge_configs_preserves_every_overlay_field() {
+        // Regression guard for the silent-drop bug class: merging a
+        // fully-populated overlay onto an empty base must reproduce the overlay
+        // exactly. Before the fix, `shared` and `extends` were dropped here
+        // (and `background` in `merge_hook_defs`), silently destroying user
+        // config on `daft merge` / `daft file merge` and on checkout
+        // propagation. The no-`..` destructure plus this assertion make a future
+        // field omission fail to compile or fail this test.
+        let mut hooks = HashMap::new();
+        hooks.insert(
+            "worktree-post-create".to_string(),
+            HookDef {
+                background: Some(true),
+                parallel: Some(true),
+                jobs: Some(vec![JobDef {
+                    name: Some("example".to_string()),
+                    run: Some(RunCommand::Simple("echo hi".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        let full = YamlConfig {
+            min_version: Some("1.0.0".to_string()),
+            colors: Some(false),
+            no_tty: Some(true),
+            rc: Some(".bashrc".to_string()),
+            output: Some(crate::hooks::yaml_config::OutputSetting::Disabled(false)),
+            extends: Some(vec!["base.yml".to_string()]),
+            source_dir: Some(".daft".to_string()),
+            source_dir_local: Some(".daft-local".to_string()),
+            layout: Some("contained".to_string()),
+            shared: Some(vec![".env".to_string()]),
+            log: Some(LogConfig {
+                retention: Some("7d".to_string()),
+                ..Default::default()
+            }),
+            hooks,
+        };
+
+        let merged = merge_configs(YamlConfig::default(), full.clone());
+        assert_eq!(
+            merged, full,
+            "merging a full overlay onto an empty base must preserve every field"
+        );
+    }
+
+    #[test]
+    fn merge_hook_defs_preserves_background() {
+        // `background` was the third silent-drop site (alongside
+        // `shared`/`extends` in `merge_configs`). Merging a hook that sets only
+        // `background` onto an empty base must carry it through.
+        let overlay = HookDef {
+            background: Some(true),
+            ..Default::default()
+        };
+        let merged = merge_hook_defs(HookDef::default(), overlay);
+        assert_eq!(merged.background, Some(true));
     }
 
     #[test]
