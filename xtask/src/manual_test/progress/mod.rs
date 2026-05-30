@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use super::reporter::ScenarioStatus;
 
-pub use indicatif_sink::IndicatifProgressSink;
+pub use indicatif_sink::{finalize_region_for_exit, IndicatifProgressSink};
 
 /// Cooperative cancellation flag shared between the SIGINT handler and the
 /// runner / sink.
@@ -71,11 +71,16 @@ pub trait ProgressSink: Send + Sync {
     /// Called once before any scenarios start, with the total to expect.
     fn run_started(&self, total_scenarios: usize);
 
-    /// Called when a worker picks up a scenario.
-    fn scenario_started(&self, name: &str, total_steps: usize);
+    /// Called when a worker picks up a scenario. `index` is the scenario's
+    /// stable position in the discovered (alphabetically-sorted) list — the
+    /// live region keys its in-flight rows by it (scenario *names* are not
+    /// unique) and maps it to a dot in the totals completion-map.
+    fn scenario_started(&self, index: usize, name: &str, total_steps: usize);
 
-    /// Called before each step's command runs. `idx` is zero-based.
-    fn step_started(&self, scenario_name: &str, idx: usize, total: usize, step_name: &str);
+    /// Called before each step's command runs. `index` identifies the
+    /// scenario (see [`Self::scenario_started`]); `step_idx` is the zero-based
+    /// step within it.
+    fn step_started(&self, index: usize, step_idx: usize, total_steps: usize, step_name: &str);
 
     /// Called when a worker finishes a scenario, with the full buffered
     /// output and the determined status.
@@ -106,8 +111,16 @@ pub trait ProgressSink: Send + Sync {
     /// step lines + footer + any cleanup note). On `NoopProgressSink` the
     /// buf is *ignored* — the orchestrator drains buffers in input order
     /// at end-of-run for the non-TTY path, so printing here would
-    /// duplicate output.
-    fn complete_scenario(&self, name: &str, status: ScenarioStatus, duration: Duration, buf: &[u8]);
+    /// duplicate output. `index` identifies the scenario (see
+    /// [`Self::scenario_started`]) so the row can be removed and its
+    /// completion-map dot lit.
+    fn complete_scenario(
+        &self,
+        index: usize,
+        status: ScenarioStatus,
+        duration: Duration,
+        buf: &[u8],
+    );
 
     /// Called once at the end of the run, after the summary block.
     fn run_finished(&self);
@@ -128,11 +141,12 @@ pub struct NoopProgressSink;
 
 impl ProgressSink for NoopProgressSink {
     fn run_started(&self, _total_scenarios: usize) {}
-    fn scenario_started(&self, _name: &str, _total_steps: usize) {}
-    fn step_started(&self, _scenario_name: &str, _idx: usize, _total: usize, _step_name: &str) {}
+    fn scenario_started(&self, _index: usize, _name: &str, _total_steps: usize) {}
+    fn step_started(&self, _index: usize, _step_idx: usize, _total_steps: usize, _step_name: &str) {
+    }
     fn complete_scenario(
         &self,
-        _name: &str,
+        _index: usize,
         _status: ScenarioStatus,
         _duration: Duration,
         _buf: &[u8],
@@ -151,25 +165,28 @@ impl ProgressSink for NoopProgressSink {
 /// detection + `NO_PROGRESS` / `CI` env-var overrides); this function
 /// doesn't re-probe the environment.
 ///
-/// `name_col_width` and `step_col_width` are the widest scenario name
-/// and the widest `[N/M] step_name` label across the discovered scenario
-/// set. The live sink pads each in-flight row's columns to these widths
-/// so spinner+name, step label, and elapsed line up across rows. Pass
-/// `0` for either to disable that column's padding.
+/// `step_counter_width` is the widest `done/total` step counter across the
+/// discovered scenario set. The live sink pads each in-flight worker row's
+/// step counter to it so the time column to its right lines up across rows.
+/// Pass `0` to disable that padding.
+///
+/// `total_workers` is the size of the rayon pool (the resolved `jobs`
+/// count). The summary line renders the in-flight count against it as
+/// `R/A running` so the reader can see how saturated the pool is.
 ///
 /// Returns `Box<dyn ProgressSink>` because the live impl carries indicatif
 /// state that the no-op impl doesn't, so the two can't share a single
 /// concrete type.
 pub fn progress_sink_for(
     show_progress: bool,
-    name_col_width: usize,
-    step_col_width: usize,
+    step_counter_width: usize,
+    total_workers: usize,
     interrupt: InterruptFlag,
 ) -> Box<dyn ProgressSink> {
     if show_progress {
         Box::new(IndicatifProgressSink::new(
-            name_col_width,
-            step_col_width,
+            step_counter_width,
+            total_workers,
             interrupt,
         ))
     } else {
@@ -185,15 +202,10 @@ mod tests {
     fn noop_sink_swallows_every_call() {
         let sink = NoopProgressSink;
         sink.run_started(10);
-        sink.scenario_started("example", 3);
-        sink.step_started("example", 0, 3, "first step");
-        sink.step_started("example", 1, 3, "second step");
-        sink.complete_scenario(
-            "example",
-            ScenarioStatus::Pass,
-            Duration::from_millis(120),
-            b"",
-        );
+        sink.scenario_started(0, "example", 3);
+        sink.step_started(0, 0, 3, "first step");
+        sink.step_started(0, 1, 3, "second step");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::from_millis(120), b"");
         sink.run_finished();
         // The contract is "no panic, no observable effect" — reaching this
         // line satisfies it.
@@ -205,11 +217,11 @@ mod tests {
         // through a dyn pointer; exercise every method instead and rely on
         // the IndicatifProgressSink unit tests (in indicatif_sink.rs) to
         // cover the live path.
-        let sink = progress_sink_for(false, 0, 0, InterruptFlag::new());
+        let sink = progress_sink_for(false, 0, 4, InterruptFlag::new());
         sink.run_started(0);
-        sink.scenario_started("x", 1);
-        sink.step_started("x", 0, 1, "s");
-        sink.complete_scenario("x", ScenarioStatus::Fail, Duration::ZERO, b"");
+        sink.scenario_started(0, "x", 1);
+        sink.step_started(0, 0, 1, "s");
+        sink.complete_scenario(0, ScenarioStatus::Fail, Duration::ZERO, b"");
         sink.run_finished();
     }
 
@@ -243,6 +255,6 @@ mod tests {
         // path, so a sink that printed here would duplicate output. The
         // contract is "no panic, no observable effect".
         let sink = NoopProgressSink;
-        sink.complete_scenario("x", ScenarioStatus::Pass, Duration::ZERO, b"some content\n");
+        sink.complete_scenario(0, ScenarioStatus::Pass, Duration::ZERO, b"some content\n");
     }
 }

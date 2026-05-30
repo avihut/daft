@@ -92,47 +92,25 @@ pub(crate) fn peek_scenario_metadata(path: &Path) -> Option<ScenarioMeta> {
     Some(meta)
 }
 
-/// Compute the widest scenario name across the discovered set, in
-/// **grapheme-approximate** character count. Width is used purely for
-/// column alignment, so `chars().count()` (codepoint count) is close
-/// enough — emoji-or-CJK-heavy names may misalign by a column or two,
-/// but the failure mode is cosmetic, not a panic.
-fn max_scenario_name_width(metas: &[ScenarioMeta]) -> usize {
+/// Compute the widest `done/total` step counter across the discovered
+/// set, in chars. Used by the live progress region to pad each worker
+/// row's step counter so the time counter to its right lands at a stable
+/// column across in-flight rows. The widest counter for a `T`-step
+/// scenario is `T/T`, so its width is `2 * digit_count(T) + 1`.
+fn max_step_counter_width(metas: &[ScenarioMeta]) -> usize {
     metas
         .iter()
-        .filter_map(|m| m.name.as_deref())
-        .map(|n| n.chars().count())
-        .max()
-        .unwrap_or(0)
-}
-
-/// Compute the widest `[N/M] step_name` label across all
-/// (scenario, step) pairs. Used by the live progress region to pad the
-/// per-row step column so the elapsed counter to its right lands at a
-/// stable column across in-flight rows.
-fn max_step_label_width(metas: &[ScenarioMeta]) -> usize {
-    metas
-        .iter()
-        .flat_map(|m| {
-            let total = m.step_names.len();
-            m.step_names
-                .iter()
-                .enumerate()
-                .map(move |(i, name)| step_label_width(i + 1, total, name))
+        .map(|m| {
+            let d = digit_count(m.step_names.len());
+            2 * d + 1
         })
         .max()
         .unwrap_or(0)
 }
 
-/// Visible width of a `[N/M] step_name` label (no styling, no padding).
-/// Single helper so `max_step_label_width` and the live sink agree on
-/// the formula.
-pub(crate) fn step_label_width(idx_one_based: usize, total: usize, step_name: &str) -> usize {
-    // "[{idx}/{total}] {step_name}" — counter brackets + slash + 1 space.
-    let counter_len = digit_count(idx_one_based) + 1 + digit_count(total) + 2;
-    counter_len + 1 + step_name.chars().count()
-}
-
+// Twin of `digit_count` in `progress/indicatif_sink.rs` (which takes `u64`
+// to match indicatif's counters). Keep the two in sync if the formula
+// changes.
 fn digit_count(n: usize) -> usize {
     if n == 0 {
         1
@@ -360,6 +338,16 @@ fn setup_cleanup_handler(keep: bool, interrupt: progress::InterruptFlag) -> Clea
         // registrations, so the `known` set captures the entire universe
         // of paths that could possibly still have on-disk presence.
         let _ = crossterm::terminal::disable_raw_mode();
+        // Collapse the live progress region first, so the forced-exit notice and
+        // cleanup messages below don't fight a steady-tick repaint. This is the
+        // path the cooperative teardown can't reach: when every worker is wedged
+        // in a slow subprocess, no completion fires `notify_cancelling`, so the
+        // region is still drawn when this second-press handler runs.
+        // `finalize_region_for_exit` stops the ticks and best-effort collapses the
+        // region — it deliberately prints nothing (an earlier totals "end screen"
+        // here duplicated the stranded summary line; see its doc comment). A no-op
+        // on a non-TTY run or if a soft cancel already tore the region down.
+        progress::finalize_region_for_exit();
         eprintln!();
         eprintln!("{}", term_styles::dim("Forced exit. Cleaning up..."));
         if !keep {
@@ -561,11 +549,10 @@ pub fn run(
     // owns the inter-scenario blank line, including the one before the very
     // first scenario.
 
-    // Pre-scan scenario files once for column-width sizing in the live
-    // in-flight region: pad scenario names (column 1) and the
-    // `[N/M] step_name` label (column 2) so the elapsed counter (column 3)
-    // stacks across rows. Scrollback footers don't pad — durations sit
-    // directly after the scenario name.
+    // Pre-scan scenario files once to size the live region's step-counter
+    // column: pad each worker row's `done/total` step counter so the time
+    // column to its right stacks across in-flight rows. (Scenario/step names
+    // flow naturally and truncate — they aren't padded.)
     //
     // The scan is `peek_scenario_metadata` — a cheap text scan, not a
     // full YAML parse. ~200ms for 580 files on an SSD.
@@ -573,8 +560,7 @@ pub fn run(
         .iter()
         .filter_map(|p| peek_scenario_metadata(p))
         .collect();
-    let name_column_width = max_scenario_name_width(&metas);
-    let step_column_width = max_step_label_width(&metas);
+    let step_counter_width = max_step_counter_width(&metas);
     let reporter = reporter::reporter_for(verbosity);
 
     // Interactive and --setup-only stay on the streaming serial path. Both
@@ -630,12 +616,8 @@ pub fn run(
     let show_progress = std::io::stderr().is_terminal()
         && std::env::var_os("NO_PROGRESS").is_none()
         && std::env::var_os("CI").is_none();
-    let progress = progress::progress_sink_for(
-        show_progress,
-        name_column_width,
-        step_column_width,
-        interrupt.clone(),
-    );
+    let progress =
+        progress::progress_sink_for(show_progress, step_counter_width, jobs, interrupt.clone());
     let result = run_parallel(
         &scenario_files,
         &labels,
@@ -1201,7 +1183,7 @@ fn run_one_scenario(
     // pool — the worker reports the panic and the pool keeps draining the
     // remaining scenarios.
     let work = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        run_one_scenario_inner(&scenario, ctx, cleanup_set)
+        run_one_scenario_inner(&scenario, index, ctx, cleanup_set)
     }));
 
     match work {
@@ -1251,6 +1233,7 @@ fn run_one_scenario(
 
 fn run_one_scenario_inner(
     scenario: &schema::Scenario,
+    index: usize,
     ctx: &RunContext<'_>,
     cleanup_set: &CleanupSet,
 ) -> Result<Option<(runner::ScenarioResult, Vec<u8>)>> {
@@ -1292,6 +1275,7 @@ fn run_one_scenario_inner(
     // already created.
     let Some(result) = runner::run_non_interactive(
         scenario,
+        index,
         &sb,
         &executor,
         ctx.reporter,
@@ -1332,8 +1316,11 @@ fn run_one_scenario_inner(
             // Suppress the "Cleaned up..." chatter on green scenarios — the
             // cleanup still happens, but the line was noise on the happy path.
             // Failures keep it so the failure-detail block visibly attaches to
-            // its scenario rather than running into the next one.
-            Ok(()) if result.failed == 0 => {}
+            // its scenario rather than running into the next one. Cancelled
+            // scenarios suppress it too: the wind-down already streams a `⊘
+            // (cancelled)` footer per scenario, and an extra cleanup line on
+            // each would just be interrupt-time chatter.
+            Ok(()) if result.failed == 0 || result.cancelled => {}
             Ok(()) => ctx
                 .reporter
                 .cleanup_note(&mut buf, "Cleaned up test environment.")?,
@@ -1362,7 +1349,7 @@ fn run_one_scenario_inner(
         reporter::ScenarioStatus::Pass
     };
     ctx.progress
-        .complete_scenario(&scenario.name, status, result.duration, &buf);
+        .complete_scenario(index, status, result.duration, &buf);
 
     Ok(Some((result, buf)))
 }
@@ -2250,7 +2237,9 @@ mod non_interactive_template_tests {
             keep: true,
         };
 
-        run_one_scenario_inner(&scenario, &ctx, &cleanup_set)
+        // Index 0: this test drives a single scenario, and the index only feeds
+        // the progress sink (a `NoopProgressSink` here, which ignores it).
+        run_one_scenario_inner(&scenario, 0, &ctx, &cleanup_set)
             .expect("non-interactive scenario run");
 
         std::env::remove_var("DAFT_MANUAL_TEST_BASE");
@@ -2269,10 +2258,7 @@ mod non_interactive_template_tests {
 
 #[cfg(test)]
 mod peek_scenario_metadata_tests {
-    use super::{
-        max_scenario_name_width, max_step_label_width, peek_scenario_metadata, step_label_width,
-        ScenarioMeta,
-    };
+    use super::{max_step_counter_width, peek_scenario_metadata, ScenarioMeta};
     use std::io::Write;
 
     fn write_yaml(content: &str) -> tempfile::NamedTempFile {
@@ -2329,48 +2315,25 @@ mod peek_scenario_metadata_tests {
     }
 
     #[test]
-    fn max_name_width_picks_longest() {
+    fn max_step_counter_width_picks_widest_counter() {
+        // Counter width is `2 * digit_count(total) + 1` (the widest counter
+        // for a T-step scenario is `T/T`). The 12-step scenario wins:
+        // "12/12" = 5 chars, vs "3/3" = 3 for the 3-step one.
         let metas = vec![
             ScenarioMeta {
-                name: Some("short".into()),
-                step_names: vec![],
+                name: Some("a".into()),
+                step_names: vec!["s".into(); 3],
             },
             ScenarioMeta {
-                name: Some("this is a much longer scenario name".into()),
-                step_names: vec![],
-            },
-            ScenarioMeta {
-                name: Some("middle one".into()),
-                step_names: vec![],
+                name: Some("b".into()),
+                step_names: vec!["s".into(); 12],
             },
         ];
-        assert_eq!(
-            max_scenario_name_width(&metas),
-            "this is a much longer scenario name".chars().count()
-        );
-    }
-
-    #[test]
-    fn max_step_label_width_picks_longest_label() {
-        let metas = vec![ScenarioMeta {
-            name: Some("x".into()),
-            step_names: vec![
-                "a".into(),
-                "bb".into(),
-                "Foo Bar Baz".into(),
-                "ddd".into(),
-                "ee".into(),
-            ],
-        }];
-        let expected = step_label_width(3, 5, "Foo Bar Baz");
-        assert_eq!(max_step_label_width(&metas), expected);
-        // Sanity-check the formula: "[3/5] Foo Bar Baz" = 17 chars.
-        assert_eq!(expected, "[3/5] Foo Bar Baz".chars().count());
+        assert_eq!(max_step_counter_width(&metas), "12/12".chars().count());
     }
 
     #[test]
     fn widths_are_zero_on_empty_set() {
-        assert_eq!(max_scenario_name_width(&[]), 0);
-        assert_eq!(max_step_label_width(&[]), 0);
+        assert_eq!(max_step_counter_width(&[]), 0);
     }
 }
