@@ -5,21 +5,7 @@ description:
 
 repos:
   - name: test-repo
-    default_branch: main
-    branches:
-      - name: main
-        files:
-          - path: README.md
-            content: "# test-repo"
-        commits:
-          - message: "Initial commit"
-      - name: feature/test-feature
-        from: main
-        files:
-          - path: feature.txt
-            content: "feature content"
-        commits:
-          - message: "Add feature"
+    use_fixture: main-with-feature-branch
 
 steps:
   - name: Clone

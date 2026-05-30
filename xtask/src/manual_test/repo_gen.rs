@@ -94,10 +94,6 @@ fn commit_branch(clone_dir: &Path, branch: &BranchSpec) -> Result<()> {
 /// Returns the path to the bare repository.
 pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
     let bare_path = remotes_dir.join(&spec.name);
-    let tmp_clone_path = remotes_dir
-        .parent()
-        .unwrap_or(remotes_dir)
-        .join(format!("tmp-clone-{}", spec.name));
 
     // 1. Create bare repo.
     std::fs::create_dir_all(&bare_path)
@@ -108,11 +104,22 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
     )
     .context("initialising bare repo")?;
 
-    // 2. Clone the bare repo into a temp working directory.
-    //    We need a parent dir that exists for the clone target.
-    if let Some(parent) = tmp_clone_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    // 2. Clone the bare repo into a temp working directory. The temp dir is a
+    //    UNIQUELY-named sibling of `remotes_dir` (random suffix via tempfile),
+    //    not inside it, so the inline path's sandbox never scans it as a remote.
+    //    Uniqueness is load-bearing: fixture priming runs `generate_repo` in
+    //    parallel with `remotes_dir.parent()` = the *shared* cache root, so two
+    //    different fixtures that reuse the same repo name would otherwise both
+    //    target `tmp-clone-<name>` (alive for the whole generation) and collide
+    //    on `git clone` (#586).
+    let tmp_parent = remotes_dir.parent().unwrap_or(remotes_dir);
+    std::fs::create_dir_all(tmp_parent)
+        .with_context(|| format!("creating temp-clone parent dir: {}", tmp_parent.display()))?;
+    let tmp_clone = tempfile::Builder::new()
+        .prefix(&format!("tmp-clone-{}-", spec.name))
+        .tempdir_in(tmp_parent)
+        .context("creating temp clone dir")?;
+    let tmp_clone_path = tmp_clone.path().to_path_buf();
     let bare_str = bare_path
         .to_str()
         .context("bare repo path is not valid UTF-8")?;
@@ -205,9 +212,9 @@ pub fn generate_repo(spec: &RepoSpec, remotes_dir: &Path) -> Result<PathBuf> {
         ],
     )?;
 
-    // 9. Cleanup temp clone.
-    std::fs::remove_dir_all(&tmp_clone_path)
-        .with_context(|| format!("removing temp clone dir: {}", tmp_clone_path.display()))?;
+    // 9. The temp clone is removed when `tmp_clone` (a tempfile::TempDir) drops
+    //    — on success here, or on any early `?` return above.
+    drop(tmp_clone);
 
     Ok(bare_path)
 }

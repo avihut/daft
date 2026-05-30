@@ -1,0 +1,14 @@
+# Single-branch repo whose daft.yml pins `layout: contained`. Shared by the
+# clone/layout scenarios that verify daft clones directly with the layout
+# declared in daft.yml. Use {{NAME}} as a placeholder for the repo name.
+
+default_branch: main
+branches:
+  - name: main
+    files:
+      - path: README.md
+        content: "# {{NAME}}"
+    commits:
+      - message: "Initial commit"
+daft_yml: |
+  layout: contained

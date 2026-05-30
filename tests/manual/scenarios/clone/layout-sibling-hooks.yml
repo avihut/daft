@@ -5,24 +5,7 @@ description:
 
 repos:
   - name: test-repo
-    default_branch: main
-    branches:
-      - name: main
-        files:
-          - path: README.md
-            content: "# test-repo"
-        commits:
-          - message: "Initial commit"
-    daft_yml: |
-      hooks:
-        post-clone:
-          jobs:
-            - name: clone-marker
-              run: touch "$DAFT_WORKTREE_PATH/.clone-hook-ran"
-        worktree-post-create:
-          jobs:
-            - name: create-marker
-              run: touch "$DAFT_WORKTREE_PATH/.create-hook-ran"
+    use_fixture: daft-yml-clone-hooks
 
 steps:
   - name: Clone with sibling layout and trust hooks
