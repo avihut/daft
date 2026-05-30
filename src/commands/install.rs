@@ -75,14 +75,28 @@ pub fn run() -> Result<()> {
 
 pub fn run_with_output(output: &mut dyn Output, opts: InstallOptions) -> Result<()> {
     let cwd = get_current_directory()?;
-    install_starter(&cwd, output)?;
     // Resolve interactivity at the boundary, not inside the offer logic. Reading
     // `is_terminal()` deeper down makes the offer untestable: a unit test run
     // from a real terminal inherits a TTY stdin and would block forever on
-    // `dialoguer::Confirm`. Computing it here keeps `maybe_offer_git_exclude`
+    // `dialoguer::Confirm`. Computing it here keeps the offer logic
     // deterministic for tests (which pass `interactive: false`).
     let interactive = std::io::stdin().is_terminal() && std::env::var("DAFT_TESTING").is_err();
-    maybe_offer_git_exclude(&cwd, output, &opts, interactive)?;
+    install_at(&cwd, output, &opts, interactive)
+}
+
+/// Install a starter daft.yml at `worktree_root`, then — when it would be
+/// visible to git — offer to exclude it (prompt when `interactive`, else a
+/// hint). Shared entry point: `daft install`/`daft repo install` call it with
+/// the cwd and computed interactivity; `daft clone --install` calls it with the
+/// freshly-created worktree (see `commands::clone`).
+pub fn install_at(
+    worktree_root: &Path,
+    output: &mut dyn Output,
+    opts: &InstallOptions,
+    interactive: bool,
+) -> Result<()> {
+    install_starter(worktree_root, output)?;
+    maybe_offer_git_exclude(worktree_root, output, opts, interactive)?;
     Ok(())
 }
 

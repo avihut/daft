@@ -139,6 +139,18 @@ pub struct Args {
         help = "Run a command in the worktree after setup completes (repeatable)"
     )]
     exec: Vec<String>,
+
+    #[arg(
+        long = "install",
+        help = "Run `daft install` in the new worktree(s) after a successful clone"
+    )]
+    install: bool,
+
+    #[arg(
+        long = "git-exclude",
+        help = "With --install: add /daft.yml to .git/info/exclude without prompting"
+    )]
+    git_exclude: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -185,6 +197,14 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
     }
     if args.trust_hooks && args.no_hooks {
         anyhow::bail!("--trust-hooks and --no-hooks cannot be used together.");
+    }
+    if args.install && args.no_checkout {
+        anyhow::bail!(
+            "--install and --no-checkout cannot be used together.\n--install writes daft.yml into a worktree; --no-checkout creates none."
+        );
+    }
+    if args.git_exclude && !args.install {
+        anyhow::bail!("--git-exclude only applies together with --install.");
     }
     Ok(())
 }
@@ -492,6 +512,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // the base worktree here.
         if !(is_multi_branch && used_tui) {
             run_post_create_hook(args, &result, output)?;
+        }
+
+        if args.install {
+            run_clone_install(args, &result, output)?;
         }
 
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
@@ -1423,6 +1447,80 @@ fn run_post_create_hook(
     Ok(())
 }
 
+/// `--install`: bootstrap a starter daft.yml in the freshly-cloned worktree(s).
+///
+/// Installs once in the primary (cd-target) worktree — where the shell lands and
+/// the `post-clone` hook runs — which writes daft.yml and (on a TTY, or
+/// unconditionally with `--git-exclude`) offers the repo-wide
+/// `.git/info/exclude` entry. The resolved visitor config is then propagated to
+/// every other worktree this clone created, so multi-branch clones are
+/// symmetric. Propagation reuses `visitor_propagation::propagate`, the same
+/// machinery that carries visitor configs across worktrees during normal use.
+///
+/// If the cloned repository already ships a daft.yml (a tracked team baseline),
+/// there is nothing to bootstrap: skip with a note rather than failing.
+fn run_clone_install(
+    args: &Args,
+    result: &clone::CloneResult,
+    output: &mut dyn Output,
+) -> Result<()> {
+    // The worktree the shell lands in; falls back to the created worktree.
+    let Some(primary) = result
+        .cd_target
+        .as_deref()
+        .or(result.worktree_dir.as_deref())
+    else {
+        // No worktree was created (e.g. requested branch not found) — nothing
+        // to install into. --no-checkout is rejected up front.
+        return Ok(());
+    };
+
+    if primary.join("daft.yml").exists() {
+        output.info("daft.yml already present in the repository — skipping --install.");
+        return Ok(());
+    }
+
+    // Decide interactivity here (TTY + not under DAFT_TESTING) and pass it in,
+    // for the same reason install.rs does: the offer logic must never read the
+    // terminal itself.
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::env::var("DAFT_TESTING").is_err();
+    let opts = crate::commands::install::InstallOptions {
+        git_exclude: args.git_exclude,
+    };
+    crate::commands::install::install_at(primary, output, &opts, interactive)?;
+
+    // Propagate the just-installed visitor config to the other worktrees this
+    // clone created. Enumerate via `git worktree list` so it covers every layout
+    // and both the sequential and TUI satellite paths. A copy failure for one
+    // sibling is a warning, not a clone failure — the primary is already set up.
+    let primary_canon = std::fs::canonicalize(primary).unwrap_or_else(|_| primary.to_path_buf());
+    let listing = crate::utils::git_command_at(primary)
+        .args(["worktree", "list", "--porcelain"])
+        .output();
+    let Ok(listing) = listing else {
+        return Ok(());
+    };
+    if !listing.status.success() {
+        return Ok(());
+    }
+    let porcelain = String::from_utf8_lossy(&listing.stdout);
+    for wt in crate::core::layout::detect::parse_worktree_list(&porcelain) {
+        let wt_canon = std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
+        if wt_canon == primary_canon {
+            continue;
+        }
+        if let Err(e) = crate::hooks::visitor_propagation::propagate(primary, &wt.path) {
+            output.warning(&format!(
+                "Could not propagate daft.yml to {}: {e}",
+                wt.path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Spawn a streaming-collector run that re-emits `LAST_COMMIT | BRANCH_AGE`
 /// for the freshly-created worktree as `PatchSource::PostTask(Setup)`
 /// patches. Blocks briefly so the patches land before the accompanying
@@ -1475,6 +1573,49 @@ fn spawn_post_clone_refresh(
 mod tests {
     use super::*;
     use crate::core::layout::BuiltinLayout;
+
+    #[test]
+    fn install_with_no_checkout_is_rejected() {
+        // --no-checkout creates no worktree, so there's nowhere to install.
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--no-checkout",
+        ]);
+        assert!(validate_arg_combinations(&args).is_err());
+    }
+
+    #[test]
+    fn git_exclude_without_install_is_rejected() {
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--git-exclude",
+        ]);
+        assert!(validate_arg_combinations(&args).is_err());
+    }
+
+    #[test]
+    fn install_alone_is_ok() {
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+        ]);
+        assert!(validate_arg_combinations(&args).is_ok());
+    }
+
+    #[test]
+    fn install_with_git_exclude_is_ok() {
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--git-exclude",
+        ]);
+        assert!(validate_arg_combinations(&args).is_ok());
+    }
 
     #[test]
     fn no_checkout_disabled_is_always_ok() {
