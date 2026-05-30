@@ -105,7 +105,15 @@ pub fn execute(
     validate_branch_name(&params.branch_name)?;
 
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    let source_worktree = get_current_directory()?;
+    // The target branch's worktree doesn't exist yet here, so there is no
+    // `preferred_branch` to bias toward — fall back to the default branch's
+    // worktree when cwd isn't a worktree (see `resolve_source_worktree`).
+    let source_worktree = crate::core::worktree::checkout_branch::resolve_source_worktree(
+        git,
+        &git_dir,
+        &params.remote_name,
+        None,
+    )?;
 
     let worktree_path = if let Some(ref at) = params.at_path {
         at.clone()
