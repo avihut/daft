@@ -11,9 +11,8 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use crate::hooks::yaml_config_loader::{
-    ConfigStatus, classify_main_config, merge_configs, parse_yaml_config_str,
-};
+use crate::hooks::config_merge::merge_configs;
+use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config, parse_yaml_config_str};
 
 /// In-scope filenames for v1 propagation.
 pub(crate) const VISITOR_DAFT_YML: &str = "daft.yml";

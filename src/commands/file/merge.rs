@@ -11,8 +11,9 @@ use clap::Parser;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
+use crate::hooks::config_merge::merge_configs;
 use crate::hooks::yaml_config::YamlConfig;
-use crate::hooks::yaml_config_loader::{merge_configs, parse_yaml_config_str};
+use crate::hooks::yaml_config_loader::parse_yaml_config_str;
 
 /// Options controlling the merge behaviour.
 pub struct MergeOptions {

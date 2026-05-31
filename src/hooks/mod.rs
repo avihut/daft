@@ -42,6 +42,7 @@
 //! User-global hooks can be placed at `~/.config/daft/hooks/`.
 
 pub mod conditions;
+pub mod config_merge;
 mod environment;
 mod executor;
 pub mod job_adapter;
