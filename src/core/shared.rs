@@ -133,33 +133,13 @@ impl MaterializedState {
 pub fn list_worktree_paths() -> Result<Vec<PathBuf>> {
     let git = GitCommand::new(true);
     let porcelain = git.worktree_list_porcelain()?;
-    let mut paths = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut is_bare = false;
-
-    for line in porcelain.lines() {
-        if let Some(path_str) = line.strip_prefix("worktree ") {
-            // Flush previous entry if it wasn't bare
-            if let Some(prev) = current_path.take()
-                && !is_bare
-            {
-                paths.push(PathBuf::from(prev));
-            }
-            current_path = Some(path_str.to_string());
-            is_bare = false;
-        } else if line == "bare" {
-            is_bare = true;
-        }
-    }
-
-    // Flush last entry
-    if let Some(prev) = current_path
-        && !is_bare
-    {
-        paths.push(PathBuf::from(prev));
-    }
-
-    Ok(paths)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
+            .into_iter()
+            .filter(|e| !e.is_bare)
+            .map(|e| e.path)
+            .collect(),
+    )
 }
 
 // ── Symlink helpers ───────────────────────────────────────────────────────

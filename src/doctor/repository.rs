@@ -3,6 +3,7 @@
 //! Verifies that the current repository is configured correctly for daft:
 //! worktree layout, worktree consistency, fetch refspec, remote HEAD.
 
+use crate::core::worktree::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 use crate::doctor::{CheckResult, FixAction};
 use crate::git::GitCommand;
 use std::path::{Path, PathBuf};
@@ -13,49 +14,6 @@ pub struct RepoContext {
     pub project_root: PathBuf,
     pub current_worktree: PathBuf,
     pub is_bare: bool,
-}
-
-/// A parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: String,
-    is_bare: bool,
-}
-
-/// Parse worktree entries from porcelain output.
-///
-/// Each block is separated by a blank line. Lines starting with "worktree "
-/// give the path, and a subsequent "bare" line marks it as the bare repo entry.
-fn parse_worktree_entries(porcelain: &str) -> Vec<WorktreeEntry> {
-    let mut entries = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut current_is_bare = false;
-
-    for line in porcelain.lines() {
-        if line.is_empty() {
-            // End of block
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    is_bare: current_is_bare,
-                });
-            }
-            current_is_bare = false;
-        } else if let Some(path_str) = line.strip_prefix("worktree ") {
-            current_path = Some(path_str.to_string());
-        } else if line == "bare" {
-            current_is_bare = true;
-        }
-    }
-
-    // Handle last block (porcelain output may not end with blank line)
-    if let Some(path) = current_path {
-        entries.push(WorktreeEntry {
-            path,
-            is_bare: current_is_bare,
-        });
-    }
-
-    entries
 }
 
 /// Check if the git common dir is a bare repository by reading its config.
@@ -150,7 +108,7 @@ pub fn check_worktree_layout(ctx: &RepoContext) -> CheckResult {
     // Count actual worktrees (exclude the bare repo entry)
     let worktree_count = match git.worktree_list_porcelain() {
         Ok(output) => {
-            let entries = parse_worktree_entries(&output);
+            let entries = parse_worktree_list_porcelain(&output);
             entries.iter().filter(|e| !e.is_bare).count()
         }
         Err(_) => 0,
@@ -176,16 +134,15 @@ pub fn check_worktree_consistency(_ctx: &RepoContext) -> CheckResult {
         }
     };
 
-    let entries = parse_worktree_entries(&porcelain);
+    let entries = parse_worktree_list_porcelain(&porcelain);
     // Only check non-bare entries
-    let worktree_entries: Vec<&WorktreeEntry> = entries.iter().filter(|e| !e.is_bare).collect();
+    let worktree_entries: Vec<&WorktreeListEntry> = entries.iter().filter(|e| !e.is_bare).collect();
     let total = worktree_entries.len();
 
     let mut orphaned = Vec::new();
     for entry in &worktree_entries {
-        let path = Path::new(&entry.path);
-        if !path.exists() {
-            orphaned.push(entry.path.clone());
+        if !entry.path.exists() {
+            orphaned.push(entry.path.display().to_string());
         }
     }
 
@@ -396,42 +353,6 @@ pub fn dry_run_remote_head() -> Vec<FixAction> {
 mod tests {
     use super::*;
     use crate::doctor::CheckStatus;
-
-    #[test]
-    fn test_parse_worktree_entries_bare_repo() {
-        let porcelain = "\
-worktree /home/user/project/.git
-bare
-
-worktree /home/user/project/main
-HEAD abc123
-branch refs/heads/main
-
-worktree /home/user/project/feature
-HEAD def456
-branch refs/heads/feature
-
-";
-        let entries = parse_worktree_entries(porcelain);
-        assert_eq!(entries.len(), 3);
-        assert!(entries[0].is_bare);
-        assert!(!entries[1].is_bare);
-        assert!(!entries[2].is_bare);
-
-        let non_bare: Vec<_> = entries.iter().filter(|e| !e.is_bare).collect();
-        assert_eq!(non_bare.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_worktree_entries_no_trailing_newline() {
-        let porcelain = "\
-worktree /home/user/project
-HEAD abc123
-branch refs/heads/main";
-        let entries = parse_worktree_entries(porcelain);
-        assert_eq!(entries.len(), 1);
-        assert!(!entries[0].is_bare);
-    }
 
     #[test]
     fn test_is_common_dir_bare_true() {

@@ -909,31 +909,14 @@ fn relocate_worktrees(
     let project_root = crate::get_project_root()?;
     let porcelain = git.worktree_list_porcelain()?;
 
-    // Parse porcelain output into (path, branch) pairs
-    let mut worktrees: Vec<(PathBuf, String)> = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut is_bare = false;
-
-    for line in porcelain.lines() {
-        if let Some(wt_path) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(wt_path));
-            is_bare = false;
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line.starts_with("detached") {
-            // Skip detached HEAD worktrees (sandboxes)
-            current_path = None;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if !is_bare
-                && let (Some(path), Some(branch)) =
-                    (current_path.take(), branch_ref.strip_prefix("refs/heads/"))
-            {
-                worktrees.push((path, branch.to_string()));
-            }
-        } else if line.is_empty() {
-            is_bare = false;
-        }
-    }
+    // Parse porcelain into (path, branch) pairs, skipping bare roots and
+    // detached-HEAD sandboxes (which have no branch to relocate).
+    let worktrees: Vec<(PathBuf, String)> =
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
+            .into_iter()
+            .filter(|e| !e.is_bare && !e.is_detached)
+            .filter_map(|e| e.branch.map(|b| (e.path, b)))
+            .collect();
 
     let mut moved_count = 0;
 

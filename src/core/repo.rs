@@ -179,50 +179,6 @@ fn rev_parse_path(cwd: &Path, arg: &str) -> Option<PathBuf> {
     }
 }
 
-/// A worktree entry parsed from `git worktree list --porcelain`.
-struct WorktreeBranchEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    is_bare: bool,
-}
-
-/// Parse `git worktree list --porcelain` into (path, branch, is_bare) entries.
-fn parse_worktree_branches(porcelain: &str) -> Vec<WorktreeBranchEntry> {
-    let mut entries = Vec::new();
-    let mut path: Option<PathBuf> = None;
-    let mut branch: Option<String> = None;
-    let mut is_bare = false;
-
-    for line in porcelain.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            path = Some(PathBuf::from(p));
-            branch = None;
-            is_bare = false;
-        } else if let Some(b) = line.strip_prefix("branch ") {
-            branch = b.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line.is_empty()
-            && let Some(p) = path.take()
-        {
-            entries.push(WorktreeBranchEntry {
-                path: p,
-                branch: branch.take(),
-                is_bare,
-            });
-            is_bare = false;
-        }
-    }
-    if let Some(p) = path {
-        entries.push(WorktreeBranchEntry {
-            path: p,
-            branch,
-            is_bare,
-        });
-    }
-    entries
-}
-
 /// Pick a worktree to represent a bare/container-root repo for config
 /// inspection. Prefers the default branch's worktree (resolved locally from
 /// `origin/HEAD`); falls back to the first non-bare worktree. Returns `None`
@@ -241,7 +197,7 @@ fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
         return None;
     }
     let porcelain = String::from_utf8_lossy(&porcelain.stdout);
-    let worktrees = parse_worktree_branches(&porcelain);
+    let worktrees = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
 
     // Prefer the default branch's worktree.
     if let Some(default) = crate::core::remote::local_default_branch(cwd, "origin")
@@ -253,7 +209,8 @@ fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
     }
 
     // Otherwise the first non-bare worktree.
-    worktrees.into_iter().find(|w| !w.is_bare).map(|w| w.path)
+    crate::core::worktree::porcelain::first_main_index(&worktrees)
+        .map(|i| worktrees[i].path.clone())
 }
 
 /// Extract a repository name from a URL (SSH, HTTPS, or shorthand).
@@ -394,28 +351,6 @@ mod tests {
             dir.display(),
             String::from_utf8_lossy(&out.stderr)
         );
-    }
-
-    #[test]
-    fn test_parse_worktree_branches() {
-        let porcelain = "\
-worktree /p/.git
-bare
-
-worktree /p/main
-HEAD abc
-branch refs/heads/main
-
-worktree /p/feature
-HEAD def
-branch refs/heads/feature
-";
-        let entries = parse_worktree_branches(porcelain);
-        assert_eq!(entries.len(), 3);
-        assert!(entries[0].is_bare);
-        assert_eq!(entries[1].branch.as_deref(), Some("main"));
-        assert!(!entries[1].is_bare);
-        assert_eq!(entries[2].branch.as_deref(), Some("feature"));
     }
 
     #[test]

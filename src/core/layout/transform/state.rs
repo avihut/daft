@@ -63,50 +63,23 @@ pub struct ClassifiedWorktree {
 
 /// Parse `git worktree list --porcelain` output into worktree entries.
 ///
-/// Skips bare root entries and detached HEAD worktrees. Each block is
-/// separated by a blank line. The `branch` line has a `refs/heads/` prefix
-/// that is stripped before storing.
+/// A transform-planning view over the shared
+/// [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`]: bare
+/// root entries and detached HEAD worktrees are skipped, as are entries without
+/// a branch. `is_default` is left `false` here and set later by
+/// `read_source_state`.
 pub fn parse_porcelain_to_entries(porcelain: &str) -> Vec<WorktreeEntry> {
-    let mut entries = Vec::new();
-
-    for block in porcelain.split("\n\n") {
-        let block = block.trim();
-        if block.is_empty() {
-            continue;
-        }
-
-        let mut path: Option<PathBuf> = None;
-        let mut branch: Option<String> = None;
-        let mut is_bare = false;
-        let mut is_detached = false;
-
-        for line in block.lines() {
-            if let Some(rest) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(rest));
-            } else if line == "bare" {
-                is_bare = true;
-            } else if line == "detached" {
-                is_detached = true;
-            } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
-                branch = Some(rest.to_string());
-            }
-        }
-
-        // Skip bare root entries and detached HEAD worktrees
-        if is_bare || is_detached {
-            continue;
-        }
-
-        if let (Some(p), Some(b)) = (path, branch) {
-            entries.push(WorktreeEntry {
-                branch: b,
-                path: p,
+    crate::core::worktree::porcelain::parse_worktree_list_porcelain(porcelain)
+        .into_iter()
+        .filter(|e| !e.is_bare && !e.is_detached)
+        .filter_map(|e| {
+            e.branch.map(|branch| WorktreeEntry {
+                branch,
+                path: e.path,
                 is_default: false,
-            });
-        }
-    }
-
-    entries
+            })
+        })
+        .collect()
 }
 
 /// Read current layout state from the repo.

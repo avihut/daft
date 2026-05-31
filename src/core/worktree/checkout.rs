@@ -373,24 +373,12 @@ fn find_existing_worktree_for_branch(
     branch_name: &str,
 ) -> Result<Option<PathBuf>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut current_path: Option<PathBuf> = None;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(worktree_path));
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if let Some(branch) = branch_ref.strip_prefix("refs/heads/")
-                && branch == branch_name
-            {
-                return Ok(current_path.take());
-            }
-            current_path = None;
-        } else if line.is_empty() {
-            current_path = None;
-        }
-    }
-
-    Ok(None)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output)
+            .into_iter()
+            .find(|e| e.branch.as_deref() == Some(branch_name))
+            .map(|e| e.path),
+    )
 }
 
 /// Fetch latest changes for a branch from the remote.

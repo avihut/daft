@@ -119,7 +119,14 @@ fn enumerate_worktrees_cli(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
         );
     }
     let stdout = String::from_utf8(output.stdout).context("worktree-list output not UTF-8")?;
-    Ok(parse_worktree_list_porcelain(&stdout))
+    // The shared parser RETAINS the bare entry; drop it here so a bare repo path
+    // never reaches the removal loop (the gix backend likewise excludes bare).
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&stdout)
+            .into_iter()
+            .filter(|e| !e.is_bare)
+            .collect(),
+    )
 }
 
 fn enumerate_worktrees_gix(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
@@ -271,68 +278,6 @@ pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
         let _ = db.save();
     }
     Ok(())
-}
-
-/// Parse the porcelain output of `git worktree list --porcelain`, dropping the
-/// bare entry. Pure-string helper so it can be unit-tested without spawning
-/// git.
-fn parse_worktree_list_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
-    let mut out = Vec::new();
-    let mut path: Option<PathBuf> = None;
-    let mut branch: Option<String> = None;
-    let mut is_bare = false;
-    let mut is_detached = false;
-    for line in stdout.lines() {
-        if line.is_empty() {
-            if let Some(p) = path.take() {
-                if !is_bare {
-                    out.push(WorktreeEntry {
-                        path: p,
-                        branch: branch.take(),
-                        is_bare,
-                        is_detached,
-                    });
-                }
-                branch = None;
-                is_bare = false;
-                is_detached = false;
-            }
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("worktree ") {
-            if let Some(p) = path.take() {
-                if !is_bare {
-                    out.push(WorktreeEntry {
-                        path: p,
-                        branch: branch.take(),
-                        is_bare,
-                        is_detached,
-                    });
-                }
-                branch = None;
-                is_bare = false;
-                is_detached = false;
-            }
-            path = Some(PathBuf::from(rest));
-        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(rest.to_string());
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line == "detached" {
-            is_detached = true;
-        }
-    }
-    if let Some(p) = path
-        && !is_bare
-    {
-        out.push(WorktreeEntry {
-            path: p,
-            branch,
-            is_bare,
-            is_detached,
-        });
-    }
-    out
 }
 
 #[cfg(test)]

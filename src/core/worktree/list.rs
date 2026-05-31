@@ -319,67 +319,6 @@ impl WorktreeInfo {
     }
 }
 
-/// Raw entry parsed from `git worktree list --porcelain`.
-struct PorcelainEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    is_bare: bool,
-    is_detached: bool,
-}
-
-/// Parse the porcelain output of `git worktree list --porcelain`.
-///
-/// Each entry is separated by a blank line and has the form:
-/// ```text
-/// worktree /path/to/worktree
-/// HEAD <sha>
-/// branch refs/heads/branch-name
-/// ```
-/// Bare entries have `bare` instead of `branch`.
-/// Detached entries have `detached` instead of `branch`.
-fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut is_bare = false;
-    let mut is_detached = false;
-
-    for line in output.lines() {
-        if let Some(path_str) = line.strip_prefix("worktree ") {
-            // Save previous entry if any
-            if let Some(path) = current_path.take() {
-                entries.push(PorcelainEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare,
-                    is_detached,
-                });
-            }
-            current_path = Some(PathBuf::from(path_str));
-            current_branch = None;
-            is_bare = false;
-            is_detached = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line == "detached" {
-            is_detached = true;
-        }
-    }
-    // Don't forget the last entry
-    if let Some(path) = current_path.take() {
-        entries.push(PorcelainEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare,
-            is_detached,
-        });
-    }
-
-    entries
-}
-
 /// Get ahead/behind counts for a branch relative to a base branch.
 ///
 /// Runs `git rev-list --left-right --count base...branch` in the given
@@ -847,7 +786,7 @@ pub fn collect_worktree_info(
         .worktree_list_porcelain()
         .context("Failed to list worktrees")?;
 
-    let entries = parse_porcelain(&porcelain_output);
+    let entries = super::porcelain::parse_worktree_list_porcelain(&porcelain_output);
     let mut infos = Vec::new();
 
     for entry in entries {
@@ -1236,110 +1175,6 @@ mod tests {
     #[test]
     fn test_parse_numstat_empty() {
         assert_eq!(parse_numstat(""), (0, 0));
-    }
-
-    #[test]
-    fn test_parse_porcelain_basic() {
-        let output = "\
-worktree /home/user/project/main
-HEAD abc123
-branch refs/heads/main
-
-worktree /home/user/project/feature
-HEAD def456
-branch refs/heads/feature-branch
-";
-        let entries = parse_porcelain(output);
-        assert_eq!(entries.len(), 2);
-
-        assert_eq!(entries[0].path, PathBuf::from("/home/user/project/main"));
-        assert_eq!(entries[0].branch.as_deref(), Some("main"));
-        assert!(!entries[0].is_bare);
-        assert!(!entries[0].is_detached);
-
-        assert_eq!(entries[1].path, PathBuf::from("/home/user/project/feature"));
-        assert_eq!(entries[1].branch.as_deref(), Some("feature-branch"));
-        assert!(!entries[1].is_bare);
-        assert!(!entries[1].is_detached);
-    }
-
-    #[test]
-    fn test_parse_porcelain_bare_skip() {
-        let output = "\
-worktree /home/user/project
-HEAD abc123
-bare
-
-worktree /home/user/project/main
-HEAD def456
-branch refs/heads/main
-";
-        let entries = parse_porcelain(output);
-        assert_eq!(entries.len(), 2);
-
-        // First entry is the bare root
-        assert!(entries[0].is_bare);
-        assert_eq!(entries[0].path, PathBuf::from("/home/user/project"));
-
-        // Second entry is a normal worktree
-        assert!(!entries[1].is_bare);
-        assert_eq!(entries[1].branch.as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn test_parse_porcelain_detached_head() {
-        let output = "\
-worktree /home/user/project/detached-wt
-HEAD abc123
-detached
-";
-        let entries = parse_porcelain(output);
-        assert_eq!(entries.len(), 1);
-
-        assert!(entries[0].is_detached);
-        assert!(!entries[0].is_bare);
-        assert!(entries[0].branch.is_none());
-        assert_eq!(
-            entries[0].path,
-            PathBuf::from("/home/user/project/detached-wt")
-        );
-    }
-
-    #[test]
-    fn test_parse_porcelain_empty() {
-        let entries = parse_porcelain("");
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn test_parse_porcelain_mixed() {
-        let output = "\
-worktree /home/user/project
-HEAD abc123
-bare
-
-worktree /home/user/project/main
-HEAD def456
-branch refs/heads/main
-
-worktree /home/user/project/hotfix
-HEAD 789abc
-detached
-
-worktree /home/user/project/feature
-HEAD aaa111
-branch refs/heads/feature/cool
-";
-        let entries = parse_porcelain(output);
-        assert_eq!(entries.len(), 4);
-
-        assert!(entries[0].is_bare);
-        assert!(!entries[1].is_bare);
-        assert!(!entries[1].is_detached);
-        assert_eq!(entries[1].branch.as_deref(), Some("main"));
-        assert!(entries[2].is_detached);
-        assert!(!entries[3].is_bare);
-        assert_eq!(entries[3].branch.as_deref(), Some("feature/cool"));
     }
 }
 

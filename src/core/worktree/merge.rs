@@ -2461,17 +2461,11 @@ pub fn ensure_merge_in_progress(worktree: &Path) -> Result<()> {
 /// `.git`) are silently skipped — listing is best-effort, not authoritative.
 fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBuf>> {
     let porcelain = git.worktree_list_porcelain()?;
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for line in porcelain.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            paths.push(PathBuf::from(p));
-        }
-    }
     let mut matches = Vec::new();
-    for path in paths {
-        match detect_in_progress(&path).ok().flatten() {
+    for entry in crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain) {
+        match detect_in_progress(&entry.path).ok().flatten() {
             Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => {
-                matches.push(path);
+                matches.push(entry.path);
             }
             _ => {}
         }

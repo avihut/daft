@@ -174,6 +174,45 @@ detached
     }
 
     #[test]
+    fn preserves_slashed_branch_short_name() {
+        // A `branch refs/heads/feature/cool` line yields the short slashed name.
+        let input = "worktree /p/feature\nHEAD aaa111\nbranch refs/heads/feature/cool\n";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch.as_deref(), Some("feature/cool"));
+    }
+
+    #[test]
+    fn mixed_bare_detached_and_branches() {
+        // A full repo: bare root + main + detached sandbox + slashed feature.
+        let input = "\
+worktree /p/.git
+HEAD abc123
+bare
+
+worktree /p/main
+HEAD def456
+branch refs/heads/main
+
+worktree /p/hotfix
+HEAD 789abc
+detached
+
+worktree /p/feature
+HEAD aaa111
+branch refs/heads/feature/cool
+";
+        let entries = parse_worktree_list_porcelain(input);
+        assert_eq!(entries.len(), 4);
+        assert!(entries[0].is_bare);
+        assert!(!entries[1].is_bare && !entries[1].is_detached);
+        assert_eq!(entries[1].branch.as_deref(), Some("main"));
+        assert!(entries[2].is_detached);
+        assert_eq!(entries[2].branch, None);
+        assert_eq!(entries[3].branch.as_deref(), Some("feature/cool"));
+    }
+
+    #[test]
     fn first_main_index_skips_leading_bare() {
         let input = "\
 worktree /home/user/proj/.git
