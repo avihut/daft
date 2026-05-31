@@ -23,65 +23,21 @@ pub struct WorktreeInfo {
 
 /// Parse the output of `git worktree list --porcelain` into a list of `WorktreeInfo`.
 ///
-/// Rules:
-/// - Skip bare entries (line "bare" appears after a worktree line).
-/// - Parse branch from "branch refs/heads/..." lines.
-/// - Handle "detached" entries (branch = None).
-/// - The first non-bare entry has `is_main = true`.
+/// A layout-detection-shaped view over the shared
+/// [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`]: bare
+/// entries are dropped, and the first remaining (non-bare) entry is the main
+/// worktree (`is_main = true`). A detached HEAD carries `branch = None`.
 pub fn parse_worktree_list(porcelain: &str) -> Vec<WorktreeInfo> {
-    let mut result = Vec::new();
-    let mut found_main = false;
-
-    // Split into stanzas (blank-line delimited)
-    let stanzas: Vec<&str> = porcelain
-        .split("\n\n")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    for stanza in stanzas {
-        let mut path: Option<PathBuf> = None;
-        let mut branch: Option<String> = None;
-        let mut is_bare = false;
-        let mut is_detached = false;
-
-        for line in stanza.lines() {
-            if let Some(p) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(p.trim()));
-            } else if line.trim() == "bare" {
-                is_bare = true;
-            } else if line.trim() == "detached" {
-                is_detached = true;
-            } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-                branch = Some(b.trim().to_string());
-            }
-        }
-
-        // Skip bare entries
-        if is_bare {
-            continue;
-        }
-
-        let Some(path) = path else {
-            continue;
-        };
-
-        // Detached HEAD → no branch
-        if is_detached {
-            branch = None;
-        }
-
-        let is_main = !found_main;
-        found_main = true;
-
-        result.push(WorktreeInfo {
-            path,
-            branch,
-            is_main,
-        });
-    }
-
-    result
+    crate::core::worktree::porcelain::parse_worktree_list_porcelain(porcelain)
+        .into_iter()
+        .filter(|e| !e.is_bare)
+        .enumerate()
+        .map(|(i, e)| WorktreeInfo {
+            path: e.path,
+            branch: e.branch,
+            is_main: i == 0,
+        })
+        .collect()
 }
 
 /// Count the number of `|` filter operators inside `{{ }}` expressions in a template.
