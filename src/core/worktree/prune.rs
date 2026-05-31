@@ -48,15 +48,12 @@ pub struct PruneResult {
     pub pruned_branches: Vec<PrunedBranchDetail>,
 }
 
-/// Parsed worktree entry from `git worktree list --porcelain`.
-#[derive(Clone, Debug)]
-pub struct WorktreeEntry {
-    pub path: PathBuf,
-    pub branch: Option<String>,
-    pub is_bare: bool,
-    /// True for detached HEAD worktrees (sandboxes created with `daft sandbox`).
-    pub is_detached: bool,
-}
+/// A worktree entry from `git worktree list --porcelain`.
+///
+/// Alias for the shared [`crate::core::worktree::porcelain::WorktreeListEntry`],
+/// kept under this name so prune's callers (and `remove_repo`'s re-export) need
+/// no churn.
+pub use crate::core::worktree::porcelain::WorktreeListEntry as WorktreeEntry;
 
 /// Bundles common state used throughout the prune operation.
 pub struct PruneContext<'a> {
@@ -910,46 +907,13 @@ pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
+///
+/// Thin I/O wrapper: runs the git query, then delegates the string parse to the
+/// shared [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`].
+/// Bare entries are retained (prune skips them itself where relevant).
 pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut current_is_bare = false;
-    let mut current_is_detached = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare: current_is_bare,
-                    is_detached: current_is_detached,
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-            current_is_bare = false;
-            current_is_detached = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            current_is_bare = true;
-        } else if line == "detached" {
-            current_is_detached = true;
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push(WorktreeEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare: current_is_bare,
-            is_detached: current_is_detached,
-        });
-    }
-
-    Ok(entries)
+    Ok(crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output))
 }
 
 /// Resolve where to cd after pruning the user's current worktree.

@@ -95,15 +95,7 @@ impl DeletionResult {
     }
 }
 
-// ── Private types ──────────────────────────────────────────────────────────
-
-/// Parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    #[allow(dead_code)] // Parsed for completeness; not needed by branch-delete logic
-    is_bare: bool,
-}
+use super::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 
 /// Bundles common parameters used throughout the branch-delete operation.
 struct BranchDeleteContext<'a> {
@@ -234,7 +226,7 @@ pub fn execute(
 ///   - A worktree path (absolute or relative to cwd, including ".")
 fn resolve_branch_args(
     args: &[String],
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
     sink: &mut dyn ProgressSink,
 ) -> Result<Vec<String>> {
@@ -264,7 +256,7 @@ fn resolve_branch_args(
 /// Try to resolve a single argument as a worktree path.
 fn resolve_single_arg(
     arg: &str,
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
 ) -> ResolveResult {
     // Build a candidate path: resolve relative paths against cwd.
@@ -308,7 +300,7 @@ fn resolve_single_arg(
 fn try_resolve_relative_to_root(
     arg: &str,
     project_root: &Path,
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
 ) -> ResolveResult {
     let potential = project_root.join(arg);
     let potential_canonical = std::fs::canonicalize(&potential).ok();
@@ -1094,42 +1086,14 @@ fn run_removal_hook(
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
-fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
+///
+/// Thin I/O wrapper around the shared
+/// [`super::porcelain::parse_worktree_list_porcelain`]. Bare entries are
+/// retained; branch-delete simply never maps a bare/detached (branch-less)
+/// entry into its branch→path lookup.
+fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeListEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut current_is_bare = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            // Save previous entry if any
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare: current_is_bare,
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-            current_is_bare = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            current_is_bare = true;
-        }
-    }
-    // Don't forget the last entry
-    if let Some(path) = current_path.take() {
-        entries.push(WorktreeEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare: current_is_bare,
-        });
-    }
-
-    Ok(entries)
+    Ok(parse_worktree_list_porcelain(&porcelain_output))
 }
 
 /// Resolve where to cd after deleting the user's current worktree.
@@ -1194,29 +1158,6 @@ fn cleanup_empty_parent_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_worktree_list_empty() {
-        let entry = WorktreeEntry {
-            path: PathBuf::from("/tmp/test"),
-            branch: Some("main".to_string()),
-            is_bare: false,
-        };
-        assert_eq!(entry.path, PathBuf::from("/tmp/test"));
-        assert_eq!(entry.branch.as_deref(), Some("main"));
-        assert!(!entry.is_bare);
-    }
-
-    #[test]
-    fn test_worktree_entry_bare() {
-        let entry = WorktreeEntry {
-            path: PathBuf::from("/tmp/test.git"),
-            branch: None,
-            is_bare: true,
-        };
-        assert!(entry.is_bare);
-        assert!(entry.branch.is_none());
-    }
 
     #[test]
     fn test_validated_branch_fields() {
