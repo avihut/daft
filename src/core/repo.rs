@@ -223,24 +223,6 @@ fn parse_worktree_branches(porcelain: &str) -> Vec<WorktreeBranchEntry> {
     entries
 }
 
-/// Read the repo's default branch from the local `origin/HEAD` symref, with no
-/// network round-trip. Returns `None` when the symref is unset.
-fn local_default_branch(cwd: &Path) -> Option<String> {
-    let out = crate::utils::git_command_at(cwd)
-        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    // "origin/main" → "main".
-    s.strip_prefix("origin/")
-        .map(String::from)
-        .filter(|b| !b.is_empty())
-}
-
 /// Pick a worktree to represent a bare/container-root repo for config
 /// inspection. Prefers the default branch's worktree (resolved locally from
 /// `origin/HEAD`); falls back to the first non-bare worktree. Returns `None`
@@ -262,7 +244,7 @@ fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
     let worktrees = parse_worktree_branches(&porcelain);
 
     // Prefer the default branch's worktree.
-    if let Some(default) = local_default_branch(cwd)
+    if let Some(default) = crate::core::remote::local_default_branch(cwd, "origin")
         && let Some(entry) = worktrees
             .iter()
             .find(|w| !w.is_bare && w.branch.as_deref() == Some(default.as_str()))
