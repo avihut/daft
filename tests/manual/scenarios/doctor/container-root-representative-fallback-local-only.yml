@@ -1,0 +1,49 @@
+name: Doctor container-root representative fallback is local-only
+description: >
+  With origin/HEAD unset, find_representative_worktree falls back to the FIRST
+  non-bare worktree using ONLY local git state (no ls-remote). origin/HEAD is
+  deleted but the remote stays reachable, so the network answer (main) disagrees
+  with the correct local answer (develop, first-created) — any network consult
+  flips the result. develop is the only worktree carrying a tracked daft.yml.
+  Pins the Area-2 offline/local-only guarantee; wholly uncovered today.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name:
+      Clone develop + feature first (default 'main' excluded, develop
+      first-created)
+    run:
+      git-worktree-clone --layout contained -b develop -b feature/test-feature
+      $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Unset origin/HEAD (leave the remote reachable)
+    run: git symbolic-ref --delete refs/remotes/origin/HEAD
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Commit a tracked daft.yml in the FIRST-created worktree (develop) only
+    run: |
+      echo 'hooks: {}' > daft.yml
+      git add daft.yml
+      git commit -m "add daft.yml"
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name:
+      doctor falls back to the first worktree (develop), not the remote default
+      (main)
+    run: NO_COLOR=1 daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml tracked"

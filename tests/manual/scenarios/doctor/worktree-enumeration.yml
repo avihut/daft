@@ -1,0 +1,44 @@
+name: Doctor worktree enumeration
+description: >
+  daft doctor -v reports the non-bare worktree count and validates every
+  non-bare worktree path. Both numbers flow through the worktree-list parser the
+  consolidation refactor swaps, so this pins the count + path enumeration
+  end-to-end (only Config-check doctor scenarios existed before, and the unit
+  test on the parser fn does not survive the consolidation).
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Make an initial commit so the default branch is born
+    run: |
+      echo hi > README.md
+      git add README.md
+      git commit -m init
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Add a second worktree
+    run: git worktree add "$WORK_DIR/test-repo/feature" -b feature/foo
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature"
+
+  - name:
+      doctor enumerates both worktrees (count + path validation) at the
+      container root
+    run: NO_COLOR=1 daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "Worktree layout"
+        - "bare repo with 2 worktrees"
+        - "Worktree consistency"
+        - "all 2 worktree paths valid"

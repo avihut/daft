@@ -1,0 +1,40 @@
+name: Rename a detached worktree by path bails
+description: >
+  git-worktree-branch -m <path-to-detached-worktree> must refuse with a
+  "detached HEAD" error (rename resolves the path entry, sees branch=None, and
+  bails). No detached worktree is exercised elsewhere in prune/remove/rename;
+  pins the branch=None signal the parser consolidation must preserve.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository (contained layout)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Add a detached-HEAD worktree
+    run:
+      git -C "$WORK_DIR/test-repo/main" worktree add --detach
+      "$WORK_DIR/test-repo/detached-wt" HEAD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/detached-wt"
+
+  - name: Rename-by-path of the detached worktree bails
+    run:
+      git-worktree-branch -m "$WORK_DIR/test-repo/detached-wt" some-new-name
+      2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      output_contains:
+        - "detached HEAD"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/detached-wt"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/some-new-name"

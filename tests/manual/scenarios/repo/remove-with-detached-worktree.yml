@@ -1,0 +1,39 @@
+name: Repo remove with a bare entry and a detached worktree
+description: >
+  daft repo remove on a contained layout that has BOTH a bare entry and a
+  detached-HEAD linked worktree tears the whole repo down. Enumeration must skip
+  the bare and detached entries when locating the main worktree, and still
+  remove the detached worktree dir. Pins is_bare AND is_detached flowing through
+  the real worktree-list parser + removal loop (today only synthetic unit vecs
+  cover this).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository (contained layout)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Add a detached-HEAD worktree
+    run:
+      git -C "$WORK_DIR/test-repo/main" worktree add --detach
+      "$WORK_DIR/test-repo/detached" HEAD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/detached"
+
+  - name: Remove the entire repo from outside it
+    run: daft repo remove --force "$WORK_DIR/test-repo" 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/detached"
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo"

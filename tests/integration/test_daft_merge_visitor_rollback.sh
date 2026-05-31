@@ -160,6 +160,101 @@ EOF
     return 0
 }
 
+# Test that a successful daft merge into a target that ALREADY has its own visitor
+# daft.yml takes the merge + re-serialize branch of propagate_one (not verbatim
+# copy) and preserves every field of both worktrees' configs.
+#
+# Setup:
+#   master  : visitor daft.yml (post-clone job + top-level shared:) — the merge base
+#   feat/add: visitor daft.yml (worktree-post-create + extends: + background: true)
+#             plus a non-conflicting commit
+#
+# When the target already holds a daft.yml, propagate_one merges feat/add's config
+# INTO master's via merge_configs and re-serializes. A field drop or null-litter in
+# the (Area-3) moved merge_configs/merge_hook_defs surfaces directly here — a path
+# distinct from the verbatim-copy branch the clean-target success test exercises.
+test_daft_merge_visitor_merges_into_existing_target_daft_yml() {
+    git-worktree-init --layout contained merge-consolidate-repo || return 1
+    cd "merge-consolidate-repo/master"
+
+    echo "hello" > README.md
+    git add README.md
+    git commit -m "init" >/dev/null 2>&1
+
+    git-worktree-checkout -b feat/add >/dev/null 2>&1
+
+    local repo_root
+    repo_root="$(dirname "$(pwd)")"
+
+    # Target (master) already has its OWN visitor daft.yml: a post-clone hook plus a
+    # top-level shared list. This is the merge BASE; its fields must survive.
+    cat > daft.yml <<'EOF'
+shared:
+  - .env
+hooks:
+  post-clone:
+    jobs:
+      - name: from-master
+        run: echo from-master
+EOF
+
+    # Keep daft.yml a visitor config: exclude it so it never makes the target
+    # "dirty". The merge clean-target pre-flight treats untracked files as dirty
+    # (git status --porcelain), so an un-excluded daft.yml would refuse the merge
+    # before propagation. The shared info/exclude covers feat/add's daft.yml too.
+    echo '/daft.yml' >> "$(git rev-parse --git-path info/exclude)"
+
+    # Source (feat/add): a non-conflicting commit + a visitor daft.yml carrying a
+    # DIFFERENT hook section, an overlay-only top-level field (extends — the exact
+    # historical drop site), and a hook-level scalar (background: true).
+    cd "$repo_root/feat/add"
+    echo "feature content" > feature.txt
+    git add feature.txt
+    git commit -m "feat/add: add feature.txt" >/dev/null 2>&1
+    cat > daft.yml <<'EOF'
+extends:
+  - base.yml
+hooks:
+  worktree-post-create:
+    background: true
+    jobs:
+      - name: from-feat
+        run: echo from-feat
+EOF
+
+    # Merge feat/add into master. master's untracked daft.yml is snapshotted and the
+    # clean-target gate is relaxed for it, so the merge proceeds and propagate_one
+    # takes the merge + re-serialize branch (target already has a daft.yml).
+    cd "$repo_root/master"
+    daft merge feat/add --no-edit >/dev/null 2>&1 || {
+        log_error "daft merge feat/add failed unexpectedly"
+        return 1
+    }
+
+    assert_file_exists "daft.yml" \
+        "master daft.yml should be present after the consolidation merge" || return 1
+    assert_file_contains "daft.yml" "post-clone" \
+        "target's own hook section must survive the merge" || return 1
+    assert_file_contains "daft.yml" "worktree-post-create" \
+        "source hook section must be merged in" || return 1
+    assert_file_contains "daft.yml" "shared" \
+        "target's top-level shared list must survive" || return 1
+    assert_file_contains "daft.yml" "extends" \
+        "overlay-only top-level field (historical drop site) must survive re-serialize" || return 1
+    assert_file_contains "daft.yml" "background" \
+        "hook-level scalar must survive merge_hook_defs" || return 1
+
+    if grep -q 'null' daft.yml; then
+        log_error "merged daft.yml contains 'null' litter (sparse-serialize regression)"
+        log_error "--- merged daft.yml:"
+        log_error "$(cat daft.yml)"
+        return 1
+    fi
+
+    log_success "daft merge into an existing target daft.yml preserved every field, no null litter"
+    return 0
+}
+
 run_daft_merge_visitor_rollback_tests() {
     log "Running daft merge visitor-config rollback integration tests..."
 
@@ -167,6 +262,8 @@ run_daft_merge_visitor_rollback_tests() {
         "test_daft_merge_visitor_rollback_on_conflict"
     run_test "daft_merge_visitor_propagates_on_success" \
         "test_daft_merge_visitor_propagates_on_success"
+    run_test "daft_merge_visitor_merges_into_existing_target_daft_yml" \
+        "test_daft_merge_visitor_merges_into_existing_target_daft_yml"
 }
 
 # Main execution when run directly.

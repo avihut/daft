@@ -1,0 +1,55 @@
+name: daft.local.yml overlay merges at hook load
+description: >
+  The daft.local.yml overlay (load_merged_config step 4 -> merge_configs) is
+  applied at hook load: an overlay-only job runs alongside the base daft.yml job
+  in a new worktree. No scenario currently loads a daft.local.yml; pins the
+  Area-3 merge_configs overlay path end-to-end (the moved merge_configs dropping
+  a field would silently lose the overlay job).
+
+steps:
+  - name: Initialize a contained-layout repo
+    run: git-worktree-init --layout contained overlay-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/overlay-repo/master"
+
+  - name: Commit a tracked base daft.yml (worktree-post-create job 'base')
+    run: |
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: base\n        run: echo BASE > "$DAFT_WORKTREE_PATH/BASE_MARKER"\n' > daft.yml
+      git add daft.yml
+      git commit -m "add base daft.yml"
+    cwd: "$WORK_DIR/overlay-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/overlay-repo/master/daft.yml"
+
+  - name: Add an untracked daft.local.yml overlay (job 'personal')
+    run: |
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: personal\n        run: echo LOCAL > "$DAFT_WORKTREE_PATH/LOCAL_MARKER"\n' > daft.local.yml
+    cwd: "$WORK_DIR/overlay-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/overlay-repo/master/daft.local.yml"
+
+  - name: Trust the hooks
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/overlay-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Create a new worktree — both the base and overlay jobs run
+    run: env -u DAFT_TESTING git-worktree-checkout -b feat 2>&1
+    cwd: "$WORK_DIR/overlay-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/overlay-repo/feat/BASE_MARKER"
+        - "$WORK_DIR/overlay-repo/feat/LOCAL_MARKER"
+      file_contains:
+        - path: "$WORK_DIR/overlay-repo/feat/BASE_MARKER"
+          content: "BASE"
+        - path: "$WORK_DIR/overlay-repo/feat/LOCAL_MARKER"
+          content: "LOCAL"

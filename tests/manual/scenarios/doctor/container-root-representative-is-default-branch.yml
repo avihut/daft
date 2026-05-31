@@ -1,0 +1,48 @@
+name: Doctor container-root representative is the default branch
+description: >
+  At a bare container root, doctor classifies the DEFAULT branch worktree's
+  daft.yml (origin/HEAD preference via find_representative_worktree +
+  local_default_branch), not the first-created worktree's. The default branch
+  (main) is added LAST and is the only worktree carrying a tracked daft.yml, so
+  a broken default-preference would resolve to develop (no daft.yml). Pins the
+  Area-2 default-branch preference; existing container-root scenarios use
+  git-worktree-init (no origin/HEAD, default==first) and cannot discriminate.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone develop + feature first (default 'main' excluded from worktrees)
+    run:
+      git-worktree-clone --layout contained -b develop -b feature/test-feature
+      $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Add the default-branch (main) worktree LAST
+    run: git worktree add main main
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Commit a tracked daft.yml in the DEFAULT worktree only
+    run: |
+      echo 'hooks: {}' > daft.yml
+      git add daft.yml
+      git commit -m "add daft.yml"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: doctor at the container root classifies the default worktree's config
+    run: NO_COLOR=1 daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml tracked"

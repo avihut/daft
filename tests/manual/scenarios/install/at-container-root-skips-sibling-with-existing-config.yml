@@ -1,0 +1,68 @@
+name: Install fan-out skips a sibling that already has a daft.yml
+description: >
+  During container-root install fan-out, a sibling worktree that already holds a
+  daft.yml is left byte-for-byte untouched (the per-sibling dest.exists() skip),
+  while fresh siblings still get the starter and no stray lands at the bare
+  container root. Pins propagate_starter_to_worktrees enumeration + skip (Area 1
+  parser + Area 4 install core). Uses the standard-remote fixture so origin/HEAD
+  makes the representative (primary) deterministically the config-less main
+  worktree; the configured sibling is a different worktree. Existing fan-out
+  scenarios use all-fresh siblings and only cover the PRIMARY skip.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository (contained layout, origin/HEAD=main)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Add a fresh sibling worktree (develop)
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Add a sibling that will already have its own daft.yml (feature)
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature/test-feature"
+
+  - name: Seed the feature sibling's daft.yml with a sentinel
+    run: printf 'shared:\n  - sentinel\n' > daft.yml
+    cwd: "$WORK_DIR/test-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feature/test-feature/daft.yml"
+
+  - name:
+      Install at the container root fans out, skipping the configured sibling
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+        - "$WORK_DIR/test-repo/develop/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+        - path: "$WORK_DIR/test-repo/develop/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+        - path: "$WORK_DIR/test-repo/feature/test-feature/daft.yml"
+          content: "sentinel"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/feature/test-feature/daft.yml"
+          content: "per-repo daft configuration"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/daft.yml"

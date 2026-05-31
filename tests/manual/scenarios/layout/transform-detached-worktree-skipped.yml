@@ -1,0 +1,46 @@
+name: Layout transform skips a detached worktree
+description: >
+  With a detached-HEAD linked worktree present, daft layout transform drops the
+  detached entry from its plan (transform/state.rs skips bare AND detached;
+  detect/legacy keep detached — a 2-of-3 split). Pins current drop-detached
+  behavior so the parser consolidation cannot silently adopt the keep-detached
+  convention. The discriminating signal is the dry-run plan, not the exit code.
+
+steps:
+  - name: Initialize a contained-layout repo
+    run: git-worktree-init --layout contained xform-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/xform-repo/master"
+
+  - name: Make an initial commit
+    run: |
+      echo content > f.txt
+      git add f.txt
+      git commit -m init
+    cwd: "$WORK_DIR/xform-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Create a linked worktree
+    run: git-worktree-checkout -b feature/x
+    cwd: "$WORK_DIR/xform-repo/master"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/xform-repo/feature/x"
+
+  - name: Detach the linked worktree's HEAD
+    run: git checkout --detach HEAD
+    cwd: "$WORK_DIR/xform-repo/feature/x"
+    expect:
+      exit_code: 0
+
+  - name: Transform dry-run plan omits the detached worktree
+    run: NO_COLOR=1 daft layout transform sibling --dry-run 2>&1
+    cwd: "$WORK_DIR/xform-repo/master"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "feature/x"
