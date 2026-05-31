@@ -1,16 +1,19 @@
 //! `daft repo install` — canonical name for the daft.yml bootstrap.
 //!
-//! All behavior lives in [`crate::commands::install`] (the starter template,
-//! the refuse-if-exists guard, the write). This module only adapts the argv
-//! offset — `daft repo install ...` carries two leading verbs to strip — and
-//! supplies the repo-namespaced clap program name so `--help`/man output reads
+//! The repo-aware dispatch lives in [`crate::commands::install`] (argv parsing,
+//! position resolution, existing-config guidance); the mechanical install — the
+//! starter template, the refuse-if-exists guard, the write — lives in
+//! [`crate::core::install`]. This module only adapts the argv offset —
+//! `daft repo install ...` carries two leading verbs to strip — and supplies
+//! the repo-namespaced clap program name so `--help`/man output reads
 //! `git-daft-repo-install`. The top-level `daft install` is a thin alias for
 //! this command (see [`crate::commands::install::run`]).
 
 use anyhow::Result;
 use clap::Parser;
 
-use crate::commands::install::{InstallOptions, run_with_output};
+use crate::commands::install::run_with_output;
+use crate::core::install::InstallOptions;
 use crate::output::{CliOutput, OutputConfig};
 
 #[derive(Parser, Debug)]

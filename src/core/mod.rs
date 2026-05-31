@@ -8,6 +8,7 @@ pub mod cache;
 pub mod columns;
 pub mod config;
 pub mod global_config;
+pub mod install;
 pub mod layout;
 pub mod multi_remote;
 pub mod ownership;

@@ -1502,16 +1502,16 @@ fn run_clone_install(
     // terminal itself.
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin())
         && std::env::var("DAFT_TESTING").is_err();
-    let opts = crate::commands::install::InstallOptions {
+    let opts = crate::core::install::InstallOptions {
         git_exclude: args.git_exclude,
     };
-    crate::commands::install::install_at(primary, output, &opts, interactive)?;
+    crate::core::install::install_at(primary, output, &opts, interactive)?;
 
     // Copy the just-installed daft.yml into the other worktrees this clone
     // created (covers every layout and both the sequential and `--all-branches`
     // satellite paths). Shared with `daft install` run at a contained-layout
     // container root, which performs the same multi-worktree bootstrap.
-    crate::commands::install::propagate_starter_to_worktrees(primary, output);
+    crate::core::install::propagate_starter_to_worktrees(primary, output);
 
     Ok(())
 }
