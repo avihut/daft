@@ -1,11 +1,11 @@
 name: Unknown command suggestion
-description: "daft steup suggests setup"
+description: "daft activ suggests activate"
 
 steps:
-  - name: Run typo of setup
-    run: daft steup 2>&1
+  - name: Run typo of activate
+    run: daft activ 2>&1
     expect:
       exit_code: 1
       output_contains:
-        - "setup"
+        - "activate"
         - "The most similar command"
