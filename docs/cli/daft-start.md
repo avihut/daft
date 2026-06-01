@@ -39,6 +39,7 @@ operations for a single invocation regardless of config.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--local` | Skip all remote operations (no fetch, no push) for this invocation | |
+| `--skip-hooks <SELECTOR>` | Skip hooks this run (`all` \| a hook name like `worktree-post-create` \| `tag:<tag>` \| `<job>`); repeatable/comma-separated | |
 | `-c, --carry` | Apply uncommitted changes from the current worktree to the new one | |
 | `--no-carry` | Do not carry uncommitted changes | |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) | |

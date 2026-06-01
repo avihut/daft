@@ -54,6 +54,7 @@ Cannot be combined with `-b`/`--create-branch`.
 |--------|-------------|---------|
 | `-s, --start` | Create a new worktree if the branch does not exist | |
 | `--local` | Skip all remote operations (no fetch) for this invocation | |
+| `--skip-hooks <SELECTOR>` | Skip hooks when `go` creates a worktree (`all` \| a hook name like `worktree-post-create` \| `tag:<tag>` \| `<job>`); repeatable/comma-separated | |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup (repeatable) | |
 | `--no-cd` | Do not change directory to the new worktree | |
 | `-c, --carry` | Apply uncommitted changes from the current worktree | |
