@@ -1,0 +1,80 @@
+name: --skip-hooks cascade and attribution
+description:
+  "The --skip-hooks flag on a worktree-create command excludes the matched jobs
+  AND their downstream dependents (reverse-needs cascade), and reports each
+  excluded job as skipped with an attributed reason. Uses the issue #616 worked
+  example: install / build(tag heavy) / test(needs build) / lint(needs install).
+  `--skip-hooks tag:heavy` drops build + test; install + lint still run."
+
+repos:
+  - name: test-skip-hooks
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# skip-hooks cascade"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skip
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          parallel: false
+          jobs:
+            - name: install
+              run: touch "$DAFT_WORKTREE_PATH/.ran-install"
+            - name: build
+              tags: [heavy]
+              needs: [install]
+              run: touch "$DAFT_WORKTREE_PATH/.ran-build"
+            - name: test
+              needs: [build]
+              run: touch "$DAFT_WORKTREE_PATH/.ran-test"
+            - name: lint
+              needs: [install]
+              run: touch "$DAFT_WORKTREE_PATH/.ran-lint"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_SKIP_HOOKS
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-hooks/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-skip-hooks/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout feature branch with --skip-hooks tag:heavy
+    run: git-worktree-checkout feature/skip --skip-hooks tag:heavy 2>&1
+    cwd: "$WORK_DIR/test-skip-hooks/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-hooks/feature/skip"
+
+  # The reverse-needs cascade is proved by which marker files exist: build
+  # matched tag:heavy directly and test cascades (needs build), so neither
+  # runs; install and lint still run. (Attribution of the skip *reason* to the
+  # presenter is covered by the engine unit tests; the per-job reason line is
+  # only rendered in the non-compact hook output mode.)
+  - name: Assert kept jobs ran and skipped jobs did not
+    run: |
+      WT="$WORK_DIR/test-skip-hooks/feature/skip"
+      test -f "$WT/.ran-install" && echo "INSTALL_RAN"
+      test -f "$WT/.ran-lint" && echo "LINT_RAN"
+      test ! -f "$WT/.ran-build" && echo "BUILD_SKIPPED"
+      test ! -f "$WT/.ran-test" && echo "TEST_SKIPPED"
+    cwd: "$WORK_DIR/test-skip-hooks/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INSTALL_RAN"
+        - "LINT_RAN"
+        - "BUILD_SKIPPED"
+        - "TEST_SKIPPED"

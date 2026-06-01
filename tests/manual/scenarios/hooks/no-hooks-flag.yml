@@ -1,7 +1,8 @@
-name: Clone with --no-hooks flag
+name: Clone with --skip-hooks all
 description:
-  "The --no-hooks flag on clone prevents any hook execution, even if the
-  repository would otherwise be trusted."
+  "The --skip-hooks all selector on clone prevents any hook execution, even if
+  the repository would otherwise be trusted (the uniform replacement for the old
+  --no-hooks flag)."
 
 repos:
   - name: test-clone-no-hooks
@@ -20,9 +21,9 @@ repos:
           touch "$DAFT_WORKTREE_PATH/.hook-executed"
 
 steps:
-  - name: Clone with --no-hooks flag
+  - name: Clone with --skip-hooks all
     run:
-      git-worktree-clone --no-hooks --layout contained
+      git-worktree-clone --skip-hooks all --layout contained
       $REMOTE_TEST_CLONE_NO_HOOKS
     expect:
       exit_code: 0

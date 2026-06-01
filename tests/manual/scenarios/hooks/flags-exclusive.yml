@@ -1,5 +1,5 @@
 name: Hooks flags exclusive
-description: --no-hooks and --trust-hooks are mutually exclusive on clone
+description: --skip-hooks all and --trust-hooks are mutually exclusive on clone
 
 repos:
   - name: test-hooks-exclusive
@@ -15,7 +15,7 @@ repos:
 steps:
   - name: Clone with both flags fails
     run:
-      git-worktree-clone --trust-hooks --no-hooks --layout contained
+      git-worktree-clone --trust-hooks --skip-hooks all --layout contained
       $REMOTE_TEST_HOOKS_EXCLUSIVE 2>&1
     expect:
       exit_code: 1
