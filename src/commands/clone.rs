@@ -106,8 +106,16 @@ pub struct Args {
     )]
     trust_hooks: bool,
 
-    #[arg(long = "no-hooks", help = "Do not run any hooks from the repository")]
-    no_hooks: bool,
+    /// Skip hooks this run. Repeatable / comma-separated.
+    /// Selectors: `all` (every hook), `tag:<tag>`, or a job name (plus its
+    /// dependents). See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks this run (all | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    skip_hooks: Vec<String>,
 
     #[arg(
         short = 'r',
@@ -196,8 +204,8 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
     if args.remote.is_some() && args.branch.len() > 1 {
         anyhow::bail!("--remote cannot be used with multiple -b flags.");
     }
-    if args.trust_hooks && args.no_hooks {
-        anyhow::bail!("--trust-hooks and --no-hooks cannot be used together.");
+    if args.trust_hooks && skip_hooks_all(&args.skip_hooks) {
+        anyhow::bail!("--trust-hooks and --skip-hooks all cannot be used together.");
     }
     if args.install && args.no_checkout {
         anyhow::bail!(
@@ -210,14 +218,23 @@ fn validate_arg_combinations(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// True when `--skip-hooks` requests skipping *every* hook (`all` / `*`) — the
+/// uniform replacement for the old `--no-hooks`. Partial skips (`tag:`/`<job>`)
+/// are NOT `all`: hooks still fire, just with some jobs excluded.
+fn skip_hooks_all(skip_hooks: &[String]) -> bool {
+    crate::hooks::job_adapter::parse_skip_selectors(skip_hooks).all
+}
+
 /// `--install` implies `--trust-hooks`: bootstrapping your own daft.yml in this
 /// clone is an implicit trust decision — the hooks you'll run are your own, and
 /// you shouldn't be prompted to trust your own config on the next worktree op.
-/// `--no-hooks` opts out of hooks entirely, so it wins (and keeps us clear of
-/// the `--trust-hooks`/`--no-hooks` conflict rejected in `validate_arg_combinations`).
-/// Applied after validation so it never trips that conflict check.
+/// `--skip-hooks all` opts out of hooks entirely, so it wins (and keeps us clear
+/// of the `--trust-hooks`/`--skip-hooks all` conflict rejected in
+/// `validate_arg_combinations`). A *partial* skip still runs your own hooks, so
+/// it does NOT suppress the trust implication. Applied after validation so it
+/// never trips that conflict check.
 fn apply_install_trust(args: &mut Args) {
-    if args.install && !args.no_hooks {
+    if args.install && !skip_hooks_all(&args.skip_hooks) {
         args.trust_hooks = true;
     }
 }
@@ -479,7 +496,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &bare_params,
                 &layout,
                 settings,
-                args.no_hooks,
+                &args.skip_hooks,
                 args.trust_hooks,
                 args.verbose,
                 tui_columns.clone(),
@@ -493,7 +510,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 &bare_params,
                 &layout,
                 settings,
-                args.no_hooks,
+                &args.skip_hooks,
                 args.trust_hooks,
                 output,
             )?
@@ -568,7 +585,7 @@ fn create_satellite_worktrees(
     bare_params: &clone::BareCloneParams,
     layout: &crate::core::layout::Layout,
     settings: &DaftSettings,
-    no_hooks: bool,
+    skip_hooks: &[String],
     trust_hooks: bool,
     output: &mut dyn Output,
 ) -> Result<clone::CloneResult> {
@@ -595,10 +612,10 @@ fn create_satellite_worktrees(
     // the new repo: a freshly-cloned repo's `.git/config` is unlikely to
     // hold daft-specific keys yet, and `_global` keeps this consistent
     // with the orchestrator-thread site below — both pre-clone paths.
-    let shared_hooks_config = if !no_hooks {
-        Some(crate::core::settings::load_hooks_config_global()?)
-    } else {
+    let shared_hooks_config = if skip_hooks_all(skip_hooks) {
         None
+    } else {
+        Some(crate::core::settings::load_hooks_config_global()?)
     };
 
     let mut created_count = 0;
@@ -635,8 +652,10 @@ fn create_satellite_worktrees(
 
         // Run worktree-pre-create hook
         if let Some(ref hooks_config) = shared_hooks_config
-            && let Ok(mut executor) = HookExecutor::new(hooks_config.clone())
+            && let Ok(executor) = HookExecutor::new(hooks_config.clone())
         {
+            let mut executor = executor
+                .with_job_filter(crate::hooks::yaml_executor::JobFilter::skipping(skip_hooks));
             if trust_hooks {
                 if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                     let _ = executor.trust_repository_with_fingerprint(
@@ -703,7 +722,10 @@ fn create_satellite_worktrees(
                         &base_result.parent_dir,
                     );
 
-                    if let Ok(mut executor) = HookExecutor::new(hooks_config.clone()) {
+                    if let Ok(executor) = HookExecutor::new(hooks_config.clone()) {
+                        let mut executor = executor.with_job_filter(
+                            crate::hooks::yaml_executor::JobFilter::skipping(skip_hooks),
+                        );
                         if trust_hooks {
                             if let Some(fp) = get_remote_url_for_git_dir(&base_result.git_dir) {
                                 let _ = executor.trust_repository_with_fingerprint(
@@ -810,7 +832,7 @@ fn create_satellite_worktrees_tui(
     bare_params: &clone::BareCloneParams,
     layout: &Layout,
     settings: &DaftSettings,
-    no_hooks: bool,
+    skip_hooks: &[String],
     trust_hooks: bool,
     verbosity: u8,
     tui_columns: Option<Vec<Column>>,
@@ -917,13 +939,18 @@ fn create_satellite_worktrees_tui(
     // Load once for the orchestrator thread; the base-post-create site and the
     // per-satellite loop each clone from this. Loader hits global git-config
     // files which are stable for the life of this command. `Option<None>`
-    // when --no-hooks was passed — the gates below (`if let Some`) replace
-    // the previous `if !no_hooks` checks.
-    let shared_hooks_config = if no_hooks {
+    // when `--skip-hooks all` was passed — the gates below (`if let Some`)
+    // replace the previous `if !no_hooks` checks. Partial skips still load the
+    // config; the per-executor `JobFilter` (built from `shared_skip_hooks`)
+    // excludes the requested jobs.
+    let shared_hooks_config = if skip_hooks_all(skip_hooks) {
         None
     } else {
         Some(crate::core::settings::load_hooks_config_global()?)
     };
+    // Owned copy moved into the orchestrator thread; each executor site builds
+    // a `JobFilter` from it.
+    let shared_skip_hooks = skip_hooks.to_vec();
     let shared_base_branch = base_branch.map(|s| s.to_string());
     let shared_base_path: Option<std::path::PathBuf> =
         worktree_infos.first().and_then(|info| info.path.clone());
@@ -951,8 +978,11 @@ fn create_satellite_worktrees_tui(
 
             // Run worktree-post-create hook for the base worktree via TuiBridge
             if let Some(ref hooks_cfg) = shared_hooks_config
-                && let Ok(mut executor) = HookExecutor::new(hooks_cfg.clone())
+                && let Ok(executor) = HookExecutor::new(hooks_cfg.clone())
             {
+                let mut executor = executor.with_job_filter(
+                    crate::hooks::yaml_executor::JobFilter::skipping(&shared_skip_hooks),
+                );
                 if shared_trust_hooks {
                     if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                         let _ = executor.trust_repository_with_fingerprint(
@@ -1042,7 +1072,10 @@ fn create_satellite_worktrees_tui(
                         });
                         continue;
                     }
-                    Ok(mut executor) => {
+                    Ok(executor) => {
+                        let mut executor = executor.with_job_filter(
+                            crate::hooks::yaml_executor::JobFilter::skipping(&shared_skip_hooks),
+                        );
                         if shared_trust_hooks {
                             if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                                 let _ = executor.trust_repository_with_fingerprint(
@@ -1117,7 +1150,12 @@ fn create_satellite_worktrees_tui(
                                     )),
                                 });
                             }
-                            Ok(mut executor) => {
+                            Ok(executor) => {
+                                let mut executor = executor.with_job_filter(
+                                    crate::hooks::yaml_executor::JobFilter::skipping(
+                                        &shared_skip_hooks,
+                                    ),
+                                );
                                 if shared_trust_hooks {
                                     if let Some(fp) = get_remote_url_for_git_dir(&shared_git_dir) {
                                         let _ = executor.trust_repository_with_fingerprint(
@@ -1358,8 +1396,8 @@ fn run_post_clone_hook(
     result: &clone::CloneResult,
     output: &mut dyn Output,
 ) -> Result<()> {
-    if args.no_hooks {
-        output.step("Skipping hooks (--no-hooks flag)");
+    if skip_hooks_all(&args.skip_hooks) {
+        output.step("Skipping hooks (--skip-hooks all)");
         return Ok(());
     }
 
@@ -1371,7 +1409,9 @@ fn run_post_clone_hook(
     // freshly-cloned repo are vanishingly rare in practice — a deliberate
     // tradeoff for cwd-tolerance.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
-    let mut executor = HookExecutor::new(hooks_config)?;
+    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");
@@ -1416,14 +1456,16 @@ fn run_post_create_hook(
     result: &clone::CloneResult,
     output: &mut dyn Output,
 ) -> Result<()> {
-    if args.no_hooks {
+    if skip_hooks_all(&args.skip_hooks) {
         return Ok(());
     }
 
     // `_global` for the same cwd-tolerance reason as `run_post_clone_hook` —
     // see the comment there.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
-    let mut executor = HookExecutor::new(hooks_config)?;
+    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
 
     if args.trust_hooks {
         if let Some(fp) = get_remote_url_for_git_dir(&result.git_dir) {
@@ -1625,17 +1667,61 @@ mod tests {
     }
 
     #[test]
-    fn install_with_no_hooks_does_not_trust() {
-        // --no-hooks opts out of hooks entirely, so the trust implication
-        // must not fire (and must not create a --trust-hooks/--no-hooks conflict).
+    fn install_with_skip_hooks_all_does_not_trust() {
+        // --skip-hooks all opts out of hooks entirely, so the trust implication
+        // must not fire (and must not create a --trust-hooks/--skip-hooks all
+        // conflict).
         let mut args = Args::parse_from([
             "git-worktree-clone",
             "https://example.com/r.git",
             "--install",
-            "--no-hooks",
+            "--skip-hooks",
+            "all",
         ]);
         apply_install_trust(&mut args);
         assert!(!args.trust_hooks);
+    }
+
+    #[test]
+    fn install_with_partial_skip_still_trusts() {
+        // A *partial* skip (tag/name) still runs the user's own hooks — just
+        // fewer jobs — so the --install trust implication must still fire.
+        let mut args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--install",
+            "--skip-hooks",
+            "tag:heavy",
+        ]);
+        apply_install_trust(&mut args);
+        assert!(
+            args.trust_hooks,
+            "--install with a partial --skip-hooks should still imply --trust-hooks"
+        );
+    }
+
+    #[test]
+    fn trust_hooks_with_skip_hooks_all_conflicts() {
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--trust-hooks",
+            "--skip-hooks",
+            "all",
+        ]);
+        assert!(validate_arg_combinations(&args).is_err());
+    }
+
+    #[test]
+    fn trust_hooks_with_partial_skip_is_ok() {
+        let args = Args::parse_from([
+            "git-worktree-clone",
+            "https://example.com/r.git",
+            "--trust-hooks",
+            "--skip-hooks",
+            "tag:heavy",
+        ]);
+        assert!(validate_arg_combinations(&args).is_ok());
     }
 
     #[test]

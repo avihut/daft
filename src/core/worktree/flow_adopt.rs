@@ -41,7 +41,7 @@ pub struct AdoptResult {
 ///
 /// Move hooks (teardown before relocation, setup after) are fired inside
 /// `convert_to_bare`. Post-clone hooks are handled separately by the
-/// command layer due to trust semantics (--trust-hooks, --no-hooks).
+/// command layer due to trust semantics (--trust-hooks, --skip-hooks).
 pub fn execute(
     params: &AdoptParams,
     sink: &mut (impl ProgressSink + HookRunner),

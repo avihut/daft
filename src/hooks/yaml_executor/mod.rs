@@ -65,13 +65,34 @@ impl ExecutionMode {
 
 /// Filter criteria for selecting specific jobs within a hook.
 ///
-/// Used by `hooks run` to restrict execution to a named job or jobs with specific tags.
+/// Two independent axes:
+/// - The **include** side (`only_job_name`, `only_tags`) is used by
+///   `hooks run` to restrict execution to a named job or tagged jobs. An empty
+///   include result is an error (`bail!`).
+/// - The **exclude** side (`skip`, from `--skip-hooks`) drops the matched jobs
+///   *plus their downstream dependents* (see
+///   [`crate::hooks::job_adapter::compute_skip_cascade`]) and reports them as
+///   attributed skips. An empty exclude result is a benign no-op (warn only).
 #[derive(Debug, Clone, Default)]
 pub struct JobFilter {
     /// Run only the job with this name.
     pub only_job_name: Option<String>,
     /// Run only jobs that have at least one of these tags.
     pub only_tags: Vec<String>,
+    /// `--skip-hooks` selectors: jobs (and their dependents) to exclude.
+    pub skip: crate::hooks::job_adapter::SkipSelectors,
+}
+
+impl JobFilter {
+    /// Build an exclude-only filter from raw `--skip-hooks` selector tokens.
+    /// Empty input yields the default (no-op) filter, so the common no-flag
+    /// path costs nothing.
+    pub fn skipping(selectors: &[String]) -> Self {
+        Self {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(selectors),
+            ..Default::default()
+        }
+    }
 }
 
 /// Bundle of configuration values threaded into `execute_yaml_hook_with_rc`.
@@ -210,6 +231,13 @@ pub fn execute_yaml_hook_with_rc(
         return Ok(HookResult::skipped("No jobs defined"));
     }
 
+    // `--skip-hooks all` short-circuits the whole fire (the old --no-hooks
+    // path). The invocation meta was already written above, so this fire is
+    // still logged; we just run no jobs.
+    if filter.skip.all {
+        return Ok(HookResult::skipped("all hooks skipped by request"));
+    }
+
     // Filter out jobs matching exclude_tags
     if let Some(ref exclude_tags) = hook_def.exclude_tags {
         jobs.retain(|job| {
@@ -221,6 +249,41 @@ pub fn execute_yaml_hook_with_rc(
         });
         if jobs.is_empty() {
             return Ok(HookResult::skipped("All jobs excluded by tags"));
+        }
+    }
+
+    // Apply `--skip-hooks` exclusion: drop the matched jobs AND the transitive
+    // closure of jobs that `needs:` them (downstream dependents), routing each
+    // into an attributed skip. Runs while `needs:` is intact (before
+    // `yaml_jobs_to_specs`) so the cascade can walk the reverse-`needs` graph;
+    // this makes the adapter's needs-stripping a no-op for the exclude path.
+    // Unmatched selectors warn (the job runs) but never error — silent
+    // no-match is more dangerous in the exclude direction.
+    let mut requested_skips: Vec<crate::hooks::job_adapter::SkippedJob> = Vec::new();
+    if !filter.skip.is_empty() {
+        let cascade = crate::hooks::job_adapter::compute_skip_cascade(&jobs, &filter.skip);
+        for sel in &cascade.unmatched {
+            output.warning(&format!(
+                "--skip-hooks: no job or tag matched '{sel}' in hook '{hook_name}'"
+            ));
+        }
+        if !cascade.excluded.is_empty() {
+            jobs.retain(|job| {
+                let Some(name) = job.name.as_deref() else {
+                    return true;
+                };
+                match cascade.excluded.get(name) {
+                    None => true,
+                    Some(cause) => {
+                        requested_skips.push(crate::hooks::job_adapter::SkippedJob {
+                            name: name.to_string(),
+                            background: job.background.or(hook_def.background).unwrap_or(false),
+                            reason: cause.reason(),
+                        });
+                        false
+                    }
+                }
+            });
         }
     }
 
@@ -275,7 +338,7 @@ pub fn execute_yaml_hook_with_rc(
         hook_background: hook_def.background,
         repo_log,
     };
-    let (specs, skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
+    let (specs, mut skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
         ctx,
         &hook_env,
@@ -283,6 +346,12 @@ pub fn execute_yaml_hook_with_rc(
         working_dir,
         &adapter,
     );
+
+    // Fold `--skip-hooks` exclusions into the skipped-job set so the
+    // persistence loop below records them (visible via `daft hooks jobs`)
+    // exactly like the adapter's own group/platform/condition skips. The
+    // separate `requested_skips` copy drives the live presenter render.
+    skipped_jobs.extend(requested_skips.iter().cloned());
 
     // Open the per-repo SQLite store once and reuse for both the
     // skipped-job persistence loop and the repo-policy write below.
@@ -370,6 +439,26 @@ pub fn execute_yaml_hook_with_rc(
     }
 
     if specs.is_empty() {
+        // When `--skip-hooks` emptied the survivor set (e.g. `--skip-hooks
+        // install` on a graph where everything reaches install), the jobs were
+        // deliberately excluded with per-job reasons — render them here so the
+        // skip is attributed, not silently swallowed by this early return. This
+        // is the only render site reached on the empty path (the post-header
+        // loop below never runs).
+        if !requested_skips.is_empty() {
+            let header_target = super::executor::header_target_for_ctx(ctx);
+            presenter.on_phase_start(hook_name, header_target);
+            for sj in &requested_skips {
+                presenter.on_job_skipped(
+                    &sj.name,
+                    &sj.reason,
+                    std::time::Duration::ZERO,
+                    false,
+                    None,
+                );
+            }
+            presenter.on_phase_complete(std::time::Duration::ZERO);
+        }
         return Ok(HookResult::skipped("All jobs skipped"));
     }
 
@@ -404,6 +493,15 @@ pub fn execute_yaml_hook_with_rc(
     // Use presenter for header and execution
     let header_target = super::executor::header_target_for_ctx(ctx);
     presenter.on_phase_start(hook_name, header_target);
+
+    // Render `--skip-hooks` exclusions as attributed skip lines under the hook
+    // header, before the surviving jobs run. (The empty-survivor case is
+    // handled at the `specs.is_empty()` early return above; these two render
+    // sites are mutually exclusive.)
+    for sj in &requested_skips {
+        presenter.on_job_skipped(&sj.name, &sj.reason, std::time::Duration::ZERO, false, None);
+    }
+
     let hook_start = std::time::Instant::now();
 
     // Execute foreground jobs via the generic runner
@@ -721,6 +819,7 @@ pub(crate) fn resolve_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::presenter::NullPresenter;
     use crate::hooks::HookType;
     use crate::hooks::yaml_config::RunCommand;
     use crate::output::TestOutput;
@@ -1634,6 +1733,227 @@ mod tests {
             // SAFETY: see `NoBackgroundJobsEnv::set`.
             unsafe { std::env::remove_var("DAFT_NO_BACKGROUND_JOBS") };
         }
+    }
+
+    // ── --skip-hooks engine surfacing ───────────────────────────────────
+
+    /// Presenter that records the events the executor emits, so tests can
+    /// assert that skipped jobs surface live (with the right reason) rather
+    /// than being silently dropped. `NullPresenter` discards everything and
+    /// can't make these assertions.
+    #[derive(Default)]
+    struct RecordingPresenter {
+        events: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingPresenter {
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+        fn push(&self, e: String) {
+            self.events.lock().unwrap().push(e);
+        }
+    }
+
+    impl crate::executor::presenter::JobPresenter for RecordingPresenter {
+        fn on_phase_start(&self, phase: &str, _target: Option<&str>) {
+            self.push(format!("phase_start:{phase}"));
+        }
+        fn on_job_start(&self, name: &str, _d: Option<&str>, _c: Option<&str>) {
+            self.push(format!("start:{name}"));
+        }
+        fn on_job_output(&self, _name: &str, _line: &str) {}
+        fn on_job_success(&self, name: &str, _dur: std::time::Duration) {
+            self.push(format!("success:{name}"));
+        }
+        fn on_job_failure(&self, name: &str, _dur: std::time::Duration) {
+            self.push(format!("failure:{name}"));
+        }
+        fn on_job_skipped(
+            &self,
+            name: &str,
+            reason: &str,
+            _dur: std::time::Duration,
+            _show_duration: bool,
+            _command_preview: Option<&str>,
+        ) {
+            self.push(format!("skipped:{name}:{reason}"));
+        }
+        fn on_job_cancelled(&self, name: &str, _dur: std::time::Duration) {
+            self.push(format!("cancelled:{name}"));
+        }
+        fn on_job_background(&self, name: &str, _d: Option<&str>) {
+            self.push(format!("background:{name}"));
+        }
+        fn on_message(&self, _msg: &str) {}
+        fn on_phase_complete(&self, _dur: std::time::Duration) {
+            self.push("phase_complete".to_string());
+        }
+        fn take_results(&self) -> Vec<crate::executor::JobResult> {
+            Vec::new()
+        }
+    }
+
+    /// The issue's worked-example hook: install / build(heavy) / test / lint.
+    /// Surviving jobs run `true` so the fire is hermetic.
+    fn skip_example_hook() -> HookDef {
+        HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("install".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("build".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    needs: Some(vec!["install".into()]),
+                    tags: Some(vec!["heavy".into()]),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("test".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    needs: Some(vec!["build".into()]),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("lint".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    needs: Some(vec!["install".into()]),
+                    ..Default::default()
+                },
+            ]),
+            // Sequential keeps the recorded event order deterministic.
+            parallel: Some(false),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn skip_all_short_circuits() {
+        let hook_def = skip_example_hook();
+        let (ctx, _dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&["all".to_string()]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: _dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+        assert!(result.skipped);
+        assert_eq!(
+            result.skip_reason.as_deref(),
+            Some("all hooks skipped by request")
+        );
+    }
+
+    #[test]
+    fn skip_name_cascade_empties_and_renders_each_reason() {
+        let hook_def = skip_example_hook();
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&["install".to_string()]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        // Every job reaches install ⇒ all excluded ⇒ hook is skipped overall.
+        assert!(result.skipped);
+        let events = recorder.events();
+        // Each excluded job rendered with its attributed reason.
+        assert!(events.contains(&"skipped:install:requested (--skip-hooks)".to_string()));
+        assert!(events.contains(&"skipped:build:depends on install (skipped)".to_string()));
+        assert!(events.contains(&"skipped:test:depends on build (skipped)".to_string()));
+        assert!(events.contains(&"skipped:lint:depends on install (skipped)".to_string()));
+        // No job actually executed.
+        assert!(!events.iter().any(|e| e.starts_with("start:")));
+    }
+
+    #[test]
+    fn skip_tag_keeps_survivors_and_renders_skips() {
+        let hook_def = skip_example_hook();
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&["tag:heavy".to_string()]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+        assert!(!result.skipped, "install+lint still run");
+        let events = recorder.events();
+        // build + test excluded with reasons.
+        assert!(events.contains(&"skipped:build:requested (--skip-hooks)".to_string()));
+        assert!(events.contains(&"skipped:test:depends on build (skipped)".to_string()));
+        // install + lint executed.
+        assert!(events.contains(&"start:install".to_string()));
+        assert!(events.contains(&"start:lint".to_string()));
+        assert!(
+            !events
+                .iter()
+                .any(|e| e == "start:build" || e == "start:test")
+        );
+    }
+
+    #[test]
+    fn skip_unmatched_selector_warns_not_errors() {
+        let hook_def = skip_example_hook();
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = NullPresenter::arc();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&["ghost".to_string()]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        // Must NOT error (contrast with the include path's bail!).
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+        assert!(!result.skipped, "no real exclusion ⇒ all jobs run");
+        assert!(
+            output.warnings().iter().any(|w| w.contains("ghost")),
+            "unmatched selector should warn, got: {:?}",
+            output.warnings()
+        );
     }
 }
 

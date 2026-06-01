@@ -72,6 +72,7 @@ git worktree-checkout [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
 | `-s, --start` | Create a new worktree if the branch does not exist |  |
 | `-@, --at <PATH>` | Place the worktree at a specific path instead of using the layout template |  |
 | `--local` | Skip all remote operations (no fetch, no push) |  |
+| `--skip-hooks <SELECTOR>` | Skip hooks this run (all | tag:<tag> | <job>); repeatable/comma-separated |  |
 
 ## Global Options
 
