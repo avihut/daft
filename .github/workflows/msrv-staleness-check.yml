@@ -52,17 +52,20 @@ jobs:
           # ~850 KB file to write; curl then dies with a write-output error
           # (exit 23) that `pipefail` propagates, aborting the step even though
           # the parse already succeeded. Downloading first removes the pipe
-          # (and keeps `curl -f`'s HTTP-error handling unambiguous).
+          # (and keeps `curl -f`'s HTTP-error handling unambiguous). $RUNNER_TEMP
+          # is the runner's per-job scratch dir (emptied each job), so the file
+          # never lands in the checked-out workspace.
           #
           # The `[pkg.rust]` block's `version` field carries the form
           #   version = "1.96.0 (ac68faa20 2026-05-25)"
           # — extract the leading semver triple.
+          channel_toml="$RUNNER_TEMP/channel-rust-stable.toml"
           curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml \
-            -o channel-rust-stable.toml
+            -o "$channel_toml"
           LATEST=$(awk '/^\[pkg\.rust\]$/{f=1; next} f && /^version *=/{
               match($0, /[0-9]+\.[0-9]+\.[0-9]+/);
               print substr($0, RSTART, RLENGTH); exit
-            }' channel-rust-stable.toml)
+            }' "$channel_toml")
 
           if [ -z "$CURRENT" ] || [ -z "$LATEST" ]; then
             echo "::error::Failed to parse MSRV (current=$CURRENT, latest=$LATEST)"
