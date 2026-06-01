@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.1](https://github.com/avihut/daft/compare/v1.15.0...v1.15.1) - 2026-06-01
+
+
+### Bug Fixes
+
+- **ci**: Avoid broken pipe in MSRV staleness version fetch (#607)
+
+
+### Miscellaneous
+
+- Bump MSRV 1.93 → 1.94 (#610)
 ## [1.15.0](https://github.com/avihut/daft/compare/v1.14.5...v1.15.0) - 2026-06-01
 
 
