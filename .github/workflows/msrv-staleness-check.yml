@@ -94,7 +94,7 @@ jobs:
           ## Action
 
           1. Pick the new MSRV target — typically \`$LATEST\` minus 2.
-          2. Update all five sync-points listed under "Where MSRV is recorded" in \`CLAUDE.md\` (\`Cargo.toml\`, \`mise.toml\`, \`.github/workflows/test.yml\`, \`README.md\`, \`docs/getting-started/installation.md\`).
+          2. Update all six sync-points listed under "Where MSRV is recorded" in \`CLAUDE.md\` (\`Cargo.toml\`, \`term-styles/Cargo.toml\`, \`mise.toml\`, \`.github/workflows/test.yml\`, \`README.md\`, \`docs/getting-started/installation.md\`).
           3. Verify locally: \`rustup run <new-msrv> cargo check --all-targets\`.
           4. Open a PR titled \`chore: bump MSRV $CURRENT → <new>\`.
 
