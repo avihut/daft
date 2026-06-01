@@ -217,42 +217,27 @@ impl MigrationPlan {
 }
 
 /// List all worktrees in a repository.
+///
+/// Thin I/O wrapper around the shared
+/// [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`], layering
+/// on the migration-specific `remote` (inferred from the path, not the
+/// porcelain). Every entry is retained — including the bare `.git` entry, which
+/// callers filter via `path.ends_with(".git")`.
 pub fn list_worktrees(git: &GitCommand, project_root: &Path) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut worktrees = Vec::new();
-
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            // Save previous worktree if any
-            if let Some(path) = current_path.take() {
-                let remote = infer_remote_from_path(project_root, &path);
-                worktrees.push(WorktreeInfo {
-                    path,
-                    branch: current_branch.take(),
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output)
+            .into_iter()
+            .map(|e| {
+                let remote = infer_remote_from_path(project_root, &e.path);
+                WorktreeInfo {
+                    path: e.path,
+                    branch: e.branch,
                     remote,
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        }
-    }
-
-    // Don't forget the last worktree
-    if let Some(path) = current_path.take() {
-        let remote = infer_remote_from_path(project_root, &path);
-        worktrees.push(WorktreeInfo {
-            path,
-            branch: current_branch.take(),
-            remote,
-        });
-    }
-
-    Ok(worktrees)
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Infer the remote name from a worktree path in multi-remote layout.

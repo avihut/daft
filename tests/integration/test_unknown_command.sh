@@ -28,10 +28,10 @@ test_unknown_command_daft_error() {
     return 0
 }
 
-# Test that `daft steup` suggests "setup"
+# Test that `daft activ` suggests "activate"
 test_unknown_command_daft_suggestion() {
     local output
-    output=$(daft steup 2>&1)
+    output=$(daft activ 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 1 ]]; then
@@ -39,8 +39,8 @@ test_unknown_command_daft_suggestion() {
         return 1
     fi
 
-    if [[ "$output" != *"setup"* ]]; then
-        log_error "Expected 'setup' suggestion, got: $output"
+    if [[ "$output" != *"activate"* ]]; then
+        log_error "Expected 'activate' suggestion, got: $output"
         return 1
     fi
 

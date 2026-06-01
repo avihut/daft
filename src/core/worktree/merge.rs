@@ -31,7 +31,19 @@ use crate::git::GitCommand;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Stdio for production-side `git` subprocesses whose output users expect to
+/// see interactively (rebase progress, commit summaries, post-rebase checkout
+/// banners). Under `cfg!(test)` we silence them so cargo test output stays
+/// readable; in real runs they inherit the terminal.
+fn user_facing_git_stdio() -> (Stdio, Stdio) {
+    if cfg!(test) {
+        (Stdio::null(), Stdio::null())
+    } else {
+        (Stdio::inherit(), Stdio::inherit())
+    }
+}
 
 /// Inputs to a merge-start operation.
 #[derive(Debug, Clone)]
@@ -1377,9 +1389,12 @@ fn run_rebase_phase(source: &str, target: &str, target_path: &Path) -> Result<()
     // on top of <upstream>, and updates the branch ref. The current HEAD shifts
     // during rebase; we restore target's HEAD afterward so the subsequent
     // `git merge` runs from the right ref.
+    let (out, err) = user_facing_git_stdio();
     let status = Command::new("git")
         .args(["rebase", target, source])
         .current_dir(target_path)
+        .stdout(out)
+        .stderr(err)
         .status()
         .with_context(|| format!("failed to invoke `git rebase {} {}`", target, source))?;
     if !status.success() {
@@ -1389,9 +1404,12 @@ fn run_rebase_phase(source: &str, target: &str, target_path: &Path) -> Result<()
             source
         );
     }
+    let (out, err) = user_facing_git_stdio();
     let restore = Command::new("git")
         .args(["checkout", target])
         .current_dir(target_path)
+        .stdout(out)
+        .stderr(err)
         .status()
         .with_context(|| format!("failed to checkout target '{}' after rebase", target))?;
     if !restore.success() {
@@ -1545,9 +1563,12 @@ fn execute_start_in_worktree(
         // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
         let (commit_status, commit_captured) = if params.flags.would_open_editor() {
             hooks.pause_spinner();
+            let (out, err) = user_facing_git_stdio();
             let status_result = Command::new("git")
                 .args(&commit_argv)
                 .current_dir(&path)
+                .stdout(out)
+                .stderr(err)
                 .status();
             hooks.resume_spinner();
             let status = status_result.with_context(|| {
@@ -1958,9 +1979,12 @@ fn execute_ephemeral_merge(
             // Non-editor commit (--no-edit, -m, or -F supplied): capture output.
             let (commit_status, commit_captured) = if params.flags.would_open_editor() {
                 hooks.pause_spinner();
+                let (out, err) = user_facing_git_stdio();
                 let status_result = Command::new("git")
                     .args(&commit_argv)
                     .current_dir(&temp_path)
+                    .stdout(out)
+                    .stderr(err)
                     .status();
                 hooks.resume_spinner();
                 let status = status_result.with_context(|| {
@@ -2437,17 +2461,11 @@ pub fn ensure_merge_in_progress(worktree: &Path) -> Result<()> {
 /// `.git`) are silently skipped — listing is best-effort, not authoritative.
 fn list_worktrees_with_in_progress_merges(git: &GitCommand) -> Result<Vec<PathBuf>> {
     let porcelain = git.worktree_list_porcelain()?;
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for line in porcelain.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            paths.push(PathBuf::from(p));
-        }
-    }
     let mut matches = Vec::new();
-    for path in paths {
-        match detect_in_progress(&path).ok().flatten() {
+    for entry in crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain) {
+        match detect_in_progress(&entry.path).ok().flatten() {
             Some(InProgressOp::Merge) | Some(InProgressOp::SquashStaged) => {
-                matches.push(path);
+                matches.push(entry.path);
             }
             _ => {}
         }
@@ -2571,9 +2589,12 @@ pub fn execute_finish(
                 FinishMode::Quit => "--quit",
             };
 
+            let (out, err) = user_facing_git_stdio();
             let status = Command::new("git")
                 .args(["merge", flag])
                 .current_dir(&path)
+                .stdout(out)
+                .stderr(err)
                 .status()
                 .with_context(|| {
                     format!(
@@ -2603,9 +2624,12 @@ fn execute_finish_rebase(mode: FinishMode, path: &Path) -> Result<()> {
         FinishMode::Abort => "--abort",
         FinishMode::Quit => "--quit",
     };
+    let (out, err) = user_facing_git_stdio();
     let status = Command::new("git")
         .args(["rebase", subcommand])
         .current_dir(path)
+        .stdout(out)
+        .stderr(err)
         .status()
         .with_context(|| format!("failed to invoke `git rebase {subcommand}`"))?;
     if !status.success() {
@@ -2641,9 +2665,12 @@ fn finish_squash_staged(
     match params.mode {
         FinishMode::Abort | FinishMode::Quit => {
             // `git reset --merge` resets staged changes back to HEAD.
+            let (out, err) = user_facing_git_stdio();
             let status = Command::new("git")
                 .args(["reset", "--merge"])
                 .current_dir(path)
+                .stdout(out)
+                .stderr(err)
                 .status()
                 .context("failed to invoke `git reset --merge`")?;
             if !status.success() {
@@ -2675,9 +2702,12 @@ fn finish_squash_staged(
             if commit_opens_editor {
                 runner.pause_spinner();
             }
+            let (out, err) = user_facing_git_stdio();
             let status_result = Command::new("git")
                 .args(&commit_argv)
                 .current_dir(path)
+                .stdout(out)
+                .stderr(err)
                 .status();
             if commit_opens_editor {
                 runner.resume_spinner();
@@ -3075,6 +3105,19 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::process::Command as ShellCommand;
+    use std::process::Stdio;
+
+    /// Test-only helper: run `git` quietly so subprocess output doesn't leak
+    /// into the test log. Returns the exit status, panics on spawn failure.
+    fn git_quiet(path: &Path, args: &[&str]) -> std::process::ExitStatus {
+        ShellCommand::new("git")
+            .args(args)
+            .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+    }
 
     /// RAII helper: saves the current working directory on construction and
     /// restores it on drop. Tests that call `std::env::set_current_dir` use
@@ -3108,56 +3151,30 @@ mod tests {
             .current_dir(path)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // Local config so production code paths (git merge, git rebase) running
         // in this repo also have an identity, without touching global config.
-        ShellCommand::new("git")
-            .args(["config", "--local", "user.name", "Test"])
-            .current_dir(path)
-            .status()
-            .unwrap();
-        ShellCommand::new("git")
-            .args(["config", "--local", "user.email", "test@test.com"])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["config", "--local", "user.name", "Test"]);
+        git_quiet(path, &["config", "--local", "user.email", "test@test.com"]);
         // `core.editor=true` makes any implicit editor invocation
         // (e.g. `git rebase --continue` after a conflict resolution) a no-op
         // success, preserving the existing commit message. CI runners run
         // headless without GIT_EDITOR/EDITOR set, so without this the commit
         // step inside `rebase --continue` fails with "Terminal is dumb".
-        ShellCommand::new("git")
-            .args(["config", "--local", "core.editor", "true"])
-            .current_dir(path)
-            .status()
-            .unwrap();
-        ShellCommand::new("git")
-            .args(["commit", "--allow-empty", "-q", "-m", "init"])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["config", "--local", "core.editor", "true"]);
+        git_quiet(path, &["commit", "--allow-empty", "-q", "-m", "init"]);
     }
 
     /// Checkout `branch`, write `content` to `file`, stage and commit it.
     /// Identity comes from `init_repo`'s local user.name/user.email config.
     fn add_commit(path: &Path, branch: &str, file: &str, content: &str) {
-        ShellCommand::new("git")
-            .args(["checkout", branch])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["checkout", branch]);
         std::fs::write(path.join(file), content).unwrap();
-        ShellCommand::new("git")
-            .args(["add", file])
-            .current_dir(path)
-            .status()
-            .unwrap();
-        ShellCommand::new("git")
-            .args(["commit", "-q", "-m", &format!("add {file}")])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["add", file]);
+        git_quiet(path, &["commit", "-q", "-m", &format!("add {file}")]);
     }
 
     #[test]
@@ -3185,11 +3202,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         // Detach HEAD at the current commit.
-        ShellCommand::new("git")
-            .args(["checkout", "--detach", "-q"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "--detach", "-q"]);
 
         let git = GitCommand::new(true);
         let err = branch_at_path(&git, tmp.path()).unwrap_err();
@@ -3708,11 +3721,7 @@ mod tests {
     /// Helper: create a staged change in the given repo (needs at least one commit).
     fn stage_file(path: &Path) {
         std::fs::write(path.join("staged.txt"), "content\n").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "staged.txt"])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["add", "staged.txt"]);
     }
 
     #[test]
@@ -4499,11 +4508,7 @@ mod tests {
 
     /// Helper: create a branch at `path` starting from the initial commit.
     fn create_branch(path: &Path, branch: &str) {
-        ShellCommand::new("git")
-            .args(["checkout", "-q", "-b", branch])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["checkout", "-q", "-b", branch]);
         // Add a commit so the branch tip is distinct from main.
         ShellCommand::new("git")
             .args(["commit", "--allow-empty", "-q", "-m", branch])
@@ -4512,14 +4517,12 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // Return to main.
-        ShellCommand::new("git")
-            .args(["checkout", "-q", "main"])
-            .current_dir(path)
-            .status()
-            .unwrap();
+        git_quiet(path, &["checkout", "-q", "main"]);
     }
 
     #[test]
@@ -4579,18 +4582,17 @@ mod tests {
     /// linked worktree at `wt_path` on a new branch `branch`. The worktree
     /// starts clean (no uncommitted changes).
     fn setup_worktree(root: &Path, branch: &str, wt_path: &Path) {
-        ShellCommand::new("git")
-            .args([
+        git_quiet(
+            root,
+            &[
                 "worktree",
                 "add",
                 "-q",
                 &wt_path.display().to_string(),
                 "-b",
                 branch,
-            ])
-            .current_dir(root)
-            .status()
-            .unwrap();
+            ],
+        );
     }
 
     #[test]
@@ -4608,6 +4610,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -4616,11 +4620,7 @@ mod tests {
 
         // Make the source worktree dirty.
         std::fs::write(feat_wt.join("dirty.txt"), b"dirty").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "dirty.txt"])
-            .current_dir(&feat_wt)
-            .status()
-            .unwrap();
+        git_quiet(&feat_wt, &["add", "dirty.txt"]);
 
         let git = GitCommand::new(false);
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -4668,6 +4668,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -4719,6 +4721,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -4747,6 +4751,8 @@ mod tests {
         let branch_exists = ShellCommand::new("git")
             .args(["show-ref", "--verify", "--quiet", "refs/heads/feature/test"])
             .current_dir(tmp.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap()
             .success();
@@ -4939,6 +4945,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -5017,6 +5025,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -5070,11 +5080,7 @@ mod tests {
         // Add a real file commit on feature so squash-merge produces staged
         // changes (detect_in_progress requires staged changes for SquashStaged).
         std::fs::write(feat_wt.join("feature.txt"), b"feature content\n").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "feature.txt"])
-            .current_dir(&feat_wt)
-            .status()
-            .unwrap();
+        git_quiet(&feat_wt, &["add", "feature.txt"]);
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", "feature work"])
             .current_dir(&feat_wt)
@@ -5082,6 +5088,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -5094,6 +5102,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -5191,17 +5201,9 @@ mod tests {
         // Lay down a commit on main, branch feat, add a commit on feat,
         // then return to main and add another commit so both branches diverge.
         add_commit(tmp.path(), "main", "before.txt", "before");
-        ShellCommand::new("git")
-            .args(["checkout", "-b", "feat"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "-b", "feat"]);
         add_commit(tmp.path(), "feat", "feat.txt", "feat content");
-        ShellCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "main"]);
         add_commit(tmp.path(), "main", "main.txt", "main content");
 
         let flags = EffectiveFlags {
@@ -5249,18 +5251,10 @@ mod tests {
         // Give main a base commit, branch feat, add two commits there, then
         // return to main to merge with squash.
         add_commit(tmp.path(), "main", "before.txt", "before");
-        ShellCommand::new("git")
-            .args(["checkout", "-b", "feat"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "-b", "feat"]);
         add_commit(tmp.path(), "feat", "a.txt", "a");
         add_commit(tmp.path(), "feat", "b.txt", "b");
-        ShellCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "main"]);
 
         let flags = EffectiveFlags {
             style: MergeStyle::Squash,
@@ -5304,22 +5298,10 @@ mod tests {
 
         // Set up a conflicting rebase.
         add_commit(tmp.path(), "main", "x.txt", "from main");
-        ShellCommand::new("git")
-            .args(["checkout", "-b", "feat"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "-b", "feat"]);
         // Modify the same file on feat (will conflict during rebase).
         std::fs::write(tmp.path().join("x.txt"), "from feat").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "x.txt"])
-            .current_dir(tmp.path())
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["add", "x.txt"]);
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", "feat: x"])
             .current_dir(tmp.path())
@@ -5327,19 +5309,13 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
-        ShellCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "main"]);
         std::fs::write(tmp.path().join("x.txt"), "from main again").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "x.txt"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["add", "x.txt"]);
         ShellCommand::new("git")
             .args(["commit", "-q", "-m", "main: x again"])
             .current_dir(tmp.path())
@@ -5347,6 +5323,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -5354,6 +5332,8 @@ mod tests {
         let _ = ShellCommand::new("git")
             .args(["rebase", "main", "feat"])
             .current_dir(tmp.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status();
 
         // The rebase should be in progress now.
@@ -5365,11 +5345,7 @@ mod tests {
 
         // Resolve the conflict.
         std::fs::write(tmp.path().join("x.txt"), "resolved").unwrap();
-        ShellCommand::new("git")
-            .args(["add", "x.txt"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["add", "x.txt"]);
 
         // Invoke daft's finish-mode --continue with rebase-aware dispatch.
         let git = GitCommand::new(true);
@@ -5400,17 +5376,9 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         add_commit(tmp.path(), "main", "before.txt", "before");
-        ShellCommand::new("git")
-            .args(["checkout", "-b", "feat"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "-b", "feat"]);
         add_commit(tmp.path(), "feat", "feat.txt", "feat content");
-        ShellCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "main"]);
         add_commit(tmp.path(), "main", "main.txt", "main content");
 
         let flags = EffectiveFlags {
@@ -5447,17 +5415,9 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         add_commit(tmp.path(), "main", "before.txt", "before");
-        ShellCommand::new("git")
-            .args(["checkout", "-b", "feat"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "-b", "feat"]);
         add_commit(tmp.path(), "feat", "feat.txt", "feat content");
-        ShellCommand::new("git")
-            .args(["checkout", "main"])
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
+        git_quiet(tmp.path(), &["checkout", "main"]);
         add_commit(tmp.path(), "main", "main.txt", "main content");
 
         let flags = EffectiveFlags {

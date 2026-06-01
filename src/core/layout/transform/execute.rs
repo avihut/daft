@@ -489,45 +489,39 @@ fn exec_validate_integrity(progress: &mut dyn ProgressSink) -> Result<()> {
     {
         Ok(result) if result.status.success() => {
             let porcelain = String::from_utf8_lossy(&result.stdout);
-            let mut current_path: Option<String> = None;
-            let mut is_bare = false;
-
-            for line in porcelain.lines() {
-                if let Some(path) = line.strip_prefix("worktree ") {
-                    current_path = Some(path.to_string());
-                    is_bare = false;
-                } else if line == "bare" {
-                    is_bare = true;
-                } else if line.is_empty() {
-                    // Check non-bare worktrees for dirty state
-                    if let Some(ref path) = current_path
-                        && !is_bare
-                        && let Ok(status) = Command::new("git")
-                            .args(["status", "--porcelain"])
-                            .current_dir(path)
-                            .output()
-                        && status.status.success()
-                    {
-                        let out = String::from_utf8_lossy(&status.stdout);
-                        // Filter out layout artifacts (.gitignore,
-                        // .worktrees/) that are cleaned up after the
-                        // transform completes.
-                        let real_changes = out
-                            .lines()
-                            .filter(|l| !l.is_empty())
-                            .filter(|l| {
-                                let path_part = if l.len() > 3 { &l[3..] } else { l };
-                                !path_part.starts_with(".gitignore")
-                                    && !path_part.starts_with(".worktrees/")
-                                    && !path_part.starts_with(".worktrees")
-                            })
-                            .count();
-                        if real_changes > 0 {
-                            errors.push(format!("Worktree at {} has unexpected dirty state", path));
-                        }
+            // Delegate the porcelain parse to the shared core parser; check each
+            // non-bare worktree for unexpected dirty state.
+            for entry in crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
+            {
+                if entry.is_bare {
+                    continue;
+                }
+                if let Ok(status) = Command::new("git")
+                    .args(["status", "--porcelain"])
+                    .current_dir(&entry.path)
+                    .output()
+                    && status.status.success()
+                {
+                    let out = String::from_utf8_lossy(&status.stdout);
+                    // Filter out layout artifacts (.gitignore,
+                    // .worktrees/) that are cleaned up after the
+                    // transform completes.
+                    let real_changes = out
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .filter(|l| {
+                            let path_part = if l.len() > 3 { &l[3..] } else { l };
+                            !path_part.starts_with(".gitignore")
+                                && !path_part.starts_with(".worktrees/")
+                                && !path_part.starts_with(".worktrees")
+                        })
+                        .count();
+                    if real_changes > 0 {
+                        errors.push(format!(
+                            "Worktree at {} has unexpected dirty state",
+                            entry.path.display()
+                        ));
                     }
-                    current_path = None;
-                    is_bare = false;
                 }
             }
         }

@@ -20,11 +20,11 @@ Default-branch shortcuts (gwtcm, gwtcbm, gwcobd, gcbdw) are available
 via shell integration only (daft shell-init).
 
 Examples:
-  daft setup shortcuts                    # Show current status
-  daft setup shortcuts list               # List all shortcut styles
-  daft setup shortcuts enable git         # Enable git-style shortcuts
-  daft setup shortcuts disable legacy     # Disable legacy shortcuts
-  daft setup shortcuts only shell         # Enable only shell shortcuts
+  daft activate shortcuts                    # Show current status
+  daft activate shortcuts list               # List all shortcut styles
+  daft activate shortcuts enable git         # Enable git-style shortcuts
+  daft activate shortcuts disable legacy     # Disable legacy shortcuts
+  daft activate shortcuts only shell         # Enable only shell shortcuts
 
 ## Usage
 
@@ -122,6 +122,6 @@ daft shortcuts only [OPTIONS] <STYLE>
 
 ## See Also
 
-- [daft-setup](./daft-setup.md)
+- [daft-activate](./daft-activate.md)
 - [daft-shell-init](./daft-shell-init.md)
 

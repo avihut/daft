@@ -14,7 +14,7 @@ use crate::{
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
-    hooks::{HookContext, HookExecutor, HookType},
+    hooks::{HookContext, HookExecutor, HookType, visitor_propagation::propagate_atomic},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -575,7 +575,7 @@ pub fn run() -> Result<()> {
     } else {
         None
     };
-    let params = crate::core::worktree::merge::StartParams {
+    let mut params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
         flags,
@@ -621,15 +621,149 @@ pub fn run() -> Result<()> {
         )
     };
     output.start_spinner(&spinner_label);
+    // Resolve propagation participants for visitor-config daft files.
+    //
+    // Propagation always flows FROM the source branch's worktree INTO the
+    // merge-receiving (target) worktree. Both must be distinct checked-out
+    // worktrees; otherwise propagation is a no-op.
+    //
+    // prop_source: worktree of params.sources[0] (the branch being merged in).
+    //   For octopus merges (multiple sources) there is no single winner, so
+    //   propagation is skipped.
+    // prop_target: the merge-receiving worktree.
+    //   - With --into X: X's resolved worktree.
+    //   - Without --into: the current worktree (where the command is run from,
+    //     which is the branch being merged INTO).
+    //
+    // `resolve_worktree_path` returns Err when the branch has no checked-out
+    // worktree (ref-only); that makes both Options None, which skips propagation.
+    let (prop_source, prop_target): (Option<PathBuf>, Option<PathBuf>) =
+        if params.sources.len() == 1 {
+            let prop_src = git
+                .resolve_worktree_path(&params.sources[0], &project_root)
+                .ok();
+            let prop_tgt = match params.target.as_deref() {
+                Some(t) => git.resolve_worktree_path(t, &project_root).ok(),
+                // No --into: the current worktree IS the merge target.
+                None => Some(source_worktree.clone()),
+            };
+            (prop_src, prop_tgt)
+        } else {
+            // Octopus merge: skip propagation.
+            (None, None)
+        };
     let outcome_result = {
         let mut runner = MergeHookRunner::new(
             &mut output,
             project_root.clone(),
             git_dir,
             settings.remote.clone(),
-            source_worktree,
+            source_worktree.clone(),
         )?;
-        crate::core::worktree::merge::execute_start(&params, &git, &project_root, &mut runner)
+        match (prop_source, prop_target) {
+            (Some(ref prop_src), Some(ref prop_tgt)) if prop_src != prop_tgt => {
+                // Both worktrees are known and distinct — wrap execute_start in
+                // propagate_atomic so that:
+                //   1. Target's pre-existing untracked daft files are snapshotted.
+                //   2. Source's visitor daft files are overlaid onto the target.
+                //   3. execute_start runs (pre-merge hook + git merge + post-merge hook).
+                //      Pre- and post-merge hooks both see the resolved daft file.
+                //   4. On success, the resolved content persists.
+                //   5. On failure (conflict, pre-merge hook abort, etc.), the target's
+                //      daft files are restored to their pre-merge snapshot.
+                //
+                // Pre-flight: run the clean-target check NOW, before propagation
+                // writes untracked files into the target. If we let execute_start
+                // run the check AFTER propagation, it would always see the freshly-
+                // written daft.yml as "dirty" and refuse the merge, even though that
+                // file is ours. We therefore run the check here and disable it inside
+                // StartParams so execute_start doesn't duplicate it.
+                if params.require_clean_target {
+                    crate::core::worktree::merge::validate_clean_target(&git, prop_tgt)?;
+                    params.require_clean_target = false;
+                }
+
+                // `propagate_atomic` takes a `FnOnce() -> Result<()>` closure.
+                // We capture `StartOutcome` via an outer Option and any Err from
+                // `execute_start` itself via a separate Option, then convert both
+                // failure paths into Err so the closure returns Err on merge
+                // failure, triggering the snapshot restore.
+                let mut captured_outcome: Option<crate::core::worktree::merge::StartOutcome> = None;
+                // Stores the Err returned by execute_start (not the failed=true
+                // Ok case). Populated before the bail so we can re-surface it
+                // after propagate_atomic returns Err and cleans up.
+                let mut captured_err: Option<anyhow::Error> = None;
+                let prop_result = propagate_atomic(prop_src, prop_tgt, || {
+                    match crate::core::worktree::merge::execute_start(
+                        &params,
+                        &git,
+                        &project_root,
+                        &mut runner,
+                    ) {
+                        Ok(outcome) => {
+                            let failed = outcome.failed;
+                            captured_outcome = Some(outcome);
+                            if failed {
+                                // Convert merge failure into Err so
+                                // propagate_atomic rolls back daft files.
+                                anyhow::bail!("merge failed — daft files will be restored");
+                            }
+                            Ok(())
+                        }
+                        Err(e) => {
+                            // execute_start itself failed (e.g. pre-merge
+                            // hook abort, dirty target). Capture the error
+                            // then bail so propagate_atomic rolls back daft
+                            // files before we re-surface the original error.
+                            captured_err = Some(e);
+                            anyhow::bail!("execute_start failed — daft files will be restored");
+                        }
+                    }
+                });
+                match prop_result {
+                    Ok(prop) => {
+                        for filename in &prop.files_propagated {
+                            crate::log_debug!("daft merge propagated {} into target", filename);
+                        }
+                        // Success path: StartOutcome was captured inside the closure.
+                        Ok(captured_outcome
+                            .expect("propagate_atomic succeeded but outcome was not captured"))
+                    }
+                    Err(_) => {
+                        // The closure returned Err — either execute_start produced
+                        // failed=true (captured_outcome is Some), or execute_start
+                        // itself returned Err (captured_err is Some).
+                        match (captured_outcome, captured_err) {
+                            (Some(outcome), _) => {
+                                // Conflict / commit-aborted path: return the outcome
+                                // so the command layer can render the conflict report.
+                                Ok(outcome)
+                            }
+                            (None, Some(e)) => {
+                                // Hard error from execute_start: re-surface it.
+                                Err(e)
+                            }
+                            (None, None) => {
+                                // Should not happen: propagate_atomic's own error
+                                // (failed during snapshot or propagation step).
+                                Err(anyhow::anyhow!(
+                                    "visitor-config propagation failed before merge"
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Ref-only, single-worktree, or octopus: skip propagation.
+                crate::core::worktree::merge::execute_start(
+                    &params,
+                    &git,
+                    &project_root,
+                    &mut runner,
+                )
+            }
+        }
     };
     output.finish_spinner();
     // Dump captured git output to stderr after the spinner stops (avoids

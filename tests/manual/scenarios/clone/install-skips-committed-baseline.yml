@@ -1,0 +1,22 @@
+name: Clone --install skips a committed daft.yml
+description:
+  When the cloned repo already ships a tracked daft.yml (a team baseline),
+  --install has nothing to bootstrap, so it skips with a note and leaves the
+  committed file intact (no starter template overwrite).
+
+repos:
+  - name: test-repo
+    use_fixture: daft-yml-contained-layout
+
+steps:
+  - name: Clone with --install onto a repo that already ships daft.yml
+    run: git-worktree-clone --install $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+      output_contains:
+        - "already present"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "per-repo daft configuration"

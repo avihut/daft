@@ -105,7 +105,15 @@ pub fn execute(
     validate_branch_name(&params.branch_name)?;
 
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    let source_worktree = get_current_directory()?;
+    // The target branch's worktree doesn't exist yet here, so there is no
+    // `preferred_branch` to bias toward — fall back to the default branch's
+    // worktree when cwd isn't a worktree (see `resolve_source_worktree`).
+    let source_worktree = crate::core::worktree::checkout_branch::resolve_source_worktree(
+        git,
+        &git_dir,
+        &params.remote_name,
+        None,
+    )?;
 
     let worktree_path = if let Some(ref at) = params.at_path {
         at.clone()
@@ -303,7 +311,29 @@ pub fn execute(
     // Set upstream tracking
     let (upstream_set, upstream_skipped) = set_upstream_if_enabled(params, git, sink)?;
 
-    // Link shared files before hooks so hooks can depend on .env etc.
+    // Propagate in-scope untracked daft files from source worktree to the new
+    // worktree, so that user post-create hooks can read them.
+    // Propagation entry point: this site creates a new worktree from an
+    // existing source worktree. See checkout_branch.rs for the canonical audit
+    // comment covering all worktree-creating entry points.
+    match crate::hooks::visitor_propagation::propagate(&source_worktree, &worktree_path) {
+        Ok(result) => {
+            for filename in &result.files_propagated {
+                crate::log_debug!("propagated {} to new worktree", filename);
+            }
+        }
+        Err(e) => {
+            sink.on_warning(&format!("visitor-config propagation failed: {}", e));
+        }
+    }
+
+    // Link shared files AFTER propagation and BEFORE post-create hooks.
+    // Order is load-bearing: a *visitor* daft.yml (untracked) reaches the new
+    // worktree only via the propagation step above, so reading `shared:` before
+    // propagation finds no config and silently links nothing. (A tracked daft.yml
+    // arrives via the git checkout regardless of order, which is why this bug was
+    // invisible until visitor configs existed — do not move this back above
+    // propagation.) Linking before hooks lets hooks depend on .env etc.
     crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
 
     // Run post-create hook
@@ -343,24 +373,12 @@ fn find_existing_worktree_for_branch(
     branch_name: &str,
 ) -> Result<Option<PathBuf>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut current_path: Option<PathBuf> = None;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(worktree_path));
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            if let Some(branch) = branch_ref.strip_prefix("refs/heads/")
-                && branch == branch_name
-            {
-                return Ok(current_path.take());
-            }
-            current_path = None;
-        } else if line.is_empty() {
-            current_path = None;
-        }
-    }
-
-    Ok(None)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output)
+            .into_iter()
+            .find(|e| e.branch.as_deref() == Some(branch_name))
+            .map(|e| e.path),
+    )
 }
 
 /// Fetch latest changes for a branch from the remote.

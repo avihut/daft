@@ -1,0 +1,68 @@
+name: Visitor config propagates when creating a worktree from the container root
+description: >
+  Regression for the field report. In a contained layout the project/container
+  root is a bare directory, not a worktree, and `daft start` is legitimately run
+  from there. The visitor (untracked) daft.yml lives in the default worktree,
+  not the container root. Worktree creation must still propagate it to the new
+  worktree so its post-create hooks run and its shared files link. Before the
+  fix the propagation source was the current directory (the container root,
+  which holds no daft.yml), so the new worktree received no config at all — no
+  hooks, no shared files. (Tracked configs were unaffected: they arrive via the
+  git checkout regardless of cwd, which is why this was visitor-specific.)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository (contained layout)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Write a visitor daft.yml (hook + shared) in the default worktree
+    run: |
+      mkdir -p "$WORK_DIR/test-repo/.git/.daft/shared"
+      printf 'ENVVAL=fromshared\n' > "$WORK_DIR/test-repo/.git/.daft/shared/env-file"
+      printf 'shared:\n- env-file\nhooks:\n  worktree-post-create:\n    jobs:\n    - name: marker\n      run: echo RAN > {worktree_path}/HOOK_MARKER\n' > daft.yml
+      printf '/daft.yml\n' >> "$(git rev-parse --git-path info/exclude)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Trust hooks for this repo
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Confirm daft.yml is a visitor (ignored) file
+    run: git check-ignore daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Create a worktree FROM THE CONTAINER ROOT (a bare dir, not a worktree)
+    run: git-worktree-checkout -b cfoo
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/cfoo/daft.yml"
+
+  - name: Propagated → shared file linked in the new worktree
+    run: test -L "$WORK_DIR/test-repo/cfoo/env-file"
+    expect:
+      exit_code: 0
+
+  - name: Propagated → post-create hook ran in the new worktree
+    run: "true"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/cfoo/HOOK_MARKER"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/cfoo/HOOK_MARKER"
+          content: "RAN"

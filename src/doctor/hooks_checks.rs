@@ -55,13 +55,17 @@ fn has_yaml_config(worktree_root: &Path) -> bool {
 }
 
 /// Check hooks configuration source (daft.yml and/or shell hooks).
+///
+/// Reports only what the hooks come from and how many there are. The main
+/// daft.yml's tracked-vs-visitor classification is a repository-configuration
+/// fact, so it is reported by the Repository category's `check_daft_config`
+/// (consistently, from any cwd) rather than conflated with a hook count here.
 pub fn check_hooks_config(worktree_root: &Path, project_root: &Path) -> CheckResult {
     let has_yaml = has_yaml_config(worktree_root);
     let has_shell = has_shell_hooks(project_root);
 
     match (has_yaml, has_shell) {
         (true, true) => {
-            // Count yaml hooks
             let hook_count = count_yaml_hooks(worktree_root);
             let shell_count = count_shell_hooks(project_root);
             CheckResult::pass(
@@ -281,6 +285,78 @@ pub fn dry_run_deprecated_names(project_root: &Path) -> Vec<FixAction> {
     }
 
     actions
+}
+
+/// Check 8.1 — Detect a tracked daft.local.yml (or any alias).
+///
+/// The local config file is intended as a personal overlay and should never be
+/// committed to the repository. When it is tracked, this check returns a
+/// Warning with a remediation suggestion.
+pub fn check_tracked_local_smell(worktree_root: &Path) -> CheckResult {
+    let candidates = [
+        "daft.local.yml",
+        "daft.local.yaml",
+        ".daft.local.yml",
+        ".daft.local.yaml",
+        "daft-local.yml",
+        "daft-local.yaml",
+        ".daft-local.yml",
+        ".daft-local.yaml",
+    ];
+
+    for name in &candidates {
+        let path = worktree_root.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let status = crate::utils::git_command_at(worktree_root)
+            .args(["ls-files", "--error-unmatch", name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if let Ok(s) = status
+            && s.success()
+        {
+            return CheckResult::warning(
+                "Local config tracked",
+                &format!("{name} is tracked in git"),
+            )
+            .with_suggestion(&format!(
+                "Run: git rm --cached {name} && add {name} to .gitignore"
+            ));
+        }
+    }
+
+    CheckResult::pass("Local config tracked", "daft.local.yml is not tracked")
+}
+
+/// Check 8.2 — Notice when a deprecated daft-local.yml-style alias exists.
+///
+/// The dot-infix form (`daft.local.yml`) is the canonical name. The
+/// dash-infix form (`daft-local.yml`) is a deprecated alias that will be
+/// removed in a future release. This check emits a soft warning so users
+/// have a release cycle to rename.
+pub fn check_deprecated_local_alias(worktree_root: &Path) -> CheckResult {
+    let aliases: &[(&str, &str)] = &[
+        ("daft-local.yml", "daft.local.yml"),
+        ("daft-local.yaml", "daft.local.yaml"),
+        (".daft-local.yml", ".daft.local.yml"),
+        (".daft-local.yaml", ".daft.local.yaml"),
+    ];
+
+    for (deprecated, preferred) in aliases {
+        if worktree_root.join(deprecated).is_file() {
+            return CheckResult::warning(
+                "Local config alias",
+                &format!("{deprecated} uses a deprecated name"),
+            )
+            .with_suggestion(&format!(
+                "Rename to {preferred} (the dash-infix form will be removed in a future release)"
+            ));
+        }
+    }
+
+    CheckResult::pass("Local config alias", "no deprecated local config names")
 }
 
 /// Check the trust level for the current repository.
@@ -518,5 +594,149 @@ mod tests {
                 .unwrap()
                 .contains("already exists")
         );
+    }
+
+    // ── Tests for check_tracked_local_smell (8.1) ────────────────────────────
+
+    fn init_git_repo(dir: &Path) {
+        std::process::Command::new("git")
+            .args(["init"])
+            .arg(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "t@t.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "T"])
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_doctor_flags_tracked_daft_local_yml() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        std::fs::write(dir.path().join("daft.local.yml"), "hooks: {}").unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "daft.local.yml"])
+            .output()
+            .unwrap();
+        // Need a commit so ls-files --error-unmatch can see it as tracked
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add"])
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+
+        let result = check_tracked_local_smell(dir.path());
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.message.contains("daft.local.yml"));
+    }
+
+    #[test]
+    fn test_doctor_no_smell_for_untracked_local() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        // Write the file but do NOT add/commit — it remains untracked.
+        std::fs::write(dir.path().join("daft.local.yml"), "hooks: {}").unwrap();
+
+        let result = check_tracked_local_smell(dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn test_doctor_no_smell_when_no_local_file() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+
+        let result = check_tracked_local_smell(dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    // ── Tests for check_deprecated_local_alias (8.2) ─────────────────────────
+
+    #[test]
+    fn test_doctor_notices_deprecated_dash_alias() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("daft-local.yml"), "hooks: {}").unwrap();
+
+        let result = check_deprecated_local_alias(dir.path());
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.message.contains("daft-local.yml"));
+        assert!(
+            result
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("daft.local.yml")
+        );
+    }
+
+    #[test]
+    fn test_doctor_no_notice_when_preferred_name() {
+        let dir = tempdir().unwrap();
+        // The canonical dot-infix name — should not trigger the check.
+        std::fs::write(dir.path().join("daft.local.yml"), "hooks: {}").unwrap();
+
+        let result = check_deprecated_local_alias(dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn test_doctor_no_notice_when_no_local_file() {
+        let dir = tempdir().unwrap();
+
+        let result = check_deprecated_local_alias(dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    // ── Tests for check_hooks_config ─────────────────────────────────────────
+
+    #[test]
+    fn test_check_hooks_config_reports_hook_count_not_tracking() {
+        // The hooks "Configuration" line reports the config source + hook count
+        // only; the tracked/visitor classification moved to the Repository
+        // category's check_daft_config. Guard against the label creeping back.
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
+
+        let result = check_hooks_config(dir.path(), dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("daft.yml") && result.message.contains("hooks"),
+            "expected a daft.yml hook-count message, got: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("tracked")
+                && !result.message.contains("visitor")
+                && !result.message.contains("unknown"),
+            "tracking classification must not appear in the hooks line, got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn test_check_hooks_config_no_config() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+
+        let result = check_hooks_config(dir.path(), dir.path());
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert_eq!(result.message, "no hooks configured");
     }
 }

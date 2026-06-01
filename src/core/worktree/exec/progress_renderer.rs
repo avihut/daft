@@ -114,8 +114,13 @@ pub fn run_with_progress(
 
     // Print the scope-summary header directly — the presenter's
     // on_phase_start would otherwise print a hook-branded box we don't
-    // want here.
-    {
+    // want here. Skipped under `cfg!(test)`: unit tests drive
+    // `run_with_progress` directly and assert on the returned report, so the
+    // header is pure noise in the test log (the indicatif presenter is
+    // already silent on the non-tty test stderr). Mirrors the `!cfg!(test)`
+    // gate on the coordinator's background-job banner. Integration tests run
+    // the real binary (where `cfg!(test)` is false) so they keep the header.
+    if !cfg!(test) {
         let stderr = std::io::stderr();
         let mut sink = stderr.lock();
         super::list_renderer::render_header(&mut sink, targets.len(), pipeline)?;

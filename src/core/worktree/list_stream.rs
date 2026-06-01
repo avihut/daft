@@ -403,7 +403,7 @@ mod tests {
 #[cfg(test)]
 mod fixture_tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use tempfile::TempDir;
 
     fn init_temp_repo() -> TempDir {
@@ -413,33 +413,45 @@ mod fixture_tests {
             .arg("init")
             .arg("-q")
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // LOCAL config only — never use --global per CLAUDE.md.
         Command::new("git")
             .args(["config", "user.email", "test@test.com"])
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "test"])
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         std::fs::write(p.join("README"), "hello").unwrap();
         Command::new("git")
             .args(["add", "."])
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
             .args(["commit", "-q", "-m", "init"])
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
             .args(["branch", "-M", "master"])
             .current_dir(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         dir

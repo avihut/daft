@@ -511,10 +511,16 @@ _daft() {
     # repo: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "remove" -- "$cur") )
+            COMPREPLY=( $(compgen -W "install remove" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
+            install)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-q --quiet -v --verbose --git-exclude -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
             remove)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "-y --force --dry-run -v --verbose -h --help" -- "$cur") )
@@ -530,6 +536,25 @@ _daft() {
     # config: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "config" ]]; then
         COMPREPLY=( $(compgen -W "remote-sync" -- "$cur") )
+        return 0
+    fi
+
+    # file: complete subcommands and arguments
+    if [[ "${words[1]}" == "file" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "merge" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            merge)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--keep-source -y --yes -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -f -- "$cur") )
+                return 0
+                ;;
+        esac
         return 0
     fi
 
@@ -700,7 +725,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "hooks shell-init setup multi-remote release-notes doctor layout shared config repo clone init go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

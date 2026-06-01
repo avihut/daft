@@ -1,0 +1,52 @@
+name: daft file merge preserves non-hook fields and writes no null litter
+description: >
+  daft file merge preserves top-level non-hook fields (shared, extends) and
+  hook-level scalars (background: true) when re-serializing the merged config,
+  and writes no 'field: null' litter. Pins the Area-3
+  merge_configs/merge_hook_defs field-completeness + sparse-serialize on the
+  WRITTEN file (the unit test travels with the moved fns, so the written file is
+  the real net). 'extends' is the exact field a historical drop bug killed.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write target.yml with a top-level shared list + a post-clone hook
+    run: |
+      printf 'shared:\n  - .env\nhooks:\n  post-clone:\n    jobs:\n      - name: a\n        run: echo from-target\n' > $WORK_DIR/test-repo/master/target.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/target.yml"
+
+  - name: Write source.yml with extends + a background worktree-post-create hook
+    run: |
+      printf 'extends:\n  - base.yml\nhooks:\n  worktree-post-create:\n    background: true\n    jobs:\n      - name: b\n        run: echo from-source\n' > $WORK_DIR/test-repo/master/source.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"
+
+  - name: Merge source into target — every field survives, no null litter
+    run: daft file merge target.yml source.yml --keep-source --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "shared:"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "extends:"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "background: true"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "post-clone"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "worktree-post-create"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "null"

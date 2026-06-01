@@ -66,22 +66,22 @@ shell integration (`daft shell-init`) and are not available as symlinks.
 
 ```bash
 # List all available styles and mappings
-daft setup shortcuts list
+daft activate shortcuts list
 
 # Show which shortcuts are currently installed
-daft setup shortcuts status
+daft activate shortcuts status
 
 # Enable a style (creates symlinks)
-daft setup shortcuts enable git
+daft activate shortcuts enable git
 
 # Disable a style (removes symlinks)
-daft setup shortcuts disable legacy
+daft activate shortcuts disable legacy
 
 # Enable only one style (disable all others)
-daft setup shortcuts only shell
+daft activate shortcuts only shell
 
 # Preview changes without applying
-daft setup shortcuts only git --dry-run
+daft activate shortcuts only git --dry-run
 ```
 
 ## How They Work

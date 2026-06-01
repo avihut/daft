@@ -1,0 +1,40 @@
+name: Doctor reports a visitor daft.yml consistently from any position
+description: >
+  An untracked (visitor) daft.yml is reported by the Repository "Config" check
+  both from inside the worktree and from the bare container root — the
+  container-root case used to report nothing about the config at all. Exit code
+  is intentionally not asserted (installation checks vary in the sandbox).
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write an untracked (visitor) daft.yml
+    run: |
+      printf 'hooks: {}\n' > daft.yml &&
+      printf '/daft.yml\n' >> "$(git rev-parse --git-path info/exclude)"
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+
+  - name: Doctor from inside the worktree reports the visitor config
+    run: daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml visitor"
+
+  - name: Doctor from the container root reports the same visitor config
+    run: daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml visitor"

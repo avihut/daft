@@ -30,14 +30,17 @@ const COMMANDS: &[&str] = &[
     "git-worktree-list",
     "git-worktree-merge",
     "git-worktree-sync",
+    "git-daft-repo-install",
     "git-daft-repo-remove",
+    "daft-activate",
     "daft-config",
     "daft-doctor",
+    "daft-file",
     "daft-hooks",
+    "daft-install",
     "daft-layout",
     "daft-multi-remote",
     "daft-release-notes",
-    "daft-setup",
     "daft-shared",
     "daft-shell-init",
     "daft-shortcuts",
@@ -168,9 +171,11 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-list" => Some(daft::commands::list::Args::command()),
         "git-worktree-merge" => Some(daft::commands::merge::Args::command()),
         "git-worktree-sync" => Some(daft::commands::sync::Args::command()),
+        "git-daft-repo-install" => Some(daft::commands::repo::install::Args::command()),
         "git-daft-repo-remove" => Some(daft::commands::repo::remove::Args::command()),
         "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
+        "daft-file" => Some(daft::commands::file::merge::Args::command()),
         "daft-layout" => Some(daft::commands::layout::LayoutArgs::command()),
         "daft-release-notes" => Some(daft::commands::release_notes::Args::command()),
         "daft-shared" => Some(daft::commands::shared::Args::command()),
@@ -179,8 +184,9 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "daft-go" => Some(daft::commands::checkout::GoArgs::command()),
         "daft-start" => Some(daft::commands::checkout::StartArgs::command()),
         "daft-hooks" => Some(daft::commands::hooks::Args::command()),
+        "daft-install" => Some(daft::commands::install::Args::command()),
         "daft-multi-remote" => Some(daft::commands::multi_remote::Args::command()),
-        "daft-setup" => Some(daft::commands::setup::Args::command()),
+        "daft-activate" => Some(daft::commands::activate::Args::command()),
         "daft-shell-init" => Some(daft::commands::shell_init::Args::command()),
         "daft-shortcuts" => Some(daft::commands::shortcuts::Args::command()),
         _ => None,
@@ -301,9 +307,9 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],
         "daft-release-notes" => vec![],
-        "daft-setup" => vec!["daft-shortcuts", "daft-shell-init"],
-        "daft-shortcuts" => vec!["daft-setup", "daft-shell-init"],
-        "daft-shell-init" => vec!["daft-setup", "daft-shortcuts"],
+        "daft-activate" => vec!["daft-shortcuts", "daft-shell-init"],
+        "daft-shortcuts" => vec!["daft-activate", "daft-shell-init"],
+        "daft-shell-init" => vec!["daft-activate", "daft-shortcuts"],
         _ => vec![],
     }
 }
@@ -728,9 +734,15 @@ fn build_top_level_command() -> clap::Command {
         .subcommand(daft::commands::layout::LayoutArgs::command().name("layout"))
         .subcommand(daft::commands::multi_remote::Args::command().name("multi-remote"))
         .subcommand(daft::commands::config::remote_sync::Args::command().name("config"))
+        .subcommand(daft::commands::install::Args::command().name("install"))
+        .subcommand(
+            clap::Command::new("file")
+                .about("Manage YAML config files")
+                .subcommand(daft::commands::file::merge::Args::command().name("merge")),
+        )
         .subcommand(daft::commands::doctor::Args::command().name("doctor"))
         .subcommand(daft::commands::shell_init::Args::command().name("shell-init"))
-        .subcommand(daft::commands::setup::Args::command().name("setup"))
+        .subcommand(daft::commands::activate::Args::command().name("activate"))
         .subcommand(daft::commands::shortcuts::Args::command().name("shortcuts"))
         .subcommand(daft::commands::release_notes::Args::command().name("release-notes"))
 }

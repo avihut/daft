@@ -58,6 +58,8 @@ pub(super) const COMMANDS: &[&str] = &[
     "daft-rename",
     "git-worktree-sync",
     "daft-shared",
+    "daft-install",
+    "daft-file",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -79,6 +81,8 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "daft-rename" => Some(crate::commands::worktree_branch::RenameArgs::command()),
         "git-worktree-sync" => Some(crate::commands::sync::Args::command()),
         "daft-shared" => Some(crate::commands::shared::Args::command()),
+        "daft-install" => Some(crate::commands::install::Args::command()),
+        "daft-file" => Some(crate::commands::file::merge::Args::command()),
         _ => None,
     }
 }

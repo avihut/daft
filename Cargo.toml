@@ -36,7 +36,7 @@ copyright = "2024, avihu <avihu@users.noreply.github.com>"
 license-file = ["LICENSE-MIT", "4"]
 extended-description = """\
 daft is a Git extensions toolkit that enhances developer workflows \
-with powerful worktree management. Run `daft setup` after installing \
+with powerful worktree management. Run `daft activate` after installing \
 to enable shell integration and shortcuts."""
 depends = "$auto, git (>= 1:2.5)"
 section = "devel"

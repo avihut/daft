@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-clone \- Clone a repository into a worktree\-based directory structure
 .SH SYNOPSIS
-\fBgit\-worktree\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-\-columns\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
+\fBgit\-worktree\-clone\fR [\fB\-b\fR|\fB\-\-branch\fR] [\fB\-n\fR|\fB\-\-no\-checkout\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-a\fR|\fB\-\-all\-branches\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-\-layout\fR] [\fB\-\-columns\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-install\fR] [\fB\-\-git\-exclude\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIREPOSITORY_URL\fR> 
 .SH DESCRIPTION
 .PP
 Clones a repository into a directory structure optimized for worktree\-based
@@ -59,6 +59,12 @@ Columns to display (comma\-separated). Replace: branch,base,age. Modify defaults
 .TP
 \fB\-x\fR, \fB\-\-exec\fR \fI<EXEC>\fR
 Run a command in the worktree after setup completes (repeatable)
+.TP
+\fB\-\-install\fR
+Run `daft install` in the new worktree(s) after a successful clone (implies \-\-trust\-hooks)
+.TP
+\fB\-\-git\-exclude\fR
+With \-\-install: add /daft.yml to .git/info/exclude without prompting
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

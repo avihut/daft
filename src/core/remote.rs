@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::Path;
 
 use crate::git::GitCommand;
@@ -73,35 +72,60 @@ pub fn is_remote_empty(repo_url: &str, use_gitoxide: bool) -> Result<bool> {
     Ok(output_str.lines().all(|line| line.trim().is_empty()))
 }
 
+/// Extract the default branch name from the output of
+/// `git symbolic-ref --short refs/remotes/<remote>/HEAD` (e.g. `"origin/main"`
+/// with remote `"origin"` → `Some("main")`; `"origin/feature/x"` →
+/// `Some("feature/x")`). Returns `None` when the short ref is empty, has no
+/// branch component, or belongs to a different remote. Pure — no I/O.
+pub fn default_branch_from_short_symref(short: &str, remote_name: &str) -> Option<String> {
+    let prefix = format!("{remote_name}/");
+    short
+        .strip_prefix(&prefix)
+        .filter(|branch| !branch.is_empty())
+        .map(String::from)
+}
+
+/// Resolve the repository's default branch from the LOCAL `origin/HEAD` symref
+/// (`refs/remotes/<remote>/HEAD`) with no network round-trip. Returns `None`
+/// when the symref is unset or not symbolic.
+///
+/// Runs through [`crate::utils::git_command_at`] so an inherited `GIT_DIR`
+/// can't retarget the query (the helper clears `GIT_*`), with stderr nulled.
+/// `dir` may be a worktree root, a contained-layout container root, or the bare
+/// common dir — all resolve the same symref.
+pub fn local_default_branch(dir: &Path, remote_name: &str) -> Option<String> {
+    let out = crate::utils::git_command_at(dir)
+        .args([
+            "symbolic-ref",
+            "--short",
+            &format!("refs/remotes/{remote_name}/HEAD"),
+        ])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let short = String::from_utf8_lossy(&out.stdout);
+    default_branch_from_short_symref(short.trim(), remote_name)
+}
+
+/// Determine a repository's default branch from local state, falling back to a
+/// remote query. Prefers the local `origin/HEAD` symref (fast, offline); only
+/// reaches for `ls-remote` when the symref isn't set up locally.
+///
+/// `dir` may be a worktree, container root, or bare common dir.
 pub fn get_default_branch_local(
-    git_common_dir: &Path,
+    dir: &Path,
     remote_name: &str,
     use_gitoxide: bool,
 ) -> Result<String> {
-    let head_ref_file = git_common_dir
-        .join("refs/remotes")
-        .join(remote_name)
-        .join("HEAD");
-
-    // Try to read the local HEAD reference file first
-    if head_ref_file.exists() {
-        let content = fs::read_to_string(&head_ref_file)
-            .with_context(|| format!("Failed to read {}", head_ref_file.display()))?;
-
-        let content = content.trim();
-
-        if let Some(ref_path) = content.strip_prefix("ref: ") {
-            let prefix = format!("refs/remotes/{remote_name}/");
-            if let Some(branch) = ref_path.strip_prefix(&prefix)
-                && !branch.is_empty()
-            {
-                return Ok(branch.to_string());
-            }
-        }
+    // Prefer the local origin/HEAD symref — no network round-trip.
+    if let Some(branch) = local_default_branch(dir, remote_name) {
+        return Ok(branch);
     }
 
-    // Fallback: Try to determine default branch from remote
-    // This happens when remote HEAD isn't set up locally
+    // Fallback: query the remote when the local HEAD symref isn't set up.
     let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
     if let Ok(output_str) = git.ls_remote_symref(remote_name) {
         for line in output_str.lines() {
@@ -119,10 +143,9 @@ pub fn get_default_branch_local(
 
     anyhow::bail!(
         "Could not determine default branch for remote '{}'. \
-        The local HEAD reference file was not found at '{}' and remote query failed. \
+        The local HEAD symref was not set and the remote query failed. \
         Try: 'git remote set-head {} --auto' and 'git fetch {}'",
         remote_name,
-        head_ref_file.display(),
         remote_name,
         remote_name
     );
@@ -222,5 +245,108 @@ mod tests {
         assert!(result.is_ok());
         // Our own repo should not be empty
         assert!(!result.unwrap());
+    }
+
+    // ── default_branch_from_short_symref (pure parser) ────────────────────────
+
+    #[test]
+    fn short_symref_extracts_branch_under_remote() {
+        assert_eq!(
+            default_branch_from_short_symref("origin/main", "origin"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn short_symref_preserves_slashed_branch() {
+        assert_eq!(
+            default_branch_from_short_symref("origin/feature/x", "origin"),
+            Some("feature/x".to_string())
+        );
+    }
+
+    #[test]
+    fn short_symref_empty_branch_is_none() {
+        assert_eq!(default_branch_from_short_symref("origin/", "origin"), None);
+    }
+
+    #[test]
+    fn short_symref_blank_is_none() {
+        assert_eq!(default_branch_from_short_symref("", "origin"), None);
+    }
+
+    #[test]
+    fn short_symref_other_remote_is_none() {
+        // A symref under a different remote must not be misread as origin's default.
+        assert_eq!(
+            default_branch_from_short_symref("upstream/main", "origin"),
+            None
+        );
+    }
+
+    // ── local_default_branch (real git, local-only — no network) ──────────────
+
+    /// Run git in an isolated temp repo with a fixed identity — never global
+    /// config (CLAUDE.md Rule #1), never this project's repo (Rule #2).
+    fn git_at(dir: &std::path::Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn local_default_branch_reads_origin_head_from_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "-b", "main"]);
+        // Hand-write the remote-tracking origin/HEAD symref (no network round-trip).
+        git_at(
+            dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        assert_eq!(
+            local_default_branch(dir.path(), "origin"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn local_default_branch_reads_origin_head_from_bare_common_dir() {
+        // get_default_branch_local passes the bare common dir; the symref read
+        // must work there too.
+        let dir = tempfile::tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        git_at(
+            dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/develop",
+            ],
+        );
+        assert_eq!(
+            local_default_branch(dir.path(), "origin"),
+            Some("develop".to_string())
+        );
+    }
+
+    #[test]
+    fn local_default_branch_none_when_head_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        git_at(dir.path(), &["init", "-q", "-b", "main"]);
+        assert_eq!(local_default_branch(dir.path(), "origin"), None);
     }
 }

@@ -1,0 +1,23 @@
+name: Install refuses outside a git repository
+description: >
+  A daft.yml on the bare filesystem is never read by daft, so `daft install`
+  refuses (non-zero) and writes nothing when the cwd is not inside a git
+  repository. Regression for the field report that install "worked" anywhere.
+
+steps:
+  - name: Make an empty (non-git) directory
+    run: mkdir -p "$WORK_DIR/not-a-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/not-a-repo"
+
+  - name: Run daft install there (should refuse, write nothing)
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/not-a-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "inside a git repository"
+      files_not_exist:
+        - "$WORK_DIR/not-a-repo/daft.yml"

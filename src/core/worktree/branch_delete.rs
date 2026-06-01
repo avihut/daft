@@ -95,15 +95,7 @@ impl DeletionResult {
     }
 }
 
-// ── Private types ──────────────────────────────────────────────────────────
-
-/// Parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    #[allow(dead_code)] // Parsed for completeness; not needed by branch-delete logic
-    is_bare: bool,
-}
+use super::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 
 /// Bundles common parameters used throughout the branch-delete operation.
 struct BranchDeleteContext<'a> {
@@ -213,7 +205,7 @@ pub fn execute(
     }
 
     // Execute deletions
-    let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, sink);
+    let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, &worktree_map, sink);
 
     Ok(BranchDeleteResult {
         deletions,
@@ -234,7 +226,7 @@ pub fn execute(
 ///   - A worktree path (absolute or relative to cwd, including ".")
 fn resolve_branch_args(
     args: &[String],
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
     sink: &mut dyn ProgressSink,
 ) -> Result<Vec<String>> {
@@ -264,7 +256,7 @@ fn resolve_branch_args(
 /// Try to resolve a single argument as a worktree path.
 fn resolve_single_arg(
     arg: &str,
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
 ) -> ResolveResult {
     // Build a candidate path: resolve relative paths against cwd.
@@ -308,7 +300,7 @@ fn resolve_single_arg(
 fn try_resolve_relative_to_root(
     arg: &str,
     project_root: &Path,
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
 ) -> ResolveResult {
     let potential = project_root.join(arg);
     let potential_canonical = std::fs::canonicalize(&potential).ok();
@@ -545,6 +537,56 @@ fn validate_branches(
             }
         }
 
+        // Check 6: Divergence guard — refuse removal when in-scope untracked daft
+        // files in this worktree differ from the merge target's. Gated BEFORE
+        // propagation (Task 6.1) so that a failed/skipped propagation doesn't
+        // silently lose visitor-config refinements. --force (-D) bypasses.
+        //
+        // Gate conditions mirror Task 6.1's propagation block: only applies when
+        // (a) the source worktree exists on disk, (b) the merge-target worktree
+        // (default branch) is also checked out somewhere, and (c) the branch has
+        // at least one in-scope file (has_local or has_visitor_daft_yml). The
+        // divergence check is the second gate: it only refuses when those files
+        // actually differ from the target's.
+        if !force
+            && !keep_local_branch
+            && let Some(ref wt) = wt_path
+            && wt.is_dir()
+        {
+            let has_local = wt.join("daft.local.yml").is_file();
+            let has_visitor_daft_yml = wt.join("daft.yml").is_file()
+                && matches!(
+                    crate::hooks::yaml_config_loader::classify_main_config(wt),
+                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+                );
+            if (has_local || has_visitor_daft_yml)
+                && let Some(target_wt) = worktree_map.get(ctx.default_branch.as_str())
+            {
+                match crate::hooks::visitor_propagation::has_inscope_divergence(wt, target_wt) {
+                    Ok(true) => {
+                        errors.push(ValidationError {
+                            branch: branch.clone(),
+                            message: format!(
+                                "untracked daft files in {} differ from the merge \
+                                 target {}. Consolidate first with `daft file merge` \
+                                 or pass -D/--force to remove anyway.",
+                                wt.display(),
+                                target_wt.display(),
+                            ),
+                        });
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        sink.on_step(&format!(
+                            "Warning: divergence check failed for '{branch}': {e}; \
+                             proceeding with removal"
+                        ));
+                    }
+                }
+            }
+        }
+
         // All checks passed — detect if this is the worktree the user is inside.
         // Use both path comparison and branch name as fallback: path comparison
         // can fail when symlinks cause git commands to report different strings
@@ -708,6 +750,7 @@ fn execute_deletions(
     ctx: &BranchDeleteContext,
     validated: &[ValidatedBranch],
     params: &BranchDeleteParams,
+    worktree_map: &HashMap<String, PathBuf>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> (Vec<DeletionResult>, Option<PathBuf>) {
     // Partition into regular and deferred (current worktree) branches
@@ -726,6 +769,7 @@ fn execute_deletions(
             params.remote_only,
             params.keep_local_branch,
             &params.command_label,
+            worktree_map,
             sink,
         );
         deletions.push(result);
@@ -769,6 +813,7 @@ fn execute_deletions(
                 params.remote_only,
                 params.keep_local_branch,
                 &params.command_label,
+                worktree_map,
                 sink,
             );
 
@@ -787,6 +832,7 @@ fn execute_deletions(
                 params.remote_only,
                 params.keep_local_branch,
                 &params.command_label,
+                worktree_map,
                 sink,
             );
             deletions.push(result);
@@ -810,6 +856,7 @@ fn delete_single_branch(
     remote_only: bool,
     keep_local_branch: bool,
     command_label: &str,
+    worktree_map: &HashMap<String, PathBuf>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> DeletionResult {
     let mut result = DeletionResult {
@@ -877,6 +924,43 @@ fn delete_single_branch(
             ));
         }
         return result;
+    }
+
+    // Visitor-config propagation: if the source worktree still has in-scope
+    // untracked daft files, copy them into the merge target's worktree before
+    // the source worktree gets removed. Gated cheapest-first so non-users
+    // pay no cost. Skip when the branch being deleted IS the default branch
+    // (worktree_only path), as there is no merge target to propagate to.
+    if !branch.worktree_only
+        && !remote_only
+        && branch.name != ctx.default_branch
+        && let Some(ref wt_path) = branch.worktree_path
+        && wt_path.is_dir()
+    {
+        let has_local = wt_path.join("daft.local.yml").is_file();
+        let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
+            && matches!(
+                crate::hooks::yaml_config_loader::classify_main_config(wt_path),
+                crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+            );
+
+        if (has_local || has_visitor_daft_yml)
+            && let Some(target_wt) = worktree_map.get(&ctx.default_branch)
+            // Only salvage when the source actually has in-scope content the
+            // target lacks. When it doesn't — the common case: an unchanged
+            // worktree whose daft files are a subset of the target's — there is
+            // nothing to copy, and running the merge would needlessly
+            // re-serialize the target's daft.yml, stripping its comments and
+            // littering it with `null`s. (A non-forced divergent removal is
+            // already blocked by the divergence guard with a "consolidate first"
+            // message; only a forced removal reaches here with real divergence.)
+            && matches!(
+                crate::hooks::visitor_propagation::has_inscope_divergence(wt_path, target_wt),
+                Ok(true)
+            )
+        {
+            let _ = crate::hooks::visitor_propagation::propagate(wt_path, target_wt);
+        }
     }
 
     // Step 3: Remove worktree (if one exists)
@@ -1002,42 +1086,14 @@ fn run_removal_hook(
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
-fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
+///
+/// Thin I/O wrapper around the shared
+/// [`super::porcelain::parse_worktree_list_porcelain`]. Bare entries are
+/// retained; branch-delete simply never maps a bare/detached (branch-less)
+/// entry into its branch→path lookup.
+fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeListEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut current_is_bare = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            // Save previous entry if any
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare: current_is_bare,
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-            current_is_bare = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            current_is_bare = true;
-        }
-    }
-    // Don't forget the last entry
-    if let Some(path) = current_path.take() {
-        entries.push(WorktreeEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare: current_is_bare,
-        });
-    }
-
-    Ok(entries)
+    Ok(parse_worktree_list_porcelain(&porcelain_output))
 }
 
 /// Resolve where to cd after deleting the user's current worktree.
@@ -1102,29 +1158,6 @@ fn cleanup_empty_parent_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_worktree_list_empty() {
-        let entry = WorktreeEntry {
-            path: PathBuf::from("/tmp/test"),
-            branch: Some("main".to_string()),
-            is_bare: false,
-        };
-        assert_eq!(entry.path, PathBuf::from("/tmp/test"));
-        assert_eq!(entry.branch.as_deref(), Some("main"));
-        assert!(!entry.is_bare);
-    }
-
-    #[test]
-    fn test_worktree_entry_bare() {
-        let entry = WorktreeEntry {
-            path: PathBuf::from("/tmp/test.git"),
-            branch: None,
-            is_bare: true,
-        };
-        assert!(entry.is_bare);
-        assert!(entry.branch.is_none());
-    }
 
     #[test]
     fn test_validated_branch_fields() {
@@ -1278,6 +1311,19 @@ mod tests {
 
     use serial_test::serial;
     use std::process::Command as ShellCommand;
+    use std::process::Stdio;
+
+    /// Test-only helper: run `git` quietly so subprocess output doesn't leak
+    /// into the test log. Returns the exit status, panics on spawn failure.
+    fn git_quiet(path: &std::path::Path, args: &[&str]) -> std::process::ExitStatus {
+        ShellCommand::new("git")
+            .args(args)
+            .current_dir(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+    }
 
     /// RAII helper: saves cwd on construction and restores on drop.
     struct CwdGuard {
@@ -1306,6 +1352,8 @@ mod tests {
             .current_dir(path)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         ShellCommand::new("git")
@@ -1315,6 +1363,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         // Create a fake origin/HEAD so get_default_branch_local() can resolve
@@ -1325,18 +1375,17 @@ mod tests {
     }
 
     fn setup_worktree(root: &std::path::Path, branch: &str, wt_path: &std::path::Path) {
-        ShellCommand::new("git")
-            .args([
+        git_quiet(
+            root,
+            &[
                 "worktree",
                 "add",
                 "-q",
                 &wt_path.display().to_string(),
                 "-b",
                 branch,
-            ])
-            .current_dir(root)
-            .status()
-            .unwrap();
+            ],
+        );
     }
 
     #[test]
@@ -1410,6 +1459,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
 
@@ -1517,5 +1568,186 @@ mod tests {
             "merge",
             "DAFT_COMMAND must reflect command_label='merge', not the hardcoded 'branch-delete'"
         );
+    }
+
+    // ── Divergence guard tests ─────────────────────────────────────────────
+
+    /// Regression test: divergence guard refuses branch-delete when daft.local.yml
+    /// in the feature worktree differs from the default branch worktree.
+    ///
+    /// To isolate Check 6 (divergence) from Check 3 (uncommitted changes), we
+    /// add daft.local.yml to .gitignore so git does not see it as dirty. This
+    /// mirrors real usage: daft.local.yml is a personal overlay that should be
+    /// gitignored in the repository.
+    #[test]
+    #[serial]
+    fn divergence_guard_refuses_delete_when_local_yml_differs() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // Add .gitignore in the feature worktree that ignores daft.local.yml so
+        // that Check 3 (uncommitted changes) does not fire before Check 6.
+        // Commit the .gitignore so it is tracked and doesn't itself appear dirty.
+        std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
+        git_quiet(&feat_wt, &["add", ".gitignore"]);
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        // Merge feature into main so Check 4 (not merged) passes. The .gitignore
+        // commit makes the branches diverge from HEAD but squash-merge passes
+        // git-cherry, so use fast-forward merge instead.
+        ShellCommand::new("git")
+            .args(["merge", "--ff-only", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        // Write a daft.local.yml in the feature worktree that doesn't exist in main.
+        // Because it's gitignored, Check 3 will not flag it as dirty.
+        std::fs::write(
+            feat_wt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo personal\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            !result.validation_errors.is_empty(),
+            "should have a validation error when daft.local.yml diverges"
+        );
+        assert!(
+            result.validation_errors[0]
+                .message
+                .contains("untracked daft files"),
+            "error message must mention untracked daft files, got: {}",
+            result.validation_errors[0].message
+        );
+        // Feature worktree must NOT have been removed.
+        assert!(
+            feat_wt.exists(),
+            "feature worktree must still exist after refusal"
+        );
+    }
+
+    /// Regression test: --force bypasses the divergence guard.
+    #[test]
+    #[serial]
+    fn divergence_guard_bypassed_with_force() {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        // Same setup as the "refuses" test: gitignore daft.local.yml to isolate Check 6.
+        std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
+        git_quiet(&feat_wt, &["add", ".gitignore"]);
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["merge", "--ff-only", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        // Write a daft.local.yml in the feature worktree that doesn't exist in main.
+        std::fs::write(
+            feat_wt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo personal\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: true, // --force bypasses divergence guard
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+        };
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "force should bypass divergence guard, got: {:?}",
+            result
+                .validation_errors
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.deletions.len(), 1);
+        assert!(
+            result.deletions[0].worktree_removed,
+            "worktree must be removed with --force"
+        );
+        assert!(!feat_wt.exists(), "feature worktree directory must be gone");
     }
 }

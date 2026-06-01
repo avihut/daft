@@ -119,7 +119,14 @@ fn enumerate_worktrees_cli(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
         );
     }
     let stdout = String::from_utf8(output.stdout).context("worktree-list output not UTF-8")?;
-    Ok(parse_worktree_list_porcelain(&stdout))
+    // The shared parser RETAINS the bare entry; drop it here so a bare repo path
+    // never reaches the removal loop (the gix backend likewise excludes bare).
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&stdout)
+            .into_iter()
+            .filter(|e| !e.is_bare)
+            .collect(),
+    )
 }
 
 fn enumerate_worktrees_gix(target: &RepoTarget) -> Result<Vec<WorktreeEntry>> {
@@ -220,10 +227,17 @@ pub fn remove_worktree_filesystem(
         std::fs::remove_dir_all(worktree_path)
             .with_context(|| format!("rm -rf {} failed", worktree_path.display()))?;
     }
+    // `worktree prune` runs after we've already removed the bare git dir in
+    // some flows (e.g. `daft repo remove --force` removes worktrees then the
+    // bare dir). The binary then errors with "fatal: not a git repository"
+    // on stderr — harmless, since this is a best-effort `_ = …` call, but
+    // noisy in test logs. Redirect both streams so the cleanup is silent.
     let _ = std::process::Command::new("git")
         .arg("--git-dir")
         .arg(&target.bare_git_dir)
         .args(["worktree", "prune"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
     Ok(RemoveWorktreeOutcome::RemovedViaFallback)
 }
@@ -266,78 +280,18 @@ pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
     Ok(())
 }
 
-/// Parse the porcelain output of `git worktree list --porcelain`, dropping the
-/// bare entry. Pure-string helper so it can be unit-tested without spawning
-/// git.
-fn parse_worktree_list_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
-    let mut out = Vec::new();
-    let mut path: Option<PathBuf> = None;
-    let mut branch: Option<String> = None;
-    let mut is_bare = false;
-    let mut is_detached = false;
-    for line in stdout.lines() {
-        if line.is_empty() {
-            if let Some(p) = path.take() {
-                if !is_bare {
-                    out.push(WorktreeEntry {
-                        path: p,
-                        branch: branch.take(),
-                        is_bare,
-                        is_detached,
-                    });
-                }
-                branch = None;
-                is_bare = false;
-                is_detached = false;
-            }
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("worktree ") {
-            if let Some(p) = path.take() {
-                if !is_bare {
-                    out.push(WorktreeEntry {
-                        path: p,
-                        branch: branch.take(),
-                        is_bare,
-                        is_detached,
-                    });
-                }
-                branch = None;
-                is_bare = false;
-                is_detached = false;
-            }
-            path = Some(PathBuf::from(rest));
-        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(rest.to_string());
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line == "detached" {
-            is_detached = true;
-        }
-    }
-    if let Some(p) = path
-        && !is_bare
-    {
-        out.push(WorktreeEntry {
-            path: p,
-            branch,
-            is_bare,
-            is_detached,
-        });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     fn init_repo(dir: &Path) {
         Command::new("git")
             .arg("init")
             .arg("-q")
             .arg(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
     }
@@ -440,6 +394,8 @@ mod tests {
         Command::new("git")
             .current_dir(dir)
             .args(["add", "."])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         Command::new("git")
@@ -449,6 +405,8 @@ mod tests {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t.com")
             .args(["commit", "-q", "-m", "init"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
     }
@@ -475,6 +433,8 @@ mod tests {
             Command::new("git")
                 .current_dir(tmp.path())
                 .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .unwrap();
 
@@ -507,6 +467,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -541,6 +503,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -573,6 +537,8 @@ mod tests {
             .arg("--bare")
             .arg("-q")
             .arg(project.join(".git"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         let bare = project.join(".git");
@@ -598,6 +564,8 @@ mod tests {
         Command::new("git")
             .current_dir(tmp.path())
             .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         assert!(wt.exists(), "worktree was not created");

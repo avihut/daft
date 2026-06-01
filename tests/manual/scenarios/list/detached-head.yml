@@ -36,3 +36,6 @@ steps:
       exit_code: 0
       output_contains:
         - "(detached)"
+        # The named default branch must co-appear in the SAME list call, proving
+        # the parser's final-entry flush + mixed branch=None/Some derivation.
+        - "master"

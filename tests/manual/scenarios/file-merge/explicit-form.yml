@@ -1,0 +1,44 @@
+name: daft file merge explicit form
+description: >
+  daft file merge TARGET SOURCE --yes merges disjoint hook sections and deletes
+  the source file by default.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write target daft.yml with post-clone hook
+    run: >
+      printf 'hooks:\n  post-clone:\n    jobs:\n      - name: a\n        run:
+      echo from-target\n' > $WORK_DIR/test-repo/master/target.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/target.yml"
+
+  - name: Write source daft.yml with worktree-post-create hook
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      b\n        run: echo from-source\n' >
+      $WORK_DIR/test-repo/master/source.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"
+
+  - name: Run daft file merge in explicit form
+    run: daft file merge target.yml source.yml --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "post-clone"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "worktree-post-create"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"

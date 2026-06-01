@@ -684,10 +684,16 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd remove
+            compadd install remove
             return
         fi
         case "$words[3]" in
+            install)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -q --quiet -v --verbose --git-exclude -h --help
+                fi
+                return
+                ;;
             remove)
                 if [[ "$curword" == -* ]]; then
                     compadd -- -y --force --dry-run -v --verbose -h --help
@@ -703,6 +709,23 @@ _daft() {
     # config: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
         compadd remote-sync
+        return
+    fi
+
+    # file: complete subcommands and arguments
+    if [[ "$words[2]" == "file" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd merge
+            return
+        fi
+        if [[ "$words[3]" == "merge" ]]; then
+            if [[ "$curword" == -* ]]; then
+                compadd -- --keep-source -y --yes -h --help
+            else
+                _files
+            fi
+            return
+        fi
         return
     fi
 
@@ -887,8 +910,8 @@ _daft() {
         if [[ "$curword" == -* ]]; then
             compadd -- --version -V --help -h -C
         else
-            compadd hooks shell-init setup multi-remote release-notes doctor layout shared \
-                    config repo clone init go start carry exec update list prune rename sync remove \
+            compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
+                    config file repo clone init install go start carry exec update list prune rename sync remove \
                     merge worktree-merge adopt eject
         fi
         return

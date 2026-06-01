@@ -1,0 +1,41 @@
+name: Doctor reports a tracked daft.yml consistently from any position
+description: >
+  daft.yml's tracked/visitor status is a repository-configuration fact, so `daft
+  doctor` reports it in a Repository "Config" check at every invocation point —
+  from inside the worktree AND from the bare container root of a contained
+  layout (where the old behavior went blind and said nothing). The exit code is
+  intentionally not asserted: installation checks vary in the sandbox and are
+  irrelevant to this regression.
+
+steps:
+  - name: Initialize a fresh contained-layout repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Commit a daft.yml so it is tracked
+    run: |
+      echo "hooks: {}" > daft.yml &&
+      git add daft.yml &&
+      git commit -m "Add daft.yml"
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Doctor from inside the worktree reports the tracked config
+    run: daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml tracked"
+
+  - name: Doctor from the container root reports the same tracked config
+    run: daft doctor -v 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      output_contains:
+        - "Config"
+        - "daft.yml tracked"

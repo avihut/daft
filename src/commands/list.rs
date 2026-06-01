@@ -1123,10 +1123,27 @@ mod tests {
     fn resolve_base_branch_honors_configured_remote_not_hardcoded_origin() {
         let tmp = tempfile::tempdir().unwrap();
         let gcd = tmp.path();
+        // get_default_branch_local reads the symref via `git symbolic-ref`, so
+        // set up a real bare repo (production always passes a real common dir)
+        // and write each remote's HEAD as an actual symbolic ref.
+        let run_git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(gcd)
+                .args(args)
+                .output()
+                .expect("git command");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_git(&["init", "-q", "--bare"]);
         for (remote, branch) in [("upstream", "main"), ("origin", "wrongdefault")] {
-            let head = gcd.join("refs/remotes").join(remote).join("HEAD");
-            std::fs::create_dir_all(head.parent().unwrap()).unwrap();
-            std::fs::write(&head, format!("ref: refs/remotes/{remote}/{branch}\n")).unwrap();
+            run_git(&[
+                "symbolic-ref",
+                &format!("refs/remotes/{remote}/HEAD"),
+                &format!("refs/remotes/{remote}/{branch}"),
+            ]);
         }
 
         // Honors settings.remote: a repo configured with `upstream` resolves to

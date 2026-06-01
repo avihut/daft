@@ -562,42 +562,24 @@ pub struct WorktreeInfo {
 }
 
 /// Parse `git worktree list --porcelain` output into structured data.
+///
+/// Thin I/O wrapper around the shared
+/// [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`], mapped
+/// into this module's `WorktreeInfo` (which omits `is_detached` — the legacy
+/// transform never needed it). Bare entries are retained; callers filter
+/// `!is_bare` themselves.
 pub fn parse_worktrees(git: &GitCommand) -> Result<Vec<WorktreeInfo>> {
     let output = git.worktree_list_porcelain()?;
-    let mut worktrees = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut is_bare = false;
-
-    for line in output.lines() {
-        if let Some(path_str) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.take() {
-                worktrees.push(WorktreeInfo {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare,
-                });
-            }
-            current_path = Some(PathBuf::from(path_str));
-            current_branch = None;
-            is_bare = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            is_bare = true;
-        }
-    }
-
-    // Don't forget the last worktree
-    if let Some(path) = current_path.take() {
-        worktrees.push(WorktreeInfo {
-            path,
-            branch: current_branch.take(),
-            is_bare,
-        });
-    }
-
-    Ok(worktrees)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&output)
+            .into_iter()
+            .map(|e| WorktreeInfo {
+                path: e.path,
+                branch: e.branch,
+                is_bare: e.is_bare,
+            })
+            .collect(),
+    )
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────

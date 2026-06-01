@@ -6,7 +6,7 @@
 //! RC-file sourcing, template substitution) happens here so that the
 //! executor never needs to know about hook configuration details.
 
-use super::yaml_config_loader::merge_log_configs;
+use super::config_merge::merge_log_configs;
 use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
 use crate::hooks::yaml_config::JobDef;

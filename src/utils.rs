@@ -2,6 +2,34 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
+
+/// Build a `git` `Command` rooted at `dir` with inherited `GIT_*` env vars
+/// stripped.
+///
+/// When daft runs inside a git hook (pre-push, post-checkout, etc.) the
+/// hook process exports `GIT_DIR` / `GIT_WORK_TREE` / friends. Child
+/// processes inherit them, and they override `-C <dir>` for repository
+/// discovery — so a query like "is this file in *this* directory's repo?"
+/// silently retargets the hook's repo. Clearing the inherited vars makes
+/// `-C` authoritative again.
+pub fn git_command_at(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_NAMESPACE",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
 
 pub fn change_directory(path: &Path) -> Result<()> {
     env::set_current_dir(path)

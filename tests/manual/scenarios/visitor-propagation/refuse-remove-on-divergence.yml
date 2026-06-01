@@ -1,0 +1,64 @@
+name: Refuse worktree removal when untracked daft files diverge
+description: >
+  When a worktree has a daft.local.yml (gitignored personal overlay) that is
+  absent or differs from the merge target's, branch-delete refuses removal.
+  Passing -D (--force) bypasses the check and removes the worktree.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create feature branch worktree
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/x"
+
+  - name:
+      Add .gitignore that ignores daft.local.yml and commit + merge into main
+    run: |
+      cd $WORK_DIR/test-repo/feat/x
+      printf 'daft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "gitignore daft.local.yml"
+      cd $WORK_DIR/test-repo/main
+      git merge feat/x
+    expect:
+      exit_code: 0
+
+  - name: Write daft.local.yml only in feat/x (gitignored, not present in main)
+    run: |
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: personal\n        run: echo my-local-config\n' \
+        > $WORK_DIR/test-repo/feat/x/daft.local.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/feat/x/daft.local.yml"
+
+  - name: Attempt to delete feat/x without force should fail
+    run: git-worktree-branch-delete feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "untracked daft files"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/x"
+
+  - name: Delete feat/x with -D force should succeed
+    run: git-worktree-branch-delete -D feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feat/x"

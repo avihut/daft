@@ -5,6 +5,7 @@
 
 /// All subcommands available via `daft <subcmd>`.
 pub const DAFT_SUBCOMMANDS: &[&str] = &[
+    "activate",
     "adopt",
     "carry",
     "clone",
@@ -12,9 +13,11 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "config",
     "doctor",
     "eject",
+    "file",
     "go",
     "hooks",
     "init",
+    "install",
     "layout",
     "list",
     "merge",
@@ -24,7 +27,6 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "remove",
     "rename",
     "repo",
-    "setup",
     "shared",
     "shell-init",
     "start",
@@ -47,7 +49,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
 ];
 
 /// All subcommands available via `daft repo <verb>`.
-pub const DAFT_REPO_SUBCOMMANDS: &[&str] = &["remove"];
+pub const DAFT_REPO_SUBCOMMANDS: &[&str] = &["install", "remove"];
 
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -124,7 +126,7 @@ pub fn find_similar<'a, S: AsRef<str> + 'a>(
 /// daft: 'foo' is not a daft command. See 'daft --help'.
 ///
 /// The most similar command is
-///     setup
+///     activate
 /// ```
 pub fn handle_unknown_subcommand(label: &str, unknown_cmd: &str, known: &[&str]) -> ! {
     eprintln!("{label}: '{unknown_cmd}' is not a {label} command. See '{label} --help'.");
@@ -188,30 +190,30 @@ mod tests {
 
     #[test]
     fn test_find_similar_typo() {
-        let known = &["setup", "shell-init", "hooks"];
-        let suggestions = find_similar_commands("steup", known);
-        assert_eq!(suggestions, vec!["setup"]);
+        let known = &["activate", "shell-init", "hooks"];
+        let suggestions = find_similar_commands("acitvate", known);
+        assert_eq!(suggestions, vec!["activate"]);
     }
 
     #[test]
     fn test_find_similar_close_match() {
-        let known = &["branch", "hooks", "setup"];
+        let known = &["branch", "hooks", "activate"];
         let suggestions = find_similar_commands("hook", known);
         assert_eq!(suggestions, vec!["hooks"]);
     }
 
     #[test]
     fn test_find_similar_no_match() {
-        let known = &["branch", "hooks", "setup"];
+        let known = &["branch", "hooks", "activate"];
         let suggestions = find_similar_commands("completely-unrelated-xyzzy", known);
         assert!(suggestions.is_empty());
     }
 
     #[test]
     fn test_find_similar_exact_match_excluded() {
-        let known = &["setup", "hooks"];
-        let suggestions = find_similar_commands("setup", known);
-        assert!(!suggestions.contains(&"setup"));
+        let known = &["activate", "hooks"];
+        let suggestions = find_similar_commands("activate", known);
+        assert!(!suggestions.contains(&"activate"));
     }
 
     #[test]

@@ -484,6 +484,31 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
 
 /// Build the repo subcommand with nested subcommands
 fn build_fig_repo_subcommand() -> FigSubcommand {
+    let install = FigSubcommand {
+        name: "install".to_string(),
+        description: Some("Install a starter daft.yml in the current worktree".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress progress reporting".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--git-exclude".into()),
+                description: "Add /daft.yml to .git/info/exclude without prompting (keeps it private to this clone)".into(),
+                args: None,
+            },
+        ]),
+    };
+
     let remove = FigSubcommand {
         name: "remove".to_string(),
         description: Some("Remove a repository, including all worktrees".to_string()),
@@ -517,7 +542,7 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         name: "repo".to_string(),
         description: Some("Repository-level operations".to_string()),
         load_spec: None,
-        subcommands: Some(vec![remove]),
+        subcommands: Some(vec![install, remove]),
         args: None,
         options: None,
     }
@@ -881,7 +906,7 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
-        ("setup", "Setup and configuration"),
+        ("activate", "Activate daft in this shell"),
         ("release-notes", "Generate release notes"),
     ];
 

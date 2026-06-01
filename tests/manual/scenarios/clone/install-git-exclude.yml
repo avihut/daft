@@ -1,0 +1,29 @@
+name: Clone --install --git-exclude hides daft.yml
+description:
+  --git-exclude adds /daft.yml to the repo's local .git/info/exclude without
+  prompting, so the bootstrapped visitor config is invisible to git.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with --install --git-exclude
+    run:
+      git-worktree-clone --layout contained --install --git-exclude
+      $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/.git/info/exclude"
+          content: "/daft.yml"
+
+  - name: git now ignores daft.yml
+    run: git check-ignore daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "daft.yml"

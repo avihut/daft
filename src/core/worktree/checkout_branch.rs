@@ -72,7 +72,8 @@ pub fn execute(
     let base_branch = resolve_base_branch(params, git, sink)?;
 
     let git_dir = crate::core::repo::get_git_common_dir()?;
-    let source_worktree = get_current_directory()?;
+    let source_worktree =
+        resolve_source_worktree(git, &git_dir, &params.remote_name, Some(&base_branch))?;
 
     let worktree_path = if let Some(ref at) = params.at_path {
         at.clone()
@@ -181,7 +182,39 @@ pub fn execute(
     // Push and set upstream
     let (push_set, push_skipped) = push_if_enabled(params, git, sink);
 
-    // Link shared files before hooks so hooks can depend on .env etc.
+    // Propagate in-scope untracked daft files from source worktree to the new
+    // worktree, so that user post-create hooks can read them.
+    //
+    // Propagation entry points audit (Task 4.3):
+    //   - checkout_branch (this site): creates a worktree with a NEW branch from an
+    //     existing source worktree — propagates here.
+    //   - checkout (checkout.rs execute): creates a worktree for an EXISTING branch
+    //     from an existing source worktree — also propagates (same pattern).
+    //   - clone (clone.rs): starts from a remote URL with no source worktree — no
+    //     propagation needed (fresh repo with no visitor-config context to carry).
+    //   - init (init.rs): creates a brand-new empty repo — no source worktree, no
+    //     propagation needed.
+    //   - checkout's early-return paths (existing worktree for branch / existing dir
+    //     on disk): navigate to an already-materialized worktree — no new worktree
+    //     is created, no propagation step.
+    match crate::hooks::visitor_propagation::propagate(&source_worktree, &worktree_path) {
+        Ok(result) => {
+            for filename in &result.files_propagated {
+                crate::log_debug!("propagated {} to new worktree", filename);
+            }
+        }
+        Err(e) => {
+            sink.on_warning(&format!("visitor-config propagation failed: {}", e));
+        }
+    }
+
+    // Link shared files AFTER propagation and BEFORE post-create hooks.
+    // Order is load-bearing: a *visitor* daft.yml (untracked) reaches the new
+    // worktree only via the propagation step above, so reading `shared:` before
+    // propagation finds no config and silently links nothing. (A tracked daft.yml
+    // arrives via the git checkout regardless of order, which is why this bug was
+    // invisible until visitor configs existed — do not move this back above
+    // propagation.) Linking before hooks lets hooks depend on .env etc.
     crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
 
     // Run post-create hook
@@ -235,6 +268,70 @@ fn resolve_base_branch(
             sink.on_step(&format!("Using current branch as base: '{current}'"));
             Ok(current)
         }
+    }
+}
+
+/// Resolve the worktree to use as the `source_worktree` — the visitor-config
+/// propagation source and the hook context's source path.
+///
+/// Normally this is the worktree the command was run in (its toplevel, which
+/// also normalizes a subdirectory cwd to the worktree root). But `daft start` /
+/// `daft go` are legitimately run from a contained-layout's **bare container
+/// root**, which is not a worktree and holds no `daft.yml`. Using it as the
+/// propagation source means a *visitor* (untracked) `daft.yml` never reaches the
+/// new worktree — no hooks, no shared files. (Tracked configs are unaffected:
+/// they arrive via the git checkout regardless of cwd.) When cwd is not a
+/// worktree, fall back to a worktree that holds the user's config: the
+/// `preferred_branch`'s worktree (the base branch), then the default branch's.
+/// Falls back to cwd when none is found, so propagation simply no-ops as before.
+///
+/// The structural "where am I" decision is delegated to
+/// [`crate::core::repo::resolve_worktree_position`] (the shared primitive that
+/// `daft install`/`daft doctor` also use, so the two resolvers can't drift).
+/// This adds the checkout-specific bias on top: prefer the `preferred_branch`'s
+/// worktree, then the default branch's (via the network-capable
+/// `get_default_branch_local`), then any worktree the local probe already found.
+pub(crate) fn resolve_source_worktree(
+    git: &GitCommand,
+    git_dir: &Path,
+    remote_name: &str,
+    preferred_branch: Option<&str>,
+) -> Result<PathBuf> {
+    use crate::core::repo::WorktreePosition;
+
+    match crate::core::repo::resolve_worktree_position(&get_current_directory()?) {
+        // Inside a worktree → its toplevel (also normalizes a subdir cwd).
+        WorktreePosition::InWorktree { root } => Ok(root),
+
+        // Bare container root: bias toward the worktree that carries the user's
+        // visitor config before falling back to whatever the probe found.
+        WorktreePosition::ContainerRoot { representative } => {
+            // Prefer the base branch's worktree (the propagation source).
+            if let Some(branch) = preferred_branch
+                && let Ok(Some(wt)) = git.find_worktree_for_branch(branch)
+            {
+                return Ok(wt);
+            }
+
+            // Then the default branch's worktree.
+            if let Ok(default_branch) =
+                crate::core::remote::get_default_branch_local(git_dir, remote_name, false)
+                && let Ok(Some(wt)) = git.find_worktree_for_branch(&default_branch)
+            {
+                return Ok(wt);
+            }
+
+            // Then any worktree the local probe already resolved.
+            if let Some(wt) = representative {
+                return Ok(wt);
+            }
+
+            // Nothing resolvable — preserve prior behavior (propagation no-ops).
+            get_current_directory()
+        }
+
+        // Not in a repo — preserve prior behavior (propagation no-ops).
+        WorktreePosition::NotInRepo => get_current_directory(),
     }
 }
 

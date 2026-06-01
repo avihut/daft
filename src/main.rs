@@ -161,17 +161,18 @@ fn main() -> Result<()> {
                     }
                     "config" => commands::config::run(),
                     "hooks" => commands::hooks::run(),
+                    "install" => commands::install::run(),
                     "layout" => commands::layout::run(),
                     "multi-remote" => commands::multi_remote::run(),
                     "shared" => commands::shared::run(),
                     "release-notes" => commands::release_notes::run(),
                     "repo" => commands::repo::run(),
-                    "setup" => {
-                        // Check for setup subcommands
+                    "activate" => {
+                        // Check for activate subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {
                             commands::shortcuts::run()
                         } else {
-                            commands::setup::run()
+                            commands::activate::run()
                         }
                     }
                     "shell-init" => commands::shell_init::run(),
@@ -191,6 +192,7 @@ fn main() -> Result<()> {
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
                     "exec" => commands::exec::run(),
+                    "file" => commands::file::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),
                     "worktree-init" => commands::init::run(),

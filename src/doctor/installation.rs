@@ -157,7 +157,7 @@ fn check_command_symlinks_in(install_dir: &Path, homebrew_prefix: Option<PathBuf
             "Command symlinks",
             &format!("{found}/{total} installed, {} missing", missing.len()),
         )
-        .with_suggestion("Run 'daft setup' to create missing symlinks")
+        .with_suggestion("Run 'daft activate' to create missing symlinks")
         .with_fix(Box::new(fix_command_symlinks))
         .with_dry_run_fix(Box::new(move || {
             dry_run_symlink_actions(&missing_owned, &dry_dir)
@@ -272,7 +272,7 @@ pub fn check_shell_integration() -> CheckResult {
             "Shell integration",
             &format!("{} not found", config_file.display()),
         )
-        .with_suggestion("Run 'daft setup' to configure shell integration");
+        .with_suggestion("Run 'daft activate' to configure shell integration");
     }
 
     match std::fs::read_to_string(&config_file) {
@@ -283,7 +283,7 @@ pub fn check_shell_integration() -> CheckResult {
             "Shell integration",
             &format!("not configured ({shell_name})"),
         )
-        .with_suggestion("Run 'daft setup' to add shell integration"),
+        .with_suggestion("Run 'daft activate' to add shell integration"),
         Err(_) => CheckResult::warning(
             "Shell integration",
             &format!("could not read {}", config_file.display()),
@@ -390,7 +390,7 @@ pub(crate) fn check_shortcut_symlinks_in(install_dir: &Path) -> Vec<CheckResult>
                     &format!("{found}/{total} installed, {} missing", missing.len()),
                 )
                 .with_suggestion(&format!(
-                    "Run 'daft setup shortcuts enable {style_name}' to install"
+                    "Run 'daft activate shortcuts enable {style_name}' to install"
                 ))
                 .with_fix(Box::new(move || {
                     for alias in &fix_missing {
@@ -412,7 +412,7 @@ pub(crate) fn check_shortcut_symlinks_in(install_dir: &Path) -> Vec<CheckResult>
     if !any_style_installed {
         results.push(
             CheckResult::warning("Shortcuts", "no shortcut aliases configured")
-                .with_suggestion("Run 'daft setup shortcuts' to enable shortcuts"),
+                .with_suggestion("Run 'daft activate shortcuts' to enable shortcuts"),
         );
     }
 

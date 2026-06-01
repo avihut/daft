@@ -55,6 +55,8 @@ git worktree-clone [OPTIONS] <REPOSITORY_URL>
 | `--layout <LAYOUT>` | Worktree layout to use for this repository |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,base,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
 | `-x, --exec <EXEC>` | Run a command in the worktree after setup completes (repeatable) |  |
+| `--install` | Run `daft install` in the new worktree(s) after a successful clone (implies --trust-hooks) |  |
+| `--git-exclude` | With --install: add /daft.yml to .git/info/exclude without prompting |  |
 
 ## Global Options
 

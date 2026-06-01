@@ -177,7 +177,7 @@ locally-built binaries on PATH.
 
 ```bash
 mise run sandbox                       # Enter the sandbox shell
-mise run sandbox:setup                 # Install sandbox shell function into RC file
+mise run sandbox:activate              # Install sandbox shell function into RC file
 mise run sandbox:clean                 # Remove sandbox for this worktree
 ```
 

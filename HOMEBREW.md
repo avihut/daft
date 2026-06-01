@@ -121,7 +121,7 @@ def caveats
 
     RECOMMENDED: For automatic cd into new worktrees, run:
 
-      daft setup
+      daft activate
 
     This will detect your shell and add the integration automatically.
 
@@ -201,11 +201,11 @@ class Daft < Formula
         gwtclone, gwtco, gwtcb, gwtprune, gwtinit, gwtcarry, gwtfetch
 
       Run 'git daft' for full documentation.
-      Run 'daft setup shortcuts list' to see all shortcut styles.
+      Run 'daft activate shortcuts list' to see all shortcut styles.
 
       RECOMMENDED: For automatic cd into new worktrees, run:
 
-        daft setup
+        daft activate
 
       This will detect your shell and add the integration automatically.
 

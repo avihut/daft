@@ -9,9 +9,9 @@ use clap::{Command, CommandFactory};
 use std::path::Path;
 
 use crate::commands::{
-    carry, checkout, clone, config, doctor, exec, fetch, flow_adopt, flow_eject, hooks, init,
-    layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init, shortcuts,
-    sync, worktree_branch,
+    carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
+    install, layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init,
+    shortcuts, sync, worktree_branch,
 };
 use crate::styles;
 
@@ -132,10 +132,16 @@ fn get_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "manage repositories",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "repo remove",
-                command: repo::remove::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "repo install",
+                    command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo remove",
+                    command: repo::remove::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "share configuration across worktrees",
@@ -149,6 +155,14 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             title: "manage daft configuration",
             layout: CategoryLayout::Inline,
             commands: vec![
+                CommandEntry {
+                    display_name: "install",
+                    command: install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "file merge",
+                    command: file::merge::Args::command(),
+                },
                 CommandEntry {
                     display_name: "config",
                     command: config::remote_sync::Args::command(),
@@ -170,7 +184,7 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: shell_init::Args::command(),
                 },
                 CommandEntry {
-                    display_name: "setup shortcuts",
+                    display_name: "activate shortcuts",
                     command: shortcuts::Args::command(),
                 },
                 CommandEntry {
@@ -271,10 +285,16 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
         CommandCategory {
             title: "manage repositories",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "daft repo remove",
-                command: repo::remove::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft repo install",
+                    command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo remove",
+                    command: repo::remove::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "share configuration across worktrees",
@@ -289,6 +309,14 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
             layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
+                    display_name: "daft install",
+                    command: install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft file merge",
+                    command: file::merge::Args::command(),
+                },
+                CommandEntry {
                     display_name: "daft hooks",
                     command: hooks::Args::command(),
                 },
@@ -301,7 +329,7 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     command: multi_remote::Args::command(),
                 },
                 CommandEntry {
-                    display_name: "daft setup shortcuts",
+                    display_name: "daft activate shortcuts",
                     command: shortcuts::Args::command(),
                 },
                 CommandEntry {

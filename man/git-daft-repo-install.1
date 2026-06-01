@@ -1,0 +1,49 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-install 1  "git-daft-repo-install 1.14.5" 
+.SH NAME
+git\-daft\-repo\-install \- Install a starter daft.yml in the current worktree
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-install\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-git\-exclude\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Creates a starter daft.yml at the worktree root with a commented skeleton
+covering the major sections (hooks, shared, layout). Modeled on
+`lefthook install`.
+.PP
+This is the canonical name for the bootstrap; `daft install` is a top\-level
+alias that runs the same thing (so lefthook\-style discovery keeps working).
+.PP
+daft.yml is a per\-worktree file, so install is repo\-aware. Inside a worktree it
+targets the worktree root (even from a subdirectory). At the bare container root
+of a contained layout it installs across the repo\*(Aqs worktrees — writing the
+starter into the default worktree and copying it into the others, like
+`daft clone \-\-install`. It refuses only outside a git repository. If a daft.yml
+already exists it reports whether the file is tracked or a visitor config and
+stops without modifying it.
+.PP
+After writing daft.yml, daft checks whether git already ignores it. If not, it
+offers to add `/daft.yml` to .git/info/exclude — a local, per\-clone exclude
+that is never committed, so a visitor config stays invisible to teammates. On a
+terminal it prompts (default No); \-\-git\-exclude adds it without prompting; a
+non\-interactive run only prints a hint and changes nothing. Without
+\-\-git\-exclude, \-\-quiet skips the check entirely. daft never touches the tracked
+\&.gitignore.
+.SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-\-git\-exclude\fR
+Add /daft.yml to .git/info/exclude without prompting (keeps it private to this clone)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.14.5

@@ -1,8 +1,7 @@
 //! First-run hints for improved user experience.
 //!
 //! This module provides a system for showing one-time hints to users
-//! who may not have completed setup for optional features like shell
-//! integration.
+//! who haven't yet activated optional features like shell integration.
 
 use crate::CD_FILE_ENV;
 use crate::output::Output;

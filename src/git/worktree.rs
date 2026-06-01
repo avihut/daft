@@ -121,6 +121,11 @@ impl GitCommand {
 
     /// Find the worktree path for a given branch name.
     /// Returns None if no worktree is checked out on that branch.
+    ///
+    /// git-layer: parses the porcelain inline rather than delegating to
+    /// `core::worktree::porcelain` — the `git` adapter sits below `core` and
+    /// must not depend on it (core → git, never the reverse). The same applies
+    /// to `resolve_worktree_path` below and the gix path in `oxide.rs`.
     pub fn find_worktree_for_branch(
         &self,
         branch_name: &str,

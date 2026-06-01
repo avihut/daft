@@ -332,13 +332,14 @@ complete -c daft -n '__fish_use_subcommand' -s V -l version -d 'Print version in
 complete -c daft -n '__fish_use_subcommand' -s h -l help -d 'Print help'
 complete -c daft -n '__fish_use_subcommand' -a 'hooks' -d 'Manage lifecycle hooks'
 complete -c daft -n '__fish_use_subcommand' -a 'shell-init' -d 'Generate shell wrappers'
-complete -c daft -n '__fish_use_subcommand' -a 'setup' -d 'Setup and configuration'
+complete -c daft -n '__fish_use_subcommand' -a 'activate' -d 'Activate daft in this shell'
 complete -c daft -n '__fish_use_subcommand' -a 'multi-remote' -d 'Multi-remote management'
 complete -c daft -n '__fish_use_subcommand' -a 'release-notes' -d 'Generate release notes'
 complete -c daft -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation'
 complete -c daft -n '__fish_use_subcommand' -a 'layout' -d 'Manage worktree layouts'
 complete -c daft -n '__fish_use_subcommand' -a 'clone' -d 'Clone repo into worktree layout'
 complete -c daft -n '__fish_use_subcommand' -a 'init' -d 'Init new repo in worktree layout'
+complete -c daft -n '__fish_use_subcommand' -a 'install' -d 'Install a starter daft.yml in the current worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'go' -d 'Open existing branch worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
@@ -356,6 +357,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to tradi
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
+complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config files'
 complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
@@ -376,13 +378,24 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 # repo: subcommands
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+# repo install: flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -l git-exclude -d 'Add /daft.yml to .git/info/exclude without prompting'
 # repo remove: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
 complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from remote-sync' -f -a 'remote-sync'
+# file: subcommands
+complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subcommand_from merge' -f -a 'merge' -d 'Merge a source daft.yml into a target daft.yml'
+# file merge: file completion + flags
+complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -F
+complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -l keep-source -d 'Keep the source file after merging'
+complete -c daft -n '__fish_seen_subcommand_from file; and __fish_seen_subcommand_from merge' -s y -l yes -d 'Skip confirmation prompt when target is untracked'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and not __fish_seen_subcommand_from trust prompt deny status migrate install validate dump run jobs' -f -a 'trust prompt deny status migrate install validate dump run jobs'
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -f -a "(daft __complete hooks-run '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from hooks; and __fish_seen_subcommand_from run' -l job -d 'Run only the named job' -r -f -a "(set -l hook (commandline -opc | string match -rv '^-' | tail -n1); DAFT_COMPLETE_HOOK=\$hook daft __complete hooks-run-job '' 2>/dev/null)"

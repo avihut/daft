@@ -48,15 +48,12 @@ pub struct PruneResult {
     pub pruned_branches: Vec<PrunedBranchDetail>,
 }
 
-/// Parsed worktree entry from `git worktree list --porcelain`.
-#[derive(Clone, Debug)]
-pub struct WorktreeEntry {
-    pub path: PathBuf,
-    pub branch: Option<String>,
-    pub is_bare: bool,
-    /// True for detached HEAD worktrees (sandboxes created with `daft sandbox`).
-    pub is_detached: bool,
-}
+/// A worktree entry from `git worktree list --porcelain`.
+///
+/// Alias for the shared [`crate::core::worktree::porcelain::WorktreeListEntry`],
+/// kept under this name so prune's callers (and `remove_repo`'s re-export) need
+/// no churn.
+pub use crate::core::worktree::porcelain::WorktreeListEntry as WorktreeEntry;
 
 /// Bundles common state used throughout the prune operation.
 pub struct PruneContext<'a> {
@@ -684,6 +681,53 @@ fn remove_worktree(
     force: bool,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> RemoveOutcome {
+    // Divergence guard — refuse removal when in-scope untracked daft files in
+    // this worktree differ from the merge target's. This catches cases where
+    // remote-merge propagation (Task 6.1) failed or didn't run, preventing
+    // visitor-config refinements from being silently lost when a worktree is
+    // removed by prune. --force bypasses.
+    //
+    // Prune only fires when the remote branch was deleted (i.e. already merged),
+    // so the default-branch worktree IS the merge target. Skip if the default
+    // branch has no checked-out worktree.
+    if wt_path.exists() && !force {
+        let default_branch_result = get_default_branch_local(&ctx.git_dir, &ctx.remote_name, false);
+        if let Ok(ref default_branch) = default_branch_result {
+            let has_local = wt_path.join("daft.local.yml").is_file();
+            let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
+                && matches!(
+                    crate::hooks::yaml_config_loader::classify_main_config(wt_path),
+                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
+                );
+            if has_local || has_visitor_daft_yml {
+                let target_wt = ctx.project_root.join(default_branch);
+                if target_wt.is_dir() {
+                    match crate::hooks::visitor_propagation::has_inscope_divergence(
+                        wt_path, &target_wt,
+                    ) {
+                        Ok(true) => {
+                            sink.on_warning(&format!(
+                                "Skipping {branch_name}: untracked daft files in {} differ \
+                                 from the merge target {}. Consolidate first with \
+                                 `daft file merge` or pass --force to remove anyway.",
+                                wt_path.display(),
+                                target_wt.display(),
+                            ));
+                            return RemoveOutcome::SkippedDirty;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            sink.on_step(&format!(
+                                "Warning: divergence check failed for '{branch_name}': {e}; \
+                                 proceeding with removal"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Check for uncommitted changes
     if wt_path.exists() && !force {
         match ctx.git.has_uncommitted_changes_in(wt_path) {
@@ -863,46 +907,13 @@ pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
+///
+/// Thin I/O wrapper: runs the git query, then delegates the string parse to the
+/// shared [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`].
+/// Bare entries are retained (prune skips them itself where relevant).
 pub fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut current_is_bare = false;
-    let mut current_is_detached = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare: current_is_bare,
-                    is_detached: current_is_detached,
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-            current_is_bare = false;
-            current_is_detached = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            current_is_bare = true;
-        } else if line == "detached" {
-            current_is_detached = true;
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push(WorktreeEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare: current_is_bare,
-            is_detached: current_is_detached,
-        });
-    }
-
-    Ok(entries)
+    Ok(crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output))
 }
 
 /// Resolve where to cd after pruning the user's current worktree.

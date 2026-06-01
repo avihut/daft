@@ -3,7 +3,8 @@
 //! This module handles finding the right config file, loading it, and
 //! merging multiple config sources (main, extends, per-hook, local).
 
-use super::yaml_config::{HookDef, JobDef, LogConfig, YamlConfig};
+use super::config_merge::merge_configs;
+use super::yaml_config::{HookDef, JobDef, YamlConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,26 +54,44 @@ pub fn find_config_file(root: &Path) -> Option<(PathBuf, ConfigLocation)> {
 
 /// Find the local override config file for the given main config.
 ///
+/// Searches in priority order:
+///   1. Preferred dot-infix name (e.g. `daft.local.yml`)
+///   2. Deprecated dash-infix alias (e.g. `daft-local.yml`)
+///
+/// When the deprecated alias is used, emits a warning to stderr so users see
+/// the rename suggestion at load time.
+///
 /// Returns the path if found.
 pub fn find_local_config(main_config: &Path) -> Option<PathBuf> {
     let parent = main_config.parent()?;
     let filename = main_config.file_name()?.to_str()?;
 
-    // Build local filename: daft.yml → daft-local.yml, .daft.yml → .daft-local.yml
-    let local_filename = if let Some(stem) = filename.strip_suffix(".yaml") {
-        format!("{stem}-local.yaml")
-    } else if let Some(stem) = filename.strip_suffix(".yml") {
-        format!("{stem}-local.yml")
+    let (stem, ext) = if let Some(s) = filename.strip_suffix(".yaml") {
+        (s, ".yaml")
+    } else if let Some(s) = filename.strip_suffix(".yml") {
+        (s, ".yml")
     } else {
         return None;
     };
 
-    let local_path = parent.join(&local_filename);
-    if local_path.is_file() {
-        Some(local_path)
-    } else {
-        None
+    let preferred_name = format!("{stem}.local{ext}");
+    let preferred = parent.join(&preferred_name);
+    if preferred.is_file() {
+        return Some(preferred);
     }
+
+    let deprecated_name = format!("{stem}-local{ext}");
+    let deprecated = parent.join(&deprecated_name);
+    if deprecated.is_file() {
+        crate::log_warning!(
+            "deprecated local config name '{}' — rename to '{}'",
+            deprecated_name,
+            preferred_name
+        );
+        return Some(deprecated);
+    }
+
+    None
 }
 
 /// Find per-hook YAML config files based on the main config location.
@@ -110,7 +129,7 @@ pub fn find_per_hook_configs(root: &Path, location: &ConfigLocation) -> HashMap<
 /// 1. Main config (`daft.yml`)
 /// 2. Extends files
 /// 3. Per-hook YAML files (`post-clone.yml`)
-/// 4. Local override (`daft-local.yml`)
+/// 4. Local override (`daft.local.yml`, or deprecated `daft-local.yml`)
 ///
 /// Returns `None` if no config file is found.
 pub fn load_merged_config(root: &Path) -> Result<Option<YamlConfig>> {
@@ -170,130 +189,6 @@ fn load_yaml_config(path: &Path) -> Result<YamlConfig> {
     load_yaml_file(path)
 }
 
-/// Merge two configs, with `overlay` taking precedence over `base`.
-pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
-    let mut merged = base;
-
-    // Scalar fields: overlay wins if set
-    if overlay.min_version.is_some() {
-        merged.min_version = overlay.min_version;
-    }
-    if overlay.colors.is_some() {
-        merged.colors = overlay.colors;
-    }
-    if overlay.no_tty.is_some() {
-        merged.no_tty = overlay.no_tty;
-    }
-    if overlay.rc.is_some() {
-        merged.rc = overlay.rc;
-    }
-    if overlay.output.is_some() {
-        merged.output = overlay.output;
-    }
-    if overlay.source_dir.is_some() {
-        merged.source_dir = overlay.source_dir;
-    }
-    if overlay.source_dir_local.is_some() {
-        merged.source_dir_local = overlay.source_dir_local;
-    }
-    if overlay.layout.is_some() {
-        merged.layout = overlay.layout;
-    }
-
-    // Merge log config (field-level merge)
-    merged.log = match (merged.log, overlay.log) {
-        (Some(b), Some(o)) => Some(merge_log_configs(o, b)),
-        (b, o) => o.or(b),
-    };
-
-    // Hooks: merge each hook definition
-    for (name, overlay_hook) in overlay.hooks {
-        if let Some(base_hook) = merged.hooks.remove(&name) {
-            merged
-                .hooks
-                .insert(name, merge_hook_defs(base_hook, overlay_hook));
-        } else {
-            merged.hooks.insert(name, overlay_hook);
-        }
-    }
-
-    merged
-}
-
-/// Merge two log configs, with `o` (overlay) taking precedence over `b` (base).
-///
-/// Field-level merge: each field uses the overlay value if set, otherwise the
-/// base value.
-pub fn merge_log_configs(o: LogConfig, b: LogConfig) -> LogConfig {
-    LogConfig {
-        retention: o.retention.or(b.retention),
-        max_log_size: o.max_log_size.or(b.max_log_size),
-        max_total_size: o.max_total_size.or(b.max_total_size),
-        keep_last: o.keep_last.or(b.keep_last),
-        stale_running_after: o.stale_running_after.or(b.stale_running_after),
-        sampling_every_nth: o.sampling_every_nth.or(b.sampling_every_nth),
-    }
-}
-
-/// Merge two hook definitions, with `overlay` taking precedence.
-///
-/// Named jobs merge by name (overlay replaces base with same name).
-/// Unnamed jobs from overlay are appended.
-pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
-    let mut merged = base;
-
-    // Scalar fields: overlay wins if set
-    if overlay.parallel.is_some() {
-        merged.parallel = overlay.parallel;
-    }
-    if overlay.piped.is_some() {
-        merged.piped = overlay.piped;
-    }
-    if overlay.follow.is_some() {
-        merged.follow = overlay.follow;
-    }
-    if overlay.exclude_tags.is_some() {
-        merged.exclude_tags = overlay.exclude_tags;
-    }
-    if overlay.exclude.is_some() {
-        merged.exclude = overlay.exclude;
-    }
-    if overlay.skip.is_some() {
-        merged.skip = overlay.skip;
-    }
-    if overlay.only.is_some() {
-        merged.only = overlay.only;
-    }
-
-    // Jobs: merge named jobs by name, append unnamed
-    if let Some(overlay_jobs) = overlay.jobs {
-        let mut base_jobs = merged.jobs.unwrap_or_default();
-        for overlay_job in overlay_jobs {
-            if let Some(ref name) = overlay_job.name {
-                // Replace existing job with same name
-                if let Some(pos) = base_jobs
-                    .iter()
-                    .position(|j| j.name.as_deref() == Some(name))
-                {
-                    base_jobs[pos] = overlay_job;
-                } else {
-                    base_jobs.push(overlay_job);
-                }
-            } else {
-                base_jobs.push(overlay_job);
-            }
-        }
-        merged.jobs = Some(base_jobs);
-    }
-
-    // Commands: overlay replaces entirely if set
-    if overlay.commands.is_some() {
-        merged.commands = overlay.commands;
-    }
-
-    merged
-}
-
 /// Convert legacy `commands` maps to `jobs` lists in all hook definitions.
 fn normalize_commands_to_jobs(config: &mut YamlConfig) {
     for hook_def in config.hooks.values_mut() {
@@ -324,6 +219,64 @@ pub fn get_effective_jobs(hook_def: &HookDef) -> Vec<JobDef> {
     }
 
     jobs
+}
+
+/// Runtime classification of the main `daft.yml` based on git tracking status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigStatus {
+    /// `daft.yml` is committed to the repo (team config).
+    Tracked,
+    /// `daft.yml` exists in the worktree but is not tracked (visitor config).
+    Visitor,
+    /// No `daft.yml` discovered at any candidate path.
+    Missing,
+}
+
+/// Classify the main daft config in `worktree_root` by tracking status.
+///
+/// Returns `Missing` if no candidate file exists. Otherwise checks whether the
+/// directory is a git worktree, then runs
+/// `git ls-files --error-unmatch <relative-path>` and maps the exit status:
+/// success → `Tracked`, failure → `Visitor`. If the git invocation itself
+/// errors (no git binary, not inside a repo), returns `Tracked` as a
+/// conservative fallback — we'd rather not implicitly treat a file as visitor
+/// when we can't confirm.
+pub fn classify_main_config(worktree_root: &Path) -> ConfigStatus {
+    let (path, _location) = match find_config_file(worktree_root) {
+        Some(found) => found,
+        None => return ConfigStatus::Missing,
+    };
+
+    let relative = match path.strip_prefix(worktree_root) {
+        Ok(p) => p,
+        Err(_) => return ConfigStatus::Tracked,
+    };
+
+    // Conservative fallback: if we can't confirm we're inside a git repo,
+    // treat the file as tracked. This handles the case where git is installed
+    // but the directory is not a git repository (git exits with code 128).
+    let in_repo = crate::utils::git_command_at(worktree_root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if !matches!(in_repo, Ok(s) if s.success()) {
+        return ConfigStatus::Tracked;
+    }
+
+    let status = crate::utils::git_command_at(worktree_root)
+        .args(["ls-files", "--error-unmatch"])
+        .arg(relative)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => ConfigStatus::Tracked,
+        Ok(_) => ConfigStatus::Visitor,
+        Err(_) => ConfigStatus::Tracked,
+    }
 }
 
 /// Parse a YAML string into a `YamlConfig`.
@@ -530,6 +483,8 @@ mod tests {
 
     #[test]
     fn test_find_local_config() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
         let dir = tempdir().unwrap();
         let main_config = dir.path().join("daft.yml");
         write_file(dir.path(), "daft.yml", "hooks: {}");
@@ -542,6 +497,8 @@ mod tests {
 
     #[test]
     fn test_find_local_config_dot_prefix() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
         let dir = tempdir().unwrap();
         let main_config = dir.path().join(".daft.yml");
         write_file(dir.path(), ".daft.yml", "hooks: {}");
@@ -559,6 +516,53 @@ mod tests {
         write_file(dir.path(), "daft.yml", "hooks: {}");
 
         assert!(find_local_config(&main_config).is_none());
+    }
+
+    #[test]
+    fn test_find_local_config_prefers_dot_infix() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yml");
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        write_file(dir.path(), "daft.local.yml", "hooks: {}");
+        write_file(dir.path(), "daft-local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft.local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_falls_back_to_dash_infix() {
+        // NOTE: exercises the deprecated dash-infix code path and will emit a
+        // "Warning: deprecated local config name..." line to stderr.
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yml");
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        write_file(dir.path(), "daft-local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft-local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_dot_prefix_main_dot_infix_local() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join(".daft.yml");
+        write_file(dir.path(), ".daft.yml", "hooks: {}");
+        write_file(dir.path(), ".daft.local.yml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join(".daft.local.yml"));
+    }
+
+    #[test]
+    fn test_find_local_config_yaml_extension_dot_infix() {
+        let dir = tempdir().unwrap();
+        let main_config = dir.path().join("daft.yaml");
+        write_file(dir.path(), "daft.yaml", "hooks: {}");
+        write_file(dir.path(), "daft.local.yaml", "hooks: {}");
+
+        let local = find_local_config(&main_config).unwrap();
+        assert_eq!(local, dir.path().join("daft.local.yaml"));
     }
 
     #[test]
@@ -595,89 +599,6 @@ mod tests {
         let result = find_per_hook_configs(dir.path(), &ConfigLocation::DotConfig);
         assert_eq!(result.len(), 1);
         assert!(result.contains_key("post-clone"));
-    }
-
-    #[test]
-    fn test_merge_configs_scalar_override() {
-        let base = YamlConfig {
-            min_version: Some("1.0.0".to_string()),
-            colors: Some(true),
-            ..Default::default()
-        };
-        let overlay = YamlConfig {
-            min_version: Some("2.0.0".to_string()),
-            ..Default::default()
-        };
-        let merged = merge_configs(base, overlay);
-        assert_eq!(merged.min_version.as_deref(), Some("2.0.0"));
-        assert_eq!(merged.colors, Some(true)); // base preserved
-    }
-
-    #[test]
-    fn test_merge_hook_defs_named_jobs() {
-        let base = HookDef {
-            jobs: Some(vec![
-                JobDef {
-                    name: Some("lint".to_string()),
-                    run: Some(RunCommand::Simple("eslint .".to_string())),
-                    ..Default::default()
-                },
-                JobDef {
-                    name: Some("format".to_string()),
-                    run: Some(RunCommand::Simple("prettier --check .".to_string())),
-                    ..Default::default()
-                },
-            ]),
-            ..Default::default()
-        };
-        let overlay = HookDef {
-            jobs: Some(vec![JobDef {
-                name: Some("lint".to_string()),
-                run: Some(RunCommand::Simple("cargo clippy".to_string())),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let merged = merge_hook_defs(base, overlay);
-        let jobs = merged.jobs.unwrap();
-        assert_eq!(jobs.len(), 2);
-        // lint should be overridden
-        assert_eq!(
-            jobs[0]
-                .run
-                .as_ref()
-                .and_then(|r| r.resolve_for_current_os()),
-            Some("cargo clippy".to_string())
-        );
-        // format should be preserved
-        assert_eq!(
-            jobs[1]
-                .run
-                .as_ref()
-                .and_then(|r| r.resolve_for_current_os()),
-            Some("prettier --check .".to_string())
-        );
-    }
-
-    #[test]
-    fn test_merge_hook_defs_unnamed_appended() {
-        let base = HookDef {
-            jobs: Some(vec![JobDef {
-                run: Some(RunCommand::Simple("echo base".to_string())),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let overlay = HookDef {
-            jobs: Some(vec![JobDef {
-                run: Some(RunCommand::Simple("echo overlay".to_string())),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let merged = merge_hook_defs(base, overlay);
-        let jobs = merged.jobs.unwrap();
-        assert_eq!(jobs.len(), 2);
     }
 
     #[test]
@@ -856,54 +777,6 @@ hooks:
 
         let jobs = get_effective_jobs(&hook);
         assert_eq!(jobs.len(), 2);
-    }
-
-    // ── Tests for log config merging ─────────────────────────────────
-
-    #[test]
-    fn test_merge_log_config() {
-        let base = YamlConfig {
-            log: Some(crate::executor::LogConfig {
-                retention: Some("7d".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let overlay = YamlConfig {
-            log: Some(crate::executor::LogConfig {
-                retention: Some("14d".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let merged = merge_configs(base, overlay);
-        assert_eq!(merged.log.unwrap().retention, Some("14d".to_string()));
-    }
-
-    #[test]
-    fn merge_prefers_override_for_new_fields() {
-        let base = LogConfig {
-            retention: Some("7d".into()),
-            max_log_size: Some("10MB".into()),
-            max_total_size: Some("500MB".into()),
-            keep_last: Some(3),
-            stale_running_after: Some("24h".into()),
-            sampling_every_nth: Some(5),
-        };
-        let override_cfg = LogConfig {
-            retention: Some("14d".into()),
-            max_log_size: Some("20MB".into()),
-            max_total_size: None,        // base wins for this one
-            keep_last: None,             // base wins
-            stale_running_after: None,   // base wins
-            sampling_every_nth: Some(2), // override wins
-        };
-        let merged = merge_log_configs(override_cfg, base);
-        assert_eq!(merged.retention.as_deref(), Some("14d"));
-        assert_eq!(merged.max_log_size.as_deref(), Some("20MB"));
-        assert_eq!(merged.max_total_size.as_deref(), Some("500MB"));
-        assert_eq!(merged.keep_last, Some(3));
-        assert_eq!(merged.stale_running_after.as_deref(), Some("24h"));
     }
 
     // ── Tests for parse_yaml_config_str ──────────────────────────────
@@ -1153,5 +1026,122 @@ hooks:
             .unwrap()
             .unwrap();
         assert!(config.hooks.contains_key("post-clone"));
+    }
+
+    // ── Tests for classify_main_config ───────────────────────────────
+
+    #[test]
+    fn test_classify_main_config_missing() {
+        let dir = tempdir().unwrap();
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Missing);
+    }
+
+    #[test]
+    fn test_classify_main_config_visitor_untracked() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // daft.yml exists in worktree but is NOT tracked → visitor
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);
+    }
+
+    #[test]
+    fn test_classify_main_config_tracked() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "daft.yml"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add"])
+            .output()
+            .unwrap();
+
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
+    }
+
+    #[test]
+    fn test_classify_main_config_no_git_falls_back_to_tracked() {
+        // Conservative fallback: if git can't answer, treat as tracked
+        let dir = tempdir().unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // No git init here — git ls-files will fail
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
+    }
+
+    #[test]
+    fn test_classify_main_config_ignored_is_visitor() {
+        let dir = tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), ".gitignore", "daft.yml\n");
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", ".gitignore"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add gitignore"])
+            .output()
+            .unwrap();
+        write_file(dir.path(), "daft.yml", "hooks: {}");
+        // Ignored daft.yml: ls-files --error-unmatch fails → Visitor.
+        assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);
     }
 }

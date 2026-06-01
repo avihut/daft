@@ -716,31 +716,22 @@ fn cmd_move(
 }
 
 /// Get the branch name for a worktree.
+///
+/// Delegates the porcelain parse to the shared
+/// [`crate::core::worktree::porcelain::parse_worktree_list_porcelain`] and
+/// returns the matching worktree's (short) branch, or `None` when the path is
+/// not found or is detached/bare.
 fn get_branch_name_for_worktree(
     git: &GitCommand,
     worktree_path: &std::path::Path,
 ) -> Result<Option<String>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-
-    let mut current_path: Option<std::path::PathBuf> = None;
-
-    for line in porcelain_output.lines() {
-        if let Some(path_str) = line.strip_prefix("worktree ") {
-            if let Some(prev_path) = current_path.take()
-                && prev_path == worktree_path
-            {
-                // We've moved past this worktree without finding a branch
-                return Ok(None);
-            }
-            current_path = Some(std::path::PathBuf::from(path_str));
-        } else if let Some(branch_ref) = line.strip_prefix("branch ")
-            && current_path.as_ref() == Some(&worktree_path.to_path_buf())
-        {
-            return Ok(branch_ref.strip_prefix("refs/heads/").map(String::from));
-        }
-    }
-
-    Ok(None)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output)
+            .into_iter()
+            .find(|e| e.path.as_path() == worktree_path)
+            .and_then(|e| e.branch),
+    )
 }
 
 /// Delete a branch from a remote.

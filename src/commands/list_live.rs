@@ -24,59 +24,8 @@ use crate::{
 use anyhow::Result;
 use std::{
     collections::HashSet,
-    path::PathBuf,
     sync::{Arc, mpsc},
 };
-
-/// Inline porcelain parsing — `core::worktree::list::parse_porcelain` is
-/// private and its enclosing file is outside this task's allowed scope.
-struct PorcelainEntry {
-    path: PathBuf,
-    branch: Option<String>,
-    is_bare: bool,
-    is_detached: bool,
-}
-
-fn parse_porcelain(output: &str) -> Vec<PorcelainEntry> {
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut is_bare = false;
-    let mut is_detached = false;
-
-    for line in output.lines() {
-        if let Some(path_str) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.take() {
-                entries.push(PorcelainEntry {
-                    path,
-                    branch: current_branch.take(),
-                    is_bare,
-                    is_detached,
-                });
-            }
-            current_path = Some(PathBuf::from(path_str));
-            current_branch = None;
-            is_bare = false;
-            is_detached = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line == "detached" {
-            is_detached = true;
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push(PorcelainEntry {
-            path,
-            branch: current_branch.take(),
-            is_bare,
-            is_detached,
-        });
-    }
-
-    entries
-}
 
 pub fn run_live(args: Args) -> Result<()> {
     // Construct the body `GitCommand` first and load settings through it so the
@@ -122,7 +71,7 @@ pub fn run_live(args: Args) -> Result<()> {
     let porcelain = git
         .worktree_list_porcelain()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let entries = parse_porcelain(&porcelain);
+    let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut targets: Vec<list_stream::CollectorTarget> = Vec::new();
     let mut worktree_branches: HashSet<String> = HashSet::new();

@@ -5,6 +5,14 @@ description: Frequently asked questions about daft.
 
 # FAQ
 
+## Do I have to commit `daft.yml` to use daft?
+
+No. Run `daft install` to create a `daft.yml` for your own use, then add it to
+your `.git/info/exclude` (or `.gitignore` if you don't mind it appearing in the
+repo's tracked file list). Daft treats the file as a visitor configuration: it
+stays out of git, but daft still propagates it between worktrees through your
+normal development workflow. See [visitor configuration](/about/glossary).
+
 ## Does daft replace `git`?
 
 No. daft sits next to git. Every daft command either calls into git or wraps a

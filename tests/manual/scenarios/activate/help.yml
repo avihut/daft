@@ -1,9 +1,9 @@
-name: Setup help
+name: Activate help
 description: Help shows usage information
 
 steps:
   - name: Show help
-    run: daft setup --help 2>&1
+    run: daft activate --help 2>&1
     expect:
       exit_code: 0
       output_contains:

@@ -1,0 +1,43 @@
+name: daft file merge keep source
+description: >
+  daft file merge with --keep-source leaves the source file intact after a
+  successful merge.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Write target daft.yml
+    run: >
+      printf 'hooks:\n  post-clone:\n    jobs:\n      - name: a\n        run:
+      echo target\n' > $WORK_DIR/test-repo/master/target.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/target.yml"
+
+  - name: Write source daft.yml
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      b\n        run: echo source\n' > $WORK_DIR/test-repo/master/source.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"
+
+  - name: Run daft file merge with --keep-source
+    run: daft file merge target.yml source.yml --keep-source --yes 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/source.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "post-clone"
+        - path: "$WORK_DIR/test-repo/master/target.yml"
+          content: "worktree-post-create"

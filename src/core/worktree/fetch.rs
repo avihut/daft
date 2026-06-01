@@ -245,43 +245,13 @@ fn determine_refspecs(
 /// Get all non-bare worktrees with their branch names from git worktree list.
 pub fn get_all_worktrees_with_branches(git: &GitCommand) -> Result<Vec<(PathBuf, String)>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut worktrees: Vec<(PathBuf, String)> = Vec::new();
-    let mut current_worktree: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-    let mut is_bare = false;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_worktree.take()
-                && !is_bare
-                && let Some(branch) = current_branch.take()
-            {
-                worktrees.push((path, branch));
-            }
-            current_worktree = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-            is_bare = false;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            // branch refs/heads/main -> main
-            current_branch = Some(
-                branch_ref
-                    .strip_prefix("refs/heads/")
-                    .unwrap_or(branch_ref)
-                    .to_string(),
-            );
-        } else if line == "bare" {
-            is_bare = true;
-        }
-    }
-
-    if let Some(path) = current_worktree
-        && !is_bare
-        && let Some(branch) = current_branch
-    {
-        worktrees.push((path, branch));
-    }
-
-    Ok(worktrees)
+    Ok(
+        crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain_output)
+            .into_iter()
+            .filter(|e| !e.is_bare)
+            .filter_map(|e| e.branch.map(|b| (e.path, b)))
+            .collect(),
+    )
 }
 
 /// Build pull arguments from params and settings (used for same-branch mode).

@@ -3,6 +3,7 @@
 //! Verifies that the current repository is configured correctly for daft:
 //! worktree layout, worktree consistency, fetch refspec, remote HEAD.
 
+use crate::core::worktree::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 use crate::doctor::{CheckResult, FixAction};
 use crate::git::GitCommand;
 use std::path::{Path, PathBuf};
@@ -13,49 +14,6 @@ pub struct RepoContext {
     pub project_root: PathBuf,
     pub current_worktree: PathBuf,
     pub is_bare: bool,
-}
-
-/// A parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: String,
-    is_bare: bool,
-}
-
-/// Parse worktree entries from porcelain output.
-///
-/// Each block is separated by a blank line. Lines starting with "worktree "
-/// give the path, and a subsequent "bare" line marks it as the bare repo entry.
-fn parse_worktree_entries(porcelain: &str) -> Vec<WorktreeEntry> {
-    let mut entries = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut current_is_bare = false;
-
-    for line in porcelain.lines() {
-        if line.is_empty() {
-            // End of block
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    is_bare: current_is_bare,
-                });
-            }
-            current_is_bare = false;
-        } else if let Some(path_str) = line.strip_prefix("worktree ") {
-            current_path = Some(path_str.to_string());
-        } else if line == "bare" {
-            current_is_bare = true;
-        }
-    }
-
-    // Handle last block (porcelain output may not end with blank line)
-    if let Some(path) = current_path {
-        entries.push(WorktreeEntry {
-            path,
-            is_bare: current_is_bare,
-        });
-    }
-
-    entries
 }
 
 /// Check if the git common dir is a bare repository by reading its config.
@@ -93,7 +51,21 @@ pub fn get_repo_context() -> Option<RepoContext> {
     let git_common_dir = crate::get_git_common_dir().ok()?;
     let project_root = git_common_dir.parent()?.to_path_buf();
     let is_bare = is_common_dir_bare(&git_common_dir);
-    let current_worktree = std::env::current_dir().ok()?;
+
+    // Resolve the worktree to inspect for config/hooks repo-awarely, not as the
+    // raw cwd. Running `daft doctor` from a worktree subdir, or from the bare
+    // container root of a contained layout, must still find the worktree where
+    // daft.yml actually lives — otherwise every config/hook check (and the
+    // Repository config check) goes blind and reports "no hooks configured"
+    // while a tracked/visitor daft.yml sits in a sibling worktree.
+    let cwd = std::env::current_dir().ok()?;
+    let current_worktree = match crate::core::repo::resolve_worktree_position(&cwd) {
+        crate::core::repo::WorktreePosition::InWorktree { root } => root,
+        crate::core::repo::WorktreePosition::ContainerRoot { representative } => {
+            representative.unwrap_or(cwd)
+        }
+        crate::core::repo::WorktreePosition::NotInRepo => cwd,
+    };
 
     Some(RepoContext {
         git_common_dir,
@@ -101,6 +73,28 @@ pub fn get_repo_context() -> Option<RepoContext> {
         current_worktree,
         is_bare,
     })
+}
+
+/// Report the main `daft.yml`'s presence and tracking classification.
+///
+/// daft.yml's tracked-vs-visitor status is a repository-configuration fact, not
+/// a hooks fact, so it lives here and is reported at *every* invocation point —
+/// from a worktree, a worktree subdir, or the bare container root — because
+/// `ctx.current_worktree` is resolved repo-awarely (see [`get_repo_context`]).
+/// Always informational (`pass`), in every state including no-config, so it
+/// never flips doctor's exit code on an ordinary repo.
+pub fn check_daft_config(ctx: &RepoContext) -> CheckResult {
+    use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config};
+
+    // doctor renders a passing check as "Name (message)", so the message must
+    // not carry its own parentheses or it nests them. Use em-dashes instead.
+    match classify_main_config(&ctx.current_worktree) {
+        ConfigStatus::Tracked => CheckResult::pass("Config", "daft.yml tracked — team baseline"),
+        ConfigStatus::Visitor => {
+            CheckResult::pass("Config", "daft.yml visitor — private to this clone")
+        }
+        ConfigStatus::Missing => CheckResult::pass("Config", "no daft.yml"),
+    }
 }
 
 /// Check that the repository uses a daft-compatible worktree layout.
@@ -114,7 +108,7 @@ pub fn check_worktree_layout(ctx: &RepoContext) -> CheckResult {
     // Count actual worktrees (exclude the bare repo entry)
     let worktree_count = match git.worktree_list_porcelain() {
         Ok(output) => {
-            let entries = parse_worktree_entries(&output);
+            let entries = parse_worktree_list_porcelain(&output);
             entries.iter().filter(|e| !e.is_bare).count()
         }
         Err(_) => 0,
@@ -140,16 +134,15 @@ pub fn check_worktree_consistency(_ctx: &RepoContext) -> CheckResult {
         }
     };
 
-    let entries = parse_worktree_entries(&porcelain);
+    let entries = parse_worktree_list_porcelain(&porcelain);
     // Only check non-bare entries
-    let worktree_entries: Vec<&WorktreeEntry> = entries.iter().filter(|e| !e.is_bare).collect();
+    let worktree_entries: Vec<&WorktreeListEntry> = entries.iter().filter(|e| !e.is_bare).collect();
     let total = worktree_entries.len();
 
     let mut orphaned = Vec::new();
     for entry in &worktree_entries {
-        let path = Path::new(&entry.path);
-        if !path.exists() {
-            orphaned.push(entry.path.clone());
+        if !entry.path.exists() {
+            orphaned.push(entry.path.display().to_string());
         }
     }
 
@@ -359,42 +352,7 @@ pub fn dry_run_remote_head() -> Vec<FixAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_worktree_entries_bare_repo() {
-        let porcelain = "\
-worktree /home/user/project/.git
-bare
-
-worktree /home/user/project/main
-HEAD abc123
-branch refs/heads/main
-
-worktree /home/user/project/feature
-HEAD def456
-branch refs/heads/feature
-
-";
-        let entries = parse_worktree_entries(porcelain);
-        assert_eq!(entries.len(), 3);
-        assert!(entries[0].is_bare);
-        assert!(!entries[1].is_bare);
-        assert!(!entries[2].is_bare);
-
-        let non_bare: Vec<_> = entries.iter().filter(|e| !e.is_bare).collect();
-        assert_eq!(non_bare.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_worktree_entries_no_trailing_newline() {
-        let porcelain = "\
-worktree /home/user/project
-HEAD abc123
-branch refs/heads/main";
-        let entries = parse_worktree_entries(porcelain);
-        assert_eq!(entries.len(), 1);
-        assert!(!entries[0].is_bare);
-    }
+    use crate::doctor::CheckStatus;
 
     #[test]
     fn test_is_common_dir_bare_true() {
@@ -447,5 +405,67 @@ branch refs/heads/main";
         let actions = dry_run_remote_head();
         assert_eq!(actions.len(), 1);
         assert!(actions[0].description.contains("git remote set-head"));
+    }
+
+    // ── check_daft_config (tracked / visitor / missing) ──────────────────────
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+
+    fn ctx_for(worktree: &Path) -> RepoContext {
+        RepoContext {
+            git_common_dir: worktree.join(".git"),
+            project_root: worktree.to_path_buf(),
+            current_worktree: worktree.to_path_buf(),
+            is_bare: false,
+        }
+    }
+
+    #[test]
+    fn test_check_daft_config_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert_eq!(result.message, "no daft.yml");
+    }
+
+    #[test]
+    fn test_check_daft_config_visitor() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("visitor"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn test_check_daft_config_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "hooks: {}").unwrap();
+        git(dir.path(), &["add", "daft.yml"]);
+        git(dir.path(), &["commit", "-q", "-m", "add"]);
+        let result = check_daft_config(&ctx_for(dir.path()));
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("tracked"),
+            "got: {}",
+            result.message
+        );
     }
 }

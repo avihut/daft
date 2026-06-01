@@ -51,6 +51,21 @@ impl CliOutput {
     pub fn verbose() -> Self {
         Self::new(OutputConfig::new(false, true))
     }
+
+    /// Belt-and-suspenders erase of a just-cleared spinner line. In some edge
+    /// cases (interleaved stdout/stderr writes) `finish_and_clear()` leaves a
+    /// residual line, so we re-erase it with an explicit escape. Suppressed
+    /// under test (same predicate as `start_spinner`): `inject_spinner_for_test`
+    /// bypasses the spinner guard, and without this gate the `\x1b[2K\r` escape
+    /// leaks into the unit-test log.
+    fn erase_spinner_line() {
+        if cfg!(test) || env::var("DAFT_TESTING").is_ok() {
+            return;
+        }
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(b"\x1b[2K\r");
+        let _ = std::io::stderr().flush();
+    }
 }
 
 impl CliOutput {
@@ -235,12 +250,7 @@ impl Output for CliOutput {
     fn finish_spinner(&mut self) {
         if let Some(spinner) = self.spinner.take() {
             spinner.finish_and_clear();
-            // Belt-and-suspenders: ensure the spinner line is fully erased.
-            // In some edge cases (e.g., interleaved stdout/stderr writes),
-            // finish_and_clear() may not fully clear the line.
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(b"\x1b[2K\r");
-            let _ = std::io::stderr().flush();
+            Self::erase_spinner_line();
         }
         // NOTE: do not touch `paused_spinner_message` here. The hook executor
         // defensively calls finish_spinner() before rendering its own progress
@@ -253,9 +263,7 @@ impl Output for CliOutput {
         if let Some(spinner) = self.spinner.take() {
             self.paused_spinner_message = Some(spinner.message());
             spinner.finish_and_clear();
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(b"\x1b[2K\r");
-            let _ = std::io::stderr().flush();
+            Self::erase_spinner_line();
         }
     }
 

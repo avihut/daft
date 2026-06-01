@@ -50,6 +50,6 @@ daft shell-init [OPTIONS] <SHELL>
 
 ## See Also
 
-- [daft-setup](./daft-setup.md)
+- [daft-activate](./daft-activate.md)
 - [daft-shortcuts](./daft-shortcuts.md)
 

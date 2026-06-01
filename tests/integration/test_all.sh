@@ -23,6 +23,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_unknown_command.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_worktree_exec.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_visitor_propagation.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_daft_merge_visitor_rollback.sh"
 
 # Test framework self-tests
 test_integration_framework_assertions() {
@@ -324,6 +326,9 @@ run_all_integration_tests() {
     run_test "integration_security_path_traversal" "test_integration_security_path_traversal"
     run_test "integration_rust_vs_shell_compatibility" "test_integration_rust_vs_shell_compatibility"
     run_test "integration_real_world_scenarios" "test_integration_real_world_scenarios"
+
+    run_visitor_propagation_tests
+    run_daft_merge_visitor_rollback_tests
 }
 
 # Main execution

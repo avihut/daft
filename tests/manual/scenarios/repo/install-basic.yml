@@ -1,0 +1,23 @@
+name: Repo install basic
+description:
+  daft repo install (the canonical name) creates a starter daft.yml in a fresh
+  worktree
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Run daft repo install
+    run: daft repo install 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."

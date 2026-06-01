@@ -1,6 +1,6 @@
 //! Shortcut management command for daft.
 //!
-//! This module provides the `daft setup shortcuts` command for managing
+//! This module provides the `daft activate shortcuts` command for managing
 //! command shortcut symlinks.
 
 use anyhow::{Context, Result, anyhow};
@@ -26,11 +26,11 @@ Default-branch shortcuts (gwtcm, gwtcbm, gwcobd, gcbdw) are available
 via shell integration only (daft shell-init).
 
 Examples:
-  daft setup shortcuts                    # Show current status
-  daft setup shortcuts list               # List all shortcut styles
-  daft setup shortcuts enable git         # Enable git-style shortcuts
-  daft setup shortcuts disable legacy     # Disable legacy shortcuts
-  daft setup shortcuts only shell         # Enable only shell shortcuts
+  daft activate shortcuts                    # Show current status
+  daft activate shortcuts list               # List all shortcut styles
+  daft activate shortcuts enable git         # Enable git-style shortcuts
+  daft activate shortcuts disable legacy     # Disable legacy shortcuts
+  daft activate shortcuts only shell         # Enable only shell shortcuts
 "#)]
 pub struct Args {
     #[command(subcommand)]
@@ -258,9 +258,9 @@ fn cmd_status(output: &mut dyn Output) -> Result<()> {
         output.info("No shortcuts currently installed.");
         output.info("");
         output.info("Enable shortcuts with:");
-        output.info("  daft setup shortcuts enable git     # Enable git-style shortcuts");
-        output.info("  daft setup shortcuts enable shell   # Enable shell-style shortcuts");
-        output.info("  daft setup shortcuts enable legacy  # Enable legacy shortcuts");
+        output.info("  daft activate shortcuts enable git     # Enable git-style shortcuts");
+        output.info("  daft activate shortcuts enable shell   # Enable shell-style shortcuts");
+        output.info("  daft activate shortcuts enable legacy  # Enable legacy shortcuts");
     } else {
         output.info("Installed shortcuts:");
         output.info("");

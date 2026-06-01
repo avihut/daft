@@ -1,0 +1,32 @@
+name: Repo install guides on an existing daft.yml instead of failing
+description: >
+  `daft repo install` (the canonical name) mirrors `daft install`: an existing
+  daft.yml is reported (tracked vs. visitor) and left untouched with exit 0, not
+  a hard error. The pre-existing file here is untracked → visitor config.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Pre-create an untracked daft.yml with distinctive content
+    run: echo "# pre-existing content" > $WORK_DIR/test-repo/master/daft.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+
+  - name: Run daft repo install — it guides, does not fail
+    run: daft repo install 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already exists"
+        - "visitor"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "# pre-existing content"

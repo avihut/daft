@@ -1,0 +1,62 @@
+name: Prune cd default-branch resolves the default even when not first-created
+description: >
+  prune.cdTarget=default-branch resolves the default via local origin/HEAD, and
+  picks the DEFAULT branch worktree even when it is NOT the first-created one.
+  The default (main) is added last; develop is first. A resolver that assumed
+  the first worktree would cd to develop. Routes through
+  core::remote::get_default_branch_local (the Area-2 unification target). Pins
+  the origin/HEAD read vs first-worktree assumption.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone develop + feature first (default 'main' not first-created)
+    run:
+      git-worktree-clone --layout contained -b develop -b feature/test-feature
+      $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Add the default-branch (main) worktree last
+    run: git worktree add main main
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Set cdTarget config to default-branch
+    run: git config daft.prune.cdTarget default-branch
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+
+  - name: Delete the feature branch from the remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name:
+      Prune from the feature worktree cd's to the default (main), not develop
+      (first)
+    run: |
+      cd $WORK_DIR/test-repo/feature/test-feature
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" git-worktree-prune 2>&1 || true
+      cat "$cd_file" > $WORK_DIR/cd_target.txt
+      rm -f "$cd_file"
+    expect:
+      file_contains:
+        - path: "$WORK_DIR/cd_target.txt"
+          content: "/main"
+      file_not_contains:
+        - path: "$WORK_DIR/cd_target.txt"
+          content: "/develop"

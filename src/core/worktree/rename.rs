@@ -61,11 +61,7 @@ pub struct RenameResult {
     pub warnings: Vec<String>,
 }
 
-/// Parsed worktree entry from `git worktree list --porcelain`.
-struct WorktreeEntry {
-    path: PathBuf,
-    branch: Option<String>,
-}
+use super::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -329,7 +325,7 @@ pub fn execute(
 /// - A path to a worktree (absolute or relative)
 fn resolve_source(
     source: &str,
-    worktree_entries: &[WorktreeEntry],
+    worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
     sink: &mut dyn ProgressSink,
 ) -> Result<(String, PathBuf)> {
@@ -390,34 +386,14 @@ fn resolve_source(
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` into structured entries.
-fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeEntry>> {
+///
+/// Thin I/O wrapper around the shared
+/// [`super::porcelain::parse_worktree_list_porcelain`]. Bare entries are
+/// retained (harmless here — a rename source is matched by branch/path, and a
+/// bare/detached entry has `branch: None`, hitting the "detached HEAD" bail).
+fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeListEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch: Option<String> = None;
-
-    for line in porcelain_output.lines() {
-        if let Some(worktree_path) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.take() {
-                entries.push(WorktreeEntry {
-                    path,
-                    branch: current_branch.take(),
-                });
-            }
-            current_path = Some(PathBuf::from(worktree_path));
-            current_branch = None;
-        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-            current_branch = branch_ref.strip_prefix("refs/heads/").map(String::from);
-        }
-    }
-    if let Some(path) = current_path.take() {
-        entries.push(WorktreeEntry {
-            path,
-            branch: current_branch.take(),
-        });
-    }
-
-    Ok(entries)
+    Ok(parse_worktree_list_porcelain(&porcelain_output))
 }
 
 /// Clean up empty parent directories after moving a worktree.

@@ -1,0 +1,33 @@
+name: Install guides on an existing daft.yml instead of failing
+description: >
+  When daft.yml already exists, `daft install` no longer hard-errors. It reports
+  whether the file is tracked or a visitor config, leaves it untouched, and
+  exits 0. Here the pre-existing file is untracked, so it classifies as a
+  visitor config.
+
+steps:
+  - name: Initialize a fresh repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Pre-create an untracked daft.yml with distinctive content
+    run: echo "# pre-existing content" > $WORK_DIR/test-repo/master/daft.yml
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo/master/daft.yml"
+
+  - name: Run daft install — it guides, does not fail, leaves the file untouched
+    run: daft install 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already exists"
+        - "visitor"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/master/daft.yml"
+          content: "# pre-existing content"

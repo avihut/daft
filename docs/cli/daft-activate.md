@@ -1,11 +1,11 @@
 ---
-title: daft-setup
-description: Add daft shell integration to your shell config
+title: daft-activate
+description: Activate daft in this shell
 ---
 
-# daft setup
+# daft activate
 
-Add daft shell integration to your shell config
+Activate daft in this shell
 
 ## Description
 
@@ -21,14 +21,14 @@ The command will:
   5. Append the shell-init line
 
 Examples:
-  daft setup              # Interactive setup with confirmation
-  daft setup --force      # Skip confirmation and re-add if already configured
-  daft setup --dry-run    # Show what would be done without making changes
+  daft activate              # Interactive activation with confirmation
+  daft activate --force      # Skip confirmation and re-add if already configured
+  daft activate --dry-run    # Show what would be done without making changes
 
 ## Usage
 
 ```
-daft setup [OPTIONS]
+daft activate [OPTIONS]
 ```
 
 ## Options
