@@ -151,8 +151,9 @@ MSRV = **`latest_stable - 2`**. Wide enough to keep distro and corporate
 installs working, narrow enough that we can adopt new stdlib/language features
 ~3 months after stabilization.
 
-The version is declared in `Cargo.toml` `rust-version`; other places that
-mention it (`mise.toml`, `.github/workflows/test.yml`, `README.md`,
+The version is declared in `Cargo.toml` `rust-version` and the workspace member
+`term-styles/Cargo.toml`; other places that mention it (`mise.toml`,
+`.github/workflows/test.yml`, `README.md`,
 `docs/getting-started/installation.md`) must match — `rg '1\.\d+'` after a bump
 finds the stragglers.
 
