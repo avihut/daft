@@ -140,6 +140,20 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      # Some runner images — notably the ubuntu-24.04-arm partner image used for
+      # aarch64-unknown-linux-gnu — ship a pre-installed Rust that can lag behind
+      # a freshly-bumped MSRV, and cargo-dist only force-installs Rust inside
+      # containers (the step above). Ensure a current stable toolchain (always
+      # >= MSRV, so it never becomes another version sync-point) is the default
+      # on every runner. `rustup target add` keeps cross-builds (e.g.
+      # x86_64-apple-darwin on the aarch64 macOS runner) working. See issue #613.
+      - name: Ensure a current Rust toolchain (>= MSRV) on all runners
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ join(matrix.targets, ' ') }}
+          rustc --version --verbose
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
