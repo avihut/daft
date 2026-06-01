@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.2](https://github.com/avihut/daft/compare/v1.15.1...v1.15.2) - 2026-06-01
+
+
+### Bug Fixes
+
+- **ci**: Ensure release build toolchain meets MSRV on every runner (#614)
 ## [1.15.1](https://github.com/avihut/daft/compare/v1.15.0...v1.15.1) - 2026-06-01
 
 
