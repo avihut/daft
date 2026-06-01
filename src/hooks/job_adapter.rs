@@ -38,6 +38,13 @@ pub struct SkipSelectors {
     pub names: Vec<String>,
     /// Tags to skip (from `tag:<tag>` selectors).
     pub tags: Vec<String>,
+    /// Hook types to skip wholesale (from bare hook-type names like
+    /// `worktree-post-create`). Each entry is a canonical
+    /// [`crate::hooks::HookType::yaml_name`]. Matched against the current
+    /// fire's hook name in the executor, where it short-circuits the whole
+    /// hook (like `all`, but scoped to one hook type). Does NOT feed
+    /// [`compute_skip_cascade`] — it is a hook-level, not job-level, selector.
+    pub hook_types: Vec<String>,
     /// Original selector tokens, retained for no-match warning attribution.
     pub raw: Vec<String>,
 }
@@ -46,7 +53,7 @@ impl SkipSelectors {
     /// True when no selectors were supplied (the common case — no
     /// `--skip-hooks` flag). Lets callers cheaply bypass the exclude path.
     pub fn is_empty(&self) -> bool {
-        !self.all && self.names.is_empty() && self.tags.is_empty()
+        !self.all && self.names.is_empty() && self.tags.is_empty() && self.hook_types.is_empty()
     }
 }
 
@@ -55,10 +62,16 @@ impl SkipSelectors {
 /// Precedence:
 /// - `tag:<tag>` → tag selector
 /// - `job:<name>` → name selector (escape hatch; `job:all` is the job literally
-///   named `all`, NOT the wildcard)
+///   named `all`, NOT the wildcard; `job:worktree-post-create` is the job
+///   literally named after a hook type, NOT the hook-type selector)
 /// - `all` / `*` → wildcard (`all = true`)
+/// - a canonical hook-type name (`worktree-post-create`, `post-clone`, …) →
+///   hook-type selector (skip that whole hook). Only the canonical
+///   [`crate::hooks::HookType::yaml_name`] spellings are reserved; deprecated
+///   short forms (`post-create`) are treated as job names.
 /// - anything else → bare name selector
 pub fn parse_skip_selectors(selectors: &[String]) -> SkipSelectors {
+    use crate::hooks::HookType;
     let mut out = SkipSelectors {
         raw: selectors.to_vec(),
         ..Default::default()
@@ -71,6 +84,8 @@ pub fn parse_skip_selectors(selectors: &[String]) -> SkipSelectors {
             out.names.push(name.to_string());
         } else if s == "all" || s == "*" {
             out.all = true;
+        } else if HookType::from_yaml_name(s).is_some() {
+            out.hook_types.push(s.to_string());
         } else {
             out.names.push(s.to_string());
         }
@@ -1165,7 +1180,40 @@ mod tests {
         assert!(!s.all);
         assert_eq!(s.tags, vec!["heavy"]);
         assert_eq!(s.names, vec!["lint", "build"]);
+        assert!(s.hook_types.is_empty());
         assert_eq!(s.raw.len(), 3);
+    }
+
+    #[test]
+    fn parse_hook_type_name_is_reserved() {
+        let s = parse_skip_selectors(&strs(&["worktree-post-create"]));
+        assert!(!s.all);
+        assert_eq!(s.hook_types, vec!["worktree-post-create"]);
+        assert!(s.names.is_empty());
+        assert!(s.tags.is_empty());
+        // post-clone and the other canonical names are reserved too.
+        assert_eq!(
+            parse_skip_selectors(&strs(&["post-clone"])).hook_types,
+            vec!["post-clone"]
+        );
+    }
+
+    #[test]
+    fn parse_job_prefix_escapes_hook_type_name() {
+        // `job:worktree-post-create` is a job literally named after the hook
+        // type, NOT the hook-type selector.
+        let s = parse_skip_selectors(&strs(&["job:worktree-post-create"]));
+        assert!(s.hook_types.is_empty());
+        assert_eq!(s.names, vec!["worktree-post-create"]);
+    }
+
+    #[test]
+    fn parse_deprecated_hook_short_form_is_a_job_name() {
+        // Deprecated short forms (`post-create`) are NOT reserved — only the
+        // canonical yaml_name spellings are. A bare `post-create` is a job name.
+        let s = parse_skip_selectors(&strs(&["post-create"]));
+        assert!(s.hook_types.is_empty());
+        assert_eq!(s.names, vec!["post-create"]);
     }
 
     // ── compute_skip_cascade ────────────────────────────────────────────

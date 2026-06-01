@@ -629,15 +629,20 @@ exclude jobs for one run (repeatable / comma-separated):
 
 ```bash
 daft start feat/x --skip-hooks all          # skip every hook (replaces the old --no-hooks)
+daft start feat/x --skip-hooks worktree-post-create  # skip one whole hook by name
 daft start feat/x --skip-hooks lint          # skip the lint job AND its dependents
 daft start feat/x --skip-hooks tag:heavy     # skip every heavy-tagged job AND dependents
 daft start feat/x --skip-hooks tag:heavy,lint
 git worktree-clone <url> --skip-hooks all    # clone without running any hooks
+git worktree-clone <url> --skip-hooks post-clone  # clone, run worktree hooks but not post-clone
 ```
 
-Selectors: `all` / `*` (every job), `tag:<tag>` (tagged jobs + dependents),
-`<name>` (a job + its dependents), `job:<name>` (explicit-name escape hatch). A
-bare token is a job **name**; tags need the `tag:` prefix.
+Selectors: `all` / `*` (every job), `<hook>` (a whole hook by its canonical
+`daft.yml` key, e.g. `worktree-post-create` / `post-clone`), `tag:<tag>` (tagged
+jobs + dependents), `<name>` (a job + its dependents), `job:<name>`
+(explicit-name escape hatch). A bare token resolves in order: wildcard → hook
+type → job name; tags need the `tag:` prefix. A hook-type selector that names a
+hook the command never fires is a silent no-op (no error, no warning).
 
 Key behavior — the **downstream cascade**: skipping a job also skips every job
 that `needs:` it (transitively), because running a dependent against a

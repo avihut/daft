@@ -140,7 +140,8 @@ For a one-off, the worktree-creating commands (`daft start`, `daft go`,
 that excludes jobs for that single invocation:
 
 ```bash
-daft start feat/x --skip-hooks all          # skip every job
+daft start feat/x --skip-hooks all          # skip every job in every hook
+daft start feat/x --skip-hooks worktree-post-create  # skip one whole hook by name
 daft start feat/x --skip-hooks lint          # drop the lint job (+ its dependents)
 daft start feat/x --skip-hooks tag:heavy     # drop all heavy jobs (+ dependents)
 daft start feat/x --skip-hooks tag:heavy,lint        # comma-separated
@@ -149,14 +150,29 @@ daft start feat/x --skip-hooks tag:heavy --skip-hooks lint   # repeatable, same 
 
 Each selector is one of:
 
-| Selector        | Meaning                                                                       |
-| --------------- | ----------------------------------------------------------------------------- |
-| `all` / `*`     | every job — the whole hook is skipped                                         |
-| `tag:<tag>`     | every job carrying `<tag>`, **plus their dependents**                         |
-| `<name>` (bare) | the job named `<name>`, **plus its dependents**                               |
-| `job:<name>`    | explicit-name form — escape hatch for a job named `all`/`*` or containing `:` |
+| Selector        | Meaning                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| `all` / `*`     | every job — the whole hook is skipped                                                       |
+| `<hook>`        | a whole hook by name (`worktree-post-create`, `worktree-pre-create`, `post-clone`, …)       |
+| `tag:<tag>`     | every job carrying `<tag>`, **plus their dependents**                                       |
+| `<name>` (bare) | the job named `<name>`, **plus its dependents**                                             |
+| `job:<name>`    | explicit-name form — escape hatch for a job named `all`/`*`, a hook type, or containing `:` |
 
-A bare token is a **job name**; tags require the `tag:` prefix.
+A bare token is matched in this order: the wildcard `all`/`*`, then a **hook
+type** (the canonical `daft.yml` hook key, e.g. `worktree-post-create`), then a
+**job name**. Tags require the `tag:` prefix. To skip a job that happens to be
+named after a hook type, use the `job:` escape hatch
+(`job:worktree-post-create`). Only the canonical hook spellings are reserved —
+the deprecated short forms (`post-create`) are treated as job names.
+
+A hook-type selector skips that hook **wholesale** — every job in it, with no
+cascade computation, since the entire hook is gone. It is the targeted
+counterpart to `all`: where `all` skips every hook the command fires,
+`worktree-post-create` skips only that one (leaving, say, `worktree-pre-create`
+to run). **Known limitation:** a hook-type selector naming a hook the command
+never fires (e.g. `--skip-hooks worktree-pre-remove` on `daft start`) is a
+silent no-op — it neither errors nor warns, because the decision is made per
+hook-fire and no fire ever matches it.
 
 The crucial part is the **downstream cascade**. Excluding a job also excludes
 every job that `needs:` it, directly or transitively — because running a

@@ -104,13 +104,14 @@ pub struct Args {
     trust_hooks: bool,
 
     /// Skip hooks this run. Repeatable / comma-separated.
-    /// Selectors: `all` (every hook), `tag:<tag>`, or a job name (plus its
+    /// Selectors: `all` (every hook), a hook name (`post-clone`,
+    /// `worktree-post-create`, …), `tag:<tag>`, or a job name (plus its
     /// dependents). See daft-hooks(1).
     #[arg(
         long,
         value_name = "SELECTOR",
         value_delimiter = ',',
-        help = "Skip hooks this run (all | tag:<tag> | <job>); repeatable/comma-separated"
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
 

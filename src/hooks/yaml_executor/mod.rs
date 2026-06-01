@@ -237,6 +237,17 @@ pub fn execute_yaml_hook_with_rc(
     if filter.skip.all {
         return Ok(HookResult::skipped("all hooks skipped by request"));
     }
+    // A hook-type selector (e.g. `--skip-hooks worktree-post-create`) skips the
+    // whole fire when it names *this* hook. A hook-type token that names a
+    // different hook (e.g. the worktree-pre-create fire of the same command, or
+    // a hook this command never fires) contributes nothing here and — unlike a
+    // job-name/tag miss — raises no warning: it is a valid hook name, just not
+    // this fire, so it never reaches `compute_skip_cascade`'s unmatched set.
+    if filter.skip.hook_types.iter().any(|h| h == hook_name) {
+        return Ok(HookResult::skipped(format!(
+            "hook '{hook_name}' skipped by request (--skip-hooks)"
+        )));
+    }
 
     // Filter out jobs matching exclude_tags
     if let Some(ref exclude_tags) = hook_def.exclude_tags {
@@ -1952,6 +1963,84 @@ mod tests {
         assert!(
             output.warnings().iter().any(|w| w.contains("ghost")),
             "unmatched selector should warn, got: {:?}",
+            output.warnings()
+        );
+    }
+
+    #[test]
+    fn skip_hook_type_matching_this_fire_short_circuits() {
+        let hook_def = skip_example_hook();
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&[
+                "worktree-post-create".to_string()
+            ]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        // hook_name == the selected hook type ⇒ whole fire skipped, no jobs run.
+        let result =
+            execute_yaml_hook_with_rc("worktree-post-create", &hook_def, &ctx, &mut output, &cfg)
+                .unwrap();
+        assert!(result.skipped);
+        assert_eq!(
+            result.skip_reason.as_deref(),
+            Some("hook 'worktree-post-create' skipped by request (--skip-hooks)")
+        );
+        assert!(!recorder.events().iter().any(|e| e.starts_with("start:")));
+        assert!(
+            output.warnings().is_empty(),
+            "a matched hook-type selector must not warn, got: {:?}",
+            output.warnings()
+        );
+    }
+
+    #[test]
+    fn skip_hook_type_naming_a_different_fire_runs_without_warning() {
+        // `--skip-hooks worktree-post-create` while the worktree-pre-create
+        // fire runs: the selector names a *valid* hook, just not this one, so
+        // every job runs and NO unmatched warning is emitted (the cross-fire
+        // case the per-fire warning must not flag).
+        let hook_def = skip_example_hook();
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            skip: crate::hooks::job_adapter::parse_skip_selectors(&[
+                "worktree-post-create".to_string()
+            ]),
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("worktree-pre-create", &hook_def, &ctx, &mut output, &cfg)
+                .unwrap();
+        assert!(
+            !result.skipped,
+            "a non-matching hook-type selector is a no-op"
+        );
+        assert!(recorder.events().iter().any(|e| e.starts_with("start:")));
+        assert!(
+            output.warnings().is_empty(),
+            "a hook-type selector for a different fire must not warn, got: {:?}",
             output.warnings()
         );
     }

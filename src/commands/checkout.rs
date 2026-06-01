@@ -125,13 +125,13 @@ pub struct Args {
     local: bool,
 
     /// Skip hooks this run. Repeatable / comma-separated.
-    /// Selectors: `all`, `tag:<tag>`, or a job name (plus its dependents).
-    /// See daft-hooks(1).
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
     #[arg(
         long,
         value_name = "SELECTOR",
         value_delimiter = ',',
-        help = "Skip hooks this run (all | tag:<tag> | <job>); repeatable/comma-separated"
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
 }
@@ -236,13 +236,13 @@ pub struct GoArgs {
     local: bool,
 
     /// Skip hooks this run (only applies when `go` creates a worktree).
-    /// Selectors: `all`, `tag:<tag>`, or a job name (plus its dependents).
-    /// See daft-hooks(1).
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
     #[arg(
         long,
         value_name = "SELECTOR",
         value_delimiter = ',',
-        help = "Skip hooks when creating a worktree (all | tag:<tag> | <job>); repeatable/comma-separated"
+        help = "Skip hooks when creating a worktree (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
 }
@@ -315,13 +315,13 @@ pub struct StartArgs {
     local: bool,
 
     /// Skip hooks this run. Repeatable / comma-separated.
-    /// Selectors: `all`, `tag:<tag>`, or a job name (plus its dependents).
-    /// See daft-hooks(1).
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
     #[arg(
         long,
         value_name = "SELECTOR",
         value_delimiter = ',',
-        help = "Skip hooks this run (all | tag:<tag> | <job>); repeatable/comma-separated"
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
 }

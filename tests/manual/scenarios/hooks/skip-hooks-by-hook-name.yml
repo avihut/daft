@@ -1,0 +1,72 @@
+name: --skip-hooks by hook name (per-hook, cross-fire)
+description:
+  "A bare hook-type name (`worktree-post-create`) skips that ONE hook wholesale
+  while leaving the command's other hooks running. The repo defines both a
+  worktree-pre-create and a worktree-post-create job; `--skip-hooks
+  worktree-post-create` on checkout must run pre-create (marker present) and
+  skip post-create (marker absent), and must NOT emit an unmatched-selector
+  warning for the pre-create fire (the cross-fire case: the selector names a
+  valid hook, just not that one). Regression for issue #616 hook-name selector."
+
+repos:
+  - name: test-skip-by-hook
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# skip by hook name"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skip
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-create:
+          jobs:
+            - name: pre-marker
+              run: touch "$DAFT_PROJECT_ROOT/.ran-pre"
+        worktree-post-create:
+          jobs:
+            - name: post-marker
+              run: touch "$DAFT_PROJECT_ROOT/.ran-post"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_SKIP_BY_HOOK
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-by-hook/main"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-skip-by-hook/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout with --skip-hooks worktree-post-create
+    run:
+      git-worktree-checkout feature/skip --skip-hooks worktree-post-create 2>&1
+    cwd: "$WORK_DIR/test-skip-by-hook/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-by-hook/feature/skip"
+      # The pre-create fire still runs; the post-create fire is skipped
+      # wholesale. A hook-type selector that doesn't match the *current* fire
+      # must NOT warn — proving the cross-fire no-op is silent.
+      output_not_contains:
+        - "no job or tag matched"
+
+  - name: Assert pre-create ran and post-create did not
+    run: |
+      ROOT="$WORK_DIR/test-skip-by-hook"
+      test -f "$ROOT/.ran-pre" && echo "PRE_RAN"
+      test ! -f "$ROOT/.ran-post" && echo "POST_SKIPPED"
+    cwd: "$WORK_DIR/test-skip-by-hook/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PRE_RAN"
+        - "POST_SKIPPED"
