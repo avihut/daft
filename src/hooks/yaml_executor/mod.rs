@@ -237,20 +237,20 @@ pub fn execute_yaml_hook_with_rc(
     if filter.skip.all {
         return Ok(HookResult::skipped("all hooks skipped by request"));
     }
-    // A hook-type selector (e.g. `--skip-hooks worktree-post-create`) skips the
-    // whole fire when it names *this* hook. A hook-type token that names a
-    // different hook (e.g. the worktree-pre-create fire of the same command, or
-    // a hook this command never fires) contributes nothing here and — unlike a
-    // job-name/tag miss — raises no warning: it is a valid hook name, just not
-    // this fire, so it never reaches `compute_skip_cascade`'s unmatched set.
-    if filter.skip.hook_types.iter().any(|h| h == hook_name) {
-        return Ok(HookResult::skipped(format!(
-            "hook '{hook_name}' skipped by request (--skip-hooks)"
-        )));
-    }
+
+    // A hook-type selector (`--skip-hooks worktree-post-create`) names *this*
+    // fire: skip every job in the hook. Unlike `all`, this is NOT a silent
+    // short-circuit — each job is routed into an attributed skip below and
+    // rendered/recorded exactly as if it had been named directly, so the hook
+    // still appears in the output with every job marked skipped. A hook-type
+    // token naming a *different* hook (the worktree-pre-create fire of the same
+    // command, or a hook this command never fires) leaves this false and is a
+    // silent no-op — it never reaches `compute_skip_cascade`'s unmatched set,
+    // so it raises no warning (it is a valid hook name, just not this fire).
+    let skip_whole_hook = filter.skip.hook_types.iter().any(|h| h == hook_name);
 
     // Filter out jobs matching exclude_tags
-    if let Some(ref exclude_tags) = hook_def.exclude_tags {
+    if !skip_whole_hook && let Some(ref exclude_tags) = hook_def.exclude_tags {
         jobs.retain(|job| {
             if let Some(ref tags) = job.tags {
                 !tags.iter().any(|t| exclude_tags.contains(t))
@@ -271,7 +271,19 @@ pub fn execute_yaml_hook_with_rc(
     // Unmatched selectors warn (the job runs) but never error — silent
     // no-match is more dangerous in the exclude direction.
     let mut requested_skips: Vec<crate::hooks::job_adapter::SkippedJob> = Vec::new();
-    if !filter.skip.is_empty() {
+    if skip_whole_hook {
+        // Whole-hook skip: every job becomes a direct `Requested` skip (same
+        // reason as a name match), then the job list is emptied so the fire
+        // flows through the `specs.is_empty()` render/record path below.
+        for job in &jobs {
+            requested_skips.push(crate::hooks::job_adapter::SkippedJob {
+                name: job.name.clone().unwrap_or_else(|| "(unnamed)".to_string()),
+                background: job.background.or(hook_def.background).unwrap_or(false),
+                reason: crate::hooks::job_adapter::SkipCause::Requested.reason(),
+            });
+        }
+        jobs.clear();
+    } else if !filter.skip.is_empty() {
         let cascade = crate::hooks::job_adapter::compute_skip_cascade(&jobs, &filter.skip);
         for sel in &cascade.unmatched {
             output.warning(&format!(
@@ -298,14 +310,16 @@ pub fn execute_yaml_hook_with_rc(
         }
     }
 
-    // Apply inclusion filters (from `hooks run --job` / `--tag`)
-    if let Some(ref name) = filter.only_job_name {
+    // Apply inclusion filters (from `hooks run --job` / `--tag`). Skipped when
+    // the whole hook is being skipped (jobs is already emptied) so the
+    // "no job matched" bails don't fire on the intentionally-cleared list.
+    if !skip_whole_hook && let Some(ref name) = filter.only_job_name {
         jobs.retain(|j| j.name.as_deref() == Some(name.as_str()));
         if jobs.is_empty() {
             anyhow::bail!("No job named '{name}' found in hook '{hook_name}'");
         }
     }
-    if !filter.only_tags.is_empty() {
+    if !skip_whole_hook && !filter.only_tags.is_empty() {
         jobs.retain(|job| {
             job.tags
                 .as_ref()
@@ -319,8 +333,10 @@ pub fn execute_yaml_hook_with_rc(
         }
     }
 
-    // Apply tracking filter when changed_attributes are present (move hooks)
-    if let Some(ref changed) = ctx.changed_attributes {
+    // Apply tracking filter when changed_attributes are present (move hooks).
+    // Skipped on a whole-hook skip so the emptied list doesn't divert into the
+    // "No jobs match changed attributes" return ahead of the skip render.
+    if !skip_whole_hook && let Some(ref changed) = ctx.changed_attributes {
         jobs = filter_tracked_jobs(&jobs, changed);
         if jobs.is_empty() {
             return Ok(HookResult::skipped("No jobs match changed attributes"));
@@ -1968,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_hook_type_matching_this_fire_short_circuits() {
+    fn skip_hook_type_renders_every_job_as_skipped() {
         let hook_def = skip_example_hook();
         let (ctx, dir) = make_ctx_with_dir();
         let mut output = TestOutput::default();
@@ -1988,16 +2004,25 @@ mod tests {
             presenter: &presenter,
             repo_log: None,
         };
-        // hook_name == the selected hook type ⇒ whole fire skipped, no jobs run.
+        // hook_name == the selected hook type ⇒ the whole hook is skipped, but
+        // it is NOT a silent drop: every job renders as skipped with the same
+        // `requested` reason as a direct name skip (the user's mental model is
+        // "as if I marked each job"), and no job actually runs.
         let result =
             execute_yaml_hook_with_rc("worktree-post-create", &hook_def, &ctx, &mut output, &cfg)
                 .unwrap();
         assert!(result.skipped);
-        assert_eq!(
-            result.skip_reason.as_deref(),
-            Some("hook 'worktree-post-create' skipped by request (--skip-hooks)")
+        let events = recorder.events();
+        for job in ["install", "build", "test", "lint"] {
+            assert!(
+                events.contains(&format!("skipped:{job}:requested (--skip-hooks)")),
+                "expected {job} rendered as skipped, got: {events:?}"
+            );
+        }
+        assert!(
+            !events.iter().any(|e| e.starts_with("start:")),
+            "no job should execute on a whole-hook skip"
         );
-        assert!(!recorder.events().iter().any(|e| e.starts_with("start:")));
         assert!(
             output.warnings().is_empty(),
             "a matched hook-type selector must not warn, got: {:?}",

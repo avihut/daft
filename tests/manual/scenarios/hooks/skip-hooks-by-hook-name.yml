@@ -54,8 +54,14 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-skip-by-hook/feature/skip"
       # The pre-create fire still runs; the post-create fire is skipped
-      # wholesale. A hook-type selector that doesn't match the *current* fire
-      # must NOT warn — proving the cross-fire no-op is silent.
+      # wholesale — but it is SHOWN with its job marked skipped (and the
+      # attributed reason), not silently dropped. This is the visibility the
+      # whole-hook skip must preserve: the job appears as `(skip)`.
+      output_contains:
+        - "post-marker (skip)"
+        - "requested (--skip-hooks)"
+      # A hook-type selector that doesn't match the *current* fire must NOT
+      # warn — proving the cross-fire no-op is silent.
       output_not_contains:
         - "no job or tag matched"
 
