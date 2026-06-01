@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.0](https://github.com/avihut/daft/compare/v1.14.5...v1.15.0) - 2026-06-01
+
+
+### Bug Fixes
+
+- **list**: Honor daft.remote for default-branch resolution in blocking list path (#598)
+
+
+### Features
+
+- Visitor configuration — adopt daft without committing daft.yml (#605)
+- **test-runner**: Redesign the live progress region with a braille completion-map (#580)
+- **test-runner**: Opt-in RAM-disk sandbox for the YAML test suite (#574)
+
+
+### Miscellaneous
+
+- Harden fresh-clone mise bootstrap (#602)
+
+
+### Performance
+
+- **test-runner**: Skip dead template snapshot in non-interactive runs (#593)
+- Collapse redundant gix::discover() per command (#592)
+- **test-runner**: Parallelize fixture-cache priming (#578)
+- **test-runner**: Share daft binary across worktrees (#576)
+- **test-runner**: Share fixture remotes across scenarios (#575)
+- **test-runner**: Exec daft directly when no shell features are needed (#570)
+
+
+### Refactoring
+
+- **test-runner**: Gate startup background work on DAFT_TESTING (#573)
+
+
+### Testing
+
+- **test-runner**: Dedupe inline repo specs into fixtures, fix parallel-prime collision (#594)
 ## [1.14.5](https://github.com/avihut/daft/compare/v1.14.4...v1.14.5) - 2026-05-27
 
 
