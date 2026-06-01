@@ -152,6 +152,10 @@ fn complete(
         // hooks run --job: complete job names for a hook type
         ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
+        // --skip-hooks <SELECTOR>: complete the selector vocabulary
+        // (all / hook-type names / job names / tag:<tag>) from daft.yml
+        ("skip-hooks-value", 1) => complete_skip_hooks(word),
+
         // layout transform / layout default / clone --layout: complete layout names
         ("layout-transform", 1) | ("layout-default", 1) | ("layout-value", 1) => {
             complete_layouts(word)
@@ -710,6 +714,61 @@ fn complete_configured_hooks(prefix: &str) -> Result<Vec<String>> {
         }
         None => Ok(vec![]),
     }
+}
+
+/// Complete `--skip-hooks` selector values from the current worktree's
+/// daft.yml: the `all` wildcard, the configured lifecycle hook-type names
+/// (e.g. `worktree-post-create`, `post-clone`), every job name, and a
+/// `tag:<tag>` entry per declared tag — the full selector vocabulary, ordered
+/// by category (wildcard → hooks → jobs → tags). Only daft lifecycle hook
+/// keys are offered as hook-type selectors, since those are the only names the
+/// executor matches wholesale. Falls back to just `all` outside a worktree.
+fn complete_skip_hooks(prefix: &str) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    if "all".starts_with(prefix) {
+        out.push("all".to_string());
+    }
+
+    let Some(root) = find_worktree_root().ok() else {
+        return Ok(out);
+    };
+    let Some(cfg) = yaml_config_loader::load_merged_config(root.as_path())
+        .ok()
+        .flatten()
+    else {
+        return Ok(out);
+    };
+
+    let mut hooks: Vec<String> = Vec::new();
+    let mut jobs: Vec<String> = Vec::new();
+    let mut tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (hook_name, def) in &cfg.hooks {
+        if crate::hooks::HookType::from_yaml_name(hook_name).is_some() {
+            hooks.push(hook_name.clone());
+        }
+        for job in yaml_config_loader::get_effective_jobs(def) {
+            if let Some(name) = job.name {
+                jobs.push(name);
+            }
+            if let Some(job_tags) = job.tags {
+                tags.extend(job_tags);
+            }
+        }
+    }
+    hooks.sort();
+    hooks.dedup();
+    jobs.sort();
+    jobs.dedup();
+
+    out.extend(hooks.into_iter().filter(|h| h.starts_with(prefix)));
+    out.extend(jobs.into_iter().filter(|j| j.starts_with(prefix)));
+    out.extend(
+        tags.into_iter()
+            .map(|t| format!("tag:{t}"))
+            .filter(|s| s.starts_with(prefix)),
+    );
+    out.dedup();
+    Ok(out)
 }
 
 /// Complete job names within a hook type.

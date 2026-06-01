@@ -63,6 +63,28 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for --skip-hooks flag (selector vocabulary from daft.yml)
+    let has_skip_hooks = matches!(
+        command_name,
+        "git-worktree-checkout"
+            | "git-worktree-clone"
+            | "git-worktree-flow-adopt"
+            | "daft-go"
+            | "daft-start"
+    );
+    if has_skip_hooks {
+        output.push_str("    # Skip-hooks selector completion for --skip-hooks\n");
+        output.push_str("    if [[ \"$prev\" == \"--skip-hooks\" ]]; then\n");
+        output.push_str("        local selectors\n");
+        output.push_str(
+            "        selectors=$(daft __complete skip-hooks-value \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        COMPREPLY=( $(compgen -W \"$selectors\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --columns flag
     let has_columns = matches!(
         command_name,
@@ -197,12 +219,27 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Rich commands that also carry --skip-hooks (checkout, go) complete its
+    // selector vocabulary when the previous word is the flag.
+    let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+        r#"    if [[ "$prev" == "--skip-hooks" ]]; then
+        local selectors
+        selectors=$(daft __complete skip-hooks-value "$cur" 2>/dev/null | cut -f1)
+        COMPREPLY=( $(compgen -W "$selectors" -- "$cur") )
+        return 0
+    fi
+
+"#
+    } else {
+        ""
+    };
+
     let mut output = format!(
         r#"_{func_name}() {{
     local cur prev words cword
     _init_completion || return
 
-    if [[ "$cur" == -* ]]; then
+{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return 0

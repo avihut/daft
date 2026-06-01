@@ -645,6 +645,38 @@ mod tests {
     }
 
     #[test]
+    fn skip_hooks_value_completion_wired_for_all_flag_carrying_commands() {
+        // Every command that exposes --skip-hooks must complete its selector
+        // values via `daft __complete skip-hooks-value`, in all three shells.
+        // Regression for the rich/non-rich generator split: checkout and go
+        // take the rich path, so a value block added only to the non-rich
+        // generator silently misses them.
+        for cmd in [
+            "git-worktree-checkout",   // rich
+            "daft-go",                 // rich
+            "git-worktree-clone",      // non-rich
+            "git-worktree-flow-adopt", // non-rich
+            "daft-start",              // non-rich
+        ] {
+            let bash = bash::generate_bash_completion_string(cmd).expect("bash gen");
+            assert!(
+                bash.contains("skip-hooks-value"),
+                "bash completion for {cmd} must complete --skip-hooks values"
+            );
+            let zsh = zsh::generate_zsh_completion_string(cmd).expect("zsh gen");
+            assert!(
+                zsh.contains("skip-hooks-value"),
+                "zsh completion for {cmd} must complete --skip-hooks values"
+            );
+            let fish = fish::generate_fish_completion_string(cmd).expect("fish gen");
+            assert!(
+                fish.contains("skip-hooks-value"),
+                "fish completion for {cmd} must complete --skip-hooks values"
+            );
+        }
+    }
+
+    #[test]
     fn fish_daft_umbrella_passes_fetch_on_miss_for_go() {
         let fish_completions = fish::generate_daft_fish_completions();
         assert!(

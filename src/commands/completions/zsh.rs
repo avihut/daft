@@ -46,9 +46,18 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     let has_branch_completions = command_name == "git-worktree-clone";
     // Value completion for --layout flag
     let has_layout = matches!(command_name, "git-worktree-clone" | "git-worktree-init");
+    // Value completion for --skip-hooks flag
+    let has_skip_hooks = matches!(
+        command_name,
+        "git-worktree-checkout"
+            | "git-worktree-clone"
+            | "git-worktree-flow-adopt"
+            | "daft-go"
+            | "daft-start"
+    );
 
     // Emit the prev_word variable once if any prev-based completion is needed
-    if has_branch_completions || has_layout {
+    if has_branch_completions || has_layout || has_skip_hooks {
         output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
     }
 
@@ -69,6 +78,17 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("        local -a layouts\n");
         output.push_str("        layouts=(\"${(@f)$(daft __complete layout-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n");
         output.push_str("        _describe 'layout' layouts\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    if has_skip_hooks {
+        output.push_str("    # Skip-hooks selector completion for --skip-hooks\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--skip-hooks\" ]]; then\n");
+        output.push_str("        local -a selectors\n");
+        output.push_str("        selectors=(\"${(@f)$(daft __complete skip-hooks-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n");
+        output.push_str("        _describe 'skip-hooks selector' selectors\n");
         output.push_str("        return\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -271,6 +291,13 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     } else {
         ""
     };
+    // Rich commands that also carry --skip-hooks (checkout, go) complete its
+    // selector vocabulary when the previous word is the flag.
+    let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+        "    if [[ \"${words[$((CURRENT-1))]}\" == \"--skip-hooks\" ]]; then\n        local -a selectors\n        selectors=(\"${(@f)$(daft __complete skip-hooks-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n        _describe 'skip-hooks selector' selectors\n        return\n    fi\n\n"
+    } else {
+        ""
+    };
 
     let mut output = format!(
         r#"#compdef {command_name}
@@ -279,7 +306,7 @@ __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
 
-    if [[ "$curword" == -* ]]; then
+{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
         flags=(
 {flags_block}        )
