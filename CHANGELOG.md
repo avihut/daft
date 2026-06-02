@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.0](https://github.com/avihut/daft/compare/v1.15.2...v1.16.0) - 2026-06-02
+
+
+### Features
+
+- DAG-aware --skip-hooks flag for worktree hooks (replaces --no-hooks) (#617)
 ## [1.15.2](https://github.com/avihut/daft/compare/v1.15.1...v1.15.2) - 2026-06-01
 
 
