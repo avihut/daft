@@ -53,17 +53,18 @@ steps:
       exit_code: 0
       dirs_exist:
         - "$WORK_DIR/test-skip-by-hook/feature/skip"
-      # The pre-create fire still runs; the post-create fire is skipped
-      # wholesale — but it is SHOWN with its job marked skipped (and the
-      # attributed reason), not silently dropped. This is the visibility the
-      # whole-hook skip must preserve: the job appears as `(skip)`.
-      output_contains:
-        - "post-marker (skip)"
-        - "requested (--skip-hooks)"
       # A hook-type selector that doesn't match the *current* fire must NOT
-      # warn — proving the cross-fire no-op is silent.
+      # warn — proving the cross-fire no-op is silent (the selector names a
+      # valid hook, just not this one).
       output_not_contains:
         - "no job or tag matched"
+      # NOTE: we deliberately do NOT assert the per-job render text
+      # ("post-marker (skip)", "requested (--skip-hooks)") here. That reason
+      # line is only emitted in the non-compact hook output mode, which this
+      # non-TTY harness does not capture — see the same note in
+      # skip-hooks-cascade.yml. The whole-hook skip *behavior* is proved by the
+      # marker-file assertions in the next step; the presenter render is covered
+      # by the engine unit test `skip_hook_type_renders_every_job_as_skipped`.
 
   - name: Assert pre-create ran and post-create did not
     run: |
