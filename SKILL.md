@@ -620,6 +620,41 @@ daft hooks run worktree-post-create --verbose    # Show skipped jobs with reason
 Use cases: re-running after a failure, iterating during hook development, or
 bootstrapping existing worktrees that predate the hooks config.
 
+### Skipping Hooks Per-Invocation (`--skip-hooks`)
+
+The worktree-creating commands (`daft start`, `daft go`,
+`git worktree-checkout`, `git worktree-checkout-branch`) and
+`git worktree-clone` / `git worktree-flow-adopt` accept `--skip-hooks` to
+exclude jobs for one run (repeatable / comma-separated):
+
+```bash
+daft start feat/x --skip-hooks all          # skip every hook (replaces the old --no-hooks)
+daft start feat/x --skip-hooks worktree-post-create  # skip one whole hook by name
+daft start feat/x --skip-hooks lint          # skip the lint job AND its dependents
+daft start feat/x --skip-hooks tag:heavy     # skip every heavy-tagged job AND dependents
+daft start feat/x --skip-hooks tag:heavy,lint
+git worktree-clone <url> --skip-hooks all    # clone without running any hooks
+git worktree-clone <url> --skip-hooks post-clone  # clone, run worktree hooks but not post-clone
+```
+
+Selectors: `all` / `*` (every job), `<hook>` (a whole hook by its canonical
+`daft.yml` key, e.g. `worktree-post-create` / `post-clone`), `tag:<tag>` (tagged
+jobs + dependents), `<name>` (a job + its dependents), `job:<name>`
+(explicit-name escape hatch). A bare token resolves in order: wildcard → hook
+type → job name; tags need the `tag:` prefix. A hook-type selector that names a
+hook the command never fires is a silent no-op (no error, no warning).
+
+Key behavior — the **downstream cascade**: skipping a job also skips every job
+that `needs:` it (transitively), because running a dependent against a
+deliberately-skipped dependency is broken. Upstream dependencies are untouched.
+Excluded jobs are reported as skipped with a reason, not dropped silently; a
+selector matching nothing warns and the run proceeds.
+
+`--skip-hooks` is the **exclusion** counterpart to `daft hooks run --job/--tag`
+(which is an inclusion filter). `--skip-hooks all` cannot be combined with
+`--trust-hooks`; a partial skip (`tag:`/`<job>`) still runs your own hooks and
+remains compatible with `--trust-hooks`.
+
 ### Move Hooks
 
 When a worktree is moved (rename via `daft worktree-branch -m`, layout transform

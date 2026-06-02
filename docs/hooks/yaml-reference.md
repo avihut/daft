@@ -78,32 +78,48 @@ Only one of `parallel`, `piped`, or `follow` can be set at a time.
 
 Each job in the `jobs` list supports:
 
-| Field               | Type                 | Description                                                              |
-| ------------------- | -------------------- | ------------------------------------------------------------------------ |
-| `name`              | string               | Job name (used for display, merging, and dependency references)          |
-| `description`       | string               | Human-readable description (shown in dry-run and completions)            |
-| `run`               | string               | Inline shell command to execute                                          |
-| `script`            | string               | Script file to run (relative to `source_dir`)                            |
-| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                |
-| `args`              | string               | Arguments to pass to the script                                          |
-| `root`              | string               | Working directory (relative to worktree root)                            |
-| `tags`              | list                 | Tags for filtering with `exclude_tags`                                   |
-| `skip`              | bool / string / list | Skip condition                                                           |
-| `only`              | bool / string / list | Only condition                                                           |
-| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match               |
-| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match             |
-| `env`               | map                  | Extra environment variables                                              |
-| `fail_text`         | string               | Custom failure message                                                   |
-| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                        |
-| `priority`          | int                  | Execution ordering (lower runs first)                                    |
-| `needs`             | list                 | Names of jobs that must complete before this job runs                    |
-| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                |
-| `group`             | object               | Nested group of jobs (see [Groups](#groups))                             |
-| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs)) |
-| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                     |
-| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job             |
+| Field               | Type                 | Description                                                                                           |
+| ------------------- | -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `name`              | string               | Job name (used for display, merging, and dependency references)                                       |
+| `description`       | string               | Human-readable description (shown in dry-run and completions)                                         |
+| `run`               | string               | Inline shell command to execute                                                                       |
+| `script`            | string               | Script file to run (relative to `source_dir`)                                                         |
+| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                             |
+| `args`              | string               | Arguments to pass to the script                                                                       |
+| `root`              | string               | Working directory / cwd, relative to worktree root (see [Working directory](#working-directory-root)) |
+| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                                |
+| `skip`              | bool / string / list | Skip condition                                                                                        |
+| `only`              | bool / string / list | Only condition                                                                                        |
+| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                            |
+| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                          |
+| `env`               | map                  | Extra environment variables                                                                           |
+| `fail_text`         | string               | Custom failure message                                                                                |
+| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                                     |
+| `priority`          | int                  | Execution ordering (lower runs first)                                                                 |
+| `needs`             | list                 | Names of jobs that must complete before this job runs                                                 |
+| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                                             |
+| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                                          |
+| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                              |
+| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                  |
+| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                          |
 
 A job must have exactly one of `run`, `script`, or `group`.
+
+### Working directory (`root`)
+
+By default each job runs in the worktree root. Set `root` to run the job in a
+subdirectory instead — useful in a monorepo where a job targets a single
+package. The path is relative to the worktree root and sets the job's working
+directory (cwd).
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install-web
+        run: pnpm install
+        root: apps/web
+```
 
 ### Template variables
 

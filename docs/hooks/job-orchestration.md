@@ -131,6 +131,82 @@ branches that don't need a running server. When a job is skipped, it is treated
 as satisfied for downstream `needs:` references, so skipping one step in a chain
 does not block the rest.
 
+## Skipping at runtime (`--skip-hooks`)
+
+`skip:` / `only:` / `exclude_tags` are configuration — they live in `daft.yml`.
+For a one-off, the worktree-creating commands (`daft start`, `daft go`,
+`git worktree-checkout`, `git worktree-checkout-branch`) and
+`git worktree-clone` / `git worktree-flow-adopt` accept a `--skip-hooks` flag
+that excludes jobs for that single invocation:
+
+```bash
+daft start feat/x --skip-hooks all          # skip every job in every hook
+daft start feat/x --skip-hooks worktree-post-create  # skip one whole hook by name
+daft start feat/x --skip-hooks lint          # drop the lint job (+ its dependents)
+daft start feat/x --skip-hooks tag:heavy     # drop all heavy jobs (+ dependents)
+daft start feat/x --skip-hooks tag:heavy,lint        # comma-separated
+daft start feat/x --skip-hooks tag:heavy --skip-hooks lint   # repeatable, same effect
+```
+
+Each selector is one of:
+
+| Selector        | Meaning                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| `all` / `*`     | every job — the whole hook is skipped                                                       |
+| `<hook>`        | a whole hook by name (`worktree-post-create`, `worktree-pre-create`, `post-clone`, …)       |
+| `tag:<tag>`     | every job carrying `<tag>`, **plus their dependents**                                       |
+| `<name>` (bare) | the job named `<name>`, **plus its dependents**                                             |
+| `job:<name>`    | explicit-name form — escape hatch for a job named `all`/`*`, a hook type, or containing `:` |
+
+A bare token is matched in this order: the wildcard `all`/`*`, then a **hook
+type** (the canonical `daft.yml` hook key, e.g. `worktree-post-create`), then a
+**job name**. Tags require the `tag:` prefix. To skip a job that happens to be
+named after a hook type, use the `job:` escape hatch
+(`job:worktree-post-create`). Only the canonical hook spellings are reserved —
+the deprecated short forms (`post-create`) are treated as job names.
+
+A hook-type selector skips that hook **wholesale** — every job in it, with no
+cascade computation, since the entire hook is gone. It is the targeted
+counterpart to `all`: where `all` skips every hook the command fires,
+`worktree-post-create` skips only that one (leaving, say, `worktree-pre-create`
+to run). **Known limitation:** a hook-type selector naming a hook the command
+never fires (e.g. `--skip-hooks worktree-pre-remove` on `daft start`) is a
+silent no-op — it neither errors nor warns, because the decision is made per
+hook-fire and no fire ever matches it.
+
+The crucial part is the **downstream cascade**. Excluding a job also excludes
+every job that `needs:` it, directly or transitively — because running a
+dependent against a dependency that deliberately did not run is the broken
+outcome. Upstream dependencies are left untouched. Given:
+
+```yaml
+install: # no needs
+build: { needs: [install], tags: [heavy] }
+test: { needs: [build] }
+lint: { needs: [install] }
+```
+
+- `--skip-hooks install` skips **install, build, test, lint** (all reach
+  install).
+- `--skip-hooks tag:heavy` skips **build** and **test** (test needs build);
+  `install` and `lint` still run.
+
+Excluded jobs are reported as skipped with a reason (`requested (--skip-hooks)`
+for a direct match, `depends on <job> (skipped)` for a cascade-removed
+dependent) rather than vanishing silently. A selector that matches nothing emits
+a warning and the run proceeds — an empty result after skipping is a no-op, not
+an error.
+
+`--skip-hooks all` is the uniform way to skip every hook; it replaces the older
+`--no-hooks` flag on `clone` / `flow-adopt`. It cannot be combined with
+`--trust-hooks` (a partial `--skip-hooks tag:…` still runs your own hooks, so it
+remains compatible with `--trust-hooks`).
+
+This is distinct from `git daft hooks run --job <name>` / `--tag <tag>`, which
+is an **inclusion** filter (run only the named jobs, re-running against an
+already-set-up worktree); `--skip-hooks` is the **exclusion** side and carries
+the dependents with it.
+
 ## OS and architecture gating
 
 Individual jobs can declare `os:` and `arch:` constraints. A job with

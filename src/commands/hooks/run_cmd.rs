@@ -86,6 +86,7 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
     let filter = JobFilter {
         only_job_name: args.job.clone(),
         only_tags: args.tag.clone(),
+        ..Default::default()
     };
 
     // Dry-run: preview jobs without executing

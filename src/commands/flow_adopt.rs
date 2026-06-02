@@ -103,8 +103,17 @@ pub struct Args {
     )]
     trust_hooks: bool,
 
-    #[arg(long = "no-hooks", help = "Do not run any hooks from the repository")]
-    no_hooks: bool,
+    /// Skip hooks this run. Repeatable / comma-separated.
+    /// Selectors: `all` (every hook), a hook name (`post-clone`,
+    /// `worktree-post-create`, …), `tag:<tag>`, or a job name (plus its
+    /// dependents). See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    skip_hooks: Vec<String>,
 
     #[arg(
         long = "dry-run",
@@ -118,8 +127,8 @@ pub fn run() -> Result<()> {
 
     init_logging(args.verbose);
 
-    if args.trust_hooks && args.no_hooks {
-        anyhow::bail!("--trust-hooks and --no-hooks cannot be used together.");
+    if args.trust_hooks && skip_hooks_all(&args.skip_hooks) {
+        anyhow::bail!("--trust-hooks and --skip-hooks all cannot be used together.");
     }
 
     let settings = DaftSettings::load_global()?;
@@ -194,18 +203,27 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     Ok(())
 }
 
+/// True when `--skip-hooks` requests skipping *every* hook (`all` / `*`) — the
+/// uniform replacement for the old `--no-hooks`. Partial skips (`tag:`/`<job>`)
+/// still fire hooks, just with some jobs excluded.
+fn skip_hooks_all(skip_hooks: &[String]) -> bool {
+    crate::hooks::job_adapter::parse_skip_selectors(skip_hooks).all
+}
+
 fn run_post_adopt_hook(
     args: &Args,
     result: &flow_adopt::AdoptResult,
     output: &mut dyn Output,
 ) -> Result<()> {
-    if args.no_hooks {
-        output.step("Skipping hooks (--no-hooks flag)");
+    if skip_hooks_all(&args.skip_hooks) {
+        output.step("Skipping hooks (--skip-hooks all)");
         return Ok(());
     }
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let mut executor = HookExecutor::new(hooks_config)?;
+    let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
 
     if args.trust_hooks {
         output.step("Trusting repository for hooks (--trust-hooks flag)");

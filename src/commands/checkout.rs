@@ -123,6 +123,17 @@ pub struct Args {
 
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
+
+    /// Skip hooks this run. Repeatable / comma-separated.
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    skip_hooks: Vec<String>,
 }
 
 /// Daft-style args for `daft go`. Separate from `Args` so that `-h`/`--help`
@@ -223,6 +234,17 @@ pub struct GoArgs {
 
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
+
+    /// Skip hooks this run (only applies when `go` creates a worktree).
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks when creating a worktree (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    skip_hooks: Vec<String>,
 }
 
 /// Daft-style args for `daft start`. Separate from `Args` so that `-h`/`--help`
@@ -291,6 +313,17 @@ pub struct StartArgs {
 
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
+
+    /// Skip hooks this run. Repeatable / comma-separated.
+    /// Selectors: `all`, a hook name (`worktree-post-create`, …),
+    /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
+    #[arg(
+        long,
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    skip_hooks: Vec<String>,
 }
 
 /// Entry point for `git-worktree-checkout`.
@@ -319,6 +352,7 @@ pub fn run_go() -> Result<()> {
         verbose: go_args.verbose,
         at: go_args.at,
         local: go_args.local,
+        skip_hooks: go_args.skip_hooks,
     };
     run_with_args(args)
 }
@@ -343,6 +377,7 @@ pub fn run_start() -> Result<()> {
         verbose: start_args.verbose,
         at: start_args.at,
         local: start_args.local,
+        skip_hooks: start_args.skip_hooks,
     };
     run_with_args(args)
 }
@@ -726,7 +761,9 @@ fn run_checkout(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
-    let executor = HookExecutor::new(hooks_config)?;
+    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
         output.warning("[experimental] Using gitoxide backend for git operations");
@@ -809,7 +846,9 @@ fn run_create_branch(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
-    let executor = HookExecutor::new(hooks_config)?;
+    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
         output.warning("[experimental] Using gitoxide backend for git operations");
@@ -902,4 +941,37 @@ fn render_create_result(result: &checkout_branch::CheckoutBranchResult, output: 
         "Created worktree '{}' from '{}'",
         result.new_branch_name, result.base_branch
     ));
+}
+
+#[cfg(test)]
+mod skip_hooks_parse_tests {
+    use super::*;
+
+    #[test]
+    fn flag_after_positional() {
+        let a = Args::parse_from(["git-worktree-checkout", "feat/x", "--skip-hooks", "all"]);
+        assert_eq!(a.branch_name, "feat/x");
+        assert_eq!(a.skip_hooks, vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn flag_before_positional() {
+        let a = Args::parse_from(["git-worktree-checkout", "--skip-hooks", "all", "feat/x"]);
+        assert_eq!(a.branch_name, "feat/x");
+        assert_eq!(a.skip_hooks, vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn comma_split() {
+        let a = Args::parse_from([
+            "git-worktree-checkout",
+            "feat/x",
+            "--skip-hooks",
+            "all,tag:heavy",
+        ]);
+        assert_eq!(
+            a.skip_hooks,
+            vec!["all".to_string(), "tag:heavy".to_string()]
+        );
+    }
 }

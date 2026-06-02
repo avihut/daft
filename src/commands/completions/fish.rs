@@ -118,6 +118,22 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         ));
     }
 
+    // Value completions for --skip-hooks flag (selector vocabulary from daft.yml)
+    let has_skip_hooks = matches!(
+        command_name,
+        "git-worktree-checkout"
+            | "git-worktree-clone"
+            | "git-worktree-flow-adopt"
+            | "daft-go"
+            | "daft-start"
+    );
+    if has_skip_hooks {
+        output.push_str(&format!(
+            "\n# Skip-hooks selector completions for --skip-hooks\ncomplete -c {} -l skip-hooks -x -a \"(daft __complete skip-hooks-value '' 2>/dev/null)\"\n",
+            command_name
+        ));
+    }
+
     // Value completions for --columns flag
     let has_columns = matches!(
         command_name,
@@ -283,6 +299,19 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
             ));
         }
     }
+    // Rich commands that also carry --skip-hooks (checkout, go) complete its
+    // selector vocabulary from daft.yml.
+    if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+        output.push_str(&format!(
+            "complete -c {command_name} -l skip-hooks -x -a \"(daft __complete skip-hooks-value '' 2>/dev/null)\"\n",
+        ));
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -l skip-hooks -x -a \"(daft __complete skip-hooks-value '' 2>/dev/null)\"\n",
+            ));
+        }
+    }
+
     output.push('\n');
     output.push_str("# Static flag completions (extracted from clap)\n");
 

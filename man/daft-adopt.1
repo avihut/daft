@@ -4,7 +4,7 @@
 .SH NAME
 daft\-adopt \- Convert a traditional repository to worktree\-based layout
 .SH SYNOPSIS
-\fBdaft\-adopt\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-no\-hooks\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPOSITORY_PATH\fR] 
+\fBdaft\-adopt\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-trust\-hooks\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPOSITORY_PATH\fR] 
 .SH DESCRIPTION
 .PP
 WHAT THIS COMMAND DOES
@@ -77,8 +77,8 @@ Be verbose; show detailed progress
 \fB\-\-trust\-hooks\fR
 Trust the repository and allow hooks to run without prompting
 .TP
-\fB\-\-no\-hooks\fR
-Do not run any hooks from the repository
+\fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
+Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated
 .TP
 \fB\-\-dry\-run\fR
 Show what would be done without making any changes

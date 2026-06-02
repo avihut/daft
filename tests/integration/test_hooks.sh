@@ -111,7 +111,7 @@ test_hooks_list_command() {
 # Clone with Hooks Tests
 # ============================================================================
 
-# Test clone with --no-hooks flag
+# Test clone with --skip-hooks all (replaces the old --no-hooks flag)
 test_clone_no_hooks_flag() {
     local remote_repo=$(create_test_remote "test-clone-no-hooks" "main")
 
@@ -132,16 +132,16 @@ EOF
     ) >/dev/null 2>&1
     rm -rf "$temp_clone"
 
-    # Clone with --no-hooks
-    git-worktree-clone --layout contained --no-hooks "$remote_repo" || return 1
+    # Clone with --skip-hooks all
+    git-worktree-clone --layout contained --skip-hooks all "$remote_repo" || return 1
 
     # Verify the hook marker file was NOT created
     if [[ -f "test-clone-no-hooks/main/.hook-executed" ]]; then
-        log_error "--no-hooks flag did not prevent hook execution"
+        log_error "--skip-hooks all did not prevent hook execution"
         return 1
     fi
 
-    log_success "--no-hooks flag correctly prevents hook execution"
+    log_success "--skip-hooks all correctly prevents hook execution"
     return 0
 }
 
@@ -179,17 +179,17 @@ EOF
     return 0
 }
 
-# Test that --trust-hooks and --no-hooks are mutually exclusive
+# Test that --trust-hooks and --skip-hooks all are mutually exclusive
 test_clone_hooks_flags_exclusive() {
     local remote_repo=$(create_test_remote "test-clone-exclusive" "main")
 
     # Try to use both flags
-    if git-worktree-clone --layout contained --trust-hooks --no-hooks "$remote_repo" 2>&1; then
-        log_error "Should fail when both --trust-hooks and --no-hooks are specified"
+    if git-worktree-clone --layout contained --trust-hooks --skip-hooks all "$remote_repo" 2>&1; then
+        log_error "Should fail when both --trust-hooks and --skip-hooks all are specified"
         return 1
     fi
 
-    log_success "--trust-hooks and --no-hooks correctly reject being used together"
+    log_success "--trust-hooks and --skip-hooks all correctly reject being used together"
     return 0
 }
 
