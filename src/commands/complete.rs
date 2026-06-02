@@ -739,6 +739,13 @@ fn complete_skip_hooks(prefix: &str) -> Result<Vec<String>> {
         return Ok(out);
     };
 
+    // Intentionally union job names and tags across *all* configured hooks,
+    // not just the hook(s) that would fire for the command being completed.
+    // Determining the firing set per command would mean re-deriving create-vs-
+    // navigate / clone-vs-adopt at completion time (repo-state dependent); the
+    // wider vocabulary is the cheaper, predictable choice. A consequence is that
+    // e.g. `daft go --skip-hooks <Tab>` may offer a `post-clone` job name that
+    // never runs for `go` — harmless (an unmatched selector just warns).
     let mut hooks: Vec<String> = Vec::new();
     let mut jobs: Vec<String> = Vec::new();
     let mut tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

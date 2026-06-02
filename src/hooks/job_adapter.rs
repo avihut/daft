@@ -1338,6 +1338,33 @@ mod tests {
     }
 
     #[test]
+    fn cascade_terminates_on_cyclic_needs() {
+        // A needs B, B needs A. Skipping `a` cascades to `b` (b needs a); when
+        // the BFS then rediscovers `a` via b's edge, the `excluded.contains_key`
+        // guard refuses to re-enqueue it, so the walk terminates. (A `needs:`
+        // cycle is later rejected by the DAG builder; the cascade runs first and
+        // must not hang on it.) The test completing — not hanging — is the
+        // cycle-safety proof the doc comment claims.
+        let jobs = vec![
+            JobDef {
+                name: Some("a".into()),
+                needs: Some(vec!["b".into()]),
+                ..Default::default()
+            },
+            JobDef {
+                name: Some("b".into()),
+                needs: Some(vec!["a".into()]),
+                ..Default::default()
+            },
+        ];
+        let skip = parse_skip_selectors(&strs(&["a"]));
+        let c = compute_skip_cascade(&jobs, &skip);
+        assert_eq!(c.excluded.get("a"), Some(&SkipCause::Requested));
+        assert_eq!(c.excluded.get("b"), Some(&SkipCause::DependsOn("a".into())));
+        assert_eq!(c.excluded.len(), 2);
+    }
+
+    #[test]
     fn cascade_unmatched_selectors_collected() {
         let jobs = worked_example_jobs();
         let skip = parse_skip_selectors(&strs(&["ghost", "tag:nope"]));
