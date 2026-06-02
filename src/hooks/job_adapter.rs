@@ -24,6 +24,14 @@ pub struct SkippedJob {
     pub reason: String,
 }
 
+/// Resolve a job's effective `background:` flag: the job's own setting wins,
+/// then the hook-level default, then `false`. Centralizes the precedence rule
+/// shared by kept-job spec conversion ([`yaml_jobs_to_specs`]) and the
+/// `--skip-hooks` skip-attribution paths so it lives in exactly one place.
+pub fn resolve_background(job_background: Option<bool>, hook_background: Option<bool>) -> bool {
+    job_background.or(hook_background).unwrap_or(false)
+}
+
 /// Parsed `--skip-hooks` selectors.
 ///
 /// Built by [`parse_skip_selectors`] from the raw CLI tokens and carried on
@@ -39,12 +47,12 @@ pub struct SkipSelectors {
     /// Tags to skip (from `tag:<tag>` selectors).
     pub tags: Vec<String>,
     /// Hook types to skip wholesale (from bare hook-type names like
-    /// `worktree-post-create`). Each entry is a canonical
-    /// [`crate::hooks::HookType::yaml_name`]. Matched against the current
-    /// fire's hook name in the executor, where it short-circuits the whole
-    /// hook (like `all`, but scoped to one hook type). Does NOT feed
+    /// `worktree-post-create`), parsed into typed [`crate::hooks::HookType`]
+    /// values. Matched against the current fire's hook name in the executor
+    /// (via [`crate::hooks::HookType::yaml_name`]), where it short-circuits the
+    /// whole hook (like `all`, but scoped to one hook type). Does NOT feed
     /// [`compute_skip_cascade`] — it is a hook-level, not job-level, selector.
-    pub hook_types: Vec<String>,
+    pub hook_types: Vec<crate::hooks::HookType>,
     /// Original selector tokens, retained for no-match warning attribution.
     pub raw: Vec<String>,
 }
@@ -84,8 +92,8 @@ pub fn parse_skip_selectors(selectors: &[String]) -> SkipSelectors {
             out.names.push(name.to_string());
         } else if s == "all" || s == "*" {
             out.all = true;
-        } else if HookType::from_yaml_name(s).is_some() {
-            out.hook_types.push(s.to_string());
+        } else if let Some(ht) = HookType::from_yaml_name(s) {
+            out.hook_types.push(ht);
         } else {
             out.names.push(s.to_string());
         }
@@ -267,7 +275,7 @@ pub fn yaml_jobs_to_specs(
 
     for job in jobs {
         let name = job.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
-        let declared_background = job.background.or(hook_background).unwrap_or(false);
+        let declared_background = resolve_background(job.background, hook_background);
 
         if job.group.is_some() {
             skipped.push(SkippedJob {
@@ -1188,13 +1196,13 @@ mod tests {
     fn parse_hook_type_name_is_reserved() {
         let s = parse_skip_selectors(&strs(&["worktree-post-create"]));
         assert!(!s.all);
-        assert_eq!(s.hook_types, vec!["worktree-post-create"]);
+        assert_eq!(s.hook_types, vec![crate::hooks::HookType::PostCreate]);
         assert!(s.names.is_empty());
         assert!(s.tags.is_empty());
         // post-clone and the other canonical names are reserved too.
         assert_eq!(
             parse_skip_selectors(&strs(&["post-clone"])).hook_types,
-            vec!["post-clone"]
+            vec![crate::hooks::HookType::PostClone]
         );
     }
 

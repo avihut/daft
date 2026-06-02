@@ -247,99 +247,119 @@ pub fn execute_yaml_hook_with_rc(
     // command, or a hook this command never fires) leaves this false and is a
     // silent no-op — it never reaches `compute_skip_cascade`'s unmatched set,
     // so it raises no warning (it is a valid hook name, just not this fire).
-    let skip_whole_hook = filter.skip.hook_types.iter().any(|h| h == hook_name);
+    let skip_whole_hook = filter
+        .skip
+        .hook_types
+        .iter()
+        .any(|h| h.yaml_name() == hook_name);
 
-    // Filter out jobs matching exclude_tags
-    if !skip_whole_hook && let Some(ref exclude_tags) = hook_def.exclude_tags {
-        jobs.retain(|job| {
-            if let Some(ref tags) = job.tags {
-                !tags.iter().any(|t| exclude_tags.contains(t))
-            } else {
-                true
-            }
-        });
-        if jobs.is_empty() {
-            return Ok(HookResult::skipped("All jobs excluded by tags"));
-        }
-    }
-
-    // Apply `--skip-hooks` exclusion: drop the matched jobs AND the transitive
-    // closure of jobs that `needs:` them (downstream dependents), routing each
-    // into an attributed skip. Runs while `needs:` is intact (before
-    // `yaml_jobs_to_specs`) so the cascade can walk the reverse-`needs` graph;
-    // this makes the adapter's needs-stripping a no-op for the exclude path.
-    // Unmatched selectors warn (the job runs) but never error — silent
-    // no-match is more dangerous in the exclude direction.
+    // Resolve which jobs run and which are skipped (with attribution). A
+    // hook-type selector (`--skip-hooks worktree-post-create`) names *this*
+    // fire: every job is skipped wholesale and ALL include/exclude/tracking
+    // filters below are bypassed — the emptied job list would otherwise divert
+    // into a "no job matched" bail ahead of the skip render. `requested_skips`
+    // is declared before the branch so both render sites (the `specs.is_empty()`
+    // early return and the post-header loop) can read it regardless of which
+    // arm populated it.
     let mut requested_skips: Vec<crate::hooks::job_adapter::SkippedJob> = Vec::new();
     if skip_whole_hook {
         // Whole-hook skip: every job becomes a direct `Requested` skip (same
         // reason as a name match), then the job list is emptied so the fire
-        // flows through the `specs.is_empty()` render/record path below.
+        // flows through the `specs.is_empty()` render/record path below. Config
+        // `exclude_tags` is intentionally *not* applied here — a whole-hook skip
+        // reports every declared job, excluded-tag jobs included.
         for job in &jobs {
             requested_skips.push(crate::hooks::job_adapter::SkippedJob {
                 name: job.name.clone().unwrap_or_else(|| "(unnamed)".to_string()),
-                background: job.background.or(hook_def.background).unwrap_or(false),
+                background: crate::hooks::job_adapter::resolve_background(
+                    job.background,
+                    hook_def.background,
+                ),
                 reason: crate::hooks::job_adapter::SkipCause::Requested.reason(),
             });
         }
         jobs.clear();
-    } else if !filter.skip.is_empty() {
-        let cascade = crate::hooks::job_adapter::compute_skip_cascade(&jobs, &filter.skip);
-        for sel in &cascade.unmatched {
-            output.warning(&format!(
-                "--skip-hooks: no job or tag matched '{sel}' in hook '{hook_name}'"
-            ));
-        }
-        if !cascade.excluded.is_empty() {
+    } else {
+        // Filter out jobs matching config-level `exclude_tags`, before the
+        // cascade so excluded-tag jobs never seed it.
+        if let Some(ref exclude_tags) = hook_def.exclude_tags {
             jobs.retain(|job| {
-                let Some(name) = job.name.as_deref() else {
-                    return true;
-                };
-                match cascade.excluded.get(name) {
-                    None => true,
-                    Some(cause) => {
-                        requested_skips.push(crate::hooks::job_adapter::SkippedJob {
-                            name: name.to_string(),
-                            background: job.background.or(hook_def.background).unwrap_or(false),
-                            reason: cause.reason(),
-                        });
-                        false
-                    }
+                if let Some(ref tags) = job.tags {
+                    !tags.iter().any(|t| exclude_tags.contains(t))
+                } else {
+                    true
                 }
             });
+            if jobs.is_empty() {
+                return Ok(HookResult::skipped("All jobs excluded by tags"));
+            }
         }
-    }
 
-    // Apply inclusion filters (from `hooks run --job` / `--tag`). Skipped when
-    // the whole hook is being skipped (jobs is already emptied) so the
-    // "no job matched" bails don't fire on the intentionally-cleared list.
-    if !skip_whole_hook && let Some(ref name) = filter.only_job_name {
-        jobs.retain(|j| j.name.as_deref() == Some(name.as_str()));
-        if jobs.is_empty() {
-            anyhow::bail!("No job named '{name}' found in hook '{hook_name}'");
+        // Apply `--skip-hooks` exclusion: drop the matched jobs AND the
+        // transitive closure of jobs that `needs:` them (downstream
+        // dependents), routing each into an attributed skip. Runs while
+        // `needs:` is intact (before `yaml_jobs_to_specs`) so the cascade can
+        // walk the reverse-`needs` graph; this makes the adapter's
+        // needs-stripping a no-op for the exclude path. Unmatched selectors
+        // warn (the job runs) but never error — silent no-match is more
+        // dangerous in the exclude direction.
+        if !filter.skip.is_empty() {
+            let cascade = crate::hooks::job_adapter::compute_skip_cascade(&jobs, &filter.skip);
+            for sel in &cascade.unmatched {
+                output.warning(&format!(
+                    "--skip-hooks: no job or tag matched '{sel}' in hook '{hook_name}'"
+                ));
+            }
+            if !cascade.excluded.is_empty() {
+                jobs.retain(|job| {
+                    let Some(name) = job.name.as_deref() else {
+                        return true;
+                    };
+                    match cascade.excluded.get(name) {
+                        None => true,
+                        Some(cause) => {
+                            requested_skips.push(crate::hooks::job_adapter::SkippedJob {
+                                name: name.to_string(),
+                                background: crate::hooks::job_adapter::resolve_background(
+                                    job.background,
+                                    hook_def.background,
+                                ),
+                                reason: cause.reason(),
+                            });
+                            false
+                        }
+                    }
+                });
+            }
         }
-    }
-    if !skip_whole_hook && !filter.only_tags.is_empty() {
-        jobs.retain(|job| {
-            job.tags
-                .as_ref()
-                .is_some_and(|tags| tags.iter().any(|t| filter.only_tags.contains(t)))
-        });
-        if jobs.is_empty() {
-            anyhow::bail!(
-                "No jobs matching tags {:?} in hook '{hook_name}'",
-                filter.only_tags
-            );
-        }
-    }
 
-    // Apply tracking filter when changed_attributes are present (move hooks).
-    // Skipped on a whole-hook skip so the emptied list doesn't divert into the
-    // "No jobs match changed attributes" return ahead of the skip render.
-    if !skip_whole_hook && let Some(ref changed) = ctx.changed_attributes {
-        jobs = filter_tracked_jobs(&jobs, changed);
-        if jobs.is_empty() {
-            return Ok(HookResult::skipped("No jobs match changed attributes"));
+        // Apply inclusion filters (from `hooks run --job` / `--tag`).
+        if let Some(ref name) = filter.only_job_name {
+            jobs.retain(|j| j.name.as_deref() == Some(name.as_str()));
+            if jobs.is_empty() {
+                anyhow::bail!("No job named '{name}' found in hook '{hook_name}'");
+            }
+        }
+        if !filter.only_tags.is_empty() {
+            jobs.retain(|job| {
+                job.tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.iter().any(|t| filter.only_tags.contains(t)))
+            });
+            if jobs.is_empty() {
+                anyhow::bail!(
+                    "No jobs matching tags {:?} in hook '{hook_name}'",
+                    filter.only_tags
+                );
+            }
+        }
+
+        // Apply tracking filter when changed_attributes are present (move hooks).
+        if let Some(ref changed) = ctx.changed_attributes {
+            jobs = filter_tracked_jobs(&jobs, changed);
+            if jobs.is_empty() {
+                return Ok(HookResult::skipped("No jobs match changed attributes"));
+            }
         }
     }
 
