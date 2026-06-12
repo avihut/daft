@@ -90,6 +90,18 @@ mod tests {
             Ok(None)
         }
 
+        fn record_skipped_invocation(&self, _row: &InvocationRow) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_skipped_invocations(&self, _r: &str) -> Result<Vec<InvocationRow>> {
+            Ok(Vec::new())
+        }
+
+        fn clear_skipped_invocations(&self, _r: &str, _h: &str, _w: &str) -> Result<()> {
+            Ok(())
+        }
+
         fn upsert_job(&self, row: &JobRow) -> Result<()> {
             let mut guard = self.jobs.lock().unwrap();
             if let Some(slot) = guard.iter_mut().find(|r| {

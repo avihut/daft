@@ -20,6 +20,25 @@ pub trait JobsStorePort: Send + Sync {
     fn get_invocation(&self, repo_hash: &str, invocation_id: &str)
     -> Result<Option<InvocationRow>>;
 
+    /// Record a trust-skipped hook fire (#596). Replaces any prior skipped
+    /// row for the same `(repo_hash, hook_type, worktree)` natural key so
+    /// repeated skips do not accumulate — a skip row is advisory replay
+    /// state ("the most recent fire of this pair was blocked by trust"),
+    /// not an audit log.
+    fn record_skipped_invocation(&self, row: &InvocationRow) -> Result<()>;
+
+    /// All `status = 'skipped'` rows for a repo, oldest first.
+    fn list_skipped_invocations(&self, repo_hash: &str) -> Result<Vec<InvocationRow>>;
+
+    /// Delete skipped rows matching `(repo_hash, hook_type, worktree)`.
+    /// Called when the trust gate next passes for that pair.
+    fn clear_skipped_invocations(
+        &self,
+        repo_hash: &str,
+        hook_type: &str,
+        worktree: &str,
+    ) -> Result<()>;
+
     fn upsert_job(&self, row: &JobRow) -> Result<()>;
 
     fn get_job(&self, repo_hash: &str, invocation_id: &str, name: &str) -> Result<Option<JobRow>>;
