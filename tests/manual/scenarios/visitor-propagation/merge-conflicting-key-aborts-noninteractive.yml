@@ -1,0 +1,89 @@
+name:
+  Conflicting daft.yml refinements abort a non-interactive merge before git runs
+description: >
+  Both main and feat/x changed the SAME job since feat/x was seeded - a genuine
+  conflict that must never be auto-resolved. A non-interactive `daft merge
+  feat/x` must abort BEFORE the git merge, name the conflict, and point at `daft
+  file merge`. Regression for the silent source-wins overlay that let the
+  branch's version clobber main's (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Commit feature work on feat/x
+    run: |
+      cd $WORK_DIR/test-repo/feat/x
+      printf 'feature work\n' > feature.txt
+      git add feature.txt
+      git commit -m "feature work"
+    expect:
+      exit_code: 0
+
+  - name: Both sides change the same job since seeding
+    run: |
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v2\n' \
+        > $WORK_DIR/test-repo/main/daft.yml
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-feat\n' \
+        > $WORK_DIR/test-repo/feat/x/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Non-interactive merge aborts on the conflict
+    run: daft merge --no-edit feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "conflicting refinements"
+        - "daft file merge"
+
+  - name: The git merge never ran
+    run: git -C $WORK_DIR/test-repo/main merge-base --is-ancestor feat/x main
+    expect:
+      exit_code: 1
+
+  - name: main's daft.yml is untouched
+    run: cat $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-feat"

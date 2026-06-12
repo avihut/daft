@@ -1,0 +1,92 @@
+name:
+  Refined daft.yml blocks unforced removal; forced removal discards to a stash
+description: >
+  feat/x genuinely refined its visitor daft.yml (added a named job) and main
+  does not have the refinement. An unforced, non-interactive `daft remove` must
+  refuse and point at `daft file merge`, naming this command's own force flag
+  (-f, not branch-delete's -D). A forced removal must DISCARD the refinement -
+  stashing it under .daft/discarded/ and never writing main's daft.yml.
+  Regression for the forced-removal salvage that propagated the refinement into
+  main instead (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Refine feat/x's daft.yml with an extra named job
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n      - name: extra\n        run: echo
+      extra-job\n' > $WORK_DIR/test-repo/feat/x/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Unforced non-interactive remove refuses and names the right flag
+    run: daft remove --local feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "refined daft files"
+        - "daft file merge"
+        - "-f"
+      output_not_contains:
+        - "-D"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/x"
+
+  - name: Forced remove discards the refinement to a stash
+    run: daft remove -f --local feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Discarded"
+        - "saved to"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/.daft/discarded/feat/x/daft.yml"
+
+  - name: main's daft.yml never gained the discarded refinement
+    run: test ! -d $WORK_DIR/test-repo/feat/x
+    expect:
+      exit_code: 0
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "extra-job"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/.git/.daft/discarded/feat/x/daft.yml"
+          content: "extra-job"
