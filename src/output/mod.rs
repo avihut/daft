@@ -187,6 +187,17 @@ pub trait Output {
         let _ = self;
     }
 
+    /// Whether `warning()` reaches the user immediately (a real stderr).
+    ///
+    /// `BufferingOutput` (TUI mode, where ratatui owns the terminal) returns
+    /// `false`: its warnings land in a buffer, not in front of the user.
+    /// Callers that must guarantee a warning is *seen* — like the untrusted-
+    /// hook notice — use this to decide between emitting now and deferring
+    /// to a post-TUI flush.
+    fn live_warnings(&self) -> bool {
+        true
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Special Output
     // ─────────────────────────────────────────────────────────────────────────

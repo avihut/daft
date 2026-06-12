@@ -79,6 +79,12 @@ impl Output for BufferingOutput {
     fn is_verbose(&self) -> bool {
         false
     }
+
+    fn live_warnings(&self) -> bool {
+        // Warnings land in the buffer, not in front of the user; callers
+        // that must guarantee visibility defer to a post-TUI flush.
+        false
+    }
 }
 
 #[cfg(test)]
