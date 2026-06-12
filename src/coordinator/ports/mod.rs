@@ -17,4 +17,4 @@ pub mod store;
 
 pub use clock::Clock;
 pub use process::ProcessControl;
-pub use store::JobsStorePort;
+pub use store::{JobsStorePort, SeedsStorePort};

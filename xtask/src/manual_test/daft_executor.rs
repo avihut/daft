@@ -43,6 +43,10 @@ pub struct DaftCommandExecutor {
     /// (the var-expansion form is registered on the sandbox at construction
     /// time so scenario commands can reference it directly).
     daft_data_dir: PathBuf,
+    /// Per-sandbox state dir surfaced as `DAFT_STATE_DIR`. Isolates the
+    /// SQLite store (job records, visitor-config seeds) so scenario runs
+    /// never read or pollute the developer's real `~/.local/state/daft`.
+    daft_state_dir: PathBuf,
 }
 
 impl DaftCommandExecutor {
@@ -53,11 +57,14 @@ impl DaftCommandExecutor {
         let binary_dir = resolve_binary_dir(project_root);
         let daft_config_dir = sandbox.base_dir.join("daft-config");
         let daft_data_dir = sandbox.base_dir.join("daft-data");
+        let daft_state_dir = sandbox.base_dir.join("daft-state");
 
         std::fs::create_dir_all(&daft_config_dir)
             .with_context(|| format!("creating daft config dir: {}", daft_config_dir.display()))?;
         std::fs::create_dir_all(&daft_data_dir)
             .with_context(|| format!("creating daft data dir: {}", daft_data_dir.display()))?;
+        std::fs::create_dir_all(&daft_state_dir)
+            .with_context(|| format!("creating daft state dir: {}", daft_state_dir.display()))?;
 
         // Surface the adapter-managed paths to scenario commands. These were
         // historically baked into the sandbox's own var store; keeping them
@@ -86,6 +93,7 @@ impl DaftCommandExecutor {
             binary_dir,
             daft_config_dir,
             daft_data_dir,
+            daft_state_dir,
         })
     }
 
@@ -134,6 +142,10 @@ impl DaftCommandExecutor {
         env.insert(
             "DAFT_DATA_DIR".into(),
             self.daft_data_dir.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "DAFT_STATE_DIR".into(),
+            self.daft_state_dir.to_string_lossy().into_owned(),
         );
 
         // PATH — binary_dir first so locally-built daft wins. `to_string_lossy`

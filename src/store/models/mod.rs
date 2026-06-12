@@ -8,7 +8,9 @@
 pub mod invocation;
 pub mod job;
 pub mod repo_policy;
+pub mod visitor_seed;
 
 pub use invocation::InvocationRow;
 pub use job::JobRow;
 pub use repo_policy::RepoPolicyRow;
+pub use visitor_seed::VisitorSeedRow;
