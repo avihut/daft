@@ -159,6 +159,13 @@ pub struct Args {
 
     #[arg(
         long,
+        requires = "push",
+        help = "Skip the repo's pre-push hook when pushing (requires --push)"
+    )]
+    no_verify: bool,
+
+    #[arg(
+        long,
         help = "Include additional branches in rebase/push (email, branch name, or 'unowned')"
     )]
     include: Vec<String>,
@@ -354,6 +361,7 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
             &mut output,
             &settings,
             args.force_with_lease,
+            args.no_verify,
             &push_skip,
             &default_branch,
         )?;
@@ -617,6 +625,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_rebase_branch: Arc<Option<String>> = Arc::new(args.rebase.clone());
     let shared_push = args.push;
     let shared_force_with_lease = args.force_with_lease;
+    let shared_no_verify = args.no_verify;
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -805,6 +814,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_project_root,
                             &shared_settings,
                             shared_force_with_lease,
+                            shared_no_verify,
                             outcomes,
                         );
                         if status == TaskStatus::Succeeded {
@@ -1154,6 +1164,7 @@ fn execute_push_task(
     project_root: &std::path::Path,
     settings: &DaftSettings,
     force_with_lease: bool,
+    no_verify: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     // Push doesn't need the branch's worktree; any git dir works.
@@ -1181,6 +1192,7 @@ fn execute_push_task(
     let params = push::PushParams {
         force_with_lease,
         remote_name: settings.remote.clone(),
+        no_verify,
     };
 
     let mut sink = NullSink;
@@ -1191,6 +1203,9 @@ fn execute_push_task(
         branch_name,
         &params,
         &mut sink,
+        &crate::core::worktree::ports::NoopStageRunner,
+        None,
+        None,
     );
 
     if result.no_upstream {
@@ -1211,9 +1226,26 @@ fn execute_push_task(
             TaskMessage::Pushed,
             branch_outcomes.clone(),
         )
+    } else if matches!(
+        result.hook,
+        push::HookVerdict::Rejected | push::HookVerdict::Passed
+    ) {
+        // A failed push with the pre-push gate in effect is a real failure
+        // (#599), not a divergence warning.
+        let first_line = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or("push rejected by pre-push hook")
+            .to_string();
+        (
+            TaskStatus::Failed,
+            TaskMessage::Failed(first_line),
+            branch_outcomes.clone(),
+        )
     } else {
-        // Push failures are warnings, not hard failures — use Succeeded + Diverged
-        // so that check_tui_failures does not count them as Failed.
+        // Hook-less push failures stay warnings, not hard failures — use
+        // Succeeded + Diverged so check_tui_failures does not count them.
         (
             TaskStatus::Succeeded,
             TaskMessage::Diverged,
@@ -1660,6 +1692,7 @@ fn run_push_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
     force_with_lease: bool,
+    no_verify: bool,
     skip_branches: &HashSet<String>,
     base_branch: &str,
 ) -> Result<()> {
@@ -1673,14 +1706,42 @@ fn run_push_phase(
     let params = push::PushParams {
         force_with_lease,
         remote_name: wt_config.remote_name.clone(),
+        no_verify,
     };
 
-    output.start_spinner("Pushing branches...");
+    // When a pre-push hook will run, its reporting renders as phase/job
+    // output through the presenter — leave the spinner off so the two don't
+    // fight over the terminal (hook-less pushes keep the spinner as before).
+    let hook_present = git.pre_push_hook_exists(&project_root);
+    let presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if hook_present && !no_verify {
+            let p: Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::executor::cli_presenter::CliPresenter::auto(
+                    &crate::settings::HookOutputConfig::default(),
+                );
+            Some(p)
+        } else {
+            None
+        };
+
+    if presenter.is_none() {
+        output.start_spinner("Pushing branches...");
+    }
     let exec_result = {
         let mut sink = OutputSink(output);
-        push::execute(&params, &git, &project_root, &mut sink, skip_branches)
+        push::execute(
+            &params,
+            &git,
+            &project_root,
+            &mut sink,
+            skip_branches,
+            &crate::core::worktree::ports::NoopStageRunner,
+            presenter.as_ref(),
+        )
     };
-    output.finish_spinner();
+    if presenter.is_none() {
+        output.finish_spinner();
+    }
     let result = exec_result?;
 
     render_push_result(&result, output, base_branch);
@@ -1690,6 +1751,15 @@ fn run_push_phase(
             "{} branch(es) failed to push",
             result.failed_count()
         ));
+    }
+
+    // A pre-push gate saying no must surface as a failure, not a warning.
+    let gated = result.gated_failure_count();
+    if gated > 0 {
+        anyhow::bail!(
+            "{gated} push(es) failed with the repo's pre-push hook in effect \
+             (re-run with --no-verify to bypass the hook)"
+        );
     }
 
     Ok(())

@@ -4,8 +4,11 @@
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
+use crate::core::worktree::ports::NoopStageRunner;
+use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
-use crate::git::{GitCommand, PushIo, PushOptions};
+use crate::executor::presenter::JobPresenter;
+use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{
     build_template_context, calculate_worktree_path, resolve_remote_for_branch,
@@ -13,6 +16,7 @@ use crate::multi_remote::path::{
 use crate::utils::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Input parameters for the checkout-branch operation.
 pub struct CheckoutBranchParams {
@@ -36,6 +40,8 @@ pub struct CheckoutBranchParams {
     pub checkout_branch_carry: bool,
     /// Whether to push and set upstream (from settings).
     pub checkout_push: bool,
+    /// Skip the repo's pre-push hook on the upstream push (`--no-verify`).
+    pub no_verify: bool,
     /// Whether to fetch from remote before creating the worktree.
     pub checkout_fetch: bool,
     /// Optional layout for computing the worktree path.
@@ -61,10 +67,14 @@ pub struct CheckoutBranchResult {
 }
 
 /// Execute the checkout-branch operation.
+///
+/// `presenter` reports the pre-push hook run on the automatic upstream push
+/// (#599); pass `None` to skip that reporting (the hook is still honored).
 pub fn execute(
     params: &CheckoutBranchParams,
     git: &GitCommand,
     project_root: &Path,
+    presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<CheckoutBranchResult> {
     validate_branch_name(&params.new_branch_name)?;
@@ -179,8 +189,12 @@ pub fn execute(
     // Apply stashed changes
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
 
-    // Push and set upstream
-    let (push_set, push_skipped) = push_if_enabled(params, git, &worktree_path, sink);
+    // Push and set upstream. A pre-push gate refusal is deferred, not an
+    // immediate bail: the worktree must still be fully initialized
+    // (propagation, shared links, post-create hooks) before the command
+    // fails, so the user is left with a usable worktree.
+    let (push_set, push_skipped, push_gate_error) =
+        push_if_enabled(params, git, &worktree_path, presenter, sink);
 
     // Propagate in-scope untracked daft files from source worktree to the new
     // worktree, so that user post-create hooks can read them.
@@ -232,6 +246,12 @@ pub fn execute(
     .with_base_branch(&base_branch);
 
     let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
+
+    // The worktree is fully set up — now surface a deferred pre-push gate
+    // refusal as the command's failure (#599 acceptance: non-zero exit).
+    if let Some(message) = push_gate_error {
+        anyhow::bail!(message);
+    }
 
     Ok(CheckoutBranchResult {
         new_branch_name: params.new_branch_name.clone(),
@@ -530,15 +550,20 @@ fn apply_stash(
 ///
 /// Runs the push from the new worktree so the repo's `pre-push` hook fires
 /// in the branch being pushed.
+/// Returns `(push_set, push_skipped, gate_error)`. A push failure with the
+/// repo's pre-push hook in effect escalates via `gate_error` (the caller
+/// fails the command after finishing worktree setup, #599); hook-less or
+/// bypassed failures keep the legacy warn-and-continue behavior.
 fn push_if_enabled(
     params: &CheckoutBranchParams,
     git: &GitCommand,
     worktree_path: &Path,
+    presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut impl ProgressSink,
-) -> (bool, bool) {
+) -> (bool, bool, Option<String>) {
     if !params.checkout_push {
         sink.on_step("Skipping push (disabled in config)");
-        return (false, true);
+        return (false, true, None);
     }
 
     sink.on_step(&format!(
@@ -546,27 +571,57 @@ fn push_if_enabled(
         params.remote_name, params.new_branch_name
     ));
 
-    let result = git
-        .push_set_upstream_from(
-            &params.remote_name,
-            &params.new_branch_name,
-            worktree_path,
-            &PushOptions::default(),
-        )
-        .and_then(PushIo::into_result);
+    let result = push_with_hooks(
+        git,
+        PushAction::SetUpstream {
+            remote: &params.remote_name,
+            branch: &params.new_branch_name,
+        },
+        worktree_path,
+        !params.no_verify,
+        &NoopStageRunner,
+        presenter,
+        None,
+    );
 
-    if let Err(e) = result {
-        sink.on_warning(&format!(
-            "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
-            params.new_branch_name, params.remote_name, e,
-            params.remote_name, params.new_branch_name
-        ));
-        (false, false)
-    } else {
-        sink.on_step(&format!(
-            "Push to '{}' and upstream tracking set successfully",
-            params.remote_name
-        ));
-        (true, false)
-    }
+    let failure = match result {
+        Ok(outcome) => match outcome.failure {
+            None => {
+                sink.on_step(&format!(
+                    "Push to '{}' and upstream tracking set successfully",
+                    params.remote_name
+                ));
+                return (true, false, None);
+            }
+            Some(msg) => {
+                let gated = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed);
+                if gated {
+                    return (
+                        false,
+                        false,
+                        Some(format!(
+                            "Could not push '{}' to '{}' with the repo's pre-push hook in effect: {}. \
+                             The worktree was created and is ready at '{}'. Fix the hook failure and \
+                             push manually with: git push -u {} {} (or re-run with --no-verify)",
+                            params.new_branch_name,
+                            params.remote_name,
+                            msg,
+                            worktree_path.display(),
+                            params.remote_name,
+                            params.new_branch_name,
+                        )),
+                    );
+                }
+                msg
+            }
+        },
+        Err(e) => format!("{e}"),
+    };
+
+    sink.on_warning(&format!(
+        "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
+        params.new_branch_name, params.remote_name, failure,
+        params.remote_name, params.new_branch_name
+    ));
+    (false, false, None)
 }

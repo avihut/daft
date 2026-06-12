@@ -23,6 +23,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "git-worktree-checkout")]
@@ -123,6 +124,12 @@ pub struct Args {
 
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
+
+    #[arg(
+        long,
+        help = "Skip the repo's pre-push hook on the automatic upstream push"
+    )]
+    no_verify: bool,
 
     /// Skip hooks this run. Repeatable / comma-separated.
     /// Selectors: `all`, a hook name (`worktree-post-create`, …),
@@ -235,6 +242,12 @@ pub struct GoArgs {
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
 
+    #[arg(
+        long,
+        help = "Skip the repo's pre-push hook on the automatic upstream push"
+    )]
+    no_verify: bool,
+
     /// Skip hooks this run (only applies when `go` creates a worktree).
     /// Selectors: `all`, a hook name (`worktree-post-create`, …),
     /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
@@ -314,6 +327,12 @@ pub struct StartArgs {
     #[arg(long, help = "Skip all remote operations (no fetch, no push)")]
     local: bool,
 
+    #[arg(
+        long,
+        help = "Skip the repo's pre-push hook on the automatic upstream push"
+    )]
+    no_verify: bool,
+
     /// Skip hooks this run. Repeatable / comma-separated.
     /// Selectors: `all`, a hook name (`worktree-post-create`, …),
     /// `tag:<tag>`, or a job name (plus its dependents). See daft-hooks(1).
@@ -352,6 +371,7 @@ pub fn run_go() -> Result<()> {
         verbose: go_args.verbose,
         at: go_args.at,
         local: go_args.local,
+        no_verify: go_args.no_verify,
         skip_hooks: go_args.skip_hooks,
     };
     run_with_args(args)
@@ -377,6 +397,7 @@ pub fn run_start() -> Result<()> {
         verbose: start_args.verbose,
         at: start_args.at,
         local: start_args.local,
+        no_verify: start_args.no_verify,
         skip_hooks: start_args.skip_hooks,
     };
     run_with_args(args)
@@ -836,6 +857,7 @@ fn run_create_branch(
         } else {
             settings.checkout_push
         },
+        no_verify: args.no_verify,
         checkout_fetch: if args.local {
             false
         } else {
@@ -846,6 +868,7 @@ fn run_create_branch(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
+    let hook_output_config = hooks_config.output.clone();
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -854,13 +877,37 @@ fn run_create_branch(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    output.start_spinner("Creating worktree...");
+    // The pre-push hook run on the auto-upstream push renders phase/job
+    // output through this presenter — keep the spinner off when it will
+    // fire so the two don't fight over the terminal (#599).
+    let push_hook_will_render =
+        params.checkout_push && !params.no_verify && git.pre_push_hook_exists(&project_root);
+    let push_presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if push_hook_will_render {
+            let p: Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config);
+            Some(p)
+        } else {
+            None
+        };
+
+    if !push_hook_will_render {
+        output.start_spinner("Creating worktree...");
+    }
     let (checkout_result, executor) = {
         let mut bridge = CommandBridge::new(output, executor);
-        let r = checkout_branch::execute(&params, git, &project_root, &mut bridge);
+        let r = checkout_branch::execute(
+            &params,
+            git,
+            &project_root,
+            push_presenter.as_ref(),
+            &mut bridge,
+        );
         (r, bridge.into_executor())
     };
-    output.finish_spinner();
+    if !push_hook_will_render {
+        output.finish_spinner();
+    }
     let result = checkout_result?;
 
     render_create_result(&result, output);

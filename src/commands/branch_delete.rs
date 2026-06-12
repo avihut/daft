@@ -60,6 +60,12 @@ pub struct Args {
     )]
     remote: bool,
 
+    #[arg(
+        long,
+        help = "Skip the repo's pre-push hook when deleting the remote branch"
+    )]
+    no_verify: bool,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
@@ -102,6 +108,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         },
         remote_only: args.remote,
         keep_local_branch: false,
+        no_verify: args.no_verify,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
     };
@@ -116,7 +123,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     output.start_spinner("Deleting branches...");
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, &mut bridge)
+        branch_delete::execute(&params, None, &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;
