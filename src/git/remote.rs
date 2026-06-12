@@ -15,8 +15,8 @@ pub enum PushStream {
 }
 
 /// Tee sink for live `git push` output lines (called from the pipe-drain
-/// threads, hence `Sync`).
-pub type PushOutputTee = dyn Fn(PushStream, &str) + Sync;
+/// threads, hence `Sync`; lifetime-parametric so callers can borrow).
+pub type PushOutputTee<'a> = dyn Fn(PushStream, &str) + Sync + 'a;
 
 /// Options threaded through every push primitive into [`GitCommand::run_push`].
 pub struct PushOptions<'a> {
@@ -26,7 +26,7 @@ pub struct PushOptions<'a> {
     /// Tee sink: every output line is forwarded here as it arrives, in
     /// addition to being captured in [`PushIo`]. Keeps the git layer free of
     /// presenter types — the composition layer bridges this to `JobPresenter`.
-    pub on_output: Option<&'a PushOutputTee>,
+    pub on_output: Option<&'a PushOutputTee<'a>>,
 }
 
 impl Default for PushOptions<'_> {
@@ -87,7 +87,7 @@ fn is_executable_file(path: &Path) -> bool {
 fn drain_push_pipe<R: Read>(
     pipe: R,
     stream: PushStream,
-    on_output: Option<&PushOutputTee>,
+    on_output: Option<&PushOutputTee<'_>>,
 ) -> String {
     let mut captured = String::new();
     for line in BufReader::new(pipe).lines().map_while(Result::ok) {
