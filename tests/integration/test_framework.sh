@@ -118,6 +118,14 @@ setup() {
     export DAFT_CONFIG_DIR="$TEMP_BASE_DIR/daft-config"
     mkdir -p "$DAFT_CONFIG_DIR"
 
+    # Isolate the daft state dir (SQLite store: job records, visitor-config
+    # seeds; coordinator sockets) so tests never read or pollute the real
+    # ~/.local/state/daft. Deliberately short ("dstate"): the coordinator
+    # binds a unix socket at <state>/coordinator-<uuid>.sock and sun_path
+    # caps at ~104 bytes on macOS.
+    export DAFT_STATE_DIR="$TEMP_BASE_DIR/dstate"
+    mkdir -p "$DAFT_STATE_DIR"
+
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do
