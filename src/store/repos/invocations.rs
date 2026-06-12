@@ -54,6 +54,20 @@ impl InvocationsRepo {
         Ok(row)
     }
 
+    /// All invocations for a repo, oldest first.
+    pub fn list_by_repo(conn: &Connection, repo_hash: &str) -> Result<Vec<InvocationRow>> {
+        let mut stmt = conn.prepare(
+            "SELECT repo_hash, invocation_id, trigger_command, hook_type, worktree, created_at, coordinator_pid, status, skip_reason
+             FROM invocations
+             WHERE repo_hash = ?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![repo_hash], row_to_invocation)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// All invocations for a repo with the given status, oldest first.
     pub fn list_by_repo_and_status(
         conn: &Connection,
