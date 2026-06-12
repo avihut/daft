@@ -29,7 +29,8 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-hooks-untrusted/main"
 
-  - name: Create worktree without trusting (hooks should NOT run)
+  - name:
+      Create worktree without trusting (hooks should NOT run, with a warning)
     run: git-worktree-checkout feature/test-hooks
     cwd: "$WORK_DIR/test-hooks-untrusted/main"
     expect:
@@ -38,3 +39,6 @@ steps:
         - "$WORK_DIR/test-hooks-untrusted/feature/test-hooks"
       files_not_exist:
         - "$WORK_DIR/test-hooks-untrusted/.hook-ran"
+      output_contains:
+        - ".daft/hooks/worktree-post-create was NOT run"
+        - "git daft hooks trust"

@@ -605,6 +605,15 @@ daft hooks dump         # Show fully merged configuration
 daft hooks run <type>   # Manually run a hook (bypasses trust)
 ```
 
+When a command skips hooks because the repo is untrusted, it prints one stderr
+warning naming the skipped hooks and suggesting `daft hooks trust` (suppressed
+by an explicit `--skip-hooks`). Each skip is recorded; a later
+`daft hooks trust` lists precise replay commands (`daft hooks run post-clone` /
+`daft hooks run worktree-post-create`) for the worktrees whose setup hooks never
+ran — run them inside each listed worktree. If an agent sees that warning,
+trusting and replaying is the way to get the worktree into its fully set-up
+state.
+
 ### Manual Hook Execution
 
 Run hooks on demand, bypassing trust checks (the user is explicitly invoking):

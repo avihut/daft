@@ -1,0 +1,67 @@
+name: --skip-hooks suppresses the untrusted-hook warning
+description:
+  "When the user explicitly opted out of hooks (--skip-hooks all or a hook-type
+  selector naming the fire), the untrusted notice would be a nag — the hooks
+  were not going to run regardless of trust. No warning, and no replay record
+  either (trusting later must not suggest replays for fires the user skipped on
+  purpose)."
+
+repos:
+  - name: test-skip-suppress
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# skip suppress"
+        commits:
+          - message: "Initial commit"
+      - name: feature/skip-all
+        from: main
+      - name: feature/skip-type
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: touch "$DAFT_WORKTREE_PATH/.post-ran"
+
+steps:
+  - name: Clone the repository
+    run:
+      git-worktree-clone --layout contained --skip-hooks all
+      $REMOTE_TEST_SKIP_SUPPRESS
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "isn't trusted"
+
+  - name: Checkout with --skip-hooks all stays silent
+    run: git-worktree-checkout --skip-hooks all feature/skip-all
+    cwd: "$WORK_DIR/test-skip-suppress/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-suppress/feature/skip-all"
+      output_not_contains:
+        - "isn't trusted"
+
+  - name: Checkout with a hook-type selector stays silent
+    run:
+      git-worktree-checkout --skip-hooks worktree-post-create feature/skip-type
+    cwd: "$WORK_DIR/test-skip-suppress/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-skip-suppress/feature/skip-type"
+      output_not_contains:
+        - "isn't trusted"
+
+  - name: Trusting suggests no replays (nothing was recorded)
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/test-skip-suppress/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Hooks were skipped here"
