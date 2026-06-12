@@ -1,0 +1,72 @@
+name: Prune skips gone-but-unmerged branches instead of force-deleting them
+description: >
+  A branch whose remote was deleted is not necessarily merged - an abandoned
+  branch's remote deletion must not destroy local work. Prune must verify merge
+  status (ancestor or squash) and skip gone-but-unmerged branches with a
+  warning; --force overrides. Regression for prune assuming "remote gone =>
+  merged" and force-deleting the local branch (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create feature worktree
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/x"
+
+  - name: Commit unique work on feat/x and push it
+    run: |
+      cd $WORK_DIR/test-repo/feat/x
+      printf 'unmerged work\n' > unmerged.txt
+      git add unmerged.txt
+      git commit -m "unmerged work"
+      git push origin feat/x
+    expect:
+      exit_code: 0
+
+  - name: Delete the remote branch without merging
+    run: git -C $WORK_DIR/test-repo/main push origin --delete feat/x
+    expect:
+      exit_code: 0
+
+  - name: Prune keeps the gone-but-unmerged branch
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "not merged"
+        - "--force"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/x"
+      branch_exists:
+        - repo: "$WORK_DIR/test-repo/main"
+          branch: "feat/x"
+
+  - name: Forced prune removes it
+    run: git-worktree-prune --force 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Worktree and branch are gone after the forced prune
+    run: test ! -d $WORK_DIR/test-repo/feat/x
+    expect:
+      exit_code: 0
+
+  - name: Local branch ref is gone after the forced prune
+    run: git -C $WORK_DIR/test-repo/main show-ref --verify refs/heads/feat/x
+    expect:
+      exit_code: 1

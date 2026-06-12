@@ -1,0 +1,83 @@
+name: Prune removes a merged worktree with a stale pristine daft.yml silently
+description: >
+  feat/x was seeded with daft.yml version A and never edited it; main's copy
+  later evolved to B. After the branch is merged and its remote deleted, prune
+  must remove the worktree cleanly - a pristine copy loses nothing - and leave
+  main's daft.yml untouched. Regression for the divergence guard
+  false-positively skipping pristine-but-stale worktrees (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Evolve main's daft.yml to version B
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v2\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Push feat/x so it tracks origin
+    run: git -C $WORK_DIR/test-repo/feat/x push -u origin feat/x
+    expect:
+      exit_code: 0
+
+  - name: Delete the remote branch (merged - no unique commits)
+    run: git -C $WORK_DIR/test-repo/main push origin --delete feat/x
+    expect:
+      exit_code: 0
+
+  - name: Prune removes the worktree without skipping
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Skipping feat/x"
+        - "Keeping feat/x"
+        - "differ"
+
+  - name: Worktree is gone and main's daft.yml still holds version B
+    run: test ! -d $WORK_DIR/test-repo/feat/x
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v1"
