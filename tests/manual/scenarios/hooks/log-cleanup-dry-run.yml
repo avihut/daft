@@ -46,7 +46,7 @@ steps:
   - name: Backdate every SQLite job/invocation timestamp to 2 days ago
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       OLD=$(python3 -c "import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
       sqlite3 "$DB" \
@@ -60,7 +60,7 @@ steps:
   - name: Snapshot the invocation count before --dry-run
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
       mkdir -p "$WORK_DIR/.scratch"
@@ -85,7 +85,7 @@ steps:
   - name: Confirm no invocation dirs were actually removed
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-dryrun/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       BEFORE=$(cat "$WORK_DIR/.scratch/before")
       echo "INV_COUNT_AFTER=$INV_COUNT"

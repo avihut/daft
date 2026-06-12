@@ -108,8 +108,9 @@ daft start feat/my-feature
 ```
 
 Before the `worktree-post-create` hook fires, daft copies `daft.yml` (and
-`daft.local.yml` if present) from your current worktree into the new one. The
-new worktree's hooks run from the propagated copy — no manual copy step needed.
+`daft.local.yml` if present) verbatim from your current worktree into the new
+one and records what it wrote as that worktree's _seed_. The new worktree's
+hooks run from the propagated copy — no manual copy step needed.
 
 ```
 api-service.feat/my-feature/
@@ -191,13 +192,18 @@ to back up your file first.
 - `daft install` is idempotent — running it on a repo that already has a
   `daft.yml` reports the file's tracked/visitor status and exits cleanly rather
   than overwriting it.
-- Visitor propagation copies are `merge_configs`-resolved, not blind copies. If
-  the target worktree already has an untracked `daft.yml` with local edits, the
-  source wins on conflicts but the target's content is the base — edits unique
-  to the target are preserved.
-- Before removing a worktree whose visitor config differs from the merge
-  target's, daft prompts and suggests `daft file merge`. Pass `--force` to
-  bypass if you genuinely don't care about the divergence.
+- Daft tracks the _seed_ of every propagated copy — the exact content it wrote
+  into the worktree. A copy you never touched is pristine: deleting or merging
+  that worktree never rewrites another worktree's config, even when your main
+  worktree's `daft.yml` has since moved on.
+- Copies you edited are consolidated with a three-way merge against the seed:
+  only your changes move, the target's own changes survive, and keys changed on
+  both sides require an explicit choice (prompt, or `daft file merge -y`).
+- Before removing a worktree whose visitor config was genuinely refined, daft
+  offers to consolidate (interactively) or refuses and suggests
+  `daft file merge`. Forcing (`-f`/`--force`) discards the refinements into
+  `<git-common-dir>/.daft/discarded/<branch>/`, where they can be recovered — it
+  never merges them into another worktree.
 
 ## Where to next
 

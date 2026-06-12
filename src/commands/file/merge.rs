@@ -1,10 +1,11 @@
 //! Implementation of `daft file merge` — merge a source daft.yml into a target.
 //!
-//! Merge semantics: recursive YAML merge via the existing `merge_configs` /
-//! `merge_hook_defs` functions used at load time. Source wins on conflicts.
-//! After a successful merge the source file is deleted unless `--keep-source`
-//! is passed. When the target is currently untracked the command prompts before
-//! writing unless `--yes` / `--force` is passed.
+//! Merge semantics: when the source carries seed provenance, a three-way
+//! `merge3` against the seed (only genuine refinements move; conflicts need
+//! an explicit side; the target is backed up first). Without provenance, the
+//! legacy two-way `merge_configs` where source wins on conflicts, guarded by
+//! the untracked-target confirmation. After a successful merge the source
+//! file is deleted unless `--keep-source` is passed.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -27,14 +28,23 @@ pub struct MergeOptions {
 #[command(name = "daft file merge")]
 #[command(about = "Merge a source daft.yml into a target daft.yml")]
 #[command(long_about = "\
-Merge SOURCE into TARGET using the same recursive YAML merge that daft uses\n\
-at load time: source wins on conflicts, new hook sections are added wholesale.\n\
+Merge SOURCE into TARGET. When the source is a worktree-root daft file with\n\
+seed provenance (daft recorded what it wrote there), the merge is THREE-WAY\n\
+against that seed: only keys the source genuinely refined move into the\n\
+target, a key-level preview is printed first, and the target is backed up to\n\
+<git-common-dir>/.daft/backups/file-merge/ before writing. Keys changed on\n\
+both sides are conflicts: pick a side at the interactive prompt, pass -y to\n\
+take the source's values, or the command aborts non-zero listing the keys.\n\
+\n\
+Without provenance the legacy two-way merge applies: source wins on\n\
+conflicts, new hook sections are added wholesale, and when TARGET is\n\
+untracked (visitor file) you are prompted for confirmation unless\n\
+--yes / --force is passed.\n\
 \n\
 When TARGET is omitted, daft.yml in the current directory is used.\n\
 \n\
-By default the source file is deleted after a successful merge.\n\
-When TARGET is untracked (visitor file) you are prompted for confirmation\n\
-unless --yes / --force is passed.")]
+By default the source file is deleted after a successful merge\n\
+(--keep-source retains it and re-seeds it as consolidated).")]
 pub struct Args {
     /// Target file to merge INTO, or source file when TARGET is omitted
     first: PathBuf,

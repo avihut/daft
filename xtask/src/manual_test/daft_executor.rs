@@ -44,9 +44,16 @@ pub struct DaftCommandExecutor {
     /// time so scenario commands can reference it directly).
     daft_data_dir: PathBuf,
     /// Per-sandbox state dir surfaced as `DAFT_STATE_DIR`. Isolates the
-    /// SQLite store (job records, visitor-config seeds) so scenario runs
-    /// never read or pollute the developer's real `~/.local/state/daft`.
-    daft_state_dir: PathBuf,
+    /// SQLite store (job records, visitor-config seeds) and the coordinator
+    /// socket so scenario runs never read or pollute the developer's real
+    /// `~/.local/state/daft`.
+    ///
+    /// Deliberately NOT under the sandbox base dir: the coordinator binds a
+    /// unix socket at `<state>/coordinator-<uuid>.sock`, and `sun_path` caps
+    /// at ~104 bytes on macOS — the sandbox base path alone nearly exhausts
+    /// that. A short `TempDir` directly under the system temp root keeps the
+    /// socket bindable and cleans itself up when the executor drops.
+    daft_state_dir: tempfile::TempDir,
 }
 
 impl DaftCommandExecutor {
@@ -57,14 +64,18 @@ impl DaftCommandExecutor {
         let binary_dir = resolve_binary_dir(project_root);
         let daft_config_dir = sandbox.base_dir.join("daft-config");
         let daft_data_dir = sandbox.base_dir.join("daft-data");
-        let daft_state_dir = sandbox.base_dir.join("daft-state");
+        // `tempdir_in("/tmp")`, not `tempdir()`: macOS's $TMPDIR
+        // (/var/folders/…/T/) is ~50 chars by itself, which would put the
+        // socket path right back over the sun_path limit.
+        let daft_state_dir = tempfile::Builder::new()
+            .prefix("daft-st-")
+            .tempdir_in("/tmp")
+            .context("creating daft state dir")?;
 
         std::fs::create_dir_all(&daft_config_dir)
             .with_context(|| format!("creating daft config dir: {}", daft_config_dir.display()))?;
         std::fs::create_dir_all(&daft_data_dir)
             .with_context(|| format!("creating daft data dir: {}", daft_data_dir.display()))?;
-        std::fs::create_dir_all(&daft_state_dir)
-            .with_context(|| format!("creating daft state dir: {}", daft_state_dir.display()))?;
 
         // Surface the adapter-managed paths to scenario commands. These were
         // historically baked into the sandbox's own var store; keeping them
@@ -145,7 +156,7 @@ impl DaftCommandExecutor {
         );
         env.insert(
             "DAFT_STATE_DIR".into(),
-            self.daft_state_dir.to_string_lossy().into_owned(),
+            self.daft_state_dir.path().to_string_lossy().into_owned(),
         );
 
         // PATH — binary_dir first so locally-built daft wins. `to_string_lossy`

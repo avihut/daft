@@ -48,7 +48,7 @@ steps:
   - name: Confirm an invocation dir exists for this repo
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       ls "$JOBS_DIR" >/dev/null 2>&1 || { echo "NO_JOBS_DIR: $JOBS_DIR"; exit 1; }
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
@@ -61,7 +61,7 @@ steps:
   - name: Backdate every SQLite job/invocation timestamp to 2 days ago
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       OLD=$(python3 -c "import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
       sqlite3 "$DB" \
@@ -85,7 +85,7 @@ steps:
   - name: Confirm the invocation dir is gone
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-retention/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
       echo "INV_COUNT_AFTER=$INV_COUNT"
       [ "$INV_COUNT" = "0" ] || { echo "expected 0 invocation dirs, found $INV_COUNT"; exit 1; }

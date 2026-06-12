@@ -13,6 +13,24 @@ repo's tracked file list). Daft treats the file as a visitor configuration: it
 stays out of git, but daft still propagates it between worktrees through your
 normal development workflow. See [visitor configuration](/about/glossary).
 
+## What happens to my visitor `daft.yml` when I delete a worktree?
+
+Daft records what it wrote into each worktree (the file's _seed_) and compares
+the copy against it at removal time. An untouched copy is deleted with the
+worktree — even when the default branch's config has since moved on, removal
+never overwrites it. A copy you edited is real data: daft offers to consolidate
+it (a three-way merge that only moves your changes), refuses in scripts, or —
+when you force — discards it to `<git-common-dir>/.daft/discarded/<branch>/`
+where you can recover it. The default branch's config is only ever written by an
+announced `daft merge` consolidation or an explicit `daft file merge`.
+
+## Where did my deleted worktree's daft file go?
+
+Forced removals (`daft remove -f`, `prune --force`) stash refined untracked daft
+files under `<git-common-dir>/.daft/discarded/<branch>/` before deleting the
+worktree. `daft file merge` likewise backs up the target under
+`<git-common-dir>/.daft/backups/file-merge/` before writing it.
+
 ## Does daft replace `git`?
 
 No. daft sits next to git. Every daft command either calls into git or wraps a

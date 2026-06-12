@@ -70,7 +70,7 @@ steps:
       meta.json is no longer written; the coordinator.db is the source of truth.
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       for i in $(seq 1 20); do
         if [ -f "$DB" ]; then
           REMAINING=$(sqlite3 "$DB" \
@@ -99,7 +99,7 @@ steps:
       + success = best-effort log removal).
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.jsonl' 2>/dev/null)
       echo "ok_logs_found:"
       printf '%s\n' "$LOGS"
@@ -116,7 +116,7 @@ steps:
       debug).
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       LOG=$(find "$JOBS_DIR" -path '*silent-fail-job*' -name 'output.jsonl' 2>/dev/null | head -1)
       echo "fail_log: $LOG"
       [ -n "$LOG" ] && [ -f "$LOG" ] || { echo "ASSERTION_FAILED: silent-fail-job log missing"; exit 1; }
