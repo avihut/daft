@@ -167,6 +167,176 @@ impl SeedsContext {
     }
 }
 
+// ── Classification ──────────────────────────────────────────────────────────
+
+/// Provenance state of one in-scope file in a worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedClass {
+    /// Byte-identical to the recorded seed: daft put it there and nobody
+    /// touched it. Deleting the worktree loses nothing.
+    Pristine,
+    /// Edited since it was seeded: genuine user data.
+    Refined,
+    /// No seed recorded (pre-provenance worktree, hand-authored file, store
+    /// unavailable). Treated like Refined: protective.
+    NoSeed,
+}
+
+/// Classification of one in-scope file, plus the two-way subsumption check
+/// against the consolidation target.
+#[derive(Debug, Clone)]
+pub struct FileClass {
+    /// `daft.yml` or `daft.local.yml`.
+    pub filename: String,
+    pub class: SeedClass,
+    /// True when the target's copy already represents everything this file
+    /// contains (`merge(target, source) == target`) — removal loses nothing
+    /// even for a Refined/NoSeed copy (e.g. it was already consolidated).
+    /// Always false when there is no target worktree to compare against.
+    pub subsumed_by_target: bool,
+}
+
+impl FileClass {
+    /// May this file's worktree copy be deleted without losing config?
+    pub fn removable(&self) -> bool {
+        matches!(self.class, SeedClass::Pristine) || self.subsumed_by_target
+    }
+}
+
+/// Classify every in-scope untracked daft file in `source_wt`.
+///
+/// In scope: `daft.yml` when it exists and classifies as a visitor
+/// (untracked) file; `daft.local.yml` whenever it exists. A file absent
+/// from disk is simply not listed — nothing on disk means nothing to lose.
+///
+/// `seeds: None` (store unavailable) classifies everything as NoSeed.
+/// `target_wt: None` (no worktree for the merge target) disables the
+/// subsumption fallback.
+pub fn classify_in_scope_files(
+    seeds: Option<&SeedsContext>,
+    branch_slug: &str,
+    source_wt: &Path,
+    target_wt: Option<&Path>,
+) -> Vec<FileClass> {
+    use crate::hooks::visitor_propagation::{
+        VISITOR_DAFT_LOCAL_YML, VISITOR_DAFT_YML, file_has_divergence,
+    };
+    use crate::hooks::yaml_config_loader::{ConfigStatus, classify_main_config};
+
+    let mut classes = Vec::new();
+
+    for filename in [VISITOR_DAFT_YML, VISITOR_DAFT_LOCAL_YML] {
+        let path = source_wt.join(filename);
+        if !path.is_file() {
+            continue;
+        }
+        if filename == VISITOR_DAFT_YML
+            && !matches!(classify_main_config(source_wt), ConfigStatus::Visitor)
+        {
+            // Tracked daft.yml travels with git; not in scope.
+            continue;
+        }
+
+        let class = match seeds {
+            Some(ctx) => match (ctx.get_seed(branch_slug, filename), std::fs::read(&path)) {
+                (Some(seed), Ok(bytes)) if seed.content.as_bytes() == bytes.as_slice() => {
+                    SeedClass::Pristine
+                }
+                (Some(_), Ok(_)) => SeedClass::Refined,
+                // Unreadable file or no seed row: protective.
+                _ => SeedClass::NoSeed,
+            },
+            None => SeedClass::NoSeed,
+        };
+
+        // The subsumption check is the semantic fallback that lets refined
+        // and NoSeed copies still be removable when the target already has
+        // everything (e.g. they were consolidated earlier). An error in the
+        // check counts as divergent — protective.
+        let subsumed_by_target = match target_wt {
+            Some(target) => !file_has_divergence(source_wt, target, filename).unwrap_or(true),
+            None => false,
+        };
+
+        classes.push(FileClass {
+            filename: filename.to_string(),
+            class,
+            subsumed_by_target,
+        });
+    }
+
+    classes
+}
+
+/// True when every in-scope file may be deleted silently.
+pub fn all_removable(classes: &[FileClass]) -> bool {
+    classes.iter().all(FileClass::removable)
+}
+
+/// The files that block a silent removal (refined/no-seed and not subsumed).
+pub fn blocking_files(classes: &[FileClass]) -> Vec<&FileClass> {
+    classes.iter().filter(|c| !c.removable()).collect()
+}
+
+// ── Discard stash ───────────────────────────────────────────────────────────
+
+/// Where a stashed copy goes under `<git-common-dir>/.daft/`.
+#[derive(Debug, Clone, Copy)]
+pub enum StashKind {
+    /// Refinements the user chose to discard (forced removal, forced prune).
+    Discarded,
+    /// Pre-write backups (e.g. `daft file merge` target).
+    Backup,
+}
+
+impl StashKind {
+    fn dir(self) -> &'static str {
+        match self {
+            StashKind::Discarded => "discarded",
+            StashKind::Backup => "backups",
+        }
+    }
+}
+
+/// Copy `file` to `<git-common-dir>/.daft/<kind>/<label>/<file-name>`,
+/// suffixing `-1`, `-2`, … on collision so nothing is overwritten. `label`
+/// is typically the branch slug (slashes nest directories, mirroring how
+/// worktree paths nest). Returns the destination for the user-facing
+/// message; `None` (with a debug log) on any failure — a failed stash must
+/// never fail the operation that requested it.
+pub fn stash_file(
+    git_common_dir: &Path,
+    kind: StashKind,
+    label: &str,
+    file: &Path,
+) -> Option<std::path::PathBuf> {
+    let file_name = file.file_name()?;
+    let dir = git_common_dir.join(".daft").join(kind.dir()).join(label);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        crate::log_debug!("stash dir creation failed at {}: {e}", dir.display());
+        return None;
+    }
+
+    let mut dest = dir.join(file_name);
+    let mut suffix = 0u32;
+    while dest.exists() {
+        suffix += 1;
+        if suffix > 999 {
+            crate::log_debug!("stash collision overflow for {}", dest.display());
+            return None;
+        }
+        dest = dir.join(format!("{}-{suffix}", file_name.to_string_lossy()));
+    }
+
+    match std::fs::copy(file, &dest) {
+        Ok(_) => Some(dest),
+        Err(e) => {
+            crate::log_debug!("stash copy failed to {}: {e}", dest.display());
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +406,208 @@ mod tests {
         ctx.delete_seed("feat/x", "daft.yml");
         ctx.delete_seeds_for_branch("feat/x");
         assert!(ctx.list_seeds().is_empty());
+    }
+
+    // ── Classification ──────────────────────────────────────────────
+
+    /// Init a temp git repo so `classify_main_config` sees untracked files
+    /// as Visitor. Local config only (never global).
+    fn init_git(dir: &Path) {
+        use std::process::Command;
+        Command::new("git")
+            .args(["init"])
+            .arg(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "t@t.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "T"])
+            .output()
+            .unwrap();
+    }
+
+    /// Test fixture holding the seeds context plus every TempDir guard it
+    /// depends on (dropping the state dir under an open pool would break
+    /// later reads).
+    struct ClassifyFixture {
+        ctx: SeedsContext,
+        src: tempfile::TempDir,
+        tgt: tempfile::TempDir,
+        _common: tempfile::TempDir,
+        _state: tempfile::TempDir,
+    }
+
+    /// Fixture: seeds ctx + source/target worktrees (both git repos), with
+    /// `content` seeded for feat/x's daft.yml.
+    fn classify_fixture(content: &str) -> ClassifyFixture {
+        let common = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let src = tempdir().unwrap();
+        let tgt = tempdir().unwrap();
+        init_git(src.path());
+        init_git(tgt.path());
+        fs::write(src.path().join("daft.yml"), content).unwrap();
+
+        let ctx = SeedsContext::open_in(common.path(), state.path()).unwrap();
+        ctx.record_seed_file("feat/x", src.path(), "daft.yml");
+        ClassifyFixture {
+            ctx,
+            src,
+            tgt,
+            _common: common,
+            _state: state,
+        }
+    }
+
+    const SEED_A: &str = "hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v1\n";
+    const TARGET_B: &str = "hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v2\n";
+    const REFINED: &str = "hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v1\n      - name: extra\n        run: echo extra-job\n";
+
+    #[test]
+    fn pristine_stale_copy_is_removable_against_evolved_target() {
+        // THE headline case from issue #628: the worktree still holds the
+        // seeded A, the target moved on to B. Two-way divergence says
+        // "divergent"; provenance says "pristine" — removable.
+        let f = classify_fixture(SEED_A);
+        fs::write(f.tgt.path().join("daft.yml"), TARGET_B).unwrap();
+
+        let classes =
+            classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), Some(f.tgt.path()));
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0].class, SeedClass::Pristine);
+        assert!(
+            !classes[0].subsumed_by_target,
+            "two-way check alone would have blocked this"
+        );
+        assert!(all_removable(&classes));
+    }
+
+    #[test]
+    fn refined_copy_blocks_unless_subsumed() {
+        let f = classify_fixture(SEED_A);
+        fs::write(f.src.path().join("daft.yml"), REFINED).unwrap();
+        fs::write(f.tgt.path().join("daft.yml"), SEED_A).unwrap();
+
+        let classes =
+            classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), Some(f.tgt.path()));
+        assert_eq!(classes[0].class, SeedClass::Refined);
+        assert!(!all_removable(&classes));
+        assert_eq!(blocking_files(&classes).len(), 1);
+
+        // Once the target holds the refinement too, the copy is subsumed.
+        fs::write(f.tgt.path().join("daft.yml"), REFINED).unwrap();
+        let classes =
+            classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), Some(f.tgt.path()));
+        assert_eq!(classes[0].class, SeedClass::Refined);
+        assert!(classes[0].subsumed_by_target);
+        assert!(all_removable(&classes));
+    }
+
+    #[test]
+    fn no_store_classifies_noseed_and_falls_back_to_subsumption() {
+        let src = tempdir().unwrap();
+        let tgt = tempdir().unwrap();
+        init_git(src.path());
+        init_git(tgt.path());
+        fs::write(src.path().join("daft.local.yml"), "hooks: {}\n").unwrap();
+
+        // Divergent (target lacks the file): blocked.
+        let classes = classify_in_scope_files(None, "feat/x", src.path(), Some(tgt.path()));
+        assert_eq!(classes[0].class, SeedClass::NoSeed);
+        assert!(!all_removable(&classes));
+
+        // Identical content in target: subsumed, removable.
+        fs::write(tgt.path().join("daft.local.yml"), "hooks: {}\n").unwrap();
+        let classes = classify_in_scope_files(None, "feat/x", src.path(), Some(tgt.path()));
+        assert!(all_removable(&classes));
+    }
+
+    #[test]
+    fn absent_files_and_tracked_daft_yml_are_out_of_scope() {
+        let f = classify_fixture(SEED_A);
+        // Delete the file: nothing in scope at all.
+        fs::remove_file(f.src.path().join("daft.yml")).unwrap();
+        let classes =
+            classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), Some(f.tgt.path()));
+        assert!(classes.is_empty());
+
+        // A tracked daft.yml is git's business, not propagation's.
+        fs::write(f.src.path().join("daft.yml"), SEED_A).unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(f.src.path())
+            .args(["add", "daft.yml"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(f.src.path())
+            .args(["commit", "-m", "track"])
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+        let classes =
+            classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), Some(f.tgt.path()));
+        assert!(classes.is_empty());
+    }
+
+    #[test]
+    fn missing_target_disables_subsumption_only() {
+        let f = classify_fixture(SEED_A);
+        fs::write(f.src.path().join("daft.yml"), REFINED).unwrap();
+        let classes = classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), None);
+        assert_eq!(classes[0].class, SeedClass::Refined);
+        assert!(!classes[0].subsumed_by_target);
+        assert!(!all_removable(&classes));
+
+        // Pristine stays removable even without a target.
+        fs::write(f.src.path().join("daft.yml"), SEED_A).unwrap();
+        let classes = classify_in_scope_files(Some(&f.ctx), "feat/x", f.src.path(), None);
+        assert!(all_removable(&classes));
+    }
+
+    // ── Stash ────────────────────────────────────────────────────────
+
+    #[test]
+    fn stash_copies_with_nested_label_and_collision_suffix() {
+        let common = tempdir().unwrap();
+        let wt = tempdir().unwrap();
+        let file = wt.path().join("daft.yml");
+        fs::write(&file, "v1").unwrap();
+
+        let dest = stash_file(common.path(), StashKind::Discarded, "feat/x", &file).unwrap();
+        assert!(
+            dest.ends_with(".daft/discarded/feat/x/daft.yml"),
+            "{dest:?}"
+        );
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "v1");
+
+        // Second stash of the same name lands beside it, never overwrites.
+        fs::write(&file, "v2").unwrap();
+        let dest2 = stash_file(common.path(), StashKind::Discarded, "feat/x", &file).unwrap();
+        assert!(dest2.ends_with("daft.yml-1"), "{dest2:?}");
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "v1", "original intact");
+        assert_eq!(fs::read_to_string(&dest2).unwrap(), "v2");
+
+        // Backup kind gets its own tree.
+        let b = stash_file(common.path(), StashKind::Backup, "file-merge", &file).unwrap();
+        assert!(b.ends_with(".daft/backups/file-merge/daft.yml"), "{b:?}");
+    }
+
+    #[test]
+    fn stash_missing_source_returns_none() {
+        let common = tempdir().unwrap();
+        let missing = common.path().join("nope/daft.yml");
+        assert!(stash_file(common.path(), StashKind::Discarded, "x", &missing).is_none());
     }
 }
