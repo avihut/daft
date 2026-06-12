@@ -212,7 +212,7 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 | `daft worktree-carry <targets>`                                                                                                                                              | Transfer uncommitted changes to one or more other worktrees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `daft worktree-fetch [targets]`                                                                                                                                              | Update worktree branches from remote (supports refspec syntax source:destination)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `daft worktree-branch -m <source> <new-branch>`                                                                                                                              | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `daft git-worktree-sync [-f] [-v\|-vv] [--rebase BRANCH [--autostash]] [--push [--force-with-lease]] [--include VALUE]... [--stat summary\|lines]`                           | Synchronize all worktrees: prune stale + update all + optional rebase + optional push (`-f`/`--prune-dirty` for dirty worktrees, `-v` hook details, `-vv` full sequential). By default, rebase and push apply only to branches you own (matching `git config user.email`). Use `--include` to add more branches: `unowned` for all, an email address for a teammate's branches, or a branch name for one specific branch.                                                                                                                     |
+| `daft git-worktree-sync [-f] [-v\|-vv] [--rebase BRANCH [--autostash]] [--push [--force-with-lease] [--no-verify]] [--include VALUE]... [--stat summary\|lines]`             | Synchronize all worktrees: prune stale + update all + optional rebase + optional push (`-f`/`--prune-dirty` for dirty worktrees, `-v` hook details, `-vv` full sequential). By default, rebase and push apply only to branches you own (matching `git config user.email`). Use `--include` to add more branches: `unowned` for all, an email address for a teammate's branches, or a branch name for one specific branch.                                                                                                                     |
 | `daft worktree-merge [SOURCE...] [--into <TARGET>] [--merge\|--squash\|--rebase\|--rebase-merge] [-s <STRAT>] [--adopt-target\|--no-adopt-target] [-y] [-r] [--set-default]` | Merge one or more source branches into a target worktree's branch. Without `--into`, the target is the current worktree. With `--into <target>`, merges into another worktree without changing directories. Multiple sources trigger octopus. `-r` removes the source worktree and branch after success. `--adopt-target` creates an ephemeral worktree when the target branch has no worktree. `--set-default` writes style and cleanup to `git config --local`. Finish with `daft worktree-merge --abort\|--continue\|--quit [<worktree>]`. |
 
 ### Adoption and Ejection
@@ -654,6 +654,18 @@ selector matching nothing warns and the run proceeds.
 (which is an inclusion filter). `--skip-hooks all` cannot be combined with
 `--trust-hooks`; a partial skip (`tag:`/`<job>`) still runs your own hooks and
 remains compatible with `--trust-hooks`.
+
+### Git pre-push Hooks on daft Pushes
+
+Separate from daft's own hooks: every daft-initiated `git push` honors the
+repo's git-level `pre-push` hook (native `.git/hooks` or `core.hooksPath`
+managers like lefthook/husky/pre-commit). The hook run is reported as a
+`pre-push` phase. A failing hook blocks the push and the command exits non-zero
+— any worktree it created or moved is still completed and usable, and the error
+names the manual recovery command. Pass `--no-verify` to the pushing command
+(`daft sync --push`, `daft start`/`go -b`, `daft rename`, `daft remove`,
+`daft multi-remote move`) to skip the hook for one invocation. `--skip-hooks`
+does NOT affect git-level hooks — it only filters daft's own jobs.
 
 ### Move Hooks
 
