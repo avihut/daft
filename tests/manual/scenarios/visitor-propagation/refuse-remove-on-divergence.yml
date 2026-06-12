@@ -1,8 +1,10 @@
 name: Refuse worktree removal when untracked daft files diverge
 description: >
-  When a worktree has a daft.local.yml (gitignored personal overlay) that is
-  absent or differs from the merge target's, branch-delete refuses removal.
-  Passing -D (--force) bypasses the check and removes the worktree.
+  When a worktree has a daft.local.yml (gitignored personal overlay) the merge
+  target lacks, branch-delete refuses removal. The file was written after the
+  worktree was created, so it has no seed provenance (NoSeed) and is treated
+  like a refinement. Passing -D (--force) discards it to .daft/discarded/ and
+  removes the worktree without ever writing the merge target.
 
 repos:
   - name: test-repo
@@ -51,14 +53,20 @@ steps:
     expect:
       exit_code: 1
       output_contains:
-        - "untracked daft files"
+        - "refined daft files"
+        - "daft file merge"
       dirs_exist:
         - "$WORK_DIR/test-repo/feat/x"
 
-  - name: Delete feat/x with -D force should succeed
+  - name: Delete feat/x with -D force discards to the stash
     run: git-worktree-branch-delete -D feat/x 2>&1
     cwd: "$WORK_DIR/test-repo"
     expect:
       exit_code: 0
       files_not_exist:
         - "$WORK_DIR/test-repo/feat/x"
+        - "$WORK_DIR/test-repo/main/daft.local.yml"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/.daft/discarded/feat/x/daft.local.yml"
+      output_contains:
+        - "Discarded"

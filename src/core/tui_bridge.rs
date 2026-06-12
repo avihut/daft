@@ -57,6 +57,10 @@ impl ProgressSink for TuiBridge {
     fn on_debug(&mut self, _msg: &str) {}
 }
 
+// TUI workers cannot prompt (raw-mode terminal is owned by the TUI): the
+// default Abort answers make refined daft files refuse removal there.
+impl crate::core::ConsolidationPrompter for TuiBridge {}
+
 impl HookRunner for TuiBridge {
     fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome> {
         let hook_type = ctx.hook_type;

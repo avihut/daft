@@ -218,6 +218,7 @@ pub fn run_remove() -> Result<()> {
         remove_args.quiet,
         remove_args.local,
         remove_args.remote,
+        "-f/--force",
         &mut output,
         &settings,
     )
@@ -431,6 +432,7 @@ fn run_with_args(args: Args) -> Result<()> {
             args.quiet,
             args.local,
             args.remote,
+            "-D/--force",
             &mut output,
             &settings,
         )?;
@@ -438,12 +440,14 @@ fn run_with_args(args: Args) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_branch_delete(
     branches: &[String],
     force: bool,
     quiet: bool,
     local_only: bool,
     remote_only: bool,
+    force_flag_label: &str,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -464,6 +468,8 @@ fn run_branch_delete(
         keep_local_branch: false,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
+        skip_merge_validation: false,
+        force_flag_label: force_flag_label.to_string(),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
