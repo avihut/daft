@@ -68,7 +68,7 @@ steps:
       the 1KB budget so the post-pass has something to evict.
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-prune-budget-accounting/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
       [ "$INV_COUNT" -ge 5 ] || { echo "expected >=5 invs, got $INV_COUNT"; exit 1; }
@@ -110,7 +110,7 @@ steps:
       just printed numbers).
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-prune-budget-accounting/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_AFTER=$INV_COUNT"
       [ "$INV_COUNT" -le 3 ] || { echo "expected <=3 after eviction, got $INV_COUNT"; exit 1; }
