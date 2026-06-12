@@ -497,6 +497,46 @@ impl PatchSource {
     }
 }
 
+/// The hook phase a `DagEvent` hook/job event belongs to: a lifecycle hook
+/// run by daft, or the synthetic `pre-push` stage reported around a hooked
+/// git push (#599). `HookType` stays closed — the pre-push stage is not a
+/// daft lifecycle hook, just a reported phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DagHookPhase {
+    Lifecycle(HookType),
+    PrePush,
+}
+
+impl DagHookPhase {
+    /// Short status-column label (kept narrow for the table layout).
+    pub fn label(&self) -> &'static str {
+        match self {
+            DagHookPhase::Lifecycle(HookType::PreRemove) => "pre-remove",
+            DagHookPhase::Lifecycle(HookType::PostRemove) => "post-remove",
+            DagHookPhase::Lifecycle(HookType::PreCreate) => "pre-create",
+            DagHookPhase::Lifecycle(HookType::PostCreate) => "post-create",
+            DagHookPhase::Lifecycle(HookType::PostClone) => "post-clone",
+            DagHookPhase::Lifecycle(HookType::PreMerge) => "pre-merge",
+            DagHookPhase::Lifecycle(HookType::PostMerge) => "post-merge",
+            DagHookPhase::PrePush => "pre-push",
+        }
+    }
+
+    /// Canonical hook name for summaries (matches `HookType::filename`).
+    pub fn hook_name(&self) -> &'static str {
+        match self {
+            DagHookPhase::Lifecycle(hook_type) => hook_type.filename(),
+            DagHookPhase::PrePush => "pre-push",
+        }
+    }
+}
+
+impl From<HookType> for DagHookPhase {
+    fn from(hook_type: HookType) -> Self {
+        DagHookPhase::Lifecycle(hook_type)
+    }
+}
+
 /// Message sent from worker threads to the renderer.
 #[derive(Debug, Clone)]
 pub enum DagEvent {
@@ -518,12 +558,12 @@ pub enum DagEvent {
     /// A hook started running for a branch.
     HookStarted {
         branch_name: String,
-        hook_type: HookType,
+        hook_type: DagHookPhase,
     },
     /// A hook completed for a branch.
     HookCompleted {
         branch_name: String,
-        hook_type: HookType,
+        hook_type: DagHookPhase,
         success: bool,
         /// Non-zero exit with FailMode::Warn.
         warned: bool,
@@ -536,13 +576,13 @@ pub enum DagEvent {
     /// A job started running within a hook.
     JobStarted {
         branch_name: String,
-        hook_type: HookType,
+        hook_type: DagHookPhase,
         job_name: String,
     },
     /// A job completed within a hook.
     JobCompleted {
         branch_name: String,
-        hook_type: HookType,
+        hook_type: DagHookPhase,
         job_name: String,
         status: JobCompletionStatus,
         duration: Duration,

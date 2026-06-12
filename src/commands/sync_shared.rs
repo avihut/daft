@@ -552,7 +552,7 @@ fn run_remove_hook_best_effort(
         // can surface it. Mirrors `TuiBridge::run_hook`.
         let _ = tx.send(DagEvent::HookCompleted {
             branch_name: label.to_string(),
-            hook_type,
+            hook_type: hook_type.into(),
             success: false,
             warned: false,
             duration: std::time::Duration::ZERO,

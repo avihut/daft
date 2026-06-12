@@ -626,6 +626,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     let shared_push = args.push;
     let shared_force_with_lease = args.force_with_lease;
     let shared_no_verify = args.no_verify;
+    // One probe for the whole run — every worktree shares the repo's hooks
+    // dir, and DAG workers shouldn't each pay a subprocess for it (#599).
+    let shared_hook_present = shared_push
+        && GitCommand::new(true)
+            .with_gitoxide(settings.use_gitoxide)
+            .pre_push_hook_exists(&project_root);
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -837,6 +843,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_settings,
                             shared_force_with_lease,
                             shared_no_verify,
+                            shared_hook_present,
+                            &tx_for_tasks,
                             outcomes,
                         );
                         if status == TaskStatus::Succeeded {
@@ -957,7 +965,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             eprintln!(
                 "  {}: {} {} ({}, {}ms)",
                 entry.branch_name,
-                entry.hook_type.filename(),
+                entry.hook_type.hook_name(),
                 status_word,
                 exit_str,
                 entry.duration.as_millis(),
@@ -1191,6 +1199,7 @@ fn execute_rebase_task(
 }
 
 /// Execute a single push task for a DAG worker.
+#[allow(clippy::too_many_arguments)]
 fn execute_push_task(
     branch_name: &str,
     worktree_path: Option<&PathBuf>,
@@ -1198,6 +1207,8 @@ fn execute_push_task(
     settings: &DaftSettings,
     force_with_lease: bool,
     no_verify: bool,
+    hook_present: bool,
+    tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
     branch_outcomes: &HashSet<TaskOutcome>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     // Push doesn't need the branch's worktree; any git dir works.
@@ -1228,6 +1239,22 @@ fn execute_push_task(
         no_verify,
     };
 
+    // Report the pre-push hook run as a phase on this branch's TUI row,
+    // mirroring how lifecycle hooks surface (#599). Existence-gated so
+    // hook-less repos emit nothing.
+    let presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if hook_present && !no_verify {
+            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::output::tui::TuiPresenter::new(
+                    tx.clone(),
+                    branch_name.to_string(),
+                    sync_dag::DagHookPhase::PrePush,
+                );
+            Some(p)
+        } else {
+            None
+        };
+
     let mut sink = NullSink;
     let result = push::push_single_worktree(
         &git,
@@ -1237,8 +1264,8 @@ fn execute_push_task(
         &params,
         &mut sink,
         &crate::core::worktree::ports::NoopStageRunner,
-        None,
-        None,
+        presenter.as_ref(),
+        Some(hook_present),
     );
 
     if result.no_upstream {

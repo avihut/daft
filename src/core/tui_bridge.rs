@@ -97,7 +97,7 @@ impl HookRunner for TuiBridge {
                 // it). Manually send HookCompleted so the TUI can show the failure.
                 let _ = self.sender.send(DagEvent::HookCompleted {
                     branch_name: self.branch_name.clone(),
-                    hook_type,
+                    hook_type: hook_type.into(),
                     success: false,
                     warned: false,
                     duration: std::time::Duration::ZERO,
