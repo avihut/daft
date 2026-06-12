@@ -24,15 +24,24 @@ Shell integration isn't installed. See
 [Shell integration](/getting-started/shell-integration) for the eval line to add
 to your shell config.
 
-## "daft.yml is untrusted; refusing to run hooks"
+## "hooks ... were NOT run — this repository isn't trusted"
 
-A `daft.yml` was added or changed. Trust the new contents:
+The repo defines hooks (`daft.yml` or `.daft/hooks/`) but hasn't been trusted,
+so daft skipped them. Trust it, then replay the setup that was skipped:
 
 ```bash
 git daft-hooks trust
+# trust prints the exact replay commands, e.g.:
+git daft-hooks run worktree-post-create   # inside each listed worktree
 ```
 
 This is intentional — see [Trust & security](/hooks/trust-and-security) for why.
+
+## My worktree is missing its hook side effects (env files, installs)
+
+It was probably created before the repo was trusted. Run `git daft-hooks trust`
+— it lists the worktrees whose setup hooks never ran and the
+`git daft-hooks run ...` commands to replay them.
 
 ## Hooks fire but I don't see their output
 

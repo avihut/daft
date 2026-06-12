@@ -1,0 +1,35 @@
+name: Untrusted post-clone hook warns at clone time
+description:
+  "Cloning a repo whose daft.yml defines post-clone must warn that the hook was
+  skipped and offer the trust command plus the post-clone replay."
+
+repos:
+  - name: test-clone-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# clone untrusted"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        post-clone:
+          jobs:
+            - name: bootstrap
+              run: touch "$DAFT_WORKTREE_PATH/.clone-ran"
+
+steps:
+  - name: Clone warns about the skipped post-clone hook
+    run: git-worktree-clone --layout contained $REMOTE_TEST_CLONE_UNTRUSTED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-clone-untrusted/main"
+      files_not_exist:
+        - "$WORK_DIR/test-clone-untrusted/main/.clone-ran"
+      output_contains:
+        - "daft.yml defines a post-clone hook that was NOT run"
+        - "git daft hooks trust"
+        - "git daft hooks run post-clone"

@@ -1,0 +1,54 @@
+name: Trusting suggests replaying previously skipped setup hooks
+description:
+  "Skips recorded while untrusted must turn into precise replay suggestions when
+  the repo is trusted: only the idempotent setup hooks (post-create here), never
+  pre-create, listing the affected worktrees."
+
+repos:
+  - name: test-replay-suggest
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# replay suggest"
+        commits:
+          - message: "Initial commit"
+      - name: feature/replay
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-create:
+          jobs:
+            - name: pre
+              run: echo pre
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: touch "$DAFT_WORKTREE_PATH/.post-ran"
+
+steps:
+  - name: Clone the repository (records the base worktree's skip)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPLAY_SUGGEST
+    expect:
+      exit_code: 0
+
+  - name: Checkout while untrusted (records the feature worktree's skips)
+    run: git-worktree-checkout feature/replay
+    cwd: "$WORK_DIR/test-replay-suggest/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NOT run"
+
+  - name: Trusting suggests the post-create replay for both worktrees
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/test-replay-suggest/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Hooks were skipped here while the repository was untrusted"
+        - "git daft hooks run worktree-post-create"
+        - "feature/replay"
+      output_not_contains:
+        - "hooks run worktree-pre-create"

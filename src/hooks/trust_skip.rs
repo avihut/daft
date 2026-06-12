@@ -285,6 +285,29 @@ fn capped_list(names: &BTreeSet<String>, more_word: &str) -> String {
     out
 }
 
+/// Like [`capped_list`], but hook names come out in lifecycle order
+/// (pre-create before post-create, …) rather than the set's alphabetical
+/// order, which reads backwards for hooks. Names that aren't lifecycle
+/// hooks (legacy script filenames with suffixes, deprecated names) keep
+/// their alphabetical position at the end.
+fn capped_hook_list(names: &BTreeSet<String>, more_word: &str) -> String {
+    let lifecycle_pos = |name: &str| {
+        HookType::from_yaml_name(name)
+            .and_then(|ht| HookType::all().iter().position(|h| *h == ht))
+            .unwrap_or(usize::MAX)
+    };
+    let mut ordered: Vec<&String> = names.iter().collect();
+    ordered.sort_by_key(|name| (lifecycle_pos(name), name.as_str()));
+
+    const CAP: usize = 4;
+    let shown: Vec<&str> = ordered.iter().take(CAP).map(|s| s.as_str()).collect();
+    let mut out = shown.join(", ");
+    if ordered.len() > CAP {
+        out.push_str(&format!(" and {} more {more_word}", ordered.len() - CAP));
+    }
+    out
+}
+
 fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
     // Continuation lines align under the 9-char "warning: " prefix the CLI
     // output adds to the first line.
@@ -306,7 +329,7 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
         } else {
             format!(
                 ".daft/hooks/ scripts ({}) were NOT run{branch_clause} — this repository isn't trusted.",
-                capped_list(&content.names, "scripts")
+                capped_hook_list(&content.names, "scripts")
             )
         }
     } else if content.names.len() == 1 {
@@ -317,7 +340,7 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
     } else {
         format!(
             "daft.yml defines hooks ({}) that were NOT run{branch_clause} — this repository isn't trusted.",
-            capped_list(&content.names, "hooks")
+            capped_hook_list(&content.names, "hooks")
         )
     };
 

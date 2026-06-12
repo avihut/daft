@@ -1,0 +1,82 @@
+name: Replaying a skipped hook clears its record per worktree
+description:
+  "A skip record means 'this hook never ran for this worktree'. Replaying it via
+  hooks run must clear exactly that worktree's record: re-trusting then suggests
+  only the worktrees still missing their setup, and once all are replayed no
+  skipped rows remain in the store."
+
+repos:
+  - name: test-replay-clear
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# replay clear"
+        commits:
+          - message: "Initial commit"
+      - name: feature/replayed
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: touch "$DAFT_WORKTREE_PATH/.post-ran"
+
+steps:
+  - name: Clone the repository (records the base worktree's skip)
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPLAY_CLEAR
+    expect:
+      exit_code: 0
+
+  - name: Checkout while untrusted (records the feature worktree's skip)
+    run: git-worktree-checkout feature/replayed
+    cwd: "$WORK_DIR/test-replay-clear/main"
+    expect:
+      exit_code: 0
+
+  - name: Trust suggests replays for both worktrees
+    run: daft hooks trust --force
+    cwd: "$WORK_DIR/test-replay-clear/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "git daft hooks run worktree-post-create"
+        - "feature/replayed"
+
+  - name: Replay the hook inside the feature worktree
+    run: daft hooks run worktree-post-create
+    cwd: "$WORK_DIR/test-replay-clear/feature/replayed"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-replay-clear/feature/replayed/.post-ran"
+
+  - name: Re-trusting now suggests only the base worktree
+    run: |
+      daft hooks deny --force >/dev/null 2>&1
+      daft hooks trust --force
+    cwd: "$WORK_DIR/test-replay-clear/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "# in main"
+      output_not_contains:
+        - "feature/replayed"
+
+  - name: Replay the hook inside the base worktree
+    run: daft hooks run worktree-post-create
+    cwd: "$WORK_DIR/test-replay-clear/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-replay-clear/main/.post-ran"
+
+  - name: No skipped rows remain in the store
+    run: daft __dump-store invocations
+    cwd: "$WORK_DIR/test-replay-clear/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - '"status":"skipped"'

@@ -59,6 +59,13 @@ fn trust_long_about() -> String {
         ),
         "each hook execution.",
         "",
+        "If hooks were skipped while the repository was untrusted, trusting",
+        "lists the setup hooks that never ran and the exact",
+        &format!(
+            "'{}' commands to replay them per worktree.",
+            bold("git daft hooks run")
+        ),
+        "",
         "Trust settings are stored in the daft config directory (trust.json)",
         "and persist across sessions.",
     ]

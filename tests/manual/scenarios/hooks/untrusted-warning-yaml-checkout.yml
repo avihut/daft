@@ -1,0 +1,52 @@
+name: Untrusted daft.yml warns on checkout, naming all configured hooks
+description:
+  "A daft.yml-only repo previously skipped hooks in total silence (the old
+  notice only looked at .daft/hooks/). The centralized notice must fire once per
+  command, name every configured lifecycle hook, and suggest both the trust
+  command and the post-create replay."
+
+repos:
+  - name: test-yaml-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# yaml untrusted"
+        commits:
+          - message: "Initial commit"
+      - name: feature/warned
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-create:
+          jobs:
+            - name: pre
+              run: touch "$DAFT_SOURCE_WORKTREE/.pre-ran"
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: touch "$DAFT_WORKTREE_PATH/.post-ran"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_YAML_UNTRUSTED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-yaml-untrusted/main"
+
+  - name: Checkout warns once, naming both configured hooks
+    run: git-worktree-checkout feature/warned
+    cwd: "$WORK_DIR/test-yaml-untrusted/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-yaml-untrusted/feature/warned"
+      files_not_exist:
+        - "$WORK_DIR/test-yaml-untrusted/feature/warned/.post-ran"
+      output_contains:
+        - "daft.yml defines hooks (worktree-pre-create, worktree-post-create)
+          that were NOT run"
+        - "git daft hooks trust"
+        - "git daft hooks run worktree-post-create"
