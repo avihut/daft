@@ -1440,14 +1440,7 @@ fn run_post_clone_hook(
     .with_new_branch(false);
 
     let presenter = CliPresenter::auto(&HookOutputConfig::default());
-    let hook_result = executor.execute(&ctx, output, presenter)?;
-
-    if hook_result.skipped
-        && let Some(reason) = &hook_result.skip_reason
-        && reason == "Repository not trusted"
-    {
-        executor.check_hooks_notice(worktree_path, &result.git_dir, output);
-    }
+    executor.execute(&ctx, output, presenter)?;
 
     Ok(())
 }

@@ -79,11 +79,6 @@ impl<'a> CommandBridge<'a> {
             output_config,
         }
     }
-
-    /// Consume the bridge and return the hook executor.
-    pub fn into_executor(self) -> HookExecutor {
-        self.executor
-    }
 }
 
 impl ProgressSink for CommandBridge<'_> {
