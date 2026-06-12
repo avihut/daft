@@ -6,14 +6,18 @@
 use crate::core::multi_remote::path::{
     calculate_worktree_path, extract_remote_from_path, resolve_remote_for_branch,
 };
+use crate::core::worktree::ports::NoopStageRunner;
+use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
 use crate::core::{HookRunner, ProgressSink};
-use crate::git::{GitCommand, PushIo, PushOptions};
+use crate::executor::presenter::JobPresenter;
+use crate::git::GitCommand;
 use crate::hooks::move_hooks::{MoveHookParams, run_setup_hooks, run_teardown_hooks};
 use crate::hooks::tracking::TrackedAttribute;
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Input parameters for the rename operation.
 pub struct RenameParams {
@@ -35,6 +39,8 @@ pub struct RenameParams {
     pub multi_remote_enabled: bool,
     /// Default remote for multi-remote mode.
     pub multi_remote_default: String,
+    /// Skip the repo's pre-push hook on remote operations (`--no-verify`).
+    pub no_verify: bool,
 }
 
 /// Result of a rename operation.
@@ -59,6 +65,11 @@ pub struct RenameResult {
     pub dry_run: bool,
     /// Non-fatal warnings collected during the operation.
     pub warnings: Vec<String>,
+    /// A push failure with the repo's pre-push hook in effect. The command
+    /// layer fails with this AFTER writing the cd redirect — the worktree
+    /// moved, so the shell must be re-pointed even when the command errors
+    /// (#599).
+    pub push_gate_error: Option<String>,
 }
 
 use super::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
@@ -68,6 +79,7 @@ use super::porcelain::{WorktreeListEntry, parse_worktree_list_porcelain};
 /// Execute the rename operation.
 pub fn execute(
     params: &RenameParams,
+    presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<RenameResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
@@ -175,6 +187,7 @@ pub fn execute(
             cd_target,
             dry_run: true,
             warnings: Vec::new(),
+            push_gate_error: None,
         });
     }
 
@@ -240,7 +253,11 @@ pub fn execute(
     run_setup_hooks(&move_params, sink);
 
     // Step 7: Remote operations (if applicable and not --no-remote).
+    // A push failure with the repo's pre-push hook in effect escalates to a
+    // command failure (#599) — deferred so the remaining local steps still
+    // run and the rename is left in a consistent, fully-reported state.
     let mut remote_renamed = false;
+    let mut push_gate_error: Option<String> = None;
     if !params.no_remote {
         let remote =
             resolve_remote_for_branch(&git, &params.new_branch, None, &params.remote_name).ok();
@@ -256,47 +273,66 @@ pub fn execute(
                     "Pushing '{}/{}' to remote...",
                     remote, params.new_branch
                 ));
-                match git
-                    .push_set_upstream_from(
+                match run_remote_rename_push(
+                    &git,
+                    PushAction::SetUpstream {
                         remote,
-                        &params.new_branch,
-                        &new_path,
-                        &PushOptions::default(),
-                    )
-                    .and_then(PushIo::into_result)
-                {
-                    Ok(_) => {
+                        branch: &params.new_branch,
+                    },
+                    &new_path,
+                    params,
+                    presenter,
+                ) {
+                    Ok(()) => {
                         // Delete old remote branch.
                         sink.on_step(&format!(
                             "Deleting old remote branch '{}/{}'...",
                             remote, old_branch
                         ));
-                        match git
-                            .push_delete_from(
+                        match run_remote_rename_push(
+                            &git,
+                            PushAction::Delete {
                                 remote,
-                                &old_branch,
-                                &new_path,
-                                &PushOptions::default(),
-                            )
-                            .and_then(PushIo::into_result)
-                        {
-                            Ok(_) => {
+                                branch: &old_branch,
+                            },
+                            &new_path,
+                            params,
+                            presenter,
+                        ) {
+                            Ok(()) => {
                                 remote_renamed = true;
                                 sink.on_step("Remote branch renamed successfully");
                             }
-                            Err(e) => {
+                            Err(PushFailure::Gated(msg)) => {
+                                push_gate_error = Some(format!(
+                                    "Could not delete old remote branch '{remote}/{old_branch}' \
+                                     with the repo's pre-push hook in effect: {msg}. The branch \
+                                     was renamed locally and '{remote}/{}' was pushed; delete the \
+                                     old remote branch manually with: git push {remote} --delete \
+                                     {old_branch} (or re-run with --no-verify)",
+                                    params.new_branch
+                                ));
+                            }
+                            Err(PushFailure::Other(e)) => {
                                 warnings.push(format!(
-                                    "Failed to delete old remote branch '{}/{}': {e}",
-                                    remote, old_branch
+                                    "Failed to delete old remote branch '{remote}/{old_branch}': {e}"
                                 ));
                                 sink.on_warning(&format!(
-                                    "Could not delete old remote branch '{}/{}': {e}",
-                                    remote, old_branch
+                                    "Could not delete old remote branch '{remote}/{old_branch}': {e}"
                                 ));
                             }
                         }
                     }
-                    Err(e) => {
+                    Err(PushFailure::Gated(msg)) => {
+                        push_gate_error = Some(format!(
+                            "Could not push '{remote}/{}' with the repo's pre-push hook in \
+                             effect: {msg}. The branch was renamed locally; the remote still \
+                             has '{old_branch}'. Fix the hook failure and push manually with: \
+                             git push --set-upstream {remote} {} (or re-run with --no-verify)",
+                            params.new_branch, params.new_branch
+                        ));
+                    }
+                    Err(PushFailure::Other(e)) => {
                         warnings.push(format!("Failed to push new branch to remote: {e}"));
                         sink.on_warning(&format!(
                             "Could not push new branch to '{}/{}': {e}",
@@ -329,7 +365,49 @@ pub fn execute(
         cd_target,
         dry_run: false,
         warnings,
+        push_gate_error,
     })
+}
+
+// ── Remote push helpers ────────────────────────────────────────────────────
+
+/// How a remote push failed, graded for #599 escalation.
+enum PushFailure {
+    /// Failed with the repo's pre-push hook in effect — escalates to a
+    /// command failure.
+    Gated(String),
+    /// Any other failure — legacy warn-and-continue.
+    Other(String),
+}
+
+fn run_remote_rename_push(
+    git: &GitCommand,
+    action: PushAction<'_>,
+    cwd: &Path,
+    params: &RenameParams,
+    presenter: Option<&Arc<dyn JobPresenter>>,
+) -> std::result::Result<(), PushFailure> {
+    match push_with_hooks(
+        git,
+        action,
+        cwd,
+        !params.no_verify,
+        &NoopStageRunner,
+        presenter,
+        None,
+    ) {
+        Ok(outcome) => match outcome.failure {
+            None => Ok(()),
+            Some(msg) => {
+                if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                    Err(PushFailure::Gated(msg))
+                } else {
+                    Err(PushFailure::Other(msg))
+                }
+            }
+        },
+        Err(e) => Err(PushFailure::Other(format!("{e}"))),
+    }
 }
 
 // ── Source resolution ──────────────────────────────────────────────────────

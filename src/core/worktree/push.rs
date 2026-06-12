@@ -24,6 +24,8 @@ pub struct PushParams {
     pub force_with_lease: bool,
     /// Name of the remote (e.g. "origin").
     pub remote_name: String,
+    /// Skip the repo's pre-push hook (`--no-verify` passthrough).
+    pub no_verify: bool,
 }
 
 /// Result of pushing a single worktree branch.
@@ -36,6 +38,8 @@ pub struct WorktreePushResult {
     pub up_to_date: bool,
     /// Branch has no remote tracking branch.
     pub no_upstream: bool,
+    /// Verdict on the repo's pre-push gate for this push.
+    pub hook: HookVerdict,
     pub message: String,
 }
 
@@ -65,6 +69,21 @@ impl PushResult {
         self.results
             .iter()
             .filter(|r| !r.success && !r.no_upstream)
+            .count()
+    }
+
+    /// Failures that happened with a pre-push hook installed and honored.
+    /// These escalate to a non-zero exit (#599): a gate saying no must not
+    /// be reduced to a warning. Hook-less or `--no-verify` failures keep the
+    /// legacy warn-and-continue ergonomics.
+    pub fn gated_failure_count(&self) -> usize {
+        self.results
+            .iter()
+            .filter(|r| {
+                !r.success
+                    && !r.no_upstream
+                    && matches!(r.hook, HookVerdict::Rejected | HookVerdict::Passed)
+            })
             .count()
     }
 }
@@ -150,9 +169,10 @@ impl PushAction<'_> {
 }
 
 /// Coarse verdict on the `pre-push` gate for one push.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HookVerdict {
     /// No pre-push hook is installed; the push ran ungated.
+    #[default]
     NoHook,
     /// A hook is installed and the push got past it (the push itself may
     /// still have failed further along, e.g. non-fast-forward).
@@ -388,9 +408,14 @@ pub fn execute(
     project_root: &Path,
     progress: &mut dyn ProgressSink,
     exclude_branches: &HashSet<String>,
+    stage: &dyn StageRunner,
+    presenter: Option<&Arc<dyn JobPresenter>>,
 ) -> Result<PushResult> {
     let original_dir = get_current_directory()?;
     let worktrees = fetch::get_all_worktrees_with_branches(git)?;
+
+    // All worktrees share one hooks dir — probe once for the whole pass.
+    let hook_present = git.pre_push_hook_exists(project_root);
 
     let mut results: Vec<WorktreePushResult> = Vec::new();
 
@@ -408,7 +433,17 @@ pub fn execute(
 
         progress.on_step(&format!("Pushing '{worktree_name}'"));
 
-        let result = push_single_worktree(git, path, &worktree_name, branch, params, progress);
+        let result = push_single_worktree(
+            git,
+            path,
+            &worktree_name,
+            branch,
+            params,
+            progress,
+            stage,
+            presenter,
+            Some(hook_present),
+        );
         results.push(result);
     }
 
@@ -424,6 +459,10 @@ pub fn execute(
 ///
 /// Checks for an upstream tracking remote first; skips if none is set.
 /// Uses an explicit working directory for thread-safe parallel execution.
+///
+/// `hook_present` short-circuits the per-push hook probe when the caller
+/// already resolved it for the repo (all worktrees share one hooks dir).
+#[allow(clippy::too_many_arguments)]
 pub fn push_single_worktree(
     git: &GitCommand,
     worktree_path: &Path,
@@ -431,6 +470,9 @@ pub fn push_single_worktree(
     branch_name: &str,
     params: &PushParams,
     progress: &mut dyn ProgressSink,
+    stage: &dyn StageRunner,
+    presenter: Option<&Arc<dyn JobPresenter>>,
+    hook_present: Option<bool>,
 ) -> WorktreePushResult {
     // Verify directory exists
     if !worktree_path.is_dir() {
@@ -468,30 +510,47 @@ pub fn push_single_worktree(
         Ok(Some(_)) => {}
     }
 
-    // Run git push with explicit working directory (thread-safe)
-    match git
-        .push_from(
-            &params.remote_name,
-            branch_name,
-            worktree_path,
-            params.force_with_lease,
-            &PushOptions::default(),
-        )
-        .and_then(PushIo::into_result)
-    {
-        Ok(io) => {
-            let up_to_date = parse_push_report(&io.stdout).all_up_to_date();
-            WorktreePushResult {
-                worktree_name: worktree_name.to_string(),
-                branch_name: branch_name.to_string(),
-                success: true,
-                up_to_date,
-                message: if up_to_date {
-                    "Already up to date".to_string()
-                } else {
-                    "Pushed successfully".to_string()
+    let action = PushAction::Sync {
+        remote: &params.remote_name,
+        branch: branch_name,
+        force_with_lease: params.force_with_lease,
+    };
+
+    match push_with_hooks(
+        git,
+        action,
+        worktree_path,
+        !params.no_verify,
+        stage,
+        presenter,
+        hook_present,
+    ) {
+        Ok(outcome) => {
+            let hook = outcome.hook;
+            match outcome.failure {
+                None => WorktreePushResult {
+                    worktree_name: worktree_name.to_string(),
+                    branch_name: branch_name.to_string(),
+                    success: true,
+                    up_to_date: outcome.up_to_date,
+                    hook,
+                    message: if outcome.up_to_date {
+                        "Already up to date".to_string()
+                    } else {
+                        "Pushed successfully".to_string()
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
+                Some(msg) => {
+                    progress.on_warning(&format!("Failed to push '{worktree_name}': {msg}"));
+                    WorktreePushResult {
+                        worktree_name: worktree_name.to_string(),
+                        branch_name: branch_name.to_string(),
+                        hook,
+                        message: msg,
+                        ..Default::default()
+                    }
+                }
             }
         }
         Err(e) => {

@@ -92,6 +92,7 @@ git worktree-branch [OPTIONS] [BRANCHES]
 | `--remote` | Only delete the remote branch, keep local worktree and branch |  |
 | `-m, --move` | Rename a branch and move its worktree |  |
 | `--no-remote` | Skip remote branch rename (only with -m) |  |
+| `--no-verify` | Skip the repo's pre-push hook on remote operations |  |
 | `--dry-run` | Preview changes without executing (only with -m) |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |

@@ -2,11 +2,14 @@
 //!
 //! Deletes branches and their associated worktrees.
 
+use crate::core::worktree::ports::NoopStageRunner;
+use crate::core::worktree::push::{PushAction, push_with_hooks};
 use crate::core::{
     ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookRunner,
     ProgressSink, RefinedFileSummary,
 };
-use crate::git::{GitCommand, PushIo, PushOptions};
+use crate::executor::presenter::JobPresenter;
+use crate::git::GitCommand;
 use crate::hooks::visitor_seeds::{self, FileClass, SeedsContext};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
@@ -15,6 +18,7 @@ use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Input parameters for the branch-delete operation.
 pub struct BranchDeleteParams {
@@ -38,6 +42,9 @@ pub struct BranchDeleteParams {
     /// (without `-b`) to remove a source worktree while keeping the local
     /// branch ref intact.
     pub keep_local_branch: bool,
+    /// Skip the repo's pre-push hook when deleting the remote branch
+    /// (`--no-verify`).
+    pub no_verify: bool,
     /// Where to cd after deleting the current worktree.
     pub prune_cd_target: PruneCdTarget,
     /// Label exposed to hook scripts as `DAFT_COMMAND`. Defaults to
@@ -120,6 +127,10 @@ struct BranchDeleteContext<'a> {
     remote_name: String,
     source_worktree: PathBuf,
     default_branch: String,
+    /// Skip the repo's pre-push hook on the remote-branch delete.
+    no_verify: bool,
+    /// Reports the pre-push hook run on the remote-branch delete (#599).
+    presenter: Option<&'a Arc<dyn JobPresenter>>,
 }
 
 /// Validated branch ready for deletion.
@@ -164,8 +175,12 @@ enum ResolveResult {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Execute the branch-delete operation.
+///
+/// `presenter` reports the pre-push hook run on remote-branch deletes
+/// (#599); pass `None` to skip that reporting (the hook is still honored).
 pub fn execute(
     params: &BranchDeleteParams,
+    presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut (impl ProgressSink + HookRunner + ConsolidationPrompter),
 ) -> Result<BranchDeleteResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
@@ -181,6 +196,8 @@ pub fn execute(
         remote_name: params.remote_name.clone(),
         source_worktree: std::env::current_dir()?,
         default_branch,
+        no_verify: params.no_verify,
+        presenter,
     };
 
     // Parse worktree list once upfront into a map: branch_name -> worktree_path
@@ -1025,10 +1042,19 @@ fn delete_single_branch(
             .as_deref()
             .filter(|p| p.is_dir())
             .unwrap_or(&ctx.project_root);
-        match ctx
-            .git
-            .push_delete_from(remote, remote_branch, push_cwd, &PushOptions::default())
-            .and_then(PushIo::into_result)
+        match push_with_hooks(
+            ctx.git,
+            PushAction::Delete {
+                remote,
+                branch: remote_branch,
+            },
+            push_cwd,
+            !ctx.no_verify,
+            &NoopStageRunner,
+            ctx.presenter,
+            None,
+        )
+        .and_then(crate::core::worktree::push::PushOutcome::into_result)
         {
             Ok(_) => {
                 result.remote_deleted = true;
@@ -1567,6 +1593,7 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: true,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -1575,7 +1602,7 @@ mod tests {
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let result = execute(&params, &mut bridge).expect("keep_local_branch should succeed");
+        let result = execute(&params, None, &mut bridge).expect("keep_local_branch should succeed");
 
         assert_eq!(result.deletions.len(), 1);
         assert!(
@@ -1633,6 +1660,7 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: true,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -1641,7 +1669,7 @@ mod tests {
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let result = execute(&params, &mut bridge).unwrap();
+        let result = execute(&params, None, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),
@@ -1698,6 +1726,7 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: true,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "merge".to_string(),
             skip_merge_validation: false,
@@ -1712,7 +1741,7 @@ mod tests {
         trust_db.set_trust_level(&canonical_git_dir, crate::hooks::TrustLevel::Allow);
         let executor = HookExecutor::with_trust_db(HooksConfig::default(), trust_db);
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let bd_result = execute(&params, &mut bridge).unwrap();
+        let bd_result = execute(&params, None, &mut bridge).unwrap();
         assert!(
             bd_result.validation_errors.is_empty(),
             "unexpected validation errors: {:?}",
@@ -1851,13 +1880,14 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: false,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
         };
         let mut bridge = ScriptedBridge::aborting();
-        let result = execute(&params, &mut bridge).unwrap();
+        let result = execute(&params, None, &mut bridge).unwrap();
 
         assert!(
             !result.validation_errors.is_empty(),
@@ -1939,13 +1969,14 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: false,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
         };
         let mut bridge = ScriptedBridge::aborting();
-        let result = execute(&params, &mut bridge).unwrap();
+        let result = execute(&params, None, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),
@@ -2039,6 +2070,7 @@ mod tests {
             delete_remote: false,
             remote_only: false,
             keep_local_branch: false,
+            no_verify: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2048,7 +2080,7 @@ mod tests {
             choice: crate::core::ConsolidationChoice::Consolidate,
             side: crate::core::ConflictSide::Abort,
         };
-        let result = execute(&params, &mut bridge).unwrap();
+        let result = execute(&params, None, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),

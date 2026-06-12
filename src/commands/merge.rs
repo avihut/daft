@@ -1180,6 +1180,7 @@ pub fn run() -> Result<()> {
                         delete_remote: settings.branch_delete_remote,
                         remote_only: false,
                         keep_local_branch,
+                        no_verify: false,
                         prune_cd_target: settings.prune_cd_target,
                         // Expose DAFT_COMMAND=merge so hook scripts can
                         // distinguish merge cleanup from standalone daft remove.
@@ -1191,7 +1192,11 @@ pub fn run() -> Result<()> {
                     let bd_result = {
                         let executor = HookExecutor::new(hooks_config.clone())?;
                         let mut bridge = CommandBridge::new(&mut output, executor);
-                        crate::core::worktree::branch_delete::execute(&bd_params, &mut bridge)?
+                        crate::core::worktree::branch_delete::execute(
+                            &bd_params,
+                            None,
+                            &mut bridge,
+                        )?
                     };
 
                     if !bd_result.validation_errors.is_empty() {
