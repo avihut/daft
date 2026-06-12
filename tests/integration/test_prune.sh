@@ -31,6 +31,10 @@ test_prune_basic() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -122,6 +126,11 @@ test_prune_multiple_deletions() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/branch1 reset --hard main >/dev/null 2>&1
+    git -C feature/branch2 reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -169,6 +178,10 @@ test_prune_from_subdirectory() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design. cwd is main/subdir here.
+    git -C ../../feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune from subdirectory
     git-worktree-prune || return 1
     
@@ -354,6 +367,10 @@ test_prune_removes_clean_worktree() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune WITHOUT --force - should still remove clean worktree
     git-worktree-prune || return 1
 
@@ -475,6 +492,12 @@ test_prune_many_worktrees() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    for i in {1..5}; do
+        git -C "feature/branch$i" reset --hard main >/dev/null 2>&1
+    done
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -595,6 +618,10 @@ test_prune_empty_parent_dir_cleanup() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/old reset --hard main >/dev/null 2>&1
+
     # Prune: should remove feature/old but keep feature/ (feature/new still exists)
     git-worktree-prune || return 1
 
@@ -616,6 +643,10 @@ test_prune_empty_parent_dir_cleanup() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/new reset --hard main >/dev/null 2>&1
 
     # Prune: should remove feature/new AND the now-empty feature/ directory
     git-worktree-prune || return 1
@@ -659,6 +690,10 @@ test_prune_from_current_worktree() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
 
     # Save the project root path for verification (resolve symlinks for macOS /tmp -> /private/tmp)
     local project_root
@@ -731,6 +766,10 @@ test_prune_from_current_worktree_cd_default_branch() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Save paths for verification (resolve symlinks for macOS /tmp -> /private/tmp)
     local project_root
     project_root=$(cd "$(pwd)" && pwd -P)
@@ -798,6 +837,10 @@ test_prune_regular_repo_current_branch() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git reset --hard main >/dev/null 2>&1
 
     # Run prune (should checkout default branch first, then delete)
     git-worktree-prune || return 1
@@ -928,6 +971,10 @@ test_prune_remote_config() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -1020,6 +1067,10 @@ HOOKEOF
     # Step 6: Run prune — in a non-TTY test environment stderr is not a terminal,
     # so prune falls back to sequential mode (CommandBridge). This path has always
     # executed hooks. The TUI path (TuiBridge) now also executes hooks after the
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/hook-prune-test reset --hard main >/dev/null 2>&1
+
     # NullBridge fix. Testing either path proves the end-to-end hook wiring works.
     git-worktree-prune || return 1
 
