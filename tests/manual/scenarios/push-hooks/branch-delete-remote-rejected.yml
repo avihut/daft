@@ -1,0 +1,54 @@
+name: branch-delete's remote delete is gated by the pre-push hook
+description:
+  "A failing pre-push hook gates the remote-branch delete (remote deletes are
+  pushes too): the command reports the failure and exits non-zero, and the
+  remote branch survives. --no-verify bypasses the gate."
+
+repos:
+  - name: delete-gate-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_DELETE_GATE_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/delete-gate-repo/main"
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/delete-gate-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Remote-only delete is rejected by the hook
+    run: git-worktree-branch -d feature/test-feature --remote 2>&1
+    cwd: "$WORK_DIR/delete-gate-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "GATE SAYS NO"
+
+  - name: The remote branch survived
+    run: git ls-remote --heads origin feature/test-feature
+    cwd: "$WORK_DIR/delete-gate-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feature/test-feature"]
+
+  - name: --no-verify deletes the remote branch through the failing hook
+    run: git-worktree-branch -d feature/test-feature --remote --no-verify 2>&1
+    cwd: "$WORK_DIR/delete-gate-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The remote branch is gone
+    run: git ls-remote --heads origin 2>/dev/null
+    cwd: "$WORK_DIR/delete-gate-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["feature/test-feature"]

@@ -1,0 +1,59 @@
+name: rename's remote update is gated by the pre-push hook
+description:
+  "A failing pre-push hook gates daft rename's remote operations: the local
+  rename and worktree move complete, the command exits non-zero with the
+  gated-push message, and the remote still has the old branch name."
+
+repos:
+  - name: rename-gate-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RENAME_GATE_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rename-gate-repo/main"
+
+  - name: Checkout the feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/rename-gate-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rename-gate-repo/feature/test-feature"
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/rename-gate-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Rename completes locally but fails on the gated remote push
+    run: daft rename feature/test-feature feature/renamed 2>&1
+    cwd: "$WORK_DIR/rename-gate-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-push hook in effect"
+      dirs_exist:
+        - "$WORK_DIR/rename-gate-repo/feature/renamed"
+
+  - name: The local branch was renamed
+    run: git branch --list feature/renamed
+    cwd: "$WORK_DIR/rename-gate-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feature/renamed"]
+
+  - name: The remote still has the old name and not the new one
+    run: git ls-remote --heads origin 2>/dev/null
+    cwd: "$WORK_DIR/rename-gate-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feature/test-feature"]
+      output_not_contains: ["feature/renamed"]
