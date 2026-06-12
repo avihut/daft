@@ -1045,6 +1045,14 @@ fn delete_single_branch(
         );
     }
 
+    // The worktree is gone — its seed provenance rows are meaningless now
+    // (a future re-checkout of the same branch re-seeds). Best-effort.
+    if result.worktree_removed
+        && let Some(seeds) = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir)
+    {
+        seeds.delete_seeds_for_branch(&branch.name);
+    }
+
     result
 }
 

@@ -784,6 +784,11 @@ fn remove_worktree(
     // Clean up empty parent directories
     cleanup_empty_parent_dirs(&ctx.project_root, wt_path, sink);
 
+    // The worktree is gone — drop its seed provenance rows. Best-effort.
+    if let Some(seeds) = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir) {
+        seeds.delete_seeds_for_branch(branch_name);
+    }
+
     RemoveOutcome::Removed
 }
 

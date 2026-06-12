@@ -11,7 +11,7 @@
 //! deal with the type the rest of the coordinator already uses.
 
 use crate::coordinator::clean_policy::RepoPolicy;
-use crate::store::models::{InvocationRow, JobRow};
+use crate::store::models::{InvocationRow, JobRow, VisitorSeedRow};
 use anyhow::Result;
 
 pub trait JobsStorePort: Send + Sync {
@@ -46,4 +46,39 @@ pub trait JobsStorePort: Send + Sync {
     /// behavior — hooks without a `log:` block produce an all-`None`
     /// policy and must not clobber persisted tuning.
     fn write_repo_policy(&self, repo_hash: &str, policy: &RepoPolicy) -> Result<()>;
+}
+
+/// Port: visitor-config seed provenance.
+///
+/// Records the content daft last wrote INTO a worktree's untracked daft
+/// file so lifecycle commands can classify the on-disk copy (pristine vs
+/// refined) and run three-way merges against the seeded base. Surfaced as
+/// its own trait — consumers are the worktree lifecycle commands, not the
+/// coordinator's job machinery — but implemented by the same SQLite
+/// adapter, since the rows live in the per-repo `coordinator.db`.
+pub trait SeedsStorePort: Send + Sync {
+    /// Insert or refresh a seed with the given content. Timestamps are
+    /// computed at the persistence boundary; a refresh preserves the
+    /// original `seeded_at` and moves `updated_at`.
+    fn record_seed(
+        &self,
+        repo_hash: &str,
+        branch_slug: &str,
+        filename: &str,
+        content: &str,
+    ) -> Result<()>;
+
+    fn get_seed(
+        &self,
+        repo_hash: &str,
+        branch_slug: &str,
+        filename: &str,
+    ) -> Result<Option<VisitorSeedRow>>;
+
+    fn delete_seed(&self, repo_hash: &str, branch_slug: &str, filename: &str) -> Result<()>;
+
+    /// Remove every seed for a branch; returns how many rows were deleted.
+    fn delete_seeds_for_branch(&self, repo_hash: &str, branch_slug: &str) -> Result<usize>;
+
+    fn list_seeds_for_repo(&self, repo_hash: &str) -> Result<Vec<VisitorSeedRow>>;
 }

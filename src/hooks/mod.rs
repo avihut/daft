@@ -52,6 +52,7 @@ pub mod tracking;
 mod trust;
 mod trust_dto;
 pub mod visitor_propagation;
+pub mod visitor_seeds;
 pub mod yaml_config;
 pub mod yaml_config_loader;
 pub mod yaml_config_validate;

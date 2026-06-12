@@ -46,9 +46,17 @@ pub fn propagate_starter_to_worktrees(primary: &Path, output: &mut dyn Output) {
     }
     let porcelain = String::from_utf8_lossy(&listing.stdout);
     let mut propagated = 0usize;
+    // Seed provenance: the starter daft wrote is daft-authored content, so
+    // every copy (including the primary's) is recorded as that branch's
+    // seed — an unedited starter classifying pristine anywhere is correct.
+    // Best-effort: a missing store never blocks the install.
+    let seeds = open_seeds_for(primary);
     for wt in crate::core::layout::detect::parse_worktree_list(&porcelain) {
         let wt_canon = std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
         if wt_canon == primary_canon {
+            if let (Some(seeds), Some(branch)) = (seeds.as_ref(), wt.branch.as_deref()) {
+                seeds.record_seed_file(branch, &wt.path, "daft.yml");
+            }
             continue;
         }
         let dest = wt.path.join("daft.yml");
@@ -58,7 +66,12 @@ pub fn propagate_starter_to_worktrees(primary: &Path, output: &mut dyn Output) {
             continue;
         }
         match std::fs::copy(&source, &dest) {
-            Ok(_) => propagated += 1,
+            Ok(_) => {
+                propagated += 1;
+                if let (Some(seeds), Some(branch)) = (seeds.as_ref(), wt.branch.as_deref()) {
+                    seeds.record_seed_file(branch, &wt.path, "daft.yml");
+                }
+            }
             Err(e) => output.warning(&format!(
                 "Could not copy daft.yml to {}: {e}",
                 wt.path.display()
@@ -71,6 +84,21 @@ pub fn propagate_starter_to_worktrees(primary: &Path, output: &mut dyn Output) {
             if propagated == 1 { "" } else { "s" }
         ));
     }
+}
+
+/// Resolve the repo's git common dir from any worktree and open the seed
+/// store. `None` (store unavailable, not a repo) degrades to no recording.
+fn open_seeds_for(worktree: &Path) -> Option<crate::hooks::visitor_seeds::SeedsContext> {
+    let out = git_command_at(worktree)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    crate::hooks::visitor_seeds::SeedsContext::open(&common)
 }
 
 /// Install a starter daft.yml at `worktree_root`, then — when it would be
