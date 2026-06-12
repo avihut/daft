@@ -118,57 +118,61 @@ pub fn has_inscope_divergence(source: &Path, target: &Path) -> Result<bool> {
             continue;
         }
 
-        let src_path = source.join(filename);
-        let tgt_path = target.join(filename);
-
-        if !src_path.is_file() {
-            continue;
-        }
-
-        if !tgt_path.is_file() {
-            // Source has a whole in-scope file the target lacks — removing the
-            // source would lose it.
+        if file_has_divergence(source, target, filename)? {
             return Ok(true);
-        }
-
-        let src_str = fs::read_to_string(&src_path)?;
-        let tgt_str = fs::read_to_string(&tgt_path)?;
-
-        // Compare semantically, not byte-for-byte. The guard's real question is
-        // "would removing `source` lose any config not already in `target`?" —
-        // a subset question, not equality. Overlay the source's config onto the
-        // target's; if the merge changes nothing, the source contributes nothing
-        // new and removal is safe. This is why formatting/comment/field-order
-        // differences do not count (e.g. a worktree whose daft.yml was written
-        // by an older canonicalizing propagate() is still recognised as
-        // non-divergent), while a real added/changed job or setting does.
-        //
-        // Correctness depends on merge_configs being complete: a merge that
-        // silently dropped a field would make a real refinement look like a
-        // no-op and false-allow the removal. That is why the merge_configs /
-        // merge_hook_defs field-drop fix is a prerequisite for this guard.
-        //
-        // Falls back to a byte comparison if either file fails to parse — we
-        // cannot reason about malformed YAML, so any difference is treated as
-        // divergence to stay on the safe side.
-        match (
-            parse_yaml_config_str(&src_str),
-            parse_yaml_config_str(&tgt_str),
-        ) {
-            (Ok(src_cfg), Ok(tgt_cfg)) => {
-                if merge_configs(tgt_cfg.clone(), src_cfg) != tgt_cfg {
-                    return Ok(true);
-                }
-            }
-            _ => {
-                if src_str != tgt_str {
-                    return Ok(true);
-                }
-            }
         }
     }
 
     Ok(false)
+}
+
+/// Per-file divergence: does `source/<filename>` contribute config the
+/// target's copy lacks? In provenance terms this is the *subsumption* check:
+/// `false` means the source's content is already represented in the target,
+/// so removing the source loses nothing — regardless of whether the copy was
+/// edited since it was seeded. Callers own the in-scope gating (visitor
+/// classification for daft.yml).
+pub(crate) fn file_has_divergence(source: &Path, target: &Path, filename: &str) -> Result<bool> {
+    let src_path = source.join(filename);
+    let tgt_path = target.join(filename);
+
+    if !src_path.is_file() {
+        return Ok(false);
+    }
+
+    if !tgt_path.is_file() {
+        // Source has a whole in-scope file the target lacks — removing the
+        // source would lose it.
+        return Ok(true);
+    }
+
+    let src_str = fs::read_to_string(&src_path)?;
+    let tgt_str = fs::read_to_string(&tgt_path)?;
+
+    // Compare semantically, not byte-for-byte. The guard's real question is
+    // "would removing `source` lose any config not already in `target`?" —
+    // a subset question, not equality. Overlay the source's config onto the
+    // target's; if the merge changes nothing, the source contributes nothing
+    // new and removal is safe. This is why formatting/comment/field-order
+    // differences do not count (e.g. a worktree whose daft.yml was written
+    // by an older canonicalizing propagate() is still recognised as
+    // non-divergent), while a real added/changed job or setting does.
+    //
+    // Correctness depends on merge_configs being complete: a merge that
+    // silently dropped a field would make a real refinement look like a
+    // no-op and false-allow the removal. That is why the merge_configs /
+    // merge_hook_defs field-drop fix is a prerequisite for this guard.
+    //
+    // Falls back to a byte comparison if either file fails to parse — we
+    // cannot reason about malformed YAML, so any difference is treated as
+    // divergence to stay on the safe side.
+    match (
+        parse_yaml_config_str(&src_str),
+        parse_yaml_config_str(&tgt_str),
+    ) {
+        (Ok(src_cfg), Ok(tgt_cfg)) => Ok(merge_configs(tgt_cfg.clone(), src_cfg) != tgt_cfg),
+        _ => Ok(src_str != tgt_str),
+    }
 }
 
 /// Save target's in-scope daft files, propagate from source, run `action`,
