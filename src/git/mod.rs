@@ -5,10 +5,13 @@ mod branch;
 mod clone;
 mod config;
 pub(crate) mod oxide;
+pub mod push_porcelain;
 mod refs;
 mod remote;
 mod stash;
 mod worktree;
+
+pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
 
 static GITOXIDE_NOTICE: Once = Once::new();
 

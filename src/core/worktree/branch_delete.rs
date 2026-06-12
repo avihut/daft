@@ -3,7 +3,7 @@
 //! Deletes branches and their associated worktrees.
 
 use crate::core::{HookRunner, ProgressSink};
-use crate::git::GitCommand;
+use crate::git::{GitCommand, PushIo, PushOptions};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
 use crate::settings::PruneCdTarget;
@@ -899,8 +899,20 @@ fn delete_single_branch(
             "Deleting remote branch {}/{}...",
             remote, remote_branch
         ));
-        match ctx.git.push_delete(remote, remote_branch) {
-            Ok(()) => {
+        // Run from the branch's worktree when it still exists (Step 3 removes
+        // it later) so the repo's pre-push hook fires there; otherwise any
+        // directory inside the repo works for a remote delete.
+        let push_cwd = branch
+            .worktree_path
+            .as_deref()
+            .filter(|p| p.is_dir())
+            .unwrap_or(&ctx.project_root);
+        match ctx
+            .git
+            .push_delete_from(remote, remote_branch, push_cwd, &PushOptions::default())
+            .and_then(PushIo::into_result)
+        {
+            Ok(_) => {
                 result.remote_deleted = true;
                 sink.on_step(&format!(
                     "Remote branch {}/{} deleted",

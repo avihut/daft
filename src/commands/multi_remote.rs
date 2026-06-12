@@ -5,7 +5,7 @@
 use crate::{
     core::OutputSink,
     get_project_root,
-    git::GitCommand,
+    git::{GitCommand, PushIo, PushOptions},
     is_git_repository,
     multi_remote::{
         config::{set_multi_remote_default, set_multi_remote_enabled},
@@ -668,12 +668,9 @@ fn cmd_move(
     if push {
         output.step(&format!("Pushing to {}...", to_remote));
 
-        let original_dir = std::env::current_dir()?;
-        std::env::set_current_dir(&new_path)?;
-
-        let result = git.push_set_upstream(to_remote, &branch_name);
-
-        std::env::set_current_dir(&original_dir)?;
+        let result = git
+            .push_set_upstream_from(to_remote, &branch_name, &new_path, &PushOptions::default())
+            .and_then(PushIo::into_result);
 
         if let Err(e) = result {
             output.warning(&format!("Failed to push: {}", e));
@@ -687,7 +684,14 @@ fn cmd_move(
             old_remote, branch_name
         ));
 
-        let result = delete_remote_branch(&git, &old_remote, &branch_name);
+        let result = git
+            .push_delete_from(
+                &old_remote,
+                &branch_name,
+                &new_path,
+                &PushOptions::default(),
+            )
+            .and_then(PushIo::into_result);
         if let Err(e) = result {
             output.warning(&format!("Failed to delete from old remote: {}", e));
         }
@@ -732,21 +736,4 @@ fn get_branch_name_for_worktree(
             .find(|e| e.path.as_path() == worktree_path)
             .and_then(|e| e.branch),
     )
-}
-
-/// Delete a branch from a remote.
-fn delete_remote_branch(_git: &GitCommand, remote: &str, branch: &str) -> Result<()> {
-    use std::process::Command;
-
-    let output = Command::new("git")
-        .args(["push", "--no-verify", remote, "--delete", branch])
-        .output()
-        .context("Failed to execute git push --delete")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to delete remote branch: {}", stderr);
-    }
-
-    Ok(())
 }
