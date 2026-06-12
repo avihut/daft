@@ -45,6 +45,16 @@ Two distinctions:
    _after_ code reaches the central repo; daft hooks run _before_. CI shifts
    left.
 
+## daft and your existing git hooks
+
+daft's hooks do not replace git's own. Every daft-initiated `git push` honors
+the repository's `pre-push` hook — whether it lives in `.git/hooks` or is
+managed by lefthook, husky, or pre-commit via `core.hooksPath`. A failing
+pre-push gate blocks the push and fails the command; its run is reported as a
+`pre-push` phase on the same surface lifecycle hooks use. Pass `--no-verify` to
+any pushing command to skip it for one invocation. See
+[Git Hooks](/reference/configuration#git-hooks) for the details.
+
 ## Where to next
 
 - **Reference:** [Lifecycle hooks](/hooks/lifecycle) — types, triggers, env
