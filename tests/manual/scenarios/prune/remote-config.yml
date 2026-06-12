@@ -37,6 +37,11 @@ steps:
     expect:
       exit_code: 0
 
+  - name: Mark the branch merged (reset onto main) so prune may delete it
+    run: git -C $WORK_DIR/test-repo/feature/test-feature reset --hard main
+    expect:
+      exit_code: 0
+
   - name: Prune removes worktree
     run: git-worktree-prune
     cwd: "$WORK_DIR/test-repo"

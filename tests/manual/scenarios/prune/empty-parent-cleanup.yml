@@ -54,6 +54,11 @@ steps:
     expect:
       exit_code: 0
 
+  - name: Mark feature/old merged (reset onto main) so prune may delete it
+    run: git -C $WORK_DIR/test-repo/feature/old reset --hard main
+    expect:
+      exit_code: 0
+
   - name: Prune removes feature/old but keeps feature/ parent
     run: git-worktree-prune
     cwd: "$WORK_DIR/test-repo"
@@ -71,6 +76,11 @@ steps:
       git clone $REMOTE_TEST_REPO "$temp" 2>/dev/null
       cd "$temp" && git push origin --delete feature/new 2>/dev/null
       rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Mark feature/new merged (reset onto main) so prune may delete it
+    run: git -C $WORK_DIR/test-repo/feature/new reset --hard main
     expect:
       exit_code: 0
 

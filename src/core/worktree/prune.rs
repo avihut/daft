@@ -46,6 +46,12 @@ pub struct PruneResult {
     pub nothing_to_prune: bool,
     /// Per-branch detail of what was removed.
     pub pruned_branches: Vec<PrunedBranchDetail>,
+    /// Branches kept because their worktrees hold refined untracked daft
+    /// files — consolidate with `daft file merge` or re-run with --force.
+    pub skipped_refined: Vec<String>,
+    /// Branches kept because the remote is gone but the local branch is not
+    /// merged into the default branch.
+    pub skipped_unmerged: Vec<String>,
 }
 
 /// A worktree entry from `git worktree list --porcelain`.
@@ -62,6 +68,11 @@ pub struct PruneContext<'a> {
     pub git_dir: PathBuf,
     pub remote_name: String,
     pub source_worktree: PathBuf,
+    /// Default branch (merge target for the unmerged guard and daft-file
+    /// classification). `None` when it cannot be resolved — the affected
+    /// guards then degrade protectively (skip with a warning) rather than
+    /// failing the prune.
+    pub default_branch: Option<String>,
 }
 
 /// Result of pruning a single branch.
@@ -72,6 +83,12 @@ pub struct SingleBranchPruneResult {
     pub deferred: bool,
     /// True when pruning was skipped because the worktree has uncommitted changes.
     pub skipped_dirty: bool,
+    /// True when pruning was skipped because the worktree has refined
+    /// untracked daft files not represented in the default branch's worktree.
+    pub skipped_refined: bool,
+    /// True when pruning was skipped because the remote branch is gone but
+    /// the local branch is not merged into the default branch.
+    pub skipped_unmerged: bool,
 }
 
 /// Result of removing a single worktree + deleting its branch.
@@ -79,6 +96,7 @@ struct SinglePruneResult {
     worktree_removed: bool,
     branch_deleted: bool,
     skipped_dirty: bool,
+    skipped_refined: bool,
 }
 
 /// Outcome of attempting to remove a worktree.
@@ -87,6 +105,8 @@ enum RemoveOutcome {
     Removed,
     /// Skipped because worktree has uncommitted changes.
     SkippedDirty,
+    /// Skipped because the worktree has refined untracked daft files.
+    SkippedRefined,
     /// Skipped due to an error (not dirty-related).
     Failed,
 }
@@ -97,12 +117,16 @@ pub fn execute(
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<PruneResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let git_dir = get_git_common_dir()?;
+    let default_branch =
+        get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide).ok();
     let ctx = PruneContext {
         git: &git,
         project_root: get_project_root()?,
-        git_dir: get_git_common_dir()?,
+        git_dir,
         remote_name: params.remote_name.clone(),
         source_worktree: std::env::current_dir()?,
+        default_branch,
     };
 
     sink.on_step(&format!(
@@ -154,6 +178,8 @@ pub fn execute(
             cd_target: None,
             nothing_to_prune: true,
             pruned_branches: Vec::new(),
+            skipped_refined: Vec::new(),
+            skipped_unmerged: Vec::new(),
         });
     }
 
@@ -173,6 +199,8 @@ pub fn execute(
     let mut worktrees_removed: u32 = 0;
     let mut deferred_branch: Option<String> = None;
     let mut pruned_branches: Vec<PrunedBranchDetail> = Vec::new();
+    let mut skipped_refined: Vec<String> = Vec::new();
+    let mut skipped_unmerged: Vec<String> = Vec::new();
 
     for branch_name in &gone_branches {
         let result = prune_single_branch(
@@ -188,6 +216,12 @@ pub fn execute(
 
         branches_deleted += result.branches_deleted;
         worktrees_removed += result.worktrees_removed;
+        if result.skipped_refined {
+            skipped_refined.push(branch_name.clone());
+        }
+        if result.skipped_unmerged {
+            skipped_unmerged.push(branch_name.clone());
+        }
 
         if result.deferred {
             deferred_branch = Some(branch_name.clone());
@@ -233,6 +267,8 @@ pub fn execute(
         cd_target,
         nothing_to_prune: false,
         pruned_branches,
+        skipped_refined,
+        skipped_unmerged,
     })
 }
 
@@ -261,6 +297,54 @@ pub fn prune_single_branch(
     let mut worktrees_removed: u32 = 0;
     let mut deferred = false;
     let mut skipped_dirty = false;
+    let mut skipped_refined = false;
+
+    // Gone-but-unmerged guard: a remote branch disappearing does not mean
+    // the work was merged — abandoned branches lose their remotes too.
+    // Verify (ancestor or squash) before destroying local state; --force
+    // overrides. The default branch itself is exempt (trivially merged);
+    // an unresolvable default branch or a failed check skips protectively.
+    if !params.force {
+        let skip_reason = match ctx.default_branch.as_deref() {
+            Some(default_branch) if default_branch == branch_name => None,
+            Some(default_branch) => match crate::core::worktree::merged::is_branch_merged(
+                ctx.git,
+                branch_name,
+                default_branch,
+                &ctx.remote_name,
+            ) {
+                Ok(true) => None,
+                Ok(false) => Some(format!(
+                    "Skipping {branch_name}: remote branch is gone but the local branch \
+                     is not merged into {default_branch} (use --force to delete anyway)"
+                )),
+                Err(e) => Some(format!(
+                    "Skipping {branch_name}: could not verify merge status ({e}); \
+                     use --force to delete anyway"
+                )),
+            },
+            None => Some(format!(
+                "Skipping {branch_name}: cannot determine the default branch to verify \
+                 merge status; use --force to delete anyway"
+            )),
+        };
+        if let Some(reason) = skip_reason {
+            sink.on_warning(&reason);
+            return Ok(SingleBranchPruneResult {
+                detail: PrunedBranchDetail {
+                    branch_name: branch_name.to_string(),
+                    worktree_removed: false,
+                    branch_deleted: false,
+                },
+                branches_deleted: 0,
+                worktrees_removed: 0,
+                deferred: false,
+                skipped_dirty: false,
+                skipped_refined: false,
+                skipped_unmerged: true,
+            });
+        }
+    }
 
     let wt_info = worktree_map.get(branch_name).cloned();
 
@@ -277,6 +361,7 @@ pub fn prune_single_branch(
                 &mut branches_deleted,
                 &mut worktrees_removed,
                 &mut skipped_dirty,
+                &mut skipped_refined,
             )?;
         }
         Some((ref wt_path, _)) if !is_bare_layout => {
@@ -293,6 +378,7 @@ pub fn prune_single_branch(
                 &mut worktrees_removed,
                 &mut deferred_branch,
                 &mut skipped_dirty,
+                &mut skipped_refined,
             );
             if deferred_branch.is_some() {
                 deferred = true;
@@ -313,6 +399,7 @@ pub fn prune_single_branch(
                 &mut worktrees_removed,
                 &mut deferred_branch,
                 &mut skipped_dirty,
+                &mut skipped_refined,
             );
             if deferred_branch.is_some() {
                 deferred = true;
@@ -340,6 +427,8 @@ pub fn prune_single_branch(
         worktrees_removed,
         deferred,
         skipped_dirty,
+        skipped_refined,
+        skipped_unmerged: false,
     })
 }
 
@@ -440,6 +529,7 @@ fn process_main_worktree_branch(
     branches_deleted: &mut u32,
     worktrees_removed: &mut u32,
     skipped_dirty: &mut bool,
+    skipped_refined: &mut bool,
 ) -> Result<()> {
     sink.on_step(&format!(
         "Branch {branch_name} is checked out in the main worktree"
@@ -480,6 +570,9 @@ fn process_main_worktree_branch(
             if matches!(outcome, RemoveOutcome::SkippedDirty) {
                 *skipped_dirty = true;
             }
+            if matches!(outcome, RemoveOutcome::SkippedRefined) {
+                *skipped_refined = true;
+            }
             return Ok(());
         }
         wt_removed = true;
@@ -515,6 +608,7 @@ fn process_linked_worktree_branch(
     worktrees_removed: &mut u32,
     deferred_branch: &mut Option<String>,
     skipped_dirty: &mut bool,
+    skipped_refined: &mut bool,
 ) {
     let is_current = current_wt_path
         .as_ref()
@@ -532,6 +626,9 @@ fn process_linked_worktree_branch(
     let result = remove_worktree_and_delete_branch(ctx, wt_path, branch_name, force, sink);
     if result.skipped_dirty {
         *skipped_dirty = true;
+    }
+    if result.skipped_refined {
+        *skipped_refined = true;
     }
     if result.worktree_removed {
         *worktrees_removed += 1;
@@ -564,6 +661,7 @@ fn process_bare_layout_branch(
     worktrees_removed: &mut u32,
     deferred_branch: &mut Option<String>,
     skipped_dirty: &mut bool,
+    skipped_refined: &mut bool,
 ) {
     if is_main {
         // The first entry in a bare repo is the bare dir, not a real worktree
@@ -591,6 +689,9 @@ fn process_bare_layout_branch(
     let result = remove_worktree_and_delete_branch(ctx, wt_path, branch_name, force, sink);
     if result.skipped_dirty {
         *skipped_dirty = true;
+    }
+    if result.skipped_refined {
+        *skipped_refined = true;
     }
     if result.worktree_removed {
         *worktrees_removed += 1;
@@ -681,48 +782,60 @@ fn remove_worktree(
     force: bool,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> RemoveOutcome {
-    // Divergence guard — refuse removal when in-scope untracked daft files in
-    // this worktree differ from the merge target's. This catches cases where
-    // remote-merge propagation (Task 6.1) failed or didn't run, preventing
-    // visitor-config refinements from being silently lost when a worktree is
-    // removed by prune. --force bypasses.
-    //
-    // Prune only fires when the remote branch was deleted (i.e. already merged),
-    // so the default-branch worktree IS the merge target. Skip if the default
-    // branch has no checked-out worktree.
-    if wt_path.exists() && !force {
-        let default_branch_result = get_default_branch_local(&ctx.git_dir, &ctx.remote_name, false);
-        if let Ok(ref default_branch) = default_branch_result {
-            let has_local = wt_path.join("daft.local.yml").is_file();
-            let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
-                && matches!(
-                    crate::hooks::yaml_config_loader::classify_main_config(wt_path),
-                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
-                );
-            if has_local || has_visitor_daft_yml {
-                let target_wt = ctx.project_root.join(default_branch);
-                if target_wt.is_dir() {
-                    match crate::hooks::visitor_propagation::has_inscope_divergence(
-                        wt_path, &target_wt,
-                    ) {
-                        Ok(true) => {
-                            sink.on_warning(&format!(
-                                "Skipping {branch_name}: untracked daft files in {} differ \
-                                 from the merge target {}. Consolidate first with \
-                                 `daft file merge` or pass --force to remove anyway.",
-                                wt_path.display(),
-                                target_wt.display(),
-                            ));
-                            return RemoveOutcome::SkippedDirty;
-                        }
-                        Ok(false) => {}
-                        Err(e) => {
-                            sink.on_step(&format!(
-                                "Warning: divergence check failed for '{branch_name}': {e}; \
-                                 proceeding with removal"
-                            ));
-                        }
-                    }
+    // Daft-file provenance guard. Classify the worktree's untracked daft
+    // files against their seeds: pristine or already-subsumed copies pass
+    // silently — including the stale-but-untouched copy a moved-on default
+    // branch used to false-positively skip (issue #628). Refined copies are
+    // real user data; prune is a batch command and never prompts, so without
+    // --force the worktree is kept (with a pointer at `daft file merge`),
+    // and with --force the refinements are stashed under .daft/discarded/
+    // before removal. The default-branch worktree is NEVER written by prune.
+    if wt_path.exists() {
+        let target_wt: Option<PathBuf> = ctx
+            .default_branch
+            .as_deref()
+            .map(|default_branch| ctx.project_root.join(default_branch))
+            .filter(|p| p.is_dir());
+        let seeds = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir);
+        let classes = crate::hooks::visitor_seeds::classify_in_scope_files(
+            seeds.as_ref(),
+            branch_name,
+            wt_path,
+            target_wt.as_deref(),
+        );
+        let blocking = crate::hooks::visitor_seeds::blocking_files(&classes);
+        if !blocking.is_empty() {
+            if !force {
+                let files = blocking
+                    .iter()
+                    .map(|c| c.filename.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sink.on_warning(&format!(
+                    "Keeping {branch_name}: {files} has refinements not in the default \
+                     branch's worktree; consolidate with `daft file merge` or pass \
+                     --force to discard"
+                ));
+                return RemoveOutcome::SkippedRefined;
+            }
+            for class in blocking {
+                let file = wt_path.join(&class.filename);
+                match crate::hooks::visitor_seeds::stash_file(
+                    &ctx.git_dir,
+                    crate::hooks::visitor_seeds::StashKind::Discarded,
+                    branch_name,
+                    &file,
+                ) {
+                    Some(dest) => sink.on_warning(&format!(
+                        "Discarded {} refinements from '{branch_name}' — saved to {}",
+                        class.filename,
+                        dest.display()
+                    )),
+                    None => sink.on_warning(&format!(
+                        "Discarded {} refinements from '{branch_name}' (stash copy failed; \
+                         the file is gone with the worktree)",
+                        class.filename
+                    )),
                 }
             }
         }
@@ -811,6 +924,7 @@ fn remove_worktree_and_delete_branch(
             worktree_removed: false,
             branch_deleted: false,
             skipped_dirty: matches!(outcome, RemoveOutcome::SkippedDirty),
+            skipped_refined: matches!(outcome, RemoveOutcome::SkippedRefined),
         };
     }
 
@@ -820,6 +934,7 @@ fn remove_worktree_and_delete_branch(
         worktree_removed: true,
         branch_deleted,
         skipped_dirty: false,
+        skipped_refined: false,
     }
 }
 

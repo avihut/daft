@@ -44,6 +44,11 @@ steps:
     expect:
       exit_code: 0
 
+  - name: Mark the branch merged (reset onto main) so prune may delete it
+    run: git -C $WORK_DIR/test-repo/feature/test-feature reset --hard main
+    expect:
+      exit_code: 0
+
   - name:
       Prune from the feature worktree cd's to the default (main), not develop
       (first)

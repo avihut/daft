@@ -26,6 +26,7 @@ pub mod list;
 pub mod list_stream;
 pub mod merge;
 pub mod merge_set_default;
+pub mod merged;
 pub mod porcelain;
 pub mod previous;
 pub mod prune;

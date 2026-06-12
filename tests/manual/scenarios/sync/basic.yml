@@ -38,6 +38,11 @@ steps:
     expect:
       exit_code: 0
 
+  - name: Mark the branch merged (reset onto main) so prune may delete it
+    run: git -C $WORK_DIR/test-repo/feature/test-feature reset --hard main
+    expect:
+      exit_code: 0
+
   - name: Run sync
     run: git-worktree-sync 2>&1
     cwd: "$WORK_DIR/test-repo/main"
