@@ -125,3 +125,71 @@ impl HookRunner for NullBridge {
         })
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Visitor daft-file consolidation prompts
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Summary of one refined untracked daft file, shown before the
+/// consolidation prompt.
+#[derive(Debug, Clone)]
+pub struct RefinedFileSummary {
+    /// `daft.yml` or `daft.local.yml`.
+    pub filename: String,
+    /// Key paths consolidation would adopt into the target.
+    pub adopt_keys: Vec<String>,
+    /// Key paths both sides changed — consolidating requires picking a side.
+    pub conflict_keys: Vec<String>,
+    /// True when there is no usable seed base (pre-provenance worktree,
+    /// unparseable YAML): consolidation overlays the whole source file onto
+    /// the target instead of merging per key.
+    pub whole_file: bool,
+}
+
+/// Everything the prompter needs to render the consolidation question for
+/// one worktree about to be removed.
+pub struct ConsolidationRequest {
+    pub branch: String,
+    pub worktree_display: String,
+    pub target_display: String,
+    pub files: Vec<RefinedFileSummary>,
+}
+
+/// Answer to "this worktree has refined daft files — what now?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolidationChoice {
+    /// Merge the refinements into the target, then remove the worktree.
+    Consolidate,
+    /// Stash the files under `.daft/discarded/` and remove the worktree.
+    Discard,
+    /// Refuse the removal.
+    Abort,
+}
+
+/// Answer to "these keys were changed on both sides — which version wins?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSide {
+    /// Keep the target's values for the conflicted keys.
+    Target,
+    /// Take the removed worktree's values for the conflicted keys.
+    Source,
+    /// Refuse the removal.
+    Abort,
+}
+
+/// Decision surface for visitor daft-file consolidation during worktree
+/// removal. Non-interactive contexts use the defaults — always `Abort` — so
+/// nothing is ever merged or discarded without an explicit interactive
+/// answer or a `--force`.
+pub trait ConsolidationPrompter {
+    fn on_refined(&mut self, _req: &ConsolidationRequest) -> ConsolidationChoice {
+        ConsolidationChoice::Abort
+    }
+
+    fn on_conflicts(&mut self, _filename: &str, _keys: &[String]) -> ConflictSide {
+        ConflictSide::Abort
+    }
+}
+
+impl ConsolidationPrompter for NullBridge {}
+impl ConsolidationPrompter for NullSink {}

@@ -2,8 +2,12 @@
 //!
 //! Deletes branches and their associated worktrees.
 
-use crate::core::{HookRunner, ProgressSink};
+use crate::core::{
+    ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookRunner,
+    ProgressSink, RefinedFileSummary,
+};
 use crate::git::GitCommand;
+use crate::hooks::visitor_seeds::{self, FileClass, SeedClass, SeedsContext};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
 use crate::settings::PruneCdTarget;
@@ -41,6 +45,17 @@ pub struct BranchDeleteParams {
     /// `daft branch-delete` flow; the merge cleanup loop sets this to
     /// `"merge"` so hook scripts can distinguish the invocation source.
     pub command_label: String,
+    /// Skip Check 4 (merged into default branch) and Check 5 (local/remote
+    /// sync). Set only by the `daft merge` cleanup loop, whose planner has
+    /// already validated reachability against the *actual* merge target —
+    /// the default-branch checks here would false-refuse cross-target
+    /// merges. Unlike `force`, this does NOT bypass the dirty check or the
+    /// daft-file provenance guard.
+    pub skip_merge_validation: bool,
+    /// How the invoking command spells its force flag — used verbatim in
+    /// refusal messages (`daft remove` says `-f/--force`, the branch-delete
+    /// forms say `-D/--force`).
+    pub force_flag_label: String,
 }
 
 /// Result of a branch-delete operation.
@@ -117,6 +132,24 @@ struct ValidatedBranch {
     /// When true, only the worktree is removed — local branch ref and remote
     /// branch are preserved. Used for the default branch.
     worktree_only: bool,
+    /// What to do with the worktree's untracked daft files before removal.
+    daft_files: DaftFilePlan,
+}
+
+/// Resolved-at-validation decision for the worktree's untracked daft files.
+/// Pristine/subsumed copies need no plan (`Nothing`); refined copies were
+/// either consolidated interactively (resolved content carried here so
+/// execution cannot re-ask) or marked for discard (forced, or the user
+/// chose to).
+enum DaftFilePlan {
+    /// Nothing to preserve — delete the worktree, touch nothing else.
+    Nothing,
+    /// Write `(filename, resolved content)` into the default-branch worktree
+    /// before removal.
+    Consolidate(Vec<(String, String)>),
+    /// Stash `filename`s under `.daft/discarded/<branch>/` before removal.
+    /// The target is never written.
+    Discard(Vec<String>),
 }
 
 enum ResolveResult {
@@ -133,7 +166,7 @@ enum ResolveResult {
 /// Execute the branch-delete operation.
 pub fn execute(
     params: &BranchDeleteParams,
-    sink: &mut (impl ProgressSink + HookRunner),
+    sink: &mut (impl ProgressSink + HookRunner + ConsolidationPrompter),
 ) -> Result<BranchDeleteResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
     let git_dir = get_git_common_dir()?;
@@ -171,9 +204,7 @@ pub fn execute(
     let (validated, errors) = validate_branches(
         &ctx,
         &resolved,
-        params.force,
-        params.remote_only,
-        params.keep_local_branch,
+        params,
         &worktree_map,
         current_wt_path.as_ref(),
         current_branch.as_deref(),
@@ -337,18 +368,24 @@ fn try_resolve_relative_to_root(
 fn validate_branches(
     ctx: &BranchDeleteContext,
     branches: &[String],
-    force: bool,
-    remote_only: bool,
-    keep_local_branch: bool,
+    params: &BranchDeleteParams,
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
     current_branch: Option<&str>,
-    sink: &mut dyn ProgressSink,
+    sink: &mut (impl ProgressSink + ConsolidationPrompter),
 ) -> (Vec<ValidatedBranch>, Vec<ValidationError>) {
+    let force = params.force;
+    let remote_only = params.remote_only;
+    let keep_local_branch = params.keep_local_branch;
+    let skip_merge_validation = params.skip_merge_validation;
+    // One store handle for the whole validation pass; `None` degrades every
+    // classification to NoSeed (protective) without blocking anything.
+    let seeds = SeedsContext::open(&ctx.git_dir);
+
     let mut validated = Vec::new();
     let mut errors = Vec::new();
 
-    for branch in branches {
+    'branches: for branch in branches {
         sink.on_step(&format!("Validating branch '{branch}'..."));
 
         // Remote-only mode: skip local branch checks entirely.
@@ -379,6 +416,7 @@ fn validate_branches(
                 remote_branch_name,
                 is_current_worktree: false,
                 worktree_only: false,
+                daft_files: DaftFilePlan::Nothing,
             });
             continue;
         }
@@ -448,7 +486,11 @@ fn validate_branches(
                     remote_name: None,
                     remote_branch_name: None,
                     is_current_worktree: is_current,
+                    // Removing the default branch's own worktree: it IS the
+                    // consolidation target, so there is nothing to preserve
+                    // elsewhere.
                     worktree_only: true,
+                    daft_files: DaftFilePlan::Nothing,
                 });
                 continue;
             }
@@ -478,8 +520,9 @@ fn validate_branches(
             }
         }
 
-        // Check 4: Merged into default branch (skip with --force or keep_local_branch)
-        if !force && !keep_local_branch {
+        // Check 4: Merged into default branch (skip with --force,
+        // keep_local_branch, or the merge cleanup's own validation)
+        if !force && !keep_local_branch && !skip_merge_validation {
             match is_branch_merged(ctx, branch) {
                 Ok(true) => {
                     sink.on_step(&format!("Branch '{branch}' is merged into default branch"));
@@ -488,8 +531,8 @@ fn validate_branches(
                     errors.push(ValidationError {
                         branch: branch.clone(),
                         message: format!(
-                            "not merged into '{}' (use -D to force)",
-                            ctx.default_branch
+                            "not merged into '{}' (use {} to force)",
+                            ctx.default_branch, params.force_flag_label
                         ),
                     });
                     continue;
@@ -497,7 +540,10 @@ fn validate_branches(
                 Err(e) => {
                     errors.push(ValidationError {
                         branch: branch.clone(),
-                        message: format!("failed to check merge status: {e} (use -D to force)"),
+                        message: format!(
+                            "failed to check merge status: {e} (use {} to force)",
+                            params.force_flag_label
+                        ),
                     });
                     continue;
                 }
@@ -507,9 +553,11 @@ fn validate_branches(
         // Determine remote tracking info for this branch
         let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
 
-        // Check 5: Local/remote in sync (skip with --force or keep_local_branch)
+        // Check 5: Local/remote in sync (skip with --force, keep_local_branch,
+        // or the merge cleanup's own validation)
         if !force
             && !keep_local_branch
+            && !skip_merge_validation
             && let Some(ref remote) = remote_name
             && let Some(ref remote_branch) = remote_branch_name
         {
@@ -537,51 +585,51 @@ fn validate_branches(
             }
         }
 
-        // Check 6: Divergence guard — refuse removal when in-scope untracked daft
-        // files in this worktree differ from the merge target's. Gated BEFORE
-        // propagation (Task 6.1) so that a failed/skipped propagation doesn't
-        // silently lose visitor-config refinements. --force (-D) bypasses.
+        // Check 6: Daft-file provenance guard. Classify the worktree's
+        // untracked daft files against their recorded seeds: pristine or
+        // already-subsumed copies pass silently (deleting them loses
+        // nothing — including the stale-but-untouched copy a moved-on
+        // target used to false-refuse). Refined copies are real user data:
+        // forced removals plan a stash-discard, unforced ones go through
+        // the consolidation prompt (non-interactive contexts answer Abort
+        // and produce the refusal). The plan is resolved HERE, during
+        // validation, so execution never prompts and all-or-nothing
+        // validation semantics are preserved.
         //
-        // Gate conditions mirror Task 6.1's propagation block: only applies when
-        // (a) the source worktree exists on disk, (b) the merge-target worktree
-        // (default branch) is also checked out somewhere, and (c) the branch has
-        // at least one in-scope file (has_local or has_visitor_daft_yml). The
-        // divergence check is the second gate: it only refuses when those files
-        // actually differ from the target's.
-        if !force
-            && !keep_local_branch
-            && let Some(ref wt) = wt_path
+        // Unlike the old divergence guard, `keep_local_branch` does NOT
+        // exempt: the worktree directory is deleted either way, so its
+        // refined files are equally at stake.
+        let mut daft_files = DaftFilePlan::Nothing;
+        if let Some(ref wt) = wt_path
             && wt.is_dir()
         {
-            let has_local = wt.join("daft.local.yml").is_file();
-            let has_visitor_daft_yml = wt.join("daft.yml").is_file()
-                && matches!(
-                    crate::hooks::yaml_config_loader::classify_main_config(wt),
-                    crate::hooks::yaml_config_loader::ConfigStatus::Visitor
-                );
-            if (has_local || has_visitor_daft_yml)
-                && let Some(target_wt) = worktree_map.get(ctx.default_branch.as_str())
-            {
-                match crate::hooks::visitor_propagation::has_inscope_divergence(wt, target_wt) {
-                    Ok(true) => {
-                        errors.push(ValidationError {
-                            branch: branch.clone(),
-                            message: format!(
-                                "untracked daft files in {} differ from the merge \
-                                 target {}. Consolidate first with `daft file merge` \
-                                 or pass -D/--force to remove anyway.",
-                                wt.display(),
-                                target_wt.display(),
-                            ),
-                        });
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        sink.on_step(&format!(
-                            "Warning: divergence check failed for '{branch}': {e}; \
-                             proceeding with removal"
-                        ));
+            let target_wt = worktree_map.get(ctx.default_branch.as_str());
+            let classes = visitor_seeds::classify_in_scope_files(
+                seeds.as_ref(),
+                branch,
+                wt,
+                target_wt.map(PathBuf::as_path),
+            );
+            let blocking: Vec<FileClass> = visitor_seeds::blocking_files(&classes)
+                .into_iter()
+                .cloned()
+                .collect();
+
+            if !blocking.is_empty() {
+                if force {
+                    daft_files = DaftFilePlan::Discard(
+                        blocking.iter().map(|c| c.filename.clone()).collect(),
+                    );
+                } else {
+                    match plan_refined_files(ctx, branch, wt, target_wt, &blocking, params, sink) {
+                        Ok(plan) => daft_files = plan,
+                        Err(message) => {
+                            errors.push(ValidationError {
+                                branch: branch.clone(),
+                                message,
+                            });
+                            continue 'branches;
+                        }
                     }
                 }
             }
@@ -610,10 +658,231 @@ fn validate_branches(
             remote_branch_name,
             is_current_worktree: is_current,
             worktree_only: false,
+            daft_files,
         });
     }
 
     (validated, errors)
+}
+
+/// Build the consolidation/discard plan for a branch whose daft files are
+/// refined (or provenance-less) and not subsumed by the target. Returns the
+/// refusal message as `Err` when the user (or a non-interactive context)
+/// aborts.
+fn plan_refined_files(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+    wt: &Path,
+    target_wt: Option<&PathBuf>,
+    blocking: &[FileClass],
+    params: &BranchDeleteParams,
+    sink: &mut (impl ProgressSink + ConsolidationPrompter),
+) -> std::result::Result<DaftFilePlan, String> {
+    let refusal = |target_display: &str| {
+        let example = blocking
+            .first()
+            .map(|c| c.filename.as_str())
+            .unwrap_or("daft.yml");
+        format!(
+            "worktree '{}' has refined daft files ({}); consolidate with \
+             `daft file merge {}/{example} {}/{example}` or re-run with {} to discard",
+            wt.display(),
+            blocking
+                .iter()
+                .map(|c| c.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            target_display,
+            wt.display(),
+            params.force_flag_label,
+        )
+    };
+
+    // No target worktree: nothing to consolidate into — the only options
+    // are refusing or discarding, and discard requires the explicit force.
+    let Some(target_wt) = target_wt else {
+        return Err(format!(
+            "worktree '{}' has refined daft files ({}) and the default branch \
+             '{}' has no worktree to consolidate into; check it out first or \
+             re-run with {} to discard",
+            wt.display(),
+            blocking
+                .iter()
+                .map(|c| c.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            ctx.default_branch,
+            params.force_flag_label,
+        ));
+    };
+
+    // Dry-run the consolidation per file so the prompt can show exactly
+    // what would happen.
+    let prepared: Vec<PreparedConsolidation> = blocking
+        .iter()
+        .map(|class| prepare_consolidation(ctx, branch, wt, target_wt, class))
+        .collect();
+
+    let request = ConsolidationRequest {
+        branch: branch.to_string(),
+        worktree_display: wt.display().to_string(),
+        target_display: target_wt.display().to_string(),
+        files: prepared.iter().map(|p| p.summary.clone()).collect(),
+    };
+
+    match sink.on_refined(&request) {
+        ConsolidationChoice::Abort => Err(refusal(&target_wt.display().to_string())),
+        ConsolidationChoice::Discard => Ok(DaftFilePlan::Discard(
+            blocking.iter().map(|c| c.filename.clone()).collect(),
+        )),
+        ConsolidationChoice::Consolidate => {
+            let mut resolved_files = Vec::new();
+            for prepared in prepared {
+                let content = match prepared.resolution {
+                    ConsolidationResolution::Resolved(content) => content,
+                    ConsolidationResolution::NeedsSide {
+                        target_priority,
+                        source_priority,
+                    } => {
+                        match sink.on_conflicts(
+                            &prepared.summary.filename,
+                            &prepared.summary.conflict_keys,
+                        ) {
+                            ConflictSide::Target => target_priority,
+                            ConflictSide::Source => source_priority,
+                            ConflictSide::Abort => {
+                                return Err(refusal(&target_wt.display().to_string()));
+                            }
+                        }
+                    }
+                };
+                resolved_files.push((prepared.summary.filename.clone(), content));
+            }
+            Ok(DaftFilePlan::Consolidate(resolved_files))
+        }
+    }
+}
+
+/// A file's dry-run consolidation: the prompt summary plus the resolved
+/// content (or both side-resolutions when conflicted keys need a choice).
+struct PreparedConsolidation {
+    summary: RefinedFileSummary,
+    resolution: ConsolidationResolution,
+}
+
+enum ConsolidationResolution {
+    Resolved(String),
+    NeedsSide {
+        target_priority: String,
+        source_priority: String,
+    },
+}
+
+/// Compute what consolidating one file would write into the target.
+///
+/// With a seed: a real three-way merge (`merge3`) — adopted keys and
+/// conflicts reported per key path. Without a usable base (NoSeed,
+/// unparseable YAML): whole-file mode — the legacy two-way source-wins
+/// overlay, labelled as such in the summary so the user knows what they
+/// are accepting.
+fn prepare_consolidation(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+    wt: &Path,
+    target_wt: &Path,
+    class: &FileClass,
+) -> PreparedConsolidation {
+    use crate::hooks::config_merge::{merge_configs, merge3};
+    use crate::hooks::yaml_config_loader::parse_yaml_config_str;
+
+    let filename = &class.filename;
+    let source_str = std::fs::read_to_string(wt.join(filename)).unwrap_or_default();
+    let target_path = target_wt.join(filename);
+
+    // Target has no such file: consolidation is a verbatim copy — comments
+    // and formatting preserved, nothing to merge into.
+    if !target_path.is_file() {
+        return PreparedConsolidation {
+            summary: RefinedFileSummary {
+                filename: filename.clone(),
+                adopt_keys: vec!["(entire file — target has none)".to_string()],
+                conflict_keys: Vec::new(),
+                whole_file: false,
+            },
+            resolution: ConsolidationResolution::Resolved(source_str),
+        };
+    }
+
+    let target_str = std::fs::read_to_string(&target_path).unwrap_or_default();
+    let seed_content = (class.class == SeedClass::Refined)
+        .then(|| {
+            SeedsContext::open(&ctx.git_dir)
+                .and_then(|seeds| seeds.get_seed(branch, filename))
+                .map(|row| row.content)
+        })
+        .flatten();
+
+    let parsed = (
+        seed_content.as_deref().map(parse_yaml_config_str),
+        parse_yaml_config_str(&source_str),
+        parse_yaml_config_str(&target_str),
+    );
+
+    if let (Some(Ok(base)), Ok(source), Ok(target)) = parsed {
+        // Three-way: ours = target (it survives), theirs = source.
+        let outcome = merge3(&base, &target, &source);
+        if outcome.conflicts.is_empty() {
+            let content =
+                serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| source_str.clone());
+            return PreparedConsolidation {
+                summary: RefinedFileSummary {
+                    filename: filename.clone(),
+                    adopt_keys: outcome.took_from_theirs,
+                    conflict_keys: Vec::new(),
+                    whole_file: false,
+                },
+                resolution: ConsolidationResolution::Resolved(content),
+            };
+        }
+        // Conflicted: pre-compute both side-resolutions. Swapping ours and
+        // theirs flips which side wins the conflicted keys while one-sided
+        // changes from both sides still flow through.
+        let target_priority =
+            serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| target_str.clone());
+        let source_priority = serde_yaml::to_string(&merge3(&base, &source, &target).merged)
+            .unwrap_or_else(|_| source_str.clone());
+        return PreparedConsolidation {
+            summary: RefinedFileSummary {
+                filename: filename.clone(),
+                adopt_keys: outcome.took_from_theirs,
+                conflict_keys: outcome.conflicts,
+                whole_file: false,
+            },
+            resolution: ConsolidationResolution::NeedsSide {
+                target_priority,
+                source_priority,
+            },
+        };
+    }
+
+    // No usable base: whole-file mode (legacy two-way source-wins).
+    let content = match (
+        parse_yaml_config_str(&target_str),
+        parse_yaml_config_str(&source_str),
+    ) {
+        (Ok(target), Ok(source)) => serde_yaml::to_string(&merge_configs(target, source))
+            .unwrap_or_else(|_| source_str.clone()),
+        _ => source_str.clone(),
+    };
+    PreparedConsolidation {
+        summary: RefinedFileSummary {
+            filename: filename.clone(),
+            adopt_keys: Vec::new(),
+            conflict_keys: Vec::new(),
+            whole_file: true,
+        },
+        resolution: ConsolidationResolution::Resolved(content),
+    }
 }
 
 // ── Merge checking ─────────────────────────────────────────────────────────
@@ -926,40 +1195,55 @@ fn delete_single_branch(
         return result;
     }
 
-    // Visitor-config propagation: if the source worktree still has in-scope
-    // untracked daft files, copy them into the merge target's worktree before
-    // the source worktree gets removed. Gated cheapest-first so non-users
-    // pay no cost. Skip when the branch being deleted IS the default branch
-    // (worktree_only path), as there is no merge target to propagate to.
-    if !branch.worktree_only
-        && !remote_only
-        && branch.name != ctx.default_branch
-        && let Some(ref wt_path) = branch.worktree_path
-        && wt_path.is_dir()
-    {
-        let has_local = wt_path.join("daft.local.yml").is_file();
-        let has_visitor_daft_yml = wt_path.join("daft.yml").is_file()
-            && matches!(
-                crate::hooks::yaml_config_loader::classify_main_config(wt_path),
-                crate::hooks::yaml_config_loader::ConfigStatus::Visitor
-            );
-
-        if (has_local || has_visitor_daft_yml)
-            && let Some(target_wt) = worktree_map.get(&ctx.default_branch)
-            // Only salvage when the source actually has in-scope content the
-            // target lacks. When it doesn't — the common case: an unchanged
-            // worktree whose daft files are a subset of the target's — there is
-            // nothing to copy, and running the merge would needlessly
-            // re-serialize the target's daft.yml, stripping its comments and
-            // littering it with `null`s. (A non-forced divergent removal is
-            // already blocked by the divergence guard with a "consolidate first"
-            // message; only a forced removal reaches here with real divergence.)
-            && matches!(
-                crate::hooks::visitor_propagation::has_inscope_divergence(wt_path, target_wt),
-                Ok(true)
-            )
-        {
-            let _ = crate::hooks::visitor_propagation::propagate(wt_path, target_wt);
+    // Apply the daft-file plan resolved at validation time. The target
+    // worktree is only ever written by an explicit Consolidate choice;
+    // Discard stashes the refinements and never touches the target;
+    // pristine/subsumed copies (Nothing) are simply deleted with the
+    // worktree. (The old behavior — silently source-wins-merging the
+    // removed worktree's files into the target — is exactly the data-loss
+    // bug this replaces.)
+    if !remote_only && let Some(ref wt_path) = branch.worktree_path {
+        match &branch.daft_files {
+            DaftFilePlan::Nothing => {}
+            DaftFilePlan::Consolidate(files) => {
+                if let Some(target_wt) = worktree_map.get(&ctx.default_branch) {
+                    for (filename, content) in files {
+                        match std::fs::write(target_wt.join(filename), content) {
+                            Ok(()) => sink.on_warning(&format!(
+                                "Consolidated {filename} refinements from '{}' into {}",
+                                branch.name,
+                                target_wt.display()
+                            )),
+                            Err(e) => result.errors.push(format!(
+                                "Failed to consolidate {filename} into {}: {e}",
+                                target_wt.display()
+                            )),
+                        }
+                    }
+                }
+            }
+            DaftFilePlan::Discard(files) => {
+                for filename in files {
+                    let file = wt_path.join(filename);
+                    match visitor_seeds::stash_file(
+                        &ctx.git_dir,
+                        visitor_seeds::StashKind::Discarded,
+                        &branch.name,
+                        &file,
+                    ) {
+                        Some(dest) => sink.on_warning(&format!(
+                            "Discarded {filename} refinements from '{}' — saved to {}",
+                            branch.name,
+                            dest.display()
+                        )),
+                        None => sink.on_warning(&format!(
+                            "Discarded {filename} refinements from '{}' (stash copy failed; \
+                             the file is gone with the worktree)",
+                            branch.name
+                        )),
+                    }
+                }
+            }
         }
     }
 
@@ -1176,6 +1460,7 @@ mod tests {
             remote_branch_name: Some("feature/test".to_string()),
             is_current_worktree: false,
             worktree_only: false,
+            daft_files: DaftFilePlan::Nothing,
         };
         assert_eq!(vb.name, "feature/test");
         assert!(vb.worktree_path.is_some());
@@ -1192,6 +1477,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: false,
+            daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_path.is_none());
         assert!(vb.remote_name.is_none());
@@ -1207,6 +1493,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: true,
+            daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_only);
         assert!(vb.worktree_path.is_some());
@@ -1421,6 +1708,8 @@ mod tests {
             keep_local_branch: true,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1485,6 +1774,8 @@ mod tests {
             keep_local_branch: true,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1548,6 +1839,8 @@ mod tests {
             keep_local_branch: true,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "merge".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
         };
 
         let mut output = TestOutput::new();
@@ -1578,22 +1871,69 @@ mod tests {
         );
     }
 
-    // ── Divergence guard tests ─────────────────────────────────────────────
+    // ── Daft-file provenance guard tests ───────────────────────────────────
 
-    /// Regression test: divergence guard refuses branch-delete when daft.local.yml
-    /// in the feature worktree differs from the default branch worktree.
+    /// Test bridge with a scriptable consolidation answer. Never touches a
+    /// terminal — unit tests must not route through CommandBridge's real
+    /// prompt, which would block on a keypress when cargo test runs under a
+    /// TTY.
+    struct ScriptedBridge {
+        choice: crate::core::ConsolidationChoice,
+        side: crate::core::ConflictSide,
+    }
+
+    impl ScriptedBridge {
+        fn aborting() -> Self {
+            Self {
+                choice: crate::core::ConsolidationChoice::Abort,
+                side: crate::core::ConflictSide::Abort,
+            }
+        }
+    }
+
+    impl ProgressSink for ScriptedBridge {
+        fn on_step(&mut self, _msg: &str) {}
+        fn on_warning(&mut self, _msg: &str) {}
+        fn on_debug(&mut self, _msg: &str) {}
+    }
+
+    impl crate::core::HookRunner for ScriptedBridge {
+        fn run_hook(
+            &mut self,
+            _ctx: &crate::hooks::HookContext,
+        ) -> anyhow::Result<crate::core::HookOutcome> {
+            Ok(crate::core::HookOutcome {
+                success: true,
+                skipped: true,
+                skip_reason: None,
+            })
+        }
+    }
+
+    impl crate::core::ConsolidationPrompter for ScriptedBridge {
+        fn on_refined(
+            &mut self,
+            _req: &crate::core::ConsolidationRequest,
+        ) -> crate::core::ConsolidationChoice {
+            self.choice
+        }
+
+        fn on_conflicts(&mut self, _filename: &str, _keys: &[String]) -> crate::core::ConflictSide {
+            self.side
+        }
+    }
+
+    /// Regression test: the provenance guard refuses branch-delete when a
+    /// daft.local.yml in the feature worktree has refinements the default
+    /// branch worktree lacks (and no interactive consolidation happens).
     ///
-    /// To isolate Check 6 (divergence) from Check 3 (uncommitted changes), we
+    /// To isolate Check 6 (daft files) from Check 3 (uncommitted changes), we
     /// add daft.local.yml to .gitignore so git does not see it as dirty. This
     /// mirrors real usage: daft.local.yml is a personal overlay that should be
     /// gitignored in the repository.
     #[test]
     #[serial]
     fn divergence_guard_refuses_delete_when_local_yml_differs() {
-        use crate::core::CommandBridge;
-        use crate::hooks::{HookExecutor, HooksConfig};
-        use crate::output::TestOutput;
-
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
@@ -1652,22 +1992,28 @@ mod tests {
             keep_local_branch: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
         };
-        let mut output = TestOutput::new();
-        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
-        let mut bridge = CommandBridge::new(&mut output, executor);
+        let mut bridge = ScriptedBridge::aborting();
         let result = execute(&params, &mut bridge).unwrap();
 
         assert!(
             !result.validation_errors.is_empty(),
             "should have a validation error when daft.local.yml diverges"
         );
+        let message = &result.validation_errors[0].message;
         assert!(
-            result.validation_errors[0]
-                .message
-                .contains("untracked daft files"),
-            "error message must mention untracked daft files, got: {}",
-            result.validation_errors[0].message
+            message.contains("refined daft files"),
+            "error message must mention refined daft files, got: {message}"
+        );
+        assert!(
+            message.contains("daft file merge"),
+            "error message must point at the consolidation command, got: {message}"
+        );
+        assert!(
+            message.contains("-D/--force"),
+            "error message must name the caller's force flag, got: {message}"
         );
         // Feature worktree must NOT have been removed.
         assert!(
@@ -1676,14 +2022,12 @@ mod tests {
         );
     }
 
-    /// Regression test: --force bypasses the divergence guard.
+    /// Regression test: --force discards refined daft files to the stash and
+    /// NEVER writes them into the default-branch worktree (the old salvage
+    /// behavior silently propagated them — issue #628).
     #[test]
     #[serial]
     fn divergence_guard_bypassed_with_force() {
-        use crate::core::CommandBridge;
-        use crate::hooks::{HookExecutor, HooksConfig};
-        use crate::output::TestOutput;
-
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
@@ -1736,15 +2080,15 @@ mod tests {
             keep_local_branch: false,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
         };
-        let mut output = TestOutput::new();
-        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
-        let mut bridge = CommandBridge::new(&mut output, executor);
+        let mut bridge = ScriptedBridge::aborting();
         let result = execute(&params, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),
-            "force should bypass divergence guard, got: {:?}",
+            "force should bypass the provenance guard, got: {:?}",
             result
                 .validation_errors
                 .iter()
@@ -1757,5 +2101,109 @@ mod tests {
             "worktree must be removed with --force"
         );
         assert!(!feat_wt.exists(), "feature worktree directory must be gone");
+
+        // Force means DISCARD: the target worktree is never written...
+        assert!(
+            !tmp.path().join("daft.local.yml").exists(),
+            "forced removal must not propagate the refined file into the \
+             default-branch worktree"
+        );
+        // ...and the refinements land in the stash for recovery.
+        let stash = tmp
+            .path()
+            .join(".git/.daft/discarded/feature/daft.local.yml");
+        assert!(
+            stash.is_file(),
+            "discarded refinements must be stashed at {}",
+            stash.display()
+        );
+        assert!(
+            std::fs::read_to_string(&stash)
+                .unwrap()
+                .contains("echo personal"),
+            "stash must hold the discarded content"
+        );
+    }
+
+    /// Interactive consolidation: answering Consolidate merges the refined
+    /// file into the default-branch worktree, then removes the worktree.
+    #[test]
+    #[serial]
+    fn consolidation_choice_writes_target_then_removes() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        std::fs::write(feat_wt.join(".gitignore"), "daft.local.yml\n").unwrap();
+        git_quiet(&feat_wt, &["add", ".gitignore"]);
+        ShellCommand::new("git")
+            .args(["commit", "-q", "-m", "gitignore daft.local.yml"])
+            .current_dir(&feat_wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        ShellCommand::new("git")
+            .args(["merge", "--ff-only", "feature"])
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        std::fs::write(
+            feat_wt.join("daft.local.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - run: echo personal\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+        let mut bridge = ScriptedBridge {
+            choice: crate::core::ConsolidationChoice::Consolidate,
+            side: crate::core::ConflictSide::Abort,
+        };
+        let result = execute(&params, &mut bridge).unwrap();
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "consolidation answer must let the removal proceed, got: {:?}",
+            result
+                .validation_errors
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
+        );
+        assert!(!feat_wt.exists(), "worktree must be removed");
+        let consolidated = std::fs::read_to_string(tmp.path().join("daft.local.yml"))
+            .expect("default-branch worktree must gain the consolidated file");
+        assert!(
+            consolidated.contains("echo personal"),
+            "consolidated content must carry the refinement: {consolidated}"
+        );
     }
 }

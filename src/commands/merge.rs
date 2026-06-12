@@ -1043,6 +1043,8 @@ pub fn run() -> Result<()> {
                         // Expose DAFT_COMMAND=merge so hook scripts can
                         // distinguish merge cleanup from standalone daft remove.
                         command_label: "merge".to_string(),
+                        skip_merge_validation: false,
+                        force_flag_label: "-f/--force".to_string(),
                     };
 
                     let bd_result = {
