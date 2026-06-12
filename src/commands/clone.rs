@@ -537,6 +537,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Run hooks and exec only if a worktree was created
     if result.worktree_dir.is_some() {
+        // Surface untrusted-hook notices the multi-branch TUI deferred
+        // (TuiBridge buffers warnings) BEFORE the post-clone fire: the
+        // aggregated multi-worktree copy wins, and a post-clone Deny hit
+        // then dedups against it instead of replacing it.
+        crate::hooks::trust_skip::flush_pending_notice(&result.git_dir, output);
         run_post_clone_hook(args, &result, output)?;
         // For multi-branch TUI: hooks already ran inside TUI for all worktrees
         // (including the base). For everything else: run post-create hook for

@@ -65,12 +65,12 @@ impl HookRunner for TuiBridge {
         match self.executor.execute(ctx, &mut self.output, presenter) {
             Ok(result) => {
                 if result.skipped {
-                    // TODO: When hooks are skipped due to TrustLevel::Prompt, surface a
-                    // post-TUI notice suggesting `git daft hooks trust`. Currently the
-                    // skip_reason is captured in HookOutcome but not surfaced to the user
-                    // in TUI mode. See spec: "Prompt Callbacks" section.
-                    // Skipped hooks (disabled, not trusted, etc.) produce no events —
-                    // the executor returns early before calling any presenter methods.
+                    // Trust-skipped hooks accumulate a pending notice in
+                    // `hooks::trust_skip` (the executor's Deny arm sees this
+                    // bridge's `BufferingOutput` and defers); the owning
+                    // command flushes it after the TUI exits. Skipped hooks
+                    // produce no events — the executor returns early before
+                    // calling any presenter methods.
                     return Ok(HookOutcome {
                         success: result.success,
                         skipped: true,

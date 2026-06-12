@@ -292,6 +292,15 @@ fn run_sequential(
         }
     }
 
+    // Surface untrusted-hook notices buffered by the per-worktree removal
+    // tasks (they run hooks against a BufferingOutput). Must happen before
+    // the bare git dir — the notice registry key — is deleted below.
+    {
+        let mut notice_output =
+            crate::output::CliOutput::new(crate::output::OutputConfig::new(false, false));
+        crate::hooks::trust_skip::flush_pending_notice(&target.bare_git_dir, &mut notice_output);
+    }
+
     let (bare_status, bare_msg) = execute_remove_bare_task(target);
     let bare_line = match &bare_msg {
         TaskMessage::Removed => "removed".to_string(),
@@ -452,6 +461,13 @@ fn run_tui(
 
     let phases = vec![OperationPhase::RemoveRepo];
 
+    // The notice registry is keyed by the canonicalized git dir; canonicalize
+    // now, while the dir still exists — the DAG below deletes it.
+    let trust_notice_key = target
+        .bare_git_dir
+        .canonicalize()
+        .unwrap_or_else(|_| target.bare_git_dir.clone());
+
     let worktree_infos = build_tui_rows(worktrees);
 
     let dag = SyncDag::build_remove_repo(
@@ -571,6 +587,14 @@ fn run_tui(
     orchestrator
         .join()
         .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
+
+    // Surface untrusted-hook notices the TUI buffered (TuiBridge warnings
+    // never reach stderr).
+    {
+        let mut post_tui_output =
+            crate::output::CliOutput::new(crate::output::OutputConfig::new(false, false));
+        crate::hooks::trust_skip::flush_pending_notice(&trust_notice_key, &mut post_tui_output);
+    }
 
     if !completed.hook_summaries.is_empty() {
         eprintln!();
