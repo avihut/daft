@@ -5,7 +5,8 @@
 
 use crate::core::ProgressSink;
 use crate::core::worktree::fetch;
-use crate::git::GitCommand;
+use crate::git::push_porcelain::parse_push_report;
+use crate::git::{GitCommand, PushIo, PushOptions};
 use crate::utils::*;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -150,15 +151,18 @@ pub fn push_single_worktree(
     }
 
     // Run git push with explicit working directory (thread-safe)
-    match git.push_from(
-        &params.remote_name,
-        branch_name,
-        worktree_path,
-        params.force_with_lease,
-    ) {
-        Ok(output) => {
-            let up_to_date = output.contains("Everything up-to-date")
-                || output.contains("everything up-to-date");
+    match git
+        .push_from(
+            &params.remote_name,
+            branch_name,
+            worktree_path,
+            params.force_with_lease,
+            &PushOptions::default(),
+        )
+        .and_then(PushIo::into_result)
+    {
+        Ok(io) => {
+            let up_to_date = parse_push_report(&io.stdout).all_up_to_date();
             WorktreePushResult {
                 worktree_name: worktree_name.to_string(),
                 branch_name: branch_name.to_string(),

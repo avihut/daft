@@ -5,7 +5,7 @@
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
-use crate::git::GitCommand;
+use crate::git::{GitCommand, PushIo, PushOptions};
 use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{
     build_template_context, calculate_worktree_path, resolve_remote_for_branch,
@@ -180,7 +180,7 @@ pub fn execute(
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
 
     // Push and set upstream
-    let (push_set, push_skipped) = push_if_enabled(params, git, sink);
+    let (push_set, push_skipped) = push_if_enabled(params, git, &worktree_path, sink);
 
     // Propagate in-scope untracked daft files from source worktree to the new
     // worktree, so that user post-create hooks can read them.
@@ -539,9 +539,13 @@ fn apply_stash(
 }
 
 /// Push and set upstream tracking if the setting is enabled.
+///
+/// Runs the push from the new worktree so the repo's `pre-push` hook fires
+/// in the branch being pushed.
 fn push_if_enabled(
     params: &CheckoutBranchParams,
     git: &GitCommand,
+    worktree_path: &Path,
     sink: &mut impl ProgressSink,
 ) -> (bool, bool) {
     if !params.checkout_push {
@@ -554,7 +558,16 @@ fn push_if_enabled(
         params.remote_name, params.new_branch_name
     ));
 
-    if let Err(e) = git.push_set_upstream(&params.remote_name, &params.new_branch_name) {
+    let result = git
+        .push_set_upstream_from(
+            &params.remote_name,
+            &params.new_branch_name,
+            worktree_path,
+            &PushOptions::default(),
+        )
+        .and_then(PushIo::into_result);
+
+    if let Err(e) = result {
         sink.on_warning(&format!(
             "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
             params.new_branch_name, params.remote_name, e,

@@ -7,7 +7,7 @@ use crate::core::multi_remote::path::{
     calculate_worktree_path, extract_remote_from_path, resolve_remote_for_branch,
 };
 use crate::core::{HookRunner, ProgressSink};
-use crate::git::GitCommand;
+use crate::git::{GitCommand, PushIo, PushOptions};
 use crate::hooks::move_hooks::{MoveHookParams, run_setup_hooks, run_teardown_hooks};
 use crate::hooks::tracking::TrackedAttribute;
 use crate::{get_git_common_dir, get_project_root};
@@ -256,15 +256,31 @@ pub fn execute(
                     "Pushing '{}/{}' to remote...",
                     remote, params.new_branch
                 ));
-                match git.push_set_upstream_from(remote, &params.new_branch, &new_path) {
-                    Ok(()) => {
+                match git
+                    .push_set_upstream_from(
+                        remote,
+                        &params.new_branch,
+                        &new_path,
+                        &PushOptions::default(),
+                    )
+                    .and_then(PushIo::into_result)
+                {
+                    Ok(_) => {
                         // Delete old remote branch.
                         sink.on_step(&format!(
                             "Deleting old remote branch '{}/{}'...",
                             remote, old_branch
                         ));
-                        match git.push_delete(remote, &old_branch) {
-                            Ok(()) => {
+                        match git
+                            .push_delete_from(
+                                remote,
+                                &old_branch,
+                                &new_path,
+                                &PushOptions::default(),
+                            )
+                            .and_then(PushIo::into_result)
+                        {
+                            Ok(_) => {
                                 remote_renamed = true;
                                 sink.on_step("Remote branch renamed successfully");
                             }
