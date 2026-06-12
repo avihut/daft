@@ -349,13 +349,16 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
             "\n{INDENT}To run hooks here, trust this repository:  git daft hooks trust"
         ));
         if let Some(replay) = &content.replay {
+            // Labels are padded so both suggestion commands start at the
+            // same column (43 chars after the indent, matching the trust
+            // line above).
             let (label, suffix) = match (replay.as_str(), multi_branch) {
-                ("post-clone", _) => ("Then replay the clone's setup:           ", ""),
+                ("post-clone", _) => ("Then replay the clone's setup:             ", ""),
                 (_, true) => (
-                    "Then replay each worktree's setup:       ",
+                    "Then replay each worktree's setup:         ",
                     "   (run inside each worktree)",
                 ),
-                (_, false) => ("Then replay this worktree's setup:       ", ""),
+                (_, false) => ("Then replay this worktree's setup:         ", ""),
             };
             first.push_str(&format!(
                 "\n{INDENT}{label}git daft hooks run {replay}{suffix}"
