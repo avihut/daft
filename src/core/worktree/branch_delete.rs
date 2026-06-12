@@ -7,7 +7,7 @@ use crate::core::{
     ProgressSink, RefinedFileSummary,
 };
 use crate::git::GitCommand;
-use crate::hooks::visitor_seeds::{self, FileClass, SeedClass, SeedsContext};
+use crate::hooks::visitor_seeds::{self, FileClass, SeedsContext};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
 use crate::settings::PruneCdTarget;
@@ -716,18 +716,29 @@ fn plan_refined_files(
         ));
     };
 
-    // Dry-run the consolidation per file so the prompt can show exactly
-    // what would happen.
-    let prepared: Vec<PreparedConsolidation> = blocking
+    // Dry-run the consolidation per file (shared with the merge flow) so
+    // the prompt can show exactly what would happen.
+    let seeds = SeedsContext::open(&ctx.git_dir);
+    let prepared: Vec<visitor_seeds::ConsolidationPreview> = blocking
         .iter()
-        .map(|class| prepare_consolidation(ctx, branch, wt, target_wt, class))
+        .map(|class| {
+            visitor_seeds::prepare_consolidation(seeds.as_ref(), branch, wt, target_wt, class)
+        })
         .collect();
 
     let request = ConsolidationRequest {
         branch: branch.to_string(),
         worktree_display: wt.display().to_string(),
         target_display: target_wt.display().to_string(),
-        files: prepared.iter().map(|p| p.summary.clone()).collect(),
+        files: prepared
+            .iter()
+            .map(|p| RefinedFileSummary {
+                filename: p.filename.clone(),
+                adopt_keys: p.adopt_keys.clone(),
+                conflict_keys: p.conflict_keys.clone(),
+                whole_file: p.whole_file,
+            })
+            .collect(),
     };
 
     match sink.on_refined(&request) {
@@ -739,149 +750,22 @@ fn plan_refined_files(
             let mut resolved_files = Vec::new();
             for prepared in prepared {
                 let content = match prepared.resolution {
-                    ConsolidationResolution::Resolved(content) => content,
-                    ConsolidationResolution::NeedsSide {
+                    visitor_seeds::PreviewResolution::Resolved(content) => content,
+                    visitor_seeds::PreviewResolution::NeedsSide {
                         target_priority,
                         source_priority,
-                    } => {
-                        match sink.on_conflicts(
-                            &prepared.summary.filename,
-                            &prepared.summary.conflict_keys,
-                        ) {
-                            ConflictSide::Target => target_priority,
-                            ConflictSide::Source => source_priority,
-                            ConflictSide::Abort => {
-                                return Err(refusal(&target_wt.display().to_string()));
-                            }
+                    } => match sink.on_conflicts(&prepared.filename, &prepared.conflict_keys) {
+                        ConflictSide::Target => target_priority,
+                        ConflictSide::Source => source_priority,
+                        ConflictSide::Abort => {
+                            return Err(refusal(&target_wt.display().to_string()));
                         }
-                    }
+                    },
                 };
-                resolved_files.push((prepared.summary.filename.clone(), content));
+                resolved_files.push((prepared.filename.clone(), content));
             }
             Ok(DaftFilePlan::Consolidate(resolved_files))
         }
-    }
-}
-
-/// A file's dry-run consolidation: the prompt summary plus the resolved
-/// content (or both side-resolutions when conflicted keys need a choice).
-struct PreparedConsolidation {
-    summary: RefinedFileSummary,
-    resolution: ConsolidationResolution,
-}
-
-enum ConsolidationResolution {
-    Resolved(String),
-    NeedsSide {
-        target_priority: String,
-        source_priority: String,
-    },
-}
-
-/// Compute what consolidating one file would write into the target.
-///
-/// With a seed: a real three-way merge (`merge3`) — adopted keys and
-/// conflicts reported per key path. Without a usable base (NoSeed,
-/// unparseable YAML): whole-file mode — the legacy two-way source-wins
-/// overlay, labelled as such in the summary so the user knows what they
-/// are accepting.
-fn prepare_consolidation(
-    ctx: &BranchDeleteContext,
-    branch: &str,
-    wt: &Path,
-    target_wt: &Path,
-    class: &FileClass,
-) -> PreparedConsolidation {
-    use crate::hooks::config_merge::{merge_configs, merge3};
-    use crate::hooks::yaml_config_loader::parse_yaml_config_str;
-
-    let filename = &class.filename;
-    let source_str = std::fs::read_to_string(wt.join(filename)).unwrap_or_default();
-    let target_path = target_wt.join(filename);
-
-    // Target has no such file: consolidation is a verbatim copy — comments
-    // and formatting preserved, nothing to merge into.
-    if !target_path.is_file() {
-        return PreparedConsolidation {
-            summary: RefinedFileSummary {
-                filename: filename.clone(),
-                adopt_keys: vec!["(entire file — target has none)".to_string()],
-                conflict_keys: Vec::new(),
-                whole_file: false,
-            },
-            resolution: ConsolidationResolution::Resolved(source_str),
-        };
-    }
-
-    let target_str = std::fs::read_to_string(&target_path).unwrap_or_default();
-    let seed_content = (class.class == SeedClass::Refined)
-        .then(|| {
-            SeedsContext::open(&ctx.git_dir)
-                .and_then(|seeds| seeds.get_seed(branch, filename))
-                .map(|row| row.content)
-        })
-        .flatten();
-
-    let parsed = (
-        seed_content.as_deref().map(parse_yaml_config_str),
-        parse_yaml_config_str(&source_str),
-        parse_yaml_config_str(&target_str),
-    );
-
-    if let (Some(Ok(base)), Ok(source), Ok(target)) = parsed {
-        // Three-way: ours = target (it survives), theirs = source.
-        let outcome = merge3(&base, &target, &source);
-        if outcome.conflicts.is_empty() {
-            let content =
-                serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| source_str.clone());
-            return PreparedConsolidation {
-                summary: RefinedFileSummary {
-                    filename: filename.clone(),
-                    adopt_keys: outcome.took_from_theirs,
-                    conflict_keys: Vec::new(),
-                    whole_file: false,
-                },
-                resolution: ConsolidationResolution::Resolved(content),
-            };
-        }
-        // Conflicted: pre-compute both side-resolutions. Swapping ours and
-        // theirs flips which side wins the conflicted keys while one-sided
-        // changes from both sides still flow through.
-        let target_priority =
-            serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| target_str.clone());
-        let source_priority = serde_yaml::to_string(&merge3(&base, &source, &target).merged)
-            .unwrap_or_else(|_| source_str.clone());
-        return PreparedConsolidation {
-            summary: RefinedFileSummary {
-                filename: filename.clone(),
-                adopt_keys: outcome.took_from_theirs,
-                conflict_keys: outcome.conflicts,
-                whole_file: false,
-            },
-            resolution: ConsolidationResolution::NeedsSide {
-                target_priority,
-                source_priority,
-            },
-        };
-    }
-
-    // No usable base: whole-file mode (legacy two-way source-wins).
-    let content = match (
-        parse_yaml_config_str(&target_str),
-        parse_yaml_config_str(&source_str),
-    ) {
-        (Ok(target), Ok(source)) => serde_yaml::to_string(&merge_configs(target, source))
-            .unwrap_or_else(|_| source_str.clone()),
-        _ => source_str.clone(),
-    };
-    PreparedConsolidation {
-        summary: RefinedFileSummary {
-            filename: filename.clone(),
-            adopt_keys: Vec::new(),
-            conflict_keys: Vec::new(),
-            whole_file: true,
-        },
-        resolution: ConsolidationResolution::Resolved(content),
     }
 }
 
