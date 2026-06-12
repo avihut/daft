@@ -278,6 +278,143 @@ pub fn blocking_files(classes: &[FileClass]) -> Vec<&FileClass> {
     classes.iter().filter(|c| !c.removable()).collect()
 }
 
+// ── Consolidation preview ───────────────────────────────────────────────────
+
+/// Dry-run of consolidating one in-scope file into a target worktree: what
+/// keys move, what conflicts, and the resolved content (or both
+/// side-resolutions when a conflict needs an explicit choice). Shared by the
+/// removal flow (`branch_delete`) and the merge flow.
+pub struct ConsolidationPreview {
+    pub filename: String,
+    /// Key paths a three-way merge adopts from the source.
+    pub adopt_keys: Vec<String>,
+    /// Key paths both sides changed — a side must be chosen.
+    pub conflict_keys: Vec<String>,
+    /// True when there is no usable seed base: per-key reasoning is
+    /// impossible and the choice is whole-file.
+    pub whole_file: bool,
+    pub resolution: PreviewResolution,
+}
+
+pub enum PreviewResolution {
+    /// Unambiguous: write this content into the target.
+    Resolved(String),
+    /// Conflicted: the caller must pick a side (prompt or abort).
+    NeedsSide {
+        /// Conflicted keys keep the target's values.
+        target_priority: String,
+        /// Conflicted keys take the source's values.
+        source_priority: String,
+    },
+}
+
+/// Compute what consolidating `class`'s file from `source_wt` into
+/// `target_wt` would write.
+///
+/// With a seed: a real three-way merge (`merge3`) — adopted keys and
+/// conflicts reported per key path. Without a usable base (NoSeed,
+/// unparseable YAML): whole-file mode — when the target has no such file the
+/// source is copied verbatim (lossless); when it does, the situation is an
+/// unresolvable whole-file conflict (`NeedsSide`) where the source-priority
+/// resolution is the legacy two-way source-wins overlay. Nothing here ever
+/// silently prefers a side.
+pub fn prepare_consolidation(
+    seeds: Option<&SeedsContext>,
+    branch_slug: &str,
+    source_wt: &Path,
+    target_wt: &Path,
+    class: &FileClass,
+) -> ConsolidationPreview {
+    use crate::hooks::config_merge::{merge_configs, merge3};
+    use crate::hooks::yaml_config_loader::parse_yaml_config_str;
+
+    let filename = &class.filename;
+    let source_str = std::fs::read_to_string(source_wt.join(filename)).unwrap_or_default();
+    let target_path = target_wt.join(filename);
+
+    // Target has no such file: consolidation is a verbatim copy — comments
+    // and formatting preserved, nothing to merge into, nothing to lose.
+    if !target_path.is_file() {
+        return ConsolidationPreview {
+            filename: filename.clone(),
+            adopt_keys: vec!["(entire file — target has none)".to_string()],
+            conflict_keys: Vec::new(),
+            whole_file: false,
+            resolution: PreviewResolution::Resolved(source_str),
+        };
+    }
+
+    let target_str = std::fs::read_to_string(&target_path).unwrap_or_default();
+    let seed_content = (class.class == SeedClass::Refined)
+        .then(|| {
+            seeds
+                .and_then(|ctx| ctx.get_seed(branch_slug, filename))
+                .map(|row| row.content)
+        })
+        .flatten();
+
+    let parsed = (
+        seed_content.as_deref().map(parse_yaml_config_str),
+        parse_yaml_config_str(&source_str),
+        parse_yaml_config_str(&target_str),
+    );
+
+    if let (Some(Ok(base)), Ok(source), Ok(target)) = parsed {
+        // Three-way: ours = target (it survives), theirs = source.
+        let outcome = merge3(&base, &target, &source);
+        if outcome.conflicts.is_empty() {
+            let content =
+                serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| source_str.clone());
+            return ConsolidationPreview {
+                filename: filename.clone(),
+                adopt_keys: outcome.took_from_theirs,
+                conflict_keys: Vec::new(),
+                whole_file: false,
+                resolution: PreviewResolution::Resolved(content),
+            };
+        }
+        // Conflicted: pre-compute both side-resolutions. Swapping ours and
+        // theirs flips which side wins the conflicted keys while one-sided
+        // changes from both sides still flow through.
+        let target_priority =
+            serde_yaml::to_string(&outcome.merged).unwrap_or_else(|_| target_str.clone());
+        let source_priority = serde_yaml::to_string(&merge3(&base, &source, &target).merged)
+            .unwrap_or_else(|_| source_str.clone());
+        return ConsolidationPreview {
+            filename: filename.clone(),
+            adopt_keys: outcome.took_from_theirs,
+            conflict_keys: outcome.conflicts,
+            whole_file: false,
+            resolution: PreviewResolution::NeedsSide {
+                target_priority,
+                source_priority,
+            },
+        };
+    }
+
+    // No usable base and the target has its own copy: whole-file conflict.
+    // The source-priority resolution is the legacy two-way overlay; the
+    // target-priority resolution leaves the target untouched.
+    let source_priority = match (
+        parse_yaml_config_str(&target_str),
+        parse_yaml_config_str(&source_str),
+    ) {
+        (Ok(target), Ok(source)) => serde_yaml::to_string(&merge_configs(target, source))
+            .unwrap_or_else(|_| source_str.clone()),
+        _ => source_str.clone(),
+    };
+    ConsolidationPreview {
+        filename: filename.clone(),
+        adopt_keys: Vec::new(),
+        conflict_keys: vec!["(entire file — no seed provenance)".to_string()],
+        whole_file: true,
+        resolution: PreviewResolution::NeedsSide {
+            target_priority: target_str,
+            source_priority,
+        },
+    }
+}
+
 // ── Discard stash ───────────────────────────────────────────────────────────
 
 /// Where a stashed copy goes under `<git-common-dir>/.daft/`.
