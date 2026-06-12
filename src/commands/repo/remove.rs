@@ -584,7 +584,7 @@ fn run_tui(
             eprintln!(
                 "  {}: {} {} ({}, {}ms)",
                 entry.branch_name,
-                entry.hook_type.filename(),
+                entry.hook_type.hook_name(),
                 status_word,
                 exit_str,
                 entry.duration.as_millis()
@@ -610,7 +610,7 @@ struct HookSummary {
     branch_name: String,
     #[allow(dead_code)] // Held for symmetry; not yet used in summary output.
     success: bool,
-    hook_type: crate::hooks::HookType,
+    hook_type: crate::core::worktree::sync_dag::DagHookPhase,
     warned: bool,
     duration: std::time::Duration,
     exit_code: Option<i32>,
@@ -632,7 +632,7 @@ fn print_hook_summary(entries: &[HookSummary]) {
         eprintln!(
             "  {}: {} {} ({}, {}ms)",
             h.branch_name,
-            h.hook_type.filename(),
+            h.hook_type.hook_name(),
             status_word,
             exit_str,
             h.duration.as_millis()

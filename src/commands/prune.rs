@@ -553,7 +553,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             eprintln!(
                 "  {}: {} {} ({}, {}ms)",
                 entry.branch_name,
-                entry.hook_type.filename(),
+                entry.hook_type.hook_name(),
                 status_word,
                 exit_str,
                 entry.duration.as_millis(),

@@ -918,7 +918,7 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
 fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -> Line<'static> {
     use super::state::HookSubStatus;
 
-    let name = sub.hook_type.filename();
+    let name = sub.hook_type.hook_name();
     let status_span = match &sub.status {
         HookSubStatus::Running => {
             let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
