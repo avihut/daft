@@ -352,6 +352,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         Arc::new(std::sync::Mutex::new(None));
     let deferred_branch_writer = Arc::clone(&deferred_branch);
 
+    // Branches prune deliberately kept (refined daft files / unmerged) —
+    // surfaced after the TUI exits, mirroring the deferred-branch pattern.
+    let skipped_refined: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let skipped_refined_writer = Arc::clone(&skipped_refined);
+    let skipped_unmerged: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let skipped_unmerged_writer = Arc::clone(&skipped_unmerged);
+
     let orch_settings = Arc::clone(&shared_settings);
     let shared_hooks_config = Arc::new(hooks_config.clone());
 
@@ -436,6 +445,18 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
+                        }
+                        if matches!(message, TaskMessage::SkippedRefined) {
+                            skipped_refined_writer
+                                .lock()
+                                .unwrap()
+                                .push(branch_name.clone());
+                        }
+                        if matches!(message, TaskMessage::SkippedUnmerged) {
+                            skipped_unmerged_writer
+                                .lock()
+                                .unwrap()
+                                .push(branch_name.clone());
                         }
                         (status, message, outcomes.clone())
                     }
@@ -566,6 +587,17 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             if !entry.success && !entry.warned {
                 eprintln!("    Prune was aborted for this branch.");
             }
+        }
+    }
+
+    // ── Surface branches prune deliberately kept ──────────────────────────
+    {
+        let refined = skipped_refined.lock().unwrap().clone();
+        let unmerged = skipped_unmerged.lock().unwrap().clone();
+        if !refined.is_empty() || !unmerged.is_empty() {
+            let config = OutputConfig::with_autocd(false, false, settings.autocd);
+            let mut notes_output = CliOutput::new(config);
+            sync_shared::render_prune_skip_notes(&refined, &unmerged, &mut notes_output);
         }
     }
 

@@ -86,6 +86,12 @@ pub enum TaskMessage {
     NoActionNeeded,
     /// Prune skipped because worktree has uncommitted changes.
     SkippedDirty,
+    /// Prune kept the worktree: refined untracked daft files need
+    /// consolidation (`daft file merge`) or --force.
+    SkippedRefined,
+    /// Prune kept the branch: remote is gone but the local branch is not
+    /// merged into the default branch.
+    SkippedUnmerged,
     /// Update couldn't fast-forward (branch diverged from upstream).
     Diverged,
     /// Push completed successfully.

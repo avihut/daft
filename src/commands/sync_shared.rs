@@ -50,6 +50,12 @@ pub fn execute_prune_task(
         git_dir: git_dir.to_path_buf(),
         remote_name: remote_name.to_string(),
         source_worktree: source_worktree.to_path_buf(),
+        default_branch: crate::remote::get_default_branch_local(
+            git_dir,
+            remote_name,
+            settings.use_gitoxide,
+        )
+        .ok(),
     };
 
     let params = prune::PruneParams {
@@ -89,6 +95,10 @@ pub fn execute_prune_task(
                 (TaskStatus::Succeeded, TaskMessage::Deferred)
             } else if result.skipped_dirty {
                 (TaskStatus::Succeeded, TaskMessage::SkippedDirty)
+            } else if result.skipped_refined {
+                (TaskStatus::Succeeded, TaskMessage::SkippedRefined)
+            } else if result.skipped_unmerged {
+                (TaskStatus::Succeeded, TaskMessage::SkippedUnmerged)
             } else {
                 (TaskStatus::Succeeded, TaskMessage::NoActionNeeded)
             }
@@ -149,12 +159,19 @@ pub fn handle_post_tui_deferred(
     let deferred = deferred_branch.lock().unwrap().clone();
     if let Some(ref branch_name) = deferred {
         let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+        let default_branch = crate::remote::get_default_branch_local(
+            &git_dir,
+            &settings.remote,
+            settings.use_gitoxide,
+        )
+        .ok();
         let ctx = prune::PruneContext {
             git: &git,
             project_root: project_root.to_path_buf(),
             git_dir,
             remote_name: settings.remote.clone(),
             source_worktree,
+            default_branch,
         };
         let params = prune::PruneParams {
             force,
@@ -372,6 +389,43 @@ pub fn render_prune_result(result: &prune::PruneResult, output: &mut dyn Output)
         output.warning(
             "Some prunable worktree data may exist. Run 'git worktree prune' to clean up.",
         );
+    }
+
+    render_prune_skip_notes(&result.skipped_refined, &result.skipped_unmerged, output);
+}
+
+/// End-of-run notes about branches prune deliberately kept. Shared by the
+/// sequential renderer above and the post-TUI summaries in `daft prune` /
+/// `daft sync`.
+pub fn render_prune_skip_notes(
+    skipped_refined: &[String],
+    skipped_unmerged: &[String],
+    output: &mut dyn Output,
+) {
+    if !skipped_refined.is_empty() {
+        let wt_word = if skipped_refined.len() == 1 {
+            "worktree"
+        } else {
+            "worktrees"
+        };
+        output.warning(&format!(
+            "Kept {} {wt_word} with refined daft files — consolidate with `daft file merge` \
+             or re-run with --force: {}",
+            skipped_refined.len(),
+            skipped_refined.join(", ")
+        ));
+    }
+    if !skipped_unmerged.is_empty() {
+        let branch_word = if skipped_unmerged.len() == 1 {
+            "branch"
+        } else {
+            "branches"
+        };
+        output.warning(&format!(
+            "Skipped {} gone-but-unmerged {branch_word} (use --force to delete): {}",
+            skipped_unmerged.len(),
+            skipped_unmerged.join(", ")
+        ));
     }
 }
 

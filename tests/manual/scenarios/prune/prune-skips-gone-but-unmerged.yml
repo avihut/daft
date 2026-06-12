@@ -69,4 +69,4 @@ steps:
   - name: Local branch ref is gone after the forced prune
     run: git -C $WORK_DIR/test-repo/main show-ref --verify refs/heads/feat/x
     expect:
-      exit_code: 1
+      exit_code: 128

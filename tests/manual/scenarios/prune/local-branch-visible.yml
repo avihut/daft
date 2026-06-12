@@ -50,6 +50,13 @@ steps:
     expect:
       exit_code: 0
 
+  - name:
+      Mark the local branch merged (repoint onto main) so prune may delete it
+    run: git branch -f feature/local-only main
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
   - name: Run prune (which fetches and identifies gone branches)
     run: git-worktree-prune --verbose --verbose 2>&1
     cwd: "$WORK_DIR/test-repo/main"

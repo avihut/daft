@@ -772,54 +772,10 @@ fn plan_refined_files(
 // ── Merge checking ─────────────────────────────────────────────────────────
 
 /// Check whether a branch has been merged into the default branch.
-///
-/// Checks against both the local default branch and its remote tracking branch.
-/// Uses a two-step approach for each target:
-/// 1. `merge-base --is-ancestor` — detects regular merges
-/// 2. `git cherry` — detects squash merges (all lines start with `-`)
+/// Delegates to the shared [`super::merged`] helpers (also used by prune's
+/// gone-but-unmerged guard).
 fn is_branch_merged(ctx: &BranchDeleteContext, branch: &str) -> Result<bool> {
-    // Check against local default branch first
-    if is_branch_merged_into(ctx, branch, &ctx.default_branch)? {
-        return Ok(true);
-    }
-
-    // Also check against the remote tracking branch, which may be ahead of local
-    let remote_ref = format!("{}/{}", ctx.remote_name, ctx.default_branch);
-    if is_branch_merged_into(ctx, branch, &remote_ref)? {
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
-/// Check whether `branch` has been merged into `target`.
-fn is_branch_merged_into(ctx: &BranchDeleteContext, branch: &str, target: &str) -> Result<bool> {
-    // Step 1: Check if branch is an ancestor of the target (regular merge)
-    let is_ancestor = ctx
-        .git
-        .merge_base_is_ancestor(branch, target)
-        .context("merge-base check failed")?;
-
-    if is_ancestor {
-        return Ok(true);
-    }
-
-    // Step 2: Check for squash merge via git cherry.
-    let cherry_output = ctx
-        .git
-        .cherry(target, branch)
-        .context("git cherry check failed")?;
-
-    let lines: Vec<&str> = cherry_output.lines().collect();
-
-    // Empty output means no commits to compare
-    if lines.is_empty() {
-        return Ok(true);
-    }
-
-    // All lines must start with `-` for the branch to be considered squash-merged
-    let all_merged = lines.iter().all(|line| line.starts_with('-'));
-    Ok(all_merged)
+    super::merged::is_branch_merged(ctx.git, branch, &ctx.default_branch, &ctx.remote_name)
 }
 
 /// Compare local and remote SHAs to determine if the branch is in sync.
