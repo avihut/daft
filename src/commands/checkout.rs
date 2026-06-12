@@ -791,23 +791,14 @@ fn run_checkout(
     }
 
     output.start_spinner("Preparing worktree...");
-    let (checkout_result, executor) = {
+    let checkout_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        let r = checkout::execute(&params, git, &project_root, &mut bridge);
-        (r, bridge.into_executor())
+        checkout::execute(&params, git, &project_root, &mut bridge)
     };
     output.finish_spinner();
     let result = checkout_result?;
 
     render_checkout_result(&result, output);
-
-    // Show hooks notice if skipped due to trust
-    if result.post_hook_outcome.skipped
-        && let Some(reason) = &result.post_hook_outcome.skip_reason
-        && reason == "Repository not trusted"
-    {
-        executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
-    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);
@@ -894,16 +885,15 @@ fn run_create_branch(
     if !push_hook_will_render {
         output.start_spinner("Creating worktree...");
     }
-    let (checkout_result, executor) = {
+    let checkout_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        let r = checkout_branch::execute(
+        checkout_branch::execute(
             &params,
             git,
             &project_root,
             push_presenter.as_ref(),
             &mut bridge,
-        );
-        (r, bridge.into_executor())
+        )
     };
     if !push_hook_will_render {
         output.finish_spinner();
@@ -911,14 +901,6 @@ fn run_create_branch(
     let result = checkout_result?;
 
     render_create_result(&result, output);
-
-    // Show hooks notice if skipped due to trust
-    if result.post_hook_outcome.skipped
-        && let Some(reason) = &result.post_hook_outcome.skip_reason
-        && reason == "Repository not trusted"
-    {
-        executor.check_hooks_notice(&result.worktree_path, &result.git_dir, output);
-    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);

@@ -3,14 +3,16 @@
 //! This module provides the `HookExecutor` which handles discovering,
 //! validating, and executing hooks with proper security checks.
 
+use super::trust_skip::{self, SkipSource};
 use super::yaml_config_loader;
 use super::yaml_executor::{self, JobFilter};
 use super::{
     DEPRECATED_HOOK_REMOVAL_VERSION, FailMode, HookConfig, HookContext, HookEnvironment, HookType,
-    HooksConfig, TrustDatabase, TrustLevel, find_hooks, list_hooks,
+    HooksConfig, TrustDatabase, TrustLevel, find_hooks,
 };
 use crate::executor::presenter::JobPresenter;
 use crate::output::Output;
+use crate::store::models::invocation::SKIP_REASON_PROMPT_UNAVAILABLE;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -330,6 +332,19 @@ impl HookExecutor {
             let trust_level = self.get_verified_trust_level(&ctx.git_dir, output);
             match trust_level {
                 TrustLevel::Deny => {
+                    if !self.user_requested_skip(ctx.hook_type) {
+                        let configured_hooks: Vec<String> = yaml_config
+                            .hooks
+                            .keys()
+                            .filter(|name| HookType::from_yaml_name(name).is_some())
+                            .cloned()
+                            .collect();
+                        trust_skip::notify_and_record(
+                            ctx,
+                            SkipSource::Yaml { configured_hooks },
+                            output,
+                        );
+                    }
                     output.debug(&format!(
                         "Skipping {hook_name} YAML hooks: repository not trusted"
                     ));
@@ -344,14 +359,22 @@ impl HookExecutor {
                         }
                     } else {
                         output.warning(&format!(
-                            "YAML hooks exist but no permission callback configured. Skipping {hook_name}."
+                            "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {hook_name}. Run 'git daft hooks trust' to allow hooks."
                         ));
+                        trust_skip::record_skip(ctx, SKIP_REASON_PROMPT_UNAVAILABLE);
                         return Ok(Some(HookResult::skipped("No permission callback")));
                     }
                 }
                 TrustLevel::Allow => {}
             }
         }
+
+        // The trust gate passed (Allow, prompt accepted, or explicit bypass):
+        // any "skipped while untrusted" record for this (hook, branch) pair
+        // is now stale — the upcoming fire supersedes it regardless of how
+        // that fire ends (failure and `skip:` conditions are post-trust
+        // outcomes, captured by job records instead).
+        trust_skip::clear_skips(ctx);
 
         let source_dir = yaml_config.source_dir.as_deref().unwrap_or(".daft");
         let rc = yaml_config.rc.as_deref();
@@ -435,6 +458,21 @@ impl HookExecutor {
             if has_project_hooks {
                 match trust_level {
                     TrustLevel::Deny => {
+                        if !self.user_requested_skip(ctx.hook_type) {
+                            let hook_files: Vec<String> = discovery
+                                .hooks
+                                .iter()
+                                .filter(|h| h.starts_with(hook_source_worktree))
+                                .filter_map(|p| p.file_name())
+                                .filter_map(|n| n.to_str())
+                                .map(String::from)
+                                .collect();
+                            trust_skip::notify_and_record(
+                                ctx,
+                                SkipSource::Scripts { hook_files },
+                                output,
+                            );
+                        }
                         output.debug(&format!(
                             "Skipping {} hooks: repository not trusted",
                             ctx.hook_type
@@ -452,6 +490,10 @@ impl HookExecutor {
                 }
             }
         }
+
+        // Trust gate passed (or only user-level hooks are involved): drop any
+        // stale "skipped while untrusted" record for this (hook, branch).
+        trust_skip::clear_skips(ctx);
 
         // Clear any active spinner — the presenter writes directly to stderr.
         output.finish_spinner();
@@ -524,9 +566,10 @@ impl HookExecutor {
         } else {
             // Default: don't execute without explicit permission
             output.warning(&format!(
-                "Hooks exist but no permission callback configured. Skipping {} hooks.",
+                "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {} hooks. Run 'git daft hooks trust' to allow hooks.",
                 ctx.hook_type
             ));
+            trust_skip::record_skip(ctx, SKIP_REASON_PROMPT_UNAVAILABLE);
             false
         }
     }
@@ -565,28 +608,14 @@ impl HookExecutor {
         }
     }
 
-    /// Check if hooks exist for a worktree and display a notice if untrusted.
-    pub fn check_hooks_notice(
-        &self,
-        worktree_path: &Path,
-        git_dir: &Path,
-        output: &mut dyn Output,
-    ) {
-        let hooks = list_hooks(worktree_path);
-        if hooks.is_empty() {
-            return;
-        }
-
-        let trust_level = self.trust_db.get_trust_level(git_dir);
-        if trust_level == TrustLevel::Deny {
-            output.warning("This repository contains hooks in .daft/hooks/:");
-            for hook in &hooks {
-                output.list_item(hook.filename());
-            }
-            output.warning("");
-            output.warning("Hooks were NOT executed. To enable hooks for this repository:");
-            output.warning("  git daft hooks trust");
-        }
+    /// Whether the user explicitly asked to skip this whole hook fire
+    /// (`--skip-hooks all` or a hook-type selector naming it). An explicit
+    /// opt-out must not trigger the untrusted-hook notice or a replay
+    /// record: the hooks were not going to run regardless of trust. Partial
+    /// selectors (job names, tags) do NOT suppress — the remaining jobs
+    /// would have run if trusted, so the trust skip is still surprising.
+    fn user_requested_skip(&self, hook_type: HookType) -> bool {
+        self.job_filter.skip.all || self.job_filter.skip.hook_types.contains(&hook_type)
     }
 
     /// Get the trust level for a repository.
@@ -788,6 +817,37 @@ mod tests {
         assert_eq!(result.skip_reason, Some("No hook files found".to_string()));
     }
 
+    /// Build a context whose git dir exists (so the skip record can compute
+    /// a repo id) and whose state writes land in the test's tempdir.
+    fn test_ctx_with_state(
+        temp_dir: &Path,
+        worktree: &Path,
+        hook_type: HookType,
+        branch: &str,
+    ) -> HookContext {
+        let git_dir = temp_dir.join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        HookContext::new(
+            hook_type, "checkout", temp_dir, &git_dir, "origin", worktree, worktree, branch,
+        )
+        .with_state_dir(temp_dir.join("state"))
+    }
+
+    /// Skip rows recorded for the context's repo, via the same store the
+    /// production write path uses.
+    fn skip_rows(ctx: &HookContext) -> Vec<crate::store::models::InvocationRow> {
+        use crate::coordinator::ports::JobsStorePort;
+        let repo_hash =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&ctx.git_dir).unwrap();
+        let state = ctx.state_dir.as_ref().unwrap();
+        let base = state.join("jobs").join(&repo_hash);
+        if !base.join("coordinator.db").exists() {
+            return Vec::new();
+        }
+        let store = crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&base).unwrap();
+        store.list_skipped_invocations(&repo_hash).unwrap()
+    }
+
     #[test]
     fn test_executor_untrusted_repo() {
         let temp_dir = tempdir().unwrap();
@@ -800,16 +860,7 @@ mod tests {
         let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
         let mut output = TestOutput::default();
 
-        let ctx = HookContext::new(
-            HookType::PostCreate,
-            "checkout",
-            temp_dir.path(),
-            temp_dir.path().join(".git"),
-            "origin",
-            &worktree,
-            &worktree,
-            "main",
-        );
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
 
         let presenter = NullPresenter::arc();
         let result = executor.execute(&ctx, &mut output, presenter).unwrap();
@@ -818,6 +869,132 @@ mod tests {
             result.skip_reason,
             Some("Repository not trusted".to_string())
         );
+
+        // The Deny arm warns (once) and records the skip.
+        let warnings = output.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("worktree-post-create"));
+        let rows = skip_rows(&ctx);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hook_type, "worktree-post-create");
+        assert_eq!(rows[0].worktree, "main");
+        assert_eq!(rows[0].skip_reason.as_deref(), Some("untrusted"));
+    }
+
+    #[test]
+    fn test_executor_untrusted_yaml_config_warns_and_records() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join("daft.yml"),
+            "hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo hi\n",
+        )
+        .unwrap();
+
+        let config = HooksConfig::default();
+        let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
+        let mut output = TestOutput::default();
+
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
+        assert!(result.skipped);
+        assert_eq!(
+            result.skip_reason,
+            Some("Repository not trusted".to_string())
+        );
+
+        let warnings = output.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("daft.yml"));
+        assert!(warnings[0].contains("worktree-post-create"));
+        let rows = skip_rows(&ctx);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].skip_reason.as_deref(), Some("untrusted"));
+    }
+
+    #[test]
+    fn test_executor_user_requested_skip_suppresses_notice_and_record() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
+
+        for selector in ["all", "worktree-post-create"] {
+            let config = HooksConfig::default();
+            let executor = HookExecutor::with_trust_db(config, TrustDatabase::default())
+                .with_job_filter(JobFilter::skipping(&[selector.to_string()]));
+            let mut output = TestOutput::default();
+
+            let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
+            let presenter = NullPresenter::arc();
+            let result = executor.execute(&ctx, &mut output, presenter).unwrap();
+            assert!(result.skipped, "selector {selector}: still trust-skipped");
+            assert!(
+                output.warnings().is_empty(),
+                "selector {selector}: explicit opt-out must not warn"
+            );
+            assert!(
+                skip_rows(&ctx).is_empty(),
+                "selector {selector}: explicit opt-out must not record"
+            );
+        }
+    }
+
+    #[test]
+    fn test_executor_bypass_trust_neither_warns_nor_records() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
+
+        let config = HooksConfig::default();
+        let executor =
+            HookExecutor::with_trust_db(config, TrustDatabase::default()).with_bypass_trust(true);
+        let mut output = TestOutput::default();
+
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
+        let presenter = NullPresenter::arc();
+        let result = executor.execute(&ctx, &mut output, presenter).unwrap();
+        assert!(result.success);
+        assert!(output.warnings().is_empty());
+        assert!(skip_rows(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_executor_trust_pass_clears_recorded_skip() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\necho test");
+
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+        let presenter = NullPresenter::arc();
+
+        // First run untrusted: records the skip.
+        let untrusted =
+            HookExecutor::with_trust_db(HooksConfig::default(), TrustDatabase::default());
+        let mut output = TestOutput::default();
+        untrusted
+            .execute(&ctx, &mut output, presenter.clone())
+            .unwrap();
+        assert_eq!(skip_rows(&ctx).len(), 1);
+
+        // Then trust and run again: the passing gate clears the record.
+        let mut trust_db = TrustDatabase::default();
+        trust_db.set_trust_level(&ctx.git_dir, TrustLevel::Allow);
+        let trusted = HookExecutor::with_trust_db(HooksConfig::default(), trust_db);
+        let mut output = TestOutput::default();
+        let result = trusted.execute(&ctx, &mut output, presenter).unwrap();
+        assert!(result.success);
+        assert!(skip_rows(&ctx).is_empty(), "trust pass clears the record");
     }
 
     #[test]
@@ -832,23 +1009,16 @@ mod tests {
             "#!/bin/bash\necho 'hook executed'",
         );
 
+        // Build the context first: it creates the git dir, which must exist
+        // before set_trust_level so both sides canonicalize identically.
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
         let config = HooksConfig::default();
         let mut trust_db = TrustDatabase::default();
-        trust_db.set_trust_level(&temp_dir.path().join(".git"), TrustLevel::Allow);
+        trust_db.set_trust_level(&ctx.git_dir, TrustLevel::Allow);
 
         let executor = HookExecutor::with_trust_db(config, trust_db);
         let mut output = TestOutput::default();
-
-        let ctx = HookContext::new(
-            HookType::PostCreate,
-            "checkout",
-            temp_dir.path(),
-            temp_dir.path().join(".git"),
-            "origin",
-            &worktree,
-            &worktree,
-            "main",
-        );
 
         let presenter = NullPresenter::arc();
         let result = executor.execute(&ctx, &mut output, presenter).unwrap();
