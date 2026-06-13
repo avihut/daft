@@ -1,14 +1,14 @@
 //! Implementation of `daft file merge` — merge a source daft.yml into a target.
 //!
-//! Merge semantics: recursive YAML merge via the existing `merge_configs` /
-//! `merge_hook_defs` functions used at load time. Source wins on conflicts.
-//! After a successful merge the source file is deleted unless `--keep-source`
-//! is passed. When the target is currently untracked the command prompts before
-//! writing unless `--yes` / `--force` is passed.
+//! Merge semantics: when the source carries seed provenance, a three-way
+//! `merge3` against the seed (only genuine refinements move; conflicts need
+//! an explicit side; the target is backed up first). Without provenance, the
+//! legacy two-way `merge_configs` where source wins on conflicts, guarded by
+//! the untracked-target confirmation. After a successful merge the source
+//! file is deleted unless `--keep-source` is passed.
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::hooks::config_merge::merge_configs;
@@ -28,14 +28,23 @@ pub struct MergeOptions {
 #[command(name = "daft file merge")]
 #[command(about = "Merge a source daft.yml into a target daft.yml")]
 #[command(long_about = "\
-Merge SOURCE into TARGET using the same recursive YAML merge that daft uses\n\
-at load time: source wins on conflicts, new hook sections are added wholesale.\n\
+Merge SOURCE into TARGET. When the source is a worktree-root daft file with\n\
+seed provenance (daft recorded what it wrote there), the merge is THREE-WAY\n\
+against that seed: only keys the source genuinely refined move into the\n\
+target, a key-level preview is printed first, and the target is backed up to\n\
+<git-common-dir>/.daft/backups/file-merge/ before writing. Keys changed on\n\
+both sides are conflicts: pick a side at the interactive prompt, pass -y to\n\
+take the source's values, or the command aborts non-zero listing the keys.\n\
+\n\
+Without provenance the legacy two-way merge applies: source wins on\n\
+conflicts, new hook sections are added wholesale, and when TARGET is\n\
+untracked (visitor file) you are prompted for confirmation unless\n\
+--yes / --force is passed.\n\
 \n\
 When TARGET is omitted, daft.yml in the current directory is used.\n\
 \n\
-By default the source file is deleted after a successful merge.\n\
-When TARGET is untracked (visitor file) you are prompted for confirmation\n\
-unless --yes / --force is passed.")]
+By default the source file is deleted after a successful merge\n\
+(--keep-source retains it and re-seeds it as consolidated).")]
 pub struct Args {
     /// Target file to merge INTO, or source file when TARGET is omitted
     first: PathBuf,
@@ -92,8 +101,13 @@ pub fn run(args: &[String]) -> Result<()> {
 
 /// Merge `source` into `target`, writing the result back to `target`.
 ///
-/// Source wins on all conflicts (both scalar fields and named hook jobs).
-/// After a successful merge `source` is deleted unless `opts.keep_source`.
+/// When the source is a worktree-root daft file with seed provenance, the
+/// merge is THREE-WAY against the seed: only genuine refinements move, a
+/// key-level preview is printed first, conflicting keys require a side
+/// choice (`-y` = source wins), and the target is backed up before writing.
+/// Without provenance the legacy two-way merge applies (source wins on all
+/// conflicts), guarded by the untracked-target confirmation. After a
+/// successful merge `source` is deleted unless `opts.keep_source`.
 pub fn merge_files(target: &Path, source: &Path, opts: MergeOptions) -> Result<()> {
     // Guard: source must exist.
     if !source.exists() {
@@ -105,22 +119,22 @@ pub fn merge_files(target: &Path, source: &Path, opts: MergeOptions) -> Result<(
         anyhow::bail!("Target and source are the same file: {}", target.display());
     }
 
-    // When target exists and is untracked, ask for confirmation (unless --yes).
-    if target.is_file() && !opts.yes && is_target_untracked(target)? {
-        eprint!(
-            "Target '{}' is untracked. Overwrite it? [y/N] ",
-            target.display()
-        );
-        let mut input = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut input)
-            .context("Failed to read confirmation")?;
-        let trimmed = input.trim().to_lowercase();
-        if trimmed != "y" && trimmed != "yes" {
-            eprintln!("Aborted by user.");
-            return Ok(());
-        }
+    // Three-way path: the source has seed provenance and the target exists
+    // to merge into.
+    if target.is_file()
+        && let Some(provenance) = resolve_source_provenance(source)
+        && let Some(seed) = provenance
+            .seeds
+            .get_seed(&provenance.branch, &provenance.filename)
+        && let Ok(base_config) = parse_yaml_config_str(&seed.content)
+    {
+        return merge_three_way(target, source, &opts, &provenance, base_config);
+    }
+
+    // Legacy two-way path. When target exists and is untracked, ask for
+    // confirmation (unless --yes).
+    if target.is_file() && !opts.yes && !confirm_untracked_overwrite(target)? {
+        return Ok(());
     }
 
     // Load source config.
@@ -160,6 +174,244 @@ pub fn merge_files(target: &Path, source: &Path, opts: MergeOptions) -> Result<(
     }
 
     Ok(())
+}
+
+/// Seed provenance of the source file: the store handle plus the branch and
+/// filename keying its seed.
+struct SourceProvenance {
+    seeds: crate::hooks::visitor_seeds::SeedsContext,
+    branch: String,
+    filename: String,
+    /// Git common dir of the source's repo (also the target's in the
+    /// in-repo consolidation flow) — where backups land.
+    git_common_dir: std::path::PathBuf,
+}
+
+/// Resolve seed provenance for `source`: it must sit at the root of a git
+/// worktree with a resolvable branch and an openable seed store. Any failure
+/// returns `None` → the legacy two-way path.
+fn resolve_source_provenance(source: &Path) -> Option<SourceProvenance> {
+    let canonical = std::fs::canonicalize(source).ok()?;
+    let parent = canonical.parent()?;
+    let filename = canonical.file_name()?.to_str()?.to_string();
+
+    let toplevel = git_stdout(parent, &["rev-parse", "--show-toplevel"])?;
+    let toplevel = std::fs::canonicalize(toplevel).ok()?;
+    if toplevel != parent {
+        // Seeds only exist for worktree-root daft files.
+        return None;
+    }
+    let branch = git_stdout(parent, &["symbolic-ref", "--short", "HEAD"])?;
+    let common = git_stdout(
+        parent,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let git_common_dir = std::path::PathBuf::from(common);
+    let seeds = crate::hooks::visitor_seeds::SeedsContext::open(&git_common_dir)?;
+    Some(SourceProvenance {
+        seeds,
+        branch,
+        filename,
+        git_common_dir,
+    })
+}
+
+/// Run a git query at `dir`, returning trimmed stdout on success. Both
+/// pipes are captured (Test Hygiene: never leak `fatal:` probes to stderr).
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = crate::utils::git_command_at(dir).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// The seeded three-way merge: preview, conflict resolution, backup, write,
+/// seed bookkeeping.
+fn merge_three_way(
+    target: &Path,
+    source: &Path,
+    opts: &MergeOptions,
+    provenance: &SourceProvenance,
+    base_config: YamlConfig,
+) -> Result<()> {
+    use crate::hooks::config_merge::merge3;
+
+    let source_content = std::fs::read_to_string(source)
+        .with_context(|| format!("Failed to read source file: {}", source.display()))?;
+    let source_config = parse_yaml_config_str(&source_content)
+        .with_context(|| format!("Failed to parse source file: {}", source.display()))?;
+    let target_content = std::fs::read_to_string(target)
+        .with_context(|| format!("Failed to read target file: {}", target.display()))?;
+    let target_config = parse_yaml_config_str(&target_content)
+        .with_context(|| format!("Failed to parse target file: {}", target.display()))?;
+
+    // ours = target (it survives), theirs = source.
+    let outcome = merge3(&base_config, &target_config, &source_config);
+
+    eprintln!(
+        "Merging {} into {} (three-way against its seed)",
+        source.display(),
+        target.display()
+    );
+    if !outcome.took_from_theirs.is_empty() {
+        eprintln!("  will adopt: {}", outcome.took_from_theirs.join(", "));
+    }
+    if !outcome.conflicts.is_empty() {
+        eprintln!("  conflicting keys: {}", outcome.conflicts.join(", "));
+    }
+
+    let resolved = if outcome.conflicts.is_empty() {
+        if outcome.took_from_theirs.is_empty() && outcome.merged == target_config {
+            // Nothing the target lacks: don't rewrite (and re-canonicalize)
+            // a file that would not change.
+            eprintln!("  nothing to adopt — target already covers the source");
+            finish_seed_bookkeeping(source, opts, provenance)?;
+            return Ok(());
+        }
+        outcome.merged
+    } else if opts.yes {
+        // Explicit -y: the user asked for source-wins resolution.
+        merge3(&base_config, &source_config, &target_config).merged
+    } else {
+        match prompt_conflict_side(&provenance.filename, &outcome.conflicts) {
+            Some(ConflictResolution::Source) => {
+                merge3(&base_config, &source_config, &target_config).merged
+            }
+            Some(ConflictResolution::Target) => outcome.merged,
+            None => anyhow::bail!(
+                "{} has conflicting keys ({}); pick a side interactively or pass -y to \
+                 take the source's values",
+                provenance.filename,
+                outcome.conflicts.join(", ")
+            ),
+        }
+    };
+
+    // Back up the target before the only copy of its content is rewritten —
+    // these files are untracked, so daft provides the undo.
+    if let Some(dest) = crate::hooks::visitor_seeds::stash_file(
+        &provenance.git_common_dir,
+        crate::hooks::visitor_seeds::StashKind::Backup,
+        "file-merge",
+        target,
+    ) {
+        eprintln!("  backed up target to {}", dest.display());
+    }
+
+    let serialized =
+        serde_yaml::to_string(&resolved).context("Failed to serialize merged config")?;
+    std::fs::write(target, &serialized)
+        .with_context(|| format!("Failed to write target file: {}", target.display()))?;
+
+    finish_seed_bookkeeping(source, opts, provenance)?;
+    Ok(())
+}
+
+/// Delete or keep the source per options and keep the seed store coherent:
+/// a deleted source drops its seed row; a kept source is re-seeded with its
+/// current content (it is now consolidated — pristine relative to the new
+/// seed).
+fn finish_seed_bookkeeping(
+    source: &Path,
+    opts: &MergeOptions,
+    provenance: &SourceProvenance,
+) -> Result<()> {
+    if opts.keep_source {
+        if let Ok(content) = std::fs::read_to_string(source) {
+            provenance.seeds.record_seed_content(
+                &provenance.branch,
+                &provenance.filename,
+                &content,
+            );
+        }
+    } else {
+        std::fs::remove_file(source)
+            .with_context(|| format!("Failed to delete source file: {}", source.display()))?;
+        provenance
+            .seeds
+            .delete_seed(&provenance.branch, &provenance.filename);
+    }
+    Ok(())
+}
+
+enum ConflictResolution {
+    Source,
+    Target,
+}
+
+/// Ask which side wins the conflicting keys. `None` = abort (default, and
+/// the answer in every non-interactive context).
+fn prompt_conflict_side(filename: &str, keys: &[String]) -> Option<ConflictResolution> {
+    use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
+    eprint!(
+        "{filename}: keep the target's version or take the source's for {}? [s/t/A] ",
+        keys.join(", ")
+    );
+    let result = single_key_select(&PromptConfig {
+        options: vec![
+            PromptOption {
+                key: 's',
+                label: "source",
+                is_default: false,
+            },
+            PromptOption {
+                key: 't',
+                label: "target",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'a',
+                label: "abort",
+                is_default: true,
+            },
+        ],
+        cancel_message: Some("Aborted.".to_string()),
+    });
+    eprintln!();
+    match result {
+        PromptResult::Selected('s') => Some(ConflictResolution::Source),
+        PromptResult::Selected('t') => Some(ConflictResolution::Target),
+        _ => None,
+    }
+}
+
+/// Untracked-target overwrite confirmation for the legacy two-way path.
+/// Returns `false` when the user declines (the command exits successfully
+/// without writing, preserving the historical behavior).
+fn confirm_untracked_overwrite(target: &Path) -> Result<bool> {
+    use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
+    if !is_target_untracked(target)? {
+        return Ok(true);
+    }
+    eprint!(
+        "Target '{}' is untracked. Overwrite it? [y/N] ",
+        target.display()
+    );
+    let result = single_key_select(&PromptConfig {
+        options: vec![
+            PromptOption {
+                key: 'y',
+                label: "yes",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'n',
+                label: "no",
+                is_default: true,
+            },
+        ],
+        cancel_message: Some("Aborted.".to_string()),
+    });
+    eprintln!();
+    match result {
+        PromptResult::Selected('y') => Ok(true),
+        _ => {
+            eprintln!("Aborted by user.");
+            Ok(false)
+        }
+    }
 }
 
 /// Returns true when the target file is currently untracked by git.

@@ -1,0 +1,85 @@
+name: Merging a branch with a stale pristine daft.yml keeps the target's version
+description: >
+  main's visitor daft.yml evolves A -> B after feat/x was seeded with A.
+  feat/x's copy is pristine (never edited), so `daft merge feat/x` must not
+  touch main's daft.yml and must not announce any consolidation. Regression for
+  the merge-time overlay bug where the stale seeded copy A silently reverted
+  main's B before the git merge (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Commit feature work on feat/x
+    run: |
+      cd $WORK_DIR/test-repo/feat/x
+      printf 'feature work\n' > feature.txt
+      git add feature.txt
+      git commit -m "feature work"
+    expect:
+      exit_code: 0
+
+  - name: Evolve main's daft.yml to version B
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v2\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Merge feat/x into main
+    run: daft merge --no-edit feat/x 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Consolidated daft.yml"
+
+  - name: main's daft.yml still holds version B, not the stale A
+    run: cat $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v1"
+
+  - name: The merge itself landed
+    run: git -C $WORK_DIR/test-repo/main merge-base --is-ancestor feat/x main
+    expect:
+      exit_code: 0

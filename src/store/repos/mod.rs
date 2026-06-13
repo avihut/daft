@@ -13,10 +13,12 @@ use rusqlite::Connection;
 pub mod invocations;
 pub mod jobs;
 pub mod repo_policies;
+pub mod visitor_seeds;
 
 pub use invocations::InvocationsRepo;
 pub use jobs::JobsRepo;
 pub use repo_policies::RepoPoliciesRepo;
+pub use visitor_seeds::VisitorSeedsRepo;
 
 /// Run a closure inside a deferred transaction on `conn`, commit on
 /// success, roll back on error. Use for multi-statement updates that must

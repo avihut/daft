@@ -479,6 +479,9 @@ impl TuiState {
                 OperationPhase::Prune => match message {
                     TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
                     TaskMessage::SkippedDirty => FinalStatus::Dirty,
+                    TaskMessage::SkippedRefined | TaskMessage::SkippedUnmerged => {
+                        FinalStatus::Skipped
+                    }
                     TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
                     _ => FinalStatus::UpToDate,
                 },
@@ -507,6 +510,9 @@ impl TuiState {
                 OperationPhase::RemoveRepo => match message {
                     TaskMessage::Removed | TaskMessage::Deferred => FinalStatus::Pruned,
                     TaskMessage::SkippedDirty => FinalStatus::Dirty,
+                    TaskMessage::SkippedRefined | TaskMessage::SkippedUnmerged => {
+                        FinalStatus::Skipped
+                    }
                     TaskMessage::NoActionNeeded => FinalStatus::UpToDate,
                     _ => FinalStatus::UpToDate,
                 },

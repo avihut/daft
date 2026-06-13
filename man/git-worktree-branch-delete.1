@@ -22,10 +22,15 @@ branch that:
   \- has uncommitted changes in its worktree
   \- has not been merged (or squash\-merged) into the default branch
   \- is out of sync with its remote tracking branch
+  \- has refined untracked daft files (daft.yml / daft.local.yml edited since
+    daft seeded them) that the default branch\*(Aqs worktree does not cover —
+    consolidate with daft\-file(1) merge, or answer the interactive prompt
 .PP
-Use \-D (\-\-force) to override these safety checks. For the default branch
-(e.g. main), \-\-force removes its worktree only — the local branch ref and
-remote branch are always preserved.
+Use \-D (\-\-force) to override these safety checks. Forcing DISCARDS refined
+untracked daft files — they are stashed under
+<git\-common\-dir>/.daft/discarded/<branch>/ and never merged into another
+worktree. For the default branch (e.g. main), \-\-force removes its worktree
+only — the local branch ref and remote branch are always preserved.
 .PP
 All targeted branches are validated before any deletions begin. If any branch
 fails validation without \-\-force, the entire command aborts and no branches

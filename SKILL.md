@@ -925,25 +925,46 @@ involved.
 answer (not a repo, binary missing), the fallback is `Tracked` to avoid
 surprising the user with implicit visitor behavior.
 
-**Propagation contract.** When `daft.yml` is a visitor, daft copies it (and
-`daft.local.yml`) between worktrees at three moments:
+**Propagation contract (seed provenance).** Every time daft writes an untracked
+daft file into a worktree — branch-out propagation, starter installs,
+consolidation — it records the written content as that worktree's **seed** in
+the per-repo SQLite store. At every later lifecycle point the on-disk copy is
+classified against its seed: **pristine** (byte-identical — nobody touched it),
+**refined** (edited since seeding — real user data), or **no-seed**
+(pre-provenance worktree or hand-authored file; treated like refined). A refined
+copy whose content the target already covers counts as _subsumed_ and behaves
+like pristine. The rules per command:
 
 1. **Branch-out** (worktree create). Before `worktree-post-create` hooks fire,
-   daft copies in-scope untracked daft files from the source worktree into the
-   new worktree. The copy uses recursive `merge_configs` so the new worktree's
-   pre-existing content (if any) wins on conflicts.
+   daft copies in-scope untracked daft files verbatim from the source worktree
+   into the new worktree and seeds them.
 
-2. **`daft merge`**. Atomic write-merge-restore: daft resolves source and target
-   configs into the target worktree before the git merge, then restores the
-   original if the merge fails or is aborted. Both pre-merge and post-merge
-   hooks see the resolved config.
+2. **`daft merge`**. A pristine/subsumed source copy is skipped outright — the
+   target's config is never touched by a stale snapshot. A refined source is
+   merged **three-way** (seed as base) into the target before the git merge
+   (atomic: the target's files are restored if the merge fails), and the adopted
+   key paths are announced. Keys changed on both sides are conflicts: daft
+   prompts for a side interactively and aborts before the git merge in
+   non-interactive runs, pointing at `daft file merge`.
 
-3. **Remote-merge detection** (during worktree removal / prune). When daft
-   detects that a source branch was merged into a target branch via the remote,
-   it propagates the source worktree's untracked daft files into the target
-   worktree. If the source worktree's untracked files differ from the target's,
-   daft refuses removal and suggests `daft file merge` to consolidate (`--force`
-   overrides for scripted use).
+3. **Worktree removal** (`daft remove`, branch-delete). Pristine/subsumed copies
+   are deleted silently with the worktree. Refined copies stop the removal:
+   interactively daft offers consolidate / discard / abort (with a key-level
+   summary); non-interactively it refuses and suggests `daft file merge`.
+   Forcing (`-f`/`-D`) means **discard** — the files are stashed under
+   `<git-common-dir>/.daft/discarded/<branch>/` and the target worktree is never
+   written.
+
+4. **`daft prune` / `daft sync`**. Batch commands never prompt: pristine copies
+   prune cleanly, refined ones keep their worktree with an end-of-run summary
+   pointing at `daft file merge`; `--force` discards to the stash. Prune
+   additionally verifies the branch is actually merged (ancestor or squash)
+   before deleting anything — a deleted remote alone no longer destroys local
+   state; gone-but-unmerged branches are kept unless forced.
+
+The default-branch worktree's config is only ever written by an announced
+`daft merge` consolidation or an explicit `daft file merge` — never by a removal
+path.
 
 **Collision (visitor `daft.yml` meets an incoming tracked `daft.yml`)** is
 deferred to the `daft pull` command (issue #493). Doctor surfaces the
@@ -953,13 +974,20 @@ occurs.
 #### `daft file merge` — on-disk config merge
 
 `daft file merge <TARGET> <SOURCE>` (or collapsed: `daft file merge <SOURCE>`)
-performs a recursive YAML merge using the same `merge_configs` engine used at
-load time. Source wins on conflicts; structured nodes (hooks, jobs) merge by
-name rather than replacing. After a successful merge, the source file is deleted
-unless `--keep-source` is passed. When the target is untracked (visitor), daft
-prompts for confirmation before writing; `--yes`/`--force` bypasses the prompt.
-Use `daft file merge` to consolidate visitor configs before removing a worktree
-or to promote a visitor config to a team baseline.
+consolidates one daft file into another. When the source is a worktree-root daft
+file with seed provenance, the merge is **three-way** against the seed: only
+genuine refinements move, a key-level preview prints first ("will adopt: …",
+"conflicting keys: …"), the target is backed up to
+`<git-common-dir>/.daft/backups/file-merge/` before writing, and conflicting
+keys require a side — an interactive prompt, `-y` for source-wins, or a non-zero
+abort listing the keys in non-interactive runs. A source that adds nothing
+reports "nothing to adopt" and leaves the target untouched. Without provenance
+the legacy two-way merge applies (source wins on conflicts), guarded by an
+untracked-target confirmation (`--yes`/`--force` bypasses). After a successful
+merge the source file is deleted unless `--keep-source` is passed (a kept source
+is re-seeded as consolidated). Use `daft file merge` to consolidate visitor
+configs before removing a worktree or to promote a visitor config to a team
+baseline.
 
 #### `daft repo install` — bootstrap a visitor configuration
 

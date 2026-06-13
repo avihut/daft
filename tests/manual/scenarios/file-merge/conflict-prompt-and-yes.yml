@@ -1,0 +1,79 @@
+name: daft file merge surfaces conflicting keys; -y resolves them source-wins
+description: >
+  Both main and feat/x changed the SAME job since feat/x was seeded. A
+  non-interactive `daft file merge` without -y must abort, naming the
+  conflicting key, and leave the target untouched. With -y the user explicitly
+  accepts source-wins resolution (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Both sides change the same job since seeding
+    run: |
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-v2\n' \
+        > $WORK_DIR/test-repo/main/daft.yml
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name: setup\n        run: echo setup-feat\n' \
+        > $WORK_DIR/test-repo/feat/x/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Non-interactive merge without -y aborts naming the conflict
+    run: daft file merge ../feat/x/daft.yml 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "conflict"
+        - "setup"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"
+      files_exist:
+        - "$WORK_DIR/test-repo/feat/x/daft.yml"
+
+  - name: With -y the source wins the conflict
+    run: daft file merge ../feat/x/daft.yml -y 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-feat"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"

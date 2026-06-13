@@ -14,7 +14,7 @@ use crate::{
     executor::cli_presenter::CliPresenter,
     get_current_worktree_path, get_git_common_dir, get_project_root,
     git::GitCommand,
-    hooks::{HookContext, HookExecutor, HookType, visitor_propagation::propagate_atomic},
+    hooks::{HookContext, HookExecutor, HookType},
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -411,6 +411,44 @@ fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
 }
 
+/// Ask which side wins conflicting daft-file keys during merge-time
+/// consolidation. Returns `None` when the user aborts or the context is
+/// non-interactive (no TTY / exhausted stdin pipe) — the caller bails before
+/// any git state changes.
+fn prompt_daft_conflict_side(filename: &str, keys: &[String]) -> Option<crate::core::ConflictSide> {
+    use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
+    eprint!(
+        "{filename}: keep the merge target's version or take the source branch's for {}? [s/t/A] ",
+        keys.join(", ")
+    );
+    let result = single_key_select(&PromptConfig {
+        options: vec![
+            PromptOption {
+                key: 's',
+                label: "source",
+                is_default: false,
+            },
+            PromptOption {
+                key: 't',
+                label: "target",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'a',
+                label: "abort",
+                is_default: true,
+            },
+        ],
+        cancel_message: Some("Aborted.".to_string()),
+    });
+    eprintln!();
+    match result {
+        PromptResult::Selected('s') => Some(crate::core::ConflictSide::Source),
+        PromptResult::Selected('t') => Some(crate::core::ConflictSide::Target),
+        _ => None,
+    }
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-merge"));
     init_logging(args.verbose);
@@ -652,6 +690,68 @@ pub fn run() -> Result<()> {
             // Octopus merge: skip propagation.
             (None, None)
         };
+    // Resolve the visitor daft-file consolidation BEFORE the merge: classify
+    // the source worktree's untracked daft files against their seeds.
+    // Pristine/subsumed copies contribute nothing — the target is left
+    // untouched (a stale seeded copy must never overwrite an evolved
+    // target, issue #628). Refined copies are three-way-merged against the
+    // seed; conflicting keys need an interactive side choice and abort the
+    // whole merge in non-interactive contexts — before any git state
+    // changes.
+    let seeds_git_dir = get_git_common_dir()?;
+    let mut consolidation: Vec<(String, String)> = Vec::new();
+    let mut consolidation_report: Vec<(String, Vec<String>, bool)> = Vec::new();
+    if let (Some(prop_src), Some(prop_tgt)) = (&prop_source, &prop_target)
+        && prop_src != prop_tgt
+    {
+        let seeds = crate::hooks::visitor_seeds::SeedsContext::open(&seeds_git_dir);
+        let source_branch = &params.sources[0];
+        let classes = crate::hooks::visitor_seeds::classify_in_scope_files(
+            seeds.as_ref(),
+            source_branch,
+            prop_src,
+            Some(prop_tgt),
+        );
+        for class in crate::hooks::visitor_seeds::blocking_files(&classes) {
+            let preview = crate::hooks::visitor_seeds::prepare_consolidation(
+                seeds.as_ref(),
+                source_branch,
+                prop_src,
+                prop_tgt,
+                class,
+            );
+            let content = match preview.resolution {
+                crate::hooks::visitor_seeds::PreviewResolution::Resolved(content) => content,
+                crate::hooks::visitor_seeds::PreviewResolution::NeedsSide {
+                    target_priority,
+                    source_priority,
+                } => {
+                    output.finish_spinner();
+                    match prompt_daft_conflict_side(&preview.filename, &preview.conflict_keys) {
+                        Some(crate::core::ConflictSide::Target) => target_priority,
+                        Some(crate::core::ConflictSide::Source) => source_priority,
+                        _ => anyhow::bail!(
+                            "{} has conflicting refinements ({}); resolve with `daft file \
+                             merge {}/{} {}/{}` and re-run daft merge",
+                            preview.filename,
+                            preview.conflict_keys.join(", "),
+                            prop_tgt.display(),
+                            preview.filename,
+                            prop_src.display(),
+                            preview.filename,
+                        ),
+                    }
+                }
+            };
+            consolidation_report.push((
+                preview.filename.clone(),
+                preview.adopt_keys.clone(),
+                preview.whole_file,
+            ));
+            consolidation.push((preview.filename, content));
+        }
+    }
+
     let outcome_result = {
         let mut runner = MergeHookRunner::new(
             &mut output,
@@ -660,30 +760,28 @@ pub fn run() -> Result<()> {
             settings.remote.clone(),
             source_worktree.clone(),
         )?;
-        match (prop_source, prop_target) {
-            (Some(ref prop_src), Some(ref prop_tgt)) if prop_src != prop_tgt => {
-                // Both worktrees are known and distinct — wrap execute_start in
-                // propagate_atomic so that:
-                //   1. Target's pre-existing untracked daft files are snapshotted.
-                //   2. Source's visitor daft files are overlaid onto the target.
-                //   3. execute_start runs (pre-merge hook + git merge + post-merge hook).
-                //      Pre- and post-merge hooks both see the resolved daft file.
-                //   4. On success, the resolved content persists.
-                //   5. On failure (conflict, pre-merge hook abort, etc.), the target's
-                //      daft files are restored to their pre-merge snapshot.
+        match (&prop_source, &prop_target) {
+            (Some(_), Some(prop_tgt)) if !consolidation.is_empty() => {
+                // Wrap execute_start in write_files_atomic so that:
+                //   1. The target's pre-existing untracked daft files are
+                //      snapshotted.
+                //   2. The resolved consolidation is written into the target.
+                //   3. execute_start runs (pre-merge hook + git merge +
+                //      post-merge hook) — hooks see the resolved daft files.
+                //   4. On success, the consolidated content persists.
+                //   5. On failure (conflict, pre-merge hook abort, etc.), the
+                //      target's daft files are restored to their snapshot.
                 //
-                // Pre-flight: run the clean-target check NOW, before propagation
-                // writes untracked files into the target. If we let execute_start
-                // run the check AFTER propagation, it would always see the freshly-
-                // written daft.yml as "dirty" and refuse the merge, even though that
-                // file is ours. We therefore run the check here and disable it inside
-                // StartParams so execute_start doesn't duplicate it.
+                // Pre-flight: run the clean-target check NOW, before the
+                // consolidation writes untracked files into the target. If we
+                // let execute_start run the check AFTER, it would see the
+                // freshly-written daft.yml as "dirty" and refuse the merge.
                 if params.require_clean_target {
                     crate::core::worktree::merge::validate_clean_target(&git, prop_tgt)?;
                     params.require_clean_target = false;
                 }
 
-                // `propagate_atomic` takes a `FnOnce() -> Result<()>` closure.
+                // `write_files_atomic` takes a `FnOnce() -> Result<()>` closure.
                 // We capture `StartOutcome` via an outer Option and any Err from
                 // `execute_start` itself via a separate Option, then convert both
                 // failure paths into Err so the closure returns Err on merge
@@ -691,43 +789,44 @@ pub fn run() -> Result<()> {
                 let mut captured_outcome: Option<crate::core::worktree::merge::StartOutcome> = None;
                 // Stores the Err returned by execute_start (not the failed=true
                 // Ok case). Populated before the bail so we can re-surface it
-                // after propagate_atomic returns Err and cleans up.
+                // after write_files_atomic returns Err and cleans up.
                 let mut captured_err: Option<anyhow::Error> = None;
-                let prop_result = propagate_atomic(prop_src, prop_tgt, || {
-                    match crate::core::worktree::merge::execute_start(
-                        &params,
-                        &git,
-                        &project_root,
-                        &mut runner,
-                    ) {
-                        Ok(outcome) => {
-                            let failed = outcome.failed;
-                            captured_outcome = Some(outcome);
-                            if failed {
-                                // Convert merge failure into Err so
-                                // propagate_atomic rolls back daft files.
-                                anyhow::bail!("merge failed — daft files will be restored");
+                let write_result = crate::hooks::visitor_propagation::write_files_atomic(
+                    prop_tgt,
+                    &consolidation,
+                    || {
+                        match crate::core::worktree::merge::execute_start(
+                            &params,
+                            &git,
+                            &project_root,
+                            &mut runner,
+                        ) {
+                            Ok(outcome) => {
+                                let failed = outcome.failed;
+                                captured_outcome = Some(outcome);
+                                if failed {
+                                    // Convert merge failure into Err so
+                                    // write_files_atomic rolls back daft files.
+                                    anyhow::bail!("merge failed — daft files will be restored");
+                                }
+                                Ok(())
                             }
-                            Ok(())
+                            Err(e) => {
+                                // execute_start itself failed (e.g. pre-merge
+                                // hook abort, dirty target). Capture the error
+                                // then bail so write_files_atomic rolls back
+                                // daft files before we re-surface it.
+                                captured_err = Some(e);
+                                anyhow::bail!("execute_start failed — daft files will be restored");
+                            }
                         }
-                        Err(e) => {
-                            // execute_start itself failed (e.g. pre-merge
-                            // hook abort, dirty target). Capture the error
-                            // then bail so propagate_atomic rolls back daft
-                            // files before we re-surface the original error.
-                            captured_err = Some(e);
-                            anyhow::bail!("execute_start failed — daft files will be restored");
-                        }
-                    }
-                });
-                match prop_result {
-                    Ok(prop) => {
-                        for filename in &prop.files_propagated {
-                            crate::log_debug!("daft merge propagated {} into target", filename);
-                        }
+                    },
+                );
+                match write_result {
+                    Ok(()) => {
                         // Success path: StartOutcome was captured inside the closure.
                         Ok(captured_outcome
-                            .expect("propagate_atomic succeeded but outcome was not captured"))
+                            .expect("write_files_atomic succeeded but outcome was not captured"))
                     }
                     Err(_) => {
                         // The closure returned Err — either execute_start produced
@@ -744,10 +843,10 @@ pub fn run() -> Result<()> {
                                 Err(e)
                             }
                             (None, None) => {
-                                // Should not happen: propagate_atomic's own error
-                                // (failed during snapshot or propagation step).
+                                // Should not happen: write_files_atomic's own error
+                                // (failed during the snapshot/write step).
                                 Err(anyhow::anyhow!(
-                                    "visitor-config propagation failed before merge"
+                                    "visitor-config consolidation failed before merge"
                                 ))
                             }
                         }
@@ -755,7 +854,8 @@ pub fn run() -> Result<()> {
                 }
             }
             _ => {
-                // Ref-only, single-worktree, or octopus: skip propagation.
+                // Ref-only, single-worktree, octopus, or nothing to
+                // consolidate: run the merge with the target untouched.
                 crate::core::worktree::merge::execute_start(
                     &params,
                     &git,
@@ -834,6 +934,42 @@ pub fn run() -> Result<()> {
         eprintln!("  daft merge --abort     # add <branch> if running from a different worktree");
         std::process::exit(1);
     } else {
+        // The merge landed and the consolidated daft files persist in the
+        // target. Announce exactly what was adopted (a cross-worktree write
+        // is never silent), then refresh the SOURCE's seeds: its refinements
+        // now live in the target, so the source copy is pristine relative to
+        // its new seed and the cleanup below can remove the worktree without
+        // re-flagging it.
+        if !consolidation_report.is_empty() {
+            let source_branch = &params.sources[0];
+            for (filename, adopt_keys, whole_file) in &consolidation_report {
+                if *whole_file {
+                    output.info(&format!(
+                        "Consolidated {filename} from {source_branch} (whole file — no seed \
+                         provenance)"
+                    ));
+                } else if adopt_keys.is_empty() {
+                    output.info(&format!(
+                        "Consolidated {filename} from {source_branch} (conflict resolution only)"
+                    ));
+                } else {
+                    output.info(&format!(
+                        "Consolidated {filename} from {source_branch}: adopted {} key(s) ({})",
+                        adopt_keys.len(),
+                        adopt_keys.join(", ")
+                    ));
+                }
+            }
+            if let (Some(prop_src), Some(seeds)) = (
+                &prop_source,
+                crate::hooks::visitor_seeds::SeedsContext::open(&seeds_git_dir),
+            ) {
+                for (filename, _, _) in &consolidation_report {
+                    seeds.record_seed_file(source_branch, prop_src, filename);
+                }
+            }
+        }
+
         // Squash-cleanup stability check (Slice 4).
         //
         // When a daft-driven squash + commit just landed AND cleanup is
@@ -1025,14 +1161,19 @@ pub fn run() -> Result<()> {
                         branches: vec![branch_for_delete],
                         // The planner has already validated reachability against
                         // the actual merge target (which may differ from the
-                        // default branch). Setting force=true here bypasses
-                        // branch_delete's redundant default-branch reachability
-                        // check, which would incorrectly reject cross-target
-                        // merges (e.g. `--into develop --remove-branch` when
-                        // feature is not yet reachable from main). For
-                        // squash-committed items, item.force_delete is already
-                        // true, so this is a no-op for that path.
-                        force: true,
+                        // default branch), so branch_delete's own default-branch
+                        // reachability and remote-sync checks (4+5) are skipped
+                        // via the narrow `skip_merge_validation` flag below —
+                        // they would incorrectly reject cross-target merges
+                        // (e.g. `--into develop --remove-branch` when feature is
+                        // not yet reachable from main). `force` is no longer
+                        // hardwired true: that blanket bypass also disarmed the
+                        // daft-file provenance guard, letting a forced-style
+                        // removal silently propagate stale visitor configs
+                        // (issue #628). Squash-committed items still force
+                        // (content equivalence was proven by the stability
+                        // check).
+                        force: item.force_delete,
                         use_gitoxide: settings.use_gitoxide,
                         is_quiet: false,
                         remote_name: settings.remote.clone(),
@@ -1043,6 +1184,8 @@ pub fn run() -> Result<()> {
                         // Expose DAFT_COMMAND=merge so hook scripts can
                         // distinguish merge cleanup from standalone daft remove.
                         command_label: "merge".to_string(),
+                        skip_merge_validation: true,
+                        force_flag_label: "-f/--force".to_string(),
                     };
 
                     let bd_result = {

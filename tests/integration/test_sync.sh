@@ -34,6 +34,10 @@ test_sync_basic() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it —
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run sync
     git-worktree-sync || return 1
 
@@ -194,6 +198,10 @@ test_sync_cd_target() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it —
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/will-be-pruned reset --hard main >/dev/null 2>&1
 
     # Run sync from the worktree that will be pruned
     cd "feature/will-be-pruned"

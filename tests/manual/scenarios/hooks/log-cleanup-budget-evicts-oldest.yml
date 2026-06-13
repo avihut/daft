@@ -63,7 +63,7 @@ steps:
   - name: Snapshot invocation count and capture the newest invocation id
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-budget/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
       [ "$INV_COUNT" -ge 5 ] || { echo "expected >=5, got $INV_COUNT"; exit 1; }
@@ -96,7 +96,7 @@ steps:
       survived
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-budget/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_AFTER=$INV_COUNT"
       # We started with at least 5 worktree-post-create invocations on

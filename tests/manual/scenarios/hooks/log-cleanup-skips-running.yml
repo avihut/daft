@@ -50,7 +50,7 @@ steps:
       process crashed, or a coordinator is genuinely still running).
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       DB="$JOBS_DIR/coordinator.db"
       INV_ID=feedfeedfeedfeed
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
@@ -91,7 +91,7 @@ steps:
   - name: The synthetic Running invocation dir must still exist
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       [ -d "$JOBS_DIR/feedfeedfeedfeed" ] || { echo "Running invocation was removed"; exit 1; }
       echo "RUNNING_PRESERVED=1"
     expect:
@@ -104,7 +104,7 @@ steps:
       it must be removed
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       NOW=$(python3 -c "import datetime; print(datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f+00:00'))")
       sqlite3 "$DB" \
         "UPDATE jobs SET status = 'completed', exit_code = 0, finished_at = '$NOW' WHERE name = 'longjob' AND invocation_id = 'feedfeedfeedfeed';"
@@ -118,7 +118,7 @@ steps:
   - name: The (now-terminal) synthetic invocation dir is gone
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-running/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       if [ -d "$JOBS_DIR/feedfeedfeedfeed" ]; then
         echo "synthetic invocation still present"
         exit 1

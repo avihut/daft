@@ -64,7 +64,7 @@ steps:
       post-create, plus 4 manual runs)
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_BEFORE=$INV_COUNT"
       [ "$INV_COUNT" -ge "6" ] || { echo "expected >=6, got $INV_COUNT"; exit 1; }
@@ -76,7 +76,7 @@ steps:
   - name: Backdate every SQLite job/invocation row by 2 days (keeps ordering)
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       # Per-row Python shift so relative ordering of started_at is
       # preserved (uniform -2d). SQLite's datetime() truncates fractional
@@ -130,7 +130,7 @@ steps:
       protected on feature/k worktree (keep_last=3)
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-keep-last/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT_AFTER=$INV_COUNT"
       [ "$INV_COUNT" = "4" ] || { echo "expected 4, got $INV_COUNT"; exit 1; }

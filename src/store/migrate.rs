@@ -19,7 +19,10 @@ use std::path::Path;
 /// Returns the full migration set. Append new migrations to the bottom of
 /// the vector — never reorder, never edit a shipped migration in place.
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("migrations/001_initial.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("migrations/001_initial.sql")),
+        M::up(include_str!("migrations/002_visitor_seeds.sql")),
+    ])
 }
 
 /// Highest schema version this binary understands. Mirrors
@@ -29,7 +32,7 @@ pub fn current_version() -> i64 {
     // rusqlite_migration's version counter is `migrations.len() as u32` after
     // every migration is applied. We return that as i64 for consistency with
     // the on-disk `user_version` PRAGMA type.
-    1
+    2
 }
 
 /// Apply all pending migrations against `conn`. Refuses if the on-disk
@@ -86,6 +89,22 @@ mod tests {
         .unwrap();
         let err = run(&mut conn, &path).unwrap_err();
         assert!(matches!(err, StoreError::SchemaTooNew { .. }));
+    }
+
+    #[test]
+    fn visitor_seeds_table_exists_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'visitor_seeds'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "visitor_seeds");
     }
 
     #[test]
