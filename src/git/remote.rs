@@ -1,9 +1,104 @@
 use super::GitCommand;
 use super::oxide;
 use crate::styles;
+use crate::utils::git_command_at;
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Which pipe a teed `git push` output line arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushStream {
+    Stdout,
+    Stderr,
+}
+
+/// Tee sink for live `git push` output lines (called from the pipe-drain
+/// threads, hence `Sync`; lifetime-parametric so callers can borrow).
+pub type PushOutputTee<'a> = dyn Fn(PushStream, &str) + Sync + 'a;
+
+/// Options threaded through every push primitive into [`GitCommand::run_push`].
+pub struct PushOptions<'a> {
+    /// When `false`, pass `--no-verify` so git skips the repo's `pre-push`
+    /// hook. Defaults to `true`: daft honors the hook (issue #599).
+    pub verify: bool,
+    /// Tee sink: every output line is forwarded here as it arrives, in
+    /// addition to being captured in [`PushIo`]. Keeps the git layer free of
+    /// presenter types — the composition layer bridges this to `JobPresenter`.
+    pub on_output: Option<&'a PushOutputTee<'a>>,
+}
+
+impl Default for PushOptions<'_> {
+    fn default() -> Self {
+        Self {
+            verify: true,
+            on_output: None,
+        }
+    }
+}
+
+/// Captured result of a `git push` subprocess.
+///
+/// `Err` from the push primitives means the subprocess could not be spawned;
+/// a push that ran and failed (hook rejection, non-fast-forward, transport)
+/// is `Ok` with `success: false` so callers can inspect both streams before
+/// deciding severity.
+#[derive(Debug)]
+pub struct PushIo {
+    pub success: bool,
+    /// Captured stdout: `--porcelain` ref-status lines plus any pre-push hook
+    /// stdout (parse with [`crate::git::push_porcelain::parse_push_report`]).
+    pub stdout: String,
+    /// Captured stderr: hook stderr, transport errors, git diagnostics.
+    pub stderr: String,
+}
+
+impl PushIo {
+    /// Collapse into the legacy contract: bail with stderr when the push
+    /// failed. For call sites that keep today's coarse error handling.
+    pub fn into_result(self) -> Result<Self> {
+        if self.success {
+            Ok(self)
+        } else {
+            anyhow::bail!("Git push failed: {}", self.stderr);
+        }
+    }
+}
+
+/// A regular file with at least one executable bit set (git's own criterion
+/// for whether a hook runs; a non-executable hook file is ignored).
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// Drain one pipe of the push subprocess line-by-line, teeing each line to
+/// `on_output` (when set) and accumulating the full stream.
+fn drain_push_pipe<R: Read>(
+    pipe: R,
+    stream: PushStream,
+    on_output: Option<&PushOutputTee<'_>>,
+) -> String {
+    let mut captured = String::new();
+    for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+        if let Some(tee) = on_output {
+            tee(stream, &line);
+        }
+        captured.push_str(&line);
+        captured.push('\n');
+    }
+    captured
+}
 
 impl GitCommand {
     pub fn fetch(&self, remote: &str, prune: bool) -> Result<()> {
@@ -46,18 +141,91 @@ impl GitCommand {
         Ok(())
     }
 
-    pub fn push_set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
-        let output = Command::new("git")
-            .args(["push", "--no-verify", "--set-upstream", remote, branch])
-            .output()
-            .context("Failed to execute git push command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git push failed: {}", stderr);
+    /// Shared seam for every daft-initiated `git push` (issue #599).
+    ///
+    /// - Runs via [`git_command_at`] so `-C <cwd>` is authoritative even when
+    ///   daft itself runs inside a git hook (inherited `GIT_DIR` is scrubbed),
+    ///   and so the repo's `pre-push` hook fires in the right worktree.
+    /// - Always passes `--porcelain`: the machine-stable ref-status report on
+    ///   stdout is what callers parse (see `push_porcelain`). Never passes
+    ///   `--quiet` — it suppresses those ref-status lines; quietness is a
+    ///   display decision made by the capture/tee layer above.
+    /// - `--no-verify` is added only when `opts.verify` is `false`. This is
+    ///   the single place that literal may appear (grep-gated by test).
+    fn run_push(&self, push_args: &[&str], cwd: &Path, opts: &PushOptions) -> Result<PushIo> {
+        let mut cmd = git_command_at(cwd);
+        cmd.args(["push", "--porcelain"]);
+        if !opts.verify {
+            cmd.arg("--no-verify");
         }
+        cmd.args(push_args);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        Ok(())
+        let mut child = cmd.spawn().context("Failed to execute git push command")?;
+        let stdout_pipe = child
+            .stdout
+            .take()
+            .context("Failed to capture git push stdout")?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .context("Failed to capture git push stderr")?;
+
+        // Thread-per-pipe drain (the executor/command.rs pattern): both pipes
+        // are read concurrently so neither can fill and deadlock the child.
+        // Scoped threads let the tee closure borrow from the caller.
+        let (stdout, stderr) = std::thread::scope(|scope| {
+            let out =
+                scope.spawn(|| drain_push_pipe(stdout_pipe, PushStream::Stdout, opts.on_output));
+            let err =
+                scope.spawn(|| drain_push_pipe(stderr_pipe, PushStream::Stderr, opts.on_output));
+            (
+                out.join().unwrap_or_default(),
+                err.join().unwrap_or_default(),
+            )
+        });
+
+        let status = child
+            .wait()
+            .context("Failed to wait for git push command")?;
+
+        Ok(PushIo {
+            success: status.success(),
+            stdout,
+            stderr,
+        })
+    }
+
+    /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
+    /// hook installed — native or via `core.hooksPath` (lefthook, husky,
+    /// pre-commit all register through one of those two mechanisms).
+    ///
+    /// Used to existence-gate the synthetic `pre-push` reporting phase so a
+    /// hook-less repo never renders a hollow phase header.
+    pub fn pre_push_hook_exists(&self, cwd: &Path) -> bool {
+        let mut cmd = git_command_at(cwd);
+        cmd.args(["rev-parse", "--git-path", "hooks"]);
+        cmd.stdin(Stdio::null()).stderr(Stdio::null());
+        let Ok(output) = cmd.output() else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let rel = raw.trim();
+        if rel.is_empty() {
+            return false;
+        }
+        // `--git-path` prints relative to git's cwd (our `-C <cwd>`).
+        let hooks_dir = if Path::new(rel).is_absolute() {
+            PathBuf::from(rel)
+        } else {
+            cwd.join(rel)
+        };
+        is_executable_file(&hooks_dir.join("pre-push"))
     }
 
     /// Push a branch and set upstream, running from a specific directory.
@@ -65,20 +233,10 @@ impl GitCommand {
         &self,
         remote: &str,
         branch: &str,
-        cwd: &std::path::Path,
-    ) -> Result<()> {
-        let output = Command::new("git")
-            .args(["push", "--no-verify", "--set-upstream", remote, branch])
-            .current_dir(cwd)
-            .output()
-            .context("Failed to execute git push command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git push failed: {}", stderr);
-        }
-
-        Ok(())
+        cwd: &Path,
+        opts: &PushOptions,
+    ) -> Result<PushIo> {
+        self.run_push(&["--set-upstream", remote, branch], cwd, opts)
     }
 
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {
@@ -99,52 +257,31 @@ impl GitCommand {
     /// Push a branch from a specific directory, optionally with --force-with-lease.
     ///
     /// Required for parallel workers where `set_current_dir` would race.
-    /// Returns the combined stderr on success (for detecting "Everything up-to-date").
     pub fn push_from(
         &self,
         remote: &str,
         branch: &str,
-        cwd: &std::path::Path,
+        cwd: &Path,
         force_with_lease: bool,
-    ) -> Result<String> {
-        let mut cmd = Command::new("git");
-        cmd.args(["push", "--no-verify", remote, branch]);
-        cmd.current_dir(cwd);
-
+        opts: &PushOptions,
+    ) -> Result<PushIo> {
         if force_with_lease {
-            cmd.arg("--force-with-lease");
+            self.run_push(&["--force-with-lease", remote, branch], cwd, opts)
+        } else {
+            self.run_push(&[remote, branch], cwd, opts)
         }
-
-        let output = cmd.output().context("Failed to execute git push command")?;
-
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if !output.status.success() {
-            anyhow::bail!("Git push failed: {}", stderr);
-        }
-
-        Ok(stderr)
     }
 
-    /// Delete a remote branch via `git push <remote> --delete <branch>`.
-    pub fn push_delete(&self, remote: &str, branch: &str) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.args(["push", "--no-verify", remote, "--delete", branch]);
-
-        if self.quiet {
-            cmd.arg("--quiet");
-        }
-
-        let output = cmd
-            .output()
-            .context("Failed to execute git push --delete command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git push --delete failed: {}", stderr);
-        }
-
-        Ok(())
+    /// Delete a remote branch via `git push <remote> --delete <branch>`,
+    /// running from a specific directory.
+    pub fn push_delete_from(
+        &self,
+        remote: &str,
+        branch: &str,
+        cwd: &Path,
+        opts: &PushOptions,
+    ) -> Result<PushIo> {
+        self.run_push(&[remote, "--delete", branch], cwd, opts)
     }
 
     /// Pull from remote with specified arguments
@@ -489,5 +626,76 @@ impl GitCommand {
                     .map(|s| s.to_string())
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    fn rs_files_under(dir: &Path, acc: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rs_files_under(&path, acc);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                acc.push(path);
+            }
+        }
+    }
+
+    /// #599 grep-gate: the no-verify push flag may appear only in
+    /// `run_push`'s verify toggle. Every push must route through that seam —
+    /// no primitive, call site, or raw `Command` may hardcode the bypass.
+    #[test]
+    fn no_verify_literal_only_in_run_push() {
+        // Assembled at runtime so this test doesn't match itself. The
+        // surrounding quotes keep git's unrelated no-verify-signatures
+        // completion strings out of scope: only the exact quoted flag
+        // literal is gated.
+        let needle = format!("\"--no-{}\"", "verify");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files_under(&src, &mut files);
+        assert!(
+            files.len() > 100,
+            "src/ walk looks broken ({} files)",
+            files.len()
+        );
+
+        let this_file = Path::new(file!())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        let mut offenders = Vec::new();
+        let mut in_run_push_file = 0usize;
+        for file in &files {
+            let Ok(content) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            let count = content.matches(&needle).count();
+            if count == 0 {
+                continue;
+            }
+            if file.file_name().and_then(|n| n.to_str()) == Some(this_file)
+                && file.parent().is_some_and(|p| p.ends_with("git"))
+            {
+                in_run_push_file = count;
+            } else {
+                offenders.push(file.display().to_string());
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "the no-verify push flag must only appear inside run_push (src/git/remote.rs); found in: {offenders:?}"
+        );
+        assert_eq!(
+            in_run_push_file, 1,
+            "expected exactly one no-verify occurrence in remote.rs (run_push's toggle)"
+        );
     }
 }

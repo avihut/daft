@@ -9,10 +9,9 @@
 //!
 //! [`CliPresenter`]: crate::executor::cli_presenter::CliPresenter
 
-use crate::core::worktree::sync_dag::{DagEvent, JobCompletionStatus};
+use crate::core::worktree::sync_dag::{DagEvent, DagHookPhase, JobCompletionStatus};
 use crate::executor::JobResult;
 use crate::executor::presenter::JobPresenter;
-use crate::hooks::HookType;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,7 +27,7 @@ pub struct TuiPresenter {
     /// Which branch this presenter is scoped to.
     branch_name: String,
     /// Which hook phase this presenter is scoped to.
-    hook_type: HookType,
+    hook_type: DagHookPhase,
     /// When the phase started, for computing duration.
     start: Mutex<Option<Instant>>,
     /// Whether any job has failed during this phase.
@@ -48,12 +47,12 @@ impl TuiPresenter {
     pub fn new(
         sender: mpsc::Sender<DagEvent>,
         branch_name: impl Into<String>,
-        hook_type: HookType,
+        hook_type: impl Into<DagHookPhase>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sender,
             branch_name: branch_name.into(),
-            hook_type,
+            hook_type: hook_type.into(),
             start: Mutex::new(None),
             has_failure: Mutex::new(false),
             output: Mutex::new(String::new()),
@@ -200,6 +199,7 @@ impl JobPresenter for TuiPresenter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::HookType;
 
     #[test]
     fn tui_presenter_is_send_sync() {
@@ -229,7 +229,7 @@ mod tests {
                 hook_type,
             } => {
                 assert_eq!(branch_name, "feat/login");
-                assert_eq!(hook_type, HookType::PostCreate);
+                assert_eq!(hook_type, HookType::PostCreate.into());
             }
             other => panic!("expected HookStarted, got {other:?}"),
         }
@@ -261,7 +261,7 @@ mod tests {
                 output,
             } => {
                 assert_eq!(branch_name, "main");
-                assert_eq!(hook_type, HookType::PostClone);
+                assert_eq!(hook_type, HookType::PostClone.into());
                 assert!(success);
                 assert!(!warned);
                 // Duration should be non-negative (close to zero in tests).
@@ -364,7 +364,7 @@ mod tests {
                 job_name,
             } => {
                 assert_eq!(branch_name, "main");
-                assert_eq!(hook_type, HookType::PostCreate);
+                assert_eq!(hook_type, HookType::PostCreate.into());
                 assert_eq!(job_name, "build");
             }
             other => panic!("expected JobStarted, got {other:?}"),

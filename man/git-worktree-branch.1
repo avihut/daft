@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-branch \- Delete or rename branches and their worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-branch\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-m\fR|\fB\-\-move\fR] [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
+\fBgit\-worktree\-branch\fR [\fB\-d\fR|\fB\-\-delete\fR] [\fB\-D\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-m\fR|\fB\-\-move\fR] [\fB\-\-no\-remote\fR] [\fB\-\-no\-verify\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCHES\fR] 
 .SH DESCRIPTION
 .PP
 Manage branches and their associated worktrees. Supports deletion (\-d/\-D)
@@ -75,6 +75,9 @@ Rename a branch and move its worktree
 .TP
 \fB\-\-no\-remote\fR
 Skip remote branch rename (only with \-m)
+.TP
+\fB\-\-no\-verify\fR
+Skip the repo\*(Aqs pre\-push hook on remote operations
 .TP
 \fB\-\-dry\-run\fR
 Preview changes without executing (only with \-m)

@@ -4,6 +4,7 @@ use crate::{
         CommandBridge,
         worktree::{branch_delete, rename},
     },
+    git::GitCommand,
     git::should_show_gitoxide_notice,
     hooks::HookExecutor,
     is_git_repository,
@@ -107,6 +108,9 @@ pub struct Args {
     )]
     no_remote: bool,
 
+    #[arg(long, help = "Skip the repo's pre-push hook on remote operations")]
+    no_verify: bool,
+
     #[arg(
         long,
         help = "Preview changes without executing (only with -m)",
@@ -185,6 +189,12 @@ pub struct RemoveArgs {
     )]
     remote: bool,
 
+    #[arg(
+        long,
+        help = "Skip the repo's pre-push hook when deleting the remote branch"
+    )]
+    no_verify: bool,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
@@ -218,6 +228,7 @@ pub fn run_remove() -> Result<()> {
         remove_args.quiet,
         remove_args.local,
         remove_args.remote,
+        remove_args.no_verify,
         &mut output,
         &settings,
     )
@@ -328,6 +339,9 @@ pub struct RenameArgs {
     #[arg(long, help = "Skip remote branch rename")]
     no_remote: bool,
 
+    #[arg(long, help = "Skip the repo's pre-push hook on remote operations")]
+    no_verify: bool,
+
     #[arg(long, help = "Preview changes without executing")]
     dry_run: bool,
 
@@ -368,6 +382,7 @@ pub fn run_rename() -> Result<()> {
         &rename_args.source,
         &rename_args.new_branch,
         rename_args.no_remote,
+        rename_args.no_verify,
         rename_args.dry_run,
         rename_args.verbose,
         &mut output,
@@ -412,6 +427,7 @@ fn run_with_args(args: Args) -> Result<()> {
             &args.branches[0],
             &args.branches[1],
             args.no_remote,
+            args.no_verify,
             args.dry_run,
             args.verbose,
             &mut output,
@@ -431,6 +447,7 @@ fn run_with_args(args: Args) -> Result<()> {
             args.quiet,
             args.local,
             args.remote,
+            args.no_verify,
             &mut output,
             &settings,
         )?;
@@ -438,12 +455,14 @@ fn run_with_args(args: Args) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_branch_delete(
     branches: &[String],
     force: bool,
     quiet: bool,
     local_only: bool,
     remote_only: bool,
+    no_verify: bool,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -462,23 +481,46 @@ fn run_branch_delete(
         },
         remote_only,
         keep_local_branch: false,
+        no_verify,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
+    let hook_output_config = hooks_config.output.clone();
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    output.start_spinner("Deleting branches...");
+    // The pre-push hook run on the remote-branch delete renders through
+    // this presenter — keep the spinner off when it will fire (#599).
+    let probe_git = GitCommand::new(quiet).with_gitoxide(settings.use_gitoxide);
+    let push_hook_will_render = params.delete_remote
+        && !params.no_verify
+        && std::env::current_dir()
+            .map(|cwd| probe_git.pre_push_hook_exists(&cwd))
+            .unwrap_or(false);
+    let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if push_hook_will_render {
+            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config);
+            Some(p)
+        } else {
+            None
+        };
+
+    if !push_hook_will_render {
+        output.start_spinner("Deleting branches...");
+    }
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, &mut bridge)
+        branch_delete::execute(&params, push_presenter.as_ref(), &mut bridge)
     };
-    output.finish_spinner();
+    if !push_hook_will_render {
+        output.finish_spinner();
+    }
     let result = exec_result?;
 
     // Handle validation errors
@@ -535,10 +577,12 @@ fn run_branch_delete(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_rename_inner(
     source: &str,
     new_branch: &str,
     no_remote: bool,
+    no_verify: bool,
     dry_run: bool,
     verbose: bool,
     output: &mut dyn Output,
@@ -554,6 +598,7 @@ fn run_rename_inner(
         remote_name: settings.remote.clone(),
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
+        no_verify,
     };
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -566,13 +611,31 @@ fn run_rename_inner(
     }
     let executor = HookExecutor::new(hooks_config.clone())?;
 
-    if !params.dry_run {
+    // The pre-push hook run on the remote rename renders through this
+    // presenter — keep the spinner off when it will fire (#599).
+    let probe_git = GitCommand::new(output.is_quiet()).with_gitoxide(settings.use_gitoxide);
+    let push_hook_will_render = !params.dry_run
+        && !params.no_remote
+        && !params.no_verify
+        && std::env::current_dir()
+            .map(|cwd| probe_git.pre_push_hook_exists(&cwd))
+            .unwrap_or(false);
+    let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if push_hook_will_render {
+            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::executor::cli_presenter::CliPresenter::auto(&hooks_config.output);
+            Some(p)
+        } else {
+            None
+        };
+
+    if !params.dry_run && !push_hook_will_render {
         output.start_spinner("Renaming branch...");
     }
     let exec_result = {
         let mut bridge =
             CommandBridge::with_output_config(output, executor, hooks_config.output.clone());
-        rename::execute(&params, &mut bridge)
+        rename::execute(&params, push_presenter.as_ref(), &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;
@@ -611,6 +674,12 @@ fn run_rename_inner(
         && let Ok(cd_file) = std::env::var(CD_FILE_ENV)
     {
         std::fs::write(&cd_file, cd_target.to_string_lossy().as_bytes()).ok();
+    }
+
+    // The worktree moved and the shell has been re-pointed — now surface a
+    // deferred pre-push gate refusal as the command's failure (#599).
+    if let Some(message) = result.push_gate_error {
+        anyhow::bail!(message);
     }
 
     Ok(())
