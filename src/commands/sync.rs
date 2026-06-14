@@ -1296,7 +1296,7 @@ fn execute_push_task(
             .message
             .lines()
             .next()
-            .unwrap_or("push rejected by pre-push hook")
+            .unwrap_or(result.hook.failure_cause())
             .to_string();
         (
             TaskStatus::Failed,
@@ -1817,7 +1817,7 @@ fn run_push_phase(
     let gated = result.gated_failure_count();
     if gated > 0 {
         anyhow::bail!(
-            "{gated} push(es) failed with the repo's pre-push hook in effect \
+            "{gated} push(es) failed with the repo's pre-push hook honored \
              (re-run with --no-verify to bypass the hook)"
         );
     }

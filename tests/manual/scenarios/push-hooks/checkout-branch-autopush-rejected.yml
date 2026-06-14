@@ -37,8 +37,9 @@ steps:
     expect:
       exit_code: 1
       output_contains:
-        - "pre-push hook in effect"
+        - "pre-push hook"
         - "ready at"
+        - "--no-verify"
       dirs_exist:
         - "$WORK_DIR/autopush-repo/feat-gated"
 

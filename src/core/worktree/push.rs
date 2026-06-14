@@ -184,6 +184,40 @@ pub enum HookVerdict {
     Bypassed,
 }
 
+impl HookVerdict {
+    /// Honest, one-line cause for a *failed* gated push, framed to what daft
+    /// can actually observe on Path A — git's hook dispatch is opaque, so daft
+    /// only sees whether any ref was negotiated before the push died:
+    /// - `Rejected`: nothing was negotiated. The repo's pre-push hook refusing
+    ///   the push produces this, but so does a pre-negotiation transport error
+    ///   (unreachable remote, auth). #599 deliberately does not parse
+    ///   locale-dependent stderr to tell them apart, so the message names both
+    ///   rather than asserting the hook is to blame.
+    /// - `Passed`: refs were negotiated, so the hook accepted the push; the
+    ///   remote rejected it downstream (non-fast-forward, permissions).
+    ///
+    /// The underlying git error travels separately (in `PushOutcome::failure`)
+    /// and carries the real diagnostic; this only frames it.
+    pub fn failure_cause(self) -> &'static str {
+        match self {
+            HookVerdict::Rejected => {
+                "the repo's pre-push hook may have blocked it, or the remote was unreachable"
+            }
+            HookVerdict::Passed => "the pre-push hook passed but the remote rejected the push",
+            HookVerdict::Bypassed | HookVerdict::NoHook => "the push failed",
+        }
+    }
+
+    /// Whether re-running with `--no-verify` could plausibly let the push
+    /// through. Only when the push never negotiated a ref (`Rejected`) is a
+    /// local pre-push hook a candidate cause; a `Passed` push already cleared
+    /// the hook, so bypassing it would not change a downstream remote
+    /// rejection.
+    pub fn no_verify_might_help(self) -> bool {
+        matches!(self, HookVerdict::Rejected)
+    }
+}
+
 /// Caller-facing result of [`push_with_hooks`]. `Err` from the function is
 /// reserved for spawn-level problems; a push that ran and failed lands here
 /// in `failure` so call sites can grade severity (warn vs abort) by verdict.
@@ -307,6 +341,12 @@ pub fn push_with_hooks(
                 },
             );
             let elapsed = started.elapsed();
+            // The synthetic job tracks the whole `git push` subprocess, so a
+            // failure here marks `pre-push: ✗` even when the hook passed and
+            // the push died later (non-fast-forward, transport). That coarse
+            // attribution is the accepted Path A tradeoff — git's hook dispatch
+            // is opaque, so daft can't pin the failure on the hook specifically.
+            // The caller-facing message disambiguates via `HookVerdict`.
             match &result {
                 Ok(io) if io.success => presenter.on_job_success("pre-push", elapsed),
                 _ => presenter.on_job_failure("pre-push", elapsed),
@@ -625,6 +665,44 @@ mod tests {
     fn collapse_bypass_wins_over_rejection_shape() {
         let outcome = collapse(io(true, PUSHED, ""), true, true);
         assert_eq!(outcome.hook, HookVerdict::Bypassed);
+    }
+
+    #[test]
+    fn failure_cause_does_not_blame_the_hook_for_a_rejected_push() {
+        // A `Rejected` push died before ref negotiation — that is the hook OR a
+        // transport error, and daft must not assert the hook is to blame (the
+        // review's Medium finding). The phrasing names both possibilities.
+        let cause = HookVerdict::Rejected.failure_cause();
+        assert!(
+            cause.contains("pre-push hook"),
+            "names the hook as a candidate"
+        );
+        assert!(
+            cause.contains("unreachable"),
+            "also names transport failure so a network error isn't blamed on the hook: {cause}"
+        );
+    }
+
+    #[test]
+    fn failure_cause_for_passed_blames_the_remote_not_the_hook() {
+        // A `Passed` push cleared the hook; a downstream failure is the remote's
+        // (non-fast-forward, perms). The message must not imply the hook rejected.
+        let cause = HookVerdict::Passed.failure_cause();
+        assert!(cause.contains("passed"), "states the hook passed");
+        assert!(
+            cause.contains("remote rejected"),
+            "attributes the failure to the remote"
+        );
+    }
+
+    #[test]
+    fn no_verify_hint_only_offered_when_the_hook_is_a_candidate() {
+        // `--no-verify` bypasses the local hook, so it only helps a `Rejected`
+        // push; a `Passed`-then-failed push would fail the same way bypassed.
+        assert!(HookVerdict::Rejected.no_verify_might_help());
+        assert!(!HookVerdict::Passed.no_verify_might_help());
+        assert!(!HookVerdict::NoHook.no_verify_might_help());
+        assert!(!HookVerdict::Bypassed.no_verify_might_help());
     }
 
     // ── Recording fakes (reconcile.rs fake-adapter shape) ───────────────

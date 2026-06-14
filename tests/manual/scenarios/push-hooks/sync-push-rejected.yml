@@ -57,7 +57,7 @@ steps:
       output_contains:
         - "pre-push"
         - "GATE SAYS NO"
-        - "pre-push hook in effect"
+        - "pre-push hook honored"
 
   - name: The remote branch was not updated
     run: |

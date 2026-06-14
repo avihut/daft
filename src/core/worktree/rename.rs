@@ -303,14 +303,19 @@ pub fn execute(
                                 remote_renamed = true;
                                 sink.on_step("Remote branch renamed successfully");
                             }
-                            Err(PushFailure::Gated(msg)) => {
+                            Err(PushFailure::Gated(msg, verdict)) => {
+                                let hint = if verdict.no_verify_might_help() {
+                                    " (or re-run with --no-verify to bypass the hook)"
+                                } else {
+                                    ""
+                                };
                                 push_gate_error = Some(format!(
-                                    "Could not delete old remote branch '{remote}/{old_branch}' \
-                                     with the repo's pre-push hook in effect: {msg}. The branch \
-                                     was renamed locally and '{remote}/{}' was pushed; delete the \
-                                     old remote branch manually with: git push {remote} --delete \
-                                     {old_branch} (or re-run with --no-verify)",
-                                    params.new_branch
+                                    "Could not delete old remote branch '{remote}/{old_branch}': \
+                                     {msg} ({cause}). The branch was renamed locally and \
+                                     '{remote}/{new}' was pushed; delete the old remote branch \
+                                     manually with: git push {remote} --delete {old_branch}{hint}",
+                                    new = params.new_branch,
+                                    cause = verdict.failure_cause(),
                                 ));
                             }
                             Err(PushFailure::Other(e)) => {
@@ -323,13 +328,19 @@ pub fn execute(
                             }
                         }
                     }
-                    Err(PushFailure::Gated(msg)) => {
+                    Err(PushFailure::Gated(msg, verdict)) => {
+                        let hint = if verdict.no_verify_might_help() {
+                            " (or re-run with --no-verify to bypass the hook)"
+                        } else {
+                            ""
+                        };
                         push_gate_error = Some(format!(
-                            "Could not push '{remote}/{}' with the repo's pre-push hook in \
-                             effect: {msg}. The branch was renamed locally; the remote still \
-                             has '{old_branch}'. Fix the hook failure and push manually with: \
-                             git push --set-upstream {remote} {} (or re-run with --no-verify)",
-                            params.new_branch, params.new_branch
+                            "Could not push '{remote}/{new}': {msg} ({cause}). \
+                             The branch was renamed locally; the remote still has \
+                             '{old_branch}'. Push manually with: \
+                             git push --set-upstream {remote} {new}{hint}",
+                            new = params.new_branch,
+                            cause = verdict.failure_cause(),
                         ));
                     }
                     Err(PushFailure::Other(e)) => {
@@ -373,9 +384,11 @@ pub fn execute(
 
 /// How a remote push failed, graded for #599 escalation.
 enum PushFailure {
-    /// Failed with the repo's pre-push hook in effect — escalates to a
-    /// command failure.
-    Gated(String),
+    /// Failed while the repo's pre-push hook was honored — escalates to a
+    /// command failure. Carries the git error and the verdict so the message
+    /// can name the cause accurately (hook refusal vs downstream reject)
+    /// instead of always blaming the hook.
+    Gated(String, HookVerdict),
     /// Any other failure — legacy warn-and-continue.
     Other(String),
 }
@@ -400,7 +413,7 @@ fn run_remote_rename_push(
             None => Ok(()),
             Some(msg) => {
                 if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
-                    Err(PushFailure::Gated(msg))
+                    Err(PushFailure::Gated(msg, outcome.hook))
                 } else {
                     Err(PushFailure::Other(msg))
                 }

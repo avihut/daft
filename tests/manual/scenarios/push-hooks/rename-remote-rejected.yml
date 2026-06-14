@@ -39,7 +39,8 @@ steps:
     expect:
       exit_code: 1
       output_contains:
-        - "pre-push hook in effect"
+        - "pre-push hook"
+        - "--no-verify"
       dirs_exist:
         - "$WORK_DIR/rename-gate-repo/feature/renamed"
 

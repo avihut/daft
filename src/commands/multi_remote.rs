@@ -714,11 +714,16 @@ fn cmd_move(
             Ok(outcome) => {
                 if let Some(msg) = outcome.failure {
                     if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                        let hint = if outcome.hook.no_verify_might_help() {
+                            " (or re-run with --no-verify to bypass the hook)"
+                        } else {
+                            ""
+                        };
                         push_gate_error = Some(format!(
-                            "Could not push '{to_remote}/{branch_name}' with the repo's \
-                             pre-push hook in effect: {msg}. The worktree was moved; push \
-                             manually with: git push --set-upstream {to_remote} {branch_name} \
-                             (or re-run with --no-verify)"
+                            "Could not push '{to_remote}/{branch_name}': {msg} ({}). \
+                             The worktree was moved; push manually with: \
+                             git push --set-upstream {to_remote} {branch_name}{hint}",
+                            outcome.hook.failure_cause(),
                         ));
                     } else {
                         output.warning(&format!("Failed to push: {}", msg));
@@ -757,11 +762,16 @@ fn cmd_move(
             Ok(outcome) => {
                 if let Some(msg) = outcome.failure {
                     if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                        let hint = if outcome.hook.no_verify_might_help() {
+                            " (or re-run with --no-verify to bypass the hook)"
+                        } else {
+                            ""
+                        };
                         push_gate_error = Some(format!(
-                            "Could not delete '{old_remote}/{branch_name}' with the repo's \
-                             pre-push hook in effect: {msg}. Delete it manually with: \
-                             git push {old_remote} --delete {branch_name} (or re-run with \
-                             --no-verify)"
+                            "Could not delete '{old_remote}/{branch_name}': {msg} ({}). \
+                             Delete it manually with: \
+                             git push {old_remote} --delete {branch_name}{hint}",
+                            outcome.hook.failure_cause(),
                         ));
                     } else {
                         output.warning(&format!("Failed to delete from old remote: {}", msg));

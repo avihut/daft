@@ -608,19 +608,26 @@ fn push_if_enabled(
             Some(msg) => {
                 let gated = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed);
                 if gated {
+                    let hint = if outcome.hook.no_verify_might_help() {
+                        " (or re-run with --no-verify to bypass the hook)"
+                    } else {
+                        ""
+                    };
                     return (
                         false,
                         false,
                         Some(format!(
-                            "Could not push '{}' to '{}' with the repo's pre-push hook in effect: {}. \
-                             The worktree was created and is ready at '{}'. Fix the hook failure and \
-                             push manually with: git push -u {} {} (or re-run with --no-verify)",
+                            "Could not push '{}' to '{}': {} ({}). \
+                             The worktree was created and is ready at '{}'. \
+                             Push manually with: git push -u {} {}{}",
                             params.new_branch_name,
                             params.remote_name,
                             msg,
+                            outcome.hook.failure_cause(),
                             worktree_path.display(),
                             params.remote_name,
                             params.new_branch_name,
+                            hint,
                         )),
                     );
                 }
