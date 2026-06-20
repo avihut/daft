@@ -115,7 +115,7 @@ steps:
       done
       echo "ok_logs_found:"
       printf '%s\n' "$LOGS"
-      echo "ASSERTION_FAILED: silent-ok-job log was not deleted within 10s: $LOGS"
+      echo "ASSERTION_FAILED: silent-ok-job log was not deleted within 10s"
       exit 1
     expect:
       exit_code: 0
