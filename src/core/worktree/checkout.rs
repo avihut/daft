@@ -321,6 +321,18 @@ pub fn execute(
             for filename in &result.files_propagated {
                 crate::log_debug!("propagated {} to new worktree", filename);
             }
+            // Record what was just written as the new worktree's seed: the
+            // provenance base for pristine/refined classification and
+            // three-way consolidation. Best-effort by design.
+            if !result.files_propagated.is_empty()
+                && let Some(seeds) = crate::hooks::visitor_seeds::SeedsContext::open(&git_dir)
+            {
+                seeds.record_seeds(
+                    &params.branch_name,
+                    &worktree_path,
+                    &result.files_propagated,
+                );
+            }
         }
         Err(e) => {
             sink.on_warning(&format!("visitor-config propagation failed: {}", e));

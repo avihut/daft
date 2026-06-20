@@ -31,6 +31,10 @@ test_prune_basic() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -122,6 +126,11 @@ test_prune_multiple_deletions() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/branch1 reset --hard main >/dev/null 2>&1
+    git -C feature/branch2 reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -169,6 +178,10 @@ test_prune_from_subdirectory() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design. cwd is main/subdir here.
+    git -C ../../feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune from subdirectory
     git-worktree-prune || return 1
     
@@ -354,6 +367,10 @@ test_prune_removes_clean_worktree() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune WITHOUT --force - should still remove clean worktree
     git-worktree-prune || return 1
 
@@ -475,6 +492,12 @@ test_prune_many_worktrees() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    for i in {1..5}; do
+        git -C "feature/branch$i" reset --hard main >/dev/null 2>&1
+    done
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -595,6 +618,10 @@ test_prune_empty_parent_dir_cleanup() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/old reset --hard main >/dev/null 2>&1
+
     # Prune: should remove feature/old but keep feature/ (feature/new still exists)
     git-worktree-prune || return 1
 
@@ -616,6 +643,10 @@ test_prune_empty_parent_dir_cleanup() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/new reset --hard main >/dev/null 2>&1
 
     # Prune: should remove feature/new AND the now-empty feature/ directory
     git-worktree-prune || return 1
@@ -659,6 +690,10 @@ test_prune_from_current_worktree() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
 
     # Save the project root path for verification (resolve symlinks for macOS /tmp -> /private/tmp)
     local project_root
@@ -731,6 +766,10 @@ test_prune_from_current_worktree_cd_default_branch() {
 
     rm -rf "$temp_clone"
 
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Save paths for verification (resolve symlinks for macOS /tmp -> /private/tmp)
     local project_root
     project_root=$(cd "$(pwd)" && pwd -P)
@@ -798,6 +837,10 @@ test_prune_regular_repo_current_branch() {
     ) >/dev/null 2>&1
 
     rm -rf "$temp_clone"
+
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git reset --hard main >/dev/null 2>&1
 
     # Run prune (should checkout default branch first, then delete)
     git-worktree-prune || return 1
@@ -928,6 +971,10 @@ test_prune_remote_config() {
     
     rm -rf "$temp_clone"
     
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/test-feature reset --hard main >/dev/null 2>&1
+
     # Run prune
     git-worktree-prune || return 1
     
@@ -1020,6 +1067,10 @@ HOOKEOF
     # Step 6: Run prune — in a non-TTY test environment stderr is not a terminal,
     # so prune falls back to sequential mode (CommandBridge). This path has always
     # executed hooks. The TUI path (TuiBridge) now also executes hooks after the
+    # Mark the branch merged (reset onto main) so prune may delete it --
+    # gone-but-unmerged branches are kept by design.
+    git -C feature/hook-prune-test reset --hard main >/dev/null 2>&1
+
     # NullBridge fix. Testing either path proves the end-to-end hook wiring works.
     git-worktree-prune || return 1
 
@@ -1043,6 +1094,60 @@ HOOKEOF
         return 1
     fi
     log_success "worktree-pre-remove hook executed during prune"
+
+    return 0
+}
+
+# Regression test for the #628 review follow-up: prune must never destroy the
+# *default branch* itself when it is named something other than master/main and
+# its upstream has gone.
+#
+# Before the fix, identify_gone_branches name-excluded only "master"/"main" in
+# Method 2 and excluded nothing in Method 1, while the gone-but-unmerged guard's
+# `default_branch == branch_name` arm proceeds (a branch is trivially merged
+# into itself). A repo whose default branch is "trunk" with a deleted upstream
+# therefore had its default-branch worktree AND local branch silently pruned.
+# The fix excludes the resolved default branch by identity in both methods.
+test_prune_keeps_default_branch_with_nonstandard_name() {
+    local remote_repo
+    remote_repo=$(create_test_remote "test-repo-prune-trunk-default" "trunk")
+
+    # Point the bare remote's HEAD at trunk so daft clones it as the default.
+    git -C "$remote_repo" symbolic-ref HEAD refs/heads/trunk
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-prune-trunk-default" || return 1
+
+    # A second worktree on a branch that stays on the remote (develop): never
+    # "gone", so prune has a non-default branch it must leave untouched.
+    git-worktree-checkout develop || return 1
+    assert_directory_exists "trunk" || return 1
+    assert_directory_exists "develop" || return 1
+
+    # Make the default branch's upstream disappear: repoint the remote HEAD off
+    # trunk, delete trunk on the remote, then prune the remote-tracking ref.
+    git -C "$remote_repo" symbolic-ref HEAD refs/heads/develop
+    git -C "$remote_repo" branch -D trunk >/dev/null 2>&1
+    git -C "trunk" fetch origin --prune >/dev/null 2>&1
+    # The repo's default is still trunk (origin/HEAD lags a remote-side rename);
+    # pin it so default resolution is deterministic across git versions.
+    git -C "trunk" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk 2>/dev/null
+
+    # Precondition: trunk must now show a gone upstream (the trigger).
+    if ! git -C "trunk" branch -vv | grep -q 'origin/trunk: gone'; then
+        log_error "precondition failed: trunk does not show a gone upstream"
+        return 1
+    fi
+
+    # Prune. The default branch must survive — worktree and local ref both.
+    git-worktree-prune || return 1
+
+    assert_directory_exists "trunk" \
+        "default branch 'trunk' worktree must survive prune" || return 1
+    assert_branch_exists "develop" "trunk" \
+        "default branch 'trunk' local ref must survive prune" || return 1
+    assert_directory_exists "develop" \
+        "non-default branch 'develop' must survive prune" || return 1
 
     return 0
 }
@@ -1074,6 +1179,7 @@ run_prune_tests() {
     run_test "prune_regular_repo_not_current_branch" "test_prune_regular_repo_not_current_branch"
     run_test "prune_shell_wrapper" "test_prune_shell_wrapper"
     run_test "prune_hooks_execute_in_tui" "test_prune_hooks_execute_in_tui"
+    run_test "prune_keeps_default_branch_with_nonstandard_name" "test_prune_keeps_default_branch_with_nonstandard_name"
 }
 
 # Main execution

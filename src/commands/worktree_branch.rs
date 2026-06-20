@@ -42,8 +42,13 @@ delete a branch that:
   - has uncommitted changes in its worktree
   - has not been merged (or squash-merged) into the default branch
   - is out of sync with its remote tracking branch
+  - has refined untracked daft files (daft.yml / daft.local.yml edited since
+    daft seeded them) that the default branch's worktree does not cover —
+    consolidate with daft-file(1) merge, or answer the interactive prompt
 
-Use -D to override these safety checks. For the default branch (e.g. main),
+Use -D to override these safety checks. Forcing DISCARDS refined untracked
+daft files — they are stashed under <git-common-dir>/.daft/discarded/<branch>/
+and never merged into another worktree. For the default branch (e.g. main),
 -D removes its worktree only — the local branch ref and remote branch are
 always preserved.
 
@@ -152,8 +157,13 @@ branch that:
   - has uncommitted changes in its worktree
   - has not been merged (or squash-merged) into the default branch
   - is out of sync with its remote tracking branch
+  - has refined untracked daft files (daft.yml / daft.local.yml edited since
+    daft seeded them) that the default branch's worktree does not cover —
+    consolidate with daft-file(1) merge, or answer the interactive prompt
 
-Use -f to override these safety checks. For the default branch (e.g. main),
+Use -f to override these safety checks. Forcing DISCARDS refined untracked
+daft files — they are stashed under <git-common-dir>/.daft/discarded/<branch>/
+and never merged into another worktree. For the default branch (e.g. main),
 -f removes its worktree only — the local branch ref and remote branch are
 always preserved.
 
@@ -218,6 +228,7 @@ pub fn run_remove() -> Result<()> {
         remove_args.quiet,
         remove_args.local,
         remove_args.remote,
+        "-f/--force",
         &mut output,
         &settings,
     )
@@ -431,6 +442,7 @@ fn run_with_args(args: Args) -> Result<()> {
             args.quiet,
             args.local,
             args.remote,
+            "-D/--force",
             &mut output,
             &settings,
         )?;
@@ -438,12 +450,14 @@ fn run_with_args(args: Args) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_branch_delete(
     branches: &[String],
     force: bool,
     quiet: bool,
     local_only: bool,
     remote_only: bool,
+    force_flag_label: &str,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -464,6 +478,8 @@ fn run_branch_delete(
         keep_local_branch: false,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
+        skip_merge_validation: false,
+        force_flag_label: force_flag_label.to_string(),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;

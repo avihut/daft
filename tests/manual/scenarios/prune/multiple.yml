@@ -72,6 +72,13 @@ steps:
     expect:
       exit_code: 0
 
+  - name: Mark both branches merged (reset onto main) so prune may delete them
+    run: |
+      git -C $WORK_DIR/test-repo/feature/branch1 reset --hard main
+      git -C $WORK_DIR/test-repo/feature/branch2 reset --hard main
+    expect:
+      exit_code: 0
+
   - name: Run prune
     run: git-worktree-prune
     cwd: "$WORK_DIR/test-repo"

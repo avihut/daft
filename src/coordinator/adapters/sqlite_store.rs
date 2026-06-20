@@ -5,9 +5,9 @@
 //! persistence boundary so secrets never reach disk.
 
 use crate::coordinator::clean_policy::RepoPolicy;
-use crate::coordinator::ports::JobsStorePort;
-use crate::store::models::{InvocationRow, JobRow, RepoPolicyRow};
-use crate::store::repos::{InvocationsRepo, JobsRepo, RepoPoliciesRepo};
+use crate::coordinator::ports::{JobsStorePort, SeedsStorePort};
+use crate::store::models::{InvocationRow, JobRow, RepoPolicyRow, VisitorSeedRow};
+use crate::store::repos::{InvocationsRepo, JobsRepo, RepoPoliciesRepo, VisitorSeedsRepo};
 use crate::store::{Pool, env_scrub};
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -238,6 +238,59 @@ impl JobsStorePort for SqliteJobsStore {
     }
 }
 
+impl SeedsStorePort for SqliteJobsStore {
+    fn record_seed(
+        &self,
+        repo_hash: &str,
+        branch_slug: &str,
+        filename: &str,
+        content: &str,
+    ) -> Result<()> {
+        // Timestamps are computed here, at the persistence boundary (same
+        // spirit as the env scrub on job rows). The repo's upsert preserves
+        // the original `seeded_at` when a row already exists.
+        let now = chrono::Utc::now();
+        let row = VisitorSeedRow {
+            repo_hash: repo_hash.to_string(),
+            branch_slug: branch_slug.to_string(),
+            filename: filename.to_string(),
+            content: content.to_string(),
+            seeded_at: now,
+            updated_at: now,
+        };
+        let conn = self.pool.writer().context("checkout writer")?;
+        VisitorSeedsRepo::upsert(&conn, &row).map_err(anyhow::Error::from)
+    }
+
+    fn get_seed(
+        &self,
+        repo_hash: &str,
+        branch_slug: &str,
+        filename: &str,
+    ) -> Result<Option<VisitorSeedRow>> {
+        let conn = self.pool.reader().context("checkout reader")?;
+        VisitorSeedsRepo::get(&conn, repo_hash, branch_slug, filename).map_err(anyhow::Error::from)
+    }
+
+    fn delete_seed(&self, repo_hash: &str, branch_slug: &str, filename: &str) -> Result<()> {
+        let conn = self.pool.writer().context("checkout writer")?;
+        VisitorSeedsRepo::delete_one(&conn, repo_hash, branch_slug, filename)
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn delete_seeds_for_branch(&self, repo_hash: &str, branch_slug: &str) -> Result<usize> {
+        let conn = self.pool.writer().context("checkout writer")?;
+        VisitorSeedsRepo::delete_for_branch(&conn, repo_hash, branch_slug)
+            .map_err(anyhow::Error::from)
+    }
+
+    fn list_seeds_for_repo(&self, repo_hash: &str) -> Result<Vec<VisitorSeedRow>> {
+        let conn = self.pool.reader().context("checkout reader")?;
+        VisitorSeedsRepo::list_for_repo(&conn, repo_hash).map_err(anyhow::Error::from)
+    }
+}
+
 fn row_to_policy(row: RepoPolicyRow) -> RepoPolicy {
     RepoPolicy {
         version: row.policy_version,
@@ -460,5 +513,61 @@ mod tests {
             base.join("coordinator.db").exists(),
             "coordinator.db should exist after for_repo_base"
         );
+    }
+
+    #[test]
+    fn seed_record_get_refresh_round_trip() {
+        let (_tmp, store) = fresh();
+        store
+            .record_seed("repo", "feat/x", "daft.yml", "v1")
+            .unwrap();
+        let first = store
+            .get_seed("repo", "feat/x", "daft.yml")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.content, "v1");
+
+        // Refresh: content moves, original seeded_at survives.
+        store
+            .record_seed("repo", "feat/x", "daft.yml", "v2")
+            .unwrap();
+        let second = store
+            .get_seed("repo", "feat/x", "daft.yml")
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.content, "v2");
+        assert_eq!(second.seeded_at, first.seeded_at);
+    }
+
+    #[test]
+    fn seed_delete_for_branch_scopes_to_branch() {
+        let (_tmp, store) = fresh();
+        store
+            .record_seed("repo", "feat/x", "daft.yml", "x")
+            .unwrap();
+        store
+            .record_seed("repo", "feat/x", "daft.local.yml", "xl")
+            .unwrap();
+        store
+            .record_seed("repo", "feat/y", "daft.yml", "y")
+            .unwrap();
+
+        assert_eq!(store.delete_seeds_for_branch("repo", "feat/x").unwrap(), 2);
+        assert!(
+            store
+                .get_seed("repo", "feat/x", "daft.yml")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_seed("repo", "feat/y", "daft.yml")
+                .unwrap()
+                .is_some()
+        );
+
+        let listed = store.list_seeds_for_repo("repo").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].branch_slug, "feat/y");
     }
 }

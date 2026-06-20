@@ -9,14 +9,23 @@ Merge a source daft.yml into a target daft.yml
 
 ## Description
 
-Merge SOURCE into TARGET using the same recursive YAML merge that daft uses
-at load time: source wins on conflicts, new hook sections are added wholesale.
+Merge SOURCE into TARGET. When the source is a worktree-root daft file with
+seed provenance (daft recorded what it wrote there), the merge is THREE-WAY
+against that seed: only keys the source genuinely refined move into the
+target, a key-level preview is printed first, and the target is backed up to
+<git-common-dir>/.daft/backups/file-merge/ before writing. Keys changed on
+both sides are conflicts: pick a side at the interactive prompt, pass -y to
+take the source's values, or the command aborts non-zero listing the keys.
+
+Without provenance the legacy two-way merge applies: source wins on
+conflicts, new hook sections are added wholesale, and when TARGET is
+untracked (visitor file) you are prompted for confirmation unless
+--yes / --force is passed.
 
 When TARGET is omitted, daft.yml in the current directory is used.
 
-By default the source file is deleted after a successful merge.
-When TARGET is untracked (visitor file) you are prompted for confirmation
-unless --yes / --force is passed.
+By default the source file is deleted after a successful merge
+(--keep-source retains it and re-seeds it as consolidated).
 
 ## Usage
 

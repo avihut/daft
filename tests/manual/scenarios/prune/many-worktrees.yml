@@ -114,6 +114,16 @@ steps:
     expect:
       exit_code: 0
 
+  - name:
+      Mark the first 5 branches merged (reset onto main) so prune may delete
+      them
+    run: |
+      for i in 1 2 3 4 5; do
+        git -C $WORK_DIR/test-repo/feature/branch$i reset --hard main
+      done
+    expect:
+      exit_code: 0
+
   - name: Prune removes first 5, keeps last 5
     run: git-worktree-prune
     cwd: "$WORK_DIR/test-repo"

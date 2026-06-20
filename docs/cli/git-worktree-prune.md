@@ -22,6 +22,16 @@ list of remote tracking branches. It then identifies local branches that were
 tracking now-deleted remote branches, removes their worktrees (if any exist),
 and finally deletes the local branches.
 
+A deleted remote branch does not by itself prove the work was merged, so each
+gone branch is verified against the default branch (regular or squash merge)
+before anything is deleted; gone-but-unmerged branches are kept with a
+warning. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
+were refined since daft seeded them are also kept, with a pointer at
+daft-file(1) merge for consolidation. --force overrides both: unmerged
+branches are deleted and refined daft files are discarded to
+<git-common-dir>/.daft/discarded/<branch>/ — prune never writes another
+worktree's files.
+
 If you are currently inside a worktree that is about to be pruned, the command
 handles this gracefully. In a bare-repo worktree layout (created by daft), the
 current worktree is removed last and the shell is redirected to a safe location

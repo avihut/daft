@@ -1,10 +1,14 @@
 //! Adapters bridging core traits to the command layer.
 
-use super::{HookOutcome, HookRunner, ProgressSink};
+use super::{
+    ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookOutcome,
+    HookRunner, ProgressSink,
+};
 use crate::executor::cli_presenter::CliPresenter;
 use crate::executor::presenter::JobPresenter;
 use crate::hooks::HookExecutor;
 use crate::output::Output;
+use crate::prompt::{PromptConfig, PromptOption, PromptResult, single_key_select};
 use crate::settings::HookOutputConfig;
 use std::sync::Arc;
 
@@ -97,6 +101,108 @@ impl ProgressSink for CommandBridge<'_> {
 
     fn on_debug(&mut self, msg: &str) {
         self.output.debug(msg);
+    }
+}
+
+impl ConsolidationPrompter for CommandBridge<'_> {
+    fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
+        // The summary must be visible above the prompt, so suspend any
+        // running spinner for the duration (same contract as run_hook).
+        self.output.pause_spinner();
+        self.output.info(&format!(
+            "Worktree '{}' has refined daft files not in {}:",
+            req.branch, req.target_display
+        ));
+        for file in &req.files {
+            if file.whole_file {
+                self.output.info(&format!(
+                    "  {} — no seed provenance; consolidating overlays the whole file",
+                    file.filename
+                ));
+                continue;
+            }
+            if !file.adopt_keys.is_empty() {
+                self.output.info(&format!(
+                    "  {} — would adopt: {}",
+                    file.filename,
+                    file.adopt_keys.join(", ")
+                ));
+            }
+            if !file.conflict_keys.is_empty() {
+                self.output.info(&format!(
+                    "  {} — conflicting keys: {}",
+                    file.filename,
+                    file.conflict_keys.join(", ")
+                ));
+            }
+        }
+        eprint!(
+            "Consolidate into {}, discard, or abort? [c/d/A] ",
+            req.target_display
+        );
+        let result = single_key_select(&PromptConfig {
+            options: vec![
+                PromptOption {
+                    key: 'c',
+                    label: "consolidate",
+                    is_default: false,
+                },
+                PromptOption {
+                    key: 'd',
+                    label: "discard",
+                    is_default: false,
+                },
+                PromptOption {
+                    key: 'a',
+                    label: "abort",
+                    is_default: true,
+                },
+            ],
+            cancel_message: Some("Aborted.".to_string()),
+        });
+        eprintln!();
+        self.output.resume_spinner();
+        match result {
+            PromptResult::Selected('c') => ConsolidationChoice::Consolidate,
+            PromptResult::Selected('d') => ConsolidationChoice::Discard,
+            _ => ConsolidationChoice::Abort,
+        }
+    }
+
+    fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
+        self.output.pause_spinner();
+        eprint!(
+            "{}: keep the target's version or take the removed worktree's for {}? [s/t/A] ",
+            filename,
+            keys.join(", ")
+        );
+        let result = single_key_select(&PromptConfig {
+            options: vec![
+                PromptOption {
+                    key: 's',
+                    label: "source",
+                    is_default: false,
+                },
+                PromptOption {
+                    key: 't',
+                    label: "target",
+                    is_default: false,
+                },
+                PromptOption {
+                    key: 'a',
+                    label: "abort",
+                    is_default: true,
+                },
+            ],
+            cancel_message: Some("Aborted.".to_string()),
+        });
+        eprintln!();
+        self.output.resume_spinner();
+        match result {
+            PromptResult::Selected('s') => ConflictSide::Source,
+            PromptResult::Selected('t') => ConflictSide::Target,
+            _ => ConflictSide::Abort,
+        }
     }
 }
 

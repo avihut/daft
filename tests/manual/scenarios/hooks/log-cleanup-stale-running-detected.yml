@@ -51,7 +51,7 @@ steps:
       coordinator.db, with no coordinator socket file
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-stale/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       DB="$JOBS_DIR/coordinator.db"
       INV_ID=deadbeefdeadbeef
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
@@ -77,8 +77,8 @@ steps:
       : > "$JOBS_DIR/$INV_ID/zombiejob/output.jsonl"
       # Make sure no coordinator socket lingers for this repo so the
       # stale-Running detector decides the job is dead.
-      rm -f "$HOME/.local/state/daft/coordinator-${REPO_ID}.sock"
-      rm -f "$HOME/.local/state/daft/coordinator-${REPO_ID}.pid"
+      rm -f "${DAFT_STATE_DIR:-$HOME/.local/state/daft}/coordinator-${REPO_ID}.sock"
+      rm -f "${DAFT_STATE_DIR:-$HOME/.local/state/daft}/coordinator-${REPO_ID}.pid"
     expect:
       exit_code: 0
       output_contains:
@@ -97,7 +97,7 @@ steps:
   - name: The stale invocation dir is gone
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-log-cleanup-stale/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       if [ -d "$JOBS_DIR/deadbeefdeadbeef" ]; then
         echo "stale invocation still present"
         exit 1

@@ -60,7 +60,7 @@ steps:
       explicit checkout fires it on feature/x → exactly 2 invocations.
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-prune-dryrun-invs/.git/daft-id")
-      JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
+      JOBS_DIR="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID"
       INV_COUNT=$(find "$JOBS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
       echo "INV_COUNT=$INV_COUNT"
       [ "$INV_COUNT" = "2" ] || { echo "expected exactly 2 invocations, got $INV_COUNT"; exit 1; }
@@ -72,7 +72,7 @@ steps:
   - name: Backdate every SQLite job/invocation timestamp to 2 days ago
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-prune-dryrun-invs/.git/daft-id")
-      DB="$HOME/.local/state/daft/jobs/$REPO_ID/coordinator.db"
+      DB="${DAFT_STATE_DIR:-$HOME/.local/state/daft}/jobs/$REPO_ID/coordinator.db"
       [ -f "$DB" ] || { echo "missing coordinator.db at $DB"; exit 1; }
       OLD=$(python3 -c "import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
       sqlite3 "$DB" \

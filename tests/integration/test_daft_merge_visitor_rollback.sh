@@ -160,19 +160,21 @@ EOF
     return 0
 }
 
-# Test that a successful daft merge into a target that ALREADY has its own visitor
-# daft.yml takes the merge + re-serialize branch of propagate_one (not verbatim
-# copy) and preserves every field of both worktrees' configs.
+# Test that a successful daft merge consolidates a REFINED source daft.yml into a
+# target that already has its own copy, via the three-way merge3 path (seed as
+# base), preserving every field of both sides.
 #
 # Setup:
-#   master  : visitor daft.yml (post-clone job + top-level shared:) — the merge base
-#   feat/add: visitor daft.yml (worktree-post-create + extends: + background: true)
-#             plus a non-conflicting commit
+#   master  : visitor daft.yml (post-clone job + top-level shared:) — written
+#             BEFORE branch-out so checkout propagates and seeds it
+#   feat/add: the seeded copy REFINED with an extra hook section, an
+#             overlay-only top-level field (extends — the historical drop
+#             site), and a hook-level scalar (background: true), plus a
+#             non-conflicting commit
 #
-# When the target already holds a daft.yml, propagate_one merges feat/add's config
-# INTO master's via merge_configs and re-serializes. A field drop or null-litter in
-# the (Area-3) moved merge_configs/merge_hook_defs surfaces directly here — a path
-# distinct from the verbatim-copy branch the clean-target success test exercises.
+# The refinements are one-sided changes against the seed, so merge3 adopts them
+# without conflicts and re-serializes the target. A field drop or null-litter in
+# merge3/merge3_hook_defs surfaces directly here.
 test_daft_merge_visitor_merges_into_existing_target_daft_yml() {
     git-worktree-init --layout contained merge-consolidate-repo || return 1
     cd "merge-consolidate-repo/master"
@@ -181,13 +183,9 @@ test_daft_merge_visitor_merges_into_existing_target_daft_yml() {
     git add README.md
     git commit -m "init" >/dev/null 2>&1
 
-    git-worktree-checkout -b feat/add >/dev/null 2>&1
-
-    local repo_root
-    repo_root="$(dirname "$(pwd)")"
-
-    # Target (master) already has its OWN visitor daft.yml: a post-clone hook plus a
-    # top-level shared list. This is the merge BASE; its fields must survive.
+    # Target (master) gets its visitor daft.yml BEFORE branch-out: a post-clone
+    # hook plus a top-level shared list. Checkout propagation copies this into
+    # feat/add and records it as feat/add's seed — the three-way merge base.
     cat > daft.yml <<'EOF'
 shared:
   - .env
@@ -201,20 +199,35 @@ EOF
     # Keep daft.yml a visitor config: exclude it so it never makes the target
     # "dirty". The merge clean-target pre-flight treats untracked files as dirty
     # (git status --porcelain), so an un-excluded daft.yml would refuse the merge
-    # before propagation. The shared info/exclude covers feat/add's daft.yml too.
+    # before consolidation. The shared info/exclude covers feat/add's copy too.
     echo '/daft.yml' >> "$(git rev-parse --git-path info/exclude)"
 
-    # Source (feat/add): a non-conflicting commit + a visitor daft.yml carrying a
-    # DIFFERENT hook section, an overlay-only top-level field (extends — the exact
-    # historical drop site), and a hook-level scalar (background: true).
+    git-worktree-checkout -b feat/add >/dev/null 2>&1
+
+    local repo_root
+    repo_root="$(dirname "$(pwd)")"
+
+    # Source (feat/add): a non-conflicting commit, then REFINE the seeded copy —
+    # keep the seeded content and add a different hook section, an overlay-only
+    # top-level field (extends), and a hook-level scalar (background: true).
     cd "$repo_root/feat/add"
     echo "feature content" > feature.txt
     git add feature.txt
     git commit -m "feat/add: add feature.txt" >/dev/null 2>&1
+
+    assert_file_contains "daft.yml" "from-master" \
+        "checkout must have propagated master's daft.yml into feat/add" || return 1
+
     cat > daft.yml <<'EOF'
+shared:
+  - .env
 extends:
   - base.yml
 hooks:
+  post-clone:
+    jobs:
+      - name: from-master
+        run: echo from-master
   worktree-post-create:
     background: true
     jobs:
@@ -222,9 +235,10 @@ hooks:
         run: echo from-feat
 EOF
 
-    # Merge feat/add into master. master's untracked daft.yml is snapshotted and the
-    # clean-target gate is relaxed for it, so the merge proceeds and propagate_one
-    # takes the merge + re-serialize branch (target already has a daft.yml).
+    # Merge feat/add into master. The source copy is refined relative to its
+    # seed, so the consolidation runs merge3 (base = seed, ours = master,
+    # theirs = feat/add): the refinements are one-sided adds, no conflicts, and
+    # the resolved config is written into master before the git merge.
     cd "$repo_root/master"
     daft merge feat/add --no-edit >/dev/null 2>&1 || {
         log_error "daft merge feat/add failed unexpectedly"
@@ -242,7 +256,7 @@ EOF
     assert_file_contains "daft.yml" "extends" \
         "overlay-only top-level field (historical drop site) must survive re-serialize" || return 1
     assert_file_contains "daft.yml" "background" \
-        "hook-level scalar must survive merge_hook_defs" || return 1
+        "hook-level scalar must survive merge3_hook_defs" || return 1
 
     if grep -q 'null' daft.yml; then
         log_error "merged daft.yml contains 'null' litter (sparse-serialize regression)"
@@ -251,7 +265,7 @@ EOF
         return 1
     fi
 
-    log_success "daft merge into an existing target daft.yml preserved every field, no null litter"
+    log_success "daft merge consolidated a refined daft.yml three-way, no field drops, no null litter"
     return 0
 }
 

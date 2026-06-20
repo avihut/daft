@@ -1,0 +1,86 @@
+name: daft file merge is three-way when the source worktree has a seed
+description: >
+  feat/x was seeded with daft.yml version A, then refined it (added a named job)
+  while main's copy independently evolved the setup job to v2. With the seed as
+  the merge base, `daft file merge` must adopt only the refinement (the extra
+  job) and keep main's own change (setup-v2) - the stale seeded value of setup
+  must NOT clobber it. The target is backed up before writing. Regression for
+  the two-way source-wins merge (issue #628).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Ignore daft files and push so new worktrees inherit the ignore
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'daft.yml\ndaft.local.yml\n' > .gitignore
+      git add .gitignore
+      git commit -m "ignore untracked daft files"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Write visitor daft.yml version A in main
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree (seeds a copy of A)
+    run: git-worktree-checkout -b feat/x
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/feat/x/daft.yml"
+          content: "setup-v1"
+
+  - name: Refine feat/x's daft.yml with an extra named job
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v1\n      - name: extra\n        run: echo
+      extra-job\n' > $WORK_DIR/test-repo/feat/x/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Evolve main's daft.yml setup job to v2
+    run: >
+      printf 'hooks:\n  worktree-post-create:\n    jobs:\n      - name:
+      setup\n        run: echo setup-v2\n' > $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+
+  - name: Three-way file merge adopts the refinement only
+    run: daft file merge ../feat/x/daft.yml -y 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "extra"
+      files_exist:
+        - "$WORK_DIR/test-repo/.git/.daft/backups/file-merge/daft.yml"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/feat/x/daft.yml"
+
+  - name: Target kept its own change and gained the refinement
+    run: cat $WORK_DIR/test-repo/main/daft.yml
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v2"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "extra-job"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "setup-v1"
