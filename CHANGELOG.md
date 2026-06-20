@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.0](https://github.com/avihut/daft/compare/v1.16.0...v1.17.0) - 2026-06-20
+
+
+### Bug Fixes
+
+- Provenance-gated visitor daft-file propagation (#629)
+
+
+### Features
+
+- **push**: Honor and report pre-push hooks at every daft push site (#630)
 ## [1.16.0](https://github.com/avihut/daft/compare/v1.15.2...v1.16.0) - 2026-06-02
 
 
