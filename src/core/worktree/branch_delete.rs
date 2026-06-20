@@ -621,7 +621,16 @@ fn validate_branches(
                         blocking.iter().map(|c| c.filename.clone()).collect(),
                     );
                 } else {
-                    match plan_refined_files(ctx, branch, wt, target_wt, &blocking, params, sink) {
+                    match plan_refined_files(
+                        ctx,
+                        branch,
+                        wt,
+                        target_wt,
+                        &blocking,
+                        seeds.as_ref(),
+                        params,
+                        sink,
+                    ) {
                         Ok(plan) => daft_files = plan,
                         Err(message) => {
                             errors.push(ValidationError {
@@ -669,12 +678,14 @@ fn validate_branches(
 /// refined (or provenance-less) and not subsumed by the target. Returns the
 /// refusal message as `Err` when the user (or a non-interactive context)
 /// aborts.
+#[allow(clippy::too_many_arguments)]
 fn plan_refined_files(
     ctx: &BranchDeleteContext,
     branch: &str,
     wt: &Path,
     target_wt: Option<&PathBuf>,
     blocking: &[FileClass],
+    seeds: Option<&SeedsContext>,
     params: &BranchDeleteParams,
     sink: &mut (impl ProgressSink + ConsolidationPrompter),
 ) -> std::result::Result<DaftFilePlan, String> {
@@ -717,13 +728,11 @@ fn plan_refined_files(
     };
 
     // Dry-run the consolidation per file (shared with the merge flow) so
-    // the prompt can show exactly what would happen.
-    let seeds = SeedsContext::open(&ctx.git_dir);
+    // the prompt can show exactly what would happen. Reuses the seed store
+    // handle opened by validate_branches rather than opening a second one.
     let prepared: Vec<visitor_seeds::ConsolidationPreview> = blocking
         .iter()
-        .map(|class| {
-            visitor_seeds::prepare_consolidation(seeds.as_ref(), branch, wt, target_wt, class)
-        })
+        .map(|class| visitor_seeds::prepare_consolidation(seeds, branch, wt, target_wt, class))
         .collect();
 
     let request = ConsolidationRequest {

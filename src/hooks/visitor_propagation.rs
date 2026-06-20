@@ -214,11 +214,21 @@ where
             for (path, original) in &saved {
                 match original {
                     Some(content) => {
-                        let _ = fs::write(path, content);
+                        if let Err(err) = fs::write(path, content) {
+                            crate::log_debug!(
+                                "visitor rollback: failed to restore {}: {err}",
+                                path.display()
+                            );
+                        }
                     }
                     None => {
                         // File didn't exist originally — remove the one we wrote.
-                        let _ = fs::remove_file(path);
+                        if let Err(err) = fs::remove_file(path) {
+                            crate::log_debug!(
+                                "visitor rollback: failed to remove {}: {err}",
+                                path.display()
+                            );
+                        }
                     }
                 }
             }

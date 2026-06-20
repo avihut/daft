@@ -806,13 +806,16 @@ fn remove_worktree(
     // --force the worktree is kept (with a pointer at `daft file merge`),
     // and with --force the refinements are stashed under .daft/discarded/
     // before removal. The default-branch worktree is NEVER written by prune.
+    // Open the seed store once: classification below consults it, and the
+    // post-removal cleanup at the end reuses the same handle. Best-effort.
+    let seeds = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir);
+
     if wt_path.exists() {
         let target_wt: Option<PathBuf> = ctx
             .default_branch
             .as_deref()
             .map(|default_branch| ctx.project_root.join(default_branch))
             .filter(|p| p.is_dir());
-        let seeds = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir);
         let classes = crate::hooks::visitor_seeds::classify_in_scope_files(
             seeds.as_ref(),
             branch_name,
@@ -913,8 +916,9 @@ fn remove_worktree(
     // Clean up empty parent directories
     cleanup_empty_parent_dirs(&ctx.project_root, wt_path, sink);
 
-    // The worktree is gone — drop its seed provenance rows. Best-effort.
-    if let Some(seeds) = crate::hooks::visitor_seeds::SeedsContext::open(&ctx.git_dir) {
+    // The worktree is gone — drop its seed provenance rows. Best-effort,
+    // reusing the handle opened at the top of the function.
+    if let Some(seeds) = seeds.as_ref() {
         seeds.delete_seeds_for_branch(branch_name);
     }
 
