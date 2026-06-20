@@ -412,7 +412,13 @@ jobs:
           path: |
             target/release/daft
             target/release/xtask
-          retention-days: 1
+          # 5 days (not 1): the integration-test jobs download this artifact
+          # rather than rebuild. Re-running only the failed jobs
+          # (`gh run rerun --failed`) does NOT re-run `build`, so with a 1-day
+          # window a re-run a couple of days later finds no artifact and fails at
+          # "Download binary" without running any test. 5 days covers a normal
+          # re-run window; a fresh full run always rebuilds regardless.
+          retention-days: 5
 
   # Integration tests (Linux only) — 4 parallel workers:
   # {default, gitoxide} x {bash, yaml}
