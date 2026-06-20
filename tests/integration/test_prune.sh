@@ -1098,6 +1098,60 @@ HOOKEOF
     return 0
 }
 
+# Regression test for the #628 review follow-up: prune must never destroy the
+# *default branch* itself when it is named something other than master/main and
+# its upstream has gone.
+#
+# Before the fix, identify_gone_branches name-excluded only "master"/"main" in
+# Method 2 and excluded nothing in Method 1, while the gone-but-unmerged guard's
+# `default_branch == branch_name` arm proceeds (a branch is trivially merged
+# into itself). A repo whose default branch is "trunk" with a deleted upstream
+# therefore had its default-branch worktree AND local branch silently pruned.
+# The fix excludes the resolved default branch by identity in both methods.
+test_prune_keeps_default_branch_with_nonstandard_name() {
+    local remote_repo
+    remote_repo=$(create_test_remote "test-repo-prune-trunk-default" "trunk")
+
+    # Point the bare remote's HEAD at trunk so daft clones it as the default.
+    git -C "$remote_repo" symbolic-ref HEAD refs/heads/trunk
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-prune-trunk-default" || return 1
+
+    # A second worktree on a branch that stays on the remote (develop): never
+    # "gone", so prune has a non-default branch it must leave untouched.
+    git-worktree-checkout develop || return 1
+    assert_directory_exists "trunk" || return 1
+    assert_directory_exists "develop" || return 1
+
+    # Make the default branch's upstream disappear: repoint the remote HEAD off
+    # trunk, delete trunk on the remote, then prune the remote-tracking ref.
+    git -C "$remote_repo" symbolic-ref HEAD refs/heads/develop
+    git -C "$remote_repo" branch -D trunk >/dev/null 2>&1
+    git -C "trunk" fetch origin --prune >/dev/null 2>&1
+    # The repo's default is still trunk (origin/HEAD lags a remote-side rename);
+    # pin it so default resolution is deterministic across git versions.
+    git -C "trunk" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk 2>/dev/null
+
+    # Precondition: trunk must now show a gone upstream (the trigger).
+    if ! git -C "trunk" branch -vv | grep -q 'origin/trunk: gone'; then
+        log_error "precondition failed: trunk does not show a gone upstream"
+        return 1
+    fi
+
+    # Prune. The default branch must survive — worktree and local ref both.
+    git-worktree-prune || return 1
+
+    assert_directory_exists "trunk" \
+        "default branch 'trunk' worktree must survive prune" || return 1
+    assert_branch_exists "develop" "trunk" \
+        "default branch 'trunk' local ref must survive prune" || return 1
+    assert_directory_exists "develop" \
+        "non-default branch 'develop' must survive prune" || return 1
+
+    return 0
+}
+
 # Run all prune tests
 run_prune_tests() {
     log "Running git-worktree-prune integration tests..."
@@ -1125,6 +1179,7 @@ run_prune_tests() {
     run_test "prune_regular_repo_not_current_branch" "test_prune_regular_repo_not_current_branch"
     run_test "prune_shell_wrapper" "test_prune_shell_wrapper"
     run_test "prune_hooks_execute_in_tui" "test_prune_hooks_execute_in_tui"
+    run_test "prune_keeps_default_branch_with_nonstandard_name" "test_prune_keeps_default_branch_with_nonstandard_name"
 }
 
 # Main execution

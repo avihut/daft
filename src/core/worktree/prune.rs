@@ -163,6 +163,7 @@ pub fn execute(
         &worktree_map,
         &ctx.remote_name,
         params.use_gitoxide,
+        ctx.default_branch.as_deref(),
         sink,
     )?;
 
@@ -469,10 +470,24 @@ pub fn identify_gone_branches(
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     remote_name: &str,
     use_gitoxide: bool,
+    default_branch: Option<&str>,
     sink: &mut dyn ProgressSink,
 ) -> Result<Vec<String>> {
     sink.on_step("Identifying local branches whose upstream branch is gone...");
     let mut gone_branches = Vec::new();
+
+    // The default branch is never a prune candidate: pruning reclaims merged
+    // feature branches whose upstream is gone, not the repo's home branch. A
+    // gone upstream on the default branch (e.g. the remote default was renamed)
+    // must never delete it — and the gone-but-unmerged guard deliberately
+    // proceeds on the default branch (trivially merged into itself), so the
+    // exclusion has to happen here, at identification. Match by identity; when
+    // the default cannot be resolved, fall back to the conventional names so
+    // master/main stay protected.
+    let is_default_branch = |name: &str| match default_branch {
+        Some(default) => name == default,
+        None => name == "master" || name == "main",
+    };
 
     // Method 1: git branch -vv to find branches with gone upstream
     let branch_output = git.branch_list_verbose()?;
@@ -485,6 +500,7 @@ pub fn identify_gone_branches(
             };
             if let Some(name) = branch_name
                 && !name.is_empty()
+                && !is_default_branch(name)
             {
                 gone_branches.push(name.to_string());
             }
@@ -497,7 +513,7 @@ pub fn identify_gone_branches(
 
     for line in ref_output.lines() {
         let branch_name = line.trim();
-        if branch_name.is_empty() || branch_name == "master" || branch_name == "main" {
+        if branch_name.is_empty() || is_default_branch(branch_name) {
             continue;
         }
 
