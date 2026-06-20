@@ -100,11 +100,23 @@ steps:
     run: |
       REPO_ID=$(cat "$WORK_DIR/test-bg-output-silent/.git/daft-id")
       JOBS_DIR="$HOME/.local/state/daft/jobs/$REPO_ID"
-      LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.jsonl' 2>/dev/null)
+      # The log removal on silent success is best-effort and lands *after* the
+      # job's status flips out of `running` (which the previous step waited for),
+      # so poll for the file to disappear rather than checking once. A single
+      # check races the coordinator's cleanup under load and flakes. Bounded at
+      # 10 s (20 x 0.5 s), mirroring the settle-poll in the previous step.
+      for _ in $(seq 1 20); do
+        LOGS=$(find "$JOBS_DIR" -path '*silent-ok-job*' -name 'output.jsonl' 2>/dev/null)
+        if [ -z "$LOGS" ]; then
+          echo "OK_LOG_DELETED"
+          exit 0
+        fi
+        sleep 0.5
+      done
       echo "ok_logs_found:"
       printf '%s\n' "$LOGS"
-      [ -z "$LOGS" ] || { echo "ASSERTION_FAILED: silent-ok-job log was not deleted: $LOGS"; exit 1; }
-      echo "OK_LOG_DELETED"
+      echo "ASSERTION_FAILED: silent-ok-job log was not deleted within 10s"
+      exit 1
     expect:
       exit_code: 0
       output_contains:
