@@ -4,7 +4,7 @@
 .SH NAME
 daft start \- Create a new branch and worktree
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft start\fR [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -47,6 +47,9 @@ Place the worktree at a specific path instead of using the layout template
 .TP
 \fB\-\-local\fR
 Skip all remote operations (no fetch, no push)
+.TP
+\fB\-\-no\-verify\fR
+Skip the repo\*(Aqs pre\-push hook on the automatic upstream push
 .TP
 \fB\-\-skip\-hooks\fR \fI<SELECTOR>\fR
 Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma\-separated

@@ -1,0 +1,66 @@
+name: checkout -b auto-upstream push is gated by the pre-push hook
+description:
+  "With daft.checkout.push enabled, a failing pre-push hook gates the automatic
+  upstream push: the worktree is still created and fully set up, the command
+  exits non-zero with a created-but-rejected message, and the branch never
+  reaches the remote."
+
+repos:
+  - name: autopush-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_AUTOPUSH_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/autopush-repo/main"
+
+  - name: Enable the automatic upstream push
+    run: git config daft.checkout.push true
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Creating a branch fails on the gated push but keeps the worktree
+    run: git-worktree-checkout -b feat-gated 2>&1
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-push hook"
+        - "ready at"
+        - "--no-verify"
+      dirs_exist:
+        - "$WORK_DIR/autopush-repo/feat-gated"
+
+  - name: The branch never reached the remote
+    run: git ls-remote --heads origin feat-gated
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["feat-gated"]
+
+  - name: --no-verify lets the same creation push through
+    run: git-worktree-checkout -b feat-bypassed --no-verify 2>&1
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/autopush-repo/feat-bypassed"
+
+  - name: The bypassed branch reached the remote
+    run: git ls-remote --heads origin feat-bypassed
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feat-bypassed"]

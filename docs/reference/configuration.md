@@ -324,10 +324,17 @@ git config daft.hooks.worktreePostCreate.failMode abort
 
 ## Git Hooks
 
-daft's push operations are structural -- they manage branch topology as a
-side-effect of worktree management, not as user-initiated code pushes. Because
-of this, daft passes `--no-verify` on all `git push` calls, skipping any
-`pre-push` hooks configured in the repository.
+Every daft-initiated `git push` honors the repository's `pre-push` hook --
+native `.git/hooks`, or hook managers registered through `core.hooksPath`
+(lefthook, husky, pre-commit). A pre-push secret scanner or test gate that fires
+on `git push` fires on daft's pushes too. The hook run is reported as a
+`pre-push` phase with the hook's output, using the same surface as daft's
+lifecycle hooks.
+
+Pass `--no-verify` to skip the hook for one invocation. Every command that can
+push accepts it: `daft sync --push`, `daft start` / `daft go -b` /
+`git worktree-checkout -b`, `daft rename`, `daft remove` /
+`git worktree-branch -d/-D`, and `daft multi-remote move`.
 
 Remote operations are disabled by default. When enabled (via
 `daft config remote-sync --on` or by setting the individual keys), this affects:
@@ -339,12 +346,16 @@ Remote operations are disabled by default. When enabled (via
 - **`daft multi-remote move --push`** -- pushes an existing branch to a new
   remote
 
-If a push fails (due to network issues, auth errors, or remote rejection rules),
-daft treats it as non-fatal: the local worktree and branch remain usable, and a
-warning is shown with the manual recovery command.
+Push failures are graded by the gate. When a `pre-push` hook is installed and
+the push fails, the command exits non-zero -- a gate saying no is a failure, not
+a warning (any worktree the command created or moved is still completed and
+usable, and the error names the manual recovery command). Without a hook, push
+failures (network issues, auth errors, remote rejection rules) stay non-fatal:
+the local worktree and branch remain usable and a warning is shown.
 
 Use `--local` on any worktree command to skip all remote operations for that
 invocation, regardless of config.
 
-::: tip This only applies to git's own hooks. daft's [lifecycle hooks](/hooks/)
-(configured in `daft.yml` or `.daft/hooks/`) are always executed normally. :::
+::: tip daft's [lifecycle hooks](/hooks/) (configured in `daft.yml` or
+`.daft/hooks/`) are separate from git's own hooks and are always executed
+normally. :::

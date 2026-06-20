@@ -1277,7 +1277,7 @@ fn create_satellite_worktrees_tui(
             eprintln!(
                 "  {}: {} {} ({}, {}ms)",
                 entry.branch_name,
-                entry.hook_type.filename(),
+                entry.hook_type.hook_name(),
                 status_word,
                 exit_str,
                 entry.duration.as_millis(),

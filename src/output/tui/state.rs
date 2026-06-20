@@ -2,9 +2,8 @@ use crate::core::sort::SortSpec;
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
-    DagEvent, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
+    DagEvent, DagHookPhase, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
 };
-use crate::hooks::HookType;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -63,7 +62,7 @@ pub enum HookSubStatus {
 /// A hook sub-row displayed beneath a worktree row in -v mode.
 #[derive(Debug, Clone)]
 pub struct HookSubRow {
-    pub hook_type: HookType,
+    pub hook_type: DagHookPhase,
     pub status: HookSubStatus,
     pub job_sub_rows: Vec<JobSubRow>,
 }
@@ -88,7 +87,7 @@ pub struct JobSubRow {
 #[derive(Debug, Clone)]
 pub struct HookSummaryEntry {
     pub branch_name: String,
-    pub hook_type: HookType,
+    pub hook_type: DagHookPhase,
     pub success: bool,
     pub warned: bool,
     pub duration: Duration,
@@ -302,18 +301,9 @@ impl TuiState {
                 let show_sub_rows = self.show_hook_sub_rows;
                 if let Some(row) = self.find_row_mut(branch_name) {
                     // Update status label to show current hook phase.
-                    // Use short labels to stay within STATUS_MAX_WIDTH and avoid
+                    // Short labels stay within STATUS_MAX_WIDTH and avoid
                     // column width jumps in the table layout.
-                    let label = match hook_type {
-                        HookType::PreRemove => "pre-remove",
-                        HookType::PostRemove => "post-remove",
-                        HookType::PreCreate => "pre-create",
-                        HookType::PostCreate => "post-create",
-                        HookType::PostClone => "post-clone",
-                        HookType::PreMerge => "pre-merge",
-                        HookType::PostMerge => "post-merge",
-                    };
-                    row.status = WorktreeStatus::Active(label.to_string());
+                    row.status = WorktreeStatus::Active(hook_type.label().to_string());
                     // Add sub-row if in verbose TUI mode
                     if show_sub_rows {
                         row.hook_sub_rows.push(HookSubRow {
@@ -527,6 +517,7 @@ impl TuiState {
 mod tests {
     use super::*;
     use crate::core::worktree::sync_dag::*;
+    use crate::hooks::HookType;
 
     fn make_test_state() -> TuiState {
         let phases = vec![
@@ -1037,7 +1028,7 @@ mod tests {
         let mut state = make_test_state();
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/old".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
         });
         let row = state
             .live
@@ -1053,7 +1044,7 @@ mod tests {
         let mut state = make_test_state();
         state.apply_event(&DagEvent::HookCompleted {
             branch_name: "feat/old".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
             success: false,
             warned: true,
             duration: Duration::from_millis(100),
@@ -1078,7 +1069,7 @@ mod tests {
         let mut state = make_test_state();
         state.apply_event(&DagEvent::HookCompleted {
             branch_name: "master".into(),
-            hook_type: HookType::PostRemove,
+            hook_type: HookType::PostRemove.into(),
             success: true,
             warned: false,
             duration: Duration::from_millis(50),
@@ -1103,7 +1094,7 @@ mod tests {
 
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostRemove,
+            hook_type: HookType::PostRemove.into(),
         });
 
         {
@@ -1114,14 +1105,14 @@ mod tests {
                 .find(|w| w.info.name == "feat/a")
                 .unwrap();
             assert_eq!(row.hook_sub_rows.len(), 1);
-            assert_eq!(row.hook_sub_rows[0].hook_type, HookType::PostRemove);
+            assert_eq!(row.hook_sub_rows[0].hook_type, HookType::PostRemove.into());
             assert_eq!(row.hook_sub_rows[0].status, HookSubStatus::Running);
         }
 
         let dur = Duration::from_millis(200);
         state.apply_event(&DagEvent::HookCompleted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostRemove,
+            hook_type: HookType::PostRemove.into(),
             success: true,
             warned: false,
             duration: dur,
@@ -1148,11 +1139,11 @@ mod tests {
 
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
         });
         state.apply_event(&DagEvent::JobStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
             job_name: "build".into(),
         });
 
@@ -1177,16 +1168,16 @@ mod tests {
 
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
         });
         state.apply_event(&DagEvent::JobStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
             job_name: "build".into(),
         });
         state.apply_event(&DagEvent::JobCompleted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
             job_name: "build".into(),
             status: JobCompletionStatus::Succeeded,
             duration: Duration::from_millis(150),
@@ -1211,21 +1202,21 @@ mod tests {
 
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
         });
         state.apply_event(&DagEvent::JobStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
             job_name: "cleanup".into(),
         });
         state.apply_event(&DagEvent::JobStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
             job_name: "notify".into(),
         });
         state.apply_event(&DagEvent::JobCompleted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
             job_name: "cleanup".into(),
             status: JobCompletionStatus::Succeeded,
             duration: Duration::from_millis(100),
@@ -1233,7 +1224,7 @@ mod tests {
         });
         state.apply_event(&DagEvent::JobCompleted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PreRemove,
+            hook_type: HookType::PreRemove.into(),
             job_name: "notify".into(),
             status: JobCompletionStatus::Failed,
             duration: Duration::from_millis(200),
@@ -1410,11 +1401,11 @@ mod tests {
 
         state.apply_event(&DagEvent::HookStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
         });
         state.apply_event(&DagEvent::JobStarted {
             branch_name: "feat/a".into(),
-            hook_type: HookType::PostCreate,
+            hook_type: HookType::PostCreate.into(),
             job_name: "build".into(),
         });
 

@@ -4,7 +4,7 @@
 .SH NAME
 daft rename \- Rename a branch and move its worktree
 .SH SYNOPSIS
-\fBdaft rename\fR [\fB\-\-no\-remote\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fISOURCE\fR> <\fINEW_BRANCH\fR> 
+\fBdaft rename\fR [\fB\-\-no\-remote\fR] [\fB\-\-no\-verify\fR] [\fB\-\-dry\-run\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fISOURCE\fR> <\fINEW_BRANCH\fR> 
 .SH DESCRIPTION
 .PP
 Renames a local branch and moves its associated worktree directory to match
@@ -23,6 +23,9 @@ Empty parent directories left behind by the move are automatically cleaned up.
 .TP
 \fB\-\-no\-remote\fR
 Skip remote branch rename
+.TP
+\fB\-\-no\-verify\fR
+Skip the repo\*(Aqs pre\-push hook on remote operations
 .TP
 \fB\-\-dry\-run\fR
 Preview changes without executing

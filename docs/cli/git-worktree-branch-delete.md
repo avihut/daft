@@ -65,6 +65,7 @@ git worktree-branch-delete [OPTIONS] <BRANCHES>
 | `-D, --force` | Force deletion even if not fully merged |  |
 | `--local` | Only delete locally, keep remote branch |  |
 | `--remote` | Only delete the remote branch, keep local worktree and branch |  |
+| `--no-verify` | Skip the repo's pre-push hook when deleting the remote branch |  |
 | `-q, --quiet` | Operate quietly; suppress progress reporting |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 

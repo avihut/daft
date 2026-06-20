@@ -4,6 +4,8 @@
 
 use crate::{
     core::OutputSink,
+    core::worktree::ports::NoopStageRunner,
+    core::worktree::push::{HookVerdict, PushAction, push_with_hooks},
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -144,6 +146,9 @@ to match the new remote organization.
         #[arg(long, help = "Delete the branch from the old remote after pushing")]
         delete_old: bool,
 
+        #[arg(long, help = "Skip the repo's pre-push hook on remote operations")]
+        no_verify: bool,
+
         #[arg(long, help = "Preview changes without executing")]
         dry_run: bool,
 
@@ -172,9 +177,19 @@ pub fn run() -> Result<()> {
             set_upstream,
             push,
             delete_old,
+            no_verify,
             dry_run,
             force,
-        }) => cmd_move(&branch, &to, set_upstream, push, delete_old, dry_run, force),
+        }) => cmd_move(
+            &branch,
+            &to,
+            set_upstream,
+            push,
+            delete_old,
+            no_verify,
+            dry_run,
+            force,
+        ),
         None => cmd_status(&EmitArgs::default()), // Default to status
     }
 }
@@ -504,12 +519,14 @@ fn cmd_set_default(remote: &str) -> Result<()> {
 
 /// Move a worktree to a different remote folder.
 #[allow(clippy::fn_params_excessive_bools)]
+#[allow(clippy::too_many_arguments)]
 fn cmd_move(
     branch: &str,
     to_remote: &str,
     set_upstream: bool,
     push: bool,
     delete_old: bool,
+    no_verify: bool,
     dry_run: bool,
     skip_confirm: bool,
 ) -> Result<()> {
@@ -664,32 +681,106 @@ fn cmd_move(
         }
     }
 
+    // Remote pushes honor the repo's pre-push hook (#599); a failure with
+    // the hook in effect escalates after the move's local steps complete.
+    let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if (push || delete_old) && !no_verify && git.pre_push_hook_exists(&new_path) {
+            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::executor::cli_presenter::CliPresenter::auto(
+                    &crate::settings::HookOutputConfig::default(),
+                );
+            Some(p)
+        } else {
+            None
+        };
+    let mut push_gate_error: Option<String> = None;
+
     // Push if requested
     if push {
         output.step(&format!("Pushing to {}...", to_remote));
 
-        let original_dir = std::env::current_dir()?;
-        std::env::set_current_dir(&new_path)?;
-
-        let result = git.push_set_upstream(to_remote, &branch_name);
-
-        std::env::set_current_dir(&original_dir)?;
-
-        if let Err(e) = result {
-            output.warning(&format!("Failed to push: {}", e));
+        match push_with_hooks(
+            &git,
+            PushAction::SetUpstream {
+                remote: to_remote,
+                branch: &branch_name,
+            },
+            &new_path,
+            !no_verify,
+            &NoopStageRunner,
+            push_presenter.as_ref(),
+            None,
+        ) {
+            Ok(outcome) => {
+                if let Some(msg) = outcome.failure {
+                    if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                        let hint = if outcome.hook.no_verify_might_help() {
+                            " (or re-run with --no-verify to bypass the hook)"
+                        } else {
+                            ""
+                        };
+                        push_gate_error = Some(format!(
+                            "Could not push '{to_remote}/{branch_name}': {msg} ({}). \
+                             The worktree was moved; push manually with: \
+                             git push --set-upstream {to_remote} {branch_name}{hint}",
+                            outcome.hook.failure_cause(),
+                        ));
+                    } else {
+                        output.warning(&format!("Failed to push: {}", msg));
+                    }
+                }
+            }
+            Err(e) => {
+                output.warning(&format!("Failed to push: {}", e));
+            }
         }
     }
 
-    // Delete from old remote if requested
-    if delete_old && let Some(old_remote) = current_remote {
+    // Delete from old remote if requested (skipped if the push was gated —
+    // the same hook would gate this push too).
+    if delete_old
+        && push_gate_error.is_none()
+        && let Some(old_remote) = current_remote
+    {
         output.step(&format!(
             "Deleting from old remote {}/{}...",
             old_remote, branch_name
         ));
 
-        let result = delete_remote_branch(&git, &old_remote, &branch_name);
-        if let Err(e) = result {
-            output.warning(&format!("Failed to delete from old remote: {}", e));
+        match push_with_hooks(
+            &git,
+            PushAction::Delete {
+                remote: &old_remote,
+                branch: &branch_name,
+            },
+            &new_path,
+            !no_verify,
+            &NoopStageRunner,
+            push_presenter.as_ref(),
+            None,
+        ) {
+            Ok(outcome) => {
+                if let Some(msg) = outcome.failure {
+                    if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                        let hint = if outcome.hook.no_verify_might_help() {
+                            " (or re-run with --no-verify to bypass the hook)"
+                        } else {
+                            ""
+                        };
+                        push_gate_error = Some(format!(
+                            "Could not delete '{old_remote}/{branch_name}': {msg} ({}). \
+                             Delete it manually with: \
+                             git push {old_remote} --delete {branch_name}{hint}",
+                            outcome.hook.failure_cause(),
+                        ));
+                    } else {
+                        output.warning(&format!("Failed to delete from old remote: {}", msg));
+                    }
+                }
+            }
+            Err(e) => {
+                output.warning(&format!("Failed to delete from old remote: {}", e));
+            }
         }
     }
 
@@ -712,6 +803,12 @@ fn cmd_move(
 
     output.result(&format!("Worktree moved to {}/{}", to_remote, branch_name));
 
+    // The move's local steps are complete — surface a deferred pre-push
+    // gate refusal as the command's failure (#599).
+    if let Some(message) = push_gate_error {
+        anyhow::bail!(message);
+    }
+
     Ok(())
 }
 
@@ -732,21 +829,4 @@ fn get_branch_name_for_worktree(
             .find(|e| e.path.as_path() == worktree_path)
             .and_then(|e| e.branch),
     )
-}
-
-/// Delete a branch from a remote.
-fn delete_remote_branch(_git: &GitCommand, remote: &str, branch: &str) -> Result<()> {
-    use std::process::Command;
-
-    let output = Command::new("git")
-        .args(["push", "--no-verify", remote, "--delete", branch])
-        .output()
-        .context("Failed to execute git push --delete")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to delete remote branch: {}", stderr);
-    }
-
-    Ok(())
 }

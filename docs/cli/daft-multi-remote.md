@@ -155,6 +155,7 @@ daft multi-remote move [OPTIONS] <BRANCH>
 | `--set-upstream` | Also update the branch's upstream tracking to the new remote |  |
 | `--push` | Push the branch to the new remote |  |
 | `--delete-old` | Delete the branch from the old remote after pushing |  |
+| `--no-verify` | Skip the repo's pre-push hook on remote operations |  |
 | `--dry-run` | Preview changes without executing |  |
 | `-f, --force` | Skip confirmation |  |
 
