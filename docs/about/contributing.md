@@ -191,6 +191,28 @@ mise run test:manual -- --setup-only checkout:basic
 mise run test:manual -- --setup-only --step 1 checkout:basic
 ```
 
+#### Config isolation
+
+Dev builds keep their daft state out of your real config, so day-to-day
+development never touches the daft you have installed. Two layers handle this,
+both checked into the repo — they work the moment you clone, with no per-machine
+setup:
+
+- **Shared across worktrees.** `mise.toml` sources `shared-env.sh`, which
+  exports `DAFT_CONFIG_DIR=<git-common-dir>/.daft-sandbox`. Every mise-activated
+  shell in every worktree — including plain `cargo run` and
+  `./target/release/daft` invocations — reads and writes one shared trust DB,
+  `repos.json`, and layout config there.
+- **Isolated per worktree.** `mise run sandbox` goes a step further, pointing
+  `DAFT_CONFIG_DIR`, `DAFT_DATA_DIR`, and `DAFT_STATE_DIR` at a
+  `/tmp/daft-sandbox-<hash>` unique to the current worktree (see
+  `mise-tasks/sandbox/_lib.sh`).
+
+These overrides are honored **only in dev builds** (gated on
+`cfg!(daft_dev_build)` in `src/lib.rs`). A released daft ignores them and always
+uses the real XDG directories (`~/.config/daft` and friends), so your installed
+daft and your dev work never share state.
+
 ### Benchmarks
 
 Compare bash and YAML test performance with a live TUI table:
