@@ -48,7 +48,7 @@ delete a branch that:
     consolidate with daft-file(1) merge, or answer the interactive prompt
 
 Use -D to override these safety checks. Forcing DISCARDS refined untracked
-daft files — they are stashed under <git-common-dir>/.daft/discarded/<branch>/
+daft files — they are stashed under `<git-common-dir>/.daft/discarded/<branch>/`
 and never merged into another worktree. For the default branch (e.g. main),
 -D removes its worktree only — the local branch ref and remote branch are
 always preserved.
@@ -166,7 +166,7 @@ branch that:
     consolidate with daft-file(1) merge, or answer the interactive prompt
 
 Use -f to override these safety checks. Forcing DISCARDS refined untracked
-daft files — they are stashed under <git-common-dir>/.daft/discarded/<branch>/
+daft files — they are stashed under `<git-common-dir>/.daft/discarded/<branch>/`
 and never merged into another worktree. For the default branch (e.g. main),
 -f removes its worktree only — the local branch ref and remote branch are
 always preserved.
