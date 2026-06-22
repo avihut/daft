@@ -32,7 +32,7 @@ Merge SOURCE into TARGET. When the source is a worktree-root daft file with\n\
 seed provenance (daft recorded what it wrote there), the merge is THREE-WAY\n\
 against that seed: only keys the source genuinely refined move into the\n\
 target, a key-level preview is printed first, and the target is backed up to\n\
-<git-common-dir>/.daft/backups/file-merge/ before writing. Keys changed on\n\
+`<git-common-dir>/.daft/backups/file-merge/` before writing. Keys changed on\n\
 both sides are conflicts: pick a side at the interactive prompt, pass -y to\n\
 take the source's values, or the command aborts non-zero listing the keys.\n\
 \n\

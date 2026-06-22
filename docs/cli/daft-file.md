@@ -13,7 +13,7 @@ Merge SOURCE into TARGET. When the source is a worktree-root daft file with
 seed provenance (daft recorded what it wrote there), the merge is THREE-WAY
 against that seed: only keys the source genuinely refined move into the
 target, a key-level preview is printed first, and the target is backed up to
-<git-common-dir>/.daft/backups/file-merge/ before writing. Keys changed on
+`<git-common-dir>/.daft/backups/file-merge/` before writing. Keys changed on
 both sides are conflicts: pick a side at the interactive prompt, pass -y to
 take the source's values, or the command aborts non-zero listing the keys.
 

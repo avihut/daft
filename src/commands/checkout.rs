@@ -39,7 +39,7 @@ automatically. If the branch exists both locally and on the remote, the local
 branch is checked out and upstream tracking is configured.
 
 With -b, creates a new branch and a corresponding worktree in a single
-operation. The new branch is based on the current branch, or on <base-branch>
+operation. The new branch is based on the current branch, or on `<base-branch>`
 if specified. After creating the branch locally, it is pushed to the remote
 and upstream tracking is configured.
 
@@ -165,7 +165,7 @@ Use '-' as the branch name to switch to the previous worktree, similar to
 'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
 
 With -b, creates a new branch and worktree in a single operation. The new
-branch is based on the current branch, or on <base-branch> if specified.
+branch is based on the current branch, or on `<base-branch>` if specified.
 Prefer 'daft start' for creating new branches.
 
 With -s (--start), if the specified branch does not exist locally or on the
@@ -271,7 +271,7 @@ Creates a new branch and a corresponding worktree in a single operation. The
 worktree is placed at the project root level as a sibling to other worktrees,
 using the branch name as the directory name.
 
-The new branch is based on the current branch, or on <base-branch> if
+The new branch is based on the current branch, or on `<base-branch>` if
 specified. After creating the branch locally, it is pushed to the remote and
 upstream tracking is configured (unless disabled via daft.checkoutBranch.push).
 

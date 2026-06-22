@@ -7,6 +7,16 @@ on:
       - "docs/**"
       - "Cargo.toml"
       - ".github/workflows/docs.yml"
+  # Build (without deploying) on PRs that touch the docs, so a broken VitePress
+  # build is caught before merge. This workflow previously only ran on push to
+  # master, so bad Markdown (e.g. unclosed angle-bracket placeholders parsed as
+  # Vue elements) reached master undetected and broke every deploy. The Deploy
+  # step below is gated to non-PR events.
+  pull_request:
+    paths:
+      - "docs/**"
+      - "Cargo.toml"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +48,11 @@ jobs:
         working-directory: docs
         run: bunx vitepress build
 
+      # Deploy only on push to master and manual dispatch — never on PR builds,
+      # which validate the VitePress build without publishing. github.event_name
+      # is a trusted, GitHub-controlled value (no untrusted-input injection).
       - name: Deploy to Cloudflare Pages
+        if: github.event_name != 'pull_request'
         uses: cloudflare/wrangler-action@v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

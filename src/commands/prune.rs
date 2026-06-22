@@ -54,7 +54,7 @@ warning. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
 were refined since daft seeded them are also kept, with a pointer at
 daft-file(1) merge for consolidation. --force overrides both: unmerged
 branches are deleted and refined daft files are discarded to
-<git-common-dir>/.daft/discarded/<branch>/ — prune never writes another
+`<git-common-dir>/.daft/discarded/<branch>/` — prune never writes another
 worktree's files.
 
 If you are currently inside a worktree that is about to be pruned, the command
