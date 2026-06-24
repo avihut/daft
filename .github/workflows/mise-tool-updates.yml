@@ -28,10 +28,10 @@ jobs:
   upgrade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
 
       - name: Install mise
-        uses: jdx/mise-action@v4.1.0
+        uses: jdx/mise-action@v4.2.0
 
       - name: Run mise upgrade
         # Stays within the constraints already in mise.toml (e.g. `bun = "1.3"`

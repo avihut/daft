@@ -61,7 +61,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
@@ -129,7 +129,7 @@ jobs:
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
           submodules: recursive
@@ -202,7 +202,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
           submodules: recursive
@@ -257,7 +257,7 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
           submodules: recursive
@@ -333,7 +333,7 @@ jobs:
       ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease ||
       fromJson(needs.plan.outputs.val).publish_prereleases }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: true
           repository: "avihut/homebrew-daft"
@@ -426,7 +426,7 @@ jobs:
       ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease ||
       fromJson(needs.plan.outputs.val).publish_prereleases }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: true
           repository: "avihut/homebrew-tap"
@@ -527,7 +527,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
       - name: Set up Rust
@@ -583,7 +583,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
       - name: Set up Rust
@@ -638,7 +638,7 @@ jobs:
             echo "::warning::AUR secrets not configured — skipping AUR publish"
             echo "SKIP_AUR=true" >> "$GITHUB_ENV"
           fi
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         if: ${{ env.SKIP_AUR != 'true' }}
         with:
           persist-credentials: false
@@ -710,7 +710,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
           submodules: recursive
