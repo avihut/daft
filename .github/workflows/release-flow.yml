@@ -128,7 +128,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-release and git-cliff
-        uses: taiki-e/install-action@v2.82.0
+        uses: taiki-e/install-action@v2.82.2
         with:
           tool: cargo-release,git-cliff
 
