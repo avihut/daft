@@ -99,7 +99,9 @@ Untrusted repo — 2 daft.yml hooks not run: worktree-pre-create, worktree-post-
 
 The line reads general to specific — trust state, then the count, then the hook
 names — and on color terminals each part is styled by role: the state in bold,
-the hook names in daft's accent color, the suggested commands in cyan.
+the hook names in daft's accent color, the suggested commands in cyan. The
+suggested commands also match how you invoked daft: `daft hooks trust` when you
+ran `daft` directly, `git daft hooks trust` when you went through git.
 
 The notice covers both config shapes (`daft.yml` and `.daft/hooks/` scripts),
 appears once per command no matter how many hooks were skipped, and never
