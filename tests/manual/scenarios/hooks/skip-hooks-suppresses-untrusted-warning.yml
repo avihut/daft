@@ -35,7 +35,7 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "isn't trusted"
+        - "Untrusted repo"
 
   - name: Checkout with --skip-hooks all stays silent
     run: git-worktree-checkout --skip-hooks all feature/skip-all
@@ -45,7 +45,7 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-skip-suppress/feature/skip-all"
       output_not_contains:
-        - "isn't trusted"
+        - "Untrusted repo"
 
   - name: Checkout with a hook-type selector stays silent
     run:
@@ -56,7 +56,7 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-skip-suppress/feature/skip-type"
       output_not_contains:
-        - "isn't trusted"
+        - "Untrusted repo"
 
   - name: Trusting suggests no replays (nothing was recorded)
     run: daft hooks trust --force

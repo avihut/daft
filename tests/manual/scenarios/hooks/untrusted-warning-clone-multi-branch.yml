@@ -29,7 +29,7 @@ repos:
 steps:
   - name: Multi-branch clone warns exactly once across all worktrees
     run: |
-      git-worktree-clone --layout contained -b develop -b feature $REMOTE_TEST_MULTI_UNTRUSTED 2>&1 | grep -c "isn't trusted"
+      git-worktree-clone --layout contained -b develop -b feature $REMOTE_TEST_MULTI_UNTRUSTED 2>&1 | grep -c "Untrusted repo"
     expect:
       exit_code: 0
       output_contains:

@@ -46,6 +46,7 @@ steps:
       files_not_exist:
         - "$WORK_DIR/test-yaml-untrusted/feature/warned/.post-ran"
       output_contains:
-        - "2 daft.yml hooks not run: worktree-pre-create, worktree-post-create"
+        - "Untrusted repo — 2 daft.yml hooks not run: worktree-pre-create,
+          worktree-post-create"
         - "git daft hooks trust"
         - "git daft hooks run worktree-post-create"

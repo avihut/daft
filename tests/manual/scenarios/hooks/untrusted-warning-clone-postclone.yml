@@ -30,6 +30,6 @@ steps:
       files_not_exist:
         - "$WORK_DIR/test-clone-untrusted/main/.clone-ran"
       output_contains:
-        - "1 daft.yml hook not run: post-clone"
+        - "Untrusted repo — 1 daft.yml hook not run: post-clone"
         - "git daft hooks trust"
         - "git daft hooks run post-clone"

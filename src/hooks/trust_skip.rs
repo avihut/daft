@@ -122,7 +122,11 @@ pub fn notify_and_record(ctx: &HookContext, source: SkipSource, output: &mut dyn
         let state = reg.entry(key).or_default();
         if !state.displayed {
             if output.live_warnings() {
-                output.notice(&format_notice(&content, !crate::hints::hints_disabled()));
+                output.notice(&format_notice(
+                    &content,
+                    !crate::hints::hints_disabled(),
+                    notice_colors(),
+                ));
                 state.displayed = true;
             } else {
                 match &mut state.pending {
@@ -153,7 +157,11 @@ pub fn flush_pending_notice(git_dir: &Path, output: &mut dyn Output) {
         }
     };
     if let Some(content) = content {
-        output.notice(&format_notice(&content, !crate::hints::hints_disabled()));
+        output.notice(&format_notice(
+            &content,
+            !crate::hints::hints_disabled(),
+            notice_colors(),
+        ));
     }
 }
 
@@ -310,11 +318,40 @@ fn capped_hook_list(names: &BTreeSet<String>, more_word: &str) -> String {
     out
 }
 
-fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
+/// Whether to style the notice. Requires a live color-capable stderr, and is
+/// forced off under both test harnesses: `cargo test` leaves fd 2 pointing at
+/// the developer's terminal even while capturing output (capture hooks the
+/// print machinery, not the fd), and the YAML runner sets `DAFT_TESTING` —
+/// either would otherwise leak ANSI codes into text assertions.
+fn notice_colors() -> bool {
+    !cfg!(test)
+        && std::env::var_os("DAFT_TESTING").is_none()
+        && crate::styles::colors_enabled_stderr()
+}
+
+fn format_notice(content: &NoticeContent, show_hints: bool, colorize: bool) -> String {
+    use crate::styles;
+
     // The notice is emitted via `Output::notice` — a plain stderr line with no
     // severity prefix — so the first line starts at column 0. Hint lines are
     // indented to read as subordinate to it.
     const INDENT: &str = "   ";
+    // Styling (when `colorize`): bold the count summary, dim the subordinate
+    // parts, cyan the runnable commands — cyan-for-commands matches the
+    // convention across the hooks command surfaces (status, trust, run) —
+    // and the accent orange for hook names, matching how the hook progress
+    // UI renders them when they do run.
+    let (bold, dim, cyan, accent, reset) = if colorize {
+        (
+            styles::BOLD,
+            styles::DIM,
+            styles::CYAN,
+            styles::ORANGE,
+            styles::RESET,
+        )
+    } else {
+        ("", "", "", "", "")
+    };
 
     let multi_branch = content.branches.len() > 1;
     let branch_clause = if multi_branch {
@@ -325,35 +362,35 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
 
     // Lead with the count, then the names: "3 daft.yml hooks not run: a, b, c".
     let n = content.names.len();
-    let mut first = if content.legacy {
-        if n == 1 {
-            let name = content.names.iter().next().expect("len checked");
-            format!(
-                "1 .daft/hooks script not run{branch_clause}: {name} — this repo isn't trusted."
-            )
+    let (noun, names) = if content.legacy {
+        let noun = if n == 1 {
+            ".daft/hooks script"
         } else {
-            format!(
-                "{n} .daft/hooks scripts not run{branch_clause}: {} — this repo isn't trusted.",
-                capped_hook_list(&content.names, "scripts")
-            )
-        }
-    } else if n == 1 {
-        let name = content.names.iter().next().expect("len checked");
-        format!("1 daft.yml hook not run{branch_clause}: {name} — this repo isn't trusted.")
+            ".daft/hooks scripts"
+        };
+        (noun, capped_hook_list(&content.names, "scripts"))
     } else {
-        format!(
-            "{n} daft.yml hooks not run{branch_clause}: {} — this repo isn't trusted.",
-            capped_hook_list(&content.names, "hooks")
-        )
+        let noun = if n == 1 {
+            "daft.yml hook"
+        } else {
+            "daft.yml hooks"
+        };
+        (noun, capped_hook_list(&content.names, "hooks"))
     };
+    let head = format!("{n} {noun} not run{branch_clause}");
+    // Strictly general → specific: the trust state leads, then the
+    // consequence, then the names directly against the count they detail.
+    let mut out = format!("{bold}Untrusted repo{reset} — {head}: {accent}{names}{reset}");
 
     if show_hints {
         // Labels are padded to LABEL_W so both suggestion commands start at the
         // same column under the indent (LABEL_W spans the longest label below).
+        // Pad the plain label first, then wrap it in the (zero-width) style
+        // codes, so the alignment holds with and without color.
         const LABEL_W: usize = 34;
-        first.push_str(&format!(
-            "\n{INDENT}{:<LABEL_W$}  git daft hooks trust",
-            "To run them, trust this repo:"
+        let label = "To run them, trust this repo:";
+        out.push_str(&format!(
+            "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}git daft hooks trust{reset}"
         ));
         if let Some(replay) = &content.replay {
             let (label, suffix) = match (replay.as_str(), multi_branch) {
@@ -364,12 +401,17 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
                 ),
                 (_, false) => ("Then replay this worktree's setup:", ""),
             };
-            first.push_str(&format!(
-                "\n{INDENT}{label:<LABEL_W$}  git daft hooks run {replay}{suffix}"
+            let suffix = if suffix.is_empty() {
+                String::new()
+            } else {
+                format!("{dim}{suffix}{reset}")
+            };
+            out.push_str(&format!(
+                "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}git daft hooks run {replay}{reset}{suffix}"
             ));
         }
     }
-    first
+    out
 }
 
 #[cfg(test)]
@@ -441,8 +483,8 @@ mod tests {
             legacy: false,
             replay: Some("worktree-post-create".to_string()),
         };
-        let msg = format_notice(&content, true);
-        assert!(msg.starts_with("2 daft.yml hooks not run: "));
+        let msg = format_notice(&content, true, false);
+        assert!(msg.starts_with("Untrusted repo — 2 daft.yml hooks not run: "));
         assert!(msg.contains("git daft hooks trust"));
         assert!(msg.contains("git daft hooks run worktree-post-create"));
         assert!(
@@ -561,15 +603,18 @@ mod tests {
             legacy: true,
             replay: None,
         };
-        let with_hints = format_notice(&content, true);
-        assert!(with_hints.starts_with("1 .daft/hooks script not run: worktree-pre-remove"));
+        let with_hints = format_notice(&content, true, false);
+        assert!(
+            with_hints
+                .starts_with("Untrusted repo — 1 .daft/hooks script not run: worktree-pre-remove")
+        );
         assert!(with_hints.contains("git daft hooks trust"));
         assert!(
             !with_hints.contains("hooks run"),
             "remove hooks get no replay line"
         );
 
-        let without = format_notice(&content, false);
+        let without = format_notice(&content, false, false);
         assert!(!without.contains("git daft hooks trust"));
         assert_eq!(without.lines().count(), 1);
     }
@@ -582,8 +627,65 @@ mod tests {
             legacy: false,
             replay: None,
         };
-        let msg = format_notice(&content, false);
+        let msg = format_notice(&content, false, false);
         assert!(msg.contains("and 2 more hooks"));
         assert!(!msg.contains("hook-5"));
+    }
+
+    #[test]
+    fn format_notice_leads_with_state_then_count_then_names() {
+        let content = NoticeContent {
+            names: BTreeSet::from([
+                "worktree-pre-create".to_string(),
+                "worktree-post-create".to_string(),
+            ]),
+            branches: BTreeSet::from(["feat/x".to_string()]),
+            legacy: false,
+            replay: None,
+        };
+        let msg = format_notice(&content, false, false);
+        assert_eq!(
+            msg,
+            "Untrusted repo — 2 daft.yml hooks not run: \
+             worktree-pre-create, worktree-post-create"
+        );
+    }
+
+    #[test]
+    fn format_notice_colorized_styles_parts_without_breaking_alignment() {
+        let content = NoticeContent {
+            names: BTreeSet::from(["worktree-post-create".to_string()]),
+            branches: BTreeSet::from(["feat/x".to_string()]),
+            legacy: false,
+            replay: Some("worktree-post-create".to_string()),
+        };
+        let strip = |s: &str| {
+            s.replace(crate::styles::BOLD, "")
+                .replace(crate::styles::DIM, "")
+                .replace(crate::styles::CYAN, "")
+                .replace(crate::styles::ORANGE, "")
+                .replace(crate::styles::RESET, "")
+        };
+
+        let plain = format_notice(&content, true, false);
+        let styled = format_notice(&content, true, true);
+        // Bold trust state leads the line.
+        assert!(styled.starts_with(crate::styles::BOLD));
+        // Commands are cyan, per the hooks-surface convention.
+        assert!(styled.contains(&format!(
+            "{}git daft hooks trust{}",
+            crate::styles::CYAN,
+            crate::styles::RESET
+        )));
+        // Hook names take the accent color the progress UI uses for them,
+        // distinct from the dim hint labels below.
+        assert!(styled.contains(&format!(
+            "{}worktree-post-create{}",
+            crate::styles::ORANGE,
+            crate::styles::RESET
+        )));
+        // Stripping the style codes must recover the plain rendering exactly —
+        // i.e. colors never move the aligned columns.
+        assert_eq!(strip(&styled), plain);
     }
 }

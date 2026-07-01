@@ -62,5 +62,5 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "1 daft.yml hook not run: worktree-pre-remove"
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-pre-remove"
         - "git daft hooks trust"

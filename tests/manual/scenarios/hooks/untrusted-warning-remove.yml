@@ -52,7 +52,7 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "isn't trusted"
+        - "Untrusted repo"
 
   - name: Branch-delete warns about the skipped script hook
     run: git-worktree-branch-delete feature/doomed
@@ -60,7 +60,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "1 .daft/hooks script not run: worktree-pre-remove"
+        - "Untrusted repo — 1 .daft/hooks script not run: worktree-pre-remove"
         - "git daft hooks trust"
       output_not_contains:
         - "git daft hooks run"
@@ -82,7 +82,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "1 daft.yml hook not run: worktree-pre-remove"
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-pre-remove"
         - "git daft hooks trust"
       output_not_contains:
         - "git daft hooks run"

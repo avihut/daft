@@ -39,7 +39,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "hooks not run:"
+        - "Untrusted repo — 2 daft.yml hooks not run:"
 
   - name: Trusting suggests the post-create replay for both worktrees
     run: daft hooks trust --force

@@ -106,7 +106,8 @@ pub trait Output {
     /// that are *not* problems (e.g. "this repo isn't trusted, so its hooks
     /// were skipped"). It stays on stderr (not stdout, so it never pollutes a
     /// command's machine-readable output) and ignores quiet mode (like a
-    /// warning, the user should still see it).
+    /// warning, the user should still see it). Implementations add no styling
+    /// of their own; callers may embed it (gated on a live stderr).
     fn notice(&mut self, msg: &str);
 
     /// Display an error message to stderr.

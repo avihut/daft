@@ -24,7 +24,7 @@ Shell integration isn't installed. See
 [Shell integration](/getting-started/shell-integration) for the eval line to add
 to your shell config.
 
-## "N hooks not run: ... — this repo isn't trusted"
+## "Untrusted repo — N hooks not run: ..."
 
 The repo defines hooks (`daft.yml` or `.daft/hooks/`) but hasn't been trusted,
 so daft skipped them. Trust it, then replay the setup that was skipped:

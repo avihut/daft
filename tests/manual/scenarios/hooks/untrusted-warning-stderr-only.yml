@@ -40,7 +40,7 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-stderr-only/feature/quiet"
       output_not_contains:
-        - "isn't trusted"
+        - "Untrusted repo"
 
   - name: Without redirection the warning is visible
     run: git-worktree-checkout feature/loud
@@ -50,4 +50,4 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-stderr-only/feature/loud"
       output_contains:
-        - "1 daft.yml hook not run: worktree-post-create"
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-post-create"

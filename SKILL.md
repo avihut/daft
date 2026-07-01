@@ -607,7 +607,7 @@ daft hooks run <type>   # Manually run a hook (bypasses trust)
 
 When a command skips hooks because the repo is untrusted, it prints one plain
 stderr notice — e.g.
-`2 daft.yml hooks not run: worktree-pre-create, worktree-post-create — this repo isn't trusted.`
+`Untrusted repo — 2 daft.yml hooks not run: worktree-pre-create, worktree-post-create`
 — naming the skipped hooks and suggesting `daft hooks trust` (suppressed by an
 explicit `--skip-hooks`). It is an untagged notice, not a `warning:`, because an
 untrusted repo declining to run hooks is by design. Each skip is recorded; a

@@ -39,5 +39,5 @@ steps:
       files_not_exist:
         - "$WORK_DIR/test-hooks-untrusted/.hook-ran"
       output_contains:
-        - "1 .daft/hooks script not run: worktree-post-create"
+        - "Untrusted repo — 1 .daft/hooks script not run: worktree-post-create"
         - "git daft hooks trust"
