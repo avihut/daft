@@ -99,6 +99,17 @@ pub trait Output {
     /// Always shown (not affected by quiet mode).
     fn warning(&mut self, msg: &str);
 
+    /// Display a neutral notice to stderr — no severity prefix, always shown.
+    ///
+    /// Unlike [`warning`](Output::warning)/[`error`](Output::error), this adds
+    /// no `warning:`/`error:` tag: it is for by-design, informational facts
+    /// that are *not* problems (e.g. "this repo isn't trusted, so its hooks
+    /// were skipped"). It stays on stderr (not stdout, so it never pollutes a
+    /// command's machine-readable output) and ignores quiet mode (like a
+    /// warning, the user should still see it). Implementations add no styling
+    /// of their own; callers may embed it (gated on a live stderr).
+    fn notice(&mut self, msg: &str);
+
     /// Display an error message to stderr.
     /// Always shown (not affected by quiet mode).
     fn error(&mut self, msg: &str);
@@ -185,6 +196,18 @@ pub trait Output {
     /// spinner was paused.
     fn resume_spinner(&mut self) {
         let _ = self;
+    }
+
+    /// Whether stderr messages (`warning()`/`notice()`) reach the user
+    /// immediately (a real stderr).
+    ///
+    /// `BufferingOutput` (TUI mode, where ratatui owns the terminal) returns
+    /// `false`: its output lands in a buffer, not in front of the user.
+    /// Callers that must guarantee a message is *seen* — like the untrusted-
+    /// hook notice — use this to decide between emitting now and deferring
+    /// to a post-TUI flush.
+    fn live_warnings(&self) -> bool {
+        true
     }
 
     // ─────────────────────────────────────────────────────────────────────────

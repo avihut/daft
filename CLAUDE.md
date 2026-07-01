@@ -181,6 +181,19 @@ invoked, then dispatches to the matching module in `src/commands/`. Symlinks
 like `git-worktree-clone → daft` enable Git subcommand discovery. Shortcut
 aliases (e.g., `gwtco`) are resolved in `src/shortcuts.rs` before routing.
 
+**Referring to the daft executable in output**: Runtime hints and suggested
+commands must render the executable the way the user invoked it —
+`daft hooks trust` for direct invocations (`daft`, `daft-go`, …),
+`git daft hooks trust` for git-style ones (`git daft`, `git worktree-checkout`,
+…). Use `daft::cli_label()` / `daft::daft_cmd(...)` (src/lib.rs); never hardcode
+`git daft` into a runtime string. Static text keeps the canonical `git daft`
+form: clap `about`/`long_about` (man pages are pre-generated from them) and
+`docs/` pages; SKILL.md uses the direct `daft` form (agents invoke the binary
+directly). Under `cfg!(test)` `cli_label()` always returns the canonical
+`git daft` — unit tests share one process, so argv-derived labels would flip
+assertions order-dependently; test the classification itself through
+`label_for_argv0`.
+
 **Shell integration**: `daft shell-init` generates shell wrappers that create a
 temp file and pass its path via `DAFT_CD_FILE`. When set, commands write the cd
 target to that file, and the wrapper reads it after the command finishes to `cd`

@@ -1,0 +1,47 @@
+name: Multi-branch clone emits exactly one untrusted-hook warning
+description:
+  "Multi-branch clone builds a fresh executor per satellite worktree; the
+  process-global notice registry must still collapse the trust skips into one
+  warning for the whole command. (Headless runs take the sequential satellite
+  path; the TUI path's deferred flush is unit-tested.)"
+
+repos:
+  - name: test-multi-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# multi untrusted"
+        commits:
+          - message: "Initial commit"
+      - name: develop
+        from: main
+      - name: feature
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: touch "$DAFT_WORKTREE_PATH/.post-ran"
+
+steps:
+  - name: Multi-branch clone warns exactly once across all worktrees
+    run: |
+      git-worktree-clone --layout contained -b develop -b feature $REMOTE_TEST_MULTI_UNTRUSTED 2>&1 | grep -c "Untrusted repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "1"
+
+  - name: Both satellite worktrees exist and no hook ran
+    run: "true"
+    cwd: "$WORK_DIR/test-multi-untrusted"
+    expect:
+      dirs_exist:
+        - "$WORK_DIR/test-multi-untrusted/develop"
+        - "$WORK_DIR/test-multi-untrusted/feature"
+      files_not_exist:
+        - "$WORK_DIR/test-multi-untrusted/develop/.post-ran"
+        - "$WORK_DIR/test-multi-untrusted/feature/.post-ran"

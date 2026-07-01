@@ -121,6 +121,14 @@ impl Output for CliOutput {
         }
     }
 
+    fn notice(&mut self, msg: &str) {
+        // A neutral fact, not a problem: no `warning:`/`error:` prefix, and
+        // no styling of its own — callers may pass pre-styled text, gated on
+        // a live color-capable stderr. Stays on stderr (out of stdout) and
+        // always shown, like a warning — quiet mode does not suppress it.
+        self.stderr_line(msg);
+    }
+
     fn error(&mut self, msg: &str) {
         // Errors are always shown (not affected by quiet mode)
         // Git-like format: lowercase prefix

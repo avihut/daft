@@ -44,6 +44,14 @@ impl Output for BufferingOutput {
         self.warnings.push(msg.to_string());
     }
 
+    // No-op by design. The only `notice()` producer is the untrusted-hook
+    // notice, which detects TUI mode via `live_warnings() == false` and defers
+    // through its own registry — the post-TUI `flush_pending_notice` then emits
+    // on the real `CliOutput`. So a notice never reaches this buffer; capturing
+    // it here would double-handle it (and the buffer drains via `warning()`,
+    // which would re-tag it).
+    fn notice(&mut self, _msg: &str) {}
+
     fn error(&mut self, _msg: &str) {}
 
     fn debug(&mut self, _msg: &str) {}
@@ -79,6 +87,12 @@ impl Output for BufferingOutput {
     fn is_verbose(&self) -> bool {
         false
     }
+
+    fn live_warnings(&self) -> bool {
+        // Warnings land in the buffer, not in front of the user; callers
+        // that must guarantee visibility defer to a post-TUI flush.
+        false
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +123,7 @@ mod tests {
         let mut output = BufferingOutput::new();
         output.info("info");
         output.success("success");
+        output.notice("notice");
         output.error("error");
         output.debug("debug");
         output.step("step");

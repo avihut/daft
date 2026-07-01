@@ -13,3 +13,9 @@
 # Example:
 #   # CVE-2026-XXXX patched in 0.2.4, no older fix available
 #   cargo:somecrate@0.2.4
+
+# why: soundness advisory in anyhow <=1.0.102 (dtolnay/anyhow#451) turns the
+# cargo-deny advisories gate red; 1.0.103 is the designated fix and is 6 days
+# old at time of bump — the same security exception Dependabot PRs get
+# automatically. Safe to remove after 2026-07-03.
+cargo:anyhow@1.0.103

@@ -22,6 +22,7 @@ pub fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("migrations/001_initial.sql")),
         M::up(include_str!("migrations/002_visitor_seeds.sql")),
+        M::up(include_str!("migrations/003_invocation_status.sql")),
     ])
 }
 
@@ -32,7 +33,7 @@ pub fn current_version() -> i64 {
     // rusqlite_migration's version counter is `migrations.len() as u32` after
     // every migration is applied. We return that as i64 for consistency with
     // the on-disk `user_version` PRAGMA type.
-    2
+    3
 }
 
 /// Apply all pending migrations against `conn`. Refuses if the on-disk
@@ -105,6 +106,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, "visitor_seeds");
+    }
+
+    #[test]
+    fn invocations_table_gains_status_columns() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        conn.execute(
+            "INSERT INTO invocations
+                 (repo_hash, invocation_id, trigger_command, hook_type, worktree,
+                  created_at, status, skip_reason)
+             VALUES ('r', 'i', 'checkout', 'worktree-post-create', 'feat/x',
+                     '2026-01-01T00:00:00Z', 'skipped', 'untrusted')",
+            [],
+        )
+        .unwrap();
+        let (status, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, skip_reason FROM invocations WHERE repo_hash = 'r'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "skipped");
+        assert_eq!(reason.as_deref(), Some("untrusted"));
     }
 
     #[test]

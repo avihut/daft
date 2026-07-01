@@ -59,6 +59,13 @@ fn trust_long_about() -> String {
         ),
         "each hook execution.",
         "",
+        "If hooks were skipped while the repository was untrusted, trusting",
+        "lists the setup hooks that never ran and the exact",
+        &format!(
+            "'{}' commands to replay them per worktree.",
+            bold("git daft hooks run")
+        ),
+        "",
         "Trust settings are stored in the daft config directory (trust.json)",
         "and persist across sessions.",
     ]
@@ -518,9 +525,10 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Run(run_args)) => run_cmd::cmd_run(&run_args, &mut output),
         None => {
             status::cmd_status(&args.path, false, &mut output)?;
-            output.info(&dim(
-                "Run `git daft hooks --help` to see all available commands.",
-            ));
+            output.info(&dim(&format!(
+                "Run `{}` to see all available commands.",
+                crate::daft_cmd("hooks --help")
+            )));
             Ok(())
         }
     }

@@ -107,11 +107,7 @@ fn main() -> Result<()> {
 
         // Main daft / git-daft command - check for subcommands
         "git-daft" | "daft" => {
-            let label = if resolved == "git-daft" {
-                "git daft"
-            } else {
-                "daft"
-            };
+            let label = daft::cli_label();
             // Check if a subcommand was provided
             let args = argv;
             if args.len() > 1 {

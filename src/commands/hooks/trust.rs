@@ -95,11 +95,114 @@ pub(super) fn cmd_set_trust(
             output.result("Done.");
         }
 
+        if new_level == TrustLevel::Allow {
+            suggest_skipped_replays(&git_dir, project_root, output);
+        }
+
         Ok(())
     })();
 
     std::env::set_current_dir(&original_dir)?;
     result
+}
+
+/// One "replay this hook" line: the hook to run and the live branches whose
+/// recorded skip it would repair.
+#[derive(Debug, PartialEq, Eq)]
+struct ReplaySuggestion {
+    hook_type: String,
+    branches: Vec<String>,
+}
+
+/// Hooks worth suggesting a retroactive replay for. Only the idempotent
+/// setup hooks qualify: pre-* hooks prepare an operation that already
+/// happened, remove hooks tear down state (replaying one against a live
+/// worktree is harmful), and merge hooks template against `DAFT_MERGE_*`
+/// env that only the merge command injects.
+const REPLAYABLE_HOOKS: [&str; 2] = ["post-clone", "worktree-post-create"];
+
+/// Filter recorded skips down to actionable replay suggestions: replayable
+/// hook types only, branches that still have a live worktree, grouped per
+/// hook type in [`REPLAYABLE_HOOKS`] order.
+fn replay_suggestions(
+    rows: &[crate::store::models::InvocationRow],
+    live_branches: &std::collections::HashSet<String>,
+) -> Vec<ReplaySuggestion> {
+    use std::collections::BTreeSet;
+
+    REPLAYABLE_HOOKS
+        .iter()
+        .filter_map(|hook| {
+            let branches: BTreeSet<&str> = rows
+                .iter()
+                .filter(|r| r.hook_type == *hook && live_branches.contains(&r.worktree))
+                .map(|r| r.worktree.as_str())
+                .collect();
+            (!branches.is_empty()).then(|| ReplaySuggestion {
+                hook_type: hook.to_string(),
+                branches: branches.into_iter().map(String::from).collect(),
+            })
+        })
+        .collect()
+}
+
+/// After a trust grant, surface the hooks that were skipped while the
+/// repository was untrusted and offer the replay commands. Best-effort
+/// throughout — trusting must never fail because of the store.
+fn suggest_skipped_replays(git_dir: &Path, project_root: &Path, output: &mut dyn Output) {
+    use crate::coordinator::ports::JobsStorePort;
+    use crate::core::worktree::remove_repo::{RepoTarget, enumerate_worktrees};
+    use crate::store::paths::{COORDINATOR_DB, JOBS_SUBDIR};
+
+    let Ok(repo_hash) = crate::core::repo_identity::compute_repo_id_from_common_dir(git_dir) else {
+        return;
+    };
+    let Ok(state_base) = crate::daft_state_dir() else {
+        return;
+    };
+    // Existence check before opening: `for_repo_base` would create the
+    // per-repo state dir, and a repo with no hook history has none.
+    let base = state_base.join(JOBS_SUBDIR).join(&repo_hash);
+    if !base.join(COORDINATOR_DB).exists() {
+        return;
+    }
+    let Ok(store) = crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&base) else {
+        return;
+    };
+    let Ok(rows) = store.list_skipped_invocations(&repo_hash) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+
+    let target = RepoTarget {
+        bare_git_dir: git_dir.to_path_buf(),
+        project_root: project_root.to_path_buf(),
+    };
+    let Ok(entries) = enumerate_worktrees(&target, false) else {
+        return;
+    };
+    let live: std::collections::HashSet<String> =
+        entries.into_iter().filter_map(|e| e.branch).collect();
+
+    let suggestions = replay_suggestions(&rows, &live);
+    if suggestions.is_empty() {
+        return;
+    }
+
+    output.info("");
+    output.info(&bold(
+        "Hooks were skipped here while the repository was untrusted. Replay them:",
+    ));
+    let exe = crate::cli_label();
+    for s in &suggestions {
+        output.info(&format!(
+            "  {}   {}",
+            cyan(&format!("{exe} hooks run {}", s.hook_type)),
+            dim(&format!("# in {}", s.branches.join(", "))),
+        ));
+    }
 }
 
 /// Revoke trust for the repository at the given path.
@@ -263,7 +366,7 @@ pub(super) fn cmd_list(
             output.info(&dim("No trusted repositories."));
             output.info("");
             output.info(&bold("To trust a repository, cd into it and run:"));
-            output.info(&format!("  {}", cyan("git daft hooks trust")));
+            output.info(&format!("  {}", cyan(&crate::daft_cmd("hooks trust"))));
         }
         return Ok(());
     }
@@ -462,4 +565,90 @@ pub(super) fn cmd_reset_trust_path(
 
     std::env::set_current_dir(&original_dir)?;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::models::InvocationRow;
+    use crate::store::models::invocation::{INVOCATION_STATUS_SKIPPED, SKIP_REASON_UNTRUSTED};
+    use std::collections::HashSet;
+
+    fn skip_row(hook_type: &str, worktree: &str) -> InvocationRow {
+        InvocationRow {
+            repo_hash: "r".into(),
+            invocation_id: format!("{hook_type}-{worktree}"),
+            trigger_command: "checkout".into(),
+            hook_type: hook_type.into(),
+            worktree: worktree.into(),
+            created_at: chrono::Utc::now(),
+            coordinator_pid: None,
+            status: INVOCATION_STATUS_SKIPPED.into(),
+            skip_reason: Some(SKIP_REASON_UNTRUSTED.into()),
+        }
+    }
+
+    fn live(branches: &[&str]) -> HashSet<String> {
+        branches.iter().map(|b| b.to_string()).collect()
+    }
+
+    #[test]
+    fn suggests_only_replayable_hook_types() {
+        let rows = vec![
+            skip_row("worktree-pre-create", "feat/a"),
+            skip_row("worktree-post-create", "feat/a"),
+            skip_row("worktree-pre-remove", "feat/a"),
+            skip_row("worktree-post-remove", "feat/a"),
+            skip_row("pre-merge", "feat/a"),
+            skip_row("post-merge", "feat/a"),
+            skip_row("post-clone", "main"),
+        ];
+        let suggestions = replay_suggestions(&rows, &live(&["main", "feat/a"]));
+        assert_eq!(
+            suggestions,
+            vec![
+                ReplaySuggestion {
+                    hook_type: "post-clone".into(),
+                    branches: vec!["main".into()],
+                },
+                ReplaySuggestion {
+                    hook_type: "worktree-post-create".into(),
+                    branches: vec!["feat/a".into()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn excludes_branches_without_a_live_worktree() {
+        let rows = vec![
+            skip_row("worktree-post-create", "feat/alive"),
+            skip_row("worktree-post-create", "feat/removed"),
+        ];
+        let suggestions = replay_suggestions(&rows, &live(&["feat/alive"]));
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].branches, vec!["feat/alive".to_string()]);
+    }
+
+    #[test]
+    fn groups_branches_per_hook_type_sorted_and_deduped() {
+        let rows = vec![
+            skip_row("worktree-post-create", "feat/b"),
+            skip_row("worktree-post-create", "feat/a"),
+            skip_row("worktree-post-create", "feat/a"),
+        ];
+        let suggestions = replay_suggestions(&rows, &live(&["feat/a", "feat/b"]));
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(
+            suggestions[0].branches,
+            vec!["feat/a".to_string(), "feat/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_when_nothing_actionable() {
+        assert!(replay_suggestions(&[], &live(&["main"])).is_empty());
+        let rows = vec![skip_row("worktree-pre-remove", "main")];
+        assert!(replay_suggestions(&rows, &live(&["main"])).is_empty());
+    }
 }
