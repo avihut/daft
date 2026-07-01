@@ -12,6 +12,12 @@ use std::time::Duration;
 
 struct JobState {
     spinner: ProgressBar,
+    /// The dim description line under the spinner, when the job has one.
+    /// Must be tracked so `remove_job_bars` can `mp.remove` it: an untracked
+    /// bar's last handle drops through indicatif's zombie path
+    /// (`mark_zombie`), which strands its line once the `MultiProgress`
+    /// outlives the job — exactly the case under a shared region (#651).
+    description: Option<ProgressBar>,
     separator: Option<ProgressBar>,
     tail_lines: Vec<ProgressBar>,
     trailer: Option<ProgressBar>,
@@ -155,6 +161,7 @@ impl HookProgressRenderer {
 
         // Show description below the spinner if provided
         let mut last_bar = spinner.clone();
+        let mut description_bar = None;
         if let Some(desc) = description {
             let desc_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
             let desc_style =
@@ -166,7 +173,8 @@ impl HookProgressRenderer {
                 desc.to_string()
             };
             desc_bar.set_message(desc_msg);
-            last_bar = desc_bar;
+            last_bar = desc_bar.clone();
+            description_bar = Some(desc_bar);
         }
 
         // Trailer is a blank spacer bar that sits at the bottom of this job's
@@ -200,6 +208,7 @@ impl HookProgressRenderer {
             name.to_string(),
             JobState {
                 spinner,
+                description: description_bar,
                 separator: None,
                 tail_lines: Vec::new(),
                 trailer: Some(trailer),
@@ -402,6 +411,9 @@ impl HookProgressRenderer {
     /// so the next `mp.println` does an atomic redraw that cleanly
     /// clears the old bar lines.
     fn remove_job_bars(&self, state: &JobState) {
+        if let Some(ref desc) = state.description {
+            self.mp.remove(desc);
+        }
         if let Some(ref sep) = state.separator {
             self.mp.remove(sep);
         }
@@ -564,6 +576,18 @@ impl HookProgressRenderer {
         self.jobs
             .get(name)
             .map(|s| s.trailer.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Test-only: whether the job's description bar is tracked in its state.
+    /// Regression guard for the zombie-line bug — an untracked description
+    /// bar escapes `remove_job_bars` and strands a line under a shared
+    /// `MultiProgress` (#651).
+    #[cfg(test)]
+    pub fn has_description_bar(&self, name: &str) -> bool {
+        self.jobs
+            .get(name)
+            .map(|s| s.description.is_some())
             .unwrap_or(false)
     }
 

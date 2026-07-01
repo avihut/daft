@@ -233,6 +233,24 @@ mod tests {
     }
 
     #[test]
+    fn description_bar_is_tracked_for_removal() {
+        // Regression guard (#651): the description bar must live in JobState
+        // so remove_job_bars can mp.remove it. Untracked, its last handle
+        // drops through indicatif's zombie path and strands a line when the
+        // MultiProgress outlives the job (the shared-region case).
+        let config = HookOutputConfig::default();
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job_with_description("job", Some("a description"), None);
+        assert!(renderer.has_description_bar("job"));
+        renderer.finish_job_success("job", Duration::from_secs(1));
+        assert!(!renderer.has_description_bar("job"));
+
+        renderer.start_job_with_description("bare", None, None);
+        assert!(!renderer.has_description_bar("bare"));
+        renderer.finish_job_success("bare", Duration::from_secs(1));
+    }
+
+    #[test]
     fn test_quiet_mode_no_tail_lines() {
         let config = HookOutputConfig {
             quiet: true,
