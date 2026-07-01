@@ -86,22 +86,23 @@ reference.
 ## Skipped hooks are never silent
 
 When a command would have run a hook but the repository isn't trusted, daft says
-so. Every command that fires lifecycle hooks — checkout, clone, merge, sync,
-prune, remove — prints one warning on stderr naming the hooks it skipped and the
-way forward:
+so. An untrusted repo skipping its hooks is the trust model working as designed,
+not a problem — so this is a plain notice, not a `warning:`. Every command that
+fires lifecycle hooks — checkout, clone, merge, sync, prune, remove — prints one
+notice on stderr naming the hooks it skipped and the way forward:
 
 ```
-warning: daft.yml defines hooks (worktree-pre-create, worktree-post-create) that were NOT run — this repository isn't trusted.
-         To run hooks here, trust this repository:  git daft hooks trust
-         Then replay this worktree's setup:         git daft hooks run worktree-post-create
+2 daft.yml hooks not run: worktree-pre-create, worktree-post-create — this repo isn't trusted.
+   To run them, trust this repo:       git daft hooks trust
+   Then replay this worktree's setup:  git daft hooks run worktree-post-create
 ```
 
-The warning covers both config shapes (`daft.yml` and `.daft/hooks/` scripts),
+The notice covers both config shapes (`daft.yml` and `.daft/hooks/` scripts),
 appears once per command no matter how many hooks were skipped, and never
 touches stdout, so shell integration and scripted output stay clean. Passing
 `--skip-hooks all` (or a hook-type selector naming the fire) suppresses it — an
-explicit opt-out is not a surprise worth warning about. The suggestion lines
-honor `DAFT_NO_HINTS=1`; the warning itself always prints.
+explicit opt-out is not a surprise worth reporting. The suggestion lines honor
+`DAFT_NO_HINTS=1`; the notice itself always prints.
 
 ### Replaying hooks you skipped
 

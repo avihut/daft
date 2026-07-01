@@ -2,9 +2,11 @@
 //!
 //! When the trust gate blocks a hook fire, two things must happen:
 //!
-//! 1. **Notice** — one contextual stderr warning per command invocation,
-//!    naming the skipped hooks and suggesting `git daft hooks trust`. The
-//!    notice is emitted here, from the executor's trust-Deny arms, so every
+//! 1. **Notice** — one contextual stderr notice per command invocation
+//!    (via [`Output::notice`]: plain, untagged — an untrusted repo skipping
+//!    its hooks is by design, not a warning), naming the skipped hooks and
+//!    suggesting `git daft hooks trust`. The notice is emitted here, from the
+//!    executor's trust-Deny arms, so every
 //!    command and both config shapes (`daft.yml`, `.daft/hooks/`) are
 //!    covered centrally — no per-caller wiring to forget.
 //! 2. **Record** — a `status = 'skipped'` row in the `invocations` table so
@@ -24,16 +26,16 @@
 //! **Test contract:** there is deliberately no reset helper. Unit tests run
 //! in parallel threads sharing this registry; isolation comes from keying —
 //! every test must use a unique (tempdir) git dir and must never assert on
-//! global warning counts across git dirs.
+//! global notice counts across git dirs.
 //!
 //! # TUI deferral
 //!
-//! In TUI mode the executor writes to a `BufferingOutput` whose warnings
-//! never reach the user. Emitting there would both hide the notice and mark
+//! In TUI mode the executor writes to a `BufferingOutput` whose output
+//! never reaches the user. Emitting there would both hide the notice and mark
 //! it "shown", suppressing the one later chance at visibility. Instead,
 //! when [`Output::live_warnings`] is false the notice accumulates as
 //! pending state, and the command calls [`flush_pending_notice`] after the
-//! TUI exits to emit a single aggregated warning on the real stderr.
+//! TUI exits to emit a single aggregated notice on the real stderr.
 
 use crate::coordinator::ports::JobsStorePort;
 use crate::hooks::HookContext;
@@ -58,7 +60,7 @@ pub enum SkipSource {
 
 #[derive(Default)]
 struct NoticeState {
-    /// A warning has reached a real stderr for this git dir.
+    /// A notice has reached a real stderr for this git dir.
     displayed: bool,
     /// Accumulated while the output was buffered (TUI mode).
     pending: Option<NoticeContent>,
@@ -111,7 +113,7 @@ fn registry_key(git_dir: &Path) -> PathBuf {
 
 /// Called from the executor's trust-Deny arms: emit (or defer) the
 /// once-per-command notice, then best-effort record the skip row. The
-/// warning never depends on the store write succeeding.
+/// notice never depends on the store write succeeding.
 pub fn notify_and_record(ctx: &HookContext, source: SkipSource, output: &mut dyn Output) {
     let content = notice_content(ctx, &source);
     let key = registry_key(&ctx.git_dir);
@@ -120,7 +122,7 @@ pub fn notify_and_record(ctx: &HookContext, source: SkipSource, output: &mut dyn
         let state = reg.entry(key).or_default();
         if !state.displayed {
             if output.live_warnings() {
-                output.warning(&format_notice(&content, !crate::hints::hints_disabled()));
+                output.notice(&format_notice(&content, !crate::hints::hints_disabled()));
                 state.displayed = true;
             } else {
                 match &mut state.pending {
@@ -133,7 +135,7 @@ pub fn notify_and_record(ctx: &HookContext, source: SkipSource, output: &mut dyn
     record_skip(ctx, SKIP_REASON_UNTRUSTED);
 }
 
-/// Post-TUI flush: if skips were deferred for `git_dir` and no warning has
+/// Post-TUI flush: if skips were deferred for `git_dir` and no notice has
 /// reached a real stderr yet, emit one aggregated notice. No-op otherwise.
 pub fn flush_pending_notice(git_dir: &Path, output: &mut dyn Output) {
     let key = registry_key(git_dir);
@@ -151,13 +153,13 @@ pub fn flush_pending_notice(git_dir: &Path, output: &mut dyn Output) {
         }
     };
     if let Some(content) = content {
-        output.warning(&format_notice(&content, !crate::hints::hints_disabled()));
+        output.notice(&format_notice(&content, !crate::hints::hints_disabled()));
     }
 }
 
 /// Best-effort write of a `status = 'skipped'` invocation row. Failures are
 /// reported on raw stderr (same precedent as the yaml executor's
-/// invocation-meta write) — never via `output.warning`, which in TUI mode
+/// invocation-meta write) — never via `output.notice`, which in TUI mode
 /// would vanish into the buffer and hide the degradation.
 pub fn record_skip(ctx: &HookContext, reason: &str) {
     if let Err(e) = try_record_skip(ctx, reason) {
@@ -309,9 +311,10 @@ fn capped_hook_list(names: &BTreeSet<String>, more_word: &str) -> String {
 }
 
 fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
-    // Continuation lines align under the 9-char "warning: " prefix the CLI
-    // output adds to the first line.
-    const INDENT: &str = "         ";
+    // The notice is emitted via `Output::notice` — a plain stderr line with no
+    // severity prefix — so the first line starts at column 0. Hint lines are
+    // indented to read as subordinate to it.
+    const INDENT: &str = "   ";
 
     let multi_branch = content.branches.len() > 1;
     let branch_clause = if multi_branch {
@@ -320,48 +323,49 @@ fn format_notice(content: &NoticeContent, show_hints: bool) -> String {
         String::new()
     };
 
+    // Lead with the count, then the names: "3 daft.yml hooks not run: a, b, c".
+    let n = content.names.len();
     let mut first = if content.legacy {
-        if content.names.len() == 1 {
+        if n == 1 {
             let name = content.names.iter().next().expect("len checked");
             format!(
-                ".daft/hooks/{name} was NOT run{branch_clause} — this repository isn't trusted."
+                "1 .daft/hooks script not run{branch_clause}: {name} — this repo isn't trusted."
             )
         } else {
             format!(
-                ".daft/hooks/ scripts ({}) were NOT run{branch_clause} — this repository isn't trusted.",
+                "{n} .daft/hooks scripts not run{branch_clause}: {} — this repo isn't trusted.",
                 capped_hook_list(&content.names, "scripts")
             )
         }
-    } else if content.names.len() == 1 {
+    } else if n == 1 {
         let name = content.names.iter().next().expect("len checked");
-        format!(
-            "daft.yml defines a {name} hook that was NOT run{branch_clause} — this repository isn't trusted."
-        )
+        format!("1 daft.yml hook not run{branch_clause}: {name} — this repo isn't trusted.")
     } else {
         format!(
-            "daft.yml defines hooks ({}) that were NOT run{branch_clause} — this repository isn't trusted.",
+            "{n} daft.yml hooks not run{branch_clause}: {} — this repo isn't trusted.",
             capped_hook_list(&content.names, "hooks")
         )
     };
 
     if show_hints {
+        // Labels are padded to LABEL_W so both suggestion commands start at the
+        // same column under the indent (LABEL_W spans the longest label below).
+        const LABEL_W: usize = 34;
         first.push_str(&format!(
-            "\n{INDENT}To run hooks here, trust this repository:  git daft hooks trust"
+            "\n{INDENT}{:<LABEL_W$}  git daft hooks trust",
+            "To run them, trust this repo:"
         ));
         if let Some(replay) = &content.replay {
-            // Labels are padded so both suggestion commands start at the
-            // same column (43 chars after the indent, matching the trust
-            // line above).
             let (label, suffix) = match (replay.as_str(), multi_branch) {
-                ("post-clone", _) => ("Then replay the clone's setup:             ", ""),
+                ("post-clone", _) => ("Then replay the clone's setup:", ""),
                 (_, true) => (
-                    "Then replay each worktree's setup:         ",
+                    "Then replay each worktree's setup:",
                     "   (run inside each worktree)",
                 ),
-                (_, false) => ("Then replay this worktree's setup:         ", ""),
+                (_, false) => ("Then replay this worktree's setup:", ""),
             };
             first.push_str(&format!(
-                "\n{INDENT}{label}git daft hooks run {replay}{suffix}"
+                "\n{INDENT}{label:<LABEL_W$}  git daft hooks run {replay}{suffix}"
             ));
         }
     }
@@ -405,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn warns_once_per_git_dir_and_names_all_configured_hooks() {
+    fn notifies_once_per_git_dir_and_names_all_configured_hooks() {
         let tmp = TempDir::new().unwrap();
         let git_dir = tmp.path().join("repo/.git");
         std::fs::create_dir_all(&git_dir).unwrap();
@@ -417,13 +421,13 @@ mod tests {
         let post = test_ctx(&git_dir, &state, HookType::PostCreate, "feat/x");
         notify_and_record(&post, yaml_source(), &mut output);
 
-        let warnings = output.warnings();
-        assert_eq!(warnings.len(), 1, "second Deny hit must be deduped");
+        let notices = output.notices();
+        assert_eq!(notices.len(), 1, "second Deny hit must be deduped");
         // Hint lines depend on the ambient DAFT_NO_HINTS; assert only the
         // env-independent first line here (hints are covered by the pure
         // format tests below).
-        assert!(warnings[0].contains("worktree-pre-create"));
-        assert!(warnings[0].contains("worktree-post-create"));
+        assert!(notices[0].contains("worktree-pre-create"));
+        assert!(notices[0].contains("worktree-post-create"));
     }
 
     #[test]
@@ -438,7 +442,7 @@ mod tests {
             replay: Some("worktree-post-create".to_string()),
         };
         let msg = format_notice(&content, true);
-        assert!(msg.starts_with("daft.yml defines hooks ("));
+        assert!(msg.starts_with("2 daft.yml hooks not run: "));
         assert!(msg.contains("git daft hooks trust"));
         assert!(msg.contains("git daft hooks run worktree-post-create"));
         assert!(
@@ -466,18 +470,18 @@ mod tests {
 
         let mut real = TestOutput::new();
         flush_pending_notice(&git_dir, &mut real);
-        let warnings = real.warnings();
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("feat/a"), "aggregate names branches");
-        assert!(warnings[0].contains("feat/b"));
+        let notices = real.notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("feat/a"), "aggregate names branches");
+        assert!(notices[0].contains("feat/b"));
 
         let mut again = TestOutput::new();
         flush_pending_notice(&git_dir, &mut again);
-        assert!(again.warnings().is_empty(), "flush is one-shot");
+        assert!(again.notices().is_empty(), "flush is one-shot");
     }
 
     #[test]
-    fn live_warning_suppresses_later_flush() {
+    fn live_notice_suppresses_later_flush() {
         let tmp = TempDir::new().unwrap();
         let git_dir = tmp.path().join("repo/.git");
         std::fs::create_dir_all(&git_dir).unwrap();
@@ -492,11 +496,11 @@ mod tests {
             },
             &mut output,
         );
-        assert_eq!(output.warnings().len(), 1);
+        assert_eq!(output.notices().len(), 1);
 
         let mut after = TestOutput::new();
         flush_pending_notice(&git_dir, &mut after);
-        assert!(after.warnings().is_empty());
+        assert!(after.notices().is_empty());
     }
 
     #[test]
@@ -558,7 +562,7 @@ mod tests {
             replay: None,
         };
         let with_hints = format_notice(&content, true);
-        assert!(with_hints.starts_with(".daft/hooks/worktree-pre-remove was NOT run"));
+        assert!(with_hints.starts_with("1 .daft/hooks script not run: worktree-pre-remove"));
         assert!(with_hints.contains("git daft hooks trust"));
         assert!(
             !with_hints.contains("hooks run"),

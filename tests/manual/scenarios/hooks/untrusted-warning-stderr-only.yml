@@ -50,4 +50,4 @@ steps:
       dirs_exist:
         - "$WORK_DIR/test-stderr-only/feature/loud"
       output_contains:
-        - "daft.yml defines a worktree-post-create hook that was NOT run"
+        - "1 daft.yml hook not run: worktree-post-create"

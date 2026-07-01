@@ -14,6 +14,8 @@ pub enum OutputEntry {
     Success(String),
     /// Warning message
     Warning(String),
+    /// Neutral notice (stderr, no prefix, always shown)
+    Notice(String),
     /// Error message
     Error(String),
     /// Debug message
@@ -143,6 +145,17 @@ impl TestOutput {
             .collect()
     }
 
+    /// Get all notice messages.
+    pub fn notices(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                OutputEntry::Notice(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Get all error messages.
     pub fn errors(&self) -> Vec<&str> {
         self.entries
@@ -238,6 +251,11 @@ impl TestOutput {
         self.warnings().iter().any(|s| s.contains(substring))
     }
 
+    /// Check if any notice message contains the given substring.
+    pub fn has_notice(&self, substring: &str) -> bool {
+        self.notices().iter().any(|s| s.contains(substring))
+    }
+
     /// Check if any error message contains the given substring.
     pub fn has_error(&self, substring: &str) -> bool {
         self.errors().iter().any(|s| s.contains(substring))
@@ -310,6 +328,11 @@ impl Output for TestOutput {
     fn warning(&mut self, msg: &str) {
         // Warnings are always captured (not affected by quiet mode)
         self.entries.push(OutputEntry::Warning(msg.to_string()));
+    }
+
+    fn notice(&mut self, msg: &str) {
+        // Notices are always captured (not affected by quiet mode)
+        self.entries.push(OutputEntry::Notice(msg.to_string()));
     }
 
     fn error(&mut self, msg: &str) {

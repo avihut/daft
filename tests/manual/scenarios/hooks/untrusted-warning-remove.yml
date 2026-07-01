@@ -60,7 +60,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - ".daft/hooks/worktree-pre-remove was NOT run"
+        - "1 .daft/hooks script not run: worktree-pre-remove"
         - "git daft hooks trust"
       output_not_contains:
         - "git daft hooks run"
@@ -82,7 +82,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "daft.yml defines a worktree-pre-remove hook that was NOT run"
+        - "1 daft.yml hook not run: worktree-pre-remove"
         - "git daft hooks trust"
       output_not_contains:
         - "git daft hooks run"

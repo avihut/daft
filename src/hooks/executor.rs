@@ -870,10 +870,10 @@ mod tests {
             Some("Repository not trusted".to_string())
         );
 
-        // The Deny arm warns (once) and records the skip.
-        let warnings = output.warnings();
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("worktree-post-create"));
+        // The Deny arm emits the notice (once) and records the skip.
+        let notices = output.notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("worktree-post-create"));
         let rows = skip_rows(&ctx);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].hook_type, "worktree-post-create");
@@ -906,10 +906,10 @@ mod tests {
             Some("Repository not trusted".to_string())
         );
 
-        let warnings = output.warnings();
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("daft.yml"));
-        assert!(warnings[0].contains("worktree-post-create"));
+        let notices = output.notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("daft.yml"));
+        assert!(notices[0].contains("worktree-post-create"));
         let rows = skip_rows(&ctx);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].skip_reason.as_deref(), Some("untrusted"));
@@ -935,8 +935,8 @@ mod tests {
             let result = executor.execute(&ctx, &mut output, presenter).unwrap();
             assert!(result.skipped, "selector {selector}: still trust-skipped");
             assert!(
-                output.warnings().is_empty(),
-                "selector {selector}: explicit opt-out must not warn"
+                output.notices().is_empty() && output.warnings().is_empty(),
+                "selector {selector}: explicit opt-out must not notify"
             );
             assert!(
                 skip_rows(&ctx).is_empty(),
@@ -963,7 +963,7 @@ mod tests {
         let presenter = NullPresenter::arc();
         let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.success);
-        assert!(output.warnings().is_empty());
+        assert!(output.notices().is_empty() && output.warnings().is_empty());
         assert!(skip_rows(&ctx).is_empty());
     }
 
