@@ -324,9 +324,59 @@ impl ProgressSink for TimelineBridge<'_> {
 
 impl HookRunner for TimelineBridge<'_> {
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
-        // Embedded rendering (region live) lands with the hook seams; until
-        // a command migrates, this arm is only reached region-less and is
-        // byte-identical to CommandBridge.
+        use crate::core::stage::{StageEvent, StageId};
+
+        // Embedded path: the region is live and the plan has a row for this
+        // hook phase (scoped by the context's branch when the plan is
+        // multi-branch). The presenter is lazy — the row expands into the
+        // hook block only if the executor actually starts the phase.
+        let embed_key = StageId::for_hook_type(ctx.hook_type)
+            .filter(|_| self.timeline.region_live())
+            .and_then(|id| self.timeline.resolve_key(id, Some(&ctx.branch_name)));
+
+        if let Some(key) = embed_key {
+            let presenter: Arc<dyn JobPresenter> =
+                CliPresenter::embedded(&self.output_config, self.timeline.handle(), key.clone());
+            let mut region_output = crate::output::timeline::RegionOutput::new(
+                self.timeline.handle(),
+                self.output.is_quiet(),
+                self.output.is_verbose(),
+            );
+            let result = self.executor.execute(ctx, &mut region_output, presenter)?;
+            if result.skipped {
+                match result.skip_reason.as_deref() {
+                    // Benign non-events: nothing was configured to run —
+                    // remove the row silently rather than advertise
+                    // machinery. ("All jobs skipped" may have rendered its
+                    // own attribution block, in which case the row is
+                    // already consumed and this is a no-op.)
+                    Some("No hook files found")
+                    | Some("Hooks are globally disabled")
+                    | Some("All jobs skipped")
+                    | None => self.timeline.resolve_silently(&key),
+                    // Attention-worthy skips (trust refusal, --skip-hooks,
+                    // declined prompt): yellow row with the reason.
+                    Some(reason) => self.timeline.on_stage(
+                        &key,
+                        StageEvent::SkippedAttention {
+                            reason: reason.to_string(),
+                        },
+                    ),
+                }
+            }
+            // Ran (success or failure): the block is the step's record —
+            // begin_hook_embed already replaced the row. Reconnect the rail
+            // below the block when more plan rows follow.
+            self.timeline.close_hook_embed();
+            return Ok(HookOutcome {
+                success: result.success,
+                skipped: result.skipped,
+                skip_reason: result.skip_reason.clone(),
+            });
+        }
+
+        // Region-less (Plain/Hidden, or pre-plan): byte-identical to
+        // CommandBridge.
         let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
         self.output.pause_spinner();
         let exec_result = self.executor.execute(ctx, self.output, presenter);

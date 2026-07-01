@@ -35,11 +35,21 @@ pub(super) fn output_suppressed() -> bool {
 /// ` on: <target>` segment so multi-source operations don't leave the user
 /// guessing which worktree the hooks are touching. `None` for project-scoped
 /// hooks (`pre-merge`, `post-merge`, `post-clone`).
+///
+/// `weld` swaps the box's left corners `┌`/`└` for `├` so the header
+/// visibly branches off the plan-execute rail when the block renders
+/// embedded in a timeline (#651). The box interior is byte-identical.
 pub(super) fn format_header_lines(
     hook_name: &str,
     target: Option<&str>,
     use_color: bool,
+    weld: bool,
 ) -> Vec<String> {
+    let (top_corner, bottom_corner) = if weld {
+        ("\u{251c}", "\u{251c}")
+    } else {
+        ("\u{250c}", "\u{2514}")
+    };
     let target_segment = target.map(|t| format!("  on: {t}")).unwrap_or_default();
     let content_width = " daft hooks v".len()
         + VERSION.len()
@@ -54,20 +64,20 @@ pub(super) fn format_header_lines(
             .map(|t| format!("  {GREY}on: {BRIGHT_WHITE}{t}{}", styles::RESET))
             .unwrap_or_default();
         vec![
-            format!("{GREY}\u{250c}{border_h}\u{2510}{}", styles::RESET),
+            format!("{GREY}{top_corner}{border_h}\u{2510}{}", styles::RESET),
             format!(
                 "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
                 styles::BOLD,
                 styles::RESET,
                 styles::RESET
             ),
-            format!("{GREY}\u{2514}{border_h}\u{2518}{}", styles::RESET),
+            format!("{GREY}{bottom_corner}{border_h}\u{2518}{}", styles::RESET),
         ]
     } else {
         vec![
-            format!("\u{250c}{border_h}\u{2510}"),
+            format!("{top_corner}{border_h}\u{2510}"),
             format!("\u{2502} daft hooks v{VERSION}  {hook_name}{target_segment} \u{2502}"),
-            format!("\u{2514}{border_h}\u{2518}"),
+            format!("{bottom_corner}{border_h}\u{2518}"),
         ]
     }
 }

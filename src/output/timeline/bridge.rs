@@ -14,7 +14,7 @@ use std::path::Path;
 
 /// `warning: <msg>` in the CliOutput vocabulary, for printing above the
 /// live bars.
-pub(crate) fn warning_line(msg: &str) -> String {
+pub fn warning_line(msg: &str) -> String {
     if styles::colors_enabled_stderr() {
         format!("{}warning:{} {msg}", styles::YELLOW, styles::RESET)
     } else {
@@ -24,7 +24,7 @@ pub(crate) fn warning_line(msg: &str) -> String {
 
 /// `error: <msg>` in the CliOutput vocabulary, for printing above the
 /// live bars.
-pub(crate) fn error_line(msg: &str) -> String {
+pub fn error_line(msg: &str) -> String {
     if styles::colors_enabled_stderr() {
         format!("{}error:{} {msg}", styles::RED, styles::RESET)
     } else {

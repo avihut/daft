@@ -78,6 +78,20 @@ impl StageId {
                 | Self::PostCloneHooks
         )
     }
+
+    /// The plan stage a lifecycle hook renders as. `None` for hook types the
+    /// timeline never plans (merge hooks — merge keeps its own output).
+    pub fn for_hook_type(hook_type: crate::hooks::HookType) -> Option<Self> {
+        use crate::hooks::HookType;
+        match hook_type {
+            HookType::PreCreate => Some(Self::PreCreateHooks),
+            HookType::PostCreate => Some(Self::PostCreateHooks),
+            HookType::PreRemove => Some(Self::PreRemoveHooks),
+            HookType::PostRemove => Some(Self::PostRemoveHooks),
+            HookType::PostClone => Some(Self::PostCloneHooks),
+            HookType::PreMerge | HookType::PostMerge => None,
+        }
+    }
 }
 
 /// A stage instance within one plan.

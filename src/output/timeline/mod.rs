@@ -22,7 +22,7 @@ mod region;
 mod render;
 
 pub use bridge::RegionOutput;
-pub(crate) use bridge::warning_line;
+pub use bridge::{error_line, warning_line};
 pub use region::HookEmbed;
 
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};
@@ -86,10 +86,22 @@ impl TimelineHandle {
 
     /// Print a permanent line above the live bars (no-op without a region).
     pub fn println_above(&self, line: &str) {
-        let inner = self.inner.lock().expect("timeline lock poisoned");
-        if let Some(core) = inner.core.as_ref() {
+        let mut inner = self.inner.lock().expect("timeline lock poisoned");
+        if let Some(core) = inner.core.as_mut() {
             core.println_above(line);
         }
+    }
+
+    /// Resolve a stage id (+ candidate scope) to the committed plan's key,
+    /// preferring the scoped row over the unscoped one. `None` when no
+    /// region is live or the plan has no such step.
+    pub fn resolve_key(
+        &self,
+        id: crate::core::stage::StageId,
+        scope: Option<&str>,
+    ) -> Option<StepKey> {
+        let inner = self.inner.lock().expect("timeline lock poisoned");
+        inner.core.as_ref()?.resolve_key(id, scope)
     }
 
     /// `-v` free-text detail under the active step (no-op without a region).
@@ -207,6 +219,15 @@ impl Timeline {
         }
     }
 
+    /// The hook block for an embedded step finished rendering; reconnect
+    /// the rail (no-op if no block opened).
+    pub fn close_hook_embed(&mut self) {
+        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        if let Some(core) = inner.core.as_mut() {
+            core.close_hook_embed();
+        }
+    }
+
     /// Resolve a step without leaving a row (benign hook skip: no hooks
     /// configured, hooks globally disabled).
     pub fn resolve_silently(&mut self, key: &StepKey) {
@@ -224,6 +245,16 @@ impl Timeline {
     /// Print a permanent line above the live bars.
     pub fn println_above(&self, line: &str) {
         self.handle.println_above(line);
+    }
+
+    /// Resolve a stage id (+ candidate scope) to the committed plan's key.
+    /// See [`TimelineHandle::resolve_key`].
+    pub fn resolve_key(
+        &self,
+        id: crate::core::stage::StageId,
+        scope: Option<&str>,
+    ) -> Option<StepKey> {
+        self.handle.resolve_key(id, scope)
     }
 
     /// Close the rail on success: `└  <text>`. No-op without a region.

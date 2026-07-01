@@ -45,6 +45,15 @@ pub struct HookProgressRenderer {
     tail_style: ProgressStyle,
     trailer_style: ProgressStyle,
     name_column_width: usize,
+    /// When embedded in a plan-execute timeline (#651): new job bars are
+    /// `insert_before` this rail bar instead of appended (`mp.add` would
+    /// land them *below* the rail's pending rows and footer). The anchor
+    /// must stay linked for the whole hook run — the timeline guarantees
+    /// this by handing out a pending-row or spacer bar that only leaves the
+    /// region at teardown.
+    insert_anchor: Option<ProgressBar>,
+    /// Weld the header box's left corners onto the rail (`┌`/`└` → `├`).
+    welded: bool,
 }
 
 impl HookProgressRenderer {
@@ -62,6 +71,16 @@ impl HookProgressRenderer {
             MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
             false,
         )
+    }
+
+    /// Render inside a plan-execute timeline's live region (#651): share its
+    /// `MultiProgress`, insert job bars above `anchor` (a live rail bar),
+    /// and weld the header box onto the rail.
+    pub fn new_embedded(config: &HookOutputConfig, mp: MultiProgress, anchor: ProgressBar) -> Self {
+        let mut renderer = Self::create(config, mp, styles::colors_enabled_stderr());
+        renderer.insert_anchor = Some(anchor);
+        renderer.welded = true;
+        renderer
     }
 
     fn create(config: &HookOutputConfig, mp: MultiProgress, use_color: bool) -> Self {
@@ -114,6 +133,18 @@ impl HookProgressRenderer {
             tail_style,
             trailer_style,
             name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
+            insert_anchor: None,
+            welded: false,
+        }
+    }
+
+    /// Add a top-level job bar: appended normally, `insert_before` the rail
+    /// anchor when embedded (the only insertion-point difference between the
+    /// standalone and embedded renderers).
+    fn add_job_bar(&self, bar: ProgressBar) -> ProgressBar {
+        match &self.insert_anchor {
+            Some(anchor) => self.mp.insert_before(anchor, bar),
+            None => self.mp.add(bar),
         }
     }
 
@@ -124,7 +155,9 @@ impl HookProgressRenderer {
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
-        for line in super::formatting::format_header_lines(hook_name, target, self.use_color) {
+        for line in
+            super::formatting::format_header_lines(hook_name, target, self.use_color, self.welded)
+        {
             self.mp.println(line).ok();
         }
     }
@@ -139,7 +172,7 @@ impl HookProgressRenderer {
         description: Option<&str>,
         command_preview: Option<&str>,
     ) {
-        let spinner = self.mp.add(ProgressBar::new_spinner());
+        let spinner = self.add_job_bar(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
         let display_name = match command_preview {

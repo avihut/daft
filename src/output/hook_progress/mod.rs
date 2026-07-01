@@ -66,6 +66,19 @@ impl HookRenderer {
         HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)))
     }
 
+    /// Render inside a plan-execute timeline's live region (#651): the rich
+    /// renderer shares the timeline's `MultiProgress` and inserts its job
+    /// bars above `anchor`, with the header box welded onto the rail.
+    pub fn embedded(
+        config: &HookOutputConfig,
+        mp: indicatif::MultiProgress,
+        anchor: indicatif::ProgressBar,
+    ) -> Self {
+        HookRenderer::Progress(Box::new(HookProgressRenderer::new_embedded(
+            config, mp, anchor,
+        )))
+    }
+
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
         match self {
             HookRenderer::Progress(r) => r.print_header(hook_name, target),
@@ -436,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_format_header_lines_plain() {
-        let lines = formatting::format_header_lines("worktree-post-create", None, false);
+        let lines = formatting::format_header_lines("worktree-post-create", None, false, false);
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with('\u{250c}'));
         assert!(lines[1].contains("daft hooks"));
@@ -448,7 +461,8 @@ mod tests {
 
     #[test]
     fn format_header_lines_includes_target_segment_when_provided() {
-        let lines = formatting::format_header_lines("worktree-pre-remove", Some("test"), false);
+        let lines =
+            formatting::format_header_lines("worktree-pre-remove", Some("test"), false, false);
         assert_eq!(lines.len(), 3);
         assert!(
             lines[1].contains("worktree-pre-remove  on: test"),
@@ -464,7 +478,7 @@ mod tests {
 
     #[test]
     fn format_header_lines_drops_redundant_hook_label() {
-        let lines = formatting::format_header_lines("post-clone", None, false);
+        let lines = formatting::format_header_lines("post-clone", None, false, false);
         // The legacy title carried a "hook:" prefix; the new title drops it
         // because the box border itself signals "this is a hook".
         assert!(
@@ -472,6 +486,19 @@ mod tests {
             "title must not carry the redundant 'hook:' label, got: {:?}",
             lines[1]
         );
+    }
+
+    #[test]
+    fn format_header_lines_weld_swaps_left_corners_only() {
+        let plain = formatting::format_header_lines("worktree-post-create", None, false, false);
+        let welded = formatting::format_header_lines("worktree-post-create", None, false, true);
+        // Left corners branch off the rail (#651)…
+        assert!(welded[0].starts_with('\u{251c}'), "got: {:?}", welded[0]);
+        assert!(welded[2].starts_with('\u{251c}'), "got: {:?}", welded[2]);
+        // …and everything else is byte-identical.
+        assert_eq!(plain[0][3..], welded[0][3..]); // past the 3-byte corner
+        assert_eq!(plain[1], welded[1]);
+        assert_eq!(plain[2][3..], welded[2][3..]);
     }
 
     #[test]

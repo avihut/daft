@@ -70,6 +70,11 @@ pub(super) struct TimelineCore {
     footer: ProgressBar,
     /// Dim free-text sub-line under the active step (`-v` only).
     detail_bar: Option<ProgressBar>,
+    /// Whether the most recently persisted line is a rail spacer (`│`) —
+    /// used to avoid doubling spacers around embedded hook blocks.
+    last_persisted_was_spacer: bool,
+    /// A hook block is currently rendering in place of one of our rows.
+    hook_block_open: bool,
 }
 
 impl TimelineCore {
@@ -94,6 +99,7 @@ impl TimelineCore {
         mp.println(render::spacer(use_color)).ok();
 
         let static_style = line_style();
+        let mut last_persisted_was_spacer = true;
         let mut slots = Vec::with_capacity(plan.rows.len());
         for row in plan.rows {
             let slot = match row {
@@ -125,6 +131,7 @@ impl TimelineCore {
                             use_color,
                         ))
                         .ok();
+                        last_persisted_was_spacer = false;
                         Slot::Step {
                             spec,
                             bar: None,
@@ -161,12 +168,15 @@ impl TimelineCore {
             bottom_spacer,
             footer,
             detail_bar: None,
+            last_persisted_was_spacer,
+            hook_block_open: false,
         }
     }
 
     /// Print a permanent line above the live bars (warnings, errors).
-    pub(super) fn println_above(&self, line: &str) {
+    pub(super) fn println_above(&mut self, line: &str) {
         self.mp.println(line).ok();
+        self.last_persisted_was_spacer = false;
     }
 
     /// Clear the region, run `f` (e.g. a stdout write that must not land
@@ -252,6 +262,7 @@ impl TimelineCore {
                     use_color,
                 );
                 self.mp.println(line).ok();
+                self.last_persisted_was_spacer = false;
             }
         }
         *state = StepState::Resolved;
@@ -316,7 +327,9 @@ impl TimelineCore {
     }
 
     /// The hook step is expanding into its block: remove its row (the block
-    /// replaces it) and hand out the shared region + a live anchor.
+    /// replaces it) and hand out the shared region + a live anchor. A rail
+    /// spacer separates the block from the rows above it (unless one is
+    /// already the last persisted line).
     pub(super) fn begin_hook_embed(&mut self, key: &StepKey) -> Option<HookEmbed> {
         let idx = self.step_index(key)?;
         self.persist_preceding(idx);
@@ -328,11 +341,34 @@ impl TimelineCore {
             }
             *state = StepState::Resolved;
         }
+        if !self.last_persisted_was_spacer {
+            self.mp.println(render::spacer(self.use_color)).ok();
+            self.last_persisted_was_spacer = true;
+        }
+        self.hook_block_open = true;
         let anchor = self.first_live_bar_after(idx);
         Some(HookEmbed {
             mp: self.mp.clone(),
             anchor,
         })
+    }
+
+    /// The hook block finished rendering. When plan rows remain below, a
+    /// rail spacer reconnects them to the spine; when the block was the last
+    /// step, `finish` provides the closing spacer instead.
+    pub(super) fn close_hook_embed(&mut self) {
+        if !self.hook_block_open {
+            return;
+        }
+        self.hook_block_open = false;
+        let steps_remain = self
+            .slots
+            .iter()
+            .any(|s| matches!(s, Slot::Step { bar: Some(_), .. }));
+        if steps_remain {
+            self.mp.println(render::spacer(self.use_color)).ok();
+            self.last_persisted_was_spacer = true;
+        }
     }
 
     /// Tear the region down. Remaining unresolved steps persist as `face`
@@ -387,6 +423,25 @@ impl TimelineCore {
         // `self.mp` drops here with zero live bars — nothing to strand.
     }
 
+    /// Resolve a stage id (+ candidate scope) to the plan's actual key:
+    /// prefer the scoped row (multi-branch plans), fall back to the unscoped
+    /// one (single-target plans, where the hook context still carries a
+    /// branch name that the plan never used as a scope).
+    pub(super) fn resolve_key(
+        &self,
+        id: crate::core::stage::StageId,
+        scope: Option<&str>,
+    ) -> Option<StepKey> {
+        if let Some(scope) = scope {
+            let scoped = StepKey::scoped(id, scope);
+            if self.step_index(&scoped).is_some() {
+                return Some(scoped);
+            }
+        }
+        let unscoped = StepKey::new(id);
+        self.step_index(&unscoped).is_some().then_some(unscoped)
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     fn step_index(&self, key: &StepKey) -> Option<usize> {
@@ -405,12 +460,14 @@ impl TimelineCore {
                     if let Some(taken) = bar.take() {
                         self.mp.remove(&taken);
                         self.mp.println(render::group(label, use_color)).ok();
+                        self.last_persisted_was_spacer = false;
                     }
                 }
                 Slot::Note { text, bar } => {
                     if let Some(taken) = bar.take() {
                         self.mp.remove(&taken);
                         self.mp.println(render::note(text, use_color)).ok();
+                        self.last_persisted_was_spacer = false;
                     }
                 }
                 Slot::Step { .. } => {}
