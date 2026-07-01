@@ -525,9 +525,10 @@ pub fn run() -> Result<()> {
         Some(HooksCommand::Run(run_args)) => run_cmd::cmd_run(&run_args, &mut output),
         None => {
             status::cmd_status(&args.path, false, &mut output)?;
-            output.info(&dim(
-                "Run `git daft hooks --help` to see all available commands.",
-            ));
+            output.info(&dim(&format!(
+                "Run `{}` to see all available commands.",
+                crate::daft_cmd("hooks --help")
+            )));
             Ok(())
         }
     }

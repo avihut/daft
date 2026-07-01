@@ -359,7 +359,8 @@ impl HookExecutor {
                         }
                     } else {
                         output.warning(&format!(
-                            "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {hook_name}. Run 'git daft hooks trust' to allow hooks."
+                            "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {hook_name}. Run '{}' to allow hooks.",
+                            crate::daft_cmd("hooks trust")
                         ));
                         trust_skip::record_skip(ctx, SKIP_REASON_PROMPT_UNAVAILABLE);
                         return Ok(Some(HookResult::skipped("No permission callback")));
@@ -417,20 +418,26 @@ impl HookExecutor {
         for warning in &discovery.deprecation_warnings {
             if warning.new_name_also_exists {
                 output.warning(&format!(
-                    "Both '{}' and '{}' exist in '{}'. Using '{}'; remove '{}' or run 'git daft hooks migrate'.",
+                    "Both '{}' and '{}' exist in '{}'. Using '{}'; remove '{}' or run '{}'.",
                     warning.new_name,
                     warning.old_name,
-                    warning.path.parent().unwrap_or(warning.path.as_path()).display(),
+                    warning
+                        .path
+                        .parent()
+                        .unwrap_or(warning.path.as_path())
+                        .display(),
                     warning.new_name,
                     warning.old_name,
+                    crate::daft_cmd("hooks migrate"),
                 ));
             } else {
                 output.warning(&format!(
-                    "Hook '{}' uses deprecated name '{}'. Rename to '{}' or run 'git daft hooks migrate'. \
+                    "Hook '{}' uses deprecated name '{}'. Rename to '{}' or run '{}'. \
                      Deprecated names will stop working in daft v{}.",
                     warning.path.display(),
                     warning.old_name,
                     warning.new_name,
+                    crate::daft_cmd("hooks migrate"),
                     DEPRECATED_HOOK_REMOVAL_VERSION
                 ));
             }
@@ -438,9 +445,10 @@ impl HookExecutor {
 
         if discovery.hooks.is_empty() {
             if !discovery.deprecation_warnings.is_empty() {
-                return Ok(HookResult::skipped(
-                    "Deprecated hook files found but not executed. Run 'git daft hooks migrate' to rename them.",
-                ));
+                return Ok(HookResult::skipped(format!(
+                    "Deprecated hook files found but not executed. Run '{}' to rename them.",
+                    crate::daft_cmd("hooks migrate")
+                )));
             }
             output.debug(&format!("No {} hooks found", ctx.hook_type));
             return Ok(HookResult::skipped("No hook files found"));
@@ -566,8 +574,9 @@ impl HookExecutor {
         } else {
             // Default: don't execute without explicit permission
             output.warning(&format!(
-                "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {} hooks. Run 'git daft hooks trust' to allow hooks.",
-                ctx.hook_type
+                "Repository trust is set to 'prompt' but no interactive prompt is available — skipping {} hooks. Run '{}' to allow hooks.",
+                ctx.hook_type,
+                crate::daft_cmd("hooks trust")
             ));
             trust_skip::record_skip(ctx, SKIP_REASON_PROMPT_UNAVAILABLE);
             false
@@ -686,10 +695,11 @@ impl HookExecutor {
                 ));
                 output.warning(&format!("  Trusted remote: {stored_fingerprint}"));
                 output.warning(&format!("  Current remote: {url}"));
-                output.warning(
+                output.warning(&format!(
                     "A different repository may now be at this path. \
-                     Run 'git daft hooks trust' to re-trust.",
-                );
+                     Run '{}' to re-trust.",
+                    crate::daft_cmd("hooks trust")
+                ));
                 TrustLevel::Prompt
             }
             None => {

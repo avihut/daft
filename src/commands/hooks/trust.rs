@@ -195,10 +195,11 @@ fn suggest_skipped_replays(git_dir: &Path, project_root: &Path, output: &mut dyn
     output.info(&bold(
         "Hooks were skipped here while the repository was untrusted. Replay them:",
     ));
+    let exe = crate::cli_label();
     for s in &suggestions {
         output.info(&format!(
             "  {}   {}",
-            cyan(&format!("git daft hooks run {}", s.hook_type)),
+            cyan(&format!("{exe} hooks run {}", s.hook_type)),
             dim(&format!("# in {}", s.branches.join(", "))),
         ));
     }
@@ -365,7 +366,7 @@ pub(super) fn cmd_list(
             output.info(&dim("No trusted repositories."));
             output.info("");
             output.info(&bold("To trust a repository, cd into it and run:"));
-            output.info(&format!("  {}", cyan("git daft hooks trust")));
+            output.info(&format!("  {}", cyan(&crate::daft_cmd("hooks trust"))));
         }
         return Ok(());
     }

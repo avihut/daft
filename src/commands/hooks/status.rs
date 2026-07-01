@@ -197,7 +197,7 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                 }
                 output.info(&format!(
                     "  Run '{}' to rename them.",
-                    cyan("git daft hooks migrate")
+                    cyan(&crate::daft_cmd("hooks migrate"))
                 ));
                 output.info(&format!(
                     "  {}",
@@ -221,28 +221,29 @@ pub(super) fn cmd_status(path: &Path, short: bool, output: &mut dyn Output) -> R
                     .to_string()
             };
 
+            let exe = crate::cli_label();
             match trust_level {
                 TrustLevel::Deny => {
                     output.info(&bold("To enable hooks:"));
                     output.info(&format!(
                         "  {}",
-                        cyan(&format!("git daft hooks trust {path_arg}"))
+                        cyan(&format!("{exe} hooks trust {path_arg}"))
                     ));
                     output.info(&format!(
                         "  {}",
-                        cyan(&format!("git daft hooks prompt {path_arg}"))
+                        cyan(&format!("{exe} hooks prompt {path_arg}"))
                     ));
                 }
                 TrustLevel::Prompt | TrustLevel::Allow => {
                     output.info(&bold("To revoke trust:"));
                     output.info(&format!(
                         "  {}  {}",
-                        cyan(&format!("git daft hooks deny {path_arg}")),
+                        cyan(&format!("{exe} hooks deny {path_arg}")),
                         dim("(explicitly deny)")
                     ));
                     output.info(&format!(
                         "  {}  {}",
-                        cyan(&format!("git daft hooks trust reset {path_arg}")),
+                        cyan(&format!("{exe} hooks trust reset {path_arg}")),
                         dim("(remove trust entry)")
                     ));
                 }

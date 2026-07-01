@@ -36,14 +36,17 @@ steps:
     expect:
       exit_code: 0
 
-  - name: Trust suggests replays for both worktrees
+  - name: Trust suggests replays for both worktrees, in the invocation's style
     run: daft hooks trust --force
     cwd: "$WORK_DIR/test-replay-clear/main"
     expect:
       exit_code: 0
       output_contains:
-        - "git daft hooks run worktree-post-create"
+        - "daft hooks run worktree-post-create"
         - "feature/replayed"
+      output_not_contains:
+        # Invoked as `daft`, not `git daft` — suggestions must match.
+        - "git daft hooks run"
 
   - name: Replay the hook inside the feature worktree
     run: daft hooks run worktree-post-create

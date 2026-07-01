@@ -48,7 +48,9 @@ steps:
       exit_code: 0
       output_contains:
         - "Hooks were skipped here while the repository was untrusted"
-        - "git daft hooks run worktree-post-create"
+        - "daft hooks run worktree-post-create"
         - "feature/replay"
       output_not_contains:
         - "hooks run worktree-pre-create"
+        # Invoked as `daft`, not `git daft` — suggestions must match.
+        - "git daft hooks run"

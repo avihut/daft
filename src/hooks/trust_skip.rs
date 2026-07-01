@@ -388,9 +388,12 @@ fn format_notice(content: &NoticeContent, show_hints: bool, colorize: bool) -> S
         // Pad the plain label first, then wrap it in the (zero-width) style
         // codes, so the alignment holds with and without color.
         const LABEL_W: usize = 34;
+        // Render the executable the way the user invoked it (`daft` vs
+        // `git daft`), so the suggestion is copy-pasteable in their style.
+        let exe = crate::cli_label();
         let label = "To run them, trust this repo:";
         out.push_str(&format!(
-            "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}git daft hooks trust{reset}"
+            "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}{exe} hooks trust{reset}"
         ));
         if let Some(replay) = &content.replay {
             let (label, suffix) = match (replay.as_str(), multi_branch) {
@@ -407,7 +410,7 @@ fn format_notice(content: &NoticeContent, show_hints: bool, colorize: bool) -> S
                 format!("{dim}{suffix}{reset}")
             };
             out.push_str(&format!(
-                "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}git daft hooks run {replay}{reset}{suffix}"
+                "\n{INDENT}{dim}{label:<LABEL_W$}{reset}  {cyan}{exe} hooks run {replay}{reset}{suffix}"
             ));
         }
     }
