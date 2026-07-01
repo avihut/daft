@@ -92,6 +92,10 @@ impl NoticeContent {
                 if a == "worktree-post-create" || b == "worktree-post-create" {
                     Some("worktree-post-create".to_string())
                 } else {
+                    // Both sides can only be "post-clone" here — replay is
+                    // populated from the two idempotent setup hooks only.
+                    // max() just keeps the pick deterministic if that set
+                    // ever grows.
                     Some(a.max(b))
                 }
             }
