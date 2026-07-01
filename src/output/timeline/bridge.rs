@@ -12,6 +12,26 @@ use crate::output::Output;
 use crate::styles;
 use std::path::Path;
 
+/// `warning: <msg>` in the CliOutput vocabulary, for printing above the
+/// live bars.
+pub(crate) fn warning_line(msg: &str) -> String {
+    if styles::colors_enabled_stderr() {
+        format!("{}warning:{} {msg}", styles::YELLOW, styles::RESET)
+    } else {
+        format!("warning: {msg}")
+    }
+}
+
+/// `error: <msg>` in the CliOutput vocabulary, for printing above the
+/// live bars.
+pub(crate) fn error_line(msg: &str) -> String {
+    if styles::colors_enabled_stderr() {
+        format!("{}error:{} {msg}", styles::RED, styles::RESET)
+    } else {
+        format!("error: {msg}")
+    }
+}
+
 pub struct RegionOutput {
     handle: TimelineHandle,
     quiet: bool,
@@ -50,12 +70,7 @@ impl Output for RegionOutput {
     }
 
     fn warning(&mut self, msg: &str) {
-        let line = if styles::colors_enabled_stderr() {
-            format!("{}warning:{} {msg}", styles::YELLOW, styles::RESET)
-        } else {
-            format!("warning: {msg}")
-        };
-        self.handle.println_above(&line);
+        self.handle.println_above(&warning_line(msg));
     }
 
     fn notice(&mut self, msg: &str) {
@@ -65,12 +80,7 @@ impl Output for RegionOutput {
     }
 
     fn error(&mut self, msg: &str) {
-        let line = if styles::colors_enabled_stderr() {
-            format!("{}error:{} {msg}", styles::RED, styles::RESET)
-        } else {
-            format!("error: {msg}")
-        };
-        self.handle.println_above(&line);
+        self.handle.println_above(&error_line(msg));
     }
 
     fn debug(&mut self, msg: &str) {

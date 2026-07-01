@@ -22,6 +22,7 @@ mod region;
 mod render;
 
 pub use bridge::RegionOutput;
+pub(crate) use bridge::warning_line;
 pub use region::HookEmbed;
 
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};

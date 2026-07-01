@@ -25,7 +25,7 @@ pub mod worktree;
 
 pub use tui_bridge::TuiBridge;
 
-pub use progress::{CommandBridge, OutputSink};
+pub use progress::{CommandBridge, OutputSink, TimelineBridge};
 pub use stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 
 use crate::hooks::HookContext;
@@ -223,3 +223,58 @@ pub trait ConsolidationPrompter {
 
 impl ConsolidationPrompter for NullBridge {}
 impl ConsolidationPrompter for NullSink {}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Test support
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Recording sink for core-level timeline contract tests: captures the
+/// committed plan, every stage event, free-text steps, and each hook type
+/// that fired — so tests can assert "plan committed after validation",
+/// "Push failed but post-create hooks still ran", etc., without a terminal.
+#[cfg(test)]
+#[derive(Default)]
+pub struct RecordingStageSink {
+    pub plan: Option<stage::PlanCommit>,
+    pub events: Vec<(stage::StepKey, stage::StageEvent)>,
+    pub steps: Vec<String>,
+    pub warnings: Vec<String>,
+    pub hooks_run: Vec<crate::hooks::HookType>,
+}
+
+#[cfg(test)]
+impl ProgressSink for RecordingStageSink {
+    fn on_step(&mut self, msg: &str) {
+        self.steps.push(msg.to_string());
+    }
+
+    fn on_warning(&mut self, msg: &str) {
+        self.warnings.push(msg.to_string());
+    }
+
+    fn on_debug(&mut self, _msg: &str) {}
+
+    fn on_plan(&mut self, plan: stage::PlanCommit) {
+        assert!(self.plan.is_none(), "plan committed twice");
+        self.plan = Some(plan);
+    }
+
+    fn on_stage(&mut self, key: &stage::StepKey, event: stage::StageEvent) {
+        self.events.push((key.clone(), event));
+    }
+}
+
+#[cfg(test)]
+impl HookRunner for RecordingStageSink {
+    fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.hooks_run.push(ctx.hook_type);
+        Ok(HookOutcome {
+            success: true,
+            skipped: true,
+            skip_reason: Some("hooks disabled".to_string()),
+        })
+    }
+}
+
+#[cfg(test)]
+impl ConsolidationPrompter for RecordingStageSink {}

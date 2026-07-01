@@ -115,105 +115,118 @@ impl ProgressSink for CommandBridge<'_> {
     }
 }
 
+/// Interactive consolidation prompt, shared by `CommandBridge` and
+/// `TimelineBridge`. The prompts fire during *validation* — before any
+/// timeline region materializes — so plain terminal IO is safe in both.
+fn prompt_refined(output: &mut dyn Output, req: &ConsolidationRequest) -> ConsolidationChoice {
+    // The summary must be visible above the prompt, so suspend any
+    // running spinner for the duration (same contract as run_hook).
+    output.pause_spinner();
+    output.info(&format!(
+        "Worktree '{}' has refined daft files not in {}:",
+        req.branch, req.target_display
+    ));
+    for file in &req.files {
+        if file.whole_file {
+            output.info(&format!(
+                "  {} — no seed provenance; consolidating overlays the whole file",
+                file.filename
+            ));
+            continue;
+        }
+        if !file.adopt_keys.is_empty() {
+            output.info(&format!(
+                "  {} — would adopt: {}",
+                file.filename,
+                file.adopt_keys.join(", ")
+            ));
+        }
+        if !file.conflict_keys.is_empty() {
+            output.info(&format!(
+                "  {} — conflicting keys: {}",
+                file.filename,
+                file.conflict_keys.join(", ")
+            ));
+        }
+    }
+    eprint!(
+        "Consolidate into {}, discard, or abort? [c/d/A] ",
+        req.target_display
+    );
+    let result = single_key_select(&PromptConfig {
+        options: vec![
+            PromptOption {
+                key: 'c',
+                label: "consolidate",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'd',
+                label: "discard",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'a',
+                label: "abort",
+                is_default: true,
+            },
+        ],
+        cancel_message: Some("Aborted.".to_string()),
+    });
+    eprintln!();
+    output.resume_spinner();
+    match result {
+        PromptResult::Selected('c') => ConsolidationChoice::Consolidate,
+        PromptResult::Selected('d') => ConsolidationChoice::Discard,
+        _ => ConsolidationChoice::Abort,
+    }
+}
+
+/// Interactive conflict-side prompt, shared by both bridges (see
+/// [`prompt_refined`]).
+fn prompt_conflict_side(output: &mut dyn Output, filename: &str, keys: &[String]) -> ConflictSide {
+    output.pause_spinner();
+    eprint!(
+        "{}: keep the target's version or take the removed worktree's for {}? [s/t/A] ",
+        filename,
+        keys.join(", ")
+    );
+    let result = single_key_select(&PromptConfig {
+        options: vec![
+            PromptOption {
+                key: 's',
+                label: "source",
+                is_default: false,
+            },
+            PromptOption {
+                key: 't',
+                label: "target",
+                is_default: false,
+            },
+            PromptOption {
+                key: 'a',
+                label: "abort",
+                is_default: true,
+            },
+        ],
+        cancel_message: Some("Aborted.".to_string()),
+    });
+    eprintln!();
+    output.resume_spinner();
+    match result {
+        PromptResult::Selected('s') => ConflictSide::Source,
+        PromptResult::Selected('t') => ConflictSide::Target,
+        _ => ConflictSide::Abort,
+    }
+}
+
 impl ConsolidationPrompter for CommandBridge<'_> {
     fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
-        // The summary must be visible above the prompt, so suspend any
-        // running spinner for the duration (same contract as run_hook).
-        self.output.pause_spinner();
-        self.output.info(&format!(
-            "Worktree '{}' has refined daft files not in {}:",
-            req.branch, req.target_display
-        ));
-        for file in &req.files {
-            if file.whole_file {
-                self.output.info(&format!(
-                    "  {} — no seed provenance; consolidating overlays the whole file",
-                    file.filename
-                ));
-                continue;
-            }
-            if !file.adopt_keys.is_empty() {
-                self.output.info(&format!(
-                    "  {} — would adopt: {}",
-                    file.filename,
-                    file.adopt_keys.join(", ")
-                ));
-            }
-            if !file.conflict_keys.is_empty() {
-                self.output.info(&format!(
-                    "  {} — conflicting keys: {}",
-                    file.filename,
-                    file.conflict_keys.join(", ")
-                ));
-            }
-        }
-        eprint!(
-            "Consolidate into {}, discard, or abort? [c/d/A] ",
-            req.target_display
-        );
-        let result = single_key_select(&PromptConfig {
-            options: vec![
-                PromptOption {
-                    key: 'c',
-                    label: "consolidate",
-                    is_default: false,
-                },
-                PromptOption {
-                    key: 'd',
-                    label: "discard",
-                    is_default: false,
-                },
-                PromptOption {
-                    key: 'a',
-                    label: "abort",
-                    is_default: true,
-                },
-            ],
-            cancel_message: Some("Aborted.".to_string()),
-        });
-        eprintln!();
-        self.output.resume_spinner();
-        match result {
-            PromptResult::Selected('c') => ConsolidationChoice::Consolidate,
-            PromptResult::Selected('d') => ConsolidationChoice::Discard,
-            _ => ConsolidationChoice::Abort,
-        }
+        prompt_refined(self.output, req)
     }
 
     fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
-        self.output.pause_spinner();
-        eprint!(
-            "{}: keep the target's version or take the removed worktree's for {}? [s/t/A] ",
-            filename,
-            keys.join(", ")
-        );
-        let result = single_key_select(&PromptConfig {
-            options: vec![
-                PromptOption {
-                    key: 's',
-                    label: "source",
-                    is_default: false,
-                },
-                PromptOption {
-                    key: 't',
-                    label: "target",
-                    is_default: false,
-                },
-                PromptOption {
-                    key: 'a',
-                    label: "abort",
-                    is_default: true,
-                },
-            ],
-            cancel_message: Some("Aborted.".to_string()),
-        });
-        eprintln!();
-        self.output.resume_spinner();
-        match result {
-            PromptResult::Selected('s') => ConflictSide::Source,
-            PromptResult::Selected('t') => ConflictSide::Target,
-            _ => ConflictSide::Abort,
-        }
+        prompt_conflict_side(self.output, filename, keys)
     }
 }
 
@@ -233,6 +246,115 @@ impl HookRunner for CommandBridge<'_> {
             skipped: result.skipped,
             skip_reason: result.skip_reason.clone(),
         })
+    }
+}
+
+/// Bridge for commands that render the plan-execute rail timeline (#651).
+///
+/// Behaves exactly like [`CommandBridge`] until the core commits its plan
+/// (`on_plan`): free-text steps drive the command's resolve spinner, prompts
+/// use plain terminal IO. Once the region is live, steps become dim detail
+/// sub-lines, warnings route above the live bars, and hook phases render as
+/// embedded blocks inside the rail.
+pub struct TimelineBridge<'a> {
+    output: &'a mut dyn Output,
+    timeline: &'a mut crate::output::timeline::Timeline,
+    executor: HookExecutor,
+    output_config: HookOutputConfig,
+}
+
+impl<'a> TimelineBridge<'a> {
+    pub fn new(
+        output: &'a mut dyn Output,
+        timeline: &'a mut crate::output::timeline::Timeline,
+        executor: HookExecutor,
+        output_config: HookOutputConfig,
+    ) -> Self {
+        Self {
+            output,
+            timeline,
+            executor,
+            output_config,
+        }
+    }
+}
+
+impl ProgressSink for TimelineBridge<'_> {
+    fn on_step(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            self.timeline.detail(msg);
+        } else {
+            self.output.step(msg);
+        }
+    }
+
+    fn on_warning(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            self.timeline
+                .println_above(&crate::output::timeline::warning_line(msg));
+        } else {
+            self.output.warning(msg);
+        }
+    }
+
+    fn on_debug(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            if self.output.is_verbose() {
+                self.timeline.detail(msg);
+            }
+        } else {
+            self.output.debug(msg);
+        }
+    }
+
+    fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
+        // The resolve-phase spinner ends where the plan begins.
+        self.output.finish_spinner();
+        self.timeline.commit_plan(plan);
+    }
+
+    fn on_stage(
+        &mut self,
+        key: &crate::core::stage::StepKey,
+        event: crate::core::stage::StageEvent,
+    ) {
+        self.timeline.on_stage(key, event);
+    }
+}
+
+impl HookRunner for TimelineBridge<'_> {
+    fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
+        // Embedded rendering (region live) lands with the hook seams; until
+        // a command migrates, this arm is only reached region-less and is
+        // byte-identical to CommandBridge.
+        let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
+        self.output.pause_spinner();
+        let exec_result = self.executor.execute(ctx, self.output, presenter);
+        self.output.resume_spinner();
+        let result = exec_result?;
+        Ok(HookOutcome {
+            success: result.success,
+            skipped: result.skipped,
+            skip_reason: result.skip_reason.clone(),
+        })
+    }
+}
+
+impl ConsolidationPrompter for TimelineBridge<'_> {
+    fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
+        debug_assert!(
+            !self.timeline.region_live(),
+            "consolidation prompts must precede the plan commit"
+        );
+        prompt_refined(self.output, req)
+    }
+
+    fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
+        debug_assert!(
+            !self.timeline.region_live(),
+            "consolidation prompts must precede the plan commit"
+        );
+        prompt_conflict_side(self.output, filename, keys)
     }
 }
 
