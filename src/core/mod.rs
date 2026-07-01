@@ -19,12 +19,14 @@ pub mod repo_identity;
 pub mod settings;
 pub mod shared;
 pub mod sort;
+pub mod stage;
 mod tui_bridge;
 pub mod worktree;
 
 pub use tui_bridge::TuiBridge;
 
 pub use progress::{CommandBridge, OutputSink};
+pub use stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 
 use crate::hooks::HookContext;
 use anyhow::Result;
@@ -48,6 +50,23 @@ pub trait ProgressSink {
     /// Report a debug message (shown in verbose mode).
     fn on_debug(&mut self, msg: &str);
 
+    // ── Plan-then-execute timeline (#651) ────────────────────────────────
+    // Default no-ops so every existing sink (OutputSink, CommandBridge,
+    // TuiBridge, NullSink, test sinks) compiles and behaves unchanged.
+    // Only timeline-aware sinks (TimelineBridge) override these.
+
+    /// Commit the execution plan. Emitted exactly once, after all
+    /// resolution/validation and before the first mutation. Cores that
+    /// return early (nothing to do, validation failure) never call this.
+    fn on_plan(&mut self, plan: stage::PlanCommit) {
+        let _ = plan;
+    }
+
+    /// Report a lifecycle event for one committed plan step.
+    fn on_stage(&mut self, key: &stage::StepKey, event: stage::StageEvent) {
+        let _ = (key, event);
+    }
+
     /// Suspend any running command-level spinner so a nested progress UI
     /// (e.g. the pre-push hook's `MultiProgress`) can own the terminal without
     /// the two clobbering each other. No-op by default; CLI adapters forward
@@ -57,6 +76,7 @@ pub trait ProgressSink {
     /// Restore a spinner previously hidden by [`pause_spinner`](Self::pause_spinner).
     /// No-op by default.
     fn resume_spinner(&mut self) {}
+
 }
 
 /// A no-op sink that discards all progress messages.

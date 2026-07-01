@@ -5,6 +5,7 @@ mod interactive;
 mod plain;
 
 pub(crate) use formatting::DEFAULT_NAME_COLUMN_WIDTH;
+pub(crate) use formatting::format_duration;
 pub use interactive::HookProgressRenderer;
 pub use plain::PlainHookRenderer;
 

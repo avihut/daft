@@ -24,7 +24,9 @@ pub mod format;
 pub mod hook_progress;
 pub mod outline;
 pub mod pager;
+pub(crate) mod palette;
 mod test;
+pub mod timeline;
 pub mod tui;
 
 pub use buffering::BufferingOutput;

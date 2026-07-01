@@ -7,12 +7,12 @@ use crate::VERSION;
 use crate::styles;
 use std::time::Duration;
 
-// ANSI color codes for hook output (256-color palette)
+// ANSI color codes for hook output (256-color palette). The scaffolding
+// greys and the attention yellow are shared with the plan-execute timeline
+// (`crate::output::palette`) so the two surfaces compose seamlessly (#651).
 pub(super) const ORANGE: &str = "\x1b[38;5;208m";
-pub(super) const YELLOW: &str = "\x1b[38;5;220m";
-pub(super) const GREY: &str = "\x1b[38;5;245m";
+pub(super) use crate::output::palette::{DARK_GREY, GREY, YELLOW};
 pub(super) const BRIGHT_WHITE: &str = "\x1b[97m";
-pub(super) const DARK_GREY: &str = "\x1b[38;5;240m";
 pub(super) const BLUE: &str = "\x1b[38;5;75m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 
@@ -22,10 +22,10 @@ pub(crate) const DEFAULT_NAME_COLUMN_WIDTH: usize = 24;
 
 /// Check if hook visual output should be suppressed (e.g. during tests).
 ///
-/// Returns true when running unit tests (`cfg!(test)`) or when `DAFT_TESTING`
-/// env var is set (for integration tests that invoke the binary as a subprocess).
+/// Delegates to the shared predicate in `crate::output::palette` so the hook
+/// renderer and the timeline suppress under exactly the same conditions.
 pub(super) fn output_suppressed() -> bool {
-    cfg!(test) || std::env::var("DAFT_TESTING").is_ok()
+    crate::output::palette::testing_suppressed()
 }
 
 /// Generate the hook header lines (dark-grey framed box).
@@ -181,7 +181,10 @@ pub(super) fn format_summary_lines(
 /// - Under 1 second: milliseconds (e.g., "112ms")
 /// - 1-60 seconds: seconds with one decimal (e.g., "2.3s")
 /// - Over 60 seconds: minutes and seconds (e.g., "1m 5s")
-pub(super) fn format_duration(d: Duration) -> String {
+///
+/// `pub(crate)` so the plan-execute timeline renders durations in exactly
+/// the same vocabulary as the hook rows it composes with.
+pub(crate) fn format_duration(d: Duration) -> String {
     let millis = d.as_millis();
     if millis < 1000 {
         format!("{millis}ms")
