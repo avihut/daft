@@ -249,6 +249,66 @@ impl HookRunner for CommandBridge<'_> {
     }
 }
 
+/// `ProgressSink`-only adapter for rail-rendering commands whose cores do
+/// not run hooks through the sink (clone's phase functions). Same routing as
+/// [`TimelineBridge`]: free text becomes detail under the active row once the
+/// region is live, warnings print above the bars, stage events drive rows.
+pub struct TimelineSink<'a> {
+    output: &'a mut dyn Output,
+    timeline: &'a mut crate::output::timeline::Timeline,
+}
+
+impl<'a> TimelineSink<'a> {
+    pub fn new(
+        output: &'a mut dyn Output,
+        timeline: &'a mut crate::output::timeline::Timeline,
+    ) -> Self {
+        Self { output, timeline }
+    }
+}
+
+impl ProgressSink for TimelineSink<'_> {
+    fn on_step(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            self.timeline.detail(msg);
+        } else {
+            self.output.step(msg);
+        }
+    }
+
+    fn on_warning(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            self.timeline
+                .println_above(&crate::output::timeline::warning_line(msg));
+        } else {
+            self.output.warning(msg);
+        }
+    }
+
+    fn on_debug(&mut self, msg: &str) {
+        if self.timeline.region_live() {
+            if self.output.is_verbose() {
+                self.timeline.detail(msg);
+            }
+        } else {
+            self.output.debug(msg);
+        }
+    }
+
+    fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
+        self.output.finish_spinner();
+        self.timeline.commit_plan(plan);
+    }
+
+    fn on_stage(
+        &mut self,
+        key: &crate::core::stage::StepKey,
+        event: crate::core::stage::StageEvent,
+    ) {
+        self.timeline.on_stage(key, event);
+    }
+}
+
 /// Bridge for commands that render the plan-execute rail timeline (#651).
 ///
 /// Behaves exactly like [`CommandBridge`] until the core commits its plan
@@ -324,7 +384,7 @@ impl ProgressSink for TimelineBridge<'_> {
 
 impl HookRunner for TimelineBridge<'_> {
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
-        use crate::core::stage::{StageEvent, StageId};
+        use crate::core::stage::StageId;
 
         // Embedded path: the region is live and the plan has a row for this
         // hook phase (scoped by the context's branch when the plan is
@@ -343,31 +403,8 @@ impl HookRunner for TimelineBridge<'_> {
                 self.output.is_verbose(),
             );
             let result = self.executor.execute(ctx, &mut region_output, presenter)?;
-            if result.skipped {
-                match result.skip_reason.as_deref() {
-                    // Benign non-events: nothing was configured to run —
-                    // remove the row silently rather than advertise
-                    // machinery. ("All jobs skipped" may have rendered its
-                    // own attribution block, in which case the row is
-                    // already consumed and this is a no-op.)
-                    Some("No hook files found")
-                    | Some("Hooks are globally disabled")
-                    | Some("All jobs skipped")
-                    | None => self.timeline.resolve_silently(&key),
-                    // Attention-worthy skips (trust refusal, --skip-hooks,
-                    // declined prompt): yellow row with the reason.
-                    Some(reason) => self.timeline.on_stage(
-                        &key,
-                        StageEvent::SkippedAttention {
-                            reason: reason.to_string(),
-                        },
-                    ),
-                }
-            }
-            // Ran (success or failure): the block is the step's record —
-            // begin_hook_embed already replaced the row. Reconnect the rail
-            // below the block when more plan rows follow.
-            self.timeline.close_hook_embed();
+            self.timeline
+                .resolve_hook_step(&key, result.skipped, result.skip_reason.as_deref());
             return Ok(HookOutcome {
                 success: result.success,
                 skipped: result.skipped,

@@ -1,13 +1,14 @@
 use crate::{
     check_dependencies,
     core::{
-        HookRunner, NullSink, OutputSink, TuiBridge,
+        HookRunner, NullSink, OutputSink, TimelineSink, TuiBridge,
         global_config::GlobalConfig,
         layout::{
             Layout, TemplateContext,
             resolver::{LayoutResolutionContext, resolve_layout},
         },
         ownership::OwnershipStrategy,
+        stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec},
         worktree::{
             branch_source::{BranchPlan, BranchSource},
             clone,
@@ -27,6 +28,7 @@ use crate::{
     logging::init_logging,
     output::{
         CliOutput, Output, OutputConfig,
+        timeline::{RegionOutput, Timeline, TimelineMode},
         tui::{
             Column,
             operation_table::{OperationTable, TableConfig},
@@ -287,6 +289,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
+    // Phase 1 completes before the timeline can exist (the layout prompt and
+    // branch resolution sit between them), so it keeps its transient spinner
+    // and later appears on the rail as a pre-completed row.
+    let bare_started = std::time::Instant::now();
     output.start_spinner("Cloning repository...");
     let bare_result = {
         let mut sink = OutputSink(output);
@@ -294,6 +300,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     };
     output.finish_spinner();
     let bare_result = bare_result?;
+    let bare_elapsed = bare_started.elapsed();
 
     // Phase 2: Read daft.yml from the bare repo (if no --layout flag)
     let yaml_layout = if args.layout.is_none() && !bare_result.is_empty {
@@ -405,36 +412,11 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     let canonical_parent_dir =
         std::env::current_dir().unwrap_or_else(|_| bare_result.parent_dir.clone());
 
-    // Phase 4: Set up repo in the correct layout
-    let result = if layout.needs_bare() {
-        output.start_spinner("Setting up worktrees...");
-        let r = {
-            let mut sink = OutputSink(output);
-            clone::setup_bare_worktrees(&bare_result, &bare_params, &layout, &mut sink)
-        };
-        output.finish_spinner();
-        r?
-    } else if layout.needs_wrapper() {
-        output.start_spinner("Setting up wrapped repository...");
-        let r = {
-            let mut sink = OutputSink(output);
-            clone::setup_wrapped_nonbare(&bare_result, &bare_params, &layout, &mut sink)
-        };
-        output.finish_spinner();
-        r?
-    } else {
-        output.start_spinner("Setting up repository...");
-        let r = {
-            let mut sink = OutputSink(output);
-            clone::unbare_and_checkout(&bare_result, &bare_params, &layout, &mut sink)
-        };
-        output.finish_spinner();
-        r?
-    };
-
     // Filter out the branch that Phase 4 already created (for bare layouts).
     // For bare layouts, Phase 4 creates a worktree for bare_result.target_branch,
     // but branch_plan.satellites includes it since branch_plan.base is None.
+    // (Computed before Phase 4 so the timeline plan can account for the
+    // satellite phase; only depends on the resolution done above.)
     let filtered_satellites: Vec<String> = if layout.needs_bare() {
         branch_plan
             .satellites
@@ -445,6 +427,112 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     } else {
         branch_plan.satellites.clone()
     };
+
+    // Plan-execute rail timeline (#651). Every prompt has fired; commit the
+    // plan directly (it spans several core phases, so the command owns it).
+    // When the satellite OperationTable will run (multi-branch on a TTY),
+    // the rail closes before the table and the post-clone/post-create hooks
+    // render standalone after it, exactly as today — so their rows are only
+    // planned for the single-target journeys.
+    let will_use_satellite_tui = is_multi_branch
+        && !filtered_satellites.is_empty()
+        && std::io::IsTerminal::is_terminal(&std::io::stderr())
+        && args.verbose < 2;
+    let mut timeline = Timeline::new(
+        TimelineMode::auto(output.is_quiet()),
+        output.is_verbose(),
+        format!("Cloning {}", bare_result.repo_name),
+    );
+    {
+        let mut plan_rows = vec![
+            Row::Step(
+                StepSpec::new(StepKey::new(StageId::CloneBare))
+                    .with_annotation(format!("\u{2190} {}", bare_params.repository_url))
+                    .pre_completed(bare_elapsed),
+            ),
+            Row::Step(
+                StepSpec::new(StepKey::new(StageId::CreateBaseWorktree))
+                    .with_annotation(bare_result.target_branch.clone()),
+            ),
+        ];
+        if !will_use_satellite_tui {
+            plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+                StageId::PostCloneHooks,
+            ))));
+            plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+                StageId::PostCreateHooks,
+            ))));
+            if args.install {
+                plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Install))));
+            }
+        }
+        timeline.commit_plan(PlanCommit::new(plan_rows));
+    }
+    let interactive = timeline.is_interactive();
+
+    // Phase 4: Set up repo in the correct layout. The rail region owns the
+    // terminal now — the legacy spinners only run when it does not.
+    let base_worktree_key = StepKey::new(StageId::CreateBaseWorktree);
+    timeline.on_stage(&base_worktree_key, StageEvent::Started);
+    let region_live = timeline.region_live();
+    let result = if layout.needs_bare() {
+        if !region_live {
+            output.start_spinner("Setting up worktrees...");
+        }
+        let r = {
+            let mut sink = TimelineSink::new(output, &mut timeline);
+            clone::setup_bare_worktrees(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r
+    } else if layout.needs_wrapper() {
+        if !region_live {
+            output.start_spinner("Setting up wrapped repository...");
+        }
+        let r = {
+            let mut sink = TimelineSink::new(output, &mut timeline);
+            clone::setup_wrapped_nonbare(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r
+    } else {
+        if !region_live {
+            output.start_spinner("Setting up repository...");
+        }
+        let r = {
+            let mut sink = TimelineSink::new(output, &mut timeline);
+            clone::unbare_and_checkout(&bare_result, &bare_params, &layout, &mut sink)
+        };
+        output.finish_spinner();
+        r
+    };
+    let result = match result {
+        Ok(result) => result,
+        Err(e) => {
+            timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+            return Err(e);
+        }
+    };
+    if result.branch_not_found {
+        timeline.on_stage(
+            &base_worktree_key,
+            StageEvent::SkippedAttention {
+                reason: format!("branch '{}' not found on remote", result.target_branch),
+            },
+        );
+    } else if result.no_checkout {
+        timeline.on_stage(
+            &base_worktree_key,
+            StageEvent::SkippedExpected {
+                reason: "--no-checkout".to_string(),
+            },
+        );
+    } else {
+        timeline.on_stage(
+            &base_worktree_key,
+            StageEvent::Completed { annotation: None },
+        );
+    }
 
     // For bare layouts, the "base" shown in the TUI is the Phase 4-created branch.
     // For non-bare layouts, it's branch_plan.base.
@@ -487,8 +575,14 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     // Phase 5: Create satellite worktrees for multi-branch clone
     let mut used_tui = false;
     let result = if is_multi_branch && !filtered_satellites.is_empty() {
-        if std::io::IsTerminal::is_terminal(&std::io::stderr()) && args.verbose < 2 {
+        if will_use_satellite_tui {
             used_tui = true;
+            // The satellite OperationTable owns the terminal next — close
+            // the rail first (base is done; hooks render after the table).
+            timeline.finish(&format!(
+                "Base worktree ready in {}",
+                timeline.elapsed_display()
+            ));
             create_satellite_worktrees_tui(
                 &result,
                 &branch_plan,
@@ -520,7 +614,24 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         result
     };
 
-    render_clone_result(&result, &layout, output);
+    // On the rail the header + footer are the record; the result line stays
+    // for Plain/Hidden and for the satellite-table path (whose rail closed
+    // before the table).
+    if !interactive || used_tui {
+        render_clone_result(&result, &layout, output);
+    }
+
+    // While the region is live, stray writes must compose with it: warnings
+    // route above the bars, stdout goes through a suspend. The hook helpers
+    // and --install receive this region-aware output too.
+    let mut region_output;
+    let tail_output: &mut dyn Output = if timeline.region_live() {
+        region_output =
+            RegionOutput::new(timeline.handle(), output.is_quiet(), output.is_verbose());
+        &mut region_output
+    } else {
+        output
+    };
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
     if !args.trust_hooks {
@@ -528,9 +639,9 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         if trust_db.has_explicit_trust(&result.git_dir) {
             trust_db.remove_trust(&result.git_dir);
             if let Err(e) = trust_db.save() {
-                output.warning(&format!("Could not remove stale trust entry: {e}"));
+                tail_output.warning(&format!("Could not remove stale trust entry: {e}"));
             } else {
-                output.step("Removed stale trust entry for previous repository at this path");
+                tail_output.step("Removed stale trust entry for previous repository at this path");
             }
         }
     }
@@ -541,17 +652,24 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // (TuiBridge buffers warnings) BEFORE the post-clone fire: the
         // aggregated multi-worktree copy wins, and a post-clone Deny hit
         // then dedups against it instead of replacing it.
-        crate::hooks::trust_skip::flush_pending_notice(&result.git_dir, output);
-        run_post_clone_hook(args, &result, output)?;
+        crate::hooks::trust_skip::flush_pending_notice(&result.git_dir, tail_output);
+        run_post_clone_hook(args, &result, tail_output, &mut timeline)?;
         // For multi-branch TUI: hooks already ran inside TUI for all worktrees
         // (including the base). For everything else: run post-create hook for
         // the base worktree here.
         if !(is_multi_branch && used_tui) {
-            run_post_create_hook(args, &result, output)?;
+            run_post_create_hook(args, &result, tail_output, &mut timeline)?;
         }
 
         if args.install {
-            run_clone_install(args, &result, output)?;
+            let install_key = StepKey::new(StageId::Install);
+            timeline.on_stage(&install_key, StageEvent::Started);
+            run_clone_install(args, &result, tail_output)?;
+            timeline.on_stage(&install_key, StageEvent::Completed { annotation: None });
+        }
+
+        if timeline.region_live() {
+            timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
         }
 
         let exec_result = crate::exec::run_exec_commands(&args.exec, output);
@@ -563,11 +681,17 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
         exec_result?;
     } else if result.branch_not_found {
+        if timeline.region_live() {
+            timeline.finish(&format!("Finished in {}", timeline.elapsed_display()));
+        }
         if let Some(ref cd_target) = result.cd_target {
             output.cd_path(cd_target);
         }
         maybe_show_shell_hint(output)?;
     } else if result.no_checkout {
+        if timeline.region_live() {
+            timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+        }
         // No worktree exists for --no-checkout, but the user still ran a
         // clone — drop them into the project root (the directory holding
         // the bare .git) so they can immediately operate on the new repo.
@@ -1401,9 +1525,17 @@ fn run_post_clone_hook(
     args: &Args,
     result: &clone::CloneResult,
     output: &mut dyn Output,
+    timeline: &mut Timeline,
 ) -> Result<()> {
+    let step_key = StepKey::new(StageId::PostCloneHooks);
     if skip_hooks_all(&args.skip_hooks) {
         output.step("Skipping hooks (--skip-hooks all)");
+        timeline.on_stage(
+            &step_key,
+            StageEvent::SkippedAttention {
+                reason: "--skip-hooks all".to_string(),
+            },
+        );
         return Ok(());
     }
 
@@ -1444,8 +1576,21 @@ fn run_post_clone_hook(
     .with_default_branch(&result.default_branch)
     .with_new_branch(false);
 
-    let presenter = CliPresenter::auto(&HookOutputConfig::default());
-    executor.execute(&ctx, output, presenter)?;
+    let presenter = if timeline.region_live() {
+        CliPresenter::embedded(
+            &HookOutputConfig::default(),
+            timeline.handle(),
+            step_key.clone(),
+        )
+    } else {
+        CliPresenter::auto(&HookOutputConfig::default())
+    };
+    let hook_result = executor.execute(&ctx, output, presenter)?;
+    timeline.resolve_hook_step(
+        &step_key,
+        hook_result.skipped,
+        hook_result.skip_reason.as_deref(),
+    );
 
     Ok(())
 }
@@ -1454,8 +1599,16 @@ fn run_post_create_hook(
     args: &Args,
     result: &clone::CloneResult,
     output: &mut dyn Output,
+    timeline: &mut Timeline,
 ) -> Result<()> {
+    let step_key = StepKey::new(StageId::PostCreateHooks);
     if skip_hooks_all(&args.skip_hooks) {
+        timeline.on_stage(
+            &step_key,
+            StageEvent::SkippedAttention {
+                reason: "--skip-hooks all".to_string(),
+            },
+        );
         return Ok(());
     }
 
@@ -1495,8 +1648,21 @@ fn run_post_create_hook(
     )
     .with_new_branch(false);
 
-    let presenter = CliPresenter::auto(&HookOutputConfig::default());
-    executor.execute(&ctx, output, presenter)?;
+    let presenter = if timeline.region_live() {
+        CliPresenter::embedded(
+            &HookOutputConfig::default(),
+            timeline.handle(),
+            step_key.clone(),
+        )
+    } else {
+        CliPresenter::auto(&HookOutputConfig::default())
+    };
+    let hook_result = executor.execute(&ctx, output, presenter)?;
+    timeline.resolve_hook_step(
+        &step_key,
+        hook_result.skipped,
+        hook_result.skip_reason.as_deref(),
+    );
 
     Ok(())
 }

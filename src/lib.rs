@@ -280,6 +280,7 @@ pub mod git;
 pub mod hints;
 pub mod homebrew;
 pub mod hooks;
+pub mod interrupt;
 pub mod log_clean;
 pub mod logging;
 pub mod output;

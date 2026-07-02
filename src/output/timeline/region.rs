@@ -70,6 +70,10 @@ pub(super) struct TimelineCore {
     footer: ProgressBar,
     /// Dim free-text sub-line under the active step (`-v` only).
     detail_bar: Option<ProgressBar>,
+    /// Suppresses the TTY's `^C` echo for the region's lifetime — the echo
+    /// wraps the cursor and desyncs indicatif's line accounting, stranding
+    /// a stale bar line on interrupt (see `output::term_guard`).
+    _echo_guard: crate::output::term_guard::EchoCtlGuard,
     /// Whether the most recently persisted line is a rail spacer (`│`) —
     /// used to avoid doubling spacers around embedded hook blocks.
     last_persisted_was_spacer: bool,
@@ -159,6 +163,24 @@ impl TimelineCore {
         let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
         let footer = add_line_bar(&mp, &static_style, render::footer("\u{2026}", use_color));
 
+        // Ctrl-C while the region is live: collapse it once (erase the live
+        // bars; persisted history stays) and exit — printing nothing more,
+        // per the stranded-frame lesson from the test runner's cancel path.
+        // `suspend` is the atomic variant of clear-then-exit: it erases the
+        // region and holds the draw lock while the process dies, so an 80ms
+        // steady tick can never repaint a stranded frame in between. The
+        // saved termios is restored by hand — process::exit skips drops.
+        // Cleared again at teardown.
+        let echo_guard = crate::output::term_guard::EchoCtlGuard::new();
+        let saved_termios = echo_guard.saved();
+        let mp_for_interrupt = mp.clone();
+        crate::interrupt::set_behavior(move || {
+            mp_for_interrupt.suspend(|| {
+                crate::output::term_guard::restore_termios(&saved_termios);
+                std::process::exit(130);
+            });
+        });
+
         Self {
             mp,
             use_color,
@@ -168,6 +190,7 @@ impl TimelineCore {
             bottom_spacer,
             footer,
             detail_bar: None,
+            _echo_guard: echo_guard,
             last_persisted_was_spacer,
             hook_block_open: false,
         }
@@ -454,6 +477,8 @@ impl TimelineCore {
         self.mp.remove(&self.footer);
         self.mp.println(render::spacer(use_color)).ok();
         self.mp.println(render::footer(footer_text, use_color)).ok();
+        // The region is gone; Ctrl-C reverts to the default exit.
+        crate::interrupt::clear_behavior();
         // `self.mp` drops here with zero live bars — nothing to strand.
     }
 

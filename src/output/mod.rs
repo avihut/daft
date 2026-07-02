@@ -25,6 +25,7 @@ pub mod hook_progress;
 pub mod outline;
 pub mod pager;
 pub(crate) mod palette;
+pub(crate) mod term_guard;
 mod test;
 pub mod timeline;
 pub mod tui;

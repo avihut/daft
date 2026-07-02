@@ -45,17 +45,22 @@ pub enum TimelineMode {
 
 impl TimelineMode {
     /// Predicate order: quiet → Hidden; `cfg(test)`/`DAFT_TESTING` → Hidden;
-    /// non-TTY stderr → Plain; else Interactive with color decided by
-    /// `colors_enabled_stderr` (NO_COLOR / CLICOLOR_FORCE respected).
+    /// non-TTY stderr or colors disabled → Plain; else Interactive.
+    ///
+    /// NO_COLOR lands in Plain because indicatif 0.18 hides its entire draw
+    /// target when colors are unsupported (`ProgressDrawTarget::term`
+    /// returns `hidden()` — documented: "Progress bars will also be hidden
+    /// if NO_COLOR is set or TERM is unset/dumb"), so an "Interactive
+    /// without color" region cannot actually render. This matches the
+    /// pre-timeline behavior: the legacy spinner gated on
+    /// `colors_enabled_stderr` too.
     pub fn auto(quiet: bool) -> Self {
         if quiet || crate::output::palette::testing_suppressed() {
             Self::Hidden
-        } else if !std::io::stderr().is_terminal() {
+        } else if !std::io::stderr().is_terminal() || !crate::styles::colors_enabled_stderr() {
             Self::Plain
         } else {
-            Self::Interactive {
-                color: crate::styles::colors_enabled_stderr(),
-            }
+            Self::Interactive { color: true }
         }
     }
 }
@@ -225,6 +230,38 @@ impl Timeline {
         let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
         if let Some(core) = inner.core.as_mut() {
             core.close_hook_embed();
+        }
+    }
+
+    /// Resolve a hook step's row from the executor's outcome: benign
+    /// non-events (nothing configured to run) remove the row silently;
+    /// attention-worthy skips (trust refusal, --skip-hooks) render the
+    /// yellow row; a hook that ran was already expanded into its block.
+    /// Shared by `TimelineBridge::run_hook` and clone's hook helpers.
+    pub fn resolve_hook_step(&mut self, key: &StepKey, skipped: bool, skip_reason: Option<&str>) {
+        if !skipped {
+            // Ran (success or failure): the block is the record; reconnect
+            // the rail below it when rows remain.
+            self.close_hook_embed();
+            return;
+        }
+        match skip_reason {
+            // Benign non-events — remove the row silently rather than
+            // advertise machinery. ("All jobs skipped" may have rendered
+            // its own attribution block, in which case the row is already
+            // consumed and this is a no-op.)
+            Some("No hook files found")
+            | Some("Hooks are globally disabled")
+            | Some("All jobs skipped")
+            | None => self.resolve_silently(key),
+            // Attention-worthy skips (trust refusal, --skip-hooks,
+            // declined prompt): yellow row with the reason.
+            Some(reason) => self.on_stage(
+                key,
+                StageEvent::SkippedAttention {
+                    reason: reason.to_string(),
+                },
+            ),
         }
     }
 

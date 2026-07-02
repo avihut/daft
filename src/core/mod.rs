@@ -25,7 +25,7 @@ pub mod worktree;
 
 pub use tui_bridge::TuiBridge;
 
-pub use progress::{CommandBridge, OutputSink, TimelineBridge};
+pub use progress::{CommandBridge, OutputSink, TimelineBridge, TimelineSink};
 pub use stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 
 use crate::hooks::HookContext;

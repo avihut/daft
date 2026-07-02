@@ -158,39 +158,43 @@ fn read_from_terminal(config: &PromptConfig) -> PromptResult {
         .map(|o| o.key.to_ascii_lowercase())
         .collect();
 
-    // Install Ctrl+C handler for clean exit with cancel message.
-    // console::Term doesn't suppress ^C echo on its own. When another
-    // subsystem already owns the process-global handler this is a
-    // silent no-op — that owner honors the contract instead via
-    // `exit_if_prompt_active` (armed by the guard below).
+    // Arm the process-wide takeover state (#672): store this prompt's cancel
+    // message and mark a prompt parked in read_key, so a command that already
+    // owns the ctrlc handler (sync's two-stage cancel) honors the cancel
+    // contract via `exit_if_prompt_active` — and so `exit_for_cancelled_prompt`
+    // has the message to print no matter which handler fires. Drop disarms on
+    // every return path.
     let _guard = PromptActiveGuard::arm(config.cancel_message.clone());
-    let _ = ctrlc::set_handler(|| {
-        // Persists process-wide once installed (ctrlc handlers cannot
-        // be unregistered): with a prompt active it prints that
-        // prompt's message; on any later signal it exits 130 plain.
-        exit_for_cancelled_prompt();
-    });
+    // Route this prompt's own Ctrl+C through the process-global dispatcher
+    // (`crate::interrupt`, #651) rather than a bare `ctrlc::set_handler`, so it
+    // clears when the prompt resolves (below) and a later phase (the
+    // plan-execute timeline) can own the interrupt. Both handler-ownership
+    // paths converge on `exit_for_cancelled_prompt` (cancel message, exit 130),
+    // matching the timeline region's own Ctrl+C.
+    crate::interrupt::set_behavior(|| exit_for_cancelled_prompt());
 
-    loop {
+    let result = loop {
         let key = match term.read_key() {
             Ok(k) => k,
-            Err(_) => return PromptResult::Cancelled,
+            Err(_) => break PromptResult::Cancelled,
         };
 
         match key {
             Key::Char(c) => {
                 let lower = c.to_ascii_lowercase();
                 if valid_keys.contains(&lower) {
-                    return PromptResult::Selected(lower);
+                    break PromptResult::Selected(lower);
                 }
                 // Ignore unrecognized characters
             }
             Key::Enter | Key::Escape => {
-                return PromptResult::Selected(default_key(config));
+                break PromptResult::Selected(default_key(config));
             }
             _ => {} // Ignore arrow keys, etc.
         }
-    }
+    };
+    crate::interrupt::clear_behavior();
+    result
 }
 
 fn default_key(config: &PromptConfig) -> char {
