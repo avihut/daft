@@ -1,7 +1,7 @@
 use crate::{
     CD_FILE_ENV,
     core::{
-        CommandBridge,
+        CommandBridge, TimelineBridge,
         worktree::{branch_delete, rename},
     },
     git::GitCommand,
@@ -9,7 +9,10 @@ use crate::{
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        CliOutput, Output, OutputConfig,
+        timeline::{Timeline, TimelineMode},
+    },
     settings::DaftSettings,
 };
 use anyhow::Result;
@@ -499,6 +502,13 @@ fn run_branch_delete(
         command_label: "branch-delete".to_string(),
         skip_merge_validation: false,
         force_flag_label: force_flag_label.to_string(),
+        keep_remote_display_reason: if local_only {
+            Some("--local".to_string())
+        } else if !remote_only && !settings.branch_delete_remote {
+            Some("daft.branchDelete.remote off".to_string())
+        } else {
+            None
+        },
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -509,8 +519,21 @@ fn run_branch_delete(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // The pre-push hook run on the remote-branch delete renders through
-    // this presenter — keep the spinner off when it will fire (#599).
+    // Plan-execute rail timeline (#651). The header names the resolved
+    // intent; the region materializes when the core commits its plan (after
+    // validation and any consolidation prompts).
+    let header = if branches.len() == 1 {
+        format!("Removing {}", branches[0])
+    } else {
+        format!("Removing {} branches", branches.len())
+    };
+    let mut timeline = Timeline::new(TimelineMode::auto(quiet), output.is_verbose(), header);
+    let interactive = timeline.is_interactive();
+
+    // Presenter for the pre-push hook run on remote-branch deletes. On the
+    // rail it embeds under each branch's active DeleteRemote row (re-resolved
+    // per phase from the push target). Off the rail, keep the legacy #599
+    // behavior: presenter only when the hook will fire, spinner otherwise.
     let probe_git = GitCommand::new(quiet).with_gitoxide(settings.use_gitoxide);
     let push_hook_will_render = params.delete_remote
         && !params.no_verify
@@ -518,24 +541,41 @@ fn run_branch_delete(
             .map(|cwd| probe_git.pre_push_hook_exists(&cwd))
             .unwrap_or(false);
     let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
-        if push_hook_will_render {
-            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
-                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config);
-            Some(p)
+        if interactive {
+            Some(
+                crate::executor::cli_presenter::CliPresenter::embedded_for_stage(
+                    &hook_output_config,
+                    timeline.handle(),
+                    crate::core::stage::StageId::DeleteRemote,
+                ),
+            )
+        } else if push_hook_will_render {
+            Some(crate::executor::cli_presenter::CliPresenter::auto(
+                &hook_output_config,
+            ))
         } else {
             None
         };
 
-    if !push_hook_will_render {
+    if interactive {
+        // Resolve-phase feedback until the plan commits (the bridge finishes
+        // this spinner at on_plan).
+        output.start_spinner("Validating branches...");
+    } else if !push_hook_will_render {
         output.start_spinner("Deleting branches...");
     }
     let exec_result = {
-        let mut bridge = CommandBridge::new(output, executor);
+        let mut bridge =
+            TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
         branch_delete::execute(&params, push_presenter.as_ref(), &mut bridge)
     };
-    if !push_hook_will_render {
+    if interactive && exec_result.is_err() {
+        timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+    }
+    if !interactive && !push_hook_will_render {
         output.finish_spinner();
     }
+    output.finish_spinner();
     let result = exec_result?;
 
     // Handle validation errors
@@ -558,18 +598,44 @@ fn run_branch_delete(
         return Ok(());
     }
 
-    // Render deletion results
+    // Render deletion results. On the rail, the footer + rows are the
+    // record; the per-branch result lines stay for Plain/Hidden so the
+    // non-TTY and DAFT_TESTING output is byte-identical to before.
     let mut had_errors = false;
     for deletion in &result.deletions {
         if deletion.has_errors() {
             had_errors = true;
+        }
+    }
+    if interactive {
+        let footer = if had_errors {
+            format!("Finished with failures in {}", timeline.elapsed_display())
+        } else if result.deletions.len() == 1 {
+            format!("Removed in {}", timeline.elapsed_display())
+        } else {
+            format!(
+                "Removed {} branches in {}",
+                result.deletions.len(),
+                timeline.elapsed_display()
+            )
+        };
+        if had_errors {
+            timeline.abort(&footer);
+        } else {
+            timeline.finish(&footer);
+        }
+    }
+    for deletion in &result.deletions {
+        if deletion.has_errors() {
             for err in &deletion.errors {
                 output.error(err);
             }
         }
-        let parts = deletion.deleted_parts();
-        if !parts.is_empty() {
-            output.result(&format!("Deleted {} ({})", deletion.branch, parts));
+        if !interactive {
+            let parts = deletion.deleted_parts();
+            if !parts.is_empty() {
+                output.result(&format!("Deleted {} ({})", deletion.branch, parts));
+            }
         }
     }
 

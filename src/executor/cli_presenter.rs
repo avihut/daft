@@ -5,25 +5,39 @@
 
 use super::presenter::JobPresenter;
 use super::{JobResult, NodeStatus};
-use crate::core::stage::StepKey;
+use crate::core::stage::{StageId, StepKey};
 use crate::output::hook_progress::{HookRenderer, JobOutcome, JobResultEntry};
 use crate::output::timeline::TimelineHandle;
 use crate::settings::HookOutputConfig;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+/// Which plan row an embedded presenter renders into.
+enum EmbedTarget {
+    /// One exact step, resolved by the caller (`TimelineBridge::run_hook`).
+    Exact(StepKey),
+    /// A stage whose scope is resolved per phase from the phase's `target`
+    /// (the pre-push presenter: one presenter serves every branch's push,
+    /// re-embedding — with a fresh, live anchor — at each `on_phase_start`).
+    Stage(StageId),
+}
+
 /// Renderer state behind the presenter mutex.
 ///
 /// The embedded variant (#651) must resolve lazily: the hook step's rail row
-/// is removed the moment the block starts rendering, and that must happen at
+/// is consumed the moment the block starts rendering, and that must happen at
 /// `on_phase_start` — not at presenter construction, which the commands do
 /// eagerly (e.g. the pre-push presenter exists before the plan even commits).
 enum PresenterState {
     Ready(HookRenderer),
-    PendingEmbed {
+    Embed {
         config: HookOutputConfig,
         handle: TimelineHandle,
-        key: StepKey,
+        target: EmbedTarget,
+        /// The renderer for the phase currently (or last) rendering.
+        /// Replaced with a fresh embed at each phase start so the insertion
+        /// anchor is always a live bar.
+        renderer: Option<HookRenderer>,
     },
 }
 
@@ -44,16 +58,36 @@ impl CliPresenter {
     }
 
     /// Create a presenter that renders the hook block inside a plan-execute
-    /// timeline (#651). Lazy: the first `on_phase_start` expands the `key`
-    /// step's rail row into the block (via `begin_hook_embed`) and builds
-    /// the embedded renderer; if the region is gone by then, it degrades to
+    /// timeline (#651). Lazy: each `on_phase_start` expands the `key` step's
+    /// rail row into the block (via `begin_hook_embed`) and builds the
+    /// embedded renderer; if the region is gone by then, it degrades to
     /// `auto`.
     pub fn embedded(config: &HookOutputConfig, handle: TimelineHandle, key: StepKey) -> Arc<Self> {
         Arc::new(Self {
-            renderer: Mutex::new(PresenterState::PendingEmbed {
+            renderer: Mutex::new(PresenterState::Embed {
                 config: config.clone(),
                 handle,
-                key,
+                target: EmbedTarget::Exact(key),
+                renderer: None,
+            }),
+        })
+    }
+
+    /// Like [`CliPresenter::embedded`], but the step is resolved per phase:
+    /// `stage` plus the phase's `target` (the branch name for pre-push
+    /// phases) pick the plan row, so one presenter can serve repeated
+    /// phases across a multi-branch plan.
+    pub fn embedded_for_stage(
+        config: &HookOutputConfig,
+        handle: TimelineHandle,
+        stage: StageId,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            renderer: Mutex::new(PresenterState::Embed {
+                config: config.clone(),
+                handle,
+                target: EmbedTarget::Stage(stage),
+                renderer: None,
             }),
         })
     }
@@ -72,7 +106,7 @@ impl CliPresenter {
 
     /// Set the name-column width used when rendering compact finalization rows.
     pub fn set_name_column_width(&self, width: usize) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.set_name_column_width(width);
         }
     }
@@ -98,48 +132,62 @@ impl CliPresenter {
     }
 }
 
+/// The active renderer behind the state, if any.
+fn ready(state: &mut PresenterState) -> Option<&mut HookRenderer> {
+    match state {
+        PresenterState::Ready(r) => Some(r),
+        PresenterState::Embed { renderer, .. } => renderer.as_mut(),
+    }
+}
+
 impl JobPresenter for CliPresenter {
     fn on_phase_start(&self, phase_name: &str, target: Option<&str>) {
         let mut guard = self.lock();
-        if let PresenterState::PendingEmbed {
+        if let PresenterState::Embed {
             config,
             handle,
-            key,
-        } = &*guard
+            target: embed_target,
+            renderer,
+        } = &mut *guard
         {
-            let renderer = match handle.begin_hook_embed(key) {
+            let key = match embed_target {
+                EmbedTarget::Exact(key) => Some(key.clone()),
+                EmbedTarget::Stage(id) => handle.resolve_key(*id, target),
+            };
+            let fresh = match key.and_then(|k| handle.begin_hook_embed(&k)) {
                 Some(embed) => HookRenderer::embedded(config, embed.mp, embed.anchor),
-                // Region already torn down (error paths) — degrade to the
-                // standalone renderer rather than losing the block.
+                // Region gone or step unknown (error paths, unplanned
+                // phase) — degrade to the standalone renderer rather than
+                // losing the block.
                 None => HookRenderer::auto(config),
             };
-            *guard = PresenterState::Ready(renderer);
+            *renderer = Some(fresh);
         }
-        if let PresenterState::Ready(r) = &*guard {
+        if let Some(r) = ready(&mut guard) {
             r.print_header(phase_name, target);
         }
     }
 
     fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.start_job_with_description(name, description, command_preview);
         }
     }
 
     fn on_job_output(&self, name: &str, line: &str) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.update_job_output(name, line);
         }
     }
 
     fn on_job_success(&self, name: &str, duration: Duration) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.finish_job_success(name, duration);
         }
     }
 
     fn on_job_failure(&self, name: &str, duration: Duration) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.finish_job_failure(name, duration);
         }
     }
@@ -152,44 +200,44 @@ impl JobPresenter for CliPresenter {
         show_duration: bool,
         command_preview: Option<&str>,
     ) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
         }
     }
 
     fn on_job_cancelled(&self, name: &str, duration: Duration) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.finish_job_cancelled(name, duration);
         }
     }
 
     fn on_job_background(&self, name: &str, description: Option<&str>) {
-        if let PresenterState::Ready(r) = &mut *self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.show_background_job(name, description);
             r.record_background_job(name, description);
         }
     }
 
     fn on_message(&self, msg: &str) {
-        if let PresenterState::Ready(r) = &*self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.println(msg);
         }
     }
 
     fn on_phase_complete(&self, total_duration: Duration) {
-        if let PresenterState::Ready(r) = &*self.lock() {
+        if let Some(r) = ready(&mut self.lock()) {
             r.print_summary(total_duration);
         }
     }
 
     fn take_results(&self) -> Vec<JobResult> {
-        match &mut *self.lock() {
-            PresenterState::Ready(r) => r
+        match ready(&mut self.lock()) {
+            Some(r) => r
                 .take_finished_jobs()
                 .into_iter()
                 .map(Self::entry_to_job_result)
                 .collect(),
-            PresenterState::PendingEmbed { .. } => Vec::new(),
+            None => Vec::new(),
         }
     }
 }

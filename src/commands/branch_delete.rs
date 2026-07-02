@@ -117,6 +117,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
         skip_merge_validation: false,
+        keep_remote_display_reason: None,
         force_flag_label: "-D/--force".to_string(),
     };
 

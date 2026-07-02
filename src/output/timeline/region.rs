@@ -185,12 +185,23 @@ impl TimelineCore {
         self.mp.suspend(f)
     }
 
+    /// If an embedded hook block is still open, close it with a rail spacer
+    /// so whatever persists next visually reconnects to the spine.
+    fn reconnect_after_block(&mut self) {
+        if self.hook_block_open {
+            self.hook_block_open = false;
+            self.mp.println(render::spacer(self.use_color)).ok();
+            self.last_persisted_was_spacer = true;
+        }
+    }
+
     /// The step began: persist everything above it, swap its bar to the
     /// active spinner style.
     pub(super) fn activate(&mut self, key: &StepKey) {
         let Some(idx) = self.step_index(key) else {
             return;
         };
+        self.reconnect_after_block();
         self.persist_preceding(idx);
         let use_color = self.use_color;
         let label_width = self.label_width;
@@ -214,10 +225,16 @@ impl TimelineCore {
 
     /// The step resolved: persist its final row (or nothing for a silent
     /// resolution) and clear any detail sub-line.
+    ///
+    /// A bar-less ACTIVE step still persists its final row: that is the
+    /// gate-hook case, where `begin_hook_embed` consumed the active row's
+    /// bar so the hook block (e.g. pre-push) could render in its place —
+    /// the outcome line then lands below the block.
     pub(super) fn resolve(&mut self, key: &StepKey, resolution: Resolution) {
         let Some(idx) = self.step_index(key) else {
             return;
         };
+        self.reconnect_after_block();
         self.persist_preceding(idx);
         self.clear_detail();
         let use_color = self.use_color;
@@ -229,12 +246,20 @@ impl TimelineCore {
             StepState::Active { started } => Some(*started),
             _ => None,
         };
-        let Some(taken) = bar.take() else {
-            *state = StepState::Resolved;
-            return;
-        };
-        taken.disable_steady_tick();
-        self.mp.remove(&taken);
+        match bar.take() {
+            Some(taken) => {
+                taken.disable_steady_tick();
+                self.mp.remove(&taken);
+            }
+            None => {
+                if !matches!(state, StepState::Active { .. }) {
+                    // Already fully resolved (e.g. replaced by a hook block,
+                    // or a duplicate event) — idempotent no-op.
+                    *state = StepState::Resolved;
+                    return;
+                }
+            }
+        }
         match resolution {
             Resolution::Silent => {}
             Resolution::Final { face, annotation } => {
@@ -332,6 +357,7 @@ impl TimelineCore {
     /// already the last persisted line).
     pub(super) fn begin_hook_embed(&mut self, key: &StepKey) -> Option<HookEmbed> {
         let idx = self.step_index(key)?;
+        self.reconnect_after_block();
         self.persist_preceding(idx);
         self.clear_detail();
         if let Slot::Step { bar, state, .. } = &mut self.slots[idx] {
@@ -339,7 +365,13 @@ impl TimelineCore {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
             }
-            *state = StepState::Resolved;
+            // A PENDING hook row is replaced by the block outright. An
+            // ACTIVE row (a gate hook rendering mid-step, e.g. pre-push
+            // during Push) stays Active so `resolve` prints its outcome row
+            // below the block.
+            if matches!(state, StepState::Pending) {
+                *state = StepState::Resolved;
+            }
         }
         if !self.last_persisted_was_spacer {
             self.mp.println(render::spacer(self.use_color)).ok();
@@ -376,6 +408,8 @@ impl TimelineCore {
     /// everything already resolved); trailing groups/notes persist as-is;
     /// then the closing spacer + footer.
     pub(super) fn finish(mut self, footer_text: &str, unresolved: UnresolvedPolicy) {
+        // The closing spacer below doubles as the block reconnect.
+        self.hook_block_open = false;
         self.clear_detail();
         let use_color = self.use_color;
         let label_width = self.label_width;
