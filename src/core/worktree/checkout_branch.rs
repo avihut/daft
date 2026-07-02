@@ -5,6 +5,7 @@
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::settings::PushVerify;
+use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
@@ -53,6 +54,9 @@ pub struct CheckoutBranchParams {
     /// Explicit path override for worktree placement (`--at` flag).
     /// When `Some`, takes priority over both `layout` and the default path computation.
     pub at_path: Option<PathBuf>,
+    /// Why the push is off, for the timeline's expected-skip row
+    /// (`--local` vs `daft.checkout.push off`). `None` when pushing.
+    pub push_off_display_reason: Option<String>,
 }
 
 /// Result of a checkout-branch operation.
@@ -127,6 +131,37 @@ pub fn execute(
     // Determine the best checkout base (three-way branch selection)
     let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;
 
+    // Commit the execution plan (#651): base and path are resolved, mutation
+    // is about to begin. The Push row is always present — it resolves as an
+    // expected skip when pushing is off, so the remote fate stays explicit.
+    let should_carry = params.carry || (!params.no_carry && params.checkout_branch_carry);
+    let mut plan_rows = vec![
+        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
+        Row::Step(StepSpec::new(StepKey::new(StageId::CreateBranch))),
+        Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CreateWorktree))
+                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+        ),
+    ];
+    if should_carry {
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
+    }
+    plan_rows.push(Row::Step(if params.checkout_push {
+        StepSpec::new(StepKey::new(StageId::Push)).with_annotation(format!(
+            "\u{2192} {}/{}",
+            params.remote_name, params.new_branch_name
+        ))
+    } else {
+        StepSpec::new(StepKey::new(StageId::Push))
+    }));
+    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+        StageId::PostCreateHooks,
+    ))));
+    sink.on_plan(
+        PlanCommit::new(plan_rows).with_header_annotation(format!("\u{2190} {checkout_base}")),
+    );
+
     // Stash uncommitted changes if carry is enabled
     let (stash_created, carry_source) = stash_if_carry(params, git, &base_branch, sink)?;
 
@@ -161,22 +196,52 @@ pub fn execute(
     // (the checkout base may be a remote-tracking ref like origin/master).
     let no_track = !params.checkout_push;
 
+    // `git worktree add -b` creates the branch, checks it out, and creates
+    // the worktree in one call; the three plan rows resolve around it as a
+    // cosmetic split of the same operation.
+    sink.on_stage(&StepKey::new(StageId::CreateBranch), StageEvent::Started);
     if let Err(e) = git.worktree_add_new_branch(
         &worktree_path,
         &params.new_branch_name,
         &checkout_base,
         no_track,
     ) {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateBranch),
+            StageEvent::Failed {
+                detail: "failed (see below)".to_string(),
+            },
+        );
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateBranch),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
+    sink.on_stage(
+        &StepKey::new(StageId::CheckOut),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CreateWorktree), StageEvent::Started);
 
     if !worktree_path.exists() {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateWorktree),
+            StageEvent::Failed {
+                detail: "directory was not created".to_string(),
+            },
+        );
         anyhow::bail!(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         );
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateWorktree),
+        StageEvent::Completed { annotation: None },
+    );
 
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
     if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
@@ -190,7 +255,31 @@ pub fn execute(
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
+    if stash_created {
+        sink.on_stage(&StepKey::new(StageId::Carry), StageEvent::Started);
+    }
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
+    if should_carry {
+        let carry_key = StepKey::new(StageId::Carry);
+        if !stash_created {
+            // The swapped label ("nothing to carry") says it all.
+            sink.on_stage(
+                &carry_key,
+                StageEvent::SkippedExpected {
+                    reason: String::new(),
+                },
+            );
+        } else if stash_applied {
+            sink.on_stage(&carry_key, StageEvent::Completed { annotation: None });
+        } else {
+            sink.on_stage(
+                &carry_key,
+                StageEvent::Failed {
+                    detail: "stash conflicts \u{2014} run git stash pop".to_string(),
+                },
+            );
+        }
+    }
 
     // Push and set upstream. A pre-push gate refusal is deferred, not an
     // immediate bail: the worktree must still be fully initialized
@@ -580,8 +669,18 @@ fn push_if_enabled(
     presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut impl ProgressSink,
 ) -> (bool, bool, Option<String>) {
+    let push_key = StepKey::new(StageId::Push);
     if !params.checkout_push {
         sink.on_step("Skipping push (disabled in config)");
+        sink.on_stage(
+            &push_key,
+            StageEvent::SkippedExpected {
+                reason: params
+                    .push_off_display_reason
+                    .clone()
+                    .unwrap_or_else(|| "push off".to_string()),
+            },
+        );
         return (false, true, None);
     }
 
@@ -589,6 +688,7 @@ fn push_if_enabled(
         "Pushing and setting upstream to '{}/{}'...",
         params.remote_name, params.new_branch_name
     ));
+    sink.on_stage(&push_key, StageEvent::Started);
 
     // Probe lazily: hook existence only when `auto` can act on it, and the
     // unpushed-commit count only when a hook is actually present (with no
@@ -673,11 +773,18 @@ fn push_if_enabled(
                     "Push to '{}' and upstream tracking set successfully",
                     params.remote_name
                 ));
+                sink.on_stage(&push_key, StageEvent::Completed { annotation: None });
                 return (true, false, None);
             }
             Some(msg) => {
                 let gated = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed);
                 if gated {
+                    sink.on_stage(
+                        &push_key,
+                        StageEvent::Failed {
+                            detail: "pre-push gate refused (see below)".to_string(),
+                        },
+                    );
                     let hint = if outcome.hook.no_verify_might_help() {
                         " (or re-run with --no-verify to bypass the hook)"
                     } else {
@@ -733,6 +840,12 @@ fn push_if_enabled(
         Err(e) => format!("{e}"),
     };
 
+    sink.on_stage(
+        &push_key,
+        StageEvent::Failed {
+            detail: "failed (see below)".to_string(),
+        },
+    );
     sink.on_warning(&format!(
         "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
         params.new_branch_name, params.remote_name, failure,
@@ -1014,6 +1127,139 @@ mod tests {
             !sink.events.contains(&"pause"),
             "a skipped hook must not pause the spinner: {:?}",
             sink.events
+        );
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use crate::core::RecordingStageSink;
+    use crate::core::stage::{Row, StageEvent, StageId};
+    use serial_test::serial;
+    use std::process::{Command as ShellCommand, Stdio};
+
+    fn git(dir: &Path, args: &[&str]) {
+        ShellCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable"),
+            }
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
+
+    /// The plan commits after base resolution with the locked row set, the
+    /// header carries the base annotation, and events narrate the cosmetic
+    /// branch/checkout/worktree split plus the expected push skip (#651).
+    #[test]
+    #[serial]
+    fn plan_commits_with_locked_row_set_and_push_skip() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+            push_off_display_reason: Some("daft.checkout.push off".to_string()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(&params, &git_cmd, tmp.path(), None, &mut sink)
+            .expect("checkout-branch succeeds");
+        assert_eq!(result.new_branch_name, "feat-x");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            plan.header_annotation.as_deref(),
+            Some("\u{2190} main"),
+            "header carries the resolved base"
+        );
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::PreCreateHooks,
+                StageId::CreateBranch,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::Push,
+                StageId::PostCreateHooks,
+            ],
+            "carry off => no Carry row; Push row always present"
+        );
+        assert!(!plan.rows.iter().any(|r| matches!(r, Row::Group { .. })));
+
+        // Push resolves as an expected skip with the provenance reason.
+        assert!(
+            sink.events.iter().any(|(k, e)| k.id == StageId::Push
+                && matches!(e, StageEvent::SkippedExpected { reason } if reason == "daft.checkout.push off")),
+            "events: {:?}",
+            sink.events
+        );
+        // The atomic worktree-add narrates all three creation steps, in order.
+        let completed: Vec<StageId> = sink
+            .events
+            .iter()
+            .filter_map(|(k, e)| matches!(e, StageEvent::Completed { .. }).then_some(k.id))
+            .collect();
+        assert_eq!(
+            completed,
+            vec![
+                StageId::CreateBranch,
+                StageId::CheckOut,
+                StageId::CreateWorktree
+            ]
+        );
+        // Hooks fired through the sink (pre + post).
+        assert_eq!(
+            sink.hooks_run,
+            vec![
+                crate::hooks::HookType::PreCreate,
+                crate::hooks::HookType::PostCreate
+            ]
         );
     }
 }

@@ -360,7 +360,7 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
 
 /// Path annotation for a worktree row: relative to the current directory
 /// when that is shorter to read, absolute otherwise.
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     std::env::current_dir()
         .ok()
         .and_then(|cwd| pathdiff::diff_paths(path, &cwd))

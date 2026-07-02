@@ -3,6 +3,7 @@
 //! Creates a worktree for an existing branch.
 
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
+use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -246,6 +247,35 @@ pub fn execute(
         false
     };
 
+    // Commit the execution plan (#651): the branch is resolved, mutation is
+    // about to begin. Earlier returns (existing worktree, branch not found)
+    // never reach this point, so no rail renders for them.
+    let should_carry = params.carry || (!params.no_carry && params.checkout_carry);
+    let checkout_annotation = if !local_exists {
+        format!("\u{2190} {}/{}", params.remote_name, params.branch_name)
+    } else if remote_exists && params.checkout_upstream {
+        format!("tracking {}/{}", params.remote_name, params.branch_name)
+    } else {
+        "local only".to_string()
+    };
+    let mut plan_rows = vec![
+        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CheckOut)).with_annotation(checkout_annotation),
+        ),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CreateWorktree))
+                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+        ),
+    ];
+    if should_carry {
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
+    }
+    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+        StageId::PostCreateHooks,
+    ))));
+    sink.on_plan(PlanCommit::new(plan_rows));
+
     // Stash uncommitted changes if carry is enabled
     let stash_created = stash_if_carry(params, git, sink)?;
 
@@ -267,7 +297,10 @@ pub fn execute(
         return Err(anyhow::anyhow!("Pre-create hook failed").into());
     }
 
-    // Create worktree
+    // Create worktree. `git worktree add` materializes the branch checkout
+    // and the worktree in one call; the two plan rows resolve around it as a
+    // cosmetic split of the same operation.
+    sink.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
     let worktree_result = if use_local_branch {
         git.worktree_add(&worktree_path, &params.branch_name)
     } else {
@@ -276,17 +309,38 @@ pub fn execute(
     };
 
     if let Err(e) = worktree_result {
+        sink.on_stage(
+            &StepKey::new(StageId::CheckOut),
+            StageEvent::Failed {
+                detail: "failed (see below)".to_string(),
+            },
+        );
         restore_stash_on_failure(stash_created, git, sink);
         return Err(anyhow::anyhow!("Failed to create git worktree: {}", e).into());
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CheckOut),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CreateWorktree), StageEvent::Started);
 
     if !worktree_path.exists() {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateWorktree),
+            StageEvent::Failed {
+                detail: "directory was not created".to_string(),
+            },
+        );
         return Err(anyhow::anyhow!(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         )
         .into());
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateWorktree),
+        StageEvent::Completed { annotation: None },
+    );
 
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
     if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
@@ -306,7 +360,31 @@ pub fn execute(
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
+    if stash_created {
+        sink.on_stage(&StepKey::new(StageId::Carry), StageEvent::Started);
+    }
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
+    if should_carry {
+        let carry_key = StepKey::new(StageId::Carry);
+        if !stash_created {
+            // The swapped label ("nothing to carry") says it all.
+            sink.on_stage(
+                &carry_key,
+                StageEvent::SkippedExpected {
+                    reason: String::new(),
+                },
+            );
+        } else if stash_applied {
+            sink.on_stage(&carry_key, StageEvent::Completed { annotation: None });
+        } else {
+            sink.on_stage(
+                &carry_key,
+                StageEvent::Failed {
+                    detail: "stash conflicts \u{2014} run git stash pop".to_string(),
+                },
+            );
+        }
+    }
 
     // Set upstream tracking
     let (upstream_set, upstream_skipped) = set_upstream_if_enabled(params, git, sink)?;
