@@ -75,7 +75,7 @@ impl HookProgressRenderer {
 
     /// Render inside a plan-execute timeline's live region (#651): share its
     /// `MultiProgress`, insert job bars above `anchor` (a live rail bar),
-    /// and weld the header box onto the rail.
+    /// and collapse the header to a `├─` branch row hung off the rail.
     pub fn new_embedded(config: &HookOutputConfig, mp: MultiProgress, anchor: ProgressBar) -> Self {
         let mut renderer = Self::create(config, mp, styles::colors_enabled_stderr());
         renderer.insert_anchor = Some(anchor);
