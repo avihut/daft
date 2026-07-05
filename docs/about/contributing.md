@@ -209,9 +209,13 @@ setup:
   `mise-tasks/sandbox/_lib.sh`).
 
 These overrides are honored **only in dev builds** (gated on
-`cfg!(daft_dev_build)` in `src/lib.rs`). A released daft ignores them and always
-uses the real XDG directories (`~/.config/daft` and friends), so your installed
-daft and your dev work never share state.
+`cfg!(any(daft_dev_build, test))` in `src/lib.rs`). A build is "dev" when it is
+compiled from a git checkout without `DAFT_BUILD_RELEASE` set; the release
+pipeline sets that variable, so a released daft ignores the overrides and always
+uses the real XDG directories (`~/.config/daft` and friends) — your installed
+daft and your dev work never share state. Git tags at HEAD play no part in the
+detection (#669: tag-based detection used to silently disable the overrides in
+every post-release window).
 
 ### Benchmarks
 
