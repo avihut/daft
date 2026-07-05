@@ -56,6 +56,11 @@ pub struct GitCommand {
     pub(crate) quiet: bool,
     pub(crate) use_gitoxide: bool,
     pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
+    /// Shared cancellation flag observed by the long-running subprocess
+    /// seams (fetch/pull/rebase/push). `None` keeps those seams
+    /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
+    /// their flag here so every worker-thread git call inherits it.
+    pub(crate) cancel: Option<std::sync::Arc<cancel::CancelFlag>>,
 }
 
 impl GitCommand {
@@ -64,12 +69,24 @@ impl GitCommand {
             quiet,
             use_gitoxide: false,
             gix_repo: OnceLock::new(),
+            cancel: None,
         }
     }
 
     pub fn with_gitoxide(mut self, enabled: bool) -> Self {
         self.use_gitoxide = enabled;
         self
+    }
+
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<cancel::CancelFlag>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// The injected cancel flag, in the borrowed form the subprocess
+    /// helpers take.
+    pub(crate) fn cancel_flag(&self) -> Option<&cancel::CancelFlag> {
+        self.cancel.as_deref()
     }
 
     /// Returns true (once per process) if the gitoxide notice should be shown.

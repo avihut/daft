@@ -20,7 +20,9 @@
 //!   after TERM kills intermediate parents, orphans reparent to PID 1
 //!   and a fresh walk can no longer reach them.
 
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 /// Cancellation level for in-flight subprocess runs.
 ///
@@ -58,6 +60,366 @@ impl CancelFlag {
 impl Default for CancelFlag {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Poll cadence for cancellable child waits (mirrors exec's loop).
+const TICK: Duration = Duration::from_millis(50);
+/// How often escalation re-walks the process table while a cancel is
+/// live. Re-walking catches groups spawned after the cancel began.
+#[cfg(unix)]
+const CASCADE_EVERY: Duration = Duration::from_millis(500);
+/// How often the direct child's job-control state is probed.
+#[cfg(unix)]
+const STOP_PROBE_EVERY: Duration = Duration::from_millis(500);
+/// Consecutive stopped probes required before declaring a tty-stop, so a
+/// transient stop/resume can't misfire the teardown.
+#[cfg(unix)]
+const STOP_STREAK: u8 = 2;
+
+/// Typed marker error: a subprocess run was torn down because the shared
+/// [`CancelFlag`] went active. Callers use `anyhow::Error::is` to tell
+/// cancellation apart from real failures.
+#[derive(Debug, thiserror::Error)]
+#[error("operation cancelled")]
+pub struct OperationCancelled;
+
+/// Typed marker error: the subprocess job-control-stopped itself — the
+/// signature of a background-group `/dev/tty` read, i.e. an interactive
+/// auth prompt daft cannot forward. Its process tree has already been
+/// killed by the time this surfaces.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "git stopped waiting for terminal input (interactive auth prompt?); \
+     run the command manually there, or configure an ssh-agent/credential helper"
+)]
+pub struct NeedsTerminal;
+
+/// Final state of a supervised child.
+#[derive(Debug)]
+pub enum Verdict {
+    /// Ran to completion (any exit status) with no cancel in flight.
+    Completed(ExitStatus),
+    /// The cancel flag went active while the child ran; its tree was
+    /// torn down and the child is reaped.
+    Cancelled,
+    /// The child job-control-stopped itself (tty auth); its tree was
+    /// killed and the child is reaped.
+    StoppedOnTty,
+}
+
+/// Poll-based replacement for `Child::wait()` that keeps watching the
+/// shared [`CancelFlag`] and the child's job-control state.
+///
+/// The child must have been spawned with `Command::process_group(0)`
+/// (unix) so escalations can target its whole tree by group. The
+/// `drains_done` gate exists because pipe write-ends are inherited by
+/// descendants that can outlive the direct child — returning before the
+/// drains see EOF would leave the caller blocked on a reader join with
+/// nobody left watching the flag, which is exactly the #663 wedge.
+pub struct ChildSupervisor<'a> {
+    cancel: Option<&'a CancelFlag>,
+    cancelled_in_flight: bool,
+    tty_stopped: bool,
+    #[cfg(unix)]
+    child_pid: u32,
+    #[cfg(unix)]
+    cascade: GroupCascade,
+    /// Level acted on and when, so a level change cascades immediately
+    /// and an unchanged level re-cascades every [`CASCADE_EVERY`].
+    #[cfg(unix)]
+    cascade_at: Option<(usize, std::time::Instant)>,
+    #[cfg(unix)]
+    stop_probe_at: std::time::Instant,
+    #[cfg(unix)]
+    stopped_streak: u8,
+}
+
+impl<'a> ChildSupervisor<'a> {
+    #[cfg(unix)]
+    pub fn new(child: &Child, cancel: Option<&'a CancelFlag>) -> Self {
+        Self {
+            cancel,
+            cancelled_in_flight: false,
+            tty_stopped: false,
+            child_pid: child.id(),
+            cascade: GroupCascade::new(child.id()),
+            cascade_at: None,
+            // First probe only after a full interval: ultra-short
+            // children exit before ever being ps-probed.
+            stop_probe_at: std::time::Instant::now() + STOP_PROBE_EVERY,
+            stopped_streak: 0,
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn new(_child: &Child, cancel: Option<&'a CancelFlag>) -> Self {
+        Self {
+            cancel,
+            cancelled_in_flight: false,
+            tty_stopped: false,
+        }
+    }
+
+    /// Drive the child until it is reaped *and* `drains_done` reports
+    /// the output pipes closed. `std::process::Child::try_wait` is the
+    /// sole reaper — no raw `waitpid` runs beside it.
+    pub fn wait(
+        &mut self,
+        child: &mut Child,
+        drains_done: impl Fn() -> bool,
+    ) -> std::io::Result<Verdict> {
+        let mut exit: Option<ExitStatus> = None;
+        loop {
+            if exit.is_none() {
+                exit = child.try_wait()?;
+            }
+            if let Some(status) = exit
+                && drains_done()
+            {
+                return Ok(if self.tty_stopped {
+                    Verdict::StoppedOnTty
+                } else if self.cancelled_in_flight {
+                    Verdict::Cancelled
+                } else {
+                    Verdict::Completed(status)
+                });
+            }
+            self.tick(child, exit.is_none());
+            std::thread::sleep(TICK);
+        }
+    }
+
+    #[cfg(unix)]
+    fn tick(&mut self, _child: &mut Child, child_running: bool) {
+        let now = std::time::Instant::now();
+        let flag_level = self.cancel.map(CancelFlag::level).unwrap_or(0);
+        // Deliberately not gated on child_running: a cancel that lands
+        // after the child exited but while pipe holders keep the drains
+        // open still interrupted the run and must report as Cancelled.
+        // (A fully-finished run wins the race structurally — the wait
+        // loop's return check runs before this tick sees the new level.)
+        if flag_level > 0 {
+            self.cancelled_in_flight = true;
+        }
+
+        // Stop detection runs only while nothing else is going on: once
+        // a cancel or a detected stop starts a teardown, the T state is
+        // expected (queued TERM) and must not re-trigger.
+        if flag_level == 0 && !self.tty_stopped && child_running && now >= self.stop_probe_at {
+            self.stop_probe_at = now + STOP_PROBE_EVERY;
+            match pid_stopped(self.child_pid) {
+                Some(true) => {
+                    self.stopped_streak += 1;
+                    if self.stopped_streak >= STOP_STREAK {
+                        self.tty_stopped = true;
+                    }
+                }
+                Some(false) => self.stopped_streak = 0,
+                None => {}
+            }
+        }
+
+        // A tty-stopped child can never make progress — skip straight to
+        // the kill cascade regardless of the flag.
+        let level = if self.tty_stopped { 2 } else { flag_level };
+        if level == 0 {
+            return;
+        }
+        let due = match self.cascade_at {
+            None => true,
+            Some((acted, at)) => acted != level || now.duration_since(at) >= CASCADE_EVERY,
+        };
+        if due {
+            if level == 1 {
+                self.cascade.soft_tick();
+            } else {
+                self.cascade.hard_tick();
+            }
+            self.cascade_at = Some((level, now));
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn tick(&mut self, child: &mut Child, child_running: bool) {
+        // No process groups off unix: two-stage degrades to a plain kill
+        // of the direct child on any cancel level.
+        if self.cancel.is_some_and(CancelFlag::is_cancelled) {
+            self.cancelled_in_flight = true;
+            if child_running {
+                let _ = child.kill();
+            }
+        }
+    }
+
+    /// Signaled process groups that still have live members after the
+    /// teardown — input for the caller's manual-recovery report.
+    #[cfg(unix)]
+    pub fn survivors(&self) -> Vec<u32> {
+        self.cascade.survivors()
+    }
+
+    #[cfg(not(unix))]
+    pub fn survivors(&self) -> Vec<u32> {
+        Vec::new()
+    }
+}
+
+/// Cancellation-aware stand-in for `Command::output()`.
+///
+/// Spawns the child in its own process group, drains both pipes on
+/// scoped threads, and polls via [`ChildSupervisor`] instead of blocking
+/// so a cancel escalation (or a tty-stop) tears the child's whole tree
+/// down. Returns [`OperationCancelled`] / [`NeedsTerminal`] as typed
+/// errors; a run that merely failed still returns `Ok` with the
+/// non-success status, matching `Command::output()` semantics.
+pub fn output_with_cancel(
+    cmd: &mut Command,
+    cancel: Option<&CancelFlag>,
+) -> anyhow::Result<Output> {
+    use anyhow::Context;
+
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(OperationCancelled.into());
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    let mut child = cmd.spawn()?;
+    let mut supervisor = ChildSupervisor::new(&child, cancel);
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .context("Failed to capture child stdout")?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .context("Failed to capture child stderr")?;
+
+    let (verdict, stdout, stderr) = std::thread::scope(|scope| {
+        let out = scope.spawn(move || {
+            let mut pipe = stdout_pipe;
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            buf
+        });
+        let err = scope.spawn(move || {
+            let mut pipe = stderr_pipe;
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            buf
+        });
+        let verdict = supervisor.wait(&mut child, || out.is_finished() && err.is_finished());
+        // The wait gate guarantees both drains saw EOF; joins can't block.
+        (
+            verdict,
+            out.join().unwrap_or_default(),
+            err.join().unwrap_or_default(),
+        )
+    });
+
+    match verdict? {
+        Verdict::Completed(status) => Ok(Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        Verdict::Cancelled => Err(OperationCancelled.into()),
+        Verdict::StoppedOnTty => Err(NeedsTerminal.into()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod supervisor_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn sh(script: &str) -> Command {
+        let mut c = Command::new("sh");
+        c.args(["-c", script]);
+        c
+    }
+
+    #[test]
+    fn output_with_cancel_completes_and_captures() {
+        let out = output_with_cancel(&mut sh("echo out; echo err >&2; exit 3"), None).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "out");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "err");
+    }
+
+    #[test]
+    fn output_with_cancel_rejects_pre_cancelled_without_spawning() {
+        let flag = CancelFlag::new();
+        flag.escalate();
+        let err = output_with_cancel(&mut sh("echo never"), Some(&flag)).unwrap_err();
+        assert!(err.is::<OperationCancelled>(), "got: {err:#}");
+    }
+
+    #[test]
+    fn soft_cancel_tears_down_a_running_child() {
+        let flag = CancelFlag::new();
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                flag.escalate();
+            });
+            let err = output_with_cancel(&mut sh("sleep 30"), Some(&flag)).unwrap_err();
+            assert!(err.is::<OperationCancelled>(), "got: {err:#}");
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "teardown took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn cancel_reaches_an_orphaned_pipe_holder() {
+        // The run_push wedge shape: the direct child exits but a
+        // backgrounded descendant keeps the pipe write-ends open. The
+        // cascade must reach it through the still-live child *group*
+        // even though the tree walk can no longer see it (the holder
+        // reparented to init when the child died).
+        let flag = CancelFlag::new();
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                flag.escalate();
+            });
+            let err =
+                output_with_cancel(&mut sh("( sleep 30 & ); exit 0"), Some(&flag)).unwrap_err();
+            assert!(err.is::<OperationCancelled>(), "got: {err:#}");
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "teardown took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn self_stopping_child_is_detected_and_killed() {
+        // Interactive-auth shape: the child stops its own group the way
+        // a background-group /dev/tty read would. Two stopped probes at
+        // 500ms cadence must flag it, kill the group, and surface the
+        // typed NeedsTerminal error instead of hanging forever.
+        let started = Instant::now();
+        let err = output_with_cancel(&mut sh("kill -STOP 0; sleep 30"), None).unwrap_err();
+        assert!(err.is::<NeedsTerminal>(), "got: {err:#}");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "stop detection took {:?}",
+            started.elapsed()
+        );
     }
 }
 

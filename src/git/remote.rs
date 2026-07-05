@@ -1,4 +1,5 @@
 use super::GitCommand;
+use super::cancel;
 use super::oxide;
 use crate::styles;
 use crate::utils::git_command_at;
@@ -109,8 +110,7 @@ impl GitCommand {
             cmd.arg("--prune");
         }
 
-        let output = cmd
-            .output()
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git fetch command")?;
 
         if !output.status.success() {
@@ -153,6 +153,13 @@ impl GitCommand {
     /// - `--no-verify` is added only when `opts.verify` is `false`. This is
     ///   the single place that literal may appear (grep-gated by test).
     fn run_push(&self, push_args: &[&str], cwd: &Path, opts: &PushOptions) -> Result<PushIo> {
+        if self
+            .cancel_flag()
+            .is_some_and(cancel::CancelFlag::is_cancelled)
+        {
+            return Err(cancel::OperationCancelled.into());
+        }
+
         let mut cmd = git_command_at(cwd);
         cmd.args(["push", "--porcelain"]);
         if !opts.verify {
@@ -162,8 +169,17 @@ impl GitCommand {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Own process group: escalations can tear down the whole
+            // hook subtree by pgid, and a hook stage that job-control-
+            // stops freezes its own group instead of daft's (#663).
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().context("Failed to execute git push command")?;
+        let mut supervisor = cancel::ChildSupervisor::new(&child, self.cancel_flag());
         let stdout_pipe = child
             .stdout
             .take()
@@ -175,27 +191,34 @@ impl GitCommand {
 
         // Thread-per-pipe drain (the executor/command.rs pattern): both pipes
         // are read concurrently so neither can fill and deadlock the child.
-        // Scoped threads let the tee closure borrow from the caller.
-        let (stdout, stderr) = std::thread::scope(|scope| {
+        // Scoped threads let the tee closure borrow from the caller. The
+        // supervisor's wait also gates on the drains: hook descendants
+        // inherit the pipe write-ends and can outlive git itself, so the
+        // poll-and-cascade loop must keep running until EOF — otherwise a
+        // stopped or TERM-immune holder would leave this blocked in a join
+        // with nobody watching the cancel flag (the #663 wedge).
+        let (verdict, stdout, stderr) = std::thread::scope(|scope| {
             let out =
                 scope.spawn(|| drain_push_pipe(stdout_pipe, PushStream::Stdout, opts.on_output));
             let err =
                 scope.spawn(|| drain_push_pipe(stderr_pipe, PushStream::Stderr, opts.on_output));
+            let verdict = supervisor.wait(&mut child, || out.is_finished() && err.is_finished());
             (
+                verdict,
                 out.join().unwrap_or_default(),
                 err.join().unwrap_or_default(),
             )
         });
 
-        let status = child
-            .wait()
-            .context("Failed to wait for git push command")?;
-
-        Ok(PushIo {
-            success: status.success(),
-            stdout,
-            stderr,
-        })
+        match verdict.context("Failed to wait for git push command")? {
+            cancel::Verdict::Completed(status) => Ok(PushIo {
+                success: status.success(),
+                stdout,
+                stderr,
+            }),
+            cancel::Verdict::Cancelled => Err(cancel::OperationCancelled.into()),
+            cancel::Verdict::StoppedOnTty => Err(cancel::NeedsTerminal.into()),
+        }
     }
 
     /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
@@ -317,7 +340,8 @@ impl GitCommand {
             cmd.arg("--quiet");
         }
 
-        let output = cmd.output().context("Failed to execute git pull command")?;
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
+            .context("Failed to execute git pull command")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -520,8 +544,7 @@ impl GitCommand {
             cmd.arg("--autostash");
         }
 
-        let output = cmd
-            .output()
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git rebase command")?;
 
         let combined = format!(
