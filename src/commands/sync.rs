@@ -940,6 +940,15 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         .join()
         .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
 
+    // Surface untrusted-hook notices the TUI buffered (TuiBridge warnings
+    // never reach stderr). Before the deferred-branch removal below, so the
+    // aggregated copy wins and any live Deny hit there dedups against it.
+    {
+        let mut post_tui_output =
+            crate::output::CliOutput::new(crate::output::OutputConfig::new(false, false));
+        crate::hooks::trust_skip::flush_pending_notice(&git_dir, &mut post_tui_output);
+    }
+
     // ── Post-TUI: handle deferred branch (current worktree) ────────────
     sync_shared::handle_post_tui_deferred(
         &deferred_branch,

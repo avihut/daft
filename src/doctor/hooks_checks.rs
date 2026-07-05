@@ -199,7 +199,7 @@ pub fn check_deprecated_names(project_root: &Path) -> CheckResult {
             "Hook names",
             &format!("{} deprecated name(s)", deprecated.len()),
         )
-        .with_suggestion("Run 'git daft hooks migrate'")
+        .with_suggestion(&format!("Run '{}'", crate::daft_cmd("hooks migrate")))
         .with_fix(Box::new(move || fix_deprecated_names(&fix_project_root)))
         .with_dry_run_fix(Box::new(move || {
             dry_run_deprecated_names(&dry_project_root)
@@ -377,7 +377,10 @@ pub fn check_trust_level(git_common_dir: &Path) -> CheckResult {
         TrustLevel::Allow => CheckResult::pass("Trust level", "allow"),
         TrustLevel::Prompt => CheckResult::pass("Trust level", "prompt"),
         TrustLevel::Deny => CheckResult::warning("Trust level", "deny (hooks will not run)")
-            .with_suggestion("Run 'git daft hooks trust' to allow hook execution"),
+            .with_suggestion(&format!(
+                "Run '{}' to allow hook execution",
+                crate::daft_cmd("hooks trust")
+            )),
     }
 }
 

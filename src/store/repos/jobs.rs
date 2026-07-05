@@ -233,6 +233,8 @@ mod tests {
                 worktree: "feat/test".into(),
                 created_at: Utc::now(),
                 coordinator_pid: None,
+                status: crate::store::models::invocation::INVOCATION_STATUS_COMPLETED.into(),
+                skip_reason: None,
             },
         )
         .unwrap();

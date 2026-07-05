@@ -1,0 +1,53 @@
+name: Untrusted-hook warning goes to stderr only
+description:
+  "The notice must never pollute stdout (the eval / DAFT_CD_FILE contract): with
+  stderr discarded the warning vanishes while the command still succeeds;
+  without redirection it is visible."
+
+repos:
+  - name: test-stderr-only
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# stderr only"
+        commits:
+          - message: "Initial commit"
+      - name: feature/quiet
+        from: main
+      - name: feature/loud
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: post
+              run: echo post
+
+steps:
+  - name: Clone the repository
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_STDERR_ONLY 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: With stderr discarded the warning disappears and checkout still works
+    run: git-worktree-checkout feature/quiet 2>/dev/null
+    cwd: "$WORK_DIR/test-stderr-only/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-stderr-only/feature/quiet"
+      output_not_contains:
+        - "Untrusted repo"
+
+  - name: Without redirection the warning is visible
+    run: git-worktree-checkout feature/loud
+    cwd: "$WORK_DIR/test-stderr-only/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-stderr-only/feature/loud"
+      output_contains:
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-post-create"

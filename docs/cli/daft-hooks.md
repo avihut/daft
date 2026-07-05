@@ -42,6 +42,10 @@ Grants full trust to the current repository, allowing hooks in
 Use 'git daft hooks prompt' instead if you want to be prompted before
 each hook execution.
 
+If hooks were skipped while the repository was untrusted, trusting
+lists the setup hooks that never ran and the exact
+'git daft hooks run' commands to replay them per worktree.
+
 Trust settings are stored in the daft config directory (trust.json)
 and persist across sessions.
 

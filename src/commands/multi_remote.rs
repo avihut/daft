@@ -480,12 +480,13 @@ fn cmd_status(emit_args: &EmitArgs) -> Result<()> {
     output.info("");
 
     // Commands
+    let exe = crate::cli_label();
     if settings.multi_remote_enabled {
         output.info("To disable multi-remote mode:");
-        output.info("  git daft multi-remote disable");
+        output.info(&format!("  {exe} multi-remote disable"));
     } else {
         output.info("To enable multi-remote mode:");
-        output.info("  git daft multi-remote enable");
+        output.info(&format!("  {exe} multi-remote enable"));
     }
 
     Ok(())
@@ -545,7 +546,8 @@ fn cmd_move(
     if !settings.multi_remote_enabled {
         anyhow::bail!(
             "Multi-remote mode is not enabled.\n\
-             Run 'git daft multi-remote enable' first, or use regular git commands."
+             Run '{}' first, or use regular git commands.",
+            crate::daft_cmd("multi-remote enable")
         );
     }
 

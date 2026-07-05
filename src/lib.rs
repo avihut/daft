@@ -156,6 +156,47 @@ pub fn get_clap_args(expected_cmd: &str) -> Vec<String> {
     args.to_vec()
 }
 
+/// The daft executable as the user invoked it, for rendering suggested
+/// commands in user-facing output: `"daft"` when invoked directly (`daft`,
+/// `daft-go`, …), `"git daft"` when invoked through git (`git daft <verb>`,
+/// `git worktree-checkout`, …).
+///
+/// Returns the canonical `"git daft"` when argv isn't installed, and always
+/// under `cfg!(test)`: unit tests share one process, so the `daft-<hash>`
+/// test-binary name (or a test that installed argv) would otherwise flip
+/// other tests' expected hint strings order-dependently.
+pub fn cli_label() -> &'static str {
+    if cfg!(test) {
+        return "git daft";
+    }
+    cli::try_argv()
+        .and_then(|args| args.first())
+        .map(|argv0| label_for_argv0(argv0))
+        .unwrap_or("git daft")
+}
+
+/// Classify an argv\[0\] into the display label. `daft` and `daft-*`
+/// (`daft-go`, `daft-start`, …) are direct-style; everything else — `git-daft`,
+/// the `git-worktree-*` symlinks, shortcut symlinks, unknown names — renders
+/// git-style, which is also the canonical documented form.
+fn label_for_argv0(argv0: &str) -> &'static str {
+    let name = Path::new(argv0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if name == "daft" || name.starts_with("daft-") {
+        "daft"
+    } else {
+        "git daft"
+    }
+}
+
+/// Format a suggested daft invocation in the current invocation style:
+/// `daft_cmd("hooks trust")` → `daft hooks trust` or `git daft hooks trust`.
+pub fn daft_cmd(args: &str) -> String {
+    format!("{} {args}", cli_label())
+}
+
 /// Returns `true` if the given argv corresponds to an invocation that should
 /// skip startup-time background work (update checks, trust pruning, etc.).
 ///
@@ -261,6 +302,35 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::path::PathBuf;
+
+    #[test]
+    fn label_for_argv0_direct_invocations() {
+        assert_eq!(label_for_argv0("daft"), "daft");
+        assert_eq!(label_for_argv0("/usr/local/bin/daft"), "daft");
+        assert_eq!(label_for_argv0("daft-go"), "daft");
+        assert_eq!(label_for_argv0("daft-start"), "daft");
+        assert_eq!(label_for_argv0("./target/debug/daft"), "daft");
+    }
+
+    #[test]
+    fn label_for_argv0_git_style_and_fallbacks() {
+        assert_eq!(label_for_argv0("git-daft"), "git daft");
+        assert_eq!(label_for_argv0("/usr/lib/git-core/git-daft"), "git daft");
+        assert_eq!(label_for_argv0("git-worktree-checkout"), "git daft");
+        assert_eq!(label_for_argv0("git-worktree-clone"), "git daft");
+        // Shortcut symlinks and unknown names render the canonical form.
+        assert_eq!(label_for_argv0("gwtco"), "git daft");
+        assert_eq!(label_for_argv0(""), "git daft");
+    }
+
+    #[test]
+    fn cli_label_is_canonical_in_tests() {
+        // Pins the cfg!(test) gate: in-process unit tests must always see the
+        // canonical label regardless of the test binary's name or any argv a
+        // sibling test installed.
+        assert_eq!(cli_label(), "git daft");
+        assert_eq!(daft_cmd("hooks trust"), "git daft hooks trust");
+    }
 
     #[test]
     #[serial]

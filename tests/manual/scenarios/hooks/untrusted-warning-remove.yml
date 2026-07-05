@@ -1,0 +1,88 @@
+name: Untrusted remove hooks warn on branch-delete (both config shapes)
+description:
+  "branch-delete fires worktree-pre/post-remove through the executor but
+  previously emitted no untrusted notice at all. The centralized notice must
+  cover the remove path for both .daft/hooks/ scripts and daft.yml, and must not
+  offer a replay line (replaying remove hooks is harmful)."
+
+repos:
+  - name: test-remove-scripts
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# remove scripts"
+        commits:
+          - message: "Initial commit"
+      - name: feature/doomed
+        from: main
+    hook_scripts:
+      - name: worktree-pre-remove
+        content: |
+          #!/bin/bash
+          echo "$DAFT_BRANCH_NAME" >> "$DAFT_PROJECT_ROOT/.pre-remove-ran"
+  - name: test-remove-yaml
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# remove yaml"
+        commits:
+          - message: "Initial commit"
+      - name: feature/doomed
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: teardown
+              run: echo teardown
+
+steps:
+  - name: Clone the scripts repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REMOVE_SCRIPTS
+    expect:
+      exit_code: 0
+
+  - name: Checkout is silent (no create hooks configured)
+    run: git-worktree-checkout feature/doomed
+    cwd: "$WORK_DIR/test-remove-scripts/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Untrusted repo"
+
+  - name: Branch-delete warns about the skipped script hook
+    run: git-worktree-branch-delete feature/doomed
+    cwd: "$WORK_DIR/test-remove-scripts/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Untrusted repo — 1 .daft/hooks script not run: worktree-pre-remove"
+        - "git daft hooks trust"
+      output_not_contains:
+        - "git daft hooks run"
+
+  - name: Clone the yaml repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REMOVE_YAML
+    expect:
+      exit_code: 0
+
+  - name: Checkout the yaml repo worktree
+    run: git-worktree-checkout feature/doomed
+    cwd: "$WORK_DIR/test-remove-yaml/main"
+    expect:
+      exit_code: 0
+
+  - name: Branch-delete warns about the skipped daft.yml hook
+    run: git-worktree-branch-delete feature/doomed
+    cwd: "$WORK_DIR/test-remove-yaml/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-pre-remove"
+        - "git daft hooks trust"
+      output_not_contains:
+        - "git daft hooks run"

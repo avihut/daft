@@ -77,7 +77,7 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
         output.info(&format!(
             "  {} run `{}` to allow hooks to run automatically.",
             dim("Tip:"),
-            cyan("git daft hooks trust")
+            cyan(&crate::daft_cmd("hooks trust"))
         ));
         output.info("");
     }
@@ -298,7 +298,7 @@ fn cmd_run_list_hooks(
     output.info("");
     output.info(&format!(
         "Run a hook with: {}",
-        cyan("git daft hooks run <hook-type>")
+        cyan(&crate::daft_cmd("hooks run <hook-type>"))
     ));
 
     Ok(())

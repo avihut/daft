@@ -178,6 +178,54 @@ impl JobsStorePort for SqliteJobsStore {
         InvocationsRepo::get(&conn, repo_hash, invocation_id).map_err(anyhow::Error::from)
     }
 
+    fn record_skipped_invocation(&self, row: &InvocationRow) -> Result<()> {
+        // The delete+insert pair runs in one transaction so the natural-key
+        // "at most one skipped row per (repo, hook, worktree)" invariant
+        // holds across *processes*. The size-1 writer pool only serializes
+        // writers that share it; two concurrent daft commands on the same
+        // repo each hold their own pool, and unwrapped pairs from both can
+        // interleave and leave two skipped rows for one key.
+        let mut conn = self.pool.writer().context("checkout writer")?;
+        crate::store::repos::with_write_txn(&mut conn, |tx| {
+            InvocationsRepo::delete_by_key_and_status(
+                tx,
+                &row.repo_hash,
+                &row.hook_type,
+                &row.worktree,
+                crate::store::models::invocation::INVOCATION_STATUS_SKIPPED,
+            )?;
+            InvocationsRepo::upsert(tx, row)
+        })
+        .map_err(anyhow::Error::from)
+    }
+
+    fn list_skipped_invocations(&self, repo_hash: &str) -> Result<Vec<InvocationRow>> {
+        let conn = self.pool.reader().context("checkout reader")?;
+        InvocationsRepo::list_by_repo_and_status(
+            &conn,
+            repo_hash,
+            crate::store::models::invocation::INVOCATION_STATUS_SKIPPED,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn clear_skipped_invocations(
+        &self,
+        repo_hash: &str,
+        hook_type: &str,
+        worktree: &str,
+    ) -> Result<()> {
+        let conn = self.pool.writer().context("checkout writer")?;
+        InvocationsRepo::delete_by_key_and_status(
+            &conn,
+            repo_hash,
+            hook_type,
+            worktree,
+            crate::store::models::invocation::INVOCATION_STATUS_SKIPPED,
+        )?;
+        Ok(())
+    }
+
     fn upsert_job(&self, row: &JobRow) -> Result<()> {
         // Scrub secrets before they touch disk. This is the canonical
         // persistence boundary for job rows; every JobsStorePort write goes
@@ -333,6 +381,22 @@ mod tests {
             worktree: "feat/foo".into(),
             created_at: Utc::now(),
             coordinator_pid: Some(42),
+            status: crate::store::models::invocation::INVOCATION_STATUS_COMPLETED.into(),
+            skip_reason: None,
+        }
+    }
+
+    fn skipped_inv(id: &str, hook_type: &str, worktree: &str) -> InvocationRow {
+        InvocationRow {
+            repo_hash: "r".into(),
+            invocation_id: id.into(),
+            trigger_command: "checkout".into(),
+            hook_type: hook_type.into(),
+            worktree: worktree.into(),
+            created_at: Utc::now(),
+            coordinator_pid: None,
+            status: crate::store::models::invocation::INVOCATION_STATUS_SKIPPED.into(),
+            skip_reason: Some(crate::store::models::invocation::SKIP_REASON_UNTRUSTED.into()),
         }
     }
 
@@ -376,6 +440,129 @@ mod tests {
             back.env
         );
         assert_eq!(back.env.get("PATH"), Some(&"/usr/bin".to_string()));
+    }
+
+    #[test]
+    fn record_skipped_invocation_replaces_prior_row_for_same_key() {
+        let (_tmp, store) = fresh();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-1", "worktree-post-create", "feat/a"))
+            .unwrap();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-2", "worktree-post-create", "feat/a"))
+            .unwrap();
+        // A different worktree keeps its own row.
+        store
+            .record_skipped_invocation(&skipped_inv("inv-3", "worktree-post-create", "feat/b"))
+            .unwrap();
+
+        let rows = store.list_skipped_invocations("r").unwrap();
+        let mut ids: Vec<_> = rows.iter().map(|r| r.invocation_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["inv-2", "inv-3"]);
+    }
+
+    #[test]
+    fn record_skipped_invocation_is_atomic_across_pools() {
+        // Two stores on one DB file stand in for two daft processes: each
+        // holds its own size-1 writer pool, so nothing but the transaction
+        // serializes the delete+insert pair. Only the *last* pairs on a key
+        // decide the end state, so a long hammer samples the race once —
+        // instead, many barrier-synced one-shot rounds, each on its own
+        // key, each an independent sample. With the transaction the
+        // invariant holds deterministically; without it, rounds interleave
+        // and leave two skipped rows for one natural key.
+        use std::sync::{Arc, Barrier};
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let store_a = Arc::new(SqliteJobsStore::new(Pool::open(&path).unwrap()));
+        let store_b = Arc::new(SqliteJobsStore::new(Pool::open(&path).unwrap()));
+        let check = SqliteJobsStore::new(Pool::open(&path).unwrap());
+
+        for round in 0..200 {
+            let worktree = format!("feat/{round}");
+            let barrier = Arc::new(Barrier::new(2));
+            let spawn = |store: &Arc<SqliteJobsStore>, id: String| {
+                let store = Arc::clone(store);
+                let barrier = Arc::clone(&barrier);
+                let worktree = worktree.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .record_skipped_invocation(&skipped_inv(
+                            &id,
+                            "worktree-post-create",
+                            &worktree,
+                        ))
+                        .unwrap();
+                })
+            };
+            let a = spawn(&store_a, format!("a-{round}"));
+            let b = spawn(&store_b, format!("b-{round}"));
+            a.join().unwrap();
+            b.join().unwrap();
+
+            let rows: Vec<_> = check
+                .list_skipped_invocations("r")
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.worktree == worktree)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "round {round}: concurrent skip records for one (repo, hook, \
+                 worktree) key must collapse to a single row; got ids {:?}",
+                rows.iter().map(|r| &r.invocation_id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn list_skipped_invocations_excludes_completed_rows() {
+        let (_tmp, store) = fresh();
+        store.upsert_invocation(&sample_inv()).unwrap();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-s", "post-clone", "main"))
+            .unwrap();
+        let rows = store.list_skipped_invocations("r").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].invocation_id, "inv-s");
+        assert_eq!(
+            rows[0].skip_reason.as_deref(),
+            Some(crate::store::models::invocation::SKIP_REASON_UNTRUSTED)
+        );
+    }
+
+    #[test]
+    fn clear_skipped_invocations_deletes_only_the_matching_triple() {
+        let (_tmp, store) = fresh();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-1", "worktree-post-create", "feat/a"))
+            .unwrap();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-2", "worktree-pre-create", "feat/a"))
+            .unwrap();
+        store
+            .record_skipped_invocation(&skipped_inv("inv-3", "worktree-post-create", "feat/b"))
+            .unwrap();
+        // A completed row on the same natural key must survive the clear.
+        let mut done = sample_inv();
+        done.invocation_id = "inv-done".into();
+        done.hook_type = "worktree-post-create".into();
+        done.worktree = "feat/a".into();
+        store.upsert_invocation(&done).unwrap();
+
+        store
+            .clear_skipped_invocations("r", "worktree-post-create", "feat/a")
+            .unwrap();
+
+        let rows = store.list_skipped_invocations("r").unwrap();
+        let mut ids: Vec<_> = rows.iter().map(|r| r.invocation_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["inv-2", "inv-3"]);
+        assert!(store.get_invocation("r", "inv-done").unwrap().is_some());
     }
 
     #[test]

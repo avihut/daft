@@ -73,3 +73,11 @@ pub fn argv() -> &'static [String] {
     ARGV.get()
         .expect("cli::install_and_apply must be called before cli::argv()")
 }
+
+/// Non-panicking [`argv`]: `None` before [`install_and_apply`] has run (unit
+/// tests, library embedders). Callers that must never crash on a missing
+/// install — e.g. cosmetic concerns like [`crate::cli_label`] — use this and
+/// pick a canonical fallback.
+pub fn try_argv() -> Option<&'static [String]> {
+    ARGV.get().map(Vec::as_slice)
+}

@@ -1,0 +1,66 @@
+name: Untrusted remove hooks warn during sync's prune phase
+description:
+  "sync's prune phase fires worktree-pre/post-remove for branches deleted on the
+  remote, but previously emitted no untrusted notice. The centralized notice
+  must surface there too."
+
+repos:
+  - name: test-sync-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# sync untrusted"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: teardown
+              run: echo teardown
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_SYNC_UNTRUSTED
+    expect:
+      exit_code: 0
+
+  - name: Create a feature branch and push it to the remote
+    run: |
+      cd $WORK_DIR/test-sync-untrusted/main
+      git checkout -b feature/synced 2>/dev/null
+      echo content > synced.txt
+      git add synced.txt
+      git commit -m "Add synced content" 2>/dev/null
+      git push origin feature/synced 2>/dev/null
+      git checkout main 2>/dev/null
+    expect:
+      exit_code: 0
+
+  - name: Checkout the feature branch as a worktree
+    run: git-worktree-checkout feature/synced
+    cwd: "$WORK_DIR/test-sync-untrusted/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-sync-untrusted/feature/synced"
+
+  - name: Delete the feature branch from the remote
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_TEST_SYNC_UNTRUSTED "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/synced 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: Sync warns about the skipped pre-remove hook while pruning
+    run: git-worktree-sync --force
+    cwd: "$WORK_DIR/test-sync-untrusted/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Untrusted repo — 1 daft.yml hook not run: worktree-pre-remove"
+        - "git daft hooks trust"

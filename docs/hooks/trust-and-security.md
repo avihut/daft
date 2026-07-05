@@ -83,6 +83,53 @@ git daft hooks trust reset all
 See [`git daft-hooks`](/reference/cli/git-daft-hooks) for the full CLI
 reference.
 
+## Skipped hooks are never silent
+
+When a command would have run a hook but the repository isn't trusted, daft says
+so. An untrusted repo skipping its hooks is the trust model working as designed,
+not a problem — so this is a plain notice, not a `warning:`. Every command that
+fires lifecycle hooks — checkout, clone, merge, sync, prune, remove — prints one
+notice on stderr naming the hooks it skipped and the way forward:
+
+```
+Untrusted repo — 2 daft.yml hooks not run: worktree-pre-create, worktree-post-create
+   To run them, trust this repo:       git daft hooks trust
+   Then replay this worktree's setup:  git daft hooks run worktree-post-create
+```
+
+The line reads general to specific — trust state, then the count, then the hook
+names — and on color terminals each part is styled by role: the state in bold,
+the hook names in daft's accent color, the suggested commands in cyan. The
+suggested commands also match how you invoked daft: `daft hooks trust` when you
+ran `daft` directly, `git daft hooks trust` when you went through git.
+
+The notice covers both config shapes (`daft.yml` and `.daft/hooks/` scripts),
+appears once per command no matter how many hooks were skipped, and never
+touches stdout, so shell integration and scripted output stay clean. Passing
+`--skip-hooks all` (or a hook-type selector naming the fire) suppresses it — an
+explicit opt-out is not a surprise worth reporting. The suggestion lines honor
+`DAFT_NO_HINTS=1`; the notice itself always prints.
+
+### Replaying hooks you skipped
+
+Each trust-skip is also recorded. When you later run `git daft hooks trust`,
+daft checks those records and lists the setup hooks that never ran, scoped to
+the worktrees that still exist:
+
+```
+Hooks were skipped here while the repository was untrusted. Replay them:
+  git daft hooks run post-clone               # in main
+  git daft hooks run worktree-post-create     # in feature/a, feature/b
+```
+
+Run the suggested command inside each listed worktree to apply the setup side
+effects (installs, symlinks, env files) retroactively. Only the idempotent setup
+hooks are suggested — `post-clone` and `worktree-post-create`. Pre-flight and
+removal hooks belong to operations that already happened, and merge hooks depend
+on per-merge environment variables, so replaying them would be meaningless or
+harmful. A record is cleared the moment the hook actually runs for that worktree
+(including via `hooks run`), so the suggestions stay accurate.
+
 ## Trust granularity
 
 Trust is granted at the **repository** level, identified by remote URL. There is
