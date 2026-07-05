@@ -12,7 +12,7 @@ use crate::{
         sort::SortSpec,
         worktree::{
             info_field::FieldSet,
-            list::{EntryKind, WorktreeInfo, collect_branch_info},
+            list::{EntryKind, Stat, WorktreeInfo, collect_branch_info},
             list_stream,
             sync_dag::{DagEvent, PatchSource},
         },
@@ -63,6 +63,12 @@ pub fn run_live(args: Args) -> Result<()> {
         ),
         None => None,
     };
+
+    // Request only the fields this view renders or sorts by. Requesting more
+    // (the old `FieldSet::ALL`) forced every worker through the SIZE cluster —
+    // a full recursive walk of each worktree — before the completion sentinel
+    // could fire and let the renderer exit (#665).
+    let fields = collector_fields(&selected_columns, sort_spec.as_ref(), stat);
 
     let show_local = args.branches || args.all;
     let show_remote = args.remotes || args.all;
@@ -170,7 +176,7 @@ pub fn run_live(args: Args) -> Result<()> {
     let collector_handle = list_stream::spawn(
         list_stream::CollectorRequest {
             targets,
-            fields: FieldSet::ALL,
+            fields,
             stat,
             source: PatchSource::Collector,
             ctx: collector_ctx,
@@ -191,11 +197,11 @@ pub fn run_live(args: Args) -> Result<()> {
         sort_spec,
         false, // pin_default_branch
         false, // partition_by_owner
-        // The streaming collector requests `FieldSet::ALL` (see CollectorRequest
-        // above), so the seed never authoritatively finalizes any field for
-        // `daft list` — every cell starts in the loading state and transitions
-        // when its patch lands.
-        FieldSet::EMPTY,
+        // Seed-finalize the complement of the collector request: fields the
+        // collector won't stream must not read as in-flight (loading shimmer,
+        // verbose footer). Every requested cell starts in the loading state
+        // and transitions when its patch lands.
+        !fields,
     );
 
     // Single source of truth for cancellation: the renderer's Ctrl-C handler
@@ -241,6 +247,45 @@ pub fn run_live(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Fields the streaming collector must populate for this view: what the
+/// selected columns render plus what the sort inspects, with the `*_LINES`
+/// variants added in `--stat lines` mode (the renderer and `SortKey::compare`
+/// read those then; the summary bits stay in the set because the loading
+/// shimmer keys off them). The collector request routes through here so it
+/// can't drift back to `FieldSet::ALL`, whose hidden SIZE walk kept the
+/// renderer alive for seconds after the table was fully drawn (#665).
+fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: Stat) -> FieldSet {
+    let mut fields = FieldSet::EMPTY;
+    for column in columns {
+        fields |= match column {
+            // Populated by the porcelain seed, never streamed.
+            ListColumn::Annotation | ListColumn::Branch | ListColumn::Path => FieldSet::EMPTY,
+            ListColumn::Size => FieldSet::SIZE,
+            ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
+            ListColumn::Changes => FieldSet::CHANGES,
+            ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
+            ListColumn::Age => FieldSet::BRANCH_AGE,
+            ListColumn::Owner => FieldSet::OWNER,
+            ListColumn::Hash | ListColumn::LastCommit => FieldSet::LAST_COMMIT,
+        };
+    }
+    if let Some(spec) = sort_spec {
+        fields |= spec.required_fields();
+    }
+    if stat == Stat::Lines {
+        if fields.contains(FieldSet::BASE_AHEAD_BEHIND) {
+            fields |= FieldSet::BASE_LINES;
+        }
+        if fields.contains(FieldSet::CHANGES) {
+            fields |= FieldSet::CHANGES_LINES;
+        }
+        if fields.contains(FieldSet::REMOTE_AHEAD_BEHIND) {
+            fields |= FieldSet::REMOTE_LINES;
+        }
+    }
+    fields
+}
+
 /// RAII guard that enables crossterm raw mode now and restores cooked mode on
 /// drop. Best-effort: if `enable_raw_mode` fails (e.g. stdin isn't a terminal),
 /// the guard is still returned so its `Drop` is safe to run. Disabling raw
@@ -255,5 +300,102 @@ struct RawModeGuard;
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod collector_fields_tests {
+    use super::*;
+
+    fn hidden_fields() -> FieldSet {
+        FieldSet::SIZE
+            | FieldSet::MTIME
+            | FieldSet::BASE_LINES
+            | FieldSet::CHANGES_LINES
+            | FieldSet::REMOTE_LINES
+    }
+
+    fn sort(input: &str, stat: Stat) -> SortSpec {
+        SortSpec::parse(input).unwrap().with_stat(stat)
+    }
+
+    /// #665 regression: the default view must not collect SIZE/MTIME (or any
+    /// line-stat field) — the hidden SIZE walk of every worktree is what kept
+    /// `daft list` alive for seconds after the table was fully rendered.
+    #[test]
+    fn default_view_collects_only_rendered_fields() {
+        let fields = collector_fields(ListColumn::list_defaults(), None, Stat::Summary);
+        for needed in [
+            FieldSet::BASE_AHEAD_BEHIND,
+            FieldSet::CHANGES,
+            FieldSet::REMOTE_AHEAD_BEHIND,
+            FieldSet::BRANCH_AGE,
+            FieldSet::OWNER,
+            FieldSet::LAST_COMMIT,
+        ] {
+            assert!(
+                fields.contains(needed),
+                "default view must collect {needed:?}"
+            );
+        }
+        assert!(
+            !fields.intersects(hidden_fields()),
+            "default view must not collect SIZE/MTIME/line stats"
+        );
+    }
+
+    #[test]
+    fn size_column_selection_requests_size() {
+        // Through the real parser, as `--columns +size` resolves it.
+        let resolved = ColumnSelection::parse("+size", CommandKind::List).unwrap();
+        let fields = collector_fields(&resolved.columns, None, Stat::Summary);
+        assert!(fields.contains(FieldSet::SIZE));
+        assert!(!fields.contains(FieldSet::MTIME));
+    }
+
+    #[test]
+    fn size_sort_requests_size_even_without_size_column() {
+        let spec = sort("-size", Stat::Summary);
+        let fields = collector_fields(ListColumn::list_defaults(), Some(&spec), Stat::Summary);
+        assert!(fields.contains(FieldSet::SIZE));
+    }
+
+    #[test]
+    fn activity_sort_requests_mtime_and_last_commit() {
+        let spec = sort("-activity", Stat::Summary);
+        let fields = collector_fields(ListColumn::list_defaults(), Some(&spec), Stat::Summary);
+        assert!(fields.contains(FieldSet::MTIME | FieldSet::LAST_COMMIT));
+        assert!(!fields.contains(FieldSet::SIZE));
+    }
+
+    #[test]
+    fn lines_stat_upgrades_rendered_groups_to_line_fields() {
+        let fields = collector_fields(ListColumn::list_defaults(), None, Stat::Lines);
+        assert!(
+            fields
+                .contains(FieldSet::BASE_LINES | FieldSet::CHANGES_LINES | FieldSet::REMOTE_LINES)
+        );
+        // Summary bits stay: the loading shimmer keys off them.
+        assert!(fields.contains(FieldSet::BASE_AHEAD_BEHIND | FieldSet::CHANGES));
+        assert!(!fields.contains(FieldSet::SIZE));
+    }
+
+    #[test]
+    fn lines_sort_on_hidden_column_still_gets_line_fields() {
+        // `--columns branch,path --sort -base --stat lines`: compare() reads
+        // base_lines_* even though no base column is rendered.
+        let spec = sort("-base", Stat::Lines);
+        let fields = collector_fields(
+            &[ListColumn::Branch, ListColumn::Path],
+            Some(&spec),
+            Stat::Lines,
+        );
+        assert!(fields.contains(FieldSet::BASE_AHEAD_BEHIND | FieldSet::BASE_LINES));
+    }
+
+    #[test]
+    fn seed_only_view_collects_nothing() {
+        let fields = collector_fields(&[ListColumn::Branch, ListColumn::Path], None, Stat::Summary);
+        assert!(fields.is_empty());
     }
 }
