@@ -22,6 +22,11 @@
 //! stderr are discarded entirely, so rc-file noise (welcome banners,
 //! p10k instant-prompt output, fortune cookies) cannot corrupt the
 //! captured snapshot. A 10s deadline guards against rc-files that hang.
+//! The capture shell runs in a detached session with no controlling
+//! terminal (via the `daft __capture-aliases` setsid trampoline) so a
+//! job-control stop can never freeze daft, and an interactive shell
+//! never job-stops *itself* fighting for daft's tty — see
+//! `capture_with_timeout`.
 //!
 //! Two files per shell:
 //!   * `aliases-<shell>.txt` — small; alias definitions plus a metadata
@@ -302,7 +307,38 @@ impl AliasCache {
             kind.functions_print_command(),
         );
 
-        let mut cmd = std::process::Command::new(shell_path);
+        // The capture shell runs in its own *session*, fully detached
+        // from daft's controlling terminal — not merely its own process
+        // group. Two failure classes force this (#663):
+        //  - a rc-file that job-control-stops the shell's group must
+        //    freeze that group *alone*, never daft and this watchdog
+        //    with it;
+        //  - an interactive shell that still sees daft's tty but sits in
+        //    a non-foreground group stops *itself* before printing
+        //    anything (bash -i force-opens /dev/tty and does the SIGTTIN
+        //    foreground dance even with job control disabled; zsh opens
+        //    /dev/tty likewise). With no controlling terminal at all,
+        //    both skip the dance and just run.
+        // `pre_exec` is off-limits under forbid(unsafe_code), so the
+        // detach uses the spawn-self pattern: `daft __capture-aliases`
+        // calls the safe nix `setsid()` and then execs the shell in
+        // place, so the direct child *is* the shell and pid == pgid ==
+        // session for the deadline's group kill below.
+        let mut cmd;
+        #[cfg(unix)]
+        {
+            let (tramp, prefix) = trampoline_argv()?;
+            cmd = std::process::Command::new(tramp);
+            cmd.args(prefix);
+            cmd.arg(shell_path);
+        }
+        #[cfg(not(unix))]
+        {
+            // No sessions or process groups to manage off unix: spawn
+            // the shell directly; the deadline degrades to a plain kill
+            // of the direct child.
+            cmd = std::process::Command::new(shell_path);
+        }
         cmd.arg("-i")
             .arg("-c")
             .arg(body)
@@ -311,17 +347,6 @@ impl AliasCache {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        // Own process group (#663): an interactive shell (or its rc
-        // machinery) that draws a job-control stop freezes its own
-        // group *alone*. Without this, the stop lands on the invoking
-        // process's group — including this very watchdog loop, which
-        // then can never fire. The safety net must not freeze together
-        // with the thing it guards.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
         let mut child = cmd.spawn()?;
 
         // Bounded wait. A rc-file that does `exec tmux` or similar would
@@ -333,9 +358,11 @@ impl AliasCache {
                 Some(_status) => break,
                 None => {
                     if std::time::Instant::now() >= deadline {
-                        // Group kill: reaches rc-spawned grandchildren
-                        // too, and SIGKILL is the one terminating signal
-                        // a stopped group still acts on.
+                        // Group kill: the trampoline's setsid made the
+                        // child a session + group leader (pgid == pid),
+                        // so this reaches rc-spawned grandchildren too,
+                        // and SIGKILL is the one terminating signal a
+                        // stopped group still acts on.
                         #[cfg(unix)]
                         {
                             let _ = nix::sys::signal::killpg(
@@ -369,6 +396,65 @@ impl AliasCache {
             functions_body.trim_start_matches('\n').to_string(),
         ))
     }
+}
+
+/// Program + leading args that turn `<shell> <args…>` into a
+/// session-detached exec of that shell (see `capture_with_timeout`).
+#[cfg(all(unix, not(test)))]
+fn trampoline_argv() -> std::io::Result<(std::ffi::OsString, Vec<std::ffi::OsString>)> {
+    // canonicalize() is load-bearing: invoked via a symlink (e.g.
+    // git-worktree-exec), current_exe() returns the symlink path, and
+    // spawning that would dispatch the symlink's command arm instead of
+    // the multicall `daft __capture-aliases` arm.
+    let exe = std::env::current_exe()?.canonicalize()?;
+    Ok((exe.into_os_string(), vec!["__capture-aliases".into()]))
+}
+
+/// Under `cargo test`, current_exe() is the libtest harness, which
+/// cannot dispatch the helper arm — substitute a perl trampoline with
+/// identical semantics (setsid, then exec the remaining argv).
+#[cfg(all(unix, test))]
+fn trampoline_argv() -> std::io::Result<(std::ffi::OsString, Vec<std::ffi::OsString>)> {
+    Ok((
+        "perl".into(),
+        vec![
+            "-MPOSIX".into(),
+            "-e".into(),
+            r#"POSIX::setsid(); exec @ARGV or die "exec: $!""#.into(),
+            "--".into(),
+        ],
+    ))
+}
+
+/// `daft __capture-aliases <shell> <args…>` — the session-detach
+/// trampoline the capture spawn above goes through. Calls `setsid()` so
+/// the exec'd shell has no controlling terminal, then replaces this
+/// process with the shell. Never returns.
+///
+/// Purpose-named rather than a generic exec helper deliberately:
+/// nothing else should grow a dependency on this arm.
+#[cfg(unix)]
+pub fn run_capture_trampoline(argv: &[String]) -> ! {
+    use std::os::unix::process::CommandExt;
+
+    // A freshly spawned child is never a process-group leader, so
+    // setsid succeeds; if it somehow fails, fall back to plain group
+    // isolation — losing tty detachment but never running the shell
+    // inside daft's own group.
+    if nix::unistd::setsid().is_err() {
+        let zero = nix::unistd::Pid::from_raw(0);
+        let _ = nix::unistd::setpgid(zero, zero);
+    }
+
+    let Some((shell, shell_args)) = argv.split_first() else {
+        eprintln!("daft __capture-aliases: missing shell argv");
+        std::process::exit(2);
+    };
+    let err = std::process::Command::new(shell).args(shell_args).exec();
+    // Only reached when exec itself failed. Stderr is normally
+    // /dev/null here; the exit code is what the watchdog side observes.
+    eprintln!("daft __capture-aliases: exec {shell}: {err}");
+    std::process::exit(127);
 }
 
 /// Upper bound on how long the shell capture is allowed to run. rc-files
@@ -436,6 +522,19 @@ pub(crate) fn looks_like_alias_dump(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Skip-guard probe: whether `<tool> <args…>` fails to run cleanly.
+    /// Capture tests skip on minimal images rather than failing.
+    #[cfg(unix)]
+    fn tool_unavailable(tool: &str, args: &[&str]) -> bool {
+        std::process::Command::new(tool)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| !s.success())
+            .unwrap_or(true)
+    }
 
     #[test]
     fn detects_bash_and_zsh_from_path() {
@@ -585,18 +684,21 @@ mod tests {
     /// any rc-file pollution was indistinguishable from alias output and
     /// got persisted, then re-injected into every subsequent fast-path
     /// invocation, breaking the user's commands.
+    ///
+    /// Doubles as the tty regression test when the suite runs from a
+    /// real terminal: `bash -i` in a background group of a controlling
+    /// tty job-stops itself (SIGTTIN foreground dance) before printing
+    /// anything, so without the detached-session trampoline this times
+    /// out at the capture deadline. Terminal-less runs (CI, pipes)
+    /// cannot reproduce that arm — the pty-wrapped integration test in
+    /// `tests/integration/test_worktree_exec.sh` covers it durably.
     #[cfg(unix)]
     #[test]
     fn capture_survives_rc_file_stdout_pollution() {
         use std::os::unix::fs::PermissionsExt;
-        if std::process::Command::new("bash")
-            .arg("-c")
-            .arg("true")
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(true)
-        {
-            // bash unavailable — skip rather than fail on minimal CI images.
+        if tool_unavailable("bash", &["-c", "true"]) || tool_unavailable("perl", &["-e", "1"]) {
+            // Skip rather than fail on minimal CI images (perl runs the
+            // test-side capture trampoline).
             return;
         }
 
@@ -651,17 +753,21 @@ mod tests {
     }
 
     /// Regression test for #663: a capture shell that job-control-stops
-    /// its own process group must wedge *alone*. Before
-    /// `process_group(0)`, the `kill -STOP 0` here landed on the
-    /// invoking process's group — this very test suite — freezing the
-    /// watchdog together with the shell it guards (the field incident's
-    /// exact shape, minus the tty). With the isolation, the watchdog
+    /// its own process group must wedge *alone*. Without the detached
+    /// session (setsid trampoline), the `kill -STOP 0` here lands on
+    /// the invoking process's group — this very test suite — freezing
+    /// the watchdog together with the shell it guards (the field
+    /// incident's exact shape, minus the tty). Detached, the watchdog
     /// stays live, group-kills the child at the deadline, and capture
     /// returns TimedOut so `daft exec` falls back to the rc-less path.
     #[cfg(unix)]
     #[test]
     fn capture_survives_self_stopping_shell() {
         use std::os::unix::fs::PermissionsExt;
+        if tool_unavailable("perl", &["-e", "1"]) {
+            // perl runs the test-side capture trampoline.
+            return;
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let wrapper = dir.path().join("stopping-shell.sh");
