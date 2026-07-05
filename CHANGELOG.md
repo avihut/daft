@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.18.0](https://github.com/avihut/daft/compare/v1.17.0...v1.18.0) - 2026-07-05
+
+
+### Features
+
+- **hooks**: Contextual per-command notices when untrusted repos skip hooks, with trust + replay suggestions (#654)
 ## [1.17.0](https://github.com/avihut/daft/compare/v1.16.0...v1.17.0) - 2026-06-20
 
 
