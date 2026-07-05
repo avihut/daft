@@ -217,6 +217,58 @@ impl GitCommand {
         Ok(output.status.success())
     }
 
+    /// Resolve the merge base of two revisions.
+    ///
+    /// Returns `Ok(None)` when the revisions share no common ancestor
+    /// (unrelated histories — `git merge-base` exits 1 with no output).
+    /// Any other failure (bad revision, not a repository, ...) is an error.
+    pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["merge-base", a, b])
+            .output()
+            .context("Failed to execute git merge-base command")?;
+
+        if !output.status.success() {
+            if output.status.code() == Some(1) {
+                return Ok(None);
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git merge-base failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git merge-base output")?;
+        Ok(Some(stdout.trim().to_string()))
+    }
+
+    /// Create an unreferenced commit wrapping `tree` with a single `parent`,
+    /// returning the new commit hash.
+    ///
+    /// Used by squash-merge detection to synthesize a one-commit equivalent
+    /// of a branch's cumulative diff. Identity is injected via environment
+    /// variables so the probe works even where user.name/user.email are not
+    /// configured. The object is deliberately left dangling — nothing ever
+    /// references it, and `git gc` sweeps it with other unreachable objects.
+    pub fn commit_tree(&self, tree: &str, parent: &str, message: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["commit-tree", tree, "-p", parent, "-m", message])
+            .env("GIT_AUTHOR_NAME", "daft")
+            .env("GIT_AUTHOR_EMAIL", "daft@localhost")
+            .env("GIT_COMMITTER_NAME", "daft")
+            .env("GIT_COMMITTER_EMAIL", "daft@localhost")
+            .output()
+            .context("Failed to execute git commit-tree command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git commit-tree failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout)
+            .context("Failed to parse git commit-tree output")
+            .map(|s| s.trim().to_string())
+    }
+
     /// Run `git cherry <upstream> <branch>` and return output.
     /// Lines prefixed with `-` indicate patches already upstream.
     /// Lines prefixed with `+` indicate patches NOT upstream.
