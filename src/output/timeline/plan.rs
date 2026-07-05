@@ -4,7 +4,9 @@
 //! imperative while pending (a promise), gerund while active, past tense once
 //! done (a fact). Failed steps deliberately keep the imperative — the fact
 //! never happened. Expected skips replace the label entirely (listr2-style
-//! "reason replaces title"), e.g. `Push` → `not pushed`.
+//! "reason replaces title"), e.g. `Delete remote branch` → `remote branch
+//! kept`. Skips known at plan-commit time never plan a row in the first
+//! place (#651) — the skipped labels serve runtime-discovered resolutions.
 //!
 //! Hook phases are noun labels in every tense; when they actually run, the
 //! row is replaced by the hook renderer's own block, so only the pending /

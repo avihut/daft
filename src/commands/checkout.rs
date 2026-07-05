@@ -894,13 +894,6 @@ fn run_create_branch(
         },
         layout: Some(layout),
         at_path: args.at.clone(),
-        push_off_display_reason: if args.local {
-            Some("--local".to_string())
-        } else if !settings.checkout_push {
-            Some("daft.checkout.push off".to_string())
-        } else {
-            None
-        },
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;

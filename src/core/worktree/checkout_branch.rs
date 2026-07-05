@@ -54,9 +54,6 @@ pub struct CheckoutBranchParams {
     /// Explicit path override for worktree placement (`--at` flag).
     /// When `Some`, takes priority over both `layout` and the default path computation.
     pub at_path: Option<PathBuf>,
-    /// Why the push is off, for the timeline's expected-skip row
-    /// (`--local` vs `daft.checkout.push off`). `None` when pushing.
-    pub push_off_display_reason: Option<String>,
 }
 
 /// Result of a checkout-branch operation.
@@ -132,8 +129,8 @@ pub fn execute(
     let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;
 
     // Commit the execution plan (#651): base and path are resolved, mutation
-    // is about to begin. The Push row is always present — it resolves as an
-    // expected skip when pushing is off, so the remote fate stays explicit.
+    // is about to begin. The plan lists only steps that will actually be
+    // attempted — a push known to be off (config or --local) plans no row.
     let should_carry = params.carry || (!params.no_carry && params.checkout_branch_carry);
     let mut plan_rows = vec![
         Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
@@ -147,14 +144,14 @@ pub fn execute(
     if should_carry {
         plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
     }
-    plan_rows.push(Row::Step(if params.checkout_push {
-        StepSpec::new(StepKey::new(StageId::Push)).with_annotation(format!(
-            "\u{2192} {}/{}",
-            params.remote_name, params.new_branch_name
-        ))
-    } else {
-        StepSpec::new(StepKey::new(StageId::Push))
-    }));
+    if params.checkout_push {
+        plan_rows.push(Row::Step(
+            StepSpec::new(StepKey::new(StageId::Push)).with_annotation(format!(
+                "\u{2192} {}/{}",
+                params.remote_name, params.new_branch_name
+            )),
+        ));
+    }
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -669,20 +666,12 @@ fn push_if_enabled(
     presenter: Option<&Arc<dyn JobPresenter>>,
     sink: &mut impl ProgressSink,
 ) -> (bool, bool, Option<String>) {
-    let push_key = StepKey::new(StageId::Push);
     if !params.checkout_push {
+        // A known-off push plans no row (#651), so there is nothing to resolve.
         sink.on_step("Skipping push (disabled in config)");
-        sink.on_stage(
-            &push_key,
-            StageEvent::SkippedExpected {
-                reason: params
-                    .push_off_display_reason
-                    .clone()
-                    .unwrap_or_else(|| "push off".to_string()),
-            },
-        );
         return (false, true, None);
     }
+    let push_key = StepKey::new(StageId::Push);
 
     sink.on_step(&format!(
         "Pushing and setting upstream to '{}/{}'...",
@@ -1201,7 +1190,6 @@ mod timeline_tests {
             checkout_fetch: false,
             layout: None,
             at_path: Some(worktree_path.clone()),
-            push_off_display_reason: Some("daft.checkout.push off".to_string()),
         };
 
         let git_cmd = GitCommand::new(true);
@@ -1225,17 +1213,15 @@ mod timeline_tests {
                 StageId::CreateBranch,
                 StageId::CheckOut,
                 StageId::CreateWorktree,
-                StageId::Push,
                 StageId::PostCreateHooks,
             ],
-            "carry off => no Carry row; Push row always present"
+            "carry off => no Carry row; push off => no Push row"
         );
         assert!(!plan.rows.iter().any(|r| matches!(r, Row::Group { .. })));
 
-        // Push resolves as an expected skip with the provenance reason.
+        // A push known to be off is not planned, so no Push event may fire.
         assert!(
-            sink.events.iter().any(|(k, e)| k.id == StageId::Push
-                && matches!(e, StageEvent::SkippedExpected { reason } if reason == "daft.checkout.push off")),
+            sink.events.iter().all(|(k, _)| k.id != StageId::Push),
             "events: {:?}",
             sink.events
         );

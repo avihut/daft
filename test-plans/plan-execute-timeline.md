@@ -14,8 +14,8 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] `daft start <name>`: full plan appears at once (pending rows dim), steps
       fill in place top-to-bottom, footer `└ Ready in <t>` persists
 - [ ] Header shows the resolved base: `┌ Starting <name> ← <base>`
-- [ ] Push off (default): `○ not pushed  daft.checkout.push off`
-- [ ] `daft start <name> --local`: `○ not pushed  --local`
+- [ ] Push off (default) or `--local`: no push row at all — the plan lists only
+      steps that will run
 - [ ] With a remote + `daft.checkout.push=true`: `✓ Pushed  → origin/<name>`
       with a dim duration when ≥ 1s
 - [ ] `daft go <existing-remote-branch>`: `✓ Checked out branch ← origin/<b>`
