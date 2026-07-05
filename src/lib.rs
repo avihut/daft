@@ -48,9 +48,10 @@ pub const STATE_DIR_ENV: &str = "DAFT_STATE_DIR";
 /// Returns the daft config directory path.
 ///
 /// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
-/// build.rs) and in unit tests, when `DAFT_CONFIG_DIR` is set to a non-empty
-/// absolute path, uses that path directly (no `daft/` suffix appended).
-/// Release builds ignore the env var. Always falls back to
+/// build.rs) and in this crate's unit tests, when `DAFT_CONFIG_DIR` is set to
+/// a non-empty absolute path, uses that path directly (no `daft/` suffix
+/// appended). Integration tests exercise the built binary, which relies on
+/// the build.rs cfg. Release builds ignore the env var. Always falls back to
 /// `dirs::config_dir()/daft`.
 pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
@@ -72,9 +73,10 @@ pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
 /// Returns the daft data directory path.
 ///
 /// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
-/// build.rs) and in unit tests, when `DAFT_DATA_DIR` is set to a non-empty
-/// absolute path, uses that path directly (no `daft/` suffix appended).
-/// Release builds ignore the env var. Always falls back to
+/// build.rs) and in this crate's unit tests, when `DAFT_DATA_DIR` is set to
+/// a non-empty absolute path, uses that path directly (no `daft/` suffix
+/// appended). Integration tests exercise the built binary, which relies on
+/// the build.rs cfg. Release builds ignore the env var. Always falls back to
 /// `dirs::data_dir()/daft`.
 pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
@@ -96,9 +98,10 @@ pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
 /// Returns the daft state directory path.
 ///
 /// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
-/// build.rs) and in unit tests, when `DAFT_STATE_DIR` is set to a non-empty
-/// absolute path, uses that path directly (no `daft/` suffix appended).
-/// Release builds ignore the env var. Always falls back to
+/// build.rs) and in this crate's unit tests, when `DAFT_STATE_DIR` is set to
+/// a non-empty absolute path, uses that path directly (no `daft/` suffix
+/// appended). Integration tests exercise the built binary, which relies on
+/// the build.rs cfg. Release builds ignore the env var. Always falls back to
 /// `dirs::state_dir()/daft` (macOS: `~/.local/state/daft`, Linux:
 /// `$XDG_STATE_HOME/daft`).
 pub fn daft_state_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -494,6 +497,19 @@ mod tests {
         }
         let dir = daft_state_dir().unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/test-daft-state"));
+        unsafe {
+            env::remove_var("DAFT_STATE_DIR");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_daft_state_dir_empty_falls_back() {
+        unsafe {
+            env::set_var("DAFT_STATE_DIR", "");
+        }
+        let dir = daft_state_dir().unwrap();
+        assert!(dir.ends_with("daft"));
         unsafe {
             env::remove_var("DAFT_STATE_DIR");
         }
