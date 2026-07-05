@@ -30,6 +30,7 @@ fn plan() -> PlanCommit {
             StepSpec::new(StepKey::new(StageId::CreateWorktree))
                 .with_annotation("../daft-652/cool-feature"),
         ),
+        Row::Step(StepSpec::new(StepKey::new(StageId::Carry))),
         Row::Step(StepSpec::new(StepKey::new(StageId::Push)).with_annotation("\u{2192} origin")),
         Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks)).with_annotation("2 jobs")),
     ])
@@ -105,6 +106,10 @@ fn main() {
     }
 
     run_step(&mut tl, StageId::CreateWorktree, 600, None);
+
+    // A no-op resolution removes its row from the rail (nothing to carry).
+    sleep(Duration::from_millis(400));
+    tl.on_stage(&StepKey::new(StageId::Carry), StageEvent::SkippedSilent);
 
     // A warning arriving mid-run must land above the live bars.
     tl.println_above(&warning_line(

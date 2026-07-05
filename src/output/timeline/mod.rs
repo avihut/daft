@@ -220,6 +220,7 @@ impl Timeline {
                     annotation: Some(format!("skipped \u{2014} {reason}")),
                 },
             ),
+            StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
             StageEvent::Note(text) => core.set_annotation(key, text),
         }
     }
@@ -390,6 +391,19 @@ mod tests {
             tl.on_stage(&key, StageEvent::Completed { annotation: None });
         }
         tl.resolve_silently(&StepKey::new(StageId::PostCreateHooks));
+        tl.finish("Ready in 0.1s");
+        assert!(!tl.region_live());
+    }
+
+    #[test]
+    fn skipped_silent_resolves_without_a_row() {
+        let mut tl = interactive();
+        tl.commit_plan(plan());
+        let key = StepKey::new(StageId::CheckOut);
+        tl.on_stage(&key, StageEvent::Started);
+        tl.on_stage(&key, StageEvent::SkippedSilent);
+        // A silently resolved step is settled: a clean finish must not
+        // re-render it (Drop policy applies to unresolved rows only).
         tl.finish("Ready in 0.1s");
         assert!(!tl.region_live());
     }

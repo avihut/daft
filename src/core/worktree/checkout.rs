@@ -367,13 +367,7 @@ pub fn execute(
     if should_carry {
         let carry_key = StepKey::new(StageId::Carry);
         if !stash_created {
-            // The swapped label ("nothing to carry") says it all.
-            sink.on_stage(
-                &carry_key,
-                StageEvent::SkippedExpected {
-                    reason: String::new(),
-                },
-            );
+            sink.on_stage(&carry_key, StageEvent::SkippedSilent);
         } else if stash_applied {
             sink.on_stage(&carry_key, StageEvent::Completed { annotation: None });
         } else {

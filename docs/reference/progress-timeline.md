@@ -42,6 +42,11 @@ rail persists in your scrollback as a receipt.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration.
+- The rail lists only work that happens. A step known to be off at planning time
+  (push with `daft.checkout.push` off or `--local`) plans no row, and a step
+  that resolves as a no-op (carry with a clean tree) removes its row — the
+  finished rail is a receipt of what daft actually did. Attention-worthy skips
+  are the exception and stay visible.
 - Every command carries an explicit remote indicator: `← origin/x` (created from
   the remote), `→ origin/x` (pushed), `tracking origin/x`, or a dim note such as
   `kept on origin — daft.branchDelete.remote off`.

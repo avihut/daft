@@ -137,6 +137,10 @@ pub enum StageEvent {
     /// The step resolved without running for an attention-worthy reason
     /// (repository not trusted, `--skip-hooks`). Renders yellow.
     SkippedAttention { reason: String },
+    /// The step resolved as a no-op that warrants no record (carry with a
+    /// clean source tree). The row is removed — the finished rail lists only
+    /// steps that actually happened.
+    SkippedSilent,
     /// Update the row's annotation while the step is pending or active.
     Note(String),
 }

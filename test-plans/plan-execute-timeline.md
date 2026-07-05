@@ -24,8 +24,8 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] `daft go -`: previous-worktree navigation unchanged, no rail
 - [ ] `daft go <missing> --start`: morphs into the start rail (exactly one rail
       for the whole invocation)
-- [ ] Carry: with uncommitted changes `✓ Carried changes`; without,
-      `○ nothing to carry`
+- [ ] Carry: with uncommitted changes `✓ Carried changes`; with a clean tree the
+      carry row vanishes once execution reaches it
 - [ ] `daft remove <branch>`: execution order (remote → worktree → branch),
       `Deleted branch` annotated `was merged into <default>`
 - [ ] `daft remove` remote fate always explicit: `✓ Deleted remote branch`, or
