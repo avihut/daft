@@ -111,12 +111,18 @@ pub enum Verdict {
 /// Poll-based replacement for `Child::wait()` that keeps watching the
 /// shared [`CancelFlag`] and the child's job-control state.
 ///
-/// The child must have been spawned with `Command::process_group(0)`
-/// (unix) so escalations can target its whole tree by group. The
-/// `drains_done` gate exists because pipe write-ends are inherited by
-/// descendants that can outlive the direct child — returning before the
-/// drains see EOF would leave the caller blocked on a reader join with
-/// nobody left watching the flag, which is exactly the #663 wedge.
+/// Supervision is opt-in via the flag: with `cancel: None` the wait is
+/// a classic blocking one — same process group, no stop probes, no
+/// cascades — preserving pre-cancellation behavior for callers that
+/// never asked for teardown (their terminal credential prompts must
+/// keep working, and Ctrl+C must keep reaching the git subtree through
+/// the caller's foreground group). With a flag attached, the child
+/// must have been spawned with `Command::process_group(0)` (unix) so
+/// escalations can target its whole tree by group. The `drains_done`
+/// gate exists because pipe write-ends are inherited by descendants
+/// that can outlive the direct child — returning before the drains see
+/// EOF would leave the caller blocked on a reader join with nobody
+/// left watching the flag, which is exactly the #663 wedge.
 pub struct ChildSupervisor<'a> {
     cancel: Option<&'a CancelFlag>,
     cancelled_in_flight: bool,
@@ -169,6 +175,17 @@ impl<'a> ChildSupervisor<'a> {
         child: &mut Child,
         drains_done: impl Fn() -> bool,
     ) -> std::io::Result<Verdict> {
+        if self.cancel.is_none() {
+            // No flag, no supervision: block like Child::wait always
+            // did, then wait out any pipe holders (the drains run on
+            // the caller's scoped threads and see EOF exactly as they
+            // would have pre-cancellation).
+            let status = child.wait()?;
+            while !drains_done() {
+                std::thread::sleep(TICK);
+            }
+            return Ok(Verdict::Completed(status));
+        }
         let mut exit: Option<ExitStatus> = None;
         loop {
             if exit.is_none() {
@@ -307,12 +324,20 @@ pub fn surviving_groups() -> Vec<u32> {
 
 /// Cancellation-aware stand-in for `Command::output()`.
 ///
-/// Spawns the child in its own process group, drains both pipes on
-/// scoped threads, and polls via [`ChildSupervisor`] instead of blocking
-/// so a cancel escalation (or a tty-stop) tears the child's whole tree
-/// down. Returns [`OperationCancelled`] / [`NeedsTerminal`] as typed
-/// errors; a run that merely failed still returns `Ok` with the
-/// non-success status, matching `Command::output()` semantics.
+/// With a cancel flag, spawns the child in its own process group,
+/// drains both pipes on scoped threads, and polls via
+/// [`ChildSupervisor`] instead of blocking so a cancel escalation (or a
+/// tty-stop) tears the child's whole tree down. Returns
+/// [`OperationCancelled`] / [`NeedsTerminal`] as typed errors; a run
+/// that merely failed still returns `Ok` with the non-success status,
+/// matching `Command::output()` semantics.
+///
+/// With `cancel: None` this is `Command::output()` with extra steps:
+/// the child stays in the caller's process group and the wait blocks
+/// classically. Callers that never opted into cancellation keep their
+/// pre-cancellation behavior — interactive credential prompts stay
+/// reachable in the foreground group, and Ctrl+C still hits the whole
+/// foreground tree.
 pub fn output_with_cancel(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
@@ -326,7 +351,7 @@ pub fn output_with_cancel(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
-    {
+    if cancel.is_some() {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
@@ -451,15 +476,49 @@ mod supervisor_tests {
         // Interactive-auth shape: the child stops its own group the way
         // a background-group /dev/tty read would. Two stopped probes at
         // 500ms cadence must flag it, kill the group, and surface the
-        // typed NeedsTerminal error instead of hanging forever.
+        // typed NeedsTerminal error instead of hanging forever. The
+        // flag stays at level 0 — stop detection is part of supervision
+        // itself, not of cancellation. (Without a flag the child would
+        // share this test process's group and the `kill -STOP 0` would
+        // freeze the suite.)
+        let flag = CancelFlag::new();
         let started = Instant::now();
-        let err = output_with_cancel(&mut sh("kill -STOP 0; sleep 30"), None).unwrap_err();
+        let err = output_with_cancel(&mut sh("kill -STOP 0; sleep 30"), Some(&flag)).unwrap_err();
         assert!(err.is::<NeedsTerminal>(), "got: {err:#}");
         assert!(
             started.elapsed() < Duration::from_secs(8),
             "stop detection took {:?}",
             started.elapsed()
         );
+    }
+
+    /// Without a flag there is no supervision: the child must stay in
+    /// the caller's process group (terminal prompts and Ctrl+C keep
+    /// their pre-cancellation reach), and the wait must block
+    /// classically to completion.
+    #[test]
+    fn no_flag_keeps_child_in_callers_group() {
+        let out = output_with_cancel(&mut sh("ps -o pgid= -p $$"), None).unwrap();
+        assert!(out.status.success());
+        let child_pgid: i32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("pgid parses");
+        assert_eq!(child_pgid, nix::unistd::getpgrp().as_raw());
+    }
+
+    /// With a flag attached the child gets its own group — the
+    /// precondition for every by-group escalation above.
+    #[test]
+    fn flag_isolates_child_into_own_group() {
+        let flag = CancelFlag::new();
+        let out = output_with_cancel(&mut sh("ps -o pgid= -p $$"), Some(&flag)).unwrap();
+        assert!(out.status.success());
+        let child_pgid: i32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("pgid parses");
+        assert_ne!(child_pgid, nix::unistd::getpgrp().as_raw());
     }
 }
 

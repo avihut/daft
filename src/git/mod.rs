@@ -78,6 +78,13 @@ impl GitCommand {
         self
     }
 
+    /// Attach a shared cancel flag, opting this command's subprocess
+    /// seams (fetch/pull/rebase/push) into supervision: each child gets
+    /// its own process group, escalations tear the tree down by pgid,
+    /// and a job-control stop (background-group tty read) surfaces as
+    /// [`cancel::NeedsTerminal`]. Without a flag the seams keep classic
+    /// blocking behavior in the caller's group — terminal auth prompts
+    /// and Ctrl+C reach them exactly as before cancellation existed.
     pub fn with_cancel(mut self, cancel: std::sync::Arc<cancel::CancelFlag>) -> Self {
         self.cancel = Some(cancel);
         self

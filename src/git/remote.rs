@@ -170,11 +170,15 @@ impl GitCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(unix)]
-        {
+        if self.cancel_flag().is_some() {
             use std::os::unix::process::CommandExt;
-            // Own process group: escalations can tear down the whole
-            // hook subtree by pgid, and a hook stage that job-control-
-            // stops freezes its own group instead of daft's (#663).
+            // Own process group, only when this push is supervised
+            // (sync): escalations can tear down the whole hook subtree
+            // by pgid, and a hook stage that job-control-stops freezes
+            // its own group instead of daft's (#663). Unsupervised
+            // pushes (checkout-branch autopush, branch delete/rename)
+            // keep the caller's foreground group so terminal auth
+            // prompts and Ctrl+C behave exactly as before.
             cmd.process_group(0);
         }
 
