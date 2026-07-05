@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::{Once, OnceLock};
 
 mod branch;
+pub mod cancel;
 mod clone;
 mod config;
 pub(crate) mod oxide;
