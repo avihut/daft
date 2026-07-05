@@ -47,12 +47,14 @@ pub const STATE_DIR_ENV: &str = "DAFT_STATE_DIR";
 
 /// Returns the daft config directory path.
 ///
-/// In dev builds, when `DAFT_CONFIG_DIR` is set to a non-empty absolute path,
-/// uses that path directly (no `daft/` suffix appended). In release builds the
-/// env var is ignored. Always falls back to `dirs::config_dir()/daft`.
+/// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
+/// build.rs) and in unit tests, when `DAFT_CONFIG_DIR` is set to a non-empty
+/// absolute path, uses that path directly (no `daft/` suffix appended).
+/// Release builds ignore the env var. Always falls back to
+/// `dirs::config_dir()/daft`.
 pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build)
+    if cfg!(any(daft_dev_build, test))
         && let Ok(dir) = env::var(CONFIG_DIR_ENV)
         && !dir.is_empty()
     {
@@ -69,12 +71,14 @@ pub fn daft_config_dir() -> anyhow::Result<std::path::PathBuf> {
 
 /// Returns the daft data directory path.
 ///
-/// In dev builds, when `DAFT_DATA_DIR` is set to a non-empty absolute path,
-/// uses that path directly (no `daft/` suffix appended). In release builds the
-/// env var is ignored. Always falls back to `dirs::data_dir()/daft`.
+/// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
+/// build.rs) and in unit tests, when `DAFT_DATA_DIR` is set to a non-empty
+/// absolute path, uses that path directly (no `daft/` suffix appended).
+/// Release builds ignore the env var. Always falls back to
+/// `dirs::data_dir()/daft`.
 pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build)
+    if cfg!(any(daft_dev_build, test))
         && let Ok(dir) = env::var(DATA_DIR_ENV)
         && !dir.is_empty()
     {
@@ -91,13 +95,15 @@ pub fn daft_data_dir() -> anyhow::Result<std::path::PathBuf> {
 
 /// Returns the daft state directory path.
 ///
-/// In dev builds, when `DAFT_STATE_DIR` is set to a non-empty absolute path,
-/// uses that path directly (no `daft/` suffix appended). In release builds the
-/// env var is ignored. Always falls back to `dirs::state_dir()/daft`
-/// (macOS: `~/.local/state/daft`, Linux: `$XDG_STATE_HOME/daft`).
+/// In dev builds (git-checkout builds without `DAFT_BUILD_RELEASE`; see
+/// build.rs) and in unit tests, when `DAFT_STATE_DIR` is set to a non-empty
+/// absolute path, uses that path directly (no `daft/` suffix appended).
+/// Release builds ignore the env var. Always falls back to
+/// `dirs::state_dir()/daft` (macOS: `~/.local/state/daft`, Linux:
+/// `$XDG_STATE_HOME/daft`).
 pub fn daft_state_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    if cfg!(daft_dev_build)
+    if cfg!(any(daft_dev_build, test))
         && let Ok(dir) = env::var(STATE_DIR_ENV)
         && !dir.is_empty()
     {

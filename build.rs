@@ -17,15 +17,18 @@ fn main() {
     println!("cargo:rustc-env=DAFT_VERSION={pkg_version}");
 
     // DAFT_VERSION_DISPLAY: includes branch/hash for dev builds, used by `daft --version`.
-    // Auto-detect release builds by checking if HEAD is tagged with this version.
-    let is_release = git_output(&["tag", "--points-at", "HEAD"])
+    // The release pipeline sets DAFT_BUILD_RELEASE (release.yml); the tag check
+    // keeps the string clean for ad-hoc builds at a tagged HEAD. Display only —
+    // it must never gate behavior (see the dev-build cfg below).
+    let is_release_build = std::env::var_os("DAFT_BUILD_RELEASE").is_some();
+    let is_tagged_release = git_output(&["tag", "--points-at", "HEAD"])
         .map(|tags| {
             tags.lines()
                 .any(|tag| tag.trim().trim_start_matches('v') == pkg_version)
         })
         .unwrap_or(false);
 
-    let display_version = if is_release || std::env::var("DAFT_BUILD_RELEASE").is_ok() {
+    let display_version = if is_tagged_release || is_release_build {
         pkg_version
     } else {
         let hash = git_output(&["rev-parse", "--short", "HEAD"]);
@@ -41,9 +44,14 @@ fn main() {
     println!("cargo:rustc-env=DAFT_VERSION_DISPLAY={display_version}");
 
     // Emit cfg flag for dev builds so DAFT_CONFIG_DIR is only honored in dev.
-    // A build is "dev" when it's not a release AND has a git repo (rules out crates.io installs).
+    // A build is "dev" when it comes from a git checkout (rules out crates.io
+    // installs) and the release pipeline hasn't said otherwise via
+    // DAFT_BUILD_RELEASE. Deliberately NOT gated on is_tagged_release: tag
+    // proximity made every local build at a freshly tagged release commit
+    // silently drop the DAFT_*_DIR overrides — failing the pre-push unit suite
+    // and pointing test state at the real ~/.local/state/daft (#669).
     let has_git_repo = git_output(&["rev-parse", "--git-dir"]).is_some();
-    if !is_release && has_git_repo {
+    if !is_release_build && has_git_repo {
         println!("cargo:rustc-cfg=daft_dev_build");
     }
 
