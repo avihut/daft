@@ -277,6 +277,14 @@ impl AliasCache {
     /// A 10-second timeout guards against rc-files that hang the shell
     /// (e.g. `exec tmux` patterns waiting on a controlling terminal).
     fn capture(shell_path: &str, kind: ShellKind) -> std::io::Result<(String, String)> {
+        Self::capture_with_timeout(shell_path, kind, CAPTURE_TIMEOUT)
+    }
+
+    fn capture_with_timeout(
+        shell_path: &str,
+        kind: ShellKind,
+        timeout: Duration,
+    ) -> std::io::Result<(String, String)> {
         let dir = tempfile::tempdir()?;
         let alias_out = dir.path().join("aliases.out");
         let fn_out = dir.path().join("functions.out");
@@ -294,33 +302,54 @@ impl AliasCache {
             kind.functions_print_command(),
         );
 
-        let mut child = std::process::Command::new(shell_path)
-            .arg("-i")
+        let mut cmd = std::process::Command::new(shell_path);
+        cmd.arg("-i")
             .arg("-c")
             .arg(body)
             .env("__DAFT_ALIAS_OUT", &alias_out)
             .env("__DAFT_FN_OUT", &fn_out)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
+            .stderr(std::process::Stdio::null());
+        // Own process group (#663): an interactive shell (or its rc
+        // machinery) that draws a job-control stop freezes its own
+        // group *alone*. Without this, the stop lands on the invoking
+        // process's group — including this very watchdog loop, which
+        // then can never fire. The safety net must not freeze together
+        // with the thing it guards.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd.spawn()?;
 
         // Bounded wait. A rc-file that does `exec tmux` or similar would
         // otherwise block forever; the deadline lets the caller fall
         // back gracefully.
-        let deadline = std::time::Instant::now() + CAPTURE_TIMEOUT;
+        let deadline = std::time::Instant::now() + timeout;
         loop {
             match child.try_wait()? {
                 Some(_status) => break,
                 None => {
                     if std::time::Instant::now() >= deadline {
+                        // Group kill: reaches rc-spawned grandchildren
+                        // too, and SIGKILL is the one terminating signal
+                        // a stopped group still acts on.
+                        #[cfg(unix)]
+                        {
+                            let _ = nix::sys::signal::killpg(
+                                nix::unistd::Pid::from_raw(child.id() as i32),
+                                nix::sys::signal::Signal::SIGKILL,
+                            );
+                        }
                         let _ = child.kill();
                         let _ = child.wait();
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!(
                                 "shell capture exceeded {}s — rc-file likely hangs in non-interactive mode",
-                                CAPTURE_TIMEOUT.as_secs()
+                                timeout.as_secs()
                             ),
                         ));
                     }
@@ -618,6 +647,39 @@ mod tests {
         assert!(
             !alias_lines.contains("fortune cookie quote"),
             "rc-file stdout must NOT leak into the cache: {alias_lines:?}"
+        );
+    }
+
+    /// Regression test for #663: a capture shell that job-control-stops
+    /// its own process group must wedge *alone*. Before
+    /// `process_group(0)`, the `kill -STOP 0` here landed on the
+    /// invoking process's group — this very test suite — freezing the
+    /// watchdog together with the shell it guards (the field incident's
+    /// exact shape, minus the tty). With the isolation, the watchdog
+    /// stays live, group-kills the child at the deadline, and capture
+    /// returns TimedOut so `daft exec` falls back to the rc-less path.
+    #[cfg(unix)]
+    #[test]
+    fn capture_survives_self_stopping_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("stopping-shell.sh");
+        std::fs::write(&wrapper, "#!/bin/sh\nkill -STOP 0\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        let err = AliasCache::capture_with_timeout(
+            wrapper.to_str().unwrap(),
+            ShellKind::Bash,
+            Duration::from_secs(1),
+        )
+        .expect_err("a stopped capture shell must time out, not wedge");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "watchdog fired late: {:?}",
+            started.elapsed()
         );
     }
 }
