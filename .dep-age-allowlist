@@ -19,3 +19,12 @@
 # old at time of bump — the same security exception Dependabot PRs get
 # automatically. Safe to remove after 2026-07-03.
 cargo:anyhow@1.0.103
+
+# why: RUSTSEC-2026-0194 + RUSTSEC-2026-0195 (quadratic attribute duplicate
+# checks / unbounded namespace allocations in quick-xml <0.41 — DoS class)
+# turn the cargo-deny advisories gate red; quick-xml 0.41.0 (2026-06-29) is
+# the designated fix and plist 1.10.0 (2026-07-04) is the first release
+# requiring it. Same security exception Dependabot PRs get automatically.
+# Safe to remove after 2026-07-11.
+cargo:quick-xml@0.41.0
+cargo:plist@1.10.0
