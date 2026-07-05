@@ -231,7 +231,7 @@ pub fn run_live(args: Args) -> Result<()> {
     // (ISIG off) and the terminal driver doesn't echo `^C` mid-render. The
     // SIGINT handler above stays installed as a fallback in case raw mode fails
     // to enable. RAII guard restores cooked mode on every exit path.
-    let _raw_guard = enable_raw_mode_guard();
+    let _raw_guard = crate::output::tui::enable_raw_mode_guard();
 
     let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
     let final_state = renderer.run()?;
@@ -246,7 +246,6 @@ pub fn run_live(args: Args) -> Result<()> {
     }
     Ok(())
 }
-
 /// Fields the streaming collector must populate for this view: what the
 /// selected columns render plus what the sort inspects
 /// (`SortSpec::required_fields`, itself `--stat`-aware). The collector
@@ -287,23 +286,6 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
         }
     }
     fields
-}
-
-/// RAII guard that enables crossterm raw mode now and restores cooked mode on
-/// drop. Best-effort: if `enable_raw_mode` fails (e.g. stdin isn't a terminal),
-/// the guard is still returned so its `Drop` is safe to run. Disabling raw
-/// mode on a terminal that wasn't in raw mode is a no-op.
-fn enable_raw_mode_guard() -> RawModeGuard {
-    let _ = crossterm::terminal::enable_raw_mode();
-    RawModeGuard
-}
-
-struct RawModeGuard;
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
 }
 
 #[cfg(test)]

@@ -100,7 +100,10 @@ fn read_from_terminal(config: &PromptConfig) -> PromptResult {
                 eprintln!("{msg}");
             }
         }
-        std::process::exit(0);
+        // 130 = interrupted-by-signal convention. With ctrlc's
+        // `termination` feature this handler also fires on SIGTERM, and
+        // a killed prompt must not read as success to calling scripts.
+        std::process::exit(130);
     });
 
     loop {

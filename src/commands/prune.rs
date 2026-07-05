@@ -382,7 +382,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
+        if !sync_shared::run_fetch_phase(
+            &tx,
+            orch_settings.use_gitoxide,
+            &orch_settings.remote,
+            None,
+        ) {
             return;
         }
 

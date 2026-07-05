@@ -284,6 +284,29 @@ impl TuiRenderer {
     }
 }
 
+/// RAII guard that enables crossterm raw mode now and restores cooked mode
+/// on drop. Best-effort: if `enable_raw_mode` fails (e.g. stdin isn't a
+/// terminal), the guard is still returned so its `Drop` is safe to run.
+/// Disabling raw mode on a terminal that wasn't in raw mode is a no-op.
+///
+/// Raw mode is what routes Ctrl+C into the render loop as a key event
+/// (ISIG off) instead of a process-wide SIGINT, and stops the terminal
+/// driver echoing `^C` mid-render. Callers keep a process-global SIGINT
+/// handler installed as the fallback for when raw mode fails to enable —
+/// and for the moment this guard drops, when Ctrl+C is a signal again.
+pub fn enable_raw_mode_guard() -> RawModeGuard {
+    let _ = crossterm::terminal::enable_raw_mode();
+    RawModeGuard
+}
+
+pub struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

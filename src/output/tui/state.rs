@@ -508,6 +508,11 @@ impl TuiState {
                 },
             },
             TaskStatus::PreconditionFailed => FinalStatus::Skipped,
+            // Cancelled is a user decision, not a failure — render like a
+            // skip so check_tui_failures never counts it. The run-level
+            // "cancelled" state comes from the live region, and the exit
+            // code (130) from the sync command itself.
+            TaskStatus::Cancelled => FinalStatus::Skipped,
             TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
         }
     }

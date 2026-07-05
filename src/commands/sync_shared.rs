@@ -274,13 +274,17 @@ pub fn run_fetch_phase(
     tx: &std::sync::mpsc::Sender<DagEvent>,
     use_gitoxide: bool,
     remote: &str,
+    cancel: Option<&std::sync::Arc<crate::git::cancel::CancelFlag>>,
 ) -> bool {
     let _ = tx.send(DagEvent::TaskStarted {
         phase: OperationPhase::Fetch,
         branch_name: String::new(),
     });
 
-    let fetch_git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    let mut fetch_git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    if let Some(cancel) = cancel {
+        fetch_git = fetch_git.with_cancel(std::sync::Arc::clone(cancel));
+    }
     let fetch_result = fetch_git.fetch(remote, true);
 
     if let Err(e) = fetch_result {

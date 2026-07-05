@@ -177,13 +177,18 @@ impl<'a> ChildSupervisor<'a> {
             if let Some(status) = exit
                 && drains_done()
             {
-                return Ok(if self.tty_stopped {
+                let verdict = if self.tty_stopped {
                     Verdict::StoppedOnTty
                 } else if self.cancelled_in_flight {
                     Verdict::Cancelled
                 } else {
                     Verdict::Completed(status)
-                });
+                };
+                #[cfg(unix)]
+                if !matches!(verdict, Verdict::Completed(_)) {
+                    record_survivors(&self.survivors());
+                }
+                return Ok(verdict);
             }
             self.tick(child, exit.is_none());
             std::thread::sleep(TICK);
@@ -263,6 +268,41 @@ impl<'a> ChildSupervisor<'a> {
     pub fn survivors(&self) -> Vec<u32> {
         Vec::new()
     }
+}
+
+/// Process groups that outlived a teardown cascade, recorded by
+/// supervisors as they conclude. Command layers read this at exit (via
+/// [`surviving_groups`]) to print a manual-recovery hint — the #663
+/// incident's `kill -KILL -<pgid>` forensics as first-class UX.
+#[cfg(unix)]
+static LEFTOVER_GROUPS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+#[cfg(unix)]
+fn record_survivors(pgids: &[u32]) {
+    if pgids.is_empty() {
+        return;
+    }
+    if let Ok(mut set) = LEFTOVER_GROUPS.lock() {
+        set.extend(pgids.iter().copied());
+    }
+}
+
+/// Ever-recorded survivor groups that are *still alive right now* —
+/// each is re-probed on read, so groups that died since teardown fall
+/// away instead of producing stale warnings.
+#[cfg(unix)]
+pub fn surviving_groups() -> Vec<u32> {
+    let Ok(mut set) = LEFTOVER_GROUPS.lock() else {
+        return Vec::new();
+    };
+    set.retain(|&p| group_alive(p));
+    set.iter().copied().collect()
+}
+
+#[cfg(not(unix))]
+pub fn surviving_groups() -> Vec<u32> {
+    Vec::new()
 }
 
 /// Cancellation-aware stand-in for `Command::output()`.
