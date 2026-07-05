@@ -68,8 +68,8 @@ impl HookRenderer {
 
     /// Render inside a plan-execute timeline's live region (#651): the rich
     /// renderer shares the timeline's `MultiProgress` and inserts its job
-    /// bars above `anchor`, with the header collapsed to a `├─` branch row
-    /// hung off the rail.
+    /// bars above `anchor`, with the rail welded into the header box's top
+    /// corner.
     pub fn embedded(
         config: &HookOutputConfig,
         mp: indicatif::MultiProgress,
@@ -490,22 +490,18 @@ mod tests {
     }
 
     #[test]
-    fn format_header_lines_weld_collapses_to_a_branch_row() {
-        let welded =
-            formatting::format_header_lines("worktree-post-create", Some("test"), false, true);
-        // A single rail-weight line, not the three-line banner box: the box
-        // reads too heavy embedded next to the rail's lone `│` spine (#651).
-        assert_eq!(welded.len(), 1, "got: {welded:?}");
-        assert!(
-            welded[0].starts_with("\u{251c}\u{2500} daft hooks"),
-            "got: {:?}",
-            welded[0]
-        );
-        assert!(welded[0].contains("worktree-post-create  on: test"));
-        // No box glyphs survive in the welded header.
-        for glyph in ['\u{250c}', '\u{2510}', '\u{2514}', '\u{2518}', '\u{2502}'] {
-            assert!(!welded[0].contains(glyph), "got: {:?}", welded[0]);
-        }
+    fn format_header_lines_weld_opens_the_top_corner_only() {
+        let plain = formatting::format_header_lines("worktree-post-create", None, false, false);
+        let welded = formatting::format_header_lines("worktree-post-create", None, false, true);
+        // The rail welds into the banner's top corner (#651)…
+        assert!(welded[0].starts_with('\u{251c}'), "got: {:?}", welded[0]);
+        // …while the banner still closes below — the job blocks hang
+        // beneath it unwelded…
+        assert!(welded[2].starts_with('\u{2514}'), "got: {:?}", welded[2]);
+        // …and everything else is byte-identical to the standalone box.
+        assert_eq!(plain[0][3..], welded[0][3..]); // past the 3-byte corner
+        assert_eq!(plain[1], welded[1]);
+        assert_eq!(plain[2], welded[2]);
     }
 
     #[test]

@@ -43,8 +43,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 ## Hook composition (the weld)
 
 - [ ] Hook step pending as `○ post-create hooks`; expands in place into the hook
-      block headed by a single `├─ daft hooks …` branch row (no banner box on
-      the rail); job/summary interior byte-identical to the standalone renderer
+      block; the rail welds into the banner's top corner (`├───┐`) and the
+      banner closes below (`└───┘`); block interior byte-identical to the
+      standalone renderer
 - [ ] Rail spacers (`│`) separate the block from rows above and below, never
       doubled
 - [ ] Pending rows + `└ …` stay visible below the block while jobs run

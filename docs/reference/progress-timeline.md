@@ -21,7 +21,9 @@ rail persists in your scrollback as a receipt.
 ✓  Created worktree   ../daft-652/cool-feature
 ✓  Pushed             → origin/daft-652/cool-feature  (1.8s)
 │
-├─ daft hooks v1.18.0  worktree-post-create  on: daft-652/cool-feature
+├──────────────────────────────────────────────────────────────────┐
+│ daft hooks v1.18.0  worktree-post-create  on: daft-652/cool-feature │
+└──────────────────────────────────────────────────────────────────┘
 ┃  bun-install ❯
 ┃  installed 214 packages
 │
@@ -52,11 +54,11 @@ rail persists in your scrollback as a receipt.
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under dim branch anchors.
 - Lifecycle hooks appear as a plan row; when they actually run, the row expands
-  in place into the familiar hook block, hung off the rail by a single
-  `├─ daft hooks …` branch row (the banner box renders only outside a rail —
-  boxed lines read too heavy next to the rail's spine). When nothing is
-  configured to run, the row disappears; skips worth noticing (untrusted
-  repository, `--skip-hooks`) render the yellow `↓` row instead.
+  in place into the familiar hook block. The rail welds into the banner's top
+  corner (`├────┐`) while the banner closes below (`└────┘`), leaving the job
+  lines hanging beneath it. When nothing is configured to run, the row
+  disappears; skips worth noticing (untrusted repository, `--skip-hooks`) render
+  the yellow `↓` row instead.
 - If a step fails, later steps persist as dim `(not run)` rows and the footer
   reports `Failed after <t>` — the receipt shows exactly how far the command
   got.
