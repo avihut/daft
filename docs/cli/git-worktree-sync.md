@@ -31,6 +31,13 @@ If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
 daft.prune.cdTarget).
 
+Cancellation: the first Ctrl+C (or SIGTERM) cancels gracefully — no new work
+starts, every running git subprocess is terminated by process group (reaching
+a pre-push hook and all of its descendants, even ones that moved to their own
+process groups or were stopped by terminal job control), an interrupted rebase
+is aborted to restore the worktree, and sync prints partial results and exits
+130. A second Ctrl+C force-kills anything still running and exits immediately.
+
 For fine-grained control over either phase, use `daft prune` and `daft update`
 separately.
 
