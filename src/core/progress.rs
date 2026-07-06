@@ -305,6 +305,11 @@ impl ProgressSink for TimelineSink<'_> {
         key: &crate::core::stage::StepKey,
         event: crate::core::stage::StageEvent,
     ) {
+        // No live region (Plain mode, quiet, tests): shared-file events
+        // fall back to their legacy stderr lines, as pre-#651.
+        if !self.timeline.region_live() {
+            crate::core::shared::render_shared_stage_fallback(key, &event);
+        }
         self.timeline.on_stage(key, event);
     }
 }
@@ -378,6 +383,11 @@ impl ProgressSink for TimelineBridge<'_> {
         key: &crate::core::stage::StepKey,
         event: crate::core::stage::StageEvent,
     ) {
+        // No live region (Plain mode, quiet, tests): shared-file events
+        // fall back to their legacy stderr lines, as pre-#651.
+        if !self.timeline.region_live() {
+            crate::core::shared::render_shared_stage_fallback(key, &event);
+        }
         self.timeline.on_stage(key, event);
     }
 }

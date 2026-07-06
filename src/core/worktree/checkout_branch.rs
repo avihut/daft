@@ -152,6 +152,14 @@ pub fn execute(
             )),
         ));
     }
+    // Shared files declared in the source worktree's config get a section:
+    // a dim anchor plus one row per file. The probe reads the same config
+    // that propagation carries into the new worktree, so plan and execution
+    // agree except when the target branch's tracked daft.yml diverges —
+    // rows that turn out to be no-ops vanish silently either way.
+    let planned_shared =
+        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -324,7 +332,9 @@ pub fn execute(
     // arrives via the git checkout regardless of order, which is why this bug was
     // invisible until visitor configs existed — do not move this back above
     // propagation.) Linking before hooks lets hooks depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
@@ -1240,6 +1250,92 @@ mod timeline_tests {
                 crate::hooks::HookType::PreCreate,
                 crate::hooks::HookType::PostCreate
             ]
+        );
+    }
+
+    /// A `shared:` declaration in the source worktree plans the shared-files
+    /// section (anchor + one row per path); execution completes the row of a
+    /// collected file and silently vanishes the row of a declared-but-never-
+    /// collected one (#651).
+    #[test]
+    #[serial]
+    fn plan_shared_section_rows_resolve_by_outcome() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(
+            tmp.path().join("daft.yml"),
+            "shared:\n  - .env\n  - .envrc\n",
+        )
+        .unwrap();
+        git(tmp.path(), &["add", "daft.yml"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        // Collect `.env` into shared storage; leave `.envrc` declared only.
+        let storage = crate::core::shared::shared_storage_dir(&tmp.path().join(".git"));
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(storage.join(".env"), "SECRET=1\n").unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(&params, &git_cmd, tmp.path(), None, &mut sink).expect("checkout-branch succeeds");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert!(
+            plan.rows
+                .iter()
+                .any(|r| matches!(r, Row::Group { label } if label == "shared files")),
+            "shared anchor planned"
+        );
+        let shared_labels: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::SharedFile)
+            .map(|s| (s.key.scope.clone(), s.label.clone()))
+            .collect();
+        assert_eq!(
+            shared_labels,
+            vec![
+                (Some(".env".into()), Some(".env".into())),
+                (Some(".envrc".into()), Some(".envrc".into())),
+            ],
+            "one row per declared path, path as fixed label"
+        );
+
+        let shared_events: Vec<_> = sink
+            .events
+            .iter()
+            .filter(|(k, _)| k.id == StageId::SharedFile)
+            .map(|(k, e)| (k.scope.clone().unwrap(), e.clone()))
+            .collect();
+        assert_eq!(
+            shared_events,
+            vec![
+                (".env".into(), StageEvent::Completed { annotation: None }),
+                (".envrc".into(), StageEvent::SkippedSilent),
+            ],
+            "collected file completes; declared-only file vanishes"
+        );
+        assert!(
+            worktree_path.join(".env").is_symlink(),
+            "the link really happened"
         );
     }
 }

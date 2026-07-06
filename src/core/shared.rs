@@ -866,10 +866,24 @@ pub enum LinkFileOutcome {
     Linked(String),
     /// File already correctly linked (no action needed).
     AlreadyLinked(String),
+    /// Declared in `shared:` but never collected into shared storage.
+    NoSource(String),
     /// A real file exists at the path (conflict).
     Conflict(String),
     /// Failed to create symlink.
     Error(String, String),
+}
+
+impl LinkFileOutcome {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Linked(p)
+            | Self::AlreadyLinked(p)
+            | Self::NoSource(p)
+            | Self::Conflict(p)
+            | Self::Error(p, _) => p,
+        }
+    }
 }
 
 /// Result of linking shared files during worktree creation.
@@ -901,8 +915,11 @@ impl LinkSharedResult {
 ///
 /// - Reads `shared:` from daft.yml found via `project_root`.
 /// - Creates symlinks for each path that exists in shared storage.
-/// - Renders results immediately to stderr (before hooks take over).
 /// - Never errors fatally.
+///
+/// Pure work — no rendering. Rail-covered call sites report through
+/// [`report_link_results`]; legacy call sites (clone's post-rail satellite
+/// worktrees) render via [`render_link_results`].
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
@@ -935,19 +952,129 @@ pub fn link_shared_files_on_create(
             Ok(LinkResult::Conflict) => {
                 outcomes.push(LinkFileOutcome::Conflict(rel_path.clone()));
             }
-            Ok(LinkResult::NoSource) => {} // Declared only, skip silently
+            Ok(LinkResult::NoSource) => {
+                outcomes.push(LinkFileOutcome::NoSource(rel_path.clone()));
+            }
             Err(e) => {
                 outcomes.push(LinkFileOutcome::Error(rel_path.clone(), e.to_string()));
             }
         }
     }
 
-    let result = LinkSharedResult { outcomes };
-    render_link_results(&result);
-    result
+    LinkSharedResult { outcomes }
 }
 
-/// Render shared file linking results to stderr with colors.
+/// The `warning:` body for a shared-path conflict — shared between the rail
+/// row's reason and the legacy line so both modes tell the same story.
+fn conflict_reason(path: &str) -> String {
+    format!("'{path}' exists but is not shared. Run `daft shared link {path}` to replace.")
+}
+
+/// The `warning:` body for a failed link.
+fn link_error_reason(path: &str, err: &str) -> String {
+    format!("Failed to link shared file '{path}': {err}")
+}
+
+/// Append the shared-files section to a creation plan: a dim group anchor
+/// plus one row per declared path, each carrying the path as its fixed
+/// label (#651). No-op when nothing is declared.
+pub fn push_shared_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[String]) {
+    use crate::core::stage::{Row, StageId, StepKey, StepSpec};
+
+    if planned.is_empty() {
+        return;
+    }
+    rows.push(Row::Group {
+        label: "shared files".into(),
+    });
+    for path in planned {
+        rows.push(Row::Step(
+            StepSpec::new(StepKey::scoped(StageId::SharedFile, path.as_str()))
+                .with_label(path.as_str()),
+        ));
+    }
+}
+
+/// Report link outcomes as stage events against the planned shared-files
+/// section (#651): linked files complete their row, no-ops (already linked,
+/// never collected) vanish silently, conflicts and errors resolve as
+/// attention skips carrying the warning body. Planned rows whose path
+/// produced no outcome (materialized-state skip, or the target branch's
+/// config dropped them) vanish silently too. Outcomes for paths the plan
+/// never saw still emit — the region ignores unknown keys and the Plain
+/// fallback prints their legacy lines.
+pub fn report_link_results(
+    result: &LinkSharedResult,
+    planned: &[String],
+    sink: &mut impl crate::core::ProgressSink,
+) {
+    use crate::core::stage::{StageEvent, StageId, StepKey};
+
+    for outcome in &result.outcomes {
+        let event = match outcome {
+            LinkFileOutcome::Linked(_) => StageEvent::Completed { annotation: None },
+            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::NoSource(_) => {
+                StageEvent::SkippedSilent
+            }
+            LinkFileOutcome::Conflict(p) => StageEvent::SkippedAttention {
+                reason: conflict_reason(p),
+            },
+            LinkFileOutcome::Error(p, err) => StageEvent::SkippedAttention {
+                reason: link_error_reason(p, err),
+            },
+        };
+        sink.on_stage(&StepKey::scoped(StageId::SharedFile, outcome.path()), event);
+    }
+    for path in planned {
+        if !result.outcomes.iter().any(|o| o.path() == path) {
+            sink.on_stage(
+                &StepKey::scoped(StageId::SharedFile, path.as_str()),
+                StageEvent::SkippedSilent,
+            );
+        }
+    }
+}
+
+/// Legacy stderr rendering for one `SharedFile` stage event, byte-identical
+/// to [`render_link_results`]. Sinks that route stage events call this when
+/// no live region owns the terminal (Plain mode, quiet, tests) so the
+/// pre-timeline output contract holds; silent resolutions print nothing.
+pub fn render_shared_stage_fallback(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+) {
+    use crate::core::stage::{StageEvent, StageId};
+    use crate::styles;
+
+    if key.id != StageId::SharedFile {
+        return;
+    }
+    let Some(path) = key.scope.as_deref() else {
+        return;
+    };
+    let use_color = styles::colors_enabled_stderr();
+    match event {
+        StageEvent::Completed { .. } => {
+            if use_color {
+                eprintln!("{}Linked{} {}", styles::GREEN, styles::RESET, path);
+            } else {
+                eprintln!("Linked {}", path);
+            }
+        }
+        StageEvent::SkippedAttention { reason } => {
+            if use_color {
+                eprintln!("{}warning:{} {}", styles::YELLOW, styles::RESET, reason);
+            } else {
+                eprintln!("warning: {}", reason);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Render shared file linking results to stderr with colors — the legacy
+/// line-based reporter, used where no rail region exists (clone's satellite
+/// worktrees after the rail closed).
 ///
 /// Clears the current line first to avoid leaving spinner artifacts,
 /// since this may be called while a spinner is active.
@@ -966,44 +1093,29 @@ pub fn render_link_results(result: &LinkSharedResult) {
     let use_color = styles::colors_enabled_stderr();
 
     for outcome in &result.outcomes {
-        match outcome {
+        let warning_body = match outcome {
             LinkFileOutcome::Linked(path) => {
                 if use_color {
                     eprintln!("{}Linked{} {}", styles::GREEN, styles::RESET, path,);
                 } else {
                     eprintln!("Linked {}", path);
                 }
+                continue;
             }
-            LinkFileOutcome::AlreadyLinked(_) => {} // Silent
-            LinkFileOutcome::Conflict(path) => {
-                if use_color {
-                    eprintln!(
-                        "{}warning:{} '{}' exists but is not shared. Run `daft shared link {}` to replace.",
-                        styles::YELLOW,
-                        styles::RESET,
-                        path,
-                        path,
-                    );
-                } else {
-                    eprintln!(
-                        "warning: '{}' exists but is not shared. Run `daft shared link {}` to replace.",
-                        path, path,
-                    );
-                }
-            }
-            LinkFileOutcome::Error(path, err) => {
-                if use_color {
-                    eprintln!(
-                        "{}warning:{} Failed to link shared file '{}': {}",
-                        styles::YELLOW,
-                        styles::RESET,
-                        path,
-                        err,
-                    );
-                } else {
-                    eprintln!("warning: Failed to link shared file '{}': {}", path, err);
-                }
-            }
+            // Silent no-ops.
+            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::NoSource(_) => continue,
+            LinkFileOutcome::Conflict(path) => conflict_reason(path),
+            LinkFileOutcome::Error(path, err) => link_error_reason(path, err),
+        };
+        if use_color {
+            eprintln!(
+                "{}warning:{} {}",
+                styles::YELLOW,
+                styles::RESET,
+                warning_body
+            );
+        } else {
+            eprintln!("warning: {}", warning_body);
         }
     }
 }
@@ -1012,6 +1124,74 @@ pub fn render_link_results(result: &LinkSharedResult) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn push_shared_section_plans_anchor_and_path_labeled_rows() {
+        use crate::core::stage::{Row, StageId};
+        let mut rows = Vec::new();
+        push_shared_section(&mut rows, &[]);
+        assert!(rows.is_empty(), "nothing declared, nothing planned");
+
+        push_shared_section(
+            &mut rows,
+            &[".env".to_string(), "conf/dev.toml".to_string()],
+        );
+        assert!(matches!(&rows[0], Row::Group { label } if label == "shared files"));
+        let Row::Step(spec) = &rows[1] else {
+            panic!("expected step row");
+        };
+        assert_eq!(spec.key.id, StageId::SharedFile);
+        assert_eq!(spec.key.scope.as_deref(), Some(".env"));
+        assert_eq!(spec.label.as_deref(), Some(".env"));
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn report_link_results_maps_outcomes_and_sweeps_planned_leftovers() {
+        use crate::core::RecordingStageSink;
+        use crate::core::stage::StageEvent;
+
+        let result = LinkSharedResult {
+            outcomes: vec![
+                LinkFileOutcome::Linked(".env".into()),
+                LinkFileOutcome::NoSource(".envrc".into()),
+                LinkFileOutcome::AlreadyLinked("a.txt".into()),
+                LinkFileOutcome::Conflict("b.txt".into()),
+                LinkFileOutcome::Error("c.txt".into(), "boom".into()),
+            ],
+        };
+        let planned = vec![".env".to_string(), "dropped.txt".to_string()];
+        let mut sink = RecordingStageSink::default();
+        report_link_results(&result, &planned, &mut sink);
+
+        let events: Vec<_> = sink
+            .events
+            .iter()
+            .map(|(k, e)| (k.scope.clone().unwrap(), e.clone()))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (".env".into(), StageEvent::Completed { annotation: None }),
+                (".envrc".into(), StageEvent::SkippedSilent),
+                ("a.txt".into(), StageEvent::SkippedSilent),
+                (
+                    "b.txt".into(),
+                    StageEvent::SkippedAttention {
+                        reason: conflict_reason("b.txt"),
+                    }
+                ),
+                (
+                    "c.txt".into(),
+                    StageEvent::SkippedAttention {
+                        reason: link_error_reason("c.txt", "boom"),
+                    }
+                ),
+                // Planned but no outcome: vanishes silently.
+                ("dropped.txt".into(), StageEvent::SkippedSilent),
+            ]
+        );
+    }
 
     #[test]
     fn test_materialized_state_roundtrip() {

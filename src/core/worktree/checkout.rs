@@ -271,6 +271,11 @@ pub fn execute(
     if should_carry {
         plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
     }
+    // Shared files declared in the source worktree's config get a section
+    // (see checkout_branch.rs for the probe-vs-execution contract).
+    let planned_shared =
+        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -418,7 +423,9 @@ pub fn execute(
     // arrives via the git checkout regardless of order, which is why this bug was
     // invisible until visitor configs existed — do not move this back above
     // propagation.) Linking before hooks lets hooks depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(

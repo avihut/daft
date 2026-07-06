@@ -846,10 +846,12 @@ fn create_satellite_worktrees(
                 // Run worktree-post-create hook
                 if let Some(ref hooks_config) = shared_hooks_config {
                     // Link shared files before post-create hooks
-                    crate::core::shared::link_shared_files_on_create(
-                        &abs_worktree_path,
-                        &base_result.git_dir,
-                        &base_result.parent_dir,
+                    crate::core::shared::render_link_results(
+                        &crate::core::shared::link_shared_files_on_create(
+                            &abs_worktree_path,
+                            &base_result.git_dir,
+                            &base_result.parent_dir,
+                        ),
                     );
 
                     if let Ok(executor) = HookExecutor::new(hooks_config.clone()) {
@@ -1129,10 +1131,12 @@ fn create_satellite_worktrees_tui(
                     .expect("base path must exist when base branch is set");
 
                 // Link shared files before post-create hooks
-                crate::core::shared::link_shared_files_on_create(
-                    base_worktree_path,
-                    &shared_git_dir,
-                    &shared_parent_dir,
+                crate::core::shared::render_link_results(
+                    &crate::core::shared::link_shared_files_on_create(
+                        base_worktree_path,
+                        &shared_git_dir,
+                        &shared_parent_dir,
+                    ),
                 );
 
                 let mut bridge = TuiBridge::new(executor, tx.clone(), base.clone());
@@ -1300,10 +1304,12 @@ fn create_satellite_worktrees_tui(
                                 }
 
                                 // Link shared files before post-create hooks
-                                crate::core::shared::link_shared_files_on_create(
-                                    worktree_path,
-                                    &shared_git_dir,
-                                    &shared_parent_dir,
+                                crate::core::shared::render_link_results(
+                                    &crate::core::shared::link_shared_files_on_create(
+                                        worktree_path,
+                                        &shared_git_dir,
+                                        &shared_parent_dir,
+                                    ),
                                 );
 
                                 let mut bridge =
@@ -1630,11 +1636,11 @@ fn run_post_create_hook(
     let worktree_path = result.worktree_dir.as_ref().unwrap();
 
     // Link shared files before post-create hooks
-    crate::core::shared::link_shared_files_on_create(
+    crate::core::shared::render_link_results(&crate::core::shared::link_shared_files_on_create(
         worktree_path,
         &result.git_dir,
         &result.parent_dir,
-    );
+    ));
 
     let ctx = HookContext::new(
         HookType::PostCreate,
