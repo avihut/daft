@@ -194,6 +194,11 @@ impl StepSpec {
 /// The plan a core commits right before mutation begins.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct PlanCommit {
+    /// Optional resolved replacement for the header text seeded at
+    /// `Timeline::new`. The seed is built by the command layer from raw
+    /// args; a core sets this when resolution improves on it (`daft remove
+    /// .` resolves the worktree-path shorthand to its branch name).
+    pub header: Option<String>,
     /// Optional annotation appended to the timeline header (e.g. `← master`
     /// once the base branch is resolved). The header text itself is seeded
     /// by the command layer, which knows the verb and target.
@@ -204,9 +209,15 @@ pub struct PlanCommit {
 impl PlanCommit {
     pub fn new(rows: Vec<Row>) -> Self {
         Self {
+            header: None,
             header_annotation: None,
             rows,
         }
+    }
+
+    pub fn with_header(mut self, header: impl Into<String>) -> Self {
+        self.header = Some(header.into());
+        self
     }
 
     pub fn with_header_annotation(mut self, annotation: impl Into<String>) -> Self {

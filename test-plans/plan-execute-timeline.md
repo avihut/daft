@@ -28,6 +28,8 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       carry row vanishes once execution reaches it
 - [ ] `daft remove <branch>`: execution order (remote → worktree → branch),
       `Deleted branch` annotated `was merged into <default>`
+- [ ] `daft remove .` (worktree-path shorthand): header names the resolved
+      branch — `Removing <branch>`, never `.`
 - [ ] `daft remove` remote fate always explicit: `✓ Deleted remote branch`, or
       `○ kept on origin — daft.branchDelete.remote off` / `--local` /
       `○ no remote branch`

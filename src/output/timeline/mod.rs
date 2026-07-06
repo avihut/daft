@@ -176,8 +176,11 @@ impl Timeline {
             debug_assert!(false, "plan committed twice for one invocation");
             return;
         }
+        // The core may replace the seeded header with the resolved intent
+        // (`daft remove .` → `Removing <branch>`).
+        let header = plan.header.clone().unwrap_or_else(|| inner.header.clone());
         inner.core = Some(TimelineCore::new(
-            inner.header.clone(),
+            header,
             plan,
             inner.verbose,
             inner.use_color,

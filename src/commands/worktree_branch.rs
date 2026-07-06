@@ -519,9 +519,9 @@ fn run_branch_delete(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // Plan-execute rail timeline (#651). The header names the resolved
-    // intent; the region materializes when the core commits its plan (after
-    // validation and any consolidation prompts).
+    // Plan-execute rail timeline (#651). This header is a seed built from
+    // raw args; the core replaces it at plan commit with the resolved
+    // targets (`daft remove .` → `Removing <branch>`, count as validated).
     let header = if branches.len() == 1 {
         format!("Removing {}", branches[0])
     } else {

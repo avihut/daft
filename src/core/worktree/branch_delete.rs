@@ -292,6 +292,13 @@ pub fn execute(
 /// note explaining why the remote is untouched.
 fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> PlanCommit {
     let multi = exec_order.len() > 1;
+    // Replace the seeded header: raw args may be worktree-path shorthands
+    // (`daft remove .`), and the count can shrink during validation.
+    let header = if multi {
+        format!("Removing {} branches", exec_order.len())
+    } else {
+        format!("Removing {}", exec_order[0].name)
+    };
     let mut rows = Vec::new();
 
     for branch in exec_order {
@@ -355,7 +362,7 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
         }
     }
 
-    PlanCommit::new(rows)
+    PlanCommit::new(rows).with_header(header)
 }
 
 /// Path annotation for a worktree row: relative to the current directory
@@ -1499,6 +1506,45 @@ fn cleanup_empty_parent_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_header_names_resolved_branches_not_raw_args() {
+        let branch = |name: &str| ValidatedBranch {
+            name: name.to_string(),
+            worktree_path: None,
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only: false,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = BranchDeleteParams {
+            branches: vec![".".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+            keep_remote_display_reason: None,
+        };
+
+        // The raw arg was a path shorthand; the header carries the branch.
+        let a = branch("feat-x");
+        let plan = build_plan(&[&a], &params);
+        assert_eq!(plan.header.as_deref(), Some("Removing feat-x"));
+
+        let b = branch("feat-y");
+        let plan = build_plan(&[&a, &b], &params);
+        assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
+    }
 
     #[test]
     fn test_validated_branch_fields() {
