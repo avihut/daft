@@ -165,8 +165,8 @@ pub enum Row {
     /// hooks row); plans grouped end-to-end (multi-branch remove) don't
     /// need it.
     EndGroup,
-    /// A non-step annotation rendered at its plan position (e.g.
-    /// "branch kept on origin — daft.branchDelete.remote off").
+    /// A non-step annotation rendered at its plan position (e.g. remove's
+    /// "no remote branch" when remote deletion is on but has no target).
     Note { text: String },
 }
 
@@ -285,7 +285,7 @@ mod tests {
             },
             Row::Step(StepSpec::new(StepKey::new(StageId::RemoveWorktree))),
             Row::Note {
-                text: "kept on origin".into(),
+                text: "no remote branch".into(),
             },
             Row::Step(StepSpec::new(StepKey::new(StageId::DeleteLocalBranch))),
         ]);

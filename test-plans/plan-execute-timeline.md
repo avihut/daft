@@ -46,9 +46,12 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       `Deleted branch` annotated `was merged into <default>`
 - [ ] `daft remove .` (worktree-path shorthand): header names the resolved
       branch — `Removing <branch>`, never `.`
-- [ ] `daft remove` remote fate always explicit: `✓ Deleted remote branch`, or
-      `○ kept on origin — daft.branchDelete.remote off` / `--local` /
-      `○ no remote branch`
+- [ ] `daft remove` with remote deletion on (`daft.branchDelete.remote` true):
+      `✓ Deleted remote branch`, or dim `○ no remote branch` when the branch has
+      no upstream
+- [ ] Remote deletion off (default, `daft config remote-sync` local only, or
+      `--local`): no remote row or note anywhere in the rail — the remote is
+      never mentioned
 - [ ] Multi-branch remove: one rail, dim branch-name group anchors, count
       footer; current-worktree branch deferred to last
 - [ ] `daft clone <url>` single-branch: `✓ Cloned repository ← <url>` as a

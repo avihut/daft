@@ -1186,7 +1186,6 @@ pub fn run() -> Result<()> {
                         // distinguish merge cleanup from standalone daft remove.
                         command_label: "merge".to_string(),
                         skip_merge_validation: true,
-                        keep_remote_display_reason: None,
                         force_flag_label: "-f/--force".to_string(),
                     };
 

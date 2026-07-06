@@ -63,7 +63,7 @@ pub(super) fn group(label: &str, use_color: bool) -> String {
     format!("{rail}  {}", paint(DARK_GREY, label, use_color))
 }
 
-/// `○  kept on origin  daft.branchDelete.remote off` — a non-step annotation.
+/// `○  no remote branch` — a non-step annotation.
 pub(super) fn note(text: &str, use_color: bool) -> String {
     paint(DARK_GREY, &format!("\u{25cb}  {text}"), use_color)
 }

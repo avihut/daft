@@ -50,9 +50,13 @@ rail persists in your scrollback as a receipt.
   that resolves as a no-op (carry with a clean tree) removes its row — the
   finished rail is a receipt of what daft actually did. Attention-worthy skips
   are the exception and stay visible.
-- Every command carries an explicit remote indicator: `← origin/x` (created from
-  the remote), `→ origin/x` (pushed), `tracking origin/x`, or a dim note such as
-  `kept on origin — daft.branchDelete.remote off`.
+- Remote indicators appear only while remote interaction is in scope:
+  `← origin/x` (created from the remote), `→ origin/x` (pushed),
+  `tracking origin/x`, or remove's dim `no remote branch` note when remote
+  deletion is on but the branch has no upstream. When configuration takes
+  remotes out of scope — `daft config remote-sync` set to local only,
+  `daft.branchDelete.remote` off (the default), or `--local` — the rail never
+  mentions them, exactly as an unconfigured push plans no row.
 - [Shared files](../cli/daft-shared.md) get their own section under a dim
   `shared files` anchor: one receipt row per declared path stating its state.
   `✓` means the symlink landed; `○ already linked` and `○ materialized` are the

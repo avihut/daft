@@ -502,13 +502,6 @@ fn run_branch_delete(
         command_label: "branch-delete".to_string(),
         skip_merge_validation: false,
         force_flag_label: force_flag_label.to_string(),
-        keep_remote_display_reason: if local_only {
-            Some("--local".to_string())
-        } else if !remote_only && !settings.branch_delete_remote {
-            Some("daft.branchDelete.remote off".to_string())
-        } else {
-            None
-        },
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;

@@ -64,10 +64,6 @@ pub struct BranchDeleteParams {
     /// refusal messages (`daft remove` says `-f/--force`, the branch-delete
     /// forms say `-D/--force`).
     pub force_flag_label: String,
-    /// Why the remote branch is being kept when `delete_remote` is off, for
-    /// the timeline's remote-fate note (`--local` vs the config default).
-    /// `None` when remote deletion is on or the caller has no timeline.
-    pub keep_remote_display_reason: Option<String>,
 }
 
 /// Result of a branch-delete operation.
@@ -287,9 +283,10 @@ pub fn execute(
 // ── Timeline plan (#651) ───────────────────────────────────────────────────
 
 /// Build the plan rows for the branches in execution order. Steps mirror the
-/// conditionals of `delete_single_branch` exactly; every branch carries an
-/// explicit remote-fate indicator — either the `DeleteRemote` step or a dim
-/// note explaining why the remote is untouched.
+/// conditionals of `delete_single_branch` exactly. Remote fate shows only
+/// when remote deletion is in scope for the invocation: the `DeleteRemote`
+/// step, or a dim `no remote branch` note when there is no upstream to
+/// delete. A daft configured local-only never mentions remotes.
 fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> PlanCommit {
     let multi = exec_order.len() > 1;
     // Replace the seeded header: raw args may be worktree-path shorthands
@@ -345,20 +342,29 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
             rows.push(Row::Step(StepSpec::new(key(StageId::PostRemoveHooks))));
         }
 
-        // Explicit remote fate when nothing touches the remote.
-        if !deletes_remote && !params.keep_local_branch {
-            let note = match (&branch.remote_name, branch.worktree_only) {
-                (_, true) => "branch and remote kept (default branch)".to_string(),
-                (Some(remote), _) => format!(
-                    "kept on {remote} — {}",
-                    params
-                        .keep_remote_display_reason
-                        .as_deref()
-                        .unwrap_or("remote deletion off")
-                ),
-                (None, _) => "no remote branch".to_string(),
-            };
-            rows.push(Row::Note { text: note });
+        // Remote fate is a topic only while remote deletion is in scope for
+        // this invocation. When configuration takes remotes out of scope
+        // (`daft.branchDelete.remote` off — the default, and what
+        // `daft config remote-sync` "local only" sets — or `--local`), the
+        // rail never mentions them, mirroring the create rail's push row.
+        let remote_in_scope = params.delete_remote || params.remote_only;
+        if !params.keep_local_branch {
+            if branch.worktree_only {
+                let text = if remote_in_scope {
+                    "branch and remote kept (default branch)"
+                } else {
+                    "branch kept (default branch)"
+                };
+                rows.push(Row::Note {
+                    text: text.to_string(),
+                });
+            } else if remote_in_scope && !deletes_remote {
+                // In scope but no DeleteRemote step: the branch has no
+                // upstream, so there was nothing to delete.
+                rows.push(Row::Note {
+                    text: "no remote branch".to_string(),
+                });
+            }
         }
     }
 
@@ -1533,7 +1539,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
 
         // The raw arg was a path shorthand; the header carries the branch.
@@ -1544,6 +1549,71 @@ mod tests {
         let b = branch("feat-y");
         let plan = build_plan(&[&a, &b], &params);
         assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
+    }
+
+    #[test]
+    fn remote_fate_note_planned_only_when_remote_deletion_in_scope() {
+        let branch = |worktree_only: bool| ValidatedBranch {
+            name: "feat-x".to_string(),
+            worktree_path: None,
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = |delete_remote: bool| BranchDeleteParams {
+            branches: vec!["feat-x".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+        let notes = |plan: &PlanCommit| -> Vec<String> {
+            plan.rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Note { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Remote deletion off (config default, remote-sync local-only, or
+        // --local): the plan never mentions the remote.
+        let plan = build_plan(&[&branch(false)], &params(false));
+        assert!(
+            notes(&plan).is_empty(),
+            "out-of-scope remote plans no note: {:?}",
+            plan.rows
+        );
+
+        // Remote deletion on but the branch has no upstream: the dim note
+        // records there was nothing to delete.
+        let plan = build_plan(&[&branch(false)], &params(true));
+        assert_eq!(notes(&plan), vec!["no remote branch".to_string()]);
+
+        // Default-branch worktree removal keeps its explanation, mentioning
+        // the remote only while remote deletion is in scope.
+        let plan = build_plan(&[&branch(true)], &params(false));
+        assert_eq!(
+            notes(&plan),
+            vec!["branch kept (default branch)".to_string()]
+        );
+        let plan = build_plan(&[&branch(true)], &params(true));
+        assert_eq!(
+            notes(&plan),
+            vec!["branch and remote kept (default branch)".to_string()]
+        );
     }
 
     #[test]
@@ -1809,7 +1879,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1877,7 +1946,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
@@ -1921,7 +1989,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-f/--force".to_string(),
-            keep_remote_display_reason: Some("daft.branchDelete.remote off".to_string()),
         };
         let mut sink = RecordingStageSink::default();
         let result = execute(&params, None, &mut sink).unwrap();
@@ -1937,7 +2004,8 @@ mod tests {
             })
             .collect();
         // Execution order: hooks bracket the removal; no DeleteRemote step
-        // (remote deletion off) — the remote fate is a Note row instead.
+        // and no remote-fate note — remote deletion is off, so the plan
+        // never mentions the remote.
         assert_eq!(
             ids,
             vec![
@@ -1948,11 +2016,8 @@ mod tests {
             ]
         );
         assert!(
-            plan.rows.iter().any(|r| matches!(
-                r,
-                Row::Note { text } if text.contains("no remote branch")
-            )),
-            "remote fate must be explicit: {:?}",
+            !plan.rows.iter().any(|r| matches!(r, Row::Note { .. })),
+            "remote out of scope plans no note: {:?}",
             plan.rows
         );
         // Single-branch plans carry no group anchors.
@@ -2029,7 +2094,6 @@ mod tests {
             command_label: "merge".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
 
         let mut output = TestOutput::new();
@@ -2184,7 +2248,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
         let mut bridge = ScriptedBridge::aborting();
         let result = execute(&params, None, &mut bridge).unwrap();
@@ -2274,7 +2337,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
         let mut bridge = ScriptedBridge::aborting();
         let result = execute(&params, None, &mut bridge).unwrap();
@@ -2376,7 +2438,6 @@ mod tests {
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
             force_flag_label: "-D/--force".to_string(),
-            keep_remote_display_reason: None,
         };
         let mut bridge = ScriptedBridge {
             choice: crate::core::ConsolidationChoice::Consolidate,
