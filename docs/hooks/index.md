@@ -51,9 +51,13 @@ daft's hooks do not replace git's own. Every daft-initiated `git push` honors
 the repository's `pre-push` hook — whether it lives in `.git/hooks` or is
 managed by lefthook, husky, or pre-commit via `core.hooksPath`. A failing
 pre-push gate blocks the push and fails the command; its run is reported as a
-`pre-push` phase on the same surface lifecycle hooks use. Pass `--no-verify` to
-any pushing command to skip it for one invocation. See
-[Git Hooks](/reference/configuration#git-hooks) for the details.
+`pre-push` phase on the same surface lifecycle hooks use. The one conditional
+site is the automatic upstream push on branch creation: it consults the hook
+only when it would publish commits the remote does not already have, so
+branching off a fully-pushed base skips it (tunable via
+`daft.checkout.pushVerify`). Pass `--no-verify` to any pushing command to skip
+it for one invocation. See [Git Hooks](/reference/configuration#git-hooks) for
+the details.
 
 ## Where to next
 

@@ -77,11 +77,12 @@ By default, daft does not contact the remote during worktree management. All
 remote operations are opt-in. Use `daft config remote-sync` to toggle these
 settings interactively, or set them directly with `git config`.
 
-| Key                        | Default | Description                                                         |
-| -------------------------- | ------- | ------------------------------------------------------------------- |
-| `daft.checkout.fetch`      | `false` | Fetch from remote before creating a worktree for an existing branch |
-| `daft.checkout.push`       | `false` | Push new branches to remote after creation                          |
-| `daft.branchDelete.remote` | `false` | Delete the remote branch when removing a local branch               |
+| Key                        | Default | Description                                                                                            |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `daft.checkout.fetch`      | `false` | Fetch from remote before creating a worktree for an existing branch                                    |
+| `daft.checkout.push`       | `false` | Push new branches to remote after creation                                                             |
+| `daft.checkout.pushVerify` | `auto`  | When that push runs the repo's pre-push hook (`auto`, `always`, `never`) — see [Git Hooks](#git-hooks) |
+| `daft.branchDelete.remote` | `false` | Delete the remote branch when removing a local branch                                                  |
 
 ### Enabling Remote Sync
 
@@ -331,6 +332,23 @@ on `git push` fires on daft's pushes too. The hook run is reported as a
 `pre-push` phase with the hook's output, using the same surface as daft's
 lifecycle hooks.
 
+The automatic upstream push on `daft start` / `git worktree-checkout -b` is the
+one conditional site: it runs the hook only when the push introduces commits the
+target remote does not already have. Branching off a fully-pushed base is a
+ref-only push -- a new branch name pointing at commits the remote already has --
+so there is nothing for a content gate to validate, and the hook is skipped.
+Control this with `daft.checkout.pushVerify`:
+
+| Value    | Behavior                                                       |
+| -------- | -------------------------------------------------------------- |
+| `auto`   | (default) Run the hook only when the push carries new commits  |
+| `always` | Run the hook on every upstream push, including ref-only pushes |
+| `never`  | Never run the hook on the automatic upstream push              |
+
+`always` is for repositories whose pre-push hooks act on the ref rather than the
+content (branch-naming policies, protected-branch guards): daft cannot classify
+an opaque hook, so the automatic skip is based purely on pushed content.
+
 Pass `--no-verify` to skip the hook for one invocation. Every command that can
 push accepts it: `daft sync --push`, `daft start` / `daft go -b` /
 `git worktree-checkout -b`, `daft rename`, `daft remove` /
@@ -340,7 +358,8 @@ Remote operations are disabled by default. When enabled (via
 `daft config remote-sync --on` or by setting the individual keys), this affects:
 
 - **`daft start` / `git worktree-checkout -b`** -- pushes the new branch to set
-  upstream tracking (controlled by `daft.checkout.push`)
+  upstream tracking (controlled by `daft.checkout.push`; pre-push hook gating
+  per `daft.checkout.pushVerify` above)
 - **`daft remove` / `git worktree-branch -d`** -- pushes `--delete` to remove
   the remote branch (controlled by `daft.branchDelete.remote`)
 - **`daft multi-remote move --push`** -- pushes an existing branch to a new

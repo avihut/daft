@@ -674,10 +674,14 @@ repo's git-level `pre-push` hook (native `.git/hooks` or `core.hooksPath`
 managers like lefthook/husky/pre-commit). The hook run is reported as a
 `pre-push` phase. A failing hook blocks the push and the command exits non-zero
 — any worktree it created or moved is still completed and usable, and the error
-names the manual recovery command. Pass `--no-verify` to the pushing command
-(`daft sync --push`, `daft start`/`go -b`, `daft rename`, `daft remove`,
-`daft multi-remote move`) to skip the hook for one invocation. `--skip-hooks`
-does NOT affect git-level hooks — it only filters daft's own jobs.
+names the manual recovery command. Exception: the automatic upstream push on
+`daft start`/`go -b` runs the hook only when it introduces new commits;
+branching off a fully-pushed base is a ref-only push and skips the hook (config
+`daft.checkout.pushVerify`: `auto` default, `always`, `never`). Pass
+`--no-verify` to the pushing command (`daft sync --push`, `daft start`/`go -b`,
+`daft rename`, `daft remove`, `daft multi-remote move`) to skip the hook for one
+invocation. `--skip-hooks` does NOT affect git-level hooks — it only filters
+daft's own jobs.
 
 ### Move Hooks
 
