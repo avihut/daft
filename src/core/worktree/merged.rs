@@ -128,15 +128,14 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::path::{Path, PathBuf};
-    use std::process::{Command as ShellCommand, Stdio};
+    use std::process::Stdio;
 
     /// Test-only helper: run `git` quietly in `path` and panic if it fails.
+    /// Routed through `git_command_at` so all inherited `GIT_*` vars are
+    /// cleared (per the project's test-hygiene rule), not just GIT_DIR.
     fn git_ok(path: &Path, args: &[&str]) {
-        let status = ShellCommand::new("git")
+        let status = crate::utils::git_command_at(path)
             .args(args)
-            .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()

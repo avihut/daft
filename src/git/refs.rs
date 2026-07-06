@@ -245,17 +245,22 @@ impl GitCommand {
     /// returning the new commit hash.
     ///
     /// Used by squash-merge detection to synthesize a one-commit equivalent
-    /// of a branch's cumulative diff. Identity is injected via environment
-    /// variables so the probe works even where user.name/user.email are not
-    /// configured. The object is deliberately left dangling — nothing ever
-    /// references it, and `git gc` sweeps it with other unreachable objects.
+    /// of a branch's cumulative diff. Identity and dates are injected via
+    /// environment variables — identity so the probe works even where
+    /// user.name/user.email are not configured, fixed epoch dates so
+    /// repeated probes of the same tree+parent produce the same SHA instead
+    /// of accumulating a new dangling object per run. The object is
+    /// deliberately left unreferenced, and `git gc` sweeps it with other
+    /// unreachable objects.
     pub fn commit_tree(&self, tree: &str, parent: &str, message: &str) -> Result<String> {
         let output = Command::new("git")
             .args(["commit-tree", tree, "-p", parent, "-m", message])
             .env("GIT_AUTHOR_NAME", "daft")
             .env("GIT_AUTHOR_EMAIL", "daft@localhost")
+            .env("GIT_AUTHOR_DATE", "1970-01-01T00:00:00+0000")
             .env("GIT_COMMITTER_NAME", "daft")
             .env("GIT_COMMITTER_EMAIL", "daft@localhost")
+            .env("GIT_COMMITTER_DATE", "1970-01-01T00:00:00+0000")
             .output()
             .context("Failed to execute git commit-tree command")?;
 
