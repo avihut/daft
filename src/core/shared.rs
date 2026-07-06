@@ -286,6 +286,34 @@ pub fn read_shared_paths(worktree_root: &Path) -> Result<Vec<String>> {
     Ok(config.and_then(|c| c.shared).unwrap_or_default())
 }
 
+/// Read the `shared:` list from a committed daft config blob
+/// (`<reference>:daft.yml` and the other accepted names), for probing before
+/// any worktree exists — clone plans its shared section right after the bare
+/// clone, when the config is only reachable through the object store. Any
+/// miss (no such ref, no config, parse error) yields an empty list.
+pub fn read_shared_paths_from_ref(repo_dir: &Path, reference: &str) -> Vec<String> {
+    for name in &["daft.yml", "daft.yaml", ".daft.yml", ".daft.yaml"] {
+        let output = crate::utils::git_command_at(repo_dir)
+            .args(["show", &format!("{reference}:{name}")])
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let Ok(contents) = String::from_utf8(output.stdout) else {
+            continue;
+        };
+        let Ok(config) = serde_yaml::from_str::<crate::hooks::yaml_config::YamlConfig>(&contents)
+        else {
+            continue;
+        };
+        return config.shared.unwrap_or_default();
+    }
+    Vec::new()
+}
+
 /// Add paths to the `shared:` list in daft.yml.
 /// Creates daft.yml if it doesn't exist. Avoids duplicates.
 ///
@@ -1035,6 +1063,37 @@ pub fn report_link_results(
     }
 }
 
+/// The legacy line for one `SharedFile` stage event — `Linked <path>` for a
+/// completion, `warning: <reason>` for an attention skip, `None` for silent
+/// resolutions and non-shared stages. Shared between the Plain-mode sink
+/// fallback and the rail's handling of outcomes its plan never saw.
+pub fn legacy_shared_stage_line(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+    use_color: bool,
+) -> Option<String> {
+    use crate::core::stage::{StageEvent, StageId};
+    use crate::styles;
+
+    if key.id != StageId::SharedFile {
+        return None;
+    }
+    let path = key.scope.as_deref()?;
+    match event {
+        StageEvent::Completed { .. } => Some(if use_color {
+            format!("{}Linked{} {}", styles::GREEN, styles::RESET, path)
+        } else {
+            format!("Linked {}", path)
+        }),
+        StageEvent::SkippedAttention { reason } => Some(if use_color {
+            format!("{}warning:{} {}", styles::YELLOW, styles::RESET, reason)
+        } else {
+            format!("warning: {}", reason)
+        }),
+        _ => None,
+    }
+}
+
 /// Legacy stderr rendering for one `SharedFile` stage event, byte-identical
 /// to [`render_link_results`]. Sinks that route stage events call this when
 /// no live region owns the terminal (Plain mode, quiet, tests) so the
@@ -1043,32 +1102,9 @@ pub fn render_shared_stage_fallback(
     key: &crate::core::stage::StepKey,
     event: &crate::core::stage::StageEvent,
 ) {
-    use crate::core::stage::{StageEvent, StageId};
-    use crate::styles;
-
-    if key.id != StageId::SharedFile {
-        return;
-    }
-    let Some(path) = key.scope.as_deref() else {
-        return;
-    };
-    let use_color = styles::colors_enabled_stderr();
-    match event {
-        StageEvent::Completed { .. } => {
-            if use_color {
-                eprintln!("{}Linked{} {}", styles::GREEN, styles::RESET, path);
-            } else {
-                eprintln!("Linked {}", path);
-            }
-        }
-        StageEvent::SkippedAttention { reason } => {
-            if use_color {
-                eprintln!("{}warning:{} {}", styles::YELLOW, styles::RESET, reason);
-            } else {
-                eprintln!("warning: {}", reason);
-            }
-        }
-        _ => {}
+    let use_color = crate::styles::colors_enabled_stderr();
+    if let Some(line) = legacy_shared_stage_line(key, event, use_color) {
+        eprintln!("{line}");
     }
 }
 
@@ -1144,6 +1180,38 @@ mod tests {
         assert_eq!(spec.key.scope.as_deref(), Some(".env"));
         assert_eq!(spec.label.as_deref(), Some(".env"));
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn read_shared_paths_from_ref_reads_the_committed_config_blob() {
+        use std::process::{Command, Stdio};
+        let dir = tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        git(&["add", "daft.yml"]);
+        git(&["commit", "-q", "-m", "cfg"]);
+
+        assert_eq!(
+            read_shared_paths_from_ref(dir.path(), "main"),
+            vec![".env".to_string()]
+        );
+        // Unknown ref and config-less ref both probe empty, never error.
+        assert!(read_shared_paths_from_ref(dir.path(), "no-such-branch").is_empty());
     }
 
     #[test]

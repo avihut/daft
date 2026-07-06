@@ -443,6 +443,19 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.is_verbose(),
         format!("Cloning {}", bare_result.repo_name),
     );
+    // Shared files the cloned config declares get a section between the hook
+    // stages (post-clone hooks may seed shared storage, the links land before
+    // post-create hooks). No worktree exists yet, so the probe reads the
+    // config blob from the bare object store; on a clone into fresh storage
+    // every row typically vanishes silently — planned, removed if unnecessary.
+    let planned_shared = if will_use_satellite_tui {
+        Vec::new()
+    } else {
+        crate::core::shared::read_shared_paths_from_ref(
+            &canonical_parent_dir,
+            &bare_result.target_branch,
+        )
+    };
     {
         let mut plan_rows = vec![
             Row::Step(
@@ -459,6 +472,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
                 StageId::PostCloneHooks,
             ))));
+            crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
             plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
                 StageId::PostCreateHooks,
             ))));
@@ -658,7 +672,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // (including the base). For everything else: run post-create hook for
         // the base worktree here.
         if !(is_multi_branch && used_tui) {
-            run_post_create_hook(args, &result, tail_output, &mut timeline)?;
+            run_post_create_hook(args, &result, &planned_shared, tail_output, &mut timeline)?;
         }
 
         if args.install {
@@ -1604,6 +1618,7 @@ fn run_post_clone_hook(
 fn run_post_create_hook(
     args: &Args,
     result: &clone::CloneResult,
+    planned_shared: &[String],
     output: &mut dyn Output,
     timeline: &mut Timeline,
 ) -> Result<()> {
@@ -1635,12 +1650,18 @@ fn run_post_create_hook(
 
     let worktree_path = result.worktree_dir.as_ref().unwrap();
 
-    // Link shared files before post-create hooks
-    crate::core::shared::render_link_results(&crate::core::shared::link_shared_files_on_create(
+    // Link shared files before post-create hooks. Outcomes resolve the
+    // planned shared section on the rail (post-clone hooks may have seeded
+    // storage); with no live region they fall back to the legacy lines.
+    let link_result = crate::core::shared::link_shared_files_on_create(
         worktree_path,
         &result.git_dir,
         &result.parent_dir,
-    ));
+    );
+    {
+        let mut sink = TimelineSink::new(output, timeline);
+        crate::core::shared::report_link_results(&link_result, planned_shared, &mut sink);
+    }
 
     let ctx = HookContext::new(
         HookType::PostCreate,

@@ -190,9 +190,24 @@ impl Timeline {
     /// Route a stage event onto the region.
     pub fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
         let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let use_color = inner.use_color;
         let Some(core) = inner.core.as_mut() else {
             return;
         };
+        // A shared-file outcome the plan never saw (clone without a probed
+        // config, or a target branch declaring more than the source did):
+        // persist its legacy line above the live bars — tear-free, and the
+        // fact is not lost — instead of dropping the unknown key.
+        if key.id == crate::core::stage::StageId::SharedFile
+            && core.resolve_key(key.id, key.scope.as_deref()).is_none()
+        {
+            if let Some(line) =
+                crate::core::shared::legacy_shared_stage_line(key, &event, use_color)
+            {
+                core.println_above(&line);
+            }
+            return;
+        }
         match event {
             StageEvent::Started => core.activate(key),
             StageEvent::Completed { annotation } => core.resolve(
