@@ -23,7 +23,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 fn plan() -> PlanCommit {
-    PlanCommit::new(vec![
+    let mut rows = vec![
         Row::Step(StepSpec::new(StepKey::new(StageId::CreateBranch))),
         Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
         Row::Step(
@@ -32,9 +32,19 @@ fn plan() -> PlanCommit {
         ),
         Row::Step(StepSpec::new(StepKey::new(StageId::Carry))),
         Row::Step(StepSpec::new(StepKey::new(StageId::Push)).with_annotation("\u{2192} origin")),
-        Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks)).with_annotation("2 jobs")),
-    ])
-    .with_header_annotation("\u{2190} master")
+    ];
+    daft::core::shared::push_shared_section(
+        &mut rows,
+        &[
+            ".env".to_string(),
+            ".claude/settings.json".to_string(),
+            "conf/dev.toml".to_string(),
+        ],
+    );
+    rows.push(Row::Step(
+        StepSpec::new(StepKey::new(StageId::PostCreateHooks)).with_annotation("2 jobs"),
+    ));
+    PlanCommit::new(rows).with_header_annotation("\u{2190} master")
 }
 
 fn run_step(tl: &mut Timeline, id: StageId, millis: u64, annotation: Option<&str>) {
@@ -112,9 +122,7 @@ fn main() {
     tl.on_stage(&StepKey::new(StageId::Carry), StageEvent::SkippedSilent);
 
     // A warning arriving mid-run must land above the live bars.
-    tl.println_above(&warning_line(
-        "shared file .env not found in source worktree",
-    ));
+    tl.println_above(&warning_line("remote is 3 commits ahead of local master"));
 
     let push = StepKey::new(StageId::Push);
     tl.on_stage(&push, StageEvent::Started);
@@ -124,6 +132,23 @@ fn main() {
         StageEvent::Completed {
             annotation: Some("\u{2192} origin/daft-652/cool-feature".into()),
         },
+    );
+
+    // The shared-files section: two links complete, one row (declared but
+    // never collected) vanishes silently under its anchor.
+    sleep(Duration::from_millis(350));
+    tl.on_stage(
+        &StepKey::scoped(StageId::SharedFile, ".env"),
+        StageEvent::Completed { annotation: None },
+    );
+    sleep(Duration::from_millis(200));
+    tl.on_stage(
+        &StepKey::scoped(StageId::SharedFile, ".claude/settings.json"),
+        StageEvent::Completed { annotation: None },
+    );
+    tl.on_stage(
+        &StepKey::scoped(StageId::SharedFile, "conf/dev.toml"),
+        StageEvent::SkippedSilent,
     );
 
     if scenario == "skip" {

@@ -20,6 +20,9 @@ rail persists in your scrollback as a receipt.
 ✓  Checked out branch
 ✓  Created worktree   ../daft-652/cool-feature
 ✓  Pushed             → origin/daft-652/cool-feature  (1.8s)
+│  shared files
+✓  .env
+✓  .claude/settings.json
 │
 ├──────────────────────────────────────────────────────────────────┐
 │ daft hooks v1.18.0  worktree-post-create  on: daft-652/cool-feature │
@@ -50,6 +53,12 @@ rail persists in your scrollback as a receipt.
 - Every command carries an explicit remote indicator: `← origin/x` (created from
   the remote), `→ origin/x` (pushed), `tracking origin/x`, or a dim note such as
   `kept on origin — daft.branchDelete.remote off`.
+- [Shared files](../cli/daft-shared.md) get their own section under a dim
+  `shared files` anchor: one row per declared path, checked off as its symlink
+  lands. A declared file with nothing to link (never collected into storage,
+  already linked) removes its row, and a section whose rows all vanish takes the
+  anchor with it; a path that exists as a real file renders the yellow `↓` row
+  with the `daft shared link` remedy.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under dim branch anchors.

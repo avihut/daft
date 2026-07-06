@@ -26,6 +26,16 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       for the whole invocation)
 - [ ] Carry: with uncommitted changes `✓ Carried changes`; with a clean tree the
       carry row vanishes once execution reaches it
+- [ ] Shared files (`shared:` in daft.yml + collected storage): dim
+      `shared files` anchor with one row per path, `✓ .env` per landed link,
+      placed between Carry/Push and the hooks block
+- [ ] Shared file declared but never collected: its row vanishes silently; if
+      every row vanishes the `shared files` anchor vanishes with them (rebuild:
+      clean rail, no orphan anchor)
+- [ ] Shared path conflicting with a real file (tracked file also declared
+      shared): yellow `↓ <path>` row carrying the `daft shared link` remedy
+- [ ] Shared files in Plain mode (`2>&1 | cat`): legacy `Linked <path>` lines,
+      byte-identical to pre-timeline output
 - [ ] `daft remove <branch>`: execution order (remote → worktree → branch),
       `Deleted branch` annotated `was merged into <default>`
 - [ ] `daft remove .` (worktree-path shorthand): header names the resolved
