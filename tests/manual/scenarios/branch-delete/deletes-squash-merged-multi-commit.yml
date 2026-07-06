@@ -1,0 +1,49 @@
+name: Branch delete removes a squash-merged multi-commit branch
+description: >
+  Branch-delete's merged-into-default validation (Check 4) uses the shared merge
+  verifier. A multi-commit branch squash-merged into the default branch must
+  delete without --force even though git cherry finds no per-commit patch-id
+  match. Regression for the cherry-only squash detection (issue #662).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create feature branch with two commits
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo
+      git-worktree-checkout -b feature/squashed
+      cd $WORK_DIR/test-repo/feature/squashed
+      echo "one" > one.txt
+      git add one.txt
+      git commit -m "part one"
+      echo "two" > two.txt
+      git add two.txt
+      git commit -m "part two"
+      git push origin feature/squashed
+    expect:
+      exit_code: 0
+
+  - name: Squash-merge the branch into main
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git merge --squash feature/squashed
+      git commit -m "squashed feature (#2)"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete without --force succeeds
+    run: git-worktree-branch-delete feature/squashed 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "not merged"
+
+  - name: Worktree directory is gone
+    run: test ! -d $WORK_DIR/test-repo/feature/squashed
+    expect:
+      exit_code: 0
