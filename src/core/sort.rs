@@ -436,9 +436,18 @@ impl SortSpec {
 
     /// Returns the set of `WorktreeInfo` fields needed to evaluate this sort
     /// spec. Used by `LiveTable` to skip re-sorts when a patch lands on a
-    /// cell unrelated to the current sort order.
+    /// cell unrelated to the current sort order, and by the live list view
+    /// to scope its collector request.
+    ///
+    /// In `--stat lines` mode the diff columns also depend on their
+    /// line-level fields: `SortKey::compare` reads those then, and the
+    /// collector patches them separately from the summary clusters, so
+    /// omitting them would skip the re-sort those patches should trigger.
+    /// The summary bits stay in the set — the Changes total still folds in
+    /// the summary-cluster `untracked` count.
     pub fn required_fields(&self) -> crate::core::worktree::info_field::FieldSet {
         use crate::core::worktree::info_field::FieldSet;
+        let lines = self.stat == Stat::Lines;
         let mut acc = FieldSet::EMPTY;
         for key in &self.keys {
             acc |= match key.column {
@@ -450,8 +459,13 @@ impl SortSpec {
                 SortColumn::Hash => FieldSet::LAST_COMMIT,
                 SortColumn::Activity => FieldSet::LAST_COMMIT | FieldSet::MTIME,
                 SortColumn::LastCommit => FieldSet::LAST_COMMIT,
+                SortColumn::Base if lines => FieldSet::BASE_AHEAD_BEHIND | FieldSet::BASE_LINES,
                 SortColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
+                SortColumn::Changes if lines => FieldSet::CHANGES | FieldSet::CHANGES_LINES,
                 SortColumn::Changes => FieldSet::CHANGES,
+                SortColumn::Remote if lines => {
+                    FieldSet::REMOTE_AHEAD_BEHIND | FieldSet::REMOTE_LINES
+                }
                 SortColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             };
         }
@@ -997,5 +1011,39 @@ mod required_fields_tests {
         let f = fields_for("+owner,-size");
         assert!(f.contains(FieldSet::OWNER));
         assert!(f.contains(FieldSet::SIZE));
+    }
+
+    fn lines_fields_for(input: &str) -> FieldSet {
+        SortSpec::parse(input)
+            .unwrap()
+            .with_stat(Stat::Lines)
+            .required_fields()
+    }
+
+    #[test]
+    fn lines_stat_adds_line_fields_to_diff_columns() {
+        // The line-stat clusters patch separately from the summary
+        // clusters, so LiveTable's resort trigger must see these bits too.
+        assert_eq!(
+            lines_fields_for("base"),
+            FieldSet::BASE_AHEAD_BEHIND | FieldSet::BASE_LINES,
+        );
+        assert_eq!(
+            lines_fields_for("changes"),
+            FieldSet::CHANGES | FieldSet::CHANGES_LINES,
+        );
+        assert_eq!(
+            lines_fields_for("remote"),
+            FieldSet::REMOTE_AHEAD_BEHIND | FieldSet::REMOTE_LINES,
+        );
+    }
+
+    #[test]
+    fn lines_stat_leaves_non_diff_columns_unchanged() {
+        assert_eq!(lines_fields_for("size"), FieldSet::SIZE);
+        assert_eq!(
+            lines_fields_for("activity"),
+            FieldSet::LAST_COMMIT | FieldSet::MTIME,
+        );
     }
 }

@@ -40,7 +40,12 @@ impl FieldSet {
             | Self::REMOTE_LINES.0,
     );
 
-    /// All fields. Used by the initial Collector run.
+    /// Every bit set, including bits with no assigned field. Acts as the
+    /// fully-received sentinel: a row whose seeded + patched bits reach
+    /// `ALL` has nothing in flight (the renderer's inflight counter checks
+    /// exactly this), and views with no streaming collector seed it
+    /// outright (`repo remove`). The live list view requests a narrowed
+    /// set instead (`collector_fields`) and seeds the complement.
     pub const ALL: Self = Self(u32::MAX);
 
     pub const fn contains(self, other: Self) -> bool {
@@ -129,6 +134,17 @@ mod tests {
         assert!(!FieldSet::VOLATILE.contains(FieldSet::SIZE));
         assert!(!FieldSet::VOLATILE.contains(FieldSet::OWNER));
         assert!(!FieldSet::VOLATILE.contains(FieldSet::BRANCH_AGE));
+    }
+
+    #[test]
+    fn complement_of_a_request_unions_back_to_all() {
+        // The live table seeds rows with the complement of the collector
+        // request and treats a row as settled once its bits reach `ALL`.
+        // That contract holds only while `ALL` is the full `u32` and `Not`
+        // is the bitwise complement.
+        let requested = FieldSet::CHANGES | FieldSet::OWNER;
+        assert_eq!(requested | !requested, FieldSet::ALL);
+        assert_eq!(!FieldSet::EMPTY, FieldSet::ALL);
     }
 
     #[test]

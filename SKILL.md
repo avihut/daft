@@ -575,19 +575,19 @@ Available in `run` commands:
 ### Skip and Only Conditions
 
 ```yaml
-skip: CI                         # Skip when env var is truthy
-skip: true                       # Always skip
+skip: CI # Skip when env var is truthy
+skip: true # Always skip
 skip:
-  - merge                        # Skip during merge
-  - rebase                       # Skip during rebase
-  - ref: "release/*"             # Skip if branch matches glob
-  - env: SKIP_HOOKS              # Skip if env var is truthy
-  - run: "test -f .skip-hooks"   # Skip if command exits 0
-    desc: "Skip file exists"     # Human-readable reason for the skip
+  - merge # Skip during merge
+  - rebase # Skip during rebase
+  - ref: "release/*" # Skip if branch matches glob
+  - env: SKIP_HOOKS # Skip if env var is truthy
+  - run: "test -f .skip-hooks" # Skip if command exits 0
+    desc: "Skip file exists" # Human-readable reason for the skip
 
 only:
-  - env: DEPLOY_ENABLED          # Only run when env var is set
-  - ref: "main"                  # Only run on main branch
+  - env: DEPLOY_ENABLED # Only run when env var is set
+  - ref: "main" # Only run on main branch
 ```
 
 ### Trust Management
