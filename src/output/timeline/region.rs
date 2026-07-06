@@ -698,6 +698,11 @@ enum StepPhase {
 }
 
 fn display_label(spec: &StepSpec, phase: StepPhase) -> String {
+    // A fixed label (a shared file's path) wins in every phase — the face
+    // glyph alone carries the row's state.
+    if let Some(label) = &spec.label {
+        return label.clone();
+    }
     let labels = super::plan::labels_for(spec.key.id);
     let base = match phase {
         StepPhase::Pending => labels.pending,
@@ -730,4 +735,25 @@ fn add_line_bar(mp: &MultiProgress, style: &ProgressStyle, line: String) -> Prog
     bar.set_style(style.clone());
     bar.set_message(line);
     bar
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::stage::StageId;
+
+    #[test]
+    fn label_override_wins_in_every_phase() {
+        let spec = StepSpec::new(StepKey::scoped(StageId::SharedFile, ".env")).with_label(".env");
+        for phase in [
+            StepPhase::Pending,
+            StepPhase::Active,
+            StepPhase::Done,
+            StepPhase::Skipped,
+        ] {
+            assert_eq!(display_label(&spec, phase), ".env");
+        }
+        let plain = StepSpec::new(StepKey::new(StageId::Push));
+        assert_eq!(display_label(&plain, StepPhase::Done), "Pushed");
+    }
 }

@@ -71,6 +71,14 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Pushed",
             skipped: "not pushed",
         },
+        // Rendered only as a fallback: shared-file rows carry the file path
+        // as a fixed label override in every phase.
+        StageId::SharedFile => StepLabels {
+            pending: "Link shared file",
+            active: "Linking shared file",
+            done: "Linked shared file",
+            skipped: "not linked",
+        },
         StageId::PostCreateHooks => StepLabels {
             pending: "post-create hooks",
             active: "post-create hooks",

@@ -36,6 +36,10 @@ pub enum StageId {
     CreateWorktree,
     /// Push the new branch and set upstream (`daft start`).
     Push,
+    /// Link one declared shared file into the new worktree. Always scoped by
+    /// the file's relative path; the row's label is the path itself (set via
+    /// [`StepSpec::with_label`]), planned under a `shared files` group.
+    SharedFile,
     /// `worktree-post-create` hooks.
     PostCreateHooks,
 
@@ -162,6 +166,10 @@ pub enum Row {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StepSpec {
     pub key: StepKey,
+    /// Fixed label overriding the stage's tense table in every phase. For
+    /// rows whose identity IS their subject (a shared file's path); the
+    /// row's state then lives entirely in the face glyph.
+    pub label: Option<String>,
     /// Second-column annotation (path, `← origin/x`, `→ origin/x`, job
     /// count…). May be patched later via `StageEvent`.
     pub annotation: Option<String>,
@@ -175,9 +183,15 @@ impl StepSpec {
     pub fn new(key: StepKey) -> Self {
         Self {
             key,
+            label: None,
             annotation: None,
             pre_completed: None,
         }
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 
     pub fn with_annotation(mut self, annotation: impl Into<String>) -> Self {
