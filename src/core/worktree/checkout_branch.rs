@@ -1325,13 +1325,22 @@ mod timeline_tests {
             .filter(|(k, _)| k.id == StageId::SharedFile)
             .map(|(k, e)| (k.scope.clone().unwrap(), e.clone()))
             .collect();
+        assert_eq!(shared_events.len(), 2);
         assert_eq!(
-            shared_events,
-            vec![
-                (".env".into(), StageEvent::Completed { annotation: None }),
-                (".envrc".into(), StageEvent::SkippedSilent),
-            ],
-            "collected file completes; declared-only file vanishes"
+            shared_events[0],
+            (".env".into(), StageEvent::Completed { annotation: None }),
+            "collected file completes its row"
+        );
+        // Declared but never collected: the receipt must say the file is
+        // missing, not drop the row.
+        let (path, event) = &shared_events[1];
+        assert_eq!(path, ".envrc");
+        assert!(
+            matches!(
+                event,
+                StageEvent::SkippedAttention { reason } if reason.contains("missing from shared storage")
+            ),
+            "declared-only file resolves as missing, got {event:?}"
         );
         assert!(
             worktree_path.join(".env").is_symlink(),

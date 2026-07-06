@@ -231,13 +231,22 @@ impl Timeline {
                     annotation: Some(reason),
                 },
             ),
-            StageEvent::SkippedAttention { reason } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::SkippedAttention,
-                    annotation: Some(format!("skipped \u{2014} {reason}")),
-                },
-            ),
+            StageEvent::SkippedAttention { reason } => {
+                // Shared-file reasons are self-contained sentences (missing,
+                // conflict, error) — the generic prefix would stutter.
+                let annotation = if key.id == crate::core::stage::StageId::SharedFile {
+                    reason
+                } else {
+                    format!("skipped \u{2014} {reason}")
+                };
+                core.resolve(
+                    key,
+                    Resolution::Final {
+                        face: FinalFace::SkippedAttention,
+                        annotation: Some(annotation),
+                    },
+                )
+            }
             StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
             StageEvent::Note(text) => core.set_annotation(key, text),
         }
@@ -434,6 +443,7 @@ mod tests {
             },
             Row::Step(StepSpec::new(StepKey::scoped(StageId::CheckOut, ".env"))),
             Row::Step(StepSpec::new(StepKey::scoped(StageId::CheckOut, ".envrc"))),
+            Row::EndGroup,
             Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks))),
         ])
     }

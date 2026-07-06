@@ -134,8 +134,8 @@ fn main() {
         },
     );
 
-    // The shared-files section: two links complete, one row (declared but
-    // never collected) vanishes silently under its anchor.
+    // The shared-files section: two links land, one declared path was never
+    // collected — its row says so instead of vanishing.
     sleep(Duration::from_millis(350));
     tl.on_stage(
         &StepKey::scoped(StageId::SharedFile, ".env"),
@@ -148,7 +148,11 @@ fn main() {
     );
     tl.on_stage(
         &StepKey::scoped(StageId::SharedFile, "conf/dev.toml"),
-        StageEvent::SkippedSilent,
+        StageEvent::SkippedAttention {
+            reason:
+                "'conf/dev.toml' missing from shared storage \u{2014} `daft shared sync` collects it"
+                    .into(),
+        },
     );
 
     if scenario == "skip" {

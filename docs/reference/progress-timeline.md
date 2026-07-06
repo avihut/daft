@@ -54,11 +54,12 @@ rail persists in your scrollback as a receipt.
   the remote), `→ origin/x` (pushed), `tracking origin/x`, or a dim note such as
   `kept on origin — daft.branchDelete.remote off`.
 - [Shared files](../cli/daft-shared.md) get their own section under a dim
-  `shared files` anchor: one row per declared path, checked off as its symlink
-  lands. A declared file with nothing to link (never collected into storage,
-  already linked) removes its row, and a section whose rows all vanish takes the
-  anchor with it; a path that exists as a real file renders the yellow `↓` row
-  with the `daft shared link` remedy.
+  `shared files` anchor: one receipt row per declared path stating its state.
+  `✓` means the symlink landed; `○ already linked` and `○ materialized` are the
+  quiet no-ops; a path never collected into shared storage renders the yellow
+  `↓ … missing from shared storage` row with the `daft shared sync` remedy, and
+  a real file in the way gets the `daft shared link` remedy. The section never
+  silently ignores a declaration it could not honor.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under dim branch anchors.

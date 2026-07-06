@@ -894,6 +894,9 @@ pub enum LinkFileOutcome {
     Linked(String),
     /// File already correctly linked (no action needed).
     AlreadyLinked(String),
+    /// This worktree deliberately materialized the file (a real copy
+    /// instead of the link) — linking honors that choice and skips.
+    Materialized(String),
     /// Declared in `shared:` but never collected into shared storage.
     NoSource(String),
     /// A real file exists at the path (conflict).
@@ -907,6 +910,7 @@ impl LinkFileOutcome {
         match self {
             Self::Linked(p)
             | Self::AlreadyLinked(p)
+            | Self::Materialized(p)
             | Self::NoSource(p)
             | Self::Conflict(p)
             | Self::Error(p, _) => p,
@@ -967,6 +971,7 @@ pub fn link_shared_files_on_create(
 
     for rel_path in &shared_paths {
         if materialized.is_materialized(rel_path, worktree_path) {
+            outcomes.push(LinkFileOutcome::Materialized(rel_path.clone()));
             continue;
         }
 
@@ -998,6 +1003,11 @@ fn conflict_reason(path: &str) -> String {
     format!("'{path}' exists but is not shared. Run `daft shared link {path}` to replace.")
 }
 
+/// The `warning:` body for a declared path with nothing in shared storage.
+fn missing_reason(path: &str) -> String {
+    format!("'{path}' missing from shared storage — `daft shared sync` collects it")
+}
+
 /// The `warning:` body for a failed link.
 fn link_error_reason(path: &str, err: &str) -> String {
     format!("Failed to link shared file '{path}': {err}")
@@ -1005,7 +1015,8 @@ fn link_error_reason(path: &str, err: &str) -> String {
 
 /// Append the shared-files section to a creation plan: a dim group anchor
 /// plus one row per declared path, each carrying the path as its fixed
-/// label (#651). No-op when nothing is declared.
+/// label, closed with an `EndGroup` so the ungrouped rows that follow
+/// (hooks) never adopt the anchor (#651). No-op when nothing is declared.
 pub fn push_shared_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[String]) {
     use crate::core::stage::{Row, StageId, StepKey, StepSpec};
 
@@ -1021,16 +1032,20 @@ pub fn push_shared_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[S
                 .with_label(path.as_str()),
         ));
     }
+    rows.push(Row::EndGroup);
 }
 
 /// Report link outcomes as stage events against the planned shared-files
-/// section (#651): linked files complete their row, no-ops (already linked,
-/// never collected) vanish silently, conflicts and errors resolve as
-/// attention skips carrying the warning body. Planned rows whose path
-/// produced no outcome (materialized-state skip, or the target branch's
-/// config dropped them) vanish silently too. Outcomes for paths the plan
-/// never saw still emit — the region ignores unknown keys and the Plain
-/// fallback prints their legacy lines.
+/// section (#651). Every declared file leaves a receipt row — the section
+/// answers "what state is each shared file in?": linked completes (`✓`),
+/// already-linked and materialized resolve as dim expected skips, a path
+/// with nothing in shared storage resolves as a yellow attention skip
+/// naming it missing (with the `daft shared sync` remedy), and conflicts /
+/// link failures carry their warning body. Only a planned row whose path
+/// produced no outcome at all (the target branch's config dropped it)
+/// vanishes silently. Outcomes for paths the plan never saw still emit —
+/// the region persists their legacy line above the bars and the Plain
+/// fallback prints it.
 pub fn report_link_results(
     result: &LinkSharedResult,
     planned: &[String],
@@ -1041,9 +1056,15 @@ pub fn report_link_results(
     for outcome in &result.outcomes {
         let event = match outcome {
             LinkFileOutcome::Linked(_) => StageEvent::Completed { annotation: None },
-            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::NoSource(_) => {
-                StageEvent::SkippedSilent
-            }
+            LinkFileOutcome::AlreadyLinked(_) => StageEvent::SkippedExpected {
+                reason: "already linked".to_string(),
+            },
+            LinkFileOutcome::Materialized(_) => StageEvent::SkippedExpected {
+                reason: "materialized".to_string(),
+            },
+            LinkFileOutcome::NoSource(p) => StageEvent::SkippedAttention {
+                reason: missing_reason(p),
+            },
             LinkFileOutcome::Conflict(p) => StageEvent::SkippedAttention {
                 reason: conflict_reason(p),
             },
@@ -1110,7 +1131,9 @@ pub fn render_shared_stage_fallback(
 
 /// Render shared file linking results to stderr with colors — the legacy
 /// line-based reporter, used where no rail region exists (clone's satellite
-/// worktrees after the rail closed).
+/// worktrees after the rail closed). A declared path with nothing in shared
+/// storage warns (`missing from shared storage`) — a declaration the link
+/// step cannot honor is never ignored, in any mode.
 ///
 /// Clears the current line first to avoid leaving spinner artifacts,
 /// since this may be called while a spinner is active.
@@ -1138,8 +1161,9 @@ pub fn render_link_results(result: &LinkSharedResult) {
                 }
                 continue;
             }
-            // Silent no-ops.
-            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::NoSource(_) => continue,
+            // Quiet no-ops: the linked state already holds / was chosen.
+            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::Materialized(_) => continue,
+            LinkFileOutcome::NoSource(path) => missing_reason(path),
             LinkFileOutcome::Conflict(path) => conflict_reason(path),
             LinkFileOutcome::Error(path, err) => link_error_reason(path, err),
         };
@@ -1179,7 +1203,11 @@ mod tests {
         assert_eq!(spec.key.id, StageId::SharedFile);
         assert_eq!(spec.key.scope.as_deref(), Some(".env"));
         assert_eq!(spec.label.as_deref(), Some(".env"));
-        assert_eq!(rows.len(), 3);
+        assert!(
+            matches!(rows.last(), Some(Row::EndGroup)),
+            "the section closes its span so following rows stay ungrouped"
+        );
+        assert_eq!(rows.len(), 4);
     }
 
     #[test]
@@ -1224,6 +1252,7 @@ mod tests {
                 LinkFileOutcome::Linked(".env".into()),
                 LinkFileOutcome::NoSource(".envrc".into()),
                 LinkFileOutcome::AlreadyLinked("a.txt".into()),
+                LinkFileOutcome::Materialized("m.txt".into()),
                 LinkFileOutcome::Conflict("b.txt".into()),
                 LinkFileOutcome::Error("c.txt".into(), "boom".into()),
             ],
@@ -1241,8 +1270,27 @@ mod tests {
             events,
             vec![
                 (".env".into(), StageEvent::Completed { annotation: None }),
-                (".envrc".into(), StageEvent::SkippedSilent),
-                ("a.txt".into(), StageEvent::SkippedSilent),
+                // Declared but never collected: says so, loudly.
+                (
+                    ".envrc".into(),
+                    StageEvent::SkippedAttention {
+                        reason: missing_reason(".envrc"),
+                    }
+                ),
+                // The linked state already holds / was deliberately traded
+                // for a real copy: dim receipt rows.
+                (
+                    "a.txt".into(),
+                    StageEvent::SkippedExpected {
+                        reason: "already linked".into(),
+                    }
+                ),
+                (
+                    "m.txt".into(),
+                    StageEvent::SkippedExpected {
+                        reason: "materialized".into(),
+                    }
+                ),
                 (
                     "b.txt".into(),
                     StageEvent::SkippedAttention {
@@ -1255,7 +1303,7 @@ mod tests {
                         reason: link_error_reason("c.txt", "boom"),
                     }
                 ),
-                // Planned but no outcome: vanishes silently.
+                // Planned but no outcome at all: vanishes silently.
                 ("dropped.txt".into(), StageEvent::SkippedSilent),
             ]
         );

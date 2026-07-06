@@ -29,13 +29,19 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Shared files (`shared:` in daft.yml + collected storage): dim
       `shared files` anchor with one row per path, `✓ .env` per landed link,
       placed between Carry/Push and the hooks block
-- [ ] Shared file declared but never collected: its row vanishes silently; if
-      every row vanishes the `shared files` anchor vanishes with them (rebuild:
-      clean rail, no orphan anchor)
+- [ ] Shared file declared but never collected: yellow `↓ <path>` row saying
+      `missing from shared storage` with the `daft shared sync` remedy — never
+      silent
+- [ ] Shared path materialized in this worktree: dim `○ <path>  materialized`;
+      already-linked: dim `○ <path>  already linked`
+- [ ] Section planned from the source config but the target branch's daft.yml
+      drops `shared:`: rows and anchor vanish — no stranded anchor above the
+      hook weld
 - [ ] Shared path conflicting with a real file (tracked file also declared
       shared): yellow `↓ <path>` row carrying the `daft shared link` remedy
-- [ ] Shared files in Plain mode (`2>&1 | cat`): legacy `Linked <path>` lines,
-      byte-identical to pre-timeline output
+- [ ] Shared files in Plain mode (`2>&1 | cat`): legacy `Linked <path>` lines
+      plus the `warning: … missing from shared storage` line for uncollected
+      paths
 - [ ] `daft remove <branch>`: execution order (remote → worktree → branch),
       `Deleted branch` annotated `was merged into <default>`
 - [ ] `daft remove .` (worktree-path shorthand): header names the resolved

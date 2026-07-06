@@ -155,8 +155,16 @@ pub enum Row {
     /// An executable step.
     Step(StepSpec),
     /// A dim structural anchor grouping the rows below it (multi-branch
-    /// remove renders the branch name this way).
+    /// remove renders the branch name this way). Its span runs to the next
+    /// `Group`, an `EndGroup`, or the end of the plan — whichever comes
+    /// first.
     Group { label: String },
+    /// Invisible terminator closing the innermost open `Group` span: rows
+    /// after it are ungrouped. Needed when grouped rows are followed by
+    /// ungrouped ones (the shared-files section sits before the ungrouped
+    /// hooks row); plans grouped end-to-end (multi-branch remove) don't
+    /// need it.
+    EndGroup,
     /// A non-step annotation rendered at its plan position (e.g.
     /// "branch kept on origin — daft.branchDelete.remote off").
     Note { text: String },

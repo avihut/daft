@@ -37,6 +37,8 @@ enum Slot {
         label: String,
         bar: Option<ProgressBar>,
     },
+    /// Invisible group-span terminator — never renders, owns no bar.
+    EndGroup,
     Note {
         text: String,
         bar: Option<ProgressBar>,
@@ -114,6 +116,7 @@ impl TimelineCore {
                         bar: Some(bar),
                     }
                 }
+                Row::EndGroup => Slot::EndGroup,
                 Row::Note { text } => {
                     let bar = add_line_bar(&mp, &static_style, render::note(&text, use_color));
                     Slot::Note {
@@ -461,7 +464,7 @@ impl TimelineCore {
                         self.drop_group_bar_at(old); // span printed nothing
                     }
                 }
-                Slot::Group { bar: None, .. } => {
+                Slot::Group { bar: None, .. } | Slot::EndGroup => {
                     if let Some(old) = pending_group.take() {
                         self.drop_group_bar_at(old); // span printed nothing
                     }
@@ -555,6 +558,9 @@ impl TimelineCore {
         for i in 0..idx {
             match &self.slots[i] {
                 Slot::Group { bar: Some(_), .. } => pending_group = Some(i),
+                // The span closed without showing content: the row at `idx`
+                // is ungrouped, so this anchor must not print for it.
+                Slot::EndGroup => pending_group = None,
                 Slot::Note { bar: Some(_), .. } => {
                     if let Some(g) = pending_group.take() {
                         self.print_group_at(g);
@@ -608,23 +614,26 @@ impl TimelineCore {
     /// unprinted anchor so it doesn't hang over nothing for the rest of the
     /// run.
     fn drop_group_if_span_settled(&mut self, idx: usize) {
+        // Walk up to the group owning `idx`'s span; an EndGroup on the way
+        // means `idx` is ungrouped and settles nothing.
         let Some(g) = self.slots[..=idx]
             .iter()
-            .rposition(|s| matches!(s, Slot::Group { .. }))
+            .rposition(|s| matches!(s, Slot::Group { .. }) || matches!(s, Slot::EndGroup))
         else {
             return;
         };
         if !matches!(&self.slots[g], Slot::Group { bar: Some(_), .. }) {
-            return; // already printed (span had visible content) or dropped
+            return; // ungrouped, already printed, or already dropped
         }
         let span_end = self.slots[g + 1..]
             .iter()
-            .position(|s| matches!(s, Slot::Group { .. }))
+            .position(|s| matches!(s, Slot::Group { .. } | Slot::EndGroup))
             .map_or(self.slots.len(), |p| g + 1 + p);
         let settled = self.slots[g + 1..span_end].iter().all(|s| match s {
             Slot::Step { state, .. } => matches!(state, StepState::Resolved),
             Slot::Note { bar, .. } => bar.is_none(),
-            Slot::Group { .. } => true, // unreachable: span ends at next group
+            // Unreachable: the span ends at the next group/terminator.
+            Slot::Group { .. } | Slot::EndGroup => true,
         });
         if settled {
             self.drop_group_bar_at(g);
