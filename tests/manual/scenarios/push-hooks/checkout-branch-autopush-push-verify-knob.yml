@@ -1,0 +1,79 @@
+name: daft.checkout.pushVerify always/never override the ref-only skip
+description:
+  "pushVerify=always restores unconditional gating (a failing hook blocks even a
+  ref-only upstream push), and pushVerify=never suppresses the hook even when
+  the push carries new commits (#679)."
+
+repos:
+  - name: knob-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_KNOB_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/knob-repo/main"
+
+  - name: Enable the automatic upstream push
+    run: git config daft.checkout.push true
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: pushVerify=always gates even a ref-only push
+    run: |
+      git config daft.checkout.pushVerify always
+      git-worktree-checkout -b feat-always 2>&1
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-push hook"
+        - "ready at"
+      dirs_exist:
+        - "$WORK_DIR/knob-repo/feat-always"
+
+  - name: The always-gated branch never reached the remote
+    run: git ls-remote --heads origin feat-always
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["feat-always"]
+
+  - name: Commit locally on main so the next push carries new commits
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "local work" > local.txt
+      git add local.txt
+      git commit -m "Local work not on the remote"
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: pushVerify=never suppresses the hook even with new commits
+    run: |
+      git config daft.checkout.pushVerify never
+      git-worktree-checkout -b feat-never 2>&1
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["GATE SAYS NO"]
+      dirs_exist:
+        - "$WORK_DIR/knob-repo/feat-never"
+
+  - name: The never branch reached the remote
+    run: git ls-remote --heads origin feat-never
+    cwd: "$WORK_DIR/knob-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feat-never"]
