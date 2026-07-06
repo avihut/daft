@@ -218,14 +218,15 @@ impl TimelineCore {
         }
     }
 
-    /// The step began: persist everything above it, swap its bar to the
-    /// active spinner style.
+    /// The step began: swap its bar to the active spinner style. Groups and
+    /// notes above it stay live (their bars already render in plan order);
+    /// they persist when visible content below them prints — see
+    /// [`Self::flush_above`].
     pub(super) fn activate(&mut self, key: &StepKey) {
         let Some(idx) = self.step_index(key) else {
             return;
         };
         self.reconnect_after_block();
-        self.persist_preceding(idx);
         let use_color = self.use_color;
         let label_width = self.label_width;
         if let Slot::Step { spec, bar, state } = &mut self.slots[idx]
@@ -258,7 +259,14 @@ impl TimelineCore {
             return;
         };
         self.reconnect_after_block();
-        self.persist_preceding(idx);
+        let silent = matches!(resolution, Resolution::Silent);
+        if !silent {
+            // About to print a visible row: everything above it must be in
+            // scrollback first. A silent resolution prints nothing, so it
+            // must NOT flush — that is what lets a group whose rows all
+            // vanish keep its anchor unprinted.
+            self.flush_above(idx);
+        }
         self.clear_detail();
         let use_color = self.use_color;
         let label_width = self.label_width;
@@ -314,6 +322,12 @@ impl TimelineCore {
             }
         }
         *state = StepState::Resolved;
+        if silent {
+            // If this was the last unsettled row of a group whose rows all
+            // vanished, the anchor would sit over nothing for the rest of
+            // the run — drop it now rather than at teardown.
+            self.drop_group_if_span_settled(idx);
+        }
     }
 
     /// Patch a pending/active row's annotation in place.
@@ -381,7 +395,8 @@ impl TimelineCore {
     pub(super) fn begin_hook_embed(&mut self, key: &StepKey) -> Option<HookEmbed> {
         let idx = self.step_index(key)?;
         self.reconnect_after_block();
-        self.persist_preceding(idx);
+        // The block is visible content: flush notes and this span's anchor.
+        self.flush_above(idx);
         self.clear_detail();
         if let Slot::Step { bar, state, .. } = &mut self.slots[idx] {
             if let Some(taken) = bar.take() {
@@ -428,50 +443,69 @@ impl TimelineCore {
 
     /// Tear the region down. Remaining unresolved steps persist as `face`
     /// (dim not-reached on failure paths, silent on clean finishes where
-    /// everything already resolved); trailing groups/notes persist as-is;
-    /// then the closing spacer + footer.
+    /// everything already resolved); remaining notes persist as-is; a group
+    /// anchor that never printed persists only if this teardown prints
+    /// content into its span (an all-silent section leaves no trace); then
+    /// the closing spacer + footer.
     pub(super) fn finish(mut self, footer_text: &str, unresolved: UnresolvedPolicy) {
         // The closing spacer below doubles as the block reconnect.
         self.hook_block_open = false;
         self.clear_detail();
         let use_color = self.use_color;
         let label_width = self.label_width;
-        for slot in &mut self.slots {
-            match slot {
-                Slot::Group { label, bar } => {
-                    if let Some(taken) = bar.take() {
-                        self.mp.remove(&taken);
-                        self.mp.println(render::group(label, use_color)).ok();
+        let mut pending_group: Option<usize> = None;
+        for i in 0..self.slots.len() {
+            match &self.slots[i] {
+                Slot::Group { bar: Some(_), .. } => {
+                    if let Some(old) = pending_group.replace(i) {
+                        self.drop_group_bar_at(old); // span printed nothing
                     }
                 }
-                Slot::Note { text, bar } => {
-                    if let Some(taken) = bar.take() {
-                        self.mp.remove(&taken);
-                        self.mp.println(render::note(text, use_color)).ok();
+                Slot::Group { bar: None, .. } => {
+                    if let Some(old) = pending_group.take() {
+                        self.drop_group_bar_at(old); // span printed nothing
                     }
                 }
-                Slot::Step { spec, bar, state } => {
-                    if let Some(taken) = bar.take() {
-                        taken.disable_steady_tick();
-                        self.mp.remove(&taken);
-                        match unresolved {
-                            UnresolvedPolicy::NotReached => {
-                                self.mp
-                                    .println(render::final_row(
-                                        &RowFace::NotReached,
-                                        &display_label(spec, StepPhase::Pending),
-                                        None,
-                                        label_width,
-                                        use_color,
-                                    ))
-                                    .ok();
-                            }
-                            UnresolvedPolicy::Drop => {}
+                Slot::Note { bar: Some(_), .. } => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
+                    }
+                    self.print_note_at(i);
+                }
+                Slot::Note { bar: None, .. } => {}
+                Slot::Step { bar: Some(_), .. } => {
+                    if matches!(unresolved, UnresolvedPolicy::NotReached)
+                        && let Some(g) = pending_group.take()
+                    {
+                        self.print_group_at(g);
+                    }
+                    let Slot::Step { spec, bar, state } = &mut self.slots[i] else {
+                        unreachable!("matched Step above");
+                    };
+                    let taken = bar.take().expect("matched Some above");
+                    taken.disable_steady_tick();
+                    self.mp.remove(&taken);
+                    match unresolved {
+                        UnresolvedPolicy::NotReached => {
+                            self.mp
+                                .println(render::final_row(
+                                    &RowFace::NotReached,
+                                    &display_label(spec, StepPhase::Pending),
+                                    None,
+                                    label_width,
+                                    use_color,
+                                ))
+                                .ok();
                         }
-                        *state = StepState::Resolved;
+                        UnresolvedPolicy::Drop => {}
                     }
+                    *state = StepState::Resolved;
                 }
+                Slot::Step { bar: None, .. } => {}
             }
+        }
+        if let Some(g) = pending_group {
+            self.drop_group_bar_at(g); // span printed nothing
         }
         self.mp.remove(&self.bottom_spacer);
         self.mp.remove(&self.footer);
@@ -509,28 +543,91 @@ impl TimelineCore {
             .position(|s| matches!(s, Slot::Step { spec, .. } if spec.key == *key))
     }
 
-    /// Persist every not-yet-persisted group/note row above `idx` so the
-    /// row at `idx` is the topmost live rail bar.
-    fn persist_preceding(&mut self, idx: usize) {
-        let use_color = self.use_color;
-        for slot in &mut self.slots[..idx] {
-            match slot {
-                Slot::Group { label, bar } => {
-                    if let Some(taken) = bar.take() {
-                        self.mp.remove(&taken);
-                        self.mp.println(render::group(label, use_color)).ok();
-                        self.last_persisted_was_spacer = false;
+    /// Persist everything above `idx` that must land in scrollback before
+    /// the visible content about to print at `idx`: every unprinted note,
+    /// and — lazily — group anchors. An anchor prints only once content in
+    /// its span (the rows between it and the next group) prints, so a group
+    /// whose rows all resolve silently never shows its anchor (#651 shared
+    /// files). A group superseded before printing stays live and is dropped
+    /// when its span settles or at teardown.
+    fn flush_above(&mut self, idx: usize) {
+        let mut pending_group: Option<usize> = None;
+        for i in 0..idx {
+            match &self.slots[i] {
+                Slot::Group { bar: Some(_), .. } => pending_group = Some(i),
+                Slot::Note { bar: Some(_), .. } => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
                     }
+                    self.print_note_at(i);
                 }
-                Slot::Note { text, bar } => {
-                    if let Some(taken) = bar.take() {
-                        self.mp.remove(&taken);
-                        self.mp.println(render::note(text, use_color)).ok();
-                        self.last_persisted_was_spacer = false;
-                    }
-                }
-                Slot::Step { .. } => {}
+                _ => {}
             }
+        }
+        // The nearest group above `idx` anchors the content about to print.
+        if let Some(g) = pending_group {
+            self.print_group_at(g);
+        }
+    }
+
+    /// Persist the group anchor at slot `i` (no-op if already gone).
+    fn print_group_at(&mut self, i: usize) {
+        let use_color = self.use_color;
+        if let Slot::Group { label, bar } = &mut self.slots[i]
+            && let Some(taken) = bar.take()
+        {
+            self.mp.remove(&taken);
+            self.mp.println(render::group(label, use_color)).ok();
+            self.last_persisted_was_spacer = false;
+        }
+    }
+
+    /// Persist the note at slot `i` (no-op if already gone).
+    fn print_note_at(&mut self, i: usize) {
+        let use_color = self.use_color;
+        if let Slot::Note { text, bar } = &mut self.slots[i]
+            && let Some(taken) = bar.take()
+        {
+            self.mp.remove(&taken);
+            self.mp.println(render::note(text, use_color)).ok();
+            self.last_persisted_was_spacer = false;
+        }
+    }
+
+    /// Remove the group anchor at slot `i` without printing it.
+    fn drop_group_bar_at(&mut self, i: usize) {
+        if let Slot::Group { bar, .. } = &mut self.slots[i]
+            && let Some(taken) = bar.take()
+        {
+            self.mp.remove(&taken);
+        }
+    }
+
+    /// After a silent resolution at `idx`: if the group span containing
+    /// `idx` is now fully settled without ever printing content, drop its
+    /// unprinted anchor so it doesn't hang over nothing for the rest of the
+    /// run.
+    fn drop_group_if_span_settled(&mut self, idx: usize) {
+        let Some(g) = self.slots[..=idx]
+            .iter()
+            .rposition(|s| matches!(s, Slot::Group { .. }))
+        else {
+            return;
+        };
+        if !matches!(&self.slots[g], Slot::Group { bar: Some(_), .. }) {
+            return; // already printed (span had visible content) or dropped
+        }
+        let span_end = self.slots[g + 1..]
+            .iter()
+            .position(|s| matches!(s, Slot::Group { .. }))
+            .map_or(self.slots.len(), |p| g + 1 + p);
+        let settled = self.slots[g + 1..span_end].iter().all(|s| match s {
+            Slot::Step { state, .. } => matches!(state, StepState::Resolved),
+            Slot::Note { bar, .. } => bar.is_none(),
+            Slot::Group { .. } => true, // unreachable: span ends at next group
+        });
+        if settled {
+            self.drop_group_bar_at(g);
         }
     }
 

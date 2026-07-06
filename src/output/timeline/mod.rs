@@ -411,6 +411,77 @@ mod tests {
         assert!(!tl.region_live());
     }
 
+    fn grouped_plan() -> PlanCommit {
+        PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::CreateWorktree))),
+            Row::Group {
+                label: "shared files".into(),
+            },
+            Row::Step(StepSpec::new(StepKey::scoped(StageId::CheckOut, ".env"))),
+            Row::Step(StepSpec::new(StepKey::scoped(StageId::CheckOut, ".envrc"))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks))),
+        ])
+    }
+
+    #[test]
+    fn all_silent_group_span_drops_its_anchor_midrun() {
+        let mut tl = interactive();
+        tl.commit_plan(grouped_plan());
+        let wt = StepKey::new(StageId::CreateWorktree);
+        tl.on_stage(&wt, StageEvent::Started);
+        tl.on_stage(&wt, StageEvent::Completed { annotation: None });
+        // Both grouped rows vanish: the second silent resolution settles the
+        // span and must drop the never-printed anchor bar (not strand it).
+        tl.on_stage(
+            &StepKey::scoped(StageId::CheckOut, ".env"),
+            StageEvent::SkippedSilent,
+        );
+        tl.on_stage(
+            &StepKey::scoped(StageId::CheckOut, ".envrc"),
+            StageEvent::SkippedSilent,
+        );
+        let hooks = StepKey::new(StageId::PostCreateHooks);
+        tl.on_stage(&hooks, StageEvent::Started);
+        tl.on_stage(&hooks, StageEvent::Completed { annotation: None });
+        tl.finish("Ready in 0.1s");
+        assert!(!tl.region_live());
+    }
+
+    #[test]
+    fn group_span_with_visible_content_persists_through_finish() {
+        let mut tl = interactive();
+        tl.commit_plan(grouped_plan());
+        // One row completes (anchor must flush before it), one vanishes.
+        tl.on_stage(
+            &StepKey::scoped(StageId::CheckOut, ".env"),
+            StageEvent::Completed { annotation: None },
+        );
+        tl.on_stage(
+            &StepKey::scoped(StageId::CheckOut, ".envrc"),
+            StageEvent::SkippedSilent,
+        );
+        tl.finish("Ready in 0.1s");
+        assert!(!tl.region_live());
+    }
+
+    #[test]
+    fn abort_persists_group_over_not_reached_rows() {
+        let mut tl = interactive();
+        tl.commit_plan(grouped_plan());
+        let wt = StepKey::new(StageId::CreateWorktree);
+        tl.on_stage(&wt, StageEvent::Started);
+        tl.on_stage(
+            &wt,
+            StageEvent::Failed {
+                detail: "boom".into(),
+            },
+        );
+        // Teardown with unresolved grouped rows: NotReached policy flushes
+        // the anchor before printing its span's `(not run)` rows.
+        tl.abort("Failed after 0.1s");
+        assert!(!tl.region_live());
+    }
+
     #[test]
     fn hook_embed_hands_out_region_and_anchor_stays_live() {
         let mut tl = interactive();
