@@ -1,6 +1,8 @@
 use super::GitCommand;
 use super::oxide;
+use crate::utils::git_command_at;
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::process::Command;
 
 impl GitCommand {
@@ -207,6 +209,42 @@ impl GitCommand {
             .context("Failed to parse commit count as number")
     }
 
+    /// Count commits reachable from `rev` but absent from every tracking ref
+    /// of `remote` (`git rev-list --count <rev> --not --remotes=<remote>`).
+    ///
+    /// Zero means a push of `rev` to `remote` is ref-only: every commit it
+    /// would publish is already reachable from that remote's refs as of the
+    /// last fetch. Runs at an explicit `cwd` via [`git_command_at`] so the
+    /// answer comes from that worktree's repo even when daft itself runs
+    /// inside a git hook. Subprocess-only by design — the gitoxide backend
+    /// has no `--not --remotes` walk (same precedent as `merge_base` and
+    /// `commit_tree` below).
+    pub fn count_commits_not_on_remote(&self, rev: &str, remote: &str, cwd: &Path) -> Result<u64> {
+        let output = git_command_at(cwd)
+            .args([
+                "rev-list",
+                "--count",
+                rev,
+                "--not",
+                &format!("--remotes={remote}"),
+            ])
+            .output()
+            .context("Failed to execute git rev-list command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git rev-list failed: {}", stderr);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git rev-list output")?;
+
+        stdout
+            .trim()
+            .parse::<u64>()
+            .context("Failed to parse commit count as number")
+    }
+
     /// Check if `commit` is an ancestor of `target` using merge-base.
     pub fn merge_base_is_ancestor(&self, commit: &str, target: &str) -> Result<bool> {
         let output = Command::new("git")
@@ -289,5 +327,102 @@ impl GitCommand {
         }
 
         String::from_utf8(output.stdout).context("Failed to parse git cherry output")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::git::GitCommand;
+    use crate::utils::git_command_at;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to spawn git");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    /// Local bare remote + a one-commit clone on `main` with `origin` wired
+    /// up (mirrors the fixture private to `core::worktree::push::tests`).
+    fn repo_with_remote() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let remote = dir.path().join("remote.git");
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&remote).unwrap();
+        git_in(&remote, &["init", "--bare"]);
+        std::fs::create_dir_all(&work).unwrap();
+        git_in(&work, &["init", "-b", "main"]);
+        git_in(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(&work, &["commit", "-m", "init"]);
+        (dir, work)
+    }
+
+    #[test]
+    fn counts_zero_for_a_new_branch_at_a_pushed_tip() {
+        let (_dir, work) = repo_with_remote();
+        git_in(&work, &["push", "-u", "origin", "main"]);
+        git_in(&work, &["branch", "feat"]);
+
+        let count = GitCommand::new(false)
+            .count_commits_not_on_remote("refs/heads/feat", "origin", &work)
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn counts_local_commits_missing_from_the_remote() {
+        let (_dir, work) = repo_with_remote();
+        git_in(&work, &["push", "-u", "origin", "main"]);
+        std::fs::write(work.join("b.txt"), "b").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(&work, &["commit", "-m", "local work"]);
+
+        let count = GitCommand::new(false)
+            .count_commits_not_on_remote("refs/heads/main", "origin", &work)
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn counts_all_commits_when_the_remote_has_no_tracking_refs() {
+        let (_dir, work) = repo_with_remote();
+
+        let count = GitCommand::new(false)
+            .count_commits_not_on_remote("refs/heads/main", "origin", &work)
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn scopes_the_count_to_the_target_remote() {
+        let (_dir, work) = repo_with_remote();
+        git_in(&work, &["push", "-u", "origin", "main"]);
+        let second = work.parent().unwrap().join("second.git");
+        std::fs::create_dir_all(&second).unwrap();
+        git_in(&second, &["init", "--bare"]);
+        git_in(
+            &work,
+            &["remote", "add", "second", second.to_str().unwrap()],
+        );
+
+        let count = GitCommand::new(false)
+            .count_commits_not_on_remote("refs/heads/main", "second", &work)
+            .unwrap();
+        assert_eq!(count, 1, "commits on origin are still new to `second`");
     }
 }

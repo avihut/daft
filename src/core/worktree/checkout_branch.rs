@@ -4,6 +4,7 @@
 
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
+use crate::core::settings::PushVerify;
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
@@ -42,6 +43,8 @@ pub struct CheckoutBranchParams {
     pub checkout_push: bool,
     /// Skip the repo's pre-push hook on the upstream push (`--no-verify`).
     pub no_verify: bool,
+    /// When the upstream push runs the repo's pre-push hook (from settings).
+    pub push_verify: PushVerify,
     /// Whether to fetch from remote before creating the worktree.
     pub checkout_fetch: bool,
     /// Optional layout for computing the worktree path.
@@ -561,11 +564,15 @@ fn apply_stash(
 /// Push and set upstream tracking if the setting is enabled.
 ///
 /// Runs the push from the new worktree so the repo's `pre-push` hook fires
-/// in the branch being pushed.
+/// in the branch being pushed. Whether git dispatches the hook at all is
+/// resolved per `daft.checkout.pushVerify` (#679): under `auto`, a ref-only
+/// push — one introducing no commits absent from the target remote — has
+/// nothing for a content gate to validate and suppresses the hook.
 /// Returns `(push_set, push_skipped, gate_error)`. A push failure with the
 /// repo's pre-push hook in effect escalates via `gate_error` (the caller
-/// fails the command after finishing worktree setup, #599); hook-less or
-/// bypassed failures keep the legacy warn-and-continue behavior.
+/// fails the command after finishing worktree setup, #599); hook-less,
+/// bypassed, or hook-skipped failures keep the legacy warn-and-continue
+/// behavior (a gate that never ran cannot have refused the push).
 fn push_if_enabled(
     params: &CheckoutBranchParams,
     git: &GitCommand,
@@ -583,6 +590,49 @@ fn push_if_enabled(
         params.remote_name, params.new_branch_name
     ));
 
+    // Probe lazily: hook existence only when `auto` can act on it, and the
+    // unpushed-commit count only when a hook is actually present (with no
+    // hook, verify and skip are behaviorally identical). The probe uses the
+    // fully-qualified branch ref — a same-named tag would shadow the short
+    // name in rev-list's resolution.
+    let (hook_present, unpushed_count) = match params.push_verify {
+        PushVerify::Auto if !params.no_verify => {
+            let present = git.pre_push_hook_exists(worktree_path);
+            let count = if present {
+                match git.count_commits_not_on_remote(
+                    &format!("refs/heads/{}", params.new_branch_name),
+                    &params.remote_name,
+                    worktree_path,
+                ) {
+                    Ok(count) => Some(count),
+                    Err(e) => {
+                        crate::log_debug!("pre-push ref-only probe failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            (Some(present), count)
+        }
+        _ => (None, None),
+    };
+
+    let verify = match resolve_pre_push(
+        params.push_verify,
+        params.no_verify,
+        hook_present.unwrap_or(false),
+        unpushed_count,
+    ) {
+        PrePushDecision::Verify => true,
+        PrePushDecision::Skip(reason) => {
+            if let Some(reason) = reason {
+                sink.on_step(reason);
+            }
+            false
+        }
+    };
+
     let result = push_with_hooks(
         git,
         PushAction::SetUpstream {
@@ -590,10 +640,10 @@ fn push_if_enabled(
             branch: &params.new_branch_name,
         },
         worktree_path,
-        !params.no_verify,
+        verify,
         &NoopStageRunner,
         presenter,
-        None,
+        hook_present,
     );
 
     let failure = match result {
@@ -643,4 +693,108 @@ fn push_if_enabled(
         params.remote_name, params.new_branch_name
     ));
     (false, false, None)
+}
+
+/// Verdict on whether git should dispatch the repo's `pre-push` hook for the
+/// automatic upstream push (#679).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrePushDecision {
+    /// Let git run the hook.
+    Verify,
+    /// Suppress the hook; `Some(reason)` is reported as a progress step
+    /// (`None` for the explicit `--no-verify` flag, which stays silent as it
+    /// always has).
+    Skip(Option<&'static str>),
+}
+
+/// Pure decision core for [`push_if_enabled`]'s hook handling: the
+/// `--no-verify` flag wins unconditionally; otherwise `daft.checkout.pushVerify`
+/// rules, with `auto` skipping only a proven ref-only push (hook present and
+/// zero commits absent from the target remote). A failed probe
+/// (`unpushed_count = None`) falls back to verifying — the worst case must be
+/// an unnecessary hook run, never an unverified content push.
+fn resolve_pre_push(
+    setting: PushVerify,
+    no_verify_flag: bool,
+    hook_present: bool,
+    unpushed_count: Option<u64>,
+) -> PrePushDecision {
+    if no_verify_flag {
+        return PrePushDecision::Skip(None);
+    }
+    match setting {
+        PushVerify::Never => PrePushDecision::Skip(Some(
+            "Skipping pre-push hook (daft.checkout.pushVerify = never)",
+        )),
+        PushVerify::Always => PrePushDecision::Verify,
+        PushVerify::Auto => {
+            if hook_present && unpushed_count == Some(0) {
+                PrePushDecision::Skip(Some("Skipping pre-push hook (no new commits to push)"))
+            } else {
+                PrePushDecision::Verify
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PrePushDecision, resolve_pre_push};
+    use crate::core::settings::PushVerify;
+
+    #[test]
+    fn no_verify_flag_skips_silently_regardless_of_setting() {
+        for setting in [PushVerify::Auto, PushVerify::Always, PushVerify::Never] {
+            assert_eq!(
+                resolve_pre_push(setting, true, true, Some(5)),
+                PrePushDecision::Skip(None)
+            );
+        }
+    }
+
+    #[test]
+    fn never_skips_with_a_reason_even_when_the_push_carries_commits() {
+        let decision = resolve_pre_push(PushVerify::Never, false, true, Some(3));
+        assert!(matches!(decision, PrePushDecision::Skip(Some(_))));
+    }
+
+    #[test]
+    fn always_verifies_even_for_ref_only_pushes() {
+        assert_eq!(
+            resolve_pre_push(PushVerify::Always, false, true, Some(0)),
+            PrePushDecision::Verify
+        );
+    }
+
+    #[test]
+    fn auto_skips_a_ref_only_push_when_a_hook_is_present() {
+        let decision = resolve_pre_push(PushVerify::Auto, false, true, Some(0));
+        assert!(matches!(decision, PrePushDecision::Skip(Some(_))));
+    }
+
+    #[test]
+    fn auto_verifies_when_the_push_carries_new_commits() {
+        assert_eq!(
+            resolve_pre_push(PushVerify::Auto, false, true, Some(2)),
+            PrePushDecision::Verify
+        );
+    }
+
+    #[test]
+    fn auto_verifies_when_the_probe_fails() {
+        assert_eq!(
+            resolve_pre_push(PushVerify::Auto, false, true, None),
+            PrePushDecision::Verify
+        );
+    }
+
+    #[test]
+    fn auto_without_a_hook_verifies_trivially() {
+        // The wiring never probes the count without a hook, but the pure fn
+        // must not skip on hook-less inputs either.
+        assert_eq!(
+            resolve_pre_push(PushVerify::Auto, false, false, Some(0)),
+            PrePushDecision::Verify
+        );
+    }
 }

@@ -12,6 +12,7 @@
 //! | `daft.checkout.push` | `false` | Push new branches to remote |
 //! | `daft.checkout.fetch` | `false` | Fetch from remote before creating worktrees |
 //! | `daft.checkout.upstream` | `true` | Set upstream tracking |
+//! | `daft.checkout.pushVerify` | `auto` | When the auto-upstream push runs the repo's pre-push hook (`auto`, `always` or `never`) |
 //! | `daft.remote` | `"origin"` | Default remote name |
 //! | `daft.checkoutBranch.carry` | `true` | Default carry for checkout-branch |
 //! | `daft.checkout.carry` | `false` | Default carry for checkout |
@@ -81,9 +82,33 @@ impl PruneCdTarget {
     }
 }
 
+/// When the automatic upstream push consults the repo's `pre-push` hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushVerify {
+    /// Run the hook only when the push introduces commits the target remote
+    /// does not already have; skip it for ref-only pushes (#679).
+    Auto,
+    /// Always run the hook, even for ref-only pushes.
+    Always,
+    /// Never run the hook on the automatic upstream push.
+    Never,
+}
+
+impl PushVerify {
+    /// Parse a string value into a PushVerify.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
 /// Default values for settings.
 pub mod defaults {
-    use super::PruneCdTarget;
+    use super::{PruneCdTarget, PushVerify};
     use crate::core::worktree::list::Stat;
 
     /// Default value for autocd setting.
@@ -97,6 +122,9 @@ pub mod defaults {
 
     /// Default value for checkout.upstream setting.
     pub const CHECKOUT_UPSTREAM: bool = true;
+
+    /// Default value for checkout.pushVerify setting.
+    pub const CHECKOUT_PUSH_VERIFY: PushVerify = PushVerify::Auto;
 
     /// Default value for remote setting.
     pub const REMOTE: &str = "origin";
@@ -185,6 +213,9 @@ pub mod keys {
 
     /// Config key for checkout.upstream setting.
     pub const CHECKOUT_UPSTREAM: &str = "daft.checkout.upstream";
+
+    /// Config key for checkout.pushVerify setting.
+    pub const CHECKOUT_PUSH_VERIFY: &str = "daft.checkout.pushVerify";
 
     /// Config key for remote setting.
     pub const REMOTE: &str = "daft.remote";
@@ -359,6 +390,9 @@ pub struct DaftSettings {
     /// Set upstream tracking for branches.
     pub checkout_upstream: bool,
 
+    /// When the automatic upstream push runs the repo's pre-push hook.
+    pub checkout_push_verify: PushVerify,
+
     /// Default remote name for operations.
     pub remote: String,
 
@@ -476,6 +510,7 @@ impl Default for DaftSettings {
             checkout_push: defaults::CHECKOUT_PUSH,
             checkout_fetch: defaults::CHECKOUT_FETCH,
             checkout_upstream: defaults::CHECKOUT_UPSTREAM,
+            checkout_push_verify: defaults::CHECKOUT_PUSH_VERIFY,
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
@@ -545,6 +580,19 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::CHECKOUT_UPSTREAM)? {
             settings.checkout_upstream = parse_bool(&value, defaults::CHECKOUT_UPSTREAM);
+        }
+
+        if let Some(value) = git.config_get(keys::CHECKOUT_PUSH_VERIFY)?
+            && !value.is_empty()
+        {
+            match PushVerify::parse(&value) {
+                Some(verify) => settings.checkout_push_verify = verify,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::CHECKOUT_PUSH_VERIFY,
+                    value
+                ),
+            }
         }
 
         if let Some(value) = git.config_get(keys::REMOTE)?
@@ -697,6 +745,19 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::CHECKOUT_UPSTREAM)? {
             settings.checkout_upstream = parse_bool(&value, defaults::CHECKOUT_UPSTREAM);
+        }
+
+        if let Some(value) = git.config_get_global(keys::CHECKOUT_PUSH_VERIFY)?
+            && !value.is_empty()
+        {
+            match PushVerify::parse(&value) {
+                Some(verify) => settings.checkout_push_verify = verify,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::CHECKOUT_PUSH_VERIFY,
+                    value
+                ),
+            }
         }
 
         if let Some(value) = git.config_get_global(keys::REMOTE)?

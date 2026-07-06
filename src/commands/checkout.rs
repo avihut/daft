@@ -16,7 +16,7 @@ use crate::{
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
-    settings::DaftSettings,
+    settings::{DaftSettings, PushVerify},
     utils::*,
 };
 use anyhow::Result;
@@ -273,7 +273,10 @@ using the branch name as the directory name.
 
 The new branch is based on the current branch, or on `<base-branch>` if
 specified. After creating the branch locally, it is pushed to the remote and
-upstream tracking is configured (unless disabled via daft.checkoutBranch.push).
+upstream tracking is configured (unless disabled via daft.checkout.push). The
+repo's pre-push hook runs only when that push introduces new commits; a
+ref-only push of already-pushed commits skips it (configurable via
+daft.checkout.pushVerify: auto, always, or never).
 
 This command can be run from anywhere within the repository.
 
@@ -849,6 +852,7 @@ fn run_create_branch(
             settings.checkout_push
         },
         no_verify: args.no_verify,
+        push_verify: settings.checkout_push_verify,
         checkout_fetch: if args.local {
             false
         } else {
@@ -869,12 +873,17 @@ fn run_create_branch(
     }
 
     // The pre-push hook run on the auto-upstream push renders phase/job
-    // output through this presenter — keep the spinner off when it will
-    // fire so the two don't fight over the terminal (#599).
-    let push_hook_will_render =
-        params.checkout_push && !params.no_verify && git.pre_push_hook_exists(&project_root);
+    // output through this presenter — keep the spinner off when it MAY
+    // fire so the two don't fight over the terminal (#599). This is a
+    // conservative upper bound: whether the hook actually runs is decided
+    // in core (push_if_enabled), where the post-fetch ref-only probe lives
+    // (#679) — a skipped hook simply never fires the presenter.
+    let push_hook_may_render = params.checkout_push
+        && !params.no_verify
+        && params.push_verify != PushVerify::Never
+        && git.pre_push_hook_exists(&project_root);
     let push_presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
-        if push_hook_will_render {
+        if push_hook_may_render {
             let p: Arc<dyn crate::executor::presenter::JobPresenter> =
                 crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config);
             Some(p)
@@ -882,7 +891,7 @@ fn run_create_branch(
             None
         };
 
-    if !push_hook_will_render {
+    if !push_hook_may_render {
         output.start_spinner("Creating worktree...");
     }
     let checkout_result = {
@@ -895,7 +904,7 @@ fn run_create_branch(
             &mut bridge,
         )
     };
-    if !push_hook_will_render {
+    if !push_hook_may_render {
         output.finish_spinner();
     }
     let result = checkout_result?;
