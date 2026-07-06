@@ -238,6 +238,12 @@ pub fn run() -> Result<()> {
         let flag = Arc::clone(&cancel);
         let render = Arc::clone(&cancel_render);
         let _ = ctrlc::set_handler(move || {
+            // Owning the process-global ctrlc slot means the prune
+            // confirmation prompt's own handler never registered; a
+            // prompt parked in term.read_key() cannot observe the flag,
+            // so honor its cancel contract (message + exit 130) here —
+            // otherwise a SIGTERM mid-prompt hangs until a keypress.
+            crate::prompt::exit_if_prompt_active();
             flag.escalate();
             render.store(true, std::sync::atomic::Ordering::Relaxed);
         });
@@ -1521,22 +1527,23 @@ fn execute_local_branch_update(
     branch_name: &str,
     git_dir: &std::path::Path,
 ) -> (TaskStatus, TaskMessage) {
-    use std::process::Command;
+    use crate::utils::git_command_at;
 
     let upstream = format!("{branch_name}@{{upstream}}");
 
     // Check if the branch can be fast-forwarded to its upstream.
-    let is_ancestor = Command::new("git")
+    // git_command_at (not a raw `git` + current_dir) so an inherited
+    // GIT_DIR can't retarget these to the hook-calling repo when sync
+    // itself runs inside a git hook.
+    let is_ancestor = git_command_at(git_dir)
         .args(["merge-base", "--is-ancestor", branch_name, &upstream])
-        .current_dir(git_dir)
         .output();
 
     match is_ancestor {
         Ok(output) if output.status.success() => {
             // Can fast-forward — move the branch pointer.
-            let ff = Command::new("git")
+            let ff = git_command_at(git_dir)
                 .args(["branch", "-f", branch_name, &upstream])
-                .current_dir(git_dir)
                 .output();
 
             match ff {
@@ -1560,9 +1567,8 @@ fn execute_local_branch_update(
         Ok(output) => {
             // Check if already up-to-date (upstream is ancestor of branch,
             // i.e. branch is at or ahead of upstream).
-            let reverse = Command::new("git")
+            let reverse = git_command_at(git_dir)
                 .args(["merge-base", "--is-ancestor", &upstream, branch_name])
-                .current_dir(git_dir)
                 .output();
 
             match reverse {

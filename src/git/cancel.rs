@@ -70,10 +70,26 @@ const TICK: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const CASCADE_EVERY: Duration = Duration::from_millis(500);
 /// How often the direct child's job-control state is probed.
+///
+/// Each probe forks one `ps -o stat= -p <pid>`; with N supervised
+/// children that is at most 2N short-lived processes per second, and
+/// only while a child is running with no cancel in flight (the probe
+/// is skipped once a teardown starts, where a `T` state is expected
+/// from the queued TERM). Fine at sync's typical worktree counts; a
+/// shared snapshot would be the lever if N ever grows painful.
 #[cfg(unix)]
 const STOP_PROBE_EVERY: Duration = Duration::from_millis(500);
 /// Consecutive stopped probes required before declaring a tty-stop, so a
 /// transient stop/resume can't misfire the teardown.
+///
+/// Two probes at 500ms means a child must sit stopped for a full
+/// second — a real tty-auth stop is indefinite, while SIGSTOP/SIGCONT
+/// blips (debuggers, `kill -STOP` probes) resume in between and reset
+/// the streak. The residual race is accepted: a child that stops for
+/// both probes, resumes, and exits successfully before the SIGKILL
+/// lands still reports StoppedOnTty — with these constants that takes
+/// deliberate signal choreography, not anything git or a hook does on
+/// its own.
 #[cfg(unix)]
 const STOP_STREAK: u8 = 2;
 
