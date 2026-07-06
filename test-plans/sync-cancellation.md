@@ -56,5 +56,12 @@ shape) and create an unpushed commit so the hook actually fires.
 - [ ] An interactive daft prompt (e.g. `daft repo remove` confirmation) killed
       with SIGTERM exits 130, not 0
 - [ ] `daft checkout-branch` autopush with a failing/slow pre-push hook:
-      behavior unchanged apart from group isolation (Ctrl+C kills daft; the
-      isolated push child exits on its own)
+      behavior fully unchanged — the push runs in daft's foreground group (no
+      cancel flag, no isolation), so Ctrl+C kills daft and the push subtree
+      together, and terminal auth prompts still appear
+- [ ] `daft exec` in a repo with shell aliases, from a real terminal: aliases
+      expand and there is no ~10s stall on first run (capture must not job-stop
+      fighting for the tty; `daft __capture-aliases` session detach)
+- [ ] `mise run test:unit` from a real interactive terminal passes — the capture
+      tests only exercise the tty arm when a controlling terminal exists (CI and
+      piped runs can't reproduce it)
