@@ -248,12 +248,11 @@ pub fn run_live(args: Args) -> Result<()> {
 }
 
 /// Fields the streaming collector must populate for this view: what the
-/// selected columns render plus what the sort inspects, with the `*_LINES`
-/// variants added in `--stat lines` mode (the renderer and `SortKey::compare`
-/// read those then; the summary bits stay in the set because the loading
-/// shimmer keys off them). The collector request routes through here so it
-/// can't drift back to `FieldSet::ALL`, whose hidden SIZE walk kept the
-/// renderer alive for seconds after the table was fully drawn (#665).
+/// selected columns render plus what the sort inspects
+/// (`SortSpec::required_fields`, itself `--stat`-aware). The collector
+/// request routes through here so it can't drift back to `FieldSet::ALL`,
+/// whose hidden SIZE walk kept the renderer alive for seconds after the
+/// table was fully drawn (#665).
 fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: Stat) -> FieldSet {
     let mut fields = FieldSet::EMPTY;
     for column in columns {
@@ -273,6 +272,10 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
         fields |= spec.required_fields();
     }
     if stat == Stat::Lines {
+        // Rendered diff columns display line counts in lines mode, so their
+        // `*_LINES` variants must be collected even without a matching sort
+        // key (sort keys arrive pre-upgraded from `required_fields`). The
+        // summary bits stay in the set — the loading shimmer keys off them.
         if fields.contains(FieldSet::BASE_AHEAD_BEHIND) {
             fields |= FieldSet::BASE_LINES;
         }
