@@ -16,7 +16,9 @@ rail persists in your scrollback as a receipt.
 ```
 ┌  Starting daft-652/cool-feature ← main
 │
-✓  Created branch
+✓  Fetched remote     origin  (1.1s)
+✓  Set up tracking
+✓  Created branch     ← origin/main
 ✓  Checked out branch
 ✓  Created worktree   ../daft-652/cool-feature
 ✓  Pushed             → origin/daft-652/cool-feature  (1.8s)
@@ -45,6 +47,13 @@ rail persists in your scrollback as a receipt.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration.
+- With `daft.checkout.fetch` on, the remote fetch is planned work: `daft start`
+  opens its rail with the `Fetch remote` and `Set up tracking` rows instead of
+  running them as a spinner before it. A failed fetch turns its row yellow
+  (`↓ Fetch remote  failed — continuing with local refs`) and the command
+  proceeds on local refs. The header names the requested base; when the fetch
+  reveals a fresher remote ref, the `Created branch` row carries the resolved
+  provenance (`← origin/main`).
 - The rail lists only work that happens. A step known to be off at planning time
   (push with `daft.checkout.push` off or `--local`) plans no row, and a step
   that resolves as a no-op (carry with a clean tree) removes its row — the

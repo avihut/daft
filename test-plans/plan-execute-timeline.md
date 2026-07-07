@@ -13,7 +13,16 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 
 - [ ] `daft start <name>`: full plan appears at once (pending rows dim), steps
       fill in place top-to-bottom, footer `└ Ready in <t>` persists
-- [ ] Header shows the resolved base: `┌ Starting <name> ← <base>`
+- [ ] Header shows the requested base immediately: `┌ Starting <name> ← <base>`;
+      when the fetch resolves a fresher remote ref, the branch row carries it —
+      `✓ Created branch  ← origin/<base>`
+- [ ] Remote sync on (`daft.checkout.fetch`): the rail appears immediately,
+      opening with `Fetch remote  <remote>` then `Set up tracking` rows — no
+      spinners before the rail
+- [ ] Fetch with remote unreachable: yellow
+      `↓ Fetch remote  failed — continuing with local refs` (and the same for
+      `Set up tracking`), warning above the rail, worktree still created
+- [ ] Fetch off (default config or `--local`): no fetch rows at all
 - [ ] Push off (default) or `--local`: no push row at all — the plan lists only
       steps that will run
 - [ ] With a remote + `daft.checkout.push=true`: `✓ Pushed  → origin/<name>`

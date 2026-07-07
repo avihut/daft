@@ -309,7 +309,9 @@ impl TimelineCore {
                     FinalFace::SkippedAttention => RowFace::SkippedAttention,
                 };
                 let phase = match face {
-                    RowFace::Failed => StepPhase::Pending,
+                    // The fact never happened — the label stays imperative
+                    // (`↓ Fetch remote  failed — …`, never `↓ Fetched …`).
+                    RowFace::Failed | RowFace::SkippedAttention => StepPhase::Pending,
                     RowFace::SkippedExpected => StepPhase::Skipped,
                     _ => StepPhase::Done,
                 };

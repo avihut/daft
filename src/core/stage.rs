@@ -7,9 +7,12 @@
 //! lifecycle so that core logic stays UI-agnostic (the same rule that keeps
 //! `ProgressSink` free of `Output`).
 //!
-//! A core emits `ProgressSink::on_plan` exactly once — at its *commit point*,
-//! after all resolution/validation (and therefore after every interactive
-//! prompt) and immediately before the first mutation. Early-return paths that
+//! A core emits `ProgressSink::on_plan` exactly once — at its *commit point*:
+//! every row of the plan is known, every interactive prompt has fired, and
+//! only planned work remains. Long-running resolve work may itself be planned
+//! — checkout's remote fetch runs as the rail's first rows rather than as a
+//! spinner before it — and facts that resolve mid-plan (the branch's resolved
+//! base) reach their rows via [`StageEvent::Note`]. Early-return paths that
 //! bail before the commit point never render a timeline at all.
 
 use std::time::Duration;
@@ -24,6 +27,10 @@ pub enum StageId {
     // ── Creation (go / start) ────────────────────────────────────────────
     /// Fetch from the remote before resolving branches (`daft.checkout.fetch`).
     Fetch,
+    /// Ensure remote-tracking refs exist for every remote branch (the
+    /// `+refs/heads/*:refs/remotes/<remote>/*` fetch that follows the
+    /// general one). Planned right after [`StageId::Fetch`].
+    Tracking,
     /// Carry uncommitted changes into the new worktree (stash + apply).
     Carry,
     /// `worktree-pre-create` hooks.
@@ -61,8 +68,6 @@ pub enum StageId {
     CloneBare,
     /// Create the initial worktree for the default (or requested) branch.
     CreateBaseWorktree,
-    /// Fetch remote tracking branches / set upstream after checkout.
-    Tracking,
     /// `post-clone` hooks.
     PostCloneHooks,
     /// `daft install` requested via `--install`.

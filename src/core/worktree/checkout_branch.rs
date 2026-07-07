@@ -120,19 +120,23 @@ pub fn execute(
         )
     };
 
-    // Fetch latest changes
-    if params.checkout_fetch {
-        fetch_remote(git, &params.remote_name, sink);
-    }
-
-    // Determine the best checkout base (three-way branch selection)
-    let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;
-
-    // Commit the execution plan (#651): base and path are resolved, mutation
-    // is about to begin. The plan lists only steps that will actually be
-    // attempted — a push known to be off (config or --local) plans no row.
+    // Commit the execution plan (#651): the requested base and the worktree
+    // path are resolved, and everything left to do is planned work — the
+    // remote fetch included, so the rail appears before the network
+    // round-trips instead of hiding them behind a spinner. The plan lists
+    // only steps that will actually be attempted — a push or fetch known to
+    // be off (config or --local) plans no row. The header carries the
+    // requested base; when the three-way selection lands on a different ref
+    // (`origin/<base>` was fresher), the branch row picks it up via `Note`.
     let should_carry = params.carry || (!params.no_carry && params.checkout_branch_carry);
-    let mut plan_rows = vec![
+    let mut plan_rows = Vec::new();
+    if params.checkout_fetch {
+        plan_rows.push(Row::Step(
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone()),
+        ));
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Tracking))));
+    }
+    plan_rows.extend([
         Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
         Row::Step(StepSpec::new(StepKey::new(StageId::CreateBranch))),
         Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
@@ -140,7 +144,7 @@ pub fn execute(
             StepSpec::new(StepKey::new(StageId::CreateWorktree))
                 .with_annotation(super::branch_delete::display_path(&worktree_path)),
         ),
-    ];
+    ]);
     if should_carry {
         plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
     }
@@ -164,8 +168,24 @@ pub fn execute(
         StageId::PostCreateHooks,
     ))));
     sink.on_plan(
-        PlanCommit::new(plan_rows).with_header_annotation(format!("\u{2190} {checkout_base}")),
+        PlanCommit::new(plan_rows).with_header_annotation(format!("\u{2190} {base_branch}")),
     );
+
+    // Fetch latest changes (planned above; failures warn and continue)
+    if params.checkout_fetch {
+        fetch_remote(git, &params.remote_name, sink);
+    }
+
+    // Determine the best checkout base (three-way branch selection). The
+    // header already names the requested base; record the resolved ref on
+    // the branch row only when the selection differs.
+    let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;
+    if checkout_base != base_branch {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateBranch),
+            StageEvent::Note(format!("\u{2190} {checkout_base}")),
+        );
+    }
 
     // Stash uncommitted changes if carry is enabled
     let (stash_created, carry_source) = stash_if_carry(params, git, &base_branch, sink)?;
@@ -461,20 +481,53 @@ pub(crate) fn resolve_source_worktree(
 }
 
 /// Fetch latest changes from the remote.
+///
+/// Both fetches are planned rail rows (`Fetch`, then `Tracking`). Failures
+/// are non-fatal by design — the command continues on local refs — so a
+/// failed fetch resolves its row as a yellow attention skip and the full
+/// error lands above the rail as a warning.
 fn fetch_remote(git: &GitCommand, remote_name: &str, sink: &mut impl ProgressSink) {
+    const FETCH_FAILED: &str = "failed \u{2014} continuing with local refs";
+
+    sink.on_stage(&StepKey::new(StageId::Fetch), StageEvent::Started);
     sink.on_step(&format!(
         "Fetching latest changes from remote '{remote_name}'..."
     ));
-    if let Err(e) = git.fetch(remote_name, false) {
-        sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+    match git.fetch(remote_name, false) {
+        Ok(()) => sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::Completed { annotation: None },
+        ),
+        Err(e) => {
+            sink.on_stage(
+                &StepKey::new(StageId::Fetch),
+                StageEvent::SkippedAttention {
+                    reason: FETCH_FAILED.to_string(),
+                },
+            );
+            sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+        }
     }
 
+    sink.on_stage(&StepKey::new(StageId::Tracking), StageEvent::Started);
     sink.on_step("Setting up remote tracking branches...");
-    if let Err(e) = git.fetch_refspec(
+    match git.fetch_refspec(
         remote_name,
         &format!("+refs/heads/*:refs/remotes/{remote_name}/*"),
     ) {
-        sink.on_warning(&format!("Failed to set up remote tracking branches: {e}"));
+        Ok(()) => sink.on_stage(
+            &StepKey::new(StageId::Tracking),
+            StageEvent::Completed { annotation: None },
+        ),
+        Err(e) => {
+            sink.on_stage(
+                &StepKey::new(StageId::Tracking),
+                StageEvent::SkippedAttention {
+                    reason: FETCH_FAILED.to_string(),
+                },
+            );
+            sink.on_warning(&format!("Failed to set up remote tracking branches: {e}"));
+        }
     }
 }
 
@@ -1166,8 +1219,8 @@ mod timeline_tests {
         }
     }
 
-    /// The plan commits after base resolution with the locked row set, the
-    /// header carries the base annotation, and events narrate the cosmetic
+    /// The plan commits with the locked row set, the header carries the
+    /// requested base, and events narrate the cosmetic
     /// branch/checkout/worktree split plus the expected push skip (#651).
     #[test]
     #[serial]
@@ -1250,6 +1303,101 @@ mod timeline_tests {
                 crate::hooks::HookType::PreCreate,
                 crate::hooks::HookType::PostCreate
             ]
+        );
+    }
+
+    /// With `daft.checkout.fetch` on, the fetch is planned work: the rail
+    /// opens with `Fetch` + `Tracking` rows (no pre-rail spinner), the header
+    /// names the requested base, and the resolved base reaches the branch row
+    /// via `Note` when the three-way selection picks a different ref. Fetch
+    /// failures are non-fatal: the rows resolve as attention skips and the
+    /// worktree is still created.
+    #[test]
+    #[serial]
+    fn fetch_rows_planned_first_and_resolved_base_noted_on_branch_row() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        // Fake a remote-tracking ref at HEAD: the three-way selection sees
+        // local and remote in sync and picks `origin/main`. No `origin`
+        // remote is configured, so both fetches fail (non-fatally).
+        git(
+            tmp.path(),
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            checkout_fetch: true,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(&params, &git_cmd, tmp.path(), None, &mut sink)
+            .expect("fetch failure is non-fatal");
+        assert!(worktree_path.exists());
+        // The result reports the resolved base — the selection picked the
+        // remote-tracking ref.
+        assert_eq!(result.base_branch, "origin/main");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            plan.header_annotation.as_deref(),
+            Some("\u{2190} main"),
+            "header names the requested base, known before the fetch"
+        );
+        let specs: Vec<_> = plan.steps().collect();
+        assert_eq!(specs[0].key.id, StageId::Fetch);
+        assert_eq!(
+            specs[0].annotation.as_deref(),
+            Some("origin"),
+            "fetch row names the remote"
+        );
+        assert_eq!(specs[1].key.id, StageId::Tracking);
+        assert_eq!(specs[2].key.id, StageId::PreCreateHooks);
+
+        // Both fetch rows started and resolved as attention skips.
+        for id in [StageId::Fetch, StageId::Tracking] {
+            let events: Vec<_> = sink
+                .events
+                .iter()
+                .filter(|(k, _)| k.id == id)
+                .map(|(_, e)| e.clone())
+                .collect();
+            assert_eq!(events[0], StageEvent::Started, "{id:?}");
+            assert!(
+                matches!(
+                    &events[1],
+                    StageEvent::SkippedAttention { reason }
+                        if reason.contains("continuing with local refs")
+                ),
+                "{id:?} resolves as attention skip, got {events:?}"
+            );
+        }
+
+        // The selection picked the remote ref; the branch row records it.
+        assert!(
+            sink.events
+                .iter()
+                .any(|(k, e)| k.id == StageId::CreateBranch
+                    && *e == StageEvent::Note("\u{2190} origin/main".to_string())),
+            "resolved base noted on the branch row: {:?}",
+            sink.events
         );
     }
 

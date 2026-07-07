@@ -24,6 +24,8 @@ use std::time::Duration;
 
 fn plan() -> PlanCommit {
     let mut rows = vec![
+        Row::Step(StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation("origin")),
+        Row::Step(StepSpec::new(StepKey::new(StageId::Tracking))),
         Row::Step(StepSpec::new(StepKey::new(StageId::CreateBranch))),
         Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
         Row::Step(
@@ -97,6 +99,14 @@ fn main() {
     tl.commit_plan(plan());
     sleep(Duration::from_millis(900));
 
+    run_step(&mut tl, StageId::Fetch, 700, None);
+    run_step(&mut tl, StageId::Tracking, 250, None);
+    // The three-way base selection resolved mid-plan; the branch row
+    // records the ref it picked.
+    tl.on_stage(
+        &StepKey::new(StageId::CreateBranch),
+        StageEvent::Note("\u{2190} origin/master".into()),
+    );
     run_step(&mut tl, StageId::CreateBranch, 400, None);
     run_step(&mut tl, StageId::CheckOut, 300, None);
 

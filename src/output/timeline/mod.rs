@@ -232,12 +232,14 @@ impl Timeline {
                 },
             ),
             StageEvent::SkippedAttention { reason } => {
-                // Shared-file reasons are self-contained sentences (missing,
-                // conflict, error) — the generic prefix would stutter.
-                let annotation = if key.id == crate::core::stage::StageId::SharedFile {
-                    reason
-                } else {
-                    format!("skipped \u{2014} {reason}")
+                // Shared-file and fetch reasons are self-contained phrases
+                // (missing, conflict, "failed — …") — the generic prefix
+                // would stutter.
+                let annotation = match key.id {
+                    crate::core::stage::StageId::SharedFile
+                    | crate::core::stage::StageId::Fetch
+                    | crate::core::stage::StageId::Tracking => reason,
+                    _ => format!("skipped \u{2014} {reason}"),
                 };
                 core.resolve(
                     key,
