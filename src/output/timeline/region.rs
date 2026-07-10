@@ -19,7 +19,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
 
 /// House braille spinner frames (same set as the hook job spinners).
-const TICK_CHARS: &str =
+pub(super) const TICK_CHARS: &str =
     "\u{2807}\u{2819}\u{2839}\u{2838}\u{283c}\u{2834}\u{2826}\u{2827}\u{2807}\u{280f}";
 
 /// What an embedded hook renderer needs to draw inside the region.

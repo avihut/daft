@@ -18,11 +18,13 @@
 
 mod bridge;
 mod plan;
+mod rail_hook;
 mod region;
 mod render;
 
 pub use bridge::RegionOutput;
 pub use bridge::{error_line, warning_line};
+pub use rail_hook::RailHookRenderer;
 pub use region::HookEmbed;
 
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};

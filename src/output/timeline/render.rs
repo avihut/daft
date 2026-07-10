@@ -8,7 +8,7 @@
 //! combined with a color on the same span.
 
 use crate::output::hook_progress::format_duration;
-use crate::output::palette::{DARK_GREY, GREY, YELLOW};
+use crate::output::palette::{BLUE, DARK_GREY, GREY, YELLOW};
 use crate::styles;
 use std::time::Duration;
 
@@ -24,12 +24,15 @@ pub(super) enum RowFace {
     SkippedAttention,
     /// `○` dark grey — never reached because an earlier step failed.
     NotReached,
+    /// `↻` blue — handed to the background coordinator (hook jobs); renders
+    /// a fixed dim `background` annotation.
+    Background,
 }
 
 /// Minimum duration worth printing on a row.
-const DURATION_THRESHOLD: Duration = Duration::from_secs(1);
+pub(super) const DURATION_THRESHOLD: Duration = Duration::from_secs(1);
 
-fn paint(code: &str, text: &str, use_color: bool) -> String {
+pub(super) fn paint(code: &str, text: &str, use_color: bool) -> String {
     if use_color {
         format!("{code}{text}{}", styles::RESET)
     } else {
@@ -126,6 +129,15 @@ pub(super) fn final_row(
             let body = row_body(label, Some("(not run)"), label_width);
             paint(DARK_GREY, &format!("\u{25cb}  {body}"), use_color)
         }
+        RowFace::Background => {
+            let glyph = paint(BLUE, "\u{21bb}", use_color);
+            let body = row_body(
+                label,
+                Some(&paint(DARK_GREY, "background", use_color)),
+                label_width,
+            );
+            format!("{glyph}  {body}")
+        }
     }
 }
 
@@ -194,6 +206,20 @@ mod tests {
     fn group_anchor_edges_off_the_rail() {
         let line = group("post-create hooks", false);
         assert_eq!(line, "\u{251c}  post-create hooks");
+    }
+
+    #[test]
+    fn background_row_carries_fixed_annotation() {
+        let line = final_row(&RowFace::Background, "check-todos", None, 11, false);
+        assert_eq!(line, "\u{21bb}  check-todos  background");
+    }
+
+    #[test]
+    fn background_row_colors_glyph_blue_and_annotation_dim() {
+        let line = final_row(&RowFace::Background, "check-todos", None, 11, true);
+        assert!(line.starts_with(BLUE), "got: {line}");
+        assert!(line.contains(DARK_GREY), "got: {line}");
+        assert!(!line.contains(styles::GREEN), "got: {line}");
     }
 
     #[test]
