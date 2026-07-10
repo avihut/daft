@@ -711,13 +711,37 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd install remove
+            compadd add info install list remove
             return
         fi
         case "$words[3]" in
+            add)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --name -q --quiet -v --verbose -h --help
+                    return
+                fi
+                _files -/
+                return
+                ;;
+            info)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --format --template --no-headers -h --help
+                    return
+                fi
+                local -a repos
+                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                (( ${#repos} )) && compadd -- "${repos[@]}"
+                return
+                ;;
             install)
                 if [[ "$curword" == -* ]]; then
                     compadd -- -q --quiet -v --verbose --git-exclude -h --help
+                fi
+                return
+                ;;
+            list)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -a --all --format --template --no-headers -q --quiet -h --help
                 fi
                 return
                 ;;

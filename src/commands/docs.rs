@@ -134,8 +134,20 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
+                    display_name: "repo add",
+                    command: repo::add::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo info",
+                    command: repo::info::Args::command(),
+                },
+                CommandEntry {
                     display_name: "repo install",
                     command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo list",
+                    command: repo::list::Args::command(),
                 },
                 CommandEntry {
                     display_name: "repo remove",
@@ -287,8 +299,20 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
             layout: CategoryLayout::List,
             commands: vec![
                 CommandEntry {
+                    display_name: "daft repo add",
+                    command: repo::add::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo info",
+                    command: repo::info::Args::command(),
+                },
+                CommandEntry {
                     display_name: "daft repo install",
                     command: repo::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo list",
+                    command: repo::list::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft repo remove",

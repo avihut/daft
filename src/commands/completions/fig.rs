@@ -484,6 +484,64 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
 
 /// Build the repo subcommand with nested subcommands
 fn build_fig_repo_subcommand() -> FigSubcommand {
+    let add = FigSubcommand {
+        name: "add".to_string(),
+        description: Some("Register a repository in the repo catalog".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "path".to_string(),
+            description: Some("Repository to register (default: current directory)".to_string()),
+            generators: None,
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--name".into()),
+                description: "Catalog name for the repo; renames it when already registered".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress progress reporting".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    let info = FigSubcommand {
+        name: "info".to_string(),
+        description: Some("Show a repository's catalog entry".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "repo".to_string(),
+            description: Some("Catalog name, path, or uuid (default: current repo)".to_string()),
+            generators: None,
+        })),
+        options: None,
+    };
+
+    let list = FigSubcommand {
+        name: "list".to_string(),
+        description: Some("List repositories in the repo catalog".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![FigOption {
+            name: FigName::Multiple(vec!["--all".into(), "-a".into()]),
+            description: "Include removed repositories".into(),
+            args: None,
+        }]),
+    };
+
     let install = FigSubcommand {
         name: "install".to_string(),
         description: Some("Install a starter daft.yml in the current worktree".to_string()),
@@ -542,7 +600,7 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         name: "repo".to_string(),
         description: Some("Repository-level operations".to_string()),
         load_spec: None,
-        subcommands: Some(vec![install, remove]),
+        subcommands: Some(vec![add, info, install, list, remove]),
         args: None,
         options: None,
     }

@@ -1,0 +1,60 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-list 1  "git-daft-repo-list 1.18.1" 
+.SH NAME
+git\-daft\-repo\-list \- List repositories in the repo catalog
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-list\fR [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Lists the repositories daft knows about. The catalog fills itself: cloning,
+initializing, adopting, or running daft commands inside a repo registers it
+automatically; `git daft repo add` registers one manually.
+.PP
+Removed repositories keep a catalog entry (so their job logs stay
+addressable and `git daft clone <name>` can restore them); show them with
+\-\-all.
+.SH OPTIONS
+.TP
+\fB\-a\fR, \fB\-\-all\fR
+Include removed repositories
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR
+Output format. Mutually exclusive with \-\-template
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+json
+.IP \(bu 2
+ndjson
+.IP \(bu 2
+tsv
+.IP \(bu 2
+csv
+.IP \(bu 2
+yaml
+.IP \(bu 2
+toon
+.IP \(bu 2
+markdown
+.RE
+.TP
+\fB\-\-template\fR \fI<STR>\fR
+Tera template string. Mutually exclusive with \-\-format
+.TP
+\fB\-\-no\-headers\fR
+Omit header row (tsv/csv only)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.18.1

@@ -1,0 +1,41 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-add 1  "git-daft-repo-add 1.18.1" 
+.SH NAME
+git\-daft\-repo\-add \- Register a repository in the repo catalog
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-add\fR [\fB\-\-name\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPATH\fR] 
+.SH DESCRIPTION
+.PP
+Registers a repository in daft\*(Aqs repo catalog — the machine\-local registry
+behind cross\-repo commands like `git daft go <repo>` and `git daft repo list`.
+.PP
+The catalog is normally maintained automatically: cloning, initializing, or
+running any daft command inside a repo keeps its entry current. Reach for
+`repo add` to register a repository daft has never operated in, or to rename
+an entry with \-\-name.
+.PP
+Names must be unique among live entries. Automatic registration resolves
+collisions by suffixing (`api\-2`); an explicit \-\-name that is already taken
+is an error instead.
+.SH OPTIONS
+.TP
+\fB\-\-name\fR \fI<NAME>\fR
+Catalog name for the repo; renames it when already registered
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress reporting
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fIPATH\fR]
+Repository to register (default: the repo containing the current directory)
+.SH VERSION
+v1.18.1

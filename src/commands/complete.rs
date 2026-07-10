@@ -125,6 +125,11 @@ fn complete(
         // daft-start: no dynamic completion for new branch names
         ("daft-start", _) => Ok(vec![]),
 
+        // repo-name: catalog repo names (for `daft repo info`, `--repo`
+        // flags, and clone-by-name). Includes removed entries — they stay
+        // addressable for log lookup and re-clone.
+        ("repo-name", _) => Ok(format_entries_as_strings(&complete_repo_names(word))),
+
         // daft-remove: worktree + local completions for deletion
         ("daft-remove", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
@@ -1605,6 +1610,34 @@ fn complete_rich_branches(
 
 /// Format rich completion entries as tab-separated strings for the shell
 /// completion protocol: `<name>\t<group>\t<description>`.
+/// Catalog repo names matching `word` as a prefix. Hot-path contract: one
+/// read-only open, never creates the catalog, empty on any failure, no
+/// stderr. Live entries come first; removed names complete too (dimly
+/// useful for `repo info` / `hooks jobs --repo` / re-clone) but never
+/// shadow a live one.
+fn complete_repo_names(word: &str) -> Vec<CompletionEntry> {
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return Vec::new();
+    };
+    let Ok(rows) = catalog.list(true) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    rows.iter()
+        .filter(|row| row.name.starts_with(word))
+        .filter(|row| seen.insert(row.name.clone()))
+        .map(|row| CompletionEntry {
+            name: row.name.clone(),
+            group: CompletionGroup::Repo,
+            description: if row.removed_at.is_some() {
+                "removed".to_string()
+            } else {
+                row.path.clone()
+            },
+        })
+        .collect()
+}
+
 fn format_entries_as_strings(entries: &[CompletionEntry]) -> Vec<String> {
     entries
         .iter()
@@ -1656,6 +1689,8 @@ pub(crate) enum CompletionGroup {
     Local,
     /// Remote-tracking branch not mirrored locally.
     Remote,
+    /// A repository from the repo catalog (cross-repo navigation).
+    Repo,
 }
 
 impl CompletionGroup {
@@ -1664,6 +1699,7 @@ impl CompletionGroup {
             CompletionGroup::Worktree => "worktree",
             CompletionGroup::Local => "local",
             CompletionGroup::Remote => "remote",
+            CompletionGroup::Repo => "repo",
         }
     }
 }

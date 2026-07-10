@@ -1,0 +1,57 @@
+name: Repo catalog basic
+description:
+  Cloning registers the repo in the catalog; repo list and repo info surface it
+  (including from inside the repo with no argument)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Catalog starts empty
+    run: daft repo list 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "No repositories in the catalog yet."
+
+  - name: Clone registers the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: repo list shows the clone
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "main"
+
+  - name: repo info resolves by name
+    run: daft repo info test-repo
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "live"
+        - "main"
+
+  - name: repo info with no argument shows the current repo
+    run: daft repo info
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "live"
+
+  - name: repo info on an unknown name fails with a suggestion
+    run: daft repo info test-rep 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+        - "did you mean: test-repo"
