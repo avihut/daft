@@ -321,6 +321,11 @@ impl Timeline {
             | Some("Hooks are globally disabled")
             | Some("All jobs skipped")
             | None => self.resolve_silently(key),
+            // A hook-level `skip:`/`only:` condition is the config working
+            // as designed — the section vanishes like a per-job condition
+            // skip (custom condition messages don't match the prefix and
+            // stay visible below).
+            Some(reason) if rail_hook::is_condition_skip(reason) => self.resolve_silently(key),
             // Attention-worthy skips (trust refusal, --skip-hooks,
             // declined prompt): yellow row with the reason.
             Some(reason) => self.on_stage(
@@ -821,6 +826,48 @@ mod tests {
              \u{2713}  .env\n\
              \u{2502}\n\
              \u{2514}  Ready in 0.1s"
+        );
+    }
+
+    #[test]
+    fn hook_level_condition_skip_vanishes_from_the_receipt() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.commit_plan(plan());
+        for id in [StageId::CheckOut, StageId::CreateWorktree] {
+            complete(&mut tl, &StepKey::new(id));
+        }
+        // `hook_def.skip` fired: the config working as designed — no row.
+        tl.resolve_hook_step(
+            &StepKey::new(StageId::PostCreateHooks),
+            true,
+            Some("skip: true"),
+        );
+        tl.finish("Ready in 0.1s");
+        assert!(
+            !term.contents().contains("post-create hooks"),
+            "condition-skipped hook must leave no receipt: {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn hook_level_attention_skip_stays_yellow() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.commit_plan(plan());
+        for id in [StageId::CheckOut, StageId::CreateWorktree] {
+            complete(&mut tl, &StepKey::new(id));
+        }
+        tl.resolve_hook_step(
+            &StepKey::new(StageId::PostCreateHooks),
+            true,
+            Some("Repository not trusted"),
+        );
+        tl.finish("Ready in 0.1s");
+        assert!(
+            term.contents()
+                .contains("post-create hooks  skipped \u{2014} Repository not trusted"),
+            "trust refusal must stay visible: {}",
+            term.contents()
         );
     }
 

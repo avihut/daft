@@ -505,7 +505,9 @@ fn run_branch_delete(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let hook_output_config = hooks_config.output.clone();
+    let mut hook_output_config = hooks_config.output.clone();
+    // `-v` opts into the full hook block on the rail (#651).
+    hook_output_config.verbose |= output.is_verbose();
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {

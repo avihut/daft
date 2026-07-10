@@ -793,7 +793,9 @@ fn run_checkout(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
-    let hook_output_config = hooks_config.output.clone();
+    let mut hook_output_config = hooks_config.output.clone();
+    // `-v` opts into the full hook block on the rail (#651).
+    hook_output_config.verbose |= output.is_verbose();
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -897,7 +899,9 @@ fn run_create_branch(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
-    let hook_output_config = hooks_config.output.clone();
+    let mut hook_output_config = hooks_config.output.clone();
+    // `-v` opts into the full hook block on the rail (#651).
+    hook_output_config.verbose |= output.is_verbose();
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );

@@ -28,10 +28,12 @@ use std::time::Duration;
 /// Everything else that reaches a skip (`--skip-hooks` exclusions,
 /// dependency failures) renders the yellow attention row.
 ///
-/// Defensive: today condition skips never reach the presenter at all
-/// (`yaml_jobs_to_specs` filters them before execution and only the job
-/// store records them); this guards the succinct rail if that ever changes.
-fn is_condition_skip(reason: &str) -> bool {
+/// Defensive on the per-job path: today condition skips never reach the
+/// presenter at all (`yaml_jobs_to_specs` filters them before execution and
+/// only the job store records them); this guards the succinct rail if that
+/// ever changes. Load-bearing on the hook level: `resolve_hook_step` uses it
+/// to vanish a whole phase skipped by `hook_def.skip`/`only`.
+pub(super) fn is_condition_skip(reason: &str) -> bool {
     reason.starts_with("skip: ") || reason.starts_with("only: ")
 }
 
