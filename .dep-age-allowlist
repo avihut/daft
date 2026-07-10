@@ -28,3 +28,11 @@ cargo:anyhow@1.0.103
 # Safe to remove after 2026-07-11.
 cargo:quick-xml@0.41.0
 cargo:plist@1.10.0
+
+# why: RUSTSEC-2026-0204 (invalid pointer dereference in crossbeam-epoch's
+# fmt::Pointer/Display impl for Atomic/Shared — NULL-pointer-deref DoS class)
+# turns the cargo-deny advisories gate red; crossbeam-epoch 0.9.20 (2026-07-06)
+# is the designated fix (patched >=0.9.20) and is 4 days old at time of bump —
+# the same security exception Dependabot PRs get automatically.
+# Safe to remove after 2026-07-13.
+cargo:crossbeam-epoch@0.9.20
