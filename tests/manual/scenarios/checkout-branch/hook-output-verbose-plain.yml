@@ -1,0 +1,62 @@
+name: hooks.output.verbose gates the plain renderer's command-preview line
+description:
+  "daft.hooks.output.verbose was promoted in #651: on the interactive timeline
+  it selects the full hook block over the succinct rail rows, and in plain
+  (non-TTY) output it keeps its original meaning — show each job's command line
+  under the job heading. The timeline half is interactive-only and out of reach
+  for this harness; this scenario pins the plain-mode contract so the promoted
+  key keeps both faces. With DAFT_TESTING unset and no TTY, HookRenderer::auto
+  selects PlainHookRenderer, which prints the command preview only when the key
+  is set."
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test-repo"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: greet
+              run: echo hello-from-hook
+
+steps:
+  - name: Clone with trust so post-create hooks run
+    run: git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  # env -u DAFT_TESTING: unsets the harness flag so HookRenderer::auto picks
+  # PlainHookRenderer (non-TTY stderr); 2>&1 captures its stderr lines.
+  - name: Default keeps the command preview out of plain output
+    run: env -u DAFT_TESTING git-worktree-checkout -b feat-default 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # The job ran and its stdout streamed through the plain renderer.
+        - "hello-from-hook"
+        - "daft hooks"
+      output_not_contains:
+        # The raw `run:` command line is verbose-only.
+        - "echo hello-from-hook"
+
+  - name: Enable daft.hooks.output.verbose for this repo
+    run: git config daft.hooks.output.verbose true
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Verbose config surfaces each job's command line
+    run: env -u DAFT_TESTING git-worktree-checkout -b feat-verbose 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "echo hello-from-hook"

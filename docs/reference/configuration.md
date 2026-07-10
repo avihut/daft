@@ -263,11 +263,12 @@ Default fail modes:
 
 ### Hook Output Settings
 
-| Key                            | Default | Description                             |
-| ------------------------------ | ------- | --------------------------------------- |
-| `daft.hooks.output.quiet`      | `false` | Suppress hook stdout/stderr             |
-| `daft.hooks.output.timerDelay` | `5`     | Seconds before showing elapsed timer    |
-| `daft.hooks.output.tailLines`  | `6`     | Rolling output lines per job (0 = none) |
+| Key                            | Default | Description                                                                                                                                                                   |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.hooks.output.quiet`      | `false` | Suppress hook stdout/stderr                                                                                                                                                   |
+| `daft.hooks.output.timerDelay` | `5`     | Seconds before showing elapsed timer (verbose block only)                                                                                                                     |
+| `daft.hooks.output.tailLines`  | `6`     | Rolling output lines per job, verbose block only (0 = none)                                                                                                                   |
+| `daft.hooks.output.verbose`    | `false` | Always render the full hook block on the [progress timeline](/reference/progress-timeline) (`-v` per invocation does the same); in plain output, show each job's command line |
 
 ### YAML Hooks Configuration
 

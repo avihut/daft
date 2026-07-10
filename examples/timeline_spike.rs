@@ -1,16 +1,17 @@
 //! TTY spike for the plan-execute rail timeline (#651).
 //!
-//! Drives a fake `daft start` rail plus a REAL embedded hook block (the
-//! actual `CliPresenter::embedded` → `HookProgressRenderer` path, with
-//! parallel jobs, descriptions, and rolling output tails) so the
-//! indicatif splice mechanics can be verified on a live terminal before any
-//! command migrates.
+//! Drives a fake `daft start` rail plus a REAL embedded hook phase through
+//! the actual `CliPresenter::embedded` path — the succinct rail rows by
+//! default, the welded `HookProgressRenderer` block under `hooks-verbose` —
+//! so the indicatif splice mechanics can be verified on a live terminal.
 //!
 //! Run on a real TTY:
 //! ```sh
-//! cargo run --example timeline_spike            # happy path with hooks
-//! cargo run --example timeline_spike -- fail    # mid-plan failure teardown
-//! cargo run --example timeline_spike -- skip    # attention-skip row
+//! cargo run --example timeline_spike                   # succinct hook rows
+//! cargo run --example timeline_spike -- hooks-verbose  # full welded block
+//! cargo run --example timeline_spike -- hooks-fail     # ✗ row + dump after footer
+//! cargo run --example timeline_spike -- fail           # mid-plan failure teardown
+//! cargo run --example timeline_spike -- skip           # attention-skip row
 //! ```
 //! (`DAFT_TESTING` must be unset; a non-TTY stderr renders nothing.)
 
@@ -61,12 +62,23 @@ fn run_step(tl: &mut Timeline, id: StageId, millis: u64, annotation: Option<&str
     );
 }
 
-fn drive_hook_block(tl: &Timeline) {
-    let config = HookOutputConfig::default();
+fn drive_hook_phase(tl: &Timeline, verbose: bool, fail_install: bool) {
+    let config = HookOutputConfig {
+        verbose,
+        ..Default::default()
+    };
     let presenter =
         CliPresenter::embedded(&config, tl.handle(), StepKey::new(StageId::PostCreateHooks));
 
     presenter.on_phase_start("worktree-post-create", Some("daft-652/cool-feature"));
+    // A --skip-hooks exclusion: yellow row on the rail, skip line in the block.
+    presenter.on_job_skipped(
+        "lint-setup",
+        "requested (--skip-hooks)",
+        Duration::ZERO,
+        false,
+        None,
+    );
     presenter.on_job_start(
         "bun-install",
         Some("Install JS dependencies"),
@@ -82,7 +94,16 @@ fn drive_hook_block(tl: &Timeline) {
     }
     presenter.on_job_success("prepare-db", Duration::from_millis(2100));
     sleep(Duration::from_millis(600));
-    presenter.on_job_success("bun-install", Duration::from_millis(2900));
+    if fail_install {
+        presenter.on_job_output("bun-install", "error: lockfile out of date");
+        presenter.on_job_failure("bun-install", Duration::from_millis(2900));
+        // The runner follows every failure with this line; the rail
+        // suppresses it (the ✗ row + deferred dump carry the fact).
+        presenter.on_message("Job 'bun-install' failed (exit code: 1)");
+    } else {
+        presenter.on_job_success("bun-install", Duration::from_millis(2900));
+    }
+    presenter.on_job_background("check-todos", Some("scan for TODOs"));
     presenter.on_phase_complete(Duration::from_millis(3000));
 }
 
@@ -173,10 +194,16 @@ fn main() {
             },
         );
     } else {
-        drive_hook_block(&tl);
+        drive_hook_phase(&tl, scenario == "hooks-verbose", scenario == "hooks-fail");
     }
 
     sleep(Duration::from_millis(300));
-    let footer = format!("Ready in {}", tl.elapsed_display());
+    // A failed hook job under failMode=warn does not fail the command; the
+    // deferred dump prints below this footer.
+    let footer = if scenario == "hooks-fail" {
+        format!("Finished with failures in {}", tl.elapsed_display())
+    } else {
+        format!("Ready in {}", tl.elapsed_display())
+    };
     tl.finish(&footer);
 }

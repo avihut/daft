@@ -35,9 +35,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       for the whole invocation)
 - [ ] Carry: with uncommitted changes `✓ Carried changes`; with a clean tree the
       carry row vanishes once execution reaches it
-- [ ] Shared files (`shared:` in daft.yml + collected storage): dim
-      `shared files` anchor with one row per path, `✓ .env` per landed link,
-      placed between Carry/Push and the hooks block
+- [ ] Shared files (`shared:` in daft.yml + collected storage): a `│` spacer
+      then `├ shared files` anchor with one row per path, `✓ .env` per landed
+      link, placed between Carry/Push and the hooks section
 - [ ] Shared file declared but never collected: yellow `↓ <path>` row saying
       `missing from shared storage` with the `daft shared sync` remedy — never
       silent
@@ -61,8 +61,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Remote deletion off (default, `daft config remote-sync` local only, or
       `--local`): no remote row or note anywhere in the rail — the remote is
       never mentioned
-- [ ] Multi-branch remove: one rail, dim branch-name group anchors, count
-      footer; current-worktree branch deferred to last
+- [ ] Multi-branch remove: one rail, `├` branch-name anchors each with a `│`
+      spacer above (the first leans on the header's spacer — never doubled),
+      count footer; current-worktree branch deferred to last
 - [ ] `daft clone <url>` single-branch: `✓ Cloned repository ← <url>` as a
       pre-completed row (bare-clone spinner runs before the layout prompt), then
       `Create worktree`, hooks, footer
@@ -70,23 +71,59 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       `└ Base worktree ready in <t>` BEFORE the satellite table; hooks render
       after the table exactly as before
 
-## Hook composition (the weld)
+## Hook sections (succinct default)
 
-- [ ] Hook step pending as `○ post-create hooks`; expands in place into the hook
-      block; the rail welds into the banner's top corner (`├───┐`) and the
-      banner closes below (`└───┘`); block interior byte-identical to the
-      standalone renderer
-- [ ] Rail spacers (`│`) separate the block from rows above and below, never
-      doubled
-- [ ] Pending rows + `└ …` stay visible below the block while jobs run
+- [ ] Hook step pending as `○ post-create hooks`; when the phase runs it becomes
+      a `│` spacer + `├ post-create hooks` anchor with one row per job; pending
+      rows + `└ …` stay visible below while jobs run
+- [ ] Active job row: spinner + name + the job's latest output line as a dim
+      annotation updating in place; long lines truncate, never wrap
+- [ ] Job description shows as the annotation until the first output line
+      arrives
+- [ ] Finished jobs resolve in place: `✓ name` with dim duration only at ≥ 1s;
+      parallel jobs persist in completion order
+- [ ] Failed job (failMode warn): red `✗ name`, command completes, footer
+      `Finished with failures…`, and the job's full captured output prints BELOW
+      the footer as `error: hook job '<name>' failed:` + indented lines; the
+      runner's `Job '<name>' failed…` line does not appear
+- [ ] Failed job (failMode abort, `worktree-pre-create`): command aborts, dump
+      still prints after the abort footer, before the command error
+- [ ] `--skip-hooks <job>`: yellow
+      `↓ <job>  skipped — requested     (--skip-hooks)` row inside the section;
+      dependents render `skipped — depends on …`
+- [ ] Job with `skip:`/`only:` condition false: no row at all (check
+      `daft hooks jobs` still records it)
+- [ ] Hook-level `skip:`/`only:` condition false: the whole hook row vanishes
+      silently
+- [ ] Background job: blue `↻ name  background` receipt row; the
+      `⟳ N background job(s) running` notice still prints above the rail
+- [ ] `daft.hooks.output.quiet`: job rows and durations still render, but no
+      live output annotation and no failure dump
+- [ ] Multi-phase (pre-create AND post-create in one run): two sections, each
+      with its own spacer + anchor, no doubled spacers between them
+- [ ] Sequential (piped) hooks: receipt rows may persist before a later, wider
+      job name raises the alignment column — accepted cosmetic limit
 - [ ] No hooks configured: the hook row vanishes silently
 - [ ] Untrusted repo: `↓ post-create hooks  skipped — Repository not trusted`,
       and the contextual `Untrusted repo — …` notice (#654: trust + replay
       suggestions) persists above the rail, not torn through the live bars
-- [ ] `--skip-hooks all`: yellow ↓ row
-- [ ] Pre-push hook (git hook in repo) during `daft start` with push on: block
-      welds under the active Push row; on rejection `✗ Push` + worktree still
-      completes + non-zero exit (#599 semantics)
+- [ ] `--skip-hooks all`: yellow ↓ row on the hook step
+- [ ] Pre-push hook (git hook in repo) during `daft start` with push on:
+      `├ pre-push hooks` section under the active Push row; on rejection
+      `✗ Push` + worktree still completes + non-zero exit (#599 semantics)
+- [ ] Remove with remote deletion + pre-push hook: per-branch `├ pre-push hooks`
+      section under each active `Delete remote branch` row
+
+## Hook block (verbose)
+
+- [ ] `-v`: the phase renders the full welded block instead — banner (`├───┐` …
+      `└───┘`), live rolling tails, full per-job output dump, summary —
+      byte-identical to the standalone renderer's interior
+- [ ] `daft.hooks.output.verbose=true` without `-v`: same full block
+- [ ] Rail spacers (`│`) separate the block from rows above and below, never
+      doubled — including a group anchor persisting right after the block
+- [ ] Plain mode (`2>&1 | cat`) with `-v`: each job's command line appears
+      (`daft.hooks.output.verbose` plain-mode behavior); without it, absent
 
 ## Failure states
 
