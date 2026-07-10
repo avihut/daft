@@ -1,6 +1,6 @@
 {
   "private": true,
   "devDependencies": {
-    "prettier": "3.9.1"
+    "prettier": "3.9.4"
   }
 }
