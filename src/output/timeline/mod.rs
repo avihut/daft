@@ -70,6 +70,13 @@ struct Inner {
     verbose: bool,
     use_color: bool,
     core: Option<TimelineCore>,
+    /// Lines held back until the rail closes — a failed hook job's captured
+    /// output belongs after the footer (the rail's errors-after pattern),
+    /// not torn through the live bars. Drained by [`Timeline::teardown`];
+    /// accumulates across hook phases. Lives here rather than on the core
+    /// because `finish` consumes the core before the footer exists in
+    /// scrollback.
+    deferred_after_footer: Vec<String>,
     /// Test-only: a draw target injected before `commit_plan`, so sequence
     /// tests capture the persisted lines through an `InMemoryTerm` instead
     /// of the (unattended) stderr target.
@@ -142,6 +149,18 @@ impl TimelineHandle {
             .core
             .is_some()
     }
+
+    /// Hold `lines` back until the rail closes; the timeline prints them
+    /// after the footer (blank-line separated). No-op semantics match the
+    /// rest of the handle: with no region the lines still drain at teardown,
+    /// but only region-embedded renderers ever defer.
+    pub fn defer_after_footer(&self, lines: Vec<String>) {
+        self.inner
+            .lock()
+            .expect("timeline lock poisoned")
+            .deferred_after_footer
+            .extend(lines);
+    }
 }
 
 /// The timeline a command owns for one invocation.
@@ -163,6 +182,7 @@ impl Timeline {
                     verbose,
                     use_color,
                     core: None,
+                    deferred_after_footer: Vec::new(),
                     #[cfg(test)]
                     test_draw_target: None,
                 })),
@@ -351,12 +371,25 @@ impl Timeline {
     }
 
     fn teardown(&mut self, footer_text: &str, policy: UnresolvedPolicy) {
-        let core = {
+        let (core, deferred) = {
             let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
-            inner.core.take()
+            (
+                inner.core.take(),
+                std::mem::take(&mut inner.deferred_after_footer),
+            )
         };
         if let Some(core) = core {
             core.finish(footer_text, policy);
+        }
+        // Deferred content (failed hook-job output) lands below the footer,
+        // blank-line separated — the region is gone, so plain stderr is the
+        // channel. Drains on abort and the Drop safety net too: the receipt
+        // may be truncated, the captured failure must not be.
+        if !deferred.is_empty() {
+            eprintln!();
+            for line in deferred {
+                eprintln!("{line}");
+            }
         }
     }
 
@@ -594,6 +627,47 @@ mod tests {
         tl.commit_plan(plan());
         tl.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
         drop(tl); // must not panic or strand bars
+    }
+
+    fn deferred_len(tl: &Timeline) -> usize {
+        tl.handle()
+            .inner
+            .lock()
+            .unwrap()
+            .deferred_after_footer
+            .len()
+    }
+
+    #[test]
+    fn deferred_lines_accumulate_and_drain_on_finish() {
+        let mut tl = interactive();
+        tl.commit_plan(plan());
+        tl.handle()
+            .defer_after_footer(vec!["error: hook job 'x' failed:".into(), "  boom".into()]);
+        tl.handle()
+            .defer_after_footer(vec!["  second phase".into()]);
+        assert_eq!(deferred_len(&tl), 3, "lines held until the rail closes");
+        tl.finish("Ready");
+        assert_eq!(deferred_len(&tl), 0, "teardown drains the buffer");
+    }
+
+    #[test]
+    fn deferred_lines_drain_on_abort_and_drop() {
+        let mut tl = interactive();
+        tl.commit_plan(plan());
+        tl.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
+        let handle = tl.handle();
+        handle.defer_after_footer(vec!["captured failure".into()]);
+        drop(tl); // Drop safety net aborts a live region
+        assert!(
+            handle
+                .inner
+                .lock()
+                .unwrap()
+                .deferred_after_footer
+                .is_empty(),
+            "a truncated receipt must still flush the captured failure"
+        );
     }
 
     // ── persisted-sequence tests (InMemoryTerm) ──────────────────────────
