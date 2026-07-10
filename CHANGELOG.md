@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.18.1](https://github.com/avihut/daft/compare/v1.18.0...v1.18.1) - 2026-07-10
+
+
+### Bug Fixes
+
+- **sync**: Graceful two-stage Ctrl+C cancellation; harden alias capture against job-control stops (#672)
+- **push**: Skip pre-push hook on ref-only upstream pushes (#686)
+- **deps**: Bump crossbeam-epoch to 0.9.20 (RUSTSEC-2026-0204) (#687)
+- Detect multi-commit squash merges in the gone-branch merge verifier (#673)
+- **list**: Collect only the fields the live view renders or sorts by (#675)
+- Decouple daft_dev_build from release-tag proximity (#670)
 ## [1.18.0](https://github.com/avihut/daft/compare/v1.17.0...v1.18.0) - 2026-07-05
 
 
