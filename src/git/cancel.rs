@@ -585,7 +585,13 @@ mod supervisor_tests {
     }
 
     /// Direct mode (fetch/pull/rebase): a cancel kills the child pid
-    /// directly, no process group needed.
+    /// directly, no process group needed. Spawns `sleep` as its own
+    /// process — NOT via `sh -c` — because Direct mode kills only the
+    /// direct child (killpg is Isolated mode's job); a shell that forks
+    /// its command instead of exec'ing it (dash vs some /bin/sh) would
+    /// leave the grandchild holding the pipe and the drains would block
+    /// for the full sleep. Real fetch/pull children exit on pipe EOF when
+    /// git dies, so this single-process shape models them faithfully.
     #[test]
     fn direct_cancel_tears_down_a_running_child() {
         let flag = CancelFlag::new();
@@ -595,7 +601,9 @@ mod supervisor_tests {
                 std::thread::sleep(Duration::from_millis(150));
                 flag.escalate();
             });
-            let err = output_with_cancel(&mut sh("sleep 30"), Some(&flag)).unwrap_err();
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            let err = output_with_cancel(&mut cmd, Some(&flag)).unwrap_err();
             assert!(err.is::<OperationCancelled>(), "got: {err:#}");
         });
         assert!(
