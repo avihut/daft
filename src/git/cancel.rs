@@ -55,6 +55,20 @@ impl CancelFlag {
                 (cur < 2).then_some(cur + 1)
             });
     }
+
+    /// Lift the level 0 → 1 only, atomically, doing nothing if any cancel
+    /// already landed. The post-TUI keypress path uses this: a raw-mode
+    /// Ctrl+C never reached the signal handler, so the flag may still be
+    /// 0 and must be raised — but a check-then-`escalate` would race the
+    /// ctrlc handler thread (SIGTERM/SIGHUP via the `termination` feature)
+    /// and could drive 0 → 1 → 2, forcing SIGKILL off a single graceful
+    /// keypress (#8). The compare-exchange makes the 0 → 1 transition win
+    /// or no-op, never compound.
+    pub fn soft_escalate_once(&self) {
+        let _ = self
+            .0
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+    }
 }
 
 impl Default for CancelFlag {
@@ -111,6 +125,34 @@ pub struct OperationCancelled;
 )]
 pub struct NeedsTerminal;
 
+/// How a supervised child's tree is torn down on cancel — and whether a
+/// job-control stop is read as an interactive-auth signal.
+///
+/// The distinction exists because process-group isolation and interactive
+/// terminal auth are mutually exclusive: a child in its own (background)
+/// group cannot read the controlling `/dev/tty`, so any credential /
+/// passphrase prompt there SIGTTIN-stops it. We only pay that cost where
+/// group teardown is actually needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisionMode {
+    /// Child spawned in its own process group (`process_group(0)`). Cancel
+    /// tears the whole tree down by pgid cascade, and a job-control stop is
+    /// read as a background-group `/dev/tty` read (interactive auth daft
+    /// cannot forward) → the tree is killed and the run reports
+    /// [`Verdict::StoppedOnTty`]. Required for `git push`, whose pre-push
+    /// hook chain (`lefthook → mise → cargo`) escapes into its own groups
+    /// that terminal job-control signals never reach (#663).
+    Isolated,
+    /// Child stays in the caller's (foreground) process group. Cancel is a
+    /// direct SIGTERM→SIGKILL of the child pid — killpg is off-limits (it
+    /// would hit daft's own group). No stop-detection: a foreground child
+    /// reads the controlling tty directly, so interactive credential /
+    /// passphrase prompts work and never SIGTTIN-stop. For
+    /// fetch/pull/rebase/ls-remote, which spawn no group-escaping
+    /// descendants; a plain `child.kill()` plus pipe-EOF reaps them.
+    Direct,
+}
+
 /// Final state of a supervised child.
 #[derive(Debug)]
 pub enum Verdict {
@@ -132,15 +174,19 @@ pub enum Verdict {
 /// cascades — preserving pre-cancellation behavior for callers that
 /// never asked for teardown (their terminal credential prompts must
 /// keep working, and Ctrl+C must keep reaching the git subtree through
-/// the caller's foreground group). With a flag attached, the child
-/// must have been spawned with `Command::process_group(0)` (unix) so
-/// escalations can target its whole tree by group. The `drains_done`
+/// the caller's foreground group). With a flag attached, [`SupervisionMode`]
+/// selects the teardown: [`Isolated`](SupervisionMode::Isolated) children
+/// (spawned with `Command::process_group(0)`) are torn down by pgid
+/// cascade and stop-detected; [`Direct`](SupervisionMode::Direct) children
+/// stay in the caller's group and are killed by pid. The `drains_done`
 /// gate exists because pipe write-ends are inherited by descendants
 /// that can outlive the direct child — returning before the drains see
 /// EOF would leave the caller blocked on a reader join with nobody
 /// left watching the flag, which is exactly the #663 wedge.
 pub struct ChildSupervisor<'a> {
     cancel: Option<&'a CancelFlag>,
+    #[cfg(unix)]
+    mode: SupervisionMode,
     cancelled_in_flight: bool,
     tty_stopped: bool,
     #[cfg(unix)]
@@ -155,13 +201,18 @@ pub struct ChildSupervisor<'a> {
     stop_probe_at: std::time::Instant,
     #[cfg(unix)]
     stopped_streak: u8,
+    /// Direct-mode: whether the child pid was already SIGTERM'd, so the
+    /// soft signal is sent once rather than every poll tick.
+    #[cfg(unix)]
+    direct_termed: bool,
 }
 
 impl<'a> ChildSupervisor<'a> {
     #[cfg(unix)]
-    pub fn new(child: &Child, cancel: Option<&'a CancelFlag>) -> Self {
+    pub fn new(child: &Child, cancel: Option<&'a CancelFlag>, mode: SupervisionMode) -> Self {
         Self {
             cancel,
+            mode,
             cancelled_in_flight: false,
             tty_stopped: false,
             child_pid: child.id(),
@@ -171,11 +222,12 @@ impl<'a> ChildSupervisor<'a> {
             // children exit before ever being ps-probed.
             stop_probe_at: std::time::Instant::now() + STOP_PROBE_EVERY,
             stopped_streak: 0,
+            direct_termed: false,
         }
     }
 
     #[cfg(not(unix))]
-    pub fn new(_child: &Child, cancel: Option<&'a CancelFlag>) -> Self {
+    pub fn new(_child: &Child, cancel: Option<&'a CancelFlag>, _mode: SupervisionMode) -> Self {
         Self {
             cancel,
             cancelled_in_flight: false,
@@ -230,14 +282,25 @@ impl<'a> ChildSupervisor<'a> {
 
     #[cfg(unix)]
     fn tick(&mut self, _child: &mut Child, child_running: bool) {
+        match self.mode {
+            SupervisionMode::Isolated => self.tick_isolated(child_running),
+            SupervisionMode::Direct => self.tick_direct(child_running),
+        }
+    }
+
+    /// Isolated-mode tick: pgid-cascade teardown plus tty-stop detection.
+    #[cfg(unix)]
+    fn tick_isolated(&mut self, child_running: bool) {
         let now = std::time::Instant::now();
         let flag_level = self.cancel.map(CancelFlag::level).unwrap_or(0);
-        // Deliberately not gated on child_running: a cancel that lands
-        // after the child exited but while pipe holders keep the drains
-        // open still interrupted the run and must report as Cancelled.
-        // (A fully-finished run wins the race structurally — the wait
-        // loop's return check runs before this tick sees the new level.)
-        if flag_level > 0 {
+        // Only a cancel seen *while the child is still running* cancels
+        // this run. If the child already exited (its status is in hand) a
+        // later cancel is just tearing down leftover pipe holders — the
+        // run's real outcome is its exit status. (#7: a `git push` that
+        // exited 0 succeeded even if a backgrounded hook child kept the
+        // pipe write-end open past the cancel; reporting it Cancelled would
+        // tell the user their commits never pushed when they did.)
+        if flag_level > 0 && child_running {
             self.cancelled_in_flight = true;
         }
 
@@ -275,6 +338,29 @@ impl<'a> ChildSupervisor<'a> {
                 self.cascade.hard_tick();
             }
             self.cascade_at = Some((level, now));
+        }
+    }
+
+    /// Direct-mode tick: no isolation, no stop-detection. The child shares
+    /// daft's (foreground) process group, so it reads the controlling tty
+    /// for interactive auth and never SIGTTIN-stops; killpg is therefore
+    /// off-limits (it would tear daft's own group down). Cancel is a direct
+    /// two-stage kill of the child pid; git's helper children exit on pipe
+    /// EOF once the parent dies.
+    #[cfg(unix)]
+    fn tick_direct(&mut self, child_running: bool) {
+        let flag_level = self.cancel.map(CancelFlag::level).unwrap_or(0);
+        // See #7 above: a cancel arriving after the child already exited
+        // doesn't cancel a finished run, and there is nothing to kill.
+        if flag_level == 0 || !child_running {
+            return;
+        }
+        self.cancelled_in_flight = true;
+        if flag_level >= 2 {
+            kill_pid(self.child_pid, true);
+        } else if !self.direct_termed {
+            kill_pid(self.child_pid, false);
+            self.direct_termed = true;
         }
     }
 
@@ -338,42 +424,45 @@ pub fn surviving_groups() -> Vec<u32> {
     Vec::new()
 }
 
-/// Cancellation-aware stand-in for `Command::output()`.
+/// The single spawn → supervise → verdict skeleton shared by every
+/// cancellable git seam. Sets up piped stdio, isolates the child into its
+/// own process group when `mode` is [`SupervisionMode::Isolated`] and a
+/// flag is attached, then drains both pipes on scoped threads with the
+/// caller's closures while [`ChildSupervisor`] polls the flag and the
+/// child's job-control state. Returns the [`Verdict`] alongside whatever
+/// the two drain closures produced.
 ///
-/// With a cancel flag, spawns the child in its own process group,
-/// drains both pipes on scoped threads, and polls via
-/// [`ChildSupervisor`] instead of blocking so a cancel escalation (or a
-/// tty-stop) tears the child's whole tree down. Returns
-/// [`OperationCancelled`] / [`NeedsTerminal`] as typed errors; a run
-/// that merely failed still returns `Ok` with the non-success status,
-/// matching `Command::output()` semantics.
-///
-/// With `cancel: None` this is `Command::output()` with extra steps:
-/// the child stays in the caller's process group and the wait blocks
-/// classically. Callers that never opted into cancellation keep their
-/// pre-cancellation behavior — interactive credential prompts stay
-/// reachable in the foreground group, and Ctrl+C still hits the whole
-/// foreground tree.
-pub fn output_with_cancel(
+/// [`output_with_cancel`] (fetch/pull/rebase/ls-remote, Direct mode) and
+/// [`GitCommand::run_push`](crate::git::GitCommand) (Isolated mode) are
+/// the two callers; centralizing the skeleton means a change to the
+/// supervision contract (the drains-done gate, a new [`Verdict`] arm) is
+/// made once instead of drifting between two copies.
+pub(crate) fn supervise_command<O, E, FO, FE>(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
-) -> anyhow::Result<Output> {
+    mode: SupervisionMode,
+    drain_out: FO,
+    drain_err: FE,
+) -> anyhow::Result<(Verdict, O, E)>
+where
+    O: Send + Default,
+    E: Send + Default,
+    FO: FnOnce(std::process::ChildStdout) -> O + Send,
+    FE: FnOnce(std::process::ChildStderr) -> E + Send,
+{
     use anyhow::Context;
 
-    if cancel.is_some_and(CancelFlag::is_cancelled) {
-        return Err(OperationCancelled.into());
-    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
-    if cancel.is_some() {
+    if cancel.is_some() && mode == SupervisionMode::Isolated {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 
     let mut child = cmd.spawn()?;
-    let mut supervisor = ChildSupervisor::new(&child, cancel);
+    let mut supervisor = ChildSupervisor::new(&child, cancel, mode);
     let stdout_pipe = child
         .stdout
         .take()
@@ -383,19 +472,9 @@ pub fn output_with_cancel(
         .take()
         .context("Failed to capture child stderr")?;
 
-    let (verdict, stdout, stderr) = std::thread::scope(|scope| {
-        let out = scope.spawn(move || {
-            let mut pipe = stdout_pipe;
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            buf
-        });
-        let err = scope.spawn(move || {
-            let mut pipe = stderr_pipe;
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            buf
-        });
+    let (verdict, out, err) = std::thread::scope(|scope| {
+        let out = scope.spawn(move || drain_out(stdout_pipe));
+        let err = scope.spawn(move || drain_err(stderr_pipe));
         let verdict = supervisor.wait(&mut child, || out.is_finished() && err.is_finished());
         // The wait gate guarantees both drains saw EOF; joins can't block.
         (
@@ -405,7 +484,48 @@ pub fn output_with_cancel(
         )
     });
 
-    match verdict? {
+    Ok((verdict?, out, err))
+}
+
+/// Cancellation-aware stand-in for `Command::output()`.
+///
+/// Uses [`SupervisionMode::Direct`]: the child stays in the caller's
+/// process group so an interactive credential / passphrase prompt on
+/// `/dev/tty` works, and a cancel escalation kills the child pid directly
+/// (fetch/pull/rebase/ls-remote spawn no group-escaping descendants that
+/// would need a pgid cascade). Returns [`OperationCancelled`] as a typed
+/// error on cancel; a run that merely failed still returns `Ok` with the
+/// non-success status, matching `Command::output()` semantics.
+///
+/// With `cancel: None` this is `Command::output()` with extra steps: the
+/// wait blocks classically. Callers that never opted into cancellation
+/// keep their exact pre-cancellation behavior.
+pub fn output_with_cancel(
+    cmd: &mut Command,
+    cancel: Option<&CancelFlag>,
+) -> anyhow::Result<Output> {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(OperationCancelled.into());
+    }
+    let read_to_end = |mut pipe: std::process::ChildStdout| {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+        buf
+    };
+    let read_to_end_err = |mut pipe: std::process::ChildStderr| {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+        buf
+    };
+    let (verdict, stdout, stderr) = supervise_command(
+        cmd,
+        cancel,
+        SupervisionMode::Direct,
+        read_to_end,
+        read_to_end_err,
+    )?;
+
+    match verdict {
         Verdict::Completed(status) => Ok(Output {
             status,
             stdout,
@@ -427,6 +547,27 @@ mod supervisor_tests {
         c
     }
 
+    fn read_out(mut p: std::process::ChildStdout) -> Vec<u8> {
+        let mut b = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut p, &mut b);
+        b
+    }
+
+    fn read_err(mut p: std::process::ChildStderr) -> Vec<u8> {
+        let mut b = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut p, &mut b);
+        b
+    }
+
+    /// Run `cmd` under Isolated supervision (the `git push` shape: own
+    /// process group, pgid cascade, tty-stop detection).
+    fn run_isolated(
+        cmd: &mut Command,
+        flag: Option<&CancelFlag>,
+    ) -> anyhow::Result<(Verdict, Vec<u8>, Vec<u8>)> {
+        supervise_command(cmd, flag, SupervisionMode::Isolated, read_out, read_err)
+    }
+
     #[test]
     fn output_with_cancel_completes_and_captures() {
         let out = output_with_cancel(&mut sh("echo out; echo err >&2; exit 3"), None).unwrap();
@@ -443,8 +584,10 @@ mod supervisor_tests {
         assert!(err.is::<OperationCancelled>(), "got: {err:#}");
     }
 
+    /// Direct mode (fetch/pull/rebase): a cancel kills the child pid
+    /// directly, no process group needed.
     #[test]
-    fn soft_cancel_tears_down_a_running_child() {
+    fn direct_cancel_tears_down_a_running_child() {
         let flag = CancelFlag::new();
         let started = Instant::now();
         std::thread::scope(|scope| {
@@ -463,23 +606,50 @@ mod supervisor_tests {
     }
 
     #[test]
-    fn cancel_reaches_an_orphaned_pipe_holder() {
+    fn isolated_cascade_reaches_an_orphaned_pipe_holder() {
         // The run_push wedge shape: the direct child exits but a
         // backgrounded descendant keeps the pipe write-ends open. The
-        // cascade must reach it through the still-live child *group*
-        // even though the tree walk can no longer see it (the holder
-        // reparented to init when the child died).
+        // Isolated cascade must reach it through the still-live child
+        // *group* even though the tree walk can no longer see it (the
+        // holder reparented to init when the child died). Proven by the
+        // sub-5s return: without the cascade, the drains would block on
+        // the `sleep 30` holder for its full duration. The verdict is
+        // Completed — the child itself exited 0, so per #7 the cancel that
+        // only tore down the leftover holder does not relabel the run.
         let flag = CancelFlag::new();
         let started = Instant::now();
-        std::thread::scope(|scope| {
+        let (verdict, _o, _e) = std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(300));
                 flag.escalate();
             });
-            let err =
-                output_with_cancel(&mut sh("( sleep 30 & ); exit 0"), Some(&flag)).unwrap_err();
-            assert!(err.is::<OperationCancelled>(), "got: {err:#}");
+            run_isolated(&mut sh("( sleep 30 & ); exit 0"), Some(&flag)).unwrap()
         });
+        assert!(
+            matches!(verdict, Verdict::Completed(s) if s.success()),
+            "got {verdict:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cascade did not reach the orphaned holder: took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn isolated_cancel_tears_down_a_running_child() {
+        // Isolated (push) shape: a cancel arriving while the child is still
+        // running tears its group down and reports Cancelled.
+        let flag = CancelFlag::new();
+        let started = Instant::now();
+        let (verdict, _o, _e) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                flag.escalate();
+            });
+            run_isolated(&mut sh("sleep 30"), Some(&flag)).unwrap()
+        });
+        assert!(matches!(verdict, Verdict::Cancelled), "got {verdict:?}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "teardown took {:?}",
@@ -488,24 +658,47 @@ mod supervisor_tests {
     }
 
     #[test]
-    fn self_stopping_child_is_detected_and_killed() {
+    fn isolated_self_stopping_child_is_detected_and_killed() {
         // Interactive-auth shape: the child stops its own group the way
         // a background-group /dev/tty read would. Two stopped probes at
-        // 500ms cadence must flag it, kill the group, and surface the
-        // typed NeedsTerminal error instead of hanging forever. The
-        // flag stays at level 0 — stop detection is part of supervision
-        // itself, not of cancellation. (Without a flag the child would
-        // share this test process's group and the `kill -STOP 0` would
-        // freeze the suite.)
+        // 500ms cadence must flag it, kill the group, and surface
+        // StoppedOnTty instead of hanging forever. The flag stays at
+        // level 0 — stop detection is part of Isolated supervision, not
+        // of cancellation. Isolation puts the child in its own group so
+        // `kill -STOP 0` freezes only it, never this test process.
         let flag = CancelFlag::new();
         let started = Instant::now();
-        let err = output_with_cancel(&mut sh("kill -STOP 0; sleep 30"), Some(&flag)).unwrap_err();
-        assert!(err.is::<NeedsTerminal>(), "got: {err:#}");
+        let (verdict, _o, _e) =
+            run_isolated(&mut sh("kill -STOP 0; sleep 30"), Some(&flag)).unwrap();
+        assert!(matches!(verdict, Verdict::StoppedOnTty), "got {verdict:?}");
         assert!(
             started.elapsed() < Duration::from_secs(8),
             "stop detection took {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn completed_run_isnt_relabeled_cancelled_by_late_cancel() {
+        // #7: the direct child exits 0 but a backgrounded descendant keeps
+        // the pipe open; a cancel that lands in that drain-wait window
+        // tears the holder down (cleanup) but must NOT relabel the
+        // already-successful run as Cancelled — the exit status stands.
+        let flag = CancelFlag::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Let the child exit 0 first, then cancel while the holder
+                // still keeps the pipe open.
+                std::thread::sleep(Duration::from_millis(200));
+                flag.escalate();
+            });
+            let (verdict, _o, _e) =
+                run_isolated(&mut sh("( sleep 3 & ) ; exit 0"), Some(&flag)).unwrap();
+            assert!(
+                matches!(verdict, Verdict::Completed(s) if s.success()),
+                "a run that exited 0 must stay Completed, got {verdict:?}"
+            );
+        });
     }
 
     /// Without a flag there is no supervision: the child must stay in
@@ -523,14 +716,30 @@ mod supervisor_tests {
         assert_eq!(child_pgid, nix::unistd::getpgrp().as_raw());
     }
 
-    /// With a flag attached the child gets its own group — the
-    /// precondition for every by-group escalation above.
+    /// #1 regression: a *supervised* Direct run (fetch/pull) must keep the
+    /// child in the caller's foreground group, so it can still read the
+    /// controlling tty for interactive auth. Isolation here would
+    /// SIGTTIN-stop a passphrase prompt and get it killed as NeedsTerminal.
     #[test]
-    fn flag_isolates_child_into_own_group() {
+    fn direct_supervision_keeps_child_in_callers_group() {
         let flag = CancelFlag::new();
         let out = output_with_cancel(&mut sh("ps -o pgid= -p $$"), Some(&flag)).unwrap();
         assert!(out.status.success());
         let child_pgid: i32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("pgid parses");
+        assert_eq!(child_pgid, nix::unistd::getpgrp().as_raw());
+    }
+
+    /// Isolated mode (push) gets the child its own group — the
+    /// precondition for every by-group escalation.
+    #[test]
+    fn isolated_supervision_gives_child_its_own_group() {
+        let flag = CancelFlag::new();
+        let (verdict, out, _e) = run_isolated(&mut sh("ps -o pgid= -p $$"), Some(&flag)).unwrap();
+        assert!(matches!(verdict, Verdict::Completed(s) if s.success()));
+        let child_pgid: i32 = String::from_utf8_lossy(&out)
             .trim()
             .parse()
             .expect("pgid parses");
@@ -557,6 +766,19 @@ mod unix {
     /// ours (still alive).
     pub fn group_alive(pgid: u32) -> bool {
         !matches!(killpg(pg(pgid), None), Err(nix::errno::Errno::ESRCH))
+    }
+
+    /// Direct two-stage kill of a single pid: `SIGTERM`, or `SIGKILL` when
+    /// `hard`. Used by [`SupervisionMode::Direct`](super::SupervisionMode)
+    /// teardown, where the child shares the caller's process group so
+    /// `killpg` is off-limits. ESRCH (already reaped) is ignored.
+    pub fn kill_pid(pid: u32, hard: bool) {
+        let sig = if hard {
+            Signal::SIGKILL
+        } else {
+            Signal::SIGTERM
+        };
+        let _ = kill(Pid::from_raw(pid as i32), sig);
     }
 
     /// Job-control state of a single pid via `ps -o stat=`.
@@ -843,6 +1065,25 @@ mod unix {
         }
 
         #[test]
+        fn soft_escalate_once_only_lifts_from_zero() {
+            use super::super::CancelFlag;
+            // 0 → 1.
+            let f = CancelFlag::new();
+            f.soft_escalate_once();
+            assert_eq!(f.level(), 1);
+            // Already cancelled → no-op (never compounds to 2).
+            f.soft_escalate_once();
+            assert_eq!(f.level(), 1);
+            // Already hard → must not regress and must not lift further.
+            let g = CancelFlag::new();
+            g.escalate();
+            g.escalate();
+            assert_eq!(g.level(), 2);
+            g.soft_escalate_once();
+            assert_eq!(g.level(), 2);
+        }
+
+        #[test]
         fn cascade_terminates_live_isolated_group() {
             let mut child = Command::new("sh")
                 .args(["-c", "sleep 30"])
@@ -933,5 +1174,14 @@ mod tests {
         f.escalate();
         f.escalate();
         assert_eq!(f.level(), 2);
+    }
+
+    #[test]
+    fn soft_escalate_once_only_lifts_from_zero() {
+        let f = CancelFlag::new();
+        f.soft_escalate_once();
+        assert_eq!(f.level(), 1);
+        f.soft_escalate_once();
+        assert_eq!(f.level(), 1);
     }
 }

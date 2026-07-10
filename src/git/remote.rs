@@ -41,10 +41,14 @@ impl Default for PushOptions<'_> {
 
 /// Captured result of a `git push` subprocess.
 ///
-/// `Err` from the push primitives means the subprocess could not be spawned;
-/// a push that ran and failed (hook rejection, non-fast-forward, transport)
+/// A push that ran and failed (hook rejection, non-fast-forward, transport)
 /// is `Ok` with `success: false` so callers can inspect both streams before
-/// deciding severity.
+/// deciding severity. `Err` means the push did not produce a verdict: the
+/// subprocess could not be spawned, or — for a supervised push (sync) — it
+/// was torn down mid-run, surfacing as the typed [`cancel::OperationCancelled`]
+/// (cancel flag went active) or [`cancel::NeedsTerminal`] (job-control-stopped
+/// on an interactive auth prompt). Callers branch on those types rather than
+/// treating every `Err` as a spawn failure.
 #[derive(Debug)]
 pub struct PushIo {
     pub success: bool,
@@ -103,7 +107,11 @@ fn drain_push_pipe<R: Read>(
 
 impl GitCommand {
     pub fn fetch(&self, remote: &str, prune: bool) -> Result<()> {
-        let mut cmd = Command::new("git");
+        // git_command_at (not a raw `git`) scrubs any inherited GIT_DIR so
+        // the fetch targets the cwd's repo — not the hook-calling repo when
+        // sync runs inside a git hook — mirroring run_push's hardening.
+        let cwd = std::env::current_dir().context("Failed to resolve current directory")?;
+        let mut cmd = git_command_at(&cwd);
         cmd.args(["fetch", remote]);
 
         if prune {
@@ -166,55 +174,30 @@ impl GitCommand {
             cmd.arg("--no-verify");
         }
         cmd.args(push_args);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(unix)]
-        if self.cancel_flag().is_some() {
-            use std::os::unix::process::CommandExt;
-            // Own process group, only when this push is supervised
-            // (sync): escalations can tear down the whole hook subtree
-            // by pgid, and a hook stage that job-control-stops freezes
-            // its own group instead of daft's (#663). Unsupervised
-            // pushes (checkout-branch autopush, branch delete/rename)
-            // keep the caller's foreground group so terminal auth
-            // prompts and Ctrl+C behave exactly as before.
-            cmd.process_group(0);
-        }
 
-        let mut child = cmd.spawn().context("Failed to execute git push command")?;
-        let mut supervisor = cancel::ChildSupervisor::new(&child, self.cancel_flag());
-        let stdout_pipe = child
-            .stdout
-            .take()
-            .context("Failed to capture git push stdout")?;
-        let stderr_pipe = child
-            .stderr
-            .take()
-            .context("Failed to capture git push stderr")?;
+        // Isolated supervision: a supervised push (sync) runs in its own
+        // process group so escalations tear the whole pre-push hook subtree
+        // down by pgid, and a hook stage that job-control-stops freezes its
+        // own group instead of daft's (#663); a background-group `/dev/tty`
+        // read (interactive auth) surfaces as `NeedsTerminal`. Unsupervised
+        // pushes (checkout-branch autopush, branch delete/rename) pass no
+        // flag, so `supervise_command` keeps them in the caller's foreground
+        // group and terminal auth prompts + Ctrl+C behave exactly as before.
+        // The wait gates on the pipe drains: hook descendants inherit the
+        // write-ends and can outlive git, so the loop must run until EOF or a
+        // stopped/TERM-immune holder would wedge a join with nobody watching
+        // the flag (the #663 wedge). All of that lives in `supervise_command`
+        // — the one skeleton shared with the fetch/pull/rebase seams.
+        let (verdict, stdout, stderr) = cancel::supervise_command(
+            &mut cmd,
+            self.cancel_flag(),
+            cancel::SupervisionMode::Isolated,
+            |pipe| drain_push_pipe(pipe, PushStream::Stdout, opts.on_output),
+            |pipe| drain_push_pipe(pipe, PushStream::Stderr, opts.on_output),
+        )
+        .context("Failed to execute git push command")?;
 
-        // Thread-per-pipe drain (the executor/command.rs pattern): both pipes
-        // are read concurrently so neither can fill and deadlock the child.
-        // Scoped threads let the tee closure borrow from the caller. The
-        // supervisor's wait also gates on the drains: hook descendants
-        // inherit the pipe write-ends and can outlive git itself, so the
-        // poll-and-cascade loop must keep running until EOF — otherwise a
-        // stopped or TERM-immune holder would leave this blocked in a join
-        // with nobody watching the cancel flag (the #663 wedge).
-        let (verdict, stdout, stderr) = std::thread::scope(|scope| {
-            let out =
-                scope.spawn(|| drain_push_pipe(stdout_pipe, PushStream::Stdout, opts.on_output));
-            let err =
-                scope.spawn(|| drain_push_pipe(stderr_pipe, PushStream::Stderr, opts.on_output));
-            let verdict = supervisor.wait(&mut child, || out.is_finished() && err.is_finished());
-            (
-                verdict,
-                out.join().unwrap_or_default(),
-                err.join().unwrap_or_default(),
-            )
-        });
-
-        match verdict.context("Failed to wait for git push command")? {
+        match verdict {
             cancel::Verdict::Completed(status) => Ok(PushIo {
                 success: status.success(),
                 stdout,
@@ -322,11 +305,15 @@ impl GitCommand {
     /// of inheriting the process CWD. This is required for parallel workers
     /// where `set_current_dir` would race.
     pub fn pull_in(&self, args: &[&str], dir: Option<&Path>) -> Result<String> {
-        let mut cmd = Command::new("git");
-
-        if let Some(d) = dir {
-            cmd.current_dir(d);
-        }
+        // git_command_at scrubs inherited GIT_* so -C is authoritative even
+        // inside a git hook. Parallel workers pass an explicit dir; the
+        // no-dir path falls back to the process cwd.
+        let mut cmd = match dir {
+            Some(d) => git_command_at(d),
+            None => git_command_at(
+                &std::env::current_dir().context("Failed to resolve current directory")?,
+            ),
+        };
 
         // Force colored diff stats even when stdout is captured,
         // so the output renders correctly when printed to the terminal.
@@ -411,7 +398,11 @@ impl GitCommand {
         {
             return oxide::ls_remote_heads(&repo, remote, branch);
         }
-        // No local repo (e.g. during clone) — fall through to git CLI
+        // No local repo (e.g. during clone) — fall through to git CLI.
+        // Routed through output_with_cancel so a supervised caller (sync's
+        // gone-branch identification) can tear a stalled network ls-remote
+        // down on the first Ctrl+C; unsupervised callers (clone) pass no
+        // flag and get a classic blocking run.
         let mut cmd = Command::new("git");
         cmd.args(["ls-remote", "--heads", remote]);
 
@@ -419,8 +410,7 @@ impl GitCommand {
             cmd.arg(format!("refs/heads/{branch}"));
         }
 
-        let output = cmd
-            .output()
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git ls-remote command")?;
 
         if !output.status.success() {
@@ -459,15 +449,17 @@ impl GitCommand {
         {
             return oxide::ls_remote_branch_exists(&repo, remote_name, branch);
         }
-        // No local repo (e.g. during clone) — fall through to git CLI
-        let output = Command::new("git")
-            .args([
-                "ls-remote",
-                "--heads",
-                remote_name,
-                &format!("refs/heads/{branch}"),
-            ])
-            .output()
+        // No local repo (e.g. during clone) — fall through to git CLI.
+        // output_with_cancel so a supervised caller (sync gone-branch check)
+        // can cancel a stalled network probe; unsupervised callers block.
+        let mut cmd = Command::new("git");
+        cmd.args([
+            "ls-remote",
+            "--heads",
+            remote_name,
+            &format!("refs/heads/{branch}"),
+        ]);
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git ls-remote command")?;
 
         if !output.status.success() {
@@ -539,10 +531,15 @@ impl GitCommand {
     /// When `dir` is `Some`, the git command runs in that directory instead
     /// of inheriting the process CWD. Required for parallel workers.
     pub fn rebase_in(&self, base: &str, dir: Option<&Path>, autostash: bool) -> Result<String> {
-        let mut cmd = Command::new("git");
-        if let Some(d) = dir {
-            cmd.current_dir(d);
-        }
+        // git_command_at scrubs inherited GIT_* so -C is authoritative even
+        // inside a git hook (parallel workers pass an explicit dir; the
+        // no-dir path falls back to the process cwd).
+        let mut cmd = match dir {
+            Some(d) => git_command_at(d),
+            None => git_command_at(
+                &std::env::current_dir().context("Failed to resolve current directory")?,
+            ),
+        };
         cmd.args(["rebase", base]);
         if autostash {
             cmd.arg("--autostash");
