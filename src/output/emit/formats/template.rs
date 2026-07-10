@@ -5,7 +5,7 @@ use crate::output::emit::dispatch::EmitError;
 use crate::output::emit::formats::json::to_json_value;
 use crate::output::emit::payload::{EmitPayload, Shape};
 use std::io::Write;
-use tera::{Context, Tera};
+use tera::{Context, Error, Kwargs, State, Tera, TeraResult, Value};
 
 pub fn emit<W: Write>(
     _shape: Shape,
@@ -31,13 +31,30 @@ pub fn emit<W: Write>(
         ctx.insert("items", &to_json_value(payload));
     }
 
-    let rendered = Tera::one_off(template, &ctx, false)
+    // tera 2.0.0 rewrote its template engine and trimmed the built-in filter
+    // set, dropping `json_encode`. Re-register it so `--template` users keep the
+    // ability to serialize a value to JSON (e.g. `{{ items | json_encode() }}`).
+    // `Tera::one_off` builds a throwaway instance that can't carry custom
+    // filters, so construct one explicitly and render with autoescape off.
+    let mut tera = Tera::default();
+    tera.register_filter("json_encode", json_encode);
+    let rendered = tera
+        .render_str(template, &ctx, false)
         .map_err(|e| EmitError::Other(format!("template error: {e}")))?;
     writer.write_all(rendered.as_bytes())?;
     if !rendered.ends_with('\n') {
         writer.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// Serialize a value to a compact JSON string.
+///
+/// Restores the `json_encode` filter that Tera shipped as a built-in through
+/// 1.x and removed in 2.0.0. Tera's `Value` implements `serde::Serialize`, so
+/// this routes through `serde_json` just as the old built-in did.
+fn json_encode(value: Value, _: Kwargs, _: &State) -> TeraResult<String> {
+    serde_json::to_string(&value).map_err(Error::message)
 }
 
 #[cfg(test)]
@@ -78,5 +95,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("template error"));
+    }
+
+    #[test]
+    fn json_encode_filter_serializes_values() {
+        // Regression: tera 2.0.0 removed the built-in `json_encode` filter;
+        // daft re-registers it so `--template` keeps JSON-encoding support.
+        let out = render(&fixture_document(), "{{ title | json_encode() }}");
+        assert_eq!(out, "\"Release 1.2\"\n");
+
+        let arr = render(&fixture_tabular(), "{{ items | json_encode() }}");
+        assert!(
+            arr.trim_start().starts_with('['),
+            "expected a JSON array, got: {arr}"
+        );
+        assert!(
+            arr.contains("alpha"),
+            "expected item name in JSON, got: {arr}"
+        );
     }
 }
