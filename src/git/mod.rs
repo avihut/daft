@@ -96,6 +96,15 @@ impl GitCommand {
         self.cancel.as_deref()
     }
 
+    /// Whether an attached cancel flag has gone active. Cheap enough to
+    /// poll at the top of a per-worktree loop so sequential engines stop
+    /// scheduling new work the moment a cancel lands (rather than
+    /// fast-failing every remaining worktree through a torn-down subprocess).
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancel_flag()
+            .is_some_and(cancel::CancelFlag::is_cancelled)
+    }
+
     /// Returns true (once per process) if the gitoxide notice should be shown.
     pub fn take_gitoxide_notice(&self) -> bool {
         should_show_gitoxide_notice(self.use_gitoxide)

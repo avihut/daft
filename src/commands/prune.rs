@@ -150,6 +150,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
+        cancel: None,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;

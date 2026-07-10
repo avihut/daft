@@ -83,6 +83,14 @@ pub fn execute(
     let mut results: Vec<WorktreeRebaseResult> = Vec::new();
 
     for (path, branch) in &worktrees {
+        // Stop scheduling new rebases once a cancel lands — otherwise every
+        // remaining worktree fast-fails through a torn-down `git rebase`,
+        // renders as a spurious conflict, and its no-op `rebase --abort`
+        // emits a "Failed to abort rebase" warning (#663).
+        if git.is_cancelled() {
+            break;
+        }
+
         // Skip the base branch itself
         if branch == &params.base_branch {
             continue;
@@ -123,6 +131,9 @@ pub fn execute(
     // Rebase local-only branches (no persistent worktree) via temp worktrees.
     let all_local_branches = git.for_each_ref("%(refname:short)", "refs/heads")?;
     for branch in all_local_branches.lines() {
+        if git.is_cancelled() {
+            break;
+        }
         let branch = branch.trim();
         if branch.is_empty() || branch == params.base_branch {
             continue;

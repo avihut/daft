@@ -24,6 +24,10 @@ pub struct PruneParams {
     pub remote_name: String,
     /// Where to cd after pruning the current worktree.
     pub prune_cd_target: PruneCdTarget,
+    /// Optional two-stage cancel flag (sync's sequential path). When set,
+    /// the phase's `git fetch --prune` is torn down on Ctrl+C instead of
+    /// blocking to completion; `daft prune` and the DAG paths pass `None`.
+    pub cancel: Option<std::sync::Arc<crate::git::cancel::CancelFlag>>,
 }
 
 /// Detail of a single pruned branch.
@@ -116,7 +120,10 @@ pub fn execute(
     params: &PruneParams,
     sink: &mut (impl ProgressSink + HookRunner),
 ) -> Result<PruneResult> {
-    let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    let mut git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
+    if let Some(cancel) = &params.cancel {
+        git = git.with_cancel(std::sync::Arc::clone(cancel));
+    }
     let git_dir = get_git_common_dir()?;
     let default_branch =
         get_default_branch_local(&git_dir, &params.remote_name, params.use_gitoxide).ok();

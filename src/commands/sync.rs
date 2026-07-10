@@ -278,6 +278,34 @@ fn exit_cancelled(done: usize, unfinished: usize) -> ! {
     std::process::exit(130);
 }
 
+/// Write the shell wrapper's cd redirect (or a fallback hint) when the
+/// prune phase removed the worktree the user's shell is sitting in.
+/// Shared by the normal exit and the cancelled-exit paths.
+fn write_cd_redirect(output: &mut CliOutput, cd_target: &std::path::Path) {
+    if std::env::var(CD_FILE_ENV).is_ok() {
+        output.cd_path(cd_target);
+    } else {
+        output.result(&format!(
+            "Run `cd {}` (your previous working directory was removed)",
+            cd_target.display()
+        ));
+    }
+}
+
+/// Cancelled-exit for the sequential path: flush the prune phase's cd
+/// redirect (so the shell leaves a just-removed worktree) *before*
+/// diverging via [`exit_cancelled`]. Without this, exiting 130 skips the
+/// end-of-function cd write and strands the shell in the deleted directory
+/// the prune already removed (#663). The sequential path streams per-phase
+/// progress as it runs, so it has no TUI row tallies — (0, 0) yields the
+/// bare "Sync cancelled." line, which is the right message there.
+fn exit_cancelled_with_cd(output: &mut CliOutput, cd_target: Option<&PathBuf>) -> ! {
+    if let Some(cd) = cd_target {
+        write_cd_redirect(output, cd);
+    }
+    exit_cancelled(0, 0);
+}
+
 /// Sequential (non-TTY) execution path — the original sync flow.
 ///
 /// Cancellation here is coarser than the TUI path: the active git
@@ -311,16 +339,20 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
     )?;
 
     // Phase 1: Prune stale branches and worktrees
-    let prune_result = run_prune_phase(&mut output, &settings, force);
+    let prune_result = run_prune_phase(&mut output, &settings, force, cancel);
     if cancel.is_cancelled() {
-        exit_cancelled(0, 0);
+        // Prune may have removed our cwd before the cancel landed — salvage
+        // its cd target so the shell still redirects out of the deleted
+        // worktree (#663).
+        let cd = prune_result.as_ref().ok().and_then(|r| r.cd_target.clone());
+        exit_cancelled_with_cd(&mut output, cd.as_ref());
     }
     let prune_result = prune_result?;
 
     // Phase 2: Update all remaining worktrees
     let update_result = run_update_phase(&mut output, &settings, force, &default_branch, cancel);
     if cancel.is_cancelled() {
-        exit_cancelled(0, 0);
+        exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
     }
     update_result?;
 
@@ -394,7 +426,7 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
             cancel,
         );
         if cancel.is_cancelled() {
-            exit_cancelled(0, 0);
+            exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
         }
         let result = result?;
         result
@@ -438,21 +470,14 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
             cancel,
         );
         if cancel.is_cancelled() {
-            exit_cancelled(0, 0);
+            exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
         }
         push_result?;
     }
 
     // Write the cd target for the shell wrapper (from prune phase)
     if let Some(ref cd_target) = prune_result.cd_target {
-        if std::env::var(CD_FILE_ENV).is_ok() {
-            output.cd_path(cd_target);
-        } else {
-            output.result(&format!(
-                "Run `cd {}` (your previous working directory was removed)",
-                cd_target.display()
-            ));
-        }
+        write_cd_redirect(&mut output, cd_target);
     }
 
     Ok(())
@@ -776,7 +801,13 @@ fn run_tui(
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
-            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+            // Carry the cancel flag: its `ls-remote` probes are network
+            // calls that must be torn down on the first Ctrl+C, like every
+            // other orchestrator git op (#663) — otherwise a stalled remote
+            // here ignores the cancel until it returns.
+            let git = GitCommand::new(false)
+                .with_gitoxide(orch_settings.use_gitoxide)
+                .with_cancel(Arc::clone(&orch_cancel));
             let mut sink = NullBridge;
             prune::identify_gone_branches(
                 &git,
@@ -1042,14 +1073,14 @@ fn run_tui(
     };
 
     // A cancel that arrived as a raw-mode key event never went through
-    // the signal handler: the flag may still be at level 0. Escalate
-    // exactly once here — never twice, or one keypress would jump
-    // straight to SIGKILL.
+    // the signal handler: the flag may still be at level 0. Lift it 0 → 1
+    // atomically — a check-then-escalate would race the ctrlc handler
+    // thread (SIGTERM/SIGHUP via the `termination` feature) and could
+    // compound to level 2, SIGKILL'ing hook subtrees off one graceful
+    // keypress (#8). `soft_escalate_once` no-ops if a cancel already landed.
     let run_cancelled = completed.cancelled || cancel.is_cancelled();
     if run_cancelled {
-        if !cancel.is_cancelled() {
-            cancel.escalate();
-        }
+        cancel.soft_escalate_once();
         eprintln!();
         eprintln!("Cancelling — waiting for running tasks (press Ctrl+C again to force-kill)…");
     }
@@ -1476,6 +1507,24 @@ fn execute_push_task(
         );
     }
 
+    // A push that job-control-stopped on an interactive auth prompt daft
+    // can't forward is a real, actionable failure — never the benign
+    // "diverged" the hook-less branch below would assign it. Independent
+    // of the cancel flag: the tty-stop is detected at level 0 (#663).
+    if result.needs_terminal {
+        let hint = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or("push needs terminal input for interactive auth")
+            .to_string();
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed(hint),
+            branch_outcomes.clone(),
+        );
+    }
+
     if result.no_upstream {
         (
             TaskStatus::Succeeded,
@@ -1594,6 +1643,7 @@ fn run_prune_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
     force: bool,
+    cancel: &Arc<CancelFlag>,
 ) -> Result<prune::PruneResult> {
     let params = prune::PruneParams {
         force,
@@ -1601,6 +1651,9 @@ fn run_prune_phase(
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
+        // Sequential path: make the prune's `git fetch --prune` cancellable
+        // like the update/rebase/push phases (#663).
+        cancel: Some(Arc::clone(cancel)),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -1665,6 +1718,14 @@ fn run_update_phase(
     };
     output.finish_spinner();
     let result = exec_result?;
+
+    // Cancelled mid-phase: the torn-down worktrees would render as genuine
+    // update failures. Skip the per-worktree failures + summary and let
+    // run_sequential print the cancel notice and exit 130 — cancellation is
+    // not a failure (#663; the TUI path relabels these Cancelled likewise).
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
 
     render_fetch_result(&result, output, base_branch);
 
@@ -1846,6 +1907,14 @@ fn run_rebase_phase(
     output.finish_spinner();
     let result = exec_result?;
 
+    // Cancelled mid-phase: a rebase torn down by the cancel cascade surfaces
+    // as a conflict (rebase_single_worktree aborts on any error). Don't
+    // render those as genuine conflicts — run_sequential exits 130 and
+    // cancellation is not a conflict (#663).
+    if cancel.is_cancelled() {
+        return Ok(result);
+    }
+
     render_rebase_result(&result, output, default_branch);
 
     if result.conflict_count() > 0 {
@@ -2023,6 +2092,13 @@ fn run_push_phase(
     }
     let result = exec_result?;
 
+    // Cancelled mid-phase: torn-down pushes would render as diverged/failed.
+    // Skip the summary; run_sequential prints the cancel notice and exits
+    // 130 — cancellation is not a push failure (#663).
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
     render_push_result(&result, output, base_branch);
 
     if result.failed_count() > 0 {
@@ -2030,6 +2106,17 @@ fn run_push_phase(
             "{} branch(es) failed to push",
             result.failed_count()
         ));
+    }
+
+    // A push that job-control-stopped on interactive auth daft can't forward
+    // did not happen and needs terminal action — exit non-zero with the hint
+    // rather than leaving it a benign "diverged" warning (#663).
+    let needs_terminal = result.needs_terminal_count();
+    if needs_terminal > 0 {
+        anyhow::bail!(
+            "{needs_terminal} push(es) stopped waiting for terminal input (interactive auth?); \
+             run the push manually there, or configure an ssh-agent/credential helper"
+        );
     }
 
     // A pre-push gate saying no must surface as a failure, not a warning.
@@ -2076,6 +2163,10 @@ fn render_push_worktree_status(
         } else {
             output.info(&format!(" * {} {name}", tag_pushed()));
         }
+    } else if r.needs_terminal {
+        // Job-control-stopped on interactive auth: not a benign divergence
+        // — the push did not happen and needs terminal action (#663).
+        output.error(&format!(" * {} {name} — needs terminal auth", tag_failed()));
     } else {
         output.warning(&format!(" * {} {name}", tag_diverged()));
     }

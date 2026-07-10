@@ -38,6 +38,12 @@ pub struct WorktreePushResult {
     pub up_to_date: bool,
     /// Branch has no remote tracking branch.
     pub no_upstream: bool,
+    /// The push job-control-stopped on an interactive auth prompt daft
+    /// cannot forward (supervised push in its own process group SIGTTIN'd
+    /// on a `/dev/tty` read). Distinct from a plain failure: the push did
+    /// not happen and needs terminal action, so it must not be reported as
+    /// a benign divergence (#663).
+    pub needs_terminal: bool,
     /// Verdict on the repo's pre-push gate for this push.
     pub hook: HookVerdict,
     pub message: String,
@@ -85,6 +91,14 @@ impl PushResult {
                     && matches!(r.hook, HookVerdict::Rejected | HookVerdict::Passed)
             })
             .count()
+    }
+
+    /// Pushes that job-control-stopped on an interactive auth prompt daft
+    /// could not forward. Like a gated failure, this exits non-zero: the
+    /// push definitively did not happen and needs terminal action — it is
+    /// not the benign "diverged" warn-and-continue case (#663).
+    pub fn needs_terminal_count(&self) -> usize {
+        self.results.iter().filter(|r| r.needs_terminal).count()
     }
 }
 
@@ -460,6 +474,13 @@ pub fn execute(
     let mut results: Vec<WorktreePushResult> = Vec::new();
 
     for (path, branch) in &worktrees {
+        // Stop scheduling new pushes once a cancel lands — otherwise every
+        // remaining branch fast-fails through a torn-down `git push` and
+        // renders as a spurious failure (#663).
+        if git.is_cancelled() {
+            break;
+        }
+
         if exclude_branches.contains(branch) {
             continue;
         }
@@ -493,6 +514,14 @@ pub fn execute(
         results,
         remote_name: params.remote_name.clone(),
     })
+}
+
+/// Whether an error is the typed [`NeedsTerminal`](crate::git::cancel::NeedsTerminal)
+/// marker — a supervised push that job-control-stopped on an interactive auth
+/// prompt (#663). Walks the anyhow chain in case a layer added context.
+fn error_needs_terminal(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.is::<crate::git::cancel::NeedsTerminal>())
 }
 
 /// Push a single worktree branch to its remote tracking branch.
@@ -594,11 +623,26 @@ pub fn push_single_worktree(
             }
         }
         Err(e) => {
+            // A supervised push torn down mid-run surfaces as a typed error.
+            // NeedsTerminal (job-control stop on an interactive auth prompt)
+            // must be preserved so the caller reports it as a real failure
+            // with the auth hint, not a benign "diverged" (#663).
+            let needs_terminal = error_needs_terminal(&e);
+            let cancelled = e
+                .chain()
+                .any(|c| c.is::<crate::git::cancel::OperationCancelled>());
             let msg = format!("{e}");
-            progress.on_warning(&format!("Failed to push '{worktree_name}': {msg}"));
+            // A cancelled push is not a failure: the whole run is being torn
+            // down and the caller prints one "cancelled" summary. Emitting a
+            // "Failed to push" warning here would mislabel it in the
+            // sequential path's live output (#663).
+            if !cancelled {
+                progress.on_warning(&format!("Failed to push '{worktree_name}': {msg}"));
+            }
             WorktreePushResult {
                 worktree_name: worktree_name.to_string(),
                 branch_name: branch_name.to_string(),
+                needs_terminal,
                 message: msg,
                 ..Default::default()
             }
@@ -1093,5 +1137,48 @@ mod tests {
         assert_eq!(refs[0].local_ref, "(delete)");
         assert_eq!(refs[0].remote_ref, "refs/heads/main");
         assert_eq!(refs[0].local_oid, zero_oid_like(None));
+    }
+
+    // ── #663: interactive-auth push stops are surfaced, not "diverged" ──
+
+    #[test]
+    fn error_needs_terminal_detects_marker_through_context() {
+        use crate::git::cancel::NeedsTerminal;
+        // Bare typed error.
+        assert!(error_needs_terminal(&anyhow::Error::from(NeedsTerminal)));
+        // Still detected once a layer wraps it in context (matches how the
+        // push seams add `.context(...)` above run_push).
+        let wrapped = anyhow::Error::from(NeedsTerminal).context("Failed to execute git push");
+        assert!(error_needs_terminal(&wrapped));
+        // An unrelated error is not mistaken for a terminal stop.
+        assert!(!error_needs_terminal(&anyhow::anyhow!("non-fast-forward")));
+        assert!(!error_needs_terminal(&anyhow::Error::from(
+            crate::git::cancel::OperationCancelled
+        )));
+    }
+
+    #[test]
+    fn needs_terminal_count_only_counts_stopped_pushes() {
+        let result = PushResult {
+            remote_name: "origin".into(),
+            results: vec![
+                WorktreePushResult {
+                    needs_terminal: true,
+                    ..Default::default()
+                },
+                WorktreePushResult {
+                    success: true,
+                    ..Default::default()
+                },
+                WorktreePushResult {
+                    // A plain hook-less failure must NOT count as needs-terminal.
+                    success: false,
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(result.needs_terminal_count(), 1);
+        // And it is not folded into gated_failure_count (hook is NoHook).
+        assert_eq!(result.gated_failure_count(), 0);
     }
 }
