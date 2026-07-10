@@ -93,8 +93,37 @@ pub struct JobsArgs {
     #[arg(long = "hook")]
     hook_filter: Option<String>,
 
+    /// Target repo by catalog name, path, or uuid (default: the current
+    /// repo). Removed repos resolve too — their logs are retained.
+    #[arg(long = "repo", value_name = "REPO")]
+    repo: Option<String>,
+
     #[command(flatten)]
     emit: EmitArgs,
+}
+
+/// Repo identity for this invocation: `--repo` resolves through the
+/// catalog (live or removed — a removed repo's logs stay addressable);
+/// the default is the cwd repo's `daft-id`.
+fn resolve_repo_hash(repo: Option<&str>) -> Result<String> {
+    let Some(needle) = repo else {
+        return crate::core::repo_identity::compute_repo_id();
+    };
+    let Some(catalog) = crate::catalog::Catalog::open_ro()? else {
+        anyhow::bail!("the repo catalog is empty — nothing matches '{needle}'");
+    };
+    match catalog.resolve(needle)? {
+        Some(row) => Ok(row.uuid),
+        None => {
+            let err = catalog.not_found(needle);
+            if let crate::catalog::CatalogError::NotFound { suggestions, .. } = &err
+                && !suggestions.is_empty()
+            {
+                anyhow::bail!("{err}\n  did you mean: {}", suggestions.join(", "));
+            }
+            Err(err.into())
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -489,6 +518,19 @@ fn build_retry_set(
 }
 
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
+    // --repo addresses another (possibly removed) repo's history: listing
+    // and one-shot logs only. Cancel/retry/prune act on live jobs and
+    // --follow needs that repo's coordinator — all inherently cwd-repo.
+    if args.repo.is_some() {
+        let supported = match &args.command {
+            None => true,
+            Some(JobsCommand::Logs { follow, .. }) => !follow,
+            _ => false,
+        };
+        if !supported {
+            anyhow::bail!("--repo applies to listing and one-shot `logs` only");
+        }
+    }
     match args.command {
         None => list_jobs(&args, path, output),
         Some(JobsCommand::Logs {
@@ -877,13 +919,15 @@ fn build_invocation_node(
 
 /// Default subcommand: list jobs grouped by worktree and invocation.
 fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let repo_hash = resolve_repo_hash(args.repo.as_deref())?;
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
     let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
-    let invocations = if args.all {
+    let invocations = if args.all || (args.repo.is_some() && args.worktree.is_none()) {
+        // --repo implies all worktrees: "the current worktree" belongs to
+        // the cwd repo, not the addressed one (which may not even exist).
         store.list_invocations()?
     } else if let Some(ref wt) = args.worktree {
         store.list_invocations_for_worktree(wt)?
@@ -1248,7 +1292,7 @@ fn show_logs(
     _path: &Path,
     _output: &mut dyn Output,
 ) -> Result<()> {
-    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let repo_hash = resolve_repo_hash(_args.repo.as_deref())?;
     let store = LogStore::for_repo(&repo_hash)?;
     let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();

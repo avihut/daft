@@ -67,14 +67,42 @@ pub fn run() -> Result<()> {
         }
     };
 
+    let relations = relations_of(&row, &catalog);
+
     if args.emit.is_structured() {
-        let payload = EmitPayload::Document(document(&row));
+        let payload = EmitPayload::Document(document(&row, &relations));
         return emit::emit_and_handle("repo info", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
-    render(&row, &mut output);
+    render(&row, &relations, &mut output);
     Ok(())
+}
+
+/// The repo's relations manifest, resolved against the catalog. Read from
+/// the repo's representative worktree (daft.yml is per-worktree); a
+/// removed or unreadable repo simply has none to show.
+fn relations_of(
+    row: &CatalogRepoRow,
+    catalog: &Catalog,
+) -> Vec<crate::catalog::relations::ResolvedRelation> {
+    if row.removed_at.is_some() {
+        return Vec::new();
+    }
+    let root = std::path::Path::new(&row.path);
+    let Some(worktree) = crate::core::repo::find_representative_worktree(root) else {
+        return Vec::new();
+    };
+    let entries = crate::hooks::yaml_config_loader::load_merged_config(&worktree)
+        .ok()
+        .flatten()
+        .and_then(|config| config.relations)
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let rows = catalog.list(false).unwrap_or_default();
+    crate::catalog::relations::resolve_relations(&entries, &rows)
 }
 
 fn not_found_error(catalog: &Catalog, needle: &str) -> anyhow::Error {
@@ -87,7 +115,10 @@ fn not_found_error(catalog: &Catalog, needle: &str) -> anyhow::Error {
     err.into()
 }
 
-fn document(row: &CatalogRepoRow) -> serde_json::Value {
+fn document(
+    row: &CatalogRepoRow,
+    relations: &[crate::catalog::relations::ResolvedRelation],
+) -> serde_json::Value {
     serde_json::json!({
         "name": row.name,
         "uuid": row.uuid,
@@ -98,10 +129,20 @@ fn document(row: &CatalogRepoRow) -> serde_json::Value {
         "created_at": row.created_at.to_rfc3339(),
         "updated_at": row.updated_at.to_rfc3339(),
         "removed_at": row.removed_at.map(|t| t.to_rfc3339()),
+        "relations": relations.iter().map(|r| serde_json::json!({
+            "url": r.entry.url,
+            "name": r.entry.name,
+            "kind": r.entry.kind,
+            "resolved_path": r.repo.as_ref().map(|repo| repo.path.clone()),
+        })).collect::<Vec<_>>(),
     })
 }
 
-fn render(row: &CatalogRepoRow, output: &mut dyn Output) {
+fn render(
+    row: &CatalogRepoRow,
+    relations: &[crate::catalog::relations::ResolvedRelation],
+    output: &mut dyn Output,
+) {
     output.raw(&format!("Name:            {}", row.name));
     let status = match row.removed_at {
         Some(t) => format!("removed {}", t.format("%Y-%m-%d %H:%M UTC")),
@@ -123,4 +164,24 @@ fn render(row: &CatalogRepoRow, output: &mut dyn Output) {
         "Registered:      {}",
         row.created_at.format("%Y-%m-%d %H:%M UTC")
     ));
+
+    if !relations.is_empty() {
+        output.raw("Relations:");
+        for relation in relations {
+            let kind = relation
+                .entry
+                .kind
+                .as_deref()
+                .map(|k| format!(" [{k}]"))
+                .unwrap_or_default();
+            let target = match &relation.repo {
+                Some(repo) => repo.path.clone(),
+                None => format!(
+                    "not cloned — `{}`",
+                    crate::daft_cmd(&format!("clone {}", relation.entry.url))
+                ),
+            };
+            output.raw(&format!("  {}{kind} → {target}", relation.entry.label()));
+        }
+    }
 }

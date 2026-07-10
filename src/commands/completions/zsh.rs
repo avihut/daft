@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
-    uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, emit_formats_for, extract_flags,
+    get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -56,9 +56,25 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
             | "daft-start"
     );
 
+    // Value completion for --repo flag (catalog repo names)
+    let has_repo_flag = command_has_repo_flag(command_name);
+
     // Emit the prev_word variable once if any prev-based completion is needed
-    if has_branch_completions || has_layout || has_skip_hooks {
+    if has_branch_completions || has_layout || has_skip_hooks || has_repo_flag {
         output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+    }
+
+    if has_repo_flag {
+        output.push_str("    # Catalog repo-name completion for --repo\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--repo\" ]]; then\n");
+        output.push_str("        local -a repos\n");
+        output.push_str(
+            "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
+        );
+        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
     }
 
     if has_branch_completions {
@@ -299,6 +315,13 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --repo flag (catalog repo names)
+    let repo_flag_pre = if command_has_repo_flag(command_name) {
+        "    if [[ \"${words[$((CURRENT-1))]}\" == \"--repo\" ]]; then\n        local -a repos\n        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n        return\n    fi\n\n"
+    } else {
+        ""
+    };
+
     // daft-go position 2 completes branches of the repo named at position 1;
     // the __complete protocol only carries the current word, so pass the
     // first positional via env.
@@ -315,7 +338,7 @@ __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
 
-{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
+{repo_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
         flags=(
 {flags_block}        )

@@ -23,6 +23,7 @@
 //! module performs **zero** `TrustDatabase` reads or writes. Migrating
 //! trust/layout into the store is its own future PR.
 
+pub mod fleet;
 pub mod normalize;
 pub mod registration;
 pub mod relations;

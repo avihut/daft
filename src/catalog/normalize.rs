@@ -73,6 +73,19 @@ fn host_path(rest: &str, default_port: Option<&str>) -> String {
     out
 }
 
+/// Whether a clone-source argument is URL- or path-shaped (as opposed to a
+/// bare word that could be a catalog name). Anything with a scheme, an
+/// scp-like `host:path`, a path prefix, or an existing filesystem path
+/// bypasses catalog resolution.
+pub(crate) fn looks_like_remote_source(input: &str) -> bool {
+    input.contains("://")
+        || input.starts_with('/')
+        || input.starts_with('.')
+        || input.starts_with('~')
+        || scp_like_parts(input).is_some()
+        || std::path::Path::new(input).exists()
+}
+
 /// Split an scp-like remote (`[user@]host:path`) into its two halves.
 /// Returns `None` for anything that can't be scp shorthand: URLs with a
 /// scheme, strings without a colon, or colons that appear after the first

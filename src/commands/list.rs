@@ -35,7 +35,7 @@ use tabled::{
 };
 use terminal_size::{Width as TermWidth, terminal_size};
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "git-worktree-list")]
 #[command(version = crate::VERSION)]
 #[command(about = "List all worktrees with status information")]
@@ -145,6 +145,20 @@ pub struct Args {
         help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     pub(crate) sort: Option<String>,
+
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        conflicts_with = "all_repos",
+        help = "List another cataloged repository's worktrees"
+    )]
+    pub(crate) repo: Option<String>,
+
+    #[arg(
+        long = "all-repos",
+        help = "List every cataloged repository's worktrees"
+    )]
+    pub(crate) all_repos: bool,
 }
 
 /// A row in the worktree list table.
@@ -177,6 +191,26 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-list"));
 
     init_logging(args.verbose);
+
+    // Fleet scopes work from anywhere; the single-repo form needs a repo.
+    if args.repo.is_some() || args.all_repos {
+        if is_git_repository()? {
+            crate::catalog::touch_current_repo();
+        }
+        let scope = match &args.repo {
+            Some(needle) => crate::catalog::fleet::FleetScope::Single(needle.clone()),
+            None => crate::catalog::fleet::FleetScope::AllRepos,
+        };
+        let mut output = crate::output::CliOutput::new(crate::output::OutputConfig::default());
+        // Always the blocking renderer — one live TUI per repo would churn.
+        let outcome = crate::catalog::fleet::for_each_repo(
+            scope,
+            /* current_repo_last */ false,
+            &mut output,
+            |_row| run_blocking(args.clone()),
+        )?;
+        return outcome.into_result();
+    }
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");

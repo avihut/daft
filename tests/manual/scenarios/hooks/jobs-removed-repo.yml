@@ -1,0 +1,49 @@
+name: Hook jobs of a removed repo stay addressable
+description:
+  daft hooks jobs --repo <name> resolves through the catalog — including removed
+  repos, whose logs are retained under their old uuid
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: say-hi
+              run: echo hi
+
+steps:
+  - name: Clone with trusted hooks
+    run:
+      git-worktree-clone --layout contained --trust-hooks $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+
+  - name: The hook run is on record
+    run: daft hooks jobs --all
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "say-hi"
+
+  - name: Remove the repo
+    run: daft repo remove -y test-repo 2>&1
+    expect:
+      exit_code: 0
+
+  - name: The removed repo's jobs still resolve by catalog name
+    run: daft hooks jobs --repo test-repo
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "say-hi"

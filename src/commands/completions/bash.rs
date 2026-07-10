@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
-    uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, emit_formats_for, extract_flags,
+    get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -58,6 +58,20 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
             "        layouts=$(daft __complete layout-value \"$cur\" 2>/dev/null | cut -f1)\n",
         );
         output.push_str("        COMPREPLY=( $(compgen -W \"$layouts\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Value completion for --repo flag (catalog repo names)
+    if command_has_repo_flag(command_name) {
+        output.push_str("    # Catalog repo-name completion for --repo\n");
+        output.push_str("    if [[ \"$prev\" == \"--repo\" ]]; then\n");
+        output.push_str("        local repos\n");
+        output.push_str(
+            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
         output.push_str("        return 0\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -219,6 +233,20 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --repo flag (catalog repo names)
+    let repo_flag_pre = if command_has_repo_flag(command_name) {
+        r#"    if [[ "$prev" == "--repo" ]]; then
+        local repos
+        repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+        COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+        return 0
+    fi
+
+"#
+    } else {
+        ""
+    };
+
     // daft-go's position-2 completion (branches of the repo at position 1)
     // needs the first positional; pass it via env — the __complete protocol
     // only carries the current word.
@@ -248,7 +276,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     local cur prev words cword
     _init_completion || return
 
-{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
+{repo_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return 0

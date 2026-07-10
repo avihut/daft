@@ -108,6 +108,19 @@ pub(super) fn uses_fetch_on_miss(command_name: &str) -> bool {
     matches!(command_name, "daft-go")
 }
 
+/// Whether a command carries a `--repo <REPO>` flag whose value completes
+/// to catalog repo names (via `daft __complete repo-name`).
+pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
+    matches!(
+        command_name,
+        "daft-go"
+            | "git-worktree-list"
+            | "git-worktree-fetch"
+            | "git-worktree-exec"
+            | "git-worktree-prune"
+    )
+}
+
 /// Whether a command accepts worktree paths as positional arguments and should
 /// fall back to filesystem directory completion when the dynamic source has
 /// nothing to offer (or as an additional candidate set). This keeps the

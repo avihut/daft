@@ -37,7 +37,7 @@ fn long_about() -> String {
     .join("\n")
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "daft-doctor")]
 #[command(about = "Diagnose daft installation and configuration issues")]
 #[command(long_about = long_about())]
@@ -61,6 +61,13 @@ pub struct Args {
     /// Only show warnings and errors
     #[arg(short, long, help = "Only show warnings and errors")]
     quiet: bool,
+
+    /// Check every cataloged repository, not just the current one
+    #[arg(
+        long = "all-repos",
+        help = "Check every cataloged repository, not just the current one"
+    )]
+    all_repos: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -69,19 +76,7 @@ pub fn run() -> Result<()> {
     // Doctor manages its own quiet/verbose filtering; Output is just the print sink.
     let mut output = CliOutput::new(OutputConfig::new(false, false));
 
-    let mut categories = Vec::new();
-
-    // Installation checks (always run)
-    categories.push(run_installation_checks());
-
-    // Repository checks (only inside a git repo)
-    let repo_ctx = repository::get_repo_context();
-    if let Some(ref ctx) = repo_ctx {
-        categories.push(run_repository_checks(ctx));
-
-        // Hooks checks (always when in a repo)
-        categories.push(run_hooks_checks(ctx));
-    }
+    let mut categories = collect_categories(args.all_repos);
 
     // Apply fixes if requested
     if args.fix {
@@ -91,12 +86,7 @@ pub fn run() -> Result<()> {
         }
         apply_fixes(&categories, &mut output);
         // Re-run checks after fixes
-        categories.clear();
-        categories.push(run_installation_checks());
-        if let Some(ref ctx) = repo_ctx {
-            categories.push(run_repository_checks(ctx));
-            categories.push(run_hooks_checks(ctx));
-        }
+        categories = collect_categories(args.all_repos);
     }
 
     // Display results
@@ -112,6 +102,54 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Assemble the full check-category list: installation + catalog always,
+/// then repository/hooks for the current repo — or, with `--all-repos`,
+/// for every live catalog entry (per-repo titled categories).
+fn collect_categories(all_repos: bool) -> Vec<CheckCategory> {
+    let mut categories = vec![
+        run_installation_checks(),
+        crate::doctor::catalog_checks::run_catalog_checks(),
+    ];
+
+    if all_repos {
+        let rows = crate::catalog::Catalog::open_ro()
+            .ok()
+            .flatten()
+            .and_then(|catalog| catalog.list(false).ok())
+            .unwrap_or_default();
+        let original = crate::utils::get_current_directory().ok();
+        for row in &rows {
+            let path = std::path::Path::new(&row.path);
+            if !path.is_dir() {
+                // The Catalog category already reports stale paths.
+                continue;
+            }
+            if crate::utils::change_directory(path).is_err() {
+                continue;
+            }
+            if let Some(ctx) = repository::get_repo_context() {
+                let mut repo_cat = run_repository_checks(&ctx);
+                repo_cat.title = format!("Repository — {}", row.name);
+                categories.push(repo_cat);
+                let mut hooks_cat = run_hooks_checks(&ctx);
+                hooks_cat.title = format!("Hooks — {}", row.name);
+                categories.push(hooks_cat);
+            }
+            if let Some(ref dir) = original {
+                let _ = crate::utils::change_directory(dir);
+            }
+        }
+        if let Some(ref dir) = original {
+            let _ = crate::utils::change_directory(dir);
+        }
+    } else if let Some(ref ctx) = repository::get_repo_context() {
+        categories.push(run_repository_checks(ctx));
+        categories.push(run_hooks_checks(ctx));
+    }
+
+    categories
 }
 
 fn run_installation_checks() -> CheckCategory {

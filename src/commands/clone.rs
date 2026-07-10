@@ -260,11 +260,40 @@ fn check_no_checkout_compat(no_checkout: bool, layout: &Layout) -> Result<()> {
     Ok(())
 }
 
+/// Interpret the clone positional: URL- and path-shaped inputs pass
+/// through untouched; a bare word that matches a catalog entry (live or
+/// removed — re-cloning by name is the removed-repo restore story)
+/// substitutes its recorded remote URL. Unknown bare words also pass
+/// through so git can produce its usual error.
+fn resolve_clone_source(input: &str, output: &mut dyn Output) -> Result<String> {
+    if crate::catalog::normalize::looks_like_remote_source(input) {
+        return Ok(input.to_string());
+    }
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return Ok(input.to_string());
+    };
+    let Ok(Some(row)) = catalog.resolve(input) else {
+        return Ok(input.to_string());
+    };
+    match &row.remote_url {
+        Some(url) => {
+            output.step(&format!("Cloning '{}' from {url} (catalog)", row.name));
+            Ok(url.clone())
+        }
+        None => anyhow::bail!(
+            "catalog entry '{}' has no recorded remote URL — pass the URL directly",
+            row.name
+        ),
+    }
+}
+
 fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> Result<()> {
     check_dependencies()?;
 
     let global_config = GlobalConfig::load().unwrap_or_default();
     let original_dir = get_current_directory()?;
+
+    let repository_url = resolve_clone_source(&args.repository_url, output)?;
 
     let branch_source = BranchSource::from_args(&args.branch, args.all_branches);
 
@@ -276,7 +305,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Phase 1: Always clone bare first
     let bare_params = clone::BareCloneParams {
-        repository_url: args.repository_url.clone(),
+        repository_url,
         branch: bare_branch.clone(),
         no_checkout: args.no_checkout,
         all_branches: args.all_branches,

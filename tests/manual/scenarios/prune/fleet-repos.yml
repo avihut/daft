@@ -1,0 +1,27 @@
+name: Prune across repos
+description:
+  daft prune --all-repos sweeps every cataloged repository sequentially (current
+  repo last)
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Fleet prune runs in every repo
+    run: daft prune --all-repos 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "── test-repo-a ──"
+        - "── test-repo-b ──"

@@ -282,6 +282,7 @@ daft hooks jobs [OPTIONS]
 | `--worktree <WORKTREE>` | Filter to a specific worktree (can be deleted) |  |
 | `--status <STATUS>` | Filter to invocations containing jobs with this status |  |
 | `--hook <HOOK_FILTER>` | Filter to invocations of this hook type |  |
+| `--repo <REPO>` | Target repo by catalog name, path, or uuid (default: the current repo). Removed repos resolve too — their logs are retained |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
 | `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
 | `--no-headers` | Omit header row (tsv/csv only) |  |

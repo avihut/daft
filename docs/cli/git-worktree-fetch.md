@@ -56,6 +56,8 @@ git worktree-fetch [OPTIONS] [TARGETS] [PULL_ARGS]
 | `--no-ff-only` | Allow merge commits |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 | `-q, --quiet` | Suppress non-error output |  |
+| `--repo <REPO>` | Update another cataloged repository |  |
+| `--all-repos` | Update every cataloged repository (implies --all within each) |  |
 
 ## Global Options
 

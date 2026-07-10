@@ -1,0 +1,43 @@
+name: List across repos
+description:
+  daft list --repo shows another cataloged repo's worktrees and --all-repos
+  sweeps the whole catalog — both work from outside any repository
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: --repo lists the other repo from inside this one
+    run: daft list --repo test-repo-b
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+
+  - name: --all-repos works from outside any repository
+    run: daft list --all-repos
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "── test-repo-a ──"
+        - "── test-repo-b ──"
+
+  - name: Unknown --repo fails with suggestions
+    run: daft list --repo test-rep 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"

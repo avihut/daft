@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "git-worktree-prune")]
 #[command(version = crate::VERSION)]
 #[command(about = "Remove worktrees and branches for deleted remote branches")]
@@ -97,12 +97,55 @@ pub struct Args {
         help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     sort: Option<String>,
+
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        conflicts_with = "all_repos",
+        help = "Prune another cataloged repository"
+    )]
+    repo: Option<String>,
+
+    #[arg(
+        long = "all-repos",
+        help = "Prune every cataloged repository (current repo last)"
+    )]
+    all_repos: bool,
 }
 
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-prune"));
 
     init_logging(args.verbose >= 2);
+
+    // Fleet scopes: sequential path per repo (one TUI per repo would
+    // churn), current repo last so its cwd-redirect semantics are intact.
+    if args.repo.is_some() || args.all_repos {
+        if is_git_repository()? {
+            crate::catalog::touch_current_repo();
+        }
+        let scope = match &args.repo {
+            Some(needle) => crate::catalog::fleet::FleetScope::Single(needle.clone()),
+            None => crate::catalog::fleet::FleetScope::AllRepos,
+        };
+        let mut output = CliOutput::new(OutputConfig::default());
+        let outcome = crate::catalog::fleet::for_each_repo(
+            scope,
+            /* current_repo_last */ true,
+            &mut output,
+            |_row| {
+                let mut repo_args = args.clone();
+                repo_args.repo = None;
+                repo_args.all_repos = false;
+                let settings = DaftSettings::load()?;
+                validate_view_args(&repo_args, &settings)?;
+                let project_root = get_project_root()?;
+                crate::core::worktree::temp_worktree::cleanup_stale(&project_root)?;
+                run_prune(repo_args, settings)
+            },
+        )?;
+        return outcome.into_result();
+    }
 
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
@@ -111,7 +154,21 @@ pub fn run() -> Result<()> {
 
     let settings = DaftSettings::load()?;
 
-    // Validate --columns and --sort early so errors surface in both sequential and TUI modes.
+    validate_view_args(&args, &settings)?;
+
+    let project_root = get_project_root()?;
+    crate::core::worktree::temp_worktree::cleanup_stale(&project_root)?;
+
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
+        run_prune(args, settings)
+    } else {
+        run_tui(args, settings)
+    }
+}
+
+/// Validate --columns and --sort early so errors surface in both
+/// sequential and TUI modes.
+fn validate_view_args(args: &Args, settings: &DaftSettings) -> Result<()> {
     let columns_input = args
         .columns
         .as_deref()
@@ -124,15 +181,7 @@ pub fn run() -> Result<()> {
     if let Some(input) = sort_input {
         SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-
-    let project_root = get_project_root()?;
-    crate::core::worktree::temp_worktree::cleanup_stale(&project_root)?;
-
-    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
-        run_prune(args, settings)
-    } else {
-        run_tui(args, settings)
-    }
+    Ok(())
 }
 
 /// Sequential (non-TTY) execution path — the original prune flow.
