@@ -57,9 +57,10 @@ pub(super) fn footer(text: &str, use_color: bool) -> String {
     format!("{corner}  {text}")
 }
 
-/// `│  feat/a` — dim structural anchor for a row group.
+/// `├  feat/a` — dim structural anchor for a row group, edged off the rail
+/// like the header and footer corners (a `│` spacer always precedes it).
 pub(super) fn group(label: &str, use_color: bool) -> String {
-    let rail = paint(GREY, "\u{2502}", use_color);
+    let rail = paint(GREY, "\u{251c}", use_color);
     format!("{rail}  {}", paint(DARK_GREY, label, use_color))
 }
 
@@ -187,6 +188,12 @@ mod tests {
     fn not_reached_row_is_marked() {
         let line = final_row(&RowFace::NotReached, "Delete branch", None, 13, false);
         assert_eq!(line, "\u{25cb}  Delete branch  (not run)");
+    }
+
+    #[test]
+    fn group_anchor_edges_off_the_rail() {
+        let line = group("post-create hooks", false);
+        assert_eq!(line, "\u{251c}  post-create hooks");
     }
 
     #[test]

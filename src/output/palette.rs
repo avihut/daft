@@ -14,6 +14,9 @@ pub(crate) const DARK_GREY: &str = "\x1b[38;5;240m";
 /// Warm yellow — attention without alarm (skips worth noticing).
 pub(crate) const YELLOW: &str = "\x1b[38;5;220m";
 
+/// Soft blue — work handed to the background (coordinator jobs).
+pub(crate) const BLUE: &str = "\x1b[38;5;75m";
+
 /// Check whether progress visuals should be suppressed entirely.
 ///
 /// True when running unit tests (`cfg!(test)`) or when `DAFT_TESTING` is set

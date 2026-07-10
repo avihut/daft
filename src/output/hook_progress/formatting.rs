@@ -11,9 +11,8 @@ use std::time::Duration;
 // greys and the attention yellow are shared with the plan-execute timeline
 // (`crate::output::palette`) so the two surfaces compose seamlessly (#651).
 pub(super) const ORANGE: &str = "\x1b[38;5;208m";
-pub(super) use crate::output::palette::{DARK_GREY, GREY, YELLOW};
+pub(super) use crate::output::palette::{BLUE, DARK_GREY, GREY, YELLOW};
 pub(super) const BRIGHT_WHITE: &str = "\x1b[97m";
-pub(super) const BLUE: &str = "\x1b[38;5;75m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 
 /// Default name-column width used when no target list is available to compute

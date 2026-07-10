@@ -36,6 +36,11 @@ enum Slot {
     Group {
         label: String,
         bar: Option<ProgressBar>,
+        /// The `│` spacer line above the anchor (the section dialect:
+        /// `│` then `├  <label>`). `None` for the plan's first slot — the
+        /// header's own top spacer already provides that gap — and after
+        /// the group persists or drops.
+        spacer: Option<ProgressBar>,
     },
     /// Invisible group-span terminator — never renders, owns no bar.
     EndGroup,
@@ -86,10 +91,16 @@ pub(super) struct TimelineCore {
 impl TimelineCore {
     /// Materialize the region: header + top spacer persist immediately, every
     /// plan row becomes a live bar, then the bottom spacer and the footer
-    /// placeholder.
-    pub(super) fn new(header: String, plan: PlanCommit, verbose: bool, use_color: bool) -> Self {
-        let mp = MultiProgress::new();
-
+    /// placeholder. The caller provides the `MultiProgress` (production:
+    /// `MultiProgress::new()`; tests: an `InMemoryTerm` draw target so the
+    /// persisted line sequence is assertable).
+    pub(super) fn new(
+        mp: MultiProgress,
+        header: String,
+        plan: PlanCommit,
+        verbose: bool,
+        use_color: bool,
+    ) -> Self {
         let label_width = plan
             .steps()
             .map(|s| display_label(s, StepPhase::Pending).chars().count())
@@ -110,10 +121,13 @@ impl TimelineCore {
         for row in plan.rows {
             let slot = match row {
                 Row::Group { label } => {
+                    let spacer = (!slots.is_empty())
+                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
                     let bar = add_line_bar(&mp, &static_style, render::group(&label, use_color));
                     Slot::Group {
                         label,
                         bar: Some(bar),
+                        spacer,
                     }
                 }
                 Row::EndGroup => Slot::EndGroup,
@@ -578,13 +592,21 @@ impl TimelineCore {
         }
     }
 
-    /// Persist the group anchor at slot `i` (no-op if already gone).
+    /// Persist the group anchor at slot `i` (no-op if already gone): a `│`
+    /// spacer first — skipped when the previously persisted line is already
+    /// one (e.g. a hook block's reconnect spacer) — then the `├` anchor.
     fn print_group_at(&mut self, i: usize) {
         let use_color = self.use_color;
-        if let Slot::Group { label, bar } = &mut self.slots[i]
+        if let Slot::Group { label, bar, spacer } = &mut self.slots[i]
             && let Some(taken) = bar.take()
         {
+            if let Some(sp) = spacer.take() {
+                self.mp.remove(&sp);
+            }
             self.mp.remove(&taken);
+            if !self.last_persisted_was_spacer {
+                self.mp.println(render::spacer(use_color)).ok();
+            }
             self.mp.println(render::group(label, use_color)).ok();
             self.last_persisted_was_spacer = false;
         }
@@ -602,12 +624,16 @@ impl TimelineCore {
         }
     }
 
-    /// Remove the group anchor at slot `i` without printing it.
+    /// Remove the group anchor (and its spacer) at slot `i` without
+    /// printing either.
     fn drop_group_bar_at(&mut self, i: usize) {
-        if let Slot::Group { bar, .. } = &mut self.slots[i]
-            && let Some(taken) = bar.take()
-        {
-            self.mp.remove(&taken);
+        if let Slot::Group { bar, spacer, .. } = &mut self.slots[i] {
+            if let Some(taken) = spacer.take() {
+                self.mp.remove(&taken);
+            }
+            if let Some(taken) = bar.take() {
+                self.mp.remove(&taken);
+            }
         }
     }
 
@@ -657,7 +683,14 @@ impl TimelineCore {
         self.slots[idx + 1..]
             .iter()
             .find_map(|s| match s {
-                Slot::Group { bar: Some(b), .. }
+                // A group's topmost live bar is its spacer: content inserted
+                // `insert_before` this anchor must land above the blank line,
+                // not between it and the `├` — below the blank it would read
+                // as part of the next section.
+                Slot::Group {
+                    spacer: Some(b), ..
+                }
+                | Slot::Group { bar: Some(b), .. }
                 | Slot::Note { bar: Some(b), .. }
                 | Slot::Step { bar: Some(b), .. } => Some(b.clone()),
                 _ => None,
