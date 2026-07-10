@@ -83,7 +83,6 @@ pub trait ProgressSink {
     /// Restore a spinner previously hidden by [`pause_spinner`](Self::pause_spinner).
     /// No-op by default.
     fn resume_spinner(&mut self) {}
-
 }
 
 /// A no-op sink that discards all progress messages.
