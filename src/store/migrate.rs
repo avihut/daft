@@ -5,9 +5,16 @@
 //! runs in its own transaction. The on-disk schema version is stored in
 //! SQLite's `user_version` PRAGMA so we don't need a sidecar table.
 //!
-//! Two safety rules:
-//!   1. `migrations()` is monotonically appended to — new versions only.
-//!   2. Opening a DB whose `user_version` is *higher* than the binary's
+//! Daft has more than one database, each with its own **migration lineage**
+//! bundled as a [`MigrationSet`]: the per-repo coordinator store
+//! (`migrations/NNN_*.sql`) and the global repo catalog
+//! (`migrations/catalog/NNN_*.sql`). `user_version` lives per file, so the
+//! lineages evolve independently.
+//!
+//! Two safety rules per lineage:
+//!   1. The migration vector is monotonically appended to — new versions
+//!      only, never reorder, never edit a shipped migration in place.
+//!   2. Opening a DB whose `user_version` is *higher* than the lineage's
 //!      highest migration is rejected: a newer daft wrote data this binary
 //!      doesn't understand.
 
@@ -16,40 +23,74 @@ use rusqlite::Connection;
 use rusqlite_migration::{M, Migrations};
 use std::path::Path;
 
-/// Returns the full migration set. Append new migrations to the bottom of
-/// the vector — never reorder, never edit a shipped migration in place.
-pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![
-        M::up(include_str!("migrations/001_initial.sql")),
-        M::up(include_str!("migrations/002_visitor_seeds.sql")),
-        M::up(include_str!("migrations/003_invocation_status.sql")),
-    ])
+/// One database's migration lineage: the ordered migrations plus the
+/// version a fully-migrated file lands on.
+pub struct MigrationSet {
+    migrations: Migrations<'static>,
+    current_version: i64,
 }
 
-/// Highest schema version this binary understands. Mirrors
-/// `migrations().pending_migrations(...)` math but is cheap and side-effect
-/// free so we can call it from the open-time refuse-newer check.
+impl MigrationSet {
+    /// Highest schema version this binary understands for the lineage.
+    pub fn current_version(&self) -> i64 {
+        self.current_version
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validate(&self) -> std::result::Result<(), rusqlite_migration::Error> {
+        self.migrations.validate()
+    }
+}
+
+/// The per-repo coordinator store lineage (`jobs/<uuid>/coordinator.db`).
+pub fn coordinator_set() -> MigrationSet {
+    MigrationSet {
+        migrations: Migrations::new(vec![
+            M::up(include_str!("migrations/001_initial.sql")),
+            M::up(include_str!("migrations/002_visitor_seeds.sql")),
+            M::up(include_str!("migrations/003_invocation_status.sql")),
+        ]),
+        // rusqlite_migration's version counter is `migrations.len() as u32`
+        // after every migration is applied. Kept as i64 for consistency with
+        // the on-disk `user_version` PRAGMA type.
+        current_version: 3,
+    }
+}
+
+/// The global repo-catalog lineage (`catalog/catalog.db`).
+pub fn catalog_set() -> MigrationSet {
+    MigrationSet {
+        migrations: Migrations::new(vec![M::up(include_str!(
+            "migrations/catalog/001_catalog.sql"
+        ))]),
+        current_version: 1,
+    }
+}
+
+/// Highest coordinator-store schema version this binary understands.
+/// Side-effect free so the open-time refuse-newer check can call it.
 pub fn current_version() -> i64 {
-    // rusqlite_migration's version counter is `migrations.len() as u32` after
-    // every migration is applied. We return that as i64 for consistency with
-    // the on-disk `user_version` PRAGMA type.
-    3
+    coordinator_set().current_version
 }
 
-/// Apply all pending migrations against `conn`. Refuses if the on-disk
-/// `user_version` is *higher* than the binary's [`current_version`].
-pub fn run(conn: &mut Connection, db_path: &Path) -> Result<()> {
+/// Apply all pending migrations for `set` against `conn`. Refuses if the
+/// on-disk `user_version` is *higher* than the lineage's current version.
+pub fn run_set(set: &MigrationSet, conn: &mut Connection, db_path: &Path) -> Result<()> {
     let on_disk: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let expected = current_version();
-    if on_disk > expected {
+    if on_disk > set.current_version {
         return Err(StoreError::SchemaTooNew {
             path: db_path.to_path_buf(),
             found: on_disk,
-            expected,
+            expected: set.current_version,
         });
     }
-    migrations().to_latest(conn)?;
+    set.migrations.to_latest(conn)?;
     Ok(())
+}
+
+/// Apply all pending coordinator-store migrations against `conn`.
+pub fn run(conn: &mut Connection, db_path: &Path) -> Result<()> {
+    run_set(&coordinator_set(), conn, db_path)
 }
 
 #[cfg(test)]
@@ -58,11 +99,30 @@ mod tests {
     use crate::store::connection;
     use tempfile::TempDir;
 
+    /// Fresh connection with PRAGMA bring-up but no auto-migration, so each
+    /// test picks which lineage to apply.
+    fn open_unmigrated(path: &Path) -> Connection {
+        let is_fresh = !path.exists();
+        let mut conn = Connection::open(path).unwrap();
+        connection::bring_up(
+            &mut conn,
+            path,
+            connection::WRITER_BUSY_TIMEOUT_MS,
+            is_fresh,
+            /* read_only */ false,
+        )
+        .unwrap();
+        conn
+    }
+
     #[test]
     fn migrations_validate() {
-        migrations()
+        coordinator_set()
             .validate()
-            .expect("migration set is well-formed");
+            .expect("coordinator migration set is well-formed");
+        catalog_set()
+            .validate()
+            .expect("catalog migration set is well-formed");
     }
 
     #[test]
@@ -78,6 +138,43 @@ mod tests {
     }
 
     #[test]
+    fn fresh_catalog_db_lands_at_catalog_version() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("catalog.db");
+        let mut conn = open_unmigrated(&path);
+        run_set(&catalog_set(), &mut conn, &path).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, catalog_set().current_version());
+    }
+
+    #[test]
+    fn catalog_migration_creates_catalog_repos_table() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("catalog.db");
+        let mut conn = open_unmigrated(&path);
+        run_set(&catalog_set(), &mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'catalog_repos'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "catalog_repos");
+        // Coordinator tables must NOT leak into the catalog lineage.
+        let jobs: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(jobs, None);
+    }
+
+    #[test]
     fn refuses_open_when_user_version_is_newer() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("db.sqlite");
@@ -89,6 +186,23 @@ mod tests {
         ))
         .unwrap();
         let err = run(&mut conn, &path).unwrap_err();
+        assert!(matches!(err, StoreError::SchemaTooNew { .. }));
+    }
+
+    #[test]
+    fn schema_too_new_is_per_lineage() {
+        // A catalog DB one version past the catalog lineage must be refused
+        // by the catalog set even though the coordinator lineage is higher.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("catalog.db");
+        let mut conn = open_unmigrated(&path);
+        run_set(&catalog_set(), &mut conn, &path).unwrap();
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = {};",
+            catalog_set().current_version() + 1
+        ))
+        .unwrap();
+        let err = run_set(&catalog_set(), &mut conn, &path).unwrap_err();
         assert!(matches!(err, StoreError::SchemaTooNew { .. }));
     }
 

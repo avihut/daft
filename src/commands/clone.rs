@@ -703,6 +703,18 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output
     };
 
+    // Register the fresh clone in the repo catalog (name, path, remote,
+    // default branch). One call here covers every layout path.
+    match crate::catalog::gather_facts(
+        &result.git_dir,
+        &result.parent_dir,
+        Some(result.repository_url.clone()),
+        Some(result.default_branch.clone()),
+    ) {
+        Ok(facts) => crate::catalog::register_repo(&facts, output),
+        Err(e) => output.warning(&format!("Could not update the repo catalog: {e}")),
+    }
+
     // Remove stale trust entry if cloning to a path that was previously trusted.
     if !args.trust_hooks {
         let mut trust_db = TrustDatabase::load().unwrap_or_default();

@@ -181,6 +181,7 @@ pub fn run() -> Result<()> {
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
+    crate::catalog::touch_current_repo();
 
     // Settings are loaded inside `run_live`/`run_blocking`, co-located with each
     // path's `GitCommand` so they share a single repo discovery (#584).

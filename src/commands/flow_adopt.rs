@@ -194,6 +194,13 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         .save()
         .context("Failed to save layout to repos.json")?;
 
+    // Register the adopted repo in the catalog.
+    if let Ok(project_root) = crate::core::repo::get_project_root()
+        && let Ok(facts) = crate::catalog::gather_facts(&git_dir, &project_root, None, None)
+    {
+        crate::catalog::register_repo(&facts, output);
+    }
+
     output.info(
         "hint: `daft adopt` will be replaced by `daft layout transform contained` in a future release.",
     );

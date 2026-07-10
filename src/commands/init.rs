@@ -197,6 +197,19 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
                 output.warning(&format!("Could not load repos.json to save layout: {e}"));
             }
         }
+
+        // Register the new repo in the catalog (no remote yet; a later
+        // in-repo command refreshes the entry once a remote exists).
+        if let Ok(project_root) = crate::core::repo::get_project_root()
+            && let Ok(facts) = crate::catalog::gather_facts(
+                &git_dir,
+                &project_root,
+                None,
+                Some(result.initial_branch.clone()),
+            )
+        {
+            crate::catalog::register_repo(&facts, output);
+        }
     }
 
     render_init_result(&result, output);

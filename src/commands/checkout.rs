@@ -420,6 +420,7 @@ fn run_with_args(args: Args) -> Result<()> {
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
+    crate::catalog::touch_current_repo();
 
     // Handle `daft go -` (previous worktree navigation)
     if args.branch_name == "-" {

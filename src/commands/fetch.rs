@@ -96,6 +96,7 @@ pub fn run() -> Result<()> {
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
+    crate::catalog::touch_current_repo();
 
     let settings = DaftSettings::load()?;
     let config = OutputConfig::new(args.quiet, args.verbose);
