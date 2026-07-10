@@ -596,7 +596,9 @@ fn push_if_enabled(
     // fully-qualified branch ref — a same-named tag would shadow the short
     // name in rev-list's resolution.
     let (hook_present, unpushed_count) = match params.push_verify {
-        PushVerify::Auto if !params.no_verify => {
+        // `--no-verify` skips silently regardless of hook presence, so don't probe.
+        _ if params.no_verify => (None, None),
+        PushVerify::Auto => {
             let present = git.pre_push_hook_exists(worktree_path);
             let count = if present {
                 match git.count_commits_not_on_remote(
@@ -615,7 +617,11 @@ fn push_if_enabled(
             };
             (Some(present), count)
         }
-        _ => (None, None),
+        // `never` announces the skip only when a hook actually exists, so probe
+        // its presence (a cheap stat). `always` verifies unconditionally and
+        // lets push_with_hooks resolve presence for its own verdict.
+        PushVerify::Never => (Some(git.pre_push_hook_exists(worktree_path)), None),
+        PushVerify::Always => (None, None),
     };
 
     let verify = match resolve_pre_push(
@@ -633,6 +639,17 @@ fn push_if_enabled(
         }
     };
 
+    // When the hook renders through the presenter its `MultiProgress` owns the
+    // terminal, so pause the outer "Creating worktree..." spinner across the
+    // render (the same contract CommandBridge::run_hook uses for post-create
+    // hooks). A ref-only push under `auto` skips the hook (#679), so the
+    // spinner keeps running and stays the only progress the user sees.
+    let renders_hook = verify
+        && presenter.is_some()
+        && hook_present.unwrap_or_else(|| git.pre_push_hook_exists(worktree_path));
+    if renders_hook {
+        sink.pause_spinner();
+    }
     let result = push_with_hooks(
         git,
         PushAction::SetUpstream {
@@ -645,6 +662,9 @@ fn push_if_enabled(
         presenter,
         hook_present,
     );
+    if renders_hook {
+        sink.resume_spinner();
+    }
 
     let failure = match result {
         Ok(outcome) => match outcome.failure {
@@ -681,6 +701,32 @@ fn push_if_enabled(
                         )),
                     );
                 }
+                // #679: the hook was skipped (ref-only auto-skip or --no-verify)
+                // but the push itself failed for a non-hook reason — a server-side
+                // rejection, transport, or auth error. A gate that never ran
+                // cannot have refused the push, yet the branch genuinely never
+                // reached the remote, so escalate to a hard error (like a real
+                // hook rejection) rather than warn-and-continue. This keeps
+                // `daft start <b> && …` from proceeding on a branch that is not
+                // on the remote. Hook-less repos (verdict NoHook) keep the legacy
+                // warn-and-continue behavior.
+                if outcome.hook == HookVerdict::Bypassed {
+                    return (
+                        false,
+                        false,
+                        Some(format!(
+                            "Could not push '{}' to '{}': {}. \
+                             The worktree was created and is ready at '{}'. \
+                             Push manually with: git push -u {} {}",
+                            params.new_branch_name,
+                            params.remote_name,
+                            msg,
+                            worktree_path.display(),
+                            params.remote_name,
+                            params.new_branch_name,
+                        )),
+                    );
+                }
                 msg
             }
         },
@@ -710,9 +756,16 @@ enum PrePushDecision {
 /// Pure decision core for [`push_if_enabled`]'s hook handling: the
 /// `--no-verify` flag wins unconditionally; otherwise `daft.checkout.pushVerify`
 /// rules, with `auto` skipping only a proven ref-only push (hook present and
-/// zero commits absent from the target remote). A failed probe
-/// (`unpushed_count = None`) falls back to verifying — the worst case must be
-/// an unnecessary hook run, never an unverified content push.
+/// zero commits absent from the target remote). On a failed probe
+/// (`unpushed_count = None`) `auto` falls back to verifying — a probe that could
+/// not answer must never silently drop the hook.
+///
+/// The `auto` skip trusts a count derived from local remote-tracking refs, which
+/// are only as fresh as the last fetch (`daft.checkout.fetch`, off by default).
+/// If the remote was rewound or force-pushed since then, a stale-ahead tracking
+/// ref can report zero unpushed commits for a push that does carry content,
+/// skipping the hook — the same trade-off pre-commit's pre-push driver makes.
+/// Set `pushVerify = always` for a hook that must run on every push regardless.
 fn resolve_pre_push(
     setting: PushVerify,
     no_verify_flag: bool,
@@ -723,9 +776,12 @@ fn resolve_pre_push(
         return PrePushDecision::Skip(None);
     }
     match setting {
-        PushVerify::Never => PrePushDecision::Skip(Some(
+        // Only announce the skip when there is actually a hook to skip; a
+        // hook-less repo stays silent, matching `auto`.
+        PushVerify::Never if hook_present => PrePushDecision::Skip(Some(
             "Skipping pre-push hook (daft.checkout.pushVerify = never)",
         )),
+        PushVerify::Never => PrePushDecision::Skip(None),
         PushVerify::Always => PrePushDecision::Verify,
         PushVerify::Auto => {
             if hook_present && unpushed_count == Some(0) {
@@ -739,8 +795,15 @@ fn resolve_pre_push(
 
 #[cfg(test)]
 mod tests {
-    use super::{PrePushDecision, resolve_pre_push};
+    use super::{CheckoutBranchParams, PrePushDecision, push_if_enabled, resolve_pre_push};
+    use crate::core::ProgressSink;
     use crate::core::settings::PushVerify;
+    use crate::executor::presenter::{JobPresenter, NullPresenter};
+    use crate::git::GitCommand;
+    use crate::utils::git_command_at;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::sync::Arc;
 
     #[test]
     fn no_verify_flag_skips_silently_regardless_of_setting() {
@@ -756,6 +819,16 @@ mod tests {
     fn never_skips_with_a_reason_even_when_the_push_carries_commits() {
         let decision = resolve_pre_push(PushVerify::Never, false, true, Some(3));
         assert!(matches!(decision, PrePushDecision::Skip(Some(_))));
+    }
+
+    #[test]
+    fn never_without_a_hook_skips_silently() {
+        // Nothing to announce when there is no hook to skip (#679 review): the
+        // `never` arm must stay quiet hook-lessly, like `auto` does.
+        assert_eq!(
+            resolve_pre_push(PushVerify::Never, false, false, None),
+            PrePushDecision::Skip(None)
+        );
     }
 
     #[test]
@@ -795,6 +868,152 @@ mod tests {
         assert_eq!(
             resolve_pre_push(PushVerify::Auto, false, false, Some(0)),
             PrePushDecision::Verify
+        );
+    }
+
+    // --- integration: spinner coordination around the pre-push render (#679) ---
+
+    /// Records the spinner-control calls `push_if_enabled` makes so a test can
+    /// assert the pre-push render is (or is not) bracketed by pause/resume.
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Vec<&'static str>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn on_step(&mut self, _msg: &str) {
+            self.events.push("step");
+        }
+        fn on_warning(&mut self, _msg: &str) {
+            self.events.push("warning");
+        }
+        fn on_debug(&mut self, _msg: &str) {}
+        fn pause_spinner(&mut self) {
+            self.events.push("pause");
+        }
+        fn resume_spinner(&mut self) {
+            self.events.push("resume");
+        }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to spawn git");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    /// Bare remote + a one-commit `main` clone pushed to origin, with `feat`
+    /// created at the already-pushed tip (so its upstream push is ref-only) and
+    /// a passing `pre-push` hook installed (so the probe sees a hook and the
+    /// push still succeeds).
+    fn repo_with_hook_and_remote() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let remote = dir.path().join("remote.git");
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&remote).unwrap();
+        git_in(&remote, &["init", "--bare"]);
+        std::fs::create_dir_all(&work).unwrap();
+        git_in(&work, &["init", "-b", "main"]);
+        git_in(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(&work, &["commit", "-m", "init"]);
+        git_in(&work, &["push", "-u", "origin", "main"]);
+        git_in(&work, &["branch", "feat"]);
+
+        let hook = work.join(".git").join("hooks").join("pre-push");
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (dir, work)
+    }
+
+    fn params_for(branch: &str, push_verify: PushVerify) -> CheckoutBranchParams {
+        CheckoutBranchParams {
+            new_branch_name: branch.to_string(),
+            base_branch_name: None,
+            carry: false,
+            no_carry: false,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: true,
+            no_verify: false,
+            push_verify,
+            checkout_fetch: false,
+            layout: None,
+            at_path: None,
+        }
+    }
+
+    #[test]
+    fn render_is_bracketed_by_spinner_pause_and_resume() {
+        // `always` forces the hook to run on the (ref-only) upstream push, so it
+        // renders through the presenter — the outer spinner must be paused for
+        // the duration and resumed after, mirroring CommandBridge::run_hook.
+        let (_dir, work) = repo_with_hook_and_remote();
+        let git = GitCommand::new(false);
+        let params = params_for("feat", PushVerify::Always);
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let mut sink = RecordingSink::default();
+
+        let (push_set, _skipped, gate) =
+            push_if_enabled(&params, &git, &work, Some(&presenter), &mut sink);
+
+        assert!(
+            push_set,
+            "ref-only push with a passing hook should succeed: {gate:?}"
+        );
+        let pause = sink.events.iter().position(|e| *e == "pause");
+        let resume = sink.events.iter().position(|e| *e == "resume");
+        assert!(
+            pause.is_some() && resume.is_some(),
+            "the render must be bracketed by pause/resume: {:?}",
+            sink.events
+        );
+        assert!(
+            pause < resume,
+            "pause must precede resume: {:?}",
+            sink.events
+        );
+    }
+
+    #[test]
+    fn auto_ref_only_skip_leaves_the_spinner_running() {
+        // The #679 case: a ref-only push under `auto` skips the hook, so the
+        // spinner is never paused — it stays visible for the whole checkout
+        // instead of the terminal going silent.
+        let (_dir, work) = repo_with_hook_and_remote();
+        let git = GitCommand::new(false);
+        let params = params_for("feat", PushVerify::Auto);
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let mut sink = RecordingSink::default();
+
+        let (push_set, _skipped, gate) =
+            push_if_enabled(&params, &git, &work, Some(&presenter), &mut sink);
+
+        assert!(push_set, "the ref-only push should still succeed: {gate:?}");
+        assert!(
+            !sink.events.contains(&"pause"),
+            "a skipped hook must not pause the spinner: {:?}",
+            sink.events
         );
     }
 }

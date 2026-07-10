@@ -41,7 +41,9 @@ branch is checked out and upstream tracking is configured.
 With -b, creates a new branch and a corresponding worktree in a single
 operation. The new branch is based on the current branch, or on `<base-branch>`
 if specified. After creating the branch locally, it is pushed to the remote
-and upstream tracking is configured.
+and upstream tracking is configured. The repo's pre-push hook runs only when
+that push introduces new commits; a ref-only push of already-pushed commits
+skips it (configurable via daft.checkout.pushVerify: auto, always, or never).
 
 With --start (or -s), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically, as if 'daft start'
@@ -165,8 +167,11 @@ Use '-' as the branch name to switch to the previous worktree, similar to
 'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
 
 With -b, creates a new branch and worktree in a single operation. The new
-branch is based on the current branch, or on `<base-branch>` if specified.
-Prefer 'daft start' for creating new branches.
+branch is based on the current branch, or on `<base-branch>` if specified. It
+is pushed to the remote and upstream tracking is configured; the pre-push hook
+runs only when that push introduces new commits, skipping ref-only pushes
+(configurable via daft.checkout.pushVerify: auto, always, or never). Prefer
+'daft start' for creating new branches.
 
 With -s (--start), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also
@@ -872,12 +877,11 @@ fn run_create_branch(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // The pre-push hook run on the auto-upstream push renders phase/job
-    // output through this presenter — keep the spinner off when it MAY
-    // fire so the two don't fight over the terminal (#599). This is a
-    // conservative upper bound: whether the hook actually runs is decided
-    // in core (push_if_enabled), where the post-fetch ref-only probe lives
-    // (#679) — a skipped hook simply never fires the presenter.
+    // The auto-upstream push may run the repo's pre-push hook and render its
+    // phase/job output through this presenter (#599). Create it whenever a hook
+    // COULD fire — a conservative upper bound, since whether the hook actually
+    // runs is decided in core (push_if_enabled), after the post-fetch ref-only
+    // probe (#679). A skipped hook simply never fires the presenter.
     let push_hook_may_render = params.checkout_push
         && !params.no_verify
         && params.push_verify != PushVerify::Never
@@ -891,9 +895,11 @@ fn run_create_branch(
             None
         };
 
-    if !push_hook_may_render {
-        output.start_spinner("Creating worktree...");
-    }
+    // Always show the spinner for the worktree checkout. When the pre-push hook
+    // renders, core pauses this spinner across the render and resumes it after
+    // (push_if_enabled), so the two never fight — and the common ref-only case,
+    // where the hook is skipped, keeps a visible spinner instead of going silent.
+    output.start_spinner("Creating worktree...");
     let checkout_result = {
         let mut bridge = CommandBridge::new(output, executor);
         checkout_branch::execute(
@@ -904,9 +910,7 @@ fn run_create_branch(
             &mut bridge,
         )
     };
-    if !push_hook_may_render {
-        output.finish_spinner();
-    }
+    output.finish_spinner();
     let result = checkout_result?;
 
     render_create_result(&result, output);

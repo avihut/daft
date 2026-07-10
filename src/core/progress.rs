@@ -37,6 +37,14 @@ impl ProgressSink for OutputSink<'_> {
     fn on_debug(&mut self, msg: &str) {
         self.0.debug(msg);
     }
+
+    fn pause_spinner(&mut self) {
+        self.0.pause_spinner();
+    }
+
+    fn resume_spinner(&mut self) {
+        self.0.resume_spinner();
+    }
 }
 
 /// Combined adapter for commands that need both progress reporting and hook
@@ -96,6 +104,14 @@ impl ProgressSink for CommandBridge<'_> {
 
     fn on_debug(&mut self, msg: &str) {
         self.output.debug(msg);
+    }
+
+    fn pause_spinner(&mut self) {
+        self.output.pause_spinner();
+    }
+
+    fn resume_spinner(&mut self) {
+        self.output.resume_spinner();
     }
 }
 

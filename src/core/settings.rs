@@ -1304,6 +1304,20 @@ mod tests {
     }
 
     #[test]
+    fn test_push_verify_parse() {
+        assert_eq!(PushVerify::parse("auto"), Some(PushVerify::Auto));
+        assert_eq!(PushVerify::parse("always"), Some(PushVerify::Always));
+        assert_eq!(PushVerify::parse("never"), Some(PushVerify::Never));
+        // Case-insensitive, like the sibling config-enum parsers.
+        assert_eq!(PushVerify::parse("Auto"), Some(PushVerify::Auto));
+        assert_eq!(PushVerify::parse("ALWAYS"), Some(PushVerify::Always));
+        assert_eq!(PushVerify::parse("Never"), Some(PushVerify::Never));
+        // Unknown and empty values are rejected (caller keeps the default).
+        assert_eq!(PushVerify::parse("verify"), None);
+        assert_eq!(PushVerify::parse(""), None);
+    }
+
+    #[test]
     fn test_parse_bool_true_variants() {
         assert!(parse_bool("true", false));
         assert!(parse_bool("True", false));
