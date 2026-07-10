@@ -320,6 +320,61 @@ impl Catalog {
     }
 }
 
+/// Resolve a `--repo <needle>` argument to a usable live catalog entry, or
+/// fail with an actionable message. The shared front door for fleet-style
+/// flags (`exec --repo`, `list --repo`, …).
+pub fn resolve_repo_arg(needle: &str) -> anyhow::Result<CatalogRepoRow> {
+    let Some(catalog) = Catalog::open_ro()? else {
+        anyhow::bail!(
+            "the repo catalog is empty — clone a repo or run `{}` first",
+            crate::daft_cmd("repo add")
+        );
+    };
+    match catalog.resolve(needle)? {
+        Some(row) if row.removed_at.is_none() => {
+            if !Path::new(&row.path).is_dir() {
+                anyhow::bail!(
+                    "catalog entry '{}' points at '{}', which no longer exists\n  \
+                     tip: if the repo moved, run `{}` from its new location; \
+                     if it's gone, `{}` re-clones it",
+                    row.name,
+                    row.path,
+                    crate::daft_cmd("repo add"),
+                    crate::daft_cmd(&format!("clone {}", row.name))
+                );
+            }
+            Ok(row)
+        }
+        Some(row) => anyhow::bail!(
+            "repository '{}' was removed from the catalog; restore it with `{}`",
+            row.name,
+            crate::daft_cmd(&format!("clone {}", row.name))
+        ),
+        None => {
+            let err = catalog.not_found(needle);
+            let mut msg = err.to_string();
+            if let CatalogError::NotFound { suggestions, .. } = &err
+                && !suggestions.is_empty()
+            {
+                msg.push_str(&format!("\n  did you mean: {}", suggestions.join(", ")));
+            }
+            anyhow::bail!(
+                "{msg}\n  tip: `{}` shows known repos; `{}` registers the current one",
+                crate::daft_cmd("repo list"),
+                crate::daft_cmd("repo add")
+            );
+        }
+    }
+}
+
+/// The branch a repo's "default worktree" refers to: the catalog's recorded
+/// default branch, falling back to the repo's local `origin/HEAD`.
+pub fn effective_default_branch(row: &CatalogRepoRow) -> Option<String> {
+    row.default_branch
+        .clone()
+        .or_else(|| crate::core::remote::local_default_branch(Path::new(&row.path), "origin"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

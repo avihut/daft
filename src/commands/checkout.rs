@@ -300,6 +300,14 @@ repo's pre-push hook runs only when that push introduces new commits; a
 ref-only push of already-pushed commits skips it (configurable via
 daft.checkout.pushVerify: auto, always, or never).
 
+With --with-related, the same branch is also created in every repo this
+repo's daft.yml `relations:` manifest points at — the entry point for a
+coordinated cross-repo change (pair with `daft exec --related`). Each
+related repo bases the branch on its own default branch; carry and -x stay
+in the current repo; hooks run in a related repo only when it is explicitly
+trusted. All related repos must be cloned locally first, and the final
+working directory is the current repo's new worktree.
+
 This command can be run from anywhere within the repository.
 
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
@@ -311,6 +319,12 @@ pub struct StartArgs {
 
     #[arg(help = "Branch to use as the base; defaults to the current branch")]
     base_branch_name: Option<String>,
+
+    #[arg(
+        long = "with-related",
+        help = "Also create the branch in every related repo (relations manifest), each based on its own default branch"
+    )]
+    with_related: bool,
 
     #[arg(
         short = 'c',
@@ -526,6 +540,10 @@ pub fn run_start() -> Result<()> {
     let mut raw = crate::get_clap_args("daft-start");
     raw[0] = "daft start".to_string();
     let start_args = StartArgs::parse_from(raw);
+
+    if start_args.with_related {
+        return run_start_with_related(start_args);
+    }
 
     let args = Args {
         branch_name: start_args.new_branch_name,
@@ -1176,6 +1194,28 @@ fn run_create_branch(
     git: &GitCommand,
     output: &mut dyn Output,
 ) -> Result<()> {
+    let result = run_create_branch_core(args, settings, git, output)?;
+
+    // Run exec commands (after hooks, before cd_path)
+    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
+    output.cd_path(&result.cd_target);
+    maybe_show_shell_hint(output)?;
+
+    // Propagate exec error after cd_path is written
+    exec_result?;
+
+    Ok(())
+}
+
+/// The create-branch machinery without the terminal tail (exec commands,
+/// cd redirect, shell hint) — reusable per-repo by `--with-related`.
+fn run_create_branch_core(
+    args: &Args,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<checkout_branch::CheckoutBranchResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -1296,16 +1336,174 @@ fn run_create_branch(
         render_create_result(&result, output);
     }
 
-    // Run exec commands (after hooks, before cd_path)
-    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+    Ok(result)
+}
 
-    output.cd_path(&result.cd_target);
-    maybe_show_shell_hint(output)?;
+/// `daft start <branch> --with-related`: create the branch here, then in
+/// every repo the relations manifest points at. Resolution is all-upfront
+/// (a missing clone aborts before anything is created); per-repo creation
+/// failures are collected and reported, not cascaded. The final cd target
+/// is the current repo's new worktree.
+fn run_start_with_related(start_args: StartArgs) -> Result<()> {
+    init_logging(start_args.verbose);
 
-    // Propagate exec error after cd_path is written
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository");
+    }
+    crate::catalog::touch_current_repo();
+
+    // Resolve every relation before creating anything.
+    let resolved = crate::catalog::relations::current_repo_resolved_relations()?;
+    if resolved.is_empty() {
+        anyhow::bail!(
+            "this repo declares no relations — add a `relations:` section to daft.yml \
+             (each entry: `- url: <remote-url>`)"
+        );
+    }
+    for relation in &resolved {
+        let Some(row) = &relation.repo else {
+            anyhow::bail!(
+                "related repo '{}' is not cloned locally\n  tip: `{}`, then re-run — \
+                 --with-related creates the branch everywhere, so every related repo \
+                 must exist first",
+                relation.entry.label(),
+                crate::daft_cmd(&format!("clone {}", relation.entry.url))
+            );
+        };
+        if !std::path::Path::new(&row.path).is_dir() {
+            anyhow::bail!(
+                "related repo '{}' points at '{}', which no longer exists\n  tip: `{}`",
+                row.name,
+                row.path,
+                crate::daft_cmd(&format!("clone {}", row.name))
+            );
+        }
+    }
+
+    let args = Args {
+        branch_name: start_args.new_branch_name,
+        base_branch_name: start_args.base_branch_name,
+        create_branch: true,
+        start: false,
+        carry: start_args.carry,
+        no_carry: start_args.no_carry,
+        remote: start_args.remote,
+        no_cd: start_args.no_cd,
+        exec: start_args.exec,
+        quiet: start_args.quiet,
+        verbose: start_args.verbose,
+        at: start_args.at,
+        local: start_args.local,
+        no_verify: start_args.no_verify,
+        skip_hooks: start_args.skip_hooks,
+    };
+
+    let original_dir = get_current_directory()?;
+    let source_worktree = get_current_worktree_path().ok();
+
+    // 1) Current repo first — its failure aborts the whole fan-out.
+    let git = GitCommand::new(args.quiet);
+    let settings = DaftSettings::load_with(&git)?;
+    let git = git.with_gitoxide(settings.use_gitoxide);
+    let autocd = settings.autocd && !args.no_cd;
+    let mut output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
+
+    let current_result = match run_create_branch_core(&args, &settings, &git, &mut output) {
+        Ok(result) => result,
+        Err(e) => {
+            change_directory(&original_dir).ok();
+            return Err(e);
+        }
+    };
+
+    // 2) Every related repo, collecting failures instead of cascading.
+    let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
+    for relation in &resolved {
+        let row = relation.repo.as_ref().expect("verified upfront");
+        output.result(&format!(
+            "Creating '{}' in '{}'…",
+            args.branch_name, row.name
+        ));
+        if let Err(e) = create_branch_in_related_repo(row, &args, &mut output) {
+            failures.push((row.name.clone(), e));
+        }
+    }
+
+    // 3) Settle in the current repo's new worktree.
+    change_directory(&current_result.cd_target)?;
+    if let Some(src) = source_worktree
+        && let Ok(git_dir) = get_git_common_dir()
+    {
+        let _ = previous::save(&git_dir, &src);
+    }
+
+    // -x runs only in the current repo (documented).
+    let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
+    output.cd_path(&current_result.cd_target);
+    maybe_show_shell_hint(&mut output)?;
     exec_result?;
 
+    if !failures.is_empty() {
+        for (name, e) in &failures {
+            output.warning(&format!("'{name}': {e}"));
+        }
+        anyhow::bail!(
+            "branch '{}' created here, but creation failed in {} related repo(s)",
+            args.branch_name,
+            failures.len()
+        );
+    }
     Ok(())
+}
+
+/// Create `args.branch_name` in a related repo: enter its default-branch
+/// worktree (so the base is that repo's own default branch), never carry,
+/// never run `-x`, and run hooks only when the repo is explicitly trusted
+/// (`Allow`) — a fan-out must not block on interactive trust prompts.
+fn create_branch_in_related_repo(
+    row: &crate::store::CatalogRepoRow,
+    args: &Args,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let repo_root = std::path::Path::new(&row.path);
+    let Some(worktree) = crate::core::repo::find_representative_worktree(repo_root) else {
+        anyhow::bail!("'{}' has no worktrees to base the new branch on", row.name);
+    };
+    let restore = get_current_directory()?;
+    change_directory(&worktree)?;
+
+    let result = (|| {
+        let git = GitCommand::new(args.quiet);
+        let settings = DaftSettings::load_with(&git)?;
+        let git = git.with_gitoxide(settings.use_gitoxide);
+
+        let mut repo_args = args.clone();
+        // Base = the related repo's own default branch (the worktree we
+        // just entered); an explicit base only applies to the current repo.
+        repo_args.base_branch_name = None;
+        // Carry and -x never cross repos.
+        repo_args.carry = false;
+        repo_args.no_carry = true;
+        repo_args.exec = Vec::new();
+
+        let git_dir = get_git_common_dir()?;
+        let trusted = TrustDatabase::load()
+            .map(|db| db.get_trust_level(&git_dir) == crate::hooks::TrustLevel::Allow)
+            .unwrap_or(false);
+        if !trusted && !repo_args.skip_hooks.iter().any(|s| s == "all") {
+            repo_args.skip_hooks.push("all".to_string());
+            output.notice(&format!(
+                "hooks skipped in '{}' (repo not trusted; run `{}` there)",
+                row.name,
+                crate::daft_cmd("hooks trust")
+            ));
+        }
+
+        run_create_branch_core(&repo_args, &settings, &git, output).map(|_| ())
+    })();
+
+    change_directory(&restore).ok();
+    result
 }
 
 fn render_branch_not_found_error(

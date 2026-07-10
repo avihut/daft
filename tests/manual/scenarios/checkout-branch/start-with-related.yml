@@ -1,0 +1,59 @@
+name: Start with related repos
+description:
+  daft start --with-related creates the same branch in the current repo and in
+  every relations-manifest repo (each based on its own default branch); a
+  related repo that isn't cloned aborts before anything is created
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Declare a relation from A to B
+    run: |
+      printf 'relations:\n  - url: %s\n' "$REMOTE_TEST_REPO_B" > daft.yml
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+
+  - name: Start a coordinated branch
+    run: daft start feat-sync --with-related 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/feat-sync"
+        - "$WORK_DIR/test-repo-b/feat-sync"
+      output_contains:
+        - "Creating 'feat-sync' in 'test-repo-b'"
+
+  - name: Both branches exist on their remotes
+    run: "true"
+    expect:
+      exit_code: 0
+      branch_exists:
+        - repo: test-repo-a
+          branch: feat-sync
+        - repo: test-repo-b
+          branch: feat-sync
+
+  - name: A missing related clone aborts before creating anything
+    run: |
+      printf 'relations:\n  - url: %s\n  - url: /remotes/never-cloned.git\n' "$REMOTE_TEST_REPO_B" > daft.yml && daft start feat-two --with-related 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not cloned locally"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-a/feat-two"
+        - "$WORK_DIR/test-repo-b/feat-two"

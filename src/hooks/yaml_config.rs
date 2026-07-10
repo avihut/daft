@@ -79,6 +79,15 @@ pub struct YamlConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<LogConfig>,
 
+    /// Related repositories (the Graph pillar's relations manifest).
+    ///
+    /// Directed edges keyed by remote URL — portable across machines; the
+    /// repo catalog resolves each URL to wherever that repo is cloned
+    /// locally. Consumed by `daft exec --related`, `daft start
+    /// --with-related`, and `daft repo info`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relations: Option<Vec<crate::catalog::relations::RelationEntry>>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 }

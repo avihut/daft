@@ -29,6 +29,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         layout,
         shared,
         log,
+        relations,
         hooks,
     } = overlay;
 
@@ -64,6 +65,9 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     }
     if shared.is_some() {
         merged.shared = shared;
+    }
+    if relations.is_some() {
+        merged.relations = relations;
     }
 
     // Merge log config (field-level merge)
@@ -250,6 +254,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         layout: b_layout,
         shared: b_shared,
         log: b_log,
+        relations: b_relations,
         hooks: b_hooks,
     } = base;
     let YamlConfig {
@@ -264,6 +269,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         layout: o_layout,
         shared: o_shared,
         log: o_log,
+        relations: o_relations,
         hooks: o_hooks,
     } = ours;
     let YamlConfig {
@@ -278,6 +284,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         layout: t_layout,
         shared: t_shared,
         log: t_log,
+        relations: t_relations,
         hooks: t_hooks,
     } = theirs;
 
@@ -311,6 +318,13 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         layout: pick3("layout", b_layout, o_layout, t_layout, &mut tally),
         shared: pick3("shared", b_shared, o_shared, t_shared, &mut tally),
         log: merge3_log(b_log, o_log, t_log, &mut tally),
+        relations: pick3(
+            "relations",
+            b_relations,
+            o_relations,
+            t_relations,
+            &mut tally,
+        ),
         hooks: merge3_hooks(b_hooks, o_hooks, t_hooks, &mut tally),
     };
 
@@ -806,6 +820,11 @@ mod tests {
                 retention: Some("7d".to_string()),
                 ..Default::default()
             }),
+            relations: Some(vec![crate::catalog::relations::RelationEntry {
+                url: "git@example.com:org/client.git".to_string(),
+                name: Some("client".to_string()),
+                kind: Some("consumer".to_string()),
+            }]),
             hooks,
         };
 
@@ -1169,6 +1188,11 @@ mod tests {
                 retention: Some("7d".to_string()),
                 ..Default::default()
             }),
+            relations: Some(vec![crate::catalog::relations::RelationEntry {
+                url: "git@example.com:org/client.git".to_string(),
+                name: Some("client".to_string()),
+                kind: Some("consumer".to_string()),
+            }]),
             hooks,
         };
 

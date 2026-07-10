@@ -1,9 +1,10 @@
 use crate::{
-    WorktreeConfig, get_project_root,
+    get_project_root,
     git::{GitCommand, should_show_gitoxide_notice},
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
+    utils::{change_directory, get_current_directory},
 };
 use anyhow::Result;
 use clap::Parser;
@@ -64,6 +65,28 @@ pub struct Args {
     pub all: bool,
 
     #[arg(
+        long = "repo",
+        value_name = "REPO",
+        conflicts_with_all = ["all_repos", "related"],
+        help = "Run in another cataloged repository (targets and --all apply there)"
+    )]
+    pub repo: Option<String>,
+
+    #[arg(
+        long = "all-repos",
+        conflicts_with_all = ["repo", "related", "targets", "all"],
+        help = "Run in every cataloged repository's default-branch worktree"
+    )]
+    pub all_repos: bool,
+
+    #[arg(
+        long = "related",
+        conflicts_with_all = ["repo", "all_repos", "targets", "all"],
+        help = "Run across this repo and its related repos (relations manifest), in each one's worktree for the current branch"
+    )]
+    pub related: bool,
+
+    #[arg(
         short = 'x',
         long = "exec",
         value_name = "CMD",
@@ -102,7 +125,8 @@ pub struct Args {
 }
 
 pub(crate) fn validate_args(args: &Args) -> anyhow::Result<()> {
-    if args.targets.is_empty() && !args.all {
+    let has_repo_scope = args.repo.is_some() || args.all_repos || args.related;
+    if args.targets.is_empty() && !args.all && !has_repo_scope {
         anyhow::bail!(
             "at least one target or --all is required (use `daft exec --help` for examples)"
         );
@@ -120,38 +144,59 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-exec"));
     validate_args(&args)?;
 
-    if !is_git_repository()? {
+    let inside_repo = is_git_repository()?;
+    if inside_repo {
+        crate::catalog::touch_current_repo();
+    }
+    // --repo and --all-repos work from anywhere; everything else needs a repo.
+    if !inside_repo && args.repo.is_none() && !args.all_repos {
         anyhow::bail!("Not inside a Git repository");
     }
-    crate::catalog::touch_current_repo();
 
-    let settings = DaftSettings::load()?;
     let config = OutputConfig::default();
     let mut output = CliOutput::new(config);
 
-    let wt_config = WorktreeConfig {
-        remote_name: settings.remote.clone(),
-        quiet: false,
-    };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
-    let _project_root = get_project_root()?;
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
-
     use crate::core::worktree::exec as core;
 
-    let snaps = core::collect_snapshot(&git)?;
-    let (targets, orphans) = core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // --repo: everything below runs against the target repo, so enter it
+    // before any cwd-derived work (settings, snapshot).
+    if let Some(needle) = &args.repo {
+        let row = crate::catalog::resolve_repo_arg(needle)?;
+        change_directory(std::path::Path::new(&row.path))?;
+    }
 
-    if !orphans.is_empty() {
-        output.warning(&format!(
-            "Skipped {} orphan branch(es) (no worktree): {}",
-            orphans.len(),
-            orphans.join(", ")
-        ));
+    let targets: Vec<core::ResolvedTarget> = if args.all_repos {
+        collect_all_repos_targets(&mut output)?
+    } else if args.related {
+        collect_related_targets(&mut output)?
+    } else {
+        let settings = DaftSettings::load()?;
+        let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+        if should_show_gitoxide_notice(settings.use_gitoxide) {
+            output.warning("[experimental] Using gitoxide backend for git operations");
+        }
+        let snaps = core::collect_snapshot(&git)?;
+
+        if args.repo.is_some() && args.targets.is_empty() && !args.all {
+            // Bare `--repo X`: the repo's default-branch worktree.
+            vec![default_branch_target(&snaps)?]
+        } else {
+            let (targets, orphans) =
+                core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if !orphans.is_empty() {
+                output.warning(&format!(
+                    "Skipped {} orphan branch(es) (no worktree): {}",
+                    orphans.len(),
+                    orphans.join(", ")
+                ));
+            }
+            targets
+        }
+    };
+
+    if targets.is_empty() {
+        anyhow::bail!("no matching worktrees to run in");
     }
 
     let pipeline: Vec<core::CommandSpec> = if !args.trailing.is_empty() {
@@ -230,6 +275,176 @@ pub fn run() -> Result<()> {
     drop(sink);
 
     std::process::exit(report.aggregate_exit_code());
+}
+
+/// Bare `--repo X` target: X's default-branch worktree. cwd is already X.
+fn default_branch_target(
+    snaps: &[crate::core::worktree::exec::WorktreeSnapshot],
+) -> Result<crate::core::worktree::exec::ResolvedTarget> {
+    let root = get_project_root()?;
+    let branch = crate::core::remote::local_default_branch(&root, "origin").ok_or_else(|| {
+        anyhow::anyhow!("could not determine the default branch; pass a target or --all")
+    })?;
+    snaps
+        .iter()
+        .filter(|w| w.has_worktree())
+        .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+        .map(|w| crate::core::worktree::exec::ResolvedTarget {
+            worktree_path: w.path.clone(),
+            branch_name: branch.clone(),
+            display: None,
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("no worktree for default branch '{branch}'; pass a target or --all")
+        })
+}
+
+/// `--all-repos`: one target per live catalog repo — its default-branch
+/// worktree. Unusable repos are skipped with a warning, never silently.
+fn collect_all_repos_targets(
+    output: &mut dyn Output,
+) -> Result<Vec<crate::core::worktree::exec::ResolvedTarget>> {
+    let rows = match crate::catalog::Catalog::open_ro()? {
+        Some(catalog) => catalog.list(false)?,
+        None => Vec::new(),
+    };
+    if rows.is_empty() {
+        anyhow::bail!(
+            "the repo catalog is empty — clone a repo or run `{}` first",
+            crate::daft_cmd("repo add")
+        );
+    }
+
+    let original = get_current_directory()?;
+    let mut targets = Vec::new();
+    for row in &rows {
+        let path = std::path::Path::new(&row.path);
+        if !path.is_dir() {
+            output.warning(&format!(
+                "skipped '{}' (path missing: {})",
+                row.name, row.path
+            ));
+            continue;
+        }
+        change_directory(path)?;
+        let found = repo_branch_target(row, None);
+        change_directory(&original)?;
+        match found {
+            Ok(Some(target)) => targets.push(target),
+            Ok(None) => output.warning(&format!(
+                "skipped '{}' (no default-branch worktree)",
+                row.name
+            )),
+            Err(e) => output.warning(&format!("skipped '{}' ({e})", row.name)),
+        }
+    }
+    Ok(targets)
+}
+
+/// `--related`: the current repo's current-branch worktree plus, for every
+/// relations-manifest edge, that repo's worktree for the same branch.
+/// Repos without that worktree (or not cloned) are skipped with a notice —
+/// the coordinated-change set is whatever actually carries the branch.
+fn collect_related_targets(
+    output: &mut dyn Output,
+) -> Result<Vec<crate::core::worktree::exec::ResolvedTarget>> {
+    use crate::core::worktree::exec as core;
+
+    let resolved = crate::catalog::relations::current_repo_resolved_relations()?;
+    if resolved.is_empty() {
+        anyhow::bail!(
+            "this repo declares no relations — add a `relations:` section to daft.yml \
+             (each entry: `- url: <remote-url>`)"
+        );
+    }
+
+    let current_branch = crate::core::repo::get_current_branch()?;
+    let current_worktree = crate::get_current_worktree_path()?;
+    let mut targets = vec![core::ResolvedTarget {
+        worktree_path: current_worktree,
+        branch_name: current_branch.clone(),
+        display: Some(format!(
+            "{}:{}",
+            current_repo_catalog_name(),
+            current_branch
+        )),
+    }];
+
+    let original = get_current_directory()?;
+    for relation in &resolved {
+        let Some(row) = &relation.repo else {
+            output.warning(&format!(
+                "related repo '{}' is not cloned locally — `{}`",
+                relation.entry.label(),
+                crate::daft_cmd(&format!("clone {}", relation.entry.url))
+            ));
+            continue;
+        };
+        let path = std::path::Path::new(&row.path);
+        if !path.is_dir() {
+            output.warning(&format!(
+                "skipped '{}' (path missing: {})",
+                row.name, row.path
+            ));
+            continue;
+        }
+        change_directory(path)?;
+        let found = repo_branch_target(row, Some(&current_branch));
+        change_directory(&original)?;
+        match found {
+            Ok(Some(target)) => targets.push(target),
+            Ok(None) => output.notice(&format!(
+                "skipped '{}' (no worktree for '{}')",
+                row.name, current_branch
+            )),
+            Err(e) => output.warning(&format!("skipped '{}' ({e})", row.name)),
+        }
+    }
+    Ok(targets)
+}
+
+/// Find `row`'s worktree for `branch` (default branch when `None`),
+/// labeled `repo:branch`. Assumes cwd is already inside `row`'s repo.
+fn repo_branch_target(
+    row: &crate::store::CatalogRepoRow,
+    branch: Option<&str>,
+) -> Result<Option<crate::core::worktree::exec::ResolvedTarget>> {
+    use crate::core::worktree::exec as core;
+    let settings = DaftSettings::load()?;
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
+    let snaps = core::collect_snapshot(&git)?;
+    let branch = match branch {
+        Some(b) => b.to_string(),
+        None => match crate::catalog::effective_default_branch(row) {
+            Some(b) => b,
+            None => return Ok(None),
+        },
+    };
+    Ok(snaps
+        .iter()
+        .filter(|w| w.has_worktree())
+        .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+        .map(|w| core::ResolvedTarget {
+            worktree_path: w.path.clone(),
+            branch_name: branch.clone(),
+            display: Some(format!("{}:{}", row.name, branch)),
+        }))
+}
+
+/// The current repo's catalog name, for `repo:branch` labels; falls back
+/// to the project directory's name.
+fn current_repo_catalog_name() -> String {
+    if let Ok(git_dir) = crate::get_git_common_dir()
+        && let Ok(canonical) = git_dir.canonicalize()
+        && let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro()
+        && let Ok(Some(row)) = catalog.resolve(&canonical.to_string_lossy())
+    {
+        return row.name;
+    }
+    get_project_root()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "repo".to_string())
 }
 
 #[cfg(test)]

@@ -56,7 +56,7 @@ pub fn run_with_progress(
     let presenter_concrete = CliPresenter::auto(&cfg);
     let max_name = targets
         .iter()
-        .map(|t| t.branch_name.len())
+        .map(|t| t.label().len())
         .max()
         .unwrap_or(crate::output::hook_progress::DEFAULT_NAME_COLUMN_WIDTH);
     presenter_concrete.set_name_column_width(max_name);
@@ -91,7 +91,7 @@ pub fn run_with_progress(
         }
         for step in pipeline {
             presenter.on_job_skipped(
-                &target.branch_name,
+                target.label(),
                 "",
                 std::time::Duration::ZERO,
                 false,
@@ -180,6 +180,7 @@ mod tests {
         let targets = vec![ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "master".into(),
+            display: None,
         }];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
         let report = run_with_progress(
@@ -210,10 +211,12 @@ mod tests {
             ResolvedTarget {
                 worktree_path: dir1.path().to_path_buf(),
                 branch_name: "a".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir2.path().to_path_buf(),
                 branch_name: "b".into(),
+                display: None,
             },
         ];
         let pipeline = vec![

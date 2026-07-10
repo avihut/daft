@@ -51,6 +51,9 @@ git worktree-exec [OPTIONS] [TARGETS] [CMD]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `--all` | Target every worktree in the repository |  |
+| `--repo <REPO>` | Run in another cataloged repository (targets and --all apply there) |  |
+| `--all-repos` | Run in every cataloged repository's default-branch worktree |  |
+| `--related` | Run across this repo and its related repos (relations manifest), in each one's worktree for the current branch |  |
 | `-x, --exec <CMD>` | Shell command to run (repeatable); runs via $SHELL -c |  |
 | `--sequential` | Run worktrees one at a time and stop on first failure |  |
 | `--keep-going` | Run worktrees one at a time and continue through failures |  |

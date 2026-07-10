@@ -66,7 +66,7 @@ pub fn render_outcome<W: Sink>(
         writeln!(
             sink,
             "  {sigil}  {:<24} ({elapsed})",
-            outcome.target.branch_name
+            outcome.target.label()
         )?;
     } else {
         let cmd_desc = pipeline
@@ -76,7 +76,8 @@ pub fn render_outcome<W: Sink>(
         writeln!(
             sink,
             "  {sigil}  {:<24} ({elapsed})   {cmd_desc} → exit {}",
-            outcome.target.branch_name, outcome.exit_code
+            outcome.target.label(),
+            outcome.exit_code
         )?;
     }
     Ok(())
@@ -144,7 +145,8 @@ fn render_outcome_block<W: Sink>(
     writeln!(
         sink,
         "{sigil} {}  \u{00b7}  {cmd_desc}  \u{00b7}  {status}, {elapsed}, exit {}",
-        outcome.target.branch_name, outcome.exit_code,
+        outcome.target.label(),
+        outcome.exit_code,
     )?;
     write_gutter_lines(sink, &outcome.captured_output)
 }
@@ -224,6 +226,7 @@ mod tests {
             target: ResolvedTarget {
                 worktree_path: format!("/r/{branch}").into(),
                 branch_name: branch.into(),
+                display: None,
             },
             last_command_index: 0,
             exit_code: exit,
