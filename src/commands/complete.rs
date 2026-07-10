@@ -122,6 +122,13 @@ fn complete(
             Ok(format_entries_as_strings(&entries))
         }
 
+        // daft-go position 2: branches of the catalog repo named at
+        // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST).
+        ("daft-go", 2) => {
+            let first = std::env::var("DAFT_COMPLETE_GO_FIRST").unwrap_or_default();
+            Ok(format_entries_as_strings(&complete_go_second(&first, word)))
+        }
+
         // daft-start: no dynamic completion for new branch names
         ("daft-start", _) => Ok(vec![]),
 
@@ -461,7 +468,12 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     let t_total = Instant::now();
 
     let t = Instant::now();
-    let repo = discover_repo()?;
+    let repo = match discover_repo() {
+        Ok(repo) => repo,
+        // Outside any git repo, `daft go` is a pure catalog jump — offer
+        // live repo names instead of nothing.
+        Err(_) => return Ok(catalog_repo_entries(prefix, &Default::default())),
+    };
     let d_discover = t.elapsed();
 
     // Read remote config + go-specific fetch-on-miss setting + columns.
@@ -555,8 +567,11 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         );
     }
 
-    let entries = collect(&repo, timings);
+    let mut entries = collect(&repo, timings);
+    append_catalog_group(&mut entries, prefix);
 
+    // A catalog-repo match counts as a hit: no point fetching refs when the
+    // word already names another repo.
     if !entries.is_empty() || !fetch_on_miss || !go_fetch_on_miss || prefix.is_empty() {
         if timings {
             eprintln!(
@@ -609,7 +624,8 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         );
     }
 
-    let entries = collect(&repo, timings);
+    let mut entries = collect(&repo, timings);
+    append_catalog_group(&mut entries, prefix);
 
     if timings {
         eprintln!(
@@ -619,6 +635,94 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     }
 
     Ok(entries)
+}
+
+/// Live catalog repos matching `prefix`, excluding names in `exclude`
+/// (branches always shadow repo names in `daft go`; a shadowed repo is
+/// reachable via `--repo`). Hot-path contract: silent, never creates.
+fn catalog_repo_entries(
+    prefix: &str,
+    exclude: &std::collections::BTreeSet<String>,
+) -> Vec<CompletionEntry> {
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return Vec::new();
+    };
+    let Ok(rows) = catalog.list(false) else {
+        return Vec::new();
+    };
+    rows.into_iter()
+        .filter(|row| row.name.starts_with(prefix) && !exclude.contains(&row.name))
+        .map(|row| CompletionEntry {
+            name: row.name,
+            group: CompletionGroup::Repo,
+            description: row.path,
+        })
+        .collect()
+}
+
+/// Append the trailing catalog-repo group to a `daft go` completion list.
+fn append_catalog_group(entries: &mut Vec<CompletionEntry>, prefix: &str) {
+    let existing: std::collections::BTreeSet<String> =
+        entries.iter().map(|e| e.name.clone()).collect();
+    entries.extend(catalog_repo_entries(prefix, &existing));
+}
+
+/// Position-2 completion for `daft go <repo> <branch>`: branches of the
+/// repo named by `DAFT_COMPLETE_GO_FIRST` (set by the shell snippets).
+/// Empty when the first word isn't a live catalog repo — position 2 then
+/// means a base branch for `-b`, which keeps its default completion.
+fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
+    if first_word.is_empty() {
+        return Vec::new();
+    }
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return Vec::new();
+    };
+    let Ok(Some(row)) = catalog.resolve_live_name(first_word) else {
+        return Vec::new();
+    };
+    let root = std::path::Path::new(&row.path);
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let Ok(out) = crate::utils::git_command_at(root)
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            // Full refnames disambiguate slashed branch names from remote
+            // prefixes: refs/heads/<branch> vs refs/remotes/<remote>/<branch>.
+            let name = line.trim();
+            if let Some(branch) = name.strip_prefix("refs/heads/") {
+                return Some(branch.to_string());
+            }
+            let rest = name.strip_prefix("refs/remotes/")?;
+            let (_, branch) = rest.split_once('/')?;
+            if branch == "HEAD" {
+                return None;
+            }
+            Some(branch.to_string())
+        })
+        .filter(|name| name.starts_with(prefix) && seen.insert(name.clone()))
+        .map(|name| CompletionEntry {
+            name,
+            group: CompletionGroup::Local,
+            description: row.name.clone(),
+        })
+        .collect()
 }
 
 /// Suggest common branch name patterns for new branches

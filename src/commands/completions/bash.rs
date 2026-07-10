@@ -219,6 +219,15 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // daft-go's position-2 completion (branches of the repo at position 1)
+    // needs the first positional; pass it via env — the __complete protocol
+    // only carries the current word.
+    let env_prefix = if command_name == "daft-go" {
+        r#"DAFT_COMPLETE_GO_FIRST="${words[1]}" "#
+    } else {
+        ""
+    };
+
     // Rich commands that also carry --skip-hooks (checkout, go) complete its
     // selector vocabulary when the previous word is the flag.
     let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
@@ -246,7 +255,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     fi
 
 {path_pre}    local raw
-    raw=$(daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
+    raw=$({env_prefix}daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true

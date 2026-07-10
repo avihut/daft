@@ -1,0 +1,33 @@
+name: Go dash hops back across repos
+description:
+  A cross-repo go records the source worktree in the target repo's
+  previous-worktree state, so `daft go -` naturally hops back
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Hop from repo A to repo B
+    run: daft go test-repo-b
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo-b/.git/.daft/previous-worktree"
+          content: "test-repo-a/main"
+
+  - name: daft go dash hops back to repo A
+    run: daft go -
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 0

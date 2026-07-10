@@ -1,0 +1,85 @@
+name: Go cross-repo navigation
+description:
+  daft go jumps between cataloged repos — bare repo name opens the default
+  branch, repo+branch opens (creating if needed) a specific worktree, --repo
+  disambiguates, local resolution always wins, and a catalog match beats
+  autoStart while --start forces branch creation
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Bare repo name opens the default-branch worktree
+    run: daft go test-repo-b
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+
+  - name: Repo plus branch creates that worktree over there
+    run: daft go test-repo-b develop
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/develop"
+
+  - name: Slashed branches work through the two-positional form
+    run: daft go test-repo-b feature/test-feature
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feature/test-feature"
+
+  - name: --repo addresses a repository explicitly
+    run: daft go --repo test-repo-a develop
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/develop"
+
+  - name: A catalog match beats autoStart
+    run: git config daft.go.autoStart true && daft go test-repo-b 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Opening repository 'test-repo-b'"
+
+  - name: --start forces branch creation instead of the catalog hop
+    run: daft go --start test-repo-b 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/test-repo-b"
+      output_not_contains:
+        - "Opening repository"
+
+  - name: A local branch shadows the repo name from now on
+    run: daft go test-repo-b 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Opening repository"
+
+  - name: Unknown repo in the two-positional form explains itself
+    run: daft go nosuch main 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+        - "two arguments mean"

@@ -299,6 +299,15 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // daft-go position 2 completes branches of the repo named at position 1;
+    // the __complete protocol only carries the current word, so pass the
+    // first positional via env.
+    let env_prefix = if command_name == "daft-go" {
+        r#"DAFT_COMPLETE_GO_FIRST="$words[2]" "#
+    } else {
+        ""
+    };
+
     let mut output = format!(
         r#"#compdef {command_name}
 
@@ -318,7 +327,7 @@ __{func_name}_impl() {{
     local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
-    raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
+    raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
