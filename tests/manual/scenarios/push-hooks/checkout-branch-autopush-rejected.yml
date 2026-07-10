@@ -1,9 +1,11 @@
 name: checkout -b auto-upstream push is gated by the pre-push hook
 description:
-  "With daft.checkout.push enabled, a failing pre-push hook gates the automatic
-  upstream push: the worktree is still created and fully set up, the command
-  exits non-zero with a created-but-rejected message, and the branch never
-  reaches the remote."
+  "With daft.checkout.push enabled and a base that is locally ahead (so the
+  upstream push carries new commits — a ref-only push would skip the hook under
+  the default pushVerify=auto, see checkout-branch-autopush-ref-only-skips), a
+  failing pre-push hook gates the automatic upstream push: the worktree is still
+  created and fully set up, the command exits non-zero with a
+  created-but-rejected message, and the branch never reaches the remote."
 
 repos:
   - name: autopush-repo
@@ -19,6 +21,16 @@ steps:
 
   - name: Enable the automatic upstream push
     run: git config daft.checkout.push true
+    cwd: "$WORK_DIR/autopush-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Commit locally on main so the upstream push carries new commits
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "local work" > local.txt
+      git add local.txt
+      git commit -m "Local work not on the remote"
     cwd: "$WORK_DIR/autopush-repo/main"
     expect: { exit_code: 0 }
 

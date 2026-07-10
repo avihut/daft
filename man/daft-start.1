@@ -13,7 +13,10 @@ using the branch name as the directory name.
 .PP
 The new branch is based on the current branch, or on `<base\-branch>` if
 specified. After creating the branch locally, it is pushed to the remote and
-upstream tracking is configured (unless disabled via daft.checkoutBranch.push).
+upstream tracking is configured (unless disabled via daft.checkout.push). The
+repo\*(Aqs pre\-push hook runs only when that push introduces new commits; a
+ref\-only push of already\-pushed commits skips it (configurable via
+daft.checkout.pushVerify: auto, always, or never).
 .PP
 This command can be run from anywhere within the repository.
 .PP

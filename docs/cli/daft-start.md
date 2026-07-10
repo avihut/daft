@@ -27,6 +27,11 @@ and upstream tracking, set `daft.checkout.push true` or use
 `daft config remote-sync --on`. You can also pass `--local` to skip remote
 operations for a single invocation regardless of config.
 
+When the push is enabled, the repo's `pre-push` hook runs only when the push
+introduces new commits; a ref-only push of already-pushed commits skips it
+(configurable via `daft.checkout.pushVerify`: `auto`, `always`, or `never` —
+see [Git Hooks](/reference/configuration#git-hooks)).
+
 ## Arguments
 
 | Argument | Description | Required |

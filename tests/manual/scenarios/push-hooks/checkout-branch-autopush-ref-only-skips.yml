@@ -1,0 +1,65 @@
+name: checkout -b ref-only auto-upstream push skips the pre-push hook
+description:
+  "Branching off a fully-pushed base makes the automatic upstream push ref-only
+  (zero new commits), so under the default pushVerify=auto the repo's pre-push
+  hook has nothing to gate and is skipped: a hook that would fail loudly does
+  not block the push, the branch reaches the remote with upstream tracking set,
+  and the command exits zero (#679)."
+
+repos:
+  - name: refonly-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_REFONLY_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/refonly-repo/main"
+
+  - name: Enable the automatic upstream push
+    run: git config daft.checkout.push true
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Creating a branch off the pushed base succeeds despite the hook
+    run: git-worktree-checkout -b feat-ref-only 2>&1
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["GATE SAYS NO"]
+      dirs_exist:
+        - "$WORK_DIR/refonly-repo/feat-ref-only"
+
+  - name: The branch reached the remote
+    run: git ls-remote --heads origin feat-ref-only
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feat-ref-only"]
+
+  - name: Upstream tracking is configured
+    run: git rev-parse --abbrev-ref 'feat-ref-only@{upstream}'
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["origin/feat-ref-only"]
+
+  - name: The skip is reported in verbose mode
+    run: git-worktree-checkout -b feat-ref-only-verbose --verbose 2>&1
+    cwd: "$WORK_DIR/refonly-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["Skipping pre-push hook (no new commits to push)"]
+      dirs_exist:
+        - "$WORK_DIR/refonly-repo/feat-ref-only-verbose"

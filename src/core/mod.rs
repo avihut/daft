@@ -47,6 +47,16 @@ pub trait ProgressSink {
 
     /// Report a debug message (shown in verbose mode).
     fn on_debug(&mut self, msg: &str);
+
+    /// Suspend any running command-level spinner so a nested progress UI
+    /// (e.g. the pre-push hook's `MultiProgress`) can own the terminal without
+    /// the two clobbering each other. No-op by default; CLI adapters forward
+    /// to `Output`. Must be paired with [`resume_spinner`](Self::resume_spinner).
+    fn pause_spinner(&mut self) {}
+
+    /// Restore a spinner previously hidden by [`pause_spinner`](Self::pause_spinner).
+    /// No-op by default.
+    fn resume_spinner(&mut self) {}
 }
 
 /// A no-op sink that discards all progress messages.
