@@ -113,6 +113,51 @@ EOF
     return 0
 }
 
+# A cancelled push must report "cancelled", never mislabel the torn-down
+# branch as a genuine "diverged"/"failed to push" (#663): the sequential
+# phase suppresses its failure summary once the cancel flag is set.
+test_sync_cancel_reports_cancelled_not_failure() {
+    setup_sync_cancel_repo "test-repo-sync-cancel-label" || return 1
+    cat > "$SYNC_CANCEL_HOOK" <<EOF
+#!/bin/sh
+echo \$\$ > $SYNC_CANCEL_MARKS/hook.pid
+echo ok > $SYNC_CANCEL_MARKS/hook-started
+exec sleep 60
+EOF
+    chmod +x "$SYNC_CANCEL_HOOK"
+
+    git-worktree-sync --push > "$SYNC_CANCEL_MARKS/out.log" 2>&1 &
+    local daft_pid=$!
+
+    if ! await_file "$SYNC_CANCEL_MARKS/hook-started" "pre-push hook to start"; then
+        cleanup_sync_cancel "$daft_pid"
+        return 1
+    fi
+
+    kill -INT "$daft_pid"
+    wait "$daft_pid"
+    local code=$?
+
+    if [[ $code -ne 130 ]]; then
+        log_error "expected exit 130 after SIGINT, got $code"
+        cleanup_sync_cancel ""
+        return 1
+    fi
+
+    # The run must read as cancelled, not as a push failure/divergence.
+    if ! grep -qi "cancelled" "$SYNC_CANCEL_MARKS/out.log"; then
+        log_error "cancelled sync did not report 'cancelled'"
+        cat "$SYNC_CANCEL_MARKS/out.log"
+        return 1
+    fi
+    if grep -Eqi "failed to push|diverged|had conflicts" "$SYNC_CANCEL_MARKS/out.log"; then
+        log_error "cancelled sync mislabeled the torn-down branch as a failure"
+        cat "$SYNC_CANCEL_MARKS/out.log"
+        return 1
+    fi
+    return 0
+}
+
 # A TERM-immune hook that keeps the pipe write-ends open must NOT wedge
 # the soft cancel (daft keeps watching the flag), and a second SIGINT
 # must SIGKILL it. This is the run_push pipe-holder regression.
@@ -296,6 +341,7 @@ EOF
 
 run_sync_cancel_tests() {
     run_test "sync_cancel_single_sigint_kills_hook" "test_sync_cancel_single_sigint_kills_hook"
+    run_test "sync_cancel_reports_cancelled_not_failure" "test_sync_cancel_reports_cancelled_not_failure"
     run_test "sync_cancel_second_sigint_force_kills" "test_sync_cancel_second_sigint_force_kills"
     run_test "sync_cancel_unsticks_stopped_hook_group" "test_sync_cancel_unsticks_stopped_hook_group"
     run_test "sync_cancel_sigterm_parity" "test_sync_cancel_sigterm_parity"
