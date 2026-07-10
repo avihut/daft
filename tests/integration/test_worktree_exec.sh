@@ -231,6 +231,92 @@ test_exec_fail_fast_emits_skipped_row() {
     return 0
 }
 
+# Run a command line with a freshly allocated pty as its controlling
+# terminal. macOS/BSD and util-linux script(1) disagree on argv shape.
+# The command line should tee its own output/exit code to files — BSD
+# script's status propagation isn't relied on.
+run_under_pty() {
+    local cmdline="$1"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        script -q /dev/null sh -c "$cmdline" < /dev/null > /dev/null 2>&1
+    else
+        script -q -e -c "$cmdline" /dev/null < /dev/null > /dev/null 2>&1
+    fi
+}
+
+# Alias capture must survive a controlling terminal (#663 regression):
+# an interactive capture shell whose session still holds daft's tty
+# job-stops itself with the SIGTTIN foreground dance (bash -i
+# force-opens /dev/tty; zsh likewise) unless capture detaches into its
+# own session via the `daft __capture-aliases` setsid trampoline.
+# Without the trampoline this burns the full 10s capture deadline and
+# loses the aliases. CI runners have no tty, so the terminal is
+# fabricated with script(1) — this is the only automated coverage of
+# the production trampoline dispatch (unit tests substitute perl).
+test_exec_alias_capture_under_tty() {
+    if ! command -v script >/dev/null 2>&1; then
+        log_success "script(1) unavailable — skipped"
+        return 0
+    fi
+
+    local remote_repo
+    remote_repo=$(create_test_remote "exec-alias-tty" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "exec-alias-tty/main" || return 1
+
+    # Fixture: isolated HOME with a .bashrc alias, plus a $SHELL wrapper
+    # NAMED bash (ShellKind sniffs the basename) that pins rc lookup to
+    # the fixture home even if the environment leaks.
+    local fix="$TEMP_BASE_DIR/exec-alias-tty-fixture"
+    rm -rf "$fix"
+    mkdir -p "$fix/bin" "$fix/home"
+    # The alias drops a marker in the worktree it runs in — file
+    # assertions don't depend on renderer output layout.
+    echo "alias daft_tty_probe='echo TTY_ALIAS_EXPANDED > \$PWD/tty-marker'" \
+        > "$fix/home/.bashrc"
+    cat > "$fix/bin/bash" <<EOF
+#!/bin/sh
+export HOME=$fix/home
+exec bash "\$@"
+EOF
+    chmod +x "$fix/bin/bash"
+
+    local out_file="$fix/exec.out" rc_file="$fix/exec.rc"
+    # HOME/XDG_CACHE_HOME are scoped to the fixture so the capture cache
+    # can't touch the real user cache; stdout goes to a file (keeps the
+    # renderer plain) while the pty stays the controlling terminal —
+    # which is all the foreground dance needs.
+    local cmdline="env HOME=$fix/home XDG_CACHE_HOME=$fix/home/.cache SHELL=$fix/bin/bash \
+git-worktree-exec --all -- daft_tty_probe > $out_file 2>&1; echo \$? > $rc_file"
+
+    local t0=$SECONDS
+    run_under_pty "$cmdline"
+    local elapsed=$((SECONDS - t0))
+
+    local rc
+    rc=$(cat "$rc_file" 2>/dev/null)
+    if [[ "$rc" != "0" ]]; then
+        log_error "exec under pty exited ${rc:-<none>} (alias likely didn't resolve): $(cat "$out_file" 2>/dev/null)"
+        return 1
+    fi
+    local repo_root
+    repo_root="$(cd .. && pwd)"
+    if ! grep -q "TTY_ALIAS_EXPANDED" "$repo_root/main/tty-marker" 2>/dev/null; then
+        log_error "alias did not expand under a controlling tty: $(cat "$out_file" 2>/dev/null)"
+        return 1
+    fi
+    # A stopped capture shell burns the whole 10s deadline before the
+    # rc-less fallback runs — a healthy capture finishes in ~1s.
+    if [[ $elapsed -gt 8 ]]; then
+        log_error "exec under pty took ${elapsed}s — capture deadline burned (tty stop?)"
+        return 1
+    fi
+
+    log_success "alias capture survived a controlling terminal (${elapsed}s)"
+    return 0
+}
+
 # --- Test runner ---
 run_worktree_exec_tests() {
     run_test "exec single-target pwd uses worktree cwd" \
@@ -247,6 +333,8 @@ run_worktree_exec_tests() {
         test_exec_multi_command_shows_inline_command_names
     run_test "exec fail-fast emits skipped row" \
         test_exec_fail_fast_emits_skipped_row
+    run_test "exec alias capture survives a controlling tty" \
+        test_exec_alias_capture_under_tty
 }
 
 # Main execution (when run directly)

@@ -150,6 +150,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
+        cancel: None,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -382,7 +383,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
+        if !sync_shared::run_fetch_phase(
+            &tx,
+            orch_settings.use_gitoxide,
+            &orch_settings.remote,
+            None,
+        ) {
             return;
         }
 

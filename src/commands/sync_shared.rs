@@ -64,6 +64,7 @@ pub fn execute_prune_task(
         is_quiet: true,
         remote_name: remote_name.to_string(),
         prune_cd_target: settings.prune_cd_target,
+        cancel: None,
     };
 
     let executor = match HookExecutor::new(hooks_config.clone()) {
@@ -179,6 +180,7 @@ pub fn handle_post_tui_deferred(
             is_quiet: true,
             remote_name: settings.remote.clone(),
             prune_cd_target: settings.prune_cd_target,
+            cancel: None,
         };
         // After TUI exits, we can use the full CLI output again
         let config = OutputConfig::with_autocd(false, false, settings.autocd);
@@ -274,13 +276,17 @@ pub fn run_fetch_phase(
     tx: &std::sync::mpsc::Sender<DagEvent>,
     use_gitoxide: bool,
     remote: &str,
+    cancel: Option<&std::sync::Arc<crate::git::cancel::CancelFlag>>,
 ) -> bool {
     let _ = tx.send(DagEvent::TaskStarted {
         phase: OperationPhase::Fetch,
         branch_name: String::new(),
     });
 
-    let fetch_git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    let mut fetch_git = GitCommand::new(false).with_gitoxide(use_gitoxide);
+    if let Some(cancel) = cancel {
+        fetch_git = fetch_git.with_cancel(std::sync::Arc::clone(cancel));
+    }
     let fetch_result = fetch_git.fetch(remote, true);
 
     if let Err(e) = fetch_result {

@@ -108,7 +108,9 @@ tabled = { version = "0.21", default-features = false, features = ["std", "ansi"
 terminal_size = "0.4"
 toml = "1.1"
 pathdiff = "0.2.3"
-ctrlc = "3.5.2"
+# `termination` widens the handler to SIGTERM/SIGHUP so `kill <daft>` and
+# a closing terminal get the same graceful teardown as Ctrl+C (#663).
+ctrlc = { version = "3.5.2", features = ["termination"] }
 console = "0.16.3"
 dialoguer = "0.12"
 syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }

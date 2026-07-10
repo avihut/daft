@@ -158,6 +158,13 @@ pub fn execute(
     let mut results: Vec<WorktreeFetchResult> = Vec::new();
 
     for (refspec, target_path) in &refspecs {
+        // Stop scheduling new pulls once a cancel lands — otherwise every
+        // remaining worktree fast-fails through a torn-down subprocess and
+        // renders as a spurious failure (#663).
+        if git.is_cancelled() {
+            break;
+        }
+
         let worktree_name = target_path
             .strip_prefix(project_root)
             .ok()

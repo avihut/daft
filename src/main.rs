@@ -136,6 +136,13 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
                     #[cfg(unix)]
+                    "__capture-aliases" => {
+                        // Internal: session-detach trampoline for the
+                        // alias-capture shell — setsid, then exec argv[2..]
+                        // in place (see exec::alias_cache).
+                        daft::core::worktree::exec::alias_cache::run_capture_trampoline(&args[2..]);
+                    }
+                    #[cfg(unix)]
                     "__coordinator" => {
                         // Internal: spawned by `spawn_coordinator()`. argv[2]
                         // is the path to a JSON-serialized CoordinatorPayload.

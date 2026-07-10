@@ -27,7 +27,7 @@ use crate::{
         },
     },
     get_git_common_dir, get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::{GitCommand, cancel::CancelFlag, should_show_gitoxide_notice},
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
@@ -113,6 +113,14 @@ This is equivalent to running `daft prune` followed by `daft update --all`:
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
 daft.prune.cdTarget).
+
+Cancellation: the first Ctrl+C (or SIGTERM) cancels gracefully — no new work
+starts and every running git subprocess is torn down. A pre-push hook and all
+of its descendants are killed by process group, reaching even stages that moved
+to their own process groups or were stopped by terminal job control; an
+interrupted rebase is aborted to restore the worktree; and sync prints partial
+results and exits 130. A second Ctrl+C force-kills anything still running and
+exits immediately.
 
 For fine-grained control over either phase, use `daft prune` and `daft update`
 separately.
@@ -218,15 +226,94 @@ pub fn run() -> Result<()> {
         SortSpec::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
+    // Two-stage cancellation (#663): the first Ctrl+C (or SIGTERM/SIGHUP —
+    // ctrlc's `termination` feature) soft-cancels — every in-flight git
+    // subtree gets TERM+CONT by process group and no new work starts. A
+    // second one hard-cancels with SIGKILL. The handler must be installed
+    // before anything else can claim the process-global ctrlc slot.
+    let cancel = Arc::new(CancelFlag::new());
+    // The TUI renderer's cancel channel is a plain AtomicBool; the handler
+    // flips both so raw-mode and signal paths converge on the same state.
+    let cancel_render = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&cancel);
+        let render = Arc::clone(&cancel_render);
+        let _ = ctrlc::set_handler(move || {
+            // Owning the process-global ctrlc slot means the prune
+            // confirmation prompt's own handler never registered; a
+            // prompt parked in term.read_key() cannot observe the flag,
+            // so honor its cancel contract (message + exit 130) here —
+            // otherwise a SIGTERM mid-prompt hangs until a keypress.
+            crate::prompt::exit_if_prompt_active();
+            flag.escalate();
+            render.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
     if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
-        run_sequential(args, settings)
+        run_sequential(args, settings, &cancel)
     } else {
-        run_tui(args, settings)
+        run_tui(args, settings, &cancel, cancel_render)
     }
 }
 
+/// Shared exit path once a run observed a cancel: print the partial-result
+/// note plus any surviving process groups, then exit 130 (128 + SIGINT).
+fn exit_cancelled(done: usize, unfinished: usize) -> ! {
+    eprintln!();
+    if done > 0 || unfinished > 0 {
+        eprintln!("Sync cancelled — {done} task row(s) finished, {unfinished} unfinished.");
+    } else {
+        eprintln!("Sync cancelled.");
+    }
+    let survivors = crate::git::cancel::surviving_groups();
+    if !survivors.is_empty() {
+        let list = survivors
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("warning: hook processes may still be running (process group(s): {list}).");
+        eprintln!("         Recover manually with: kill -KILL -<pgid>");
+    }
+    std::process::exit(130);
+}
+
+/// Write the shell wrapper's cd redirect (or a fallback hint) when the
+/// prune phase removed the worktree the user's shell is sitting in.
+/// Shared by the normal exit and the cancelled-exit paths.
+fn write_cd_redirect(output: &mut CliOutput, cd_target: &std::path::Path) {
+    if std::env::var(CD_FILE_ENV).is_ok() {
+        output.cd_path(cd_target);
+    } else {
+        output.result(&format!(
+            "Run `cd {}` (your previous working directory was removed)",
+            cd_target.display()
+        ));
+    }
+}
+
+/// Cancelled-exit for the sequential path: flush the prune phase's cd
+/// redirect (so the shell leaves a just-removed worktree) *before*
+/// diverging via [`exit_cancelled`]. Without this, exiting 130 skips the
+/// end-of-function cd write and strands the shell in the deleted directory
+/// the prune already removed (#663). The sequential path streams per-phase
+/// progress as it runs, so it has no TUI row tallies — (0, 0) yields the
+/// bare "Sync cancelled." line, which is the right message there.
+fn exit_cancelled_with_cd(output: &mut CliOutput, cd_target: Option<&PathBuf>) -> ! {
+    if let Some(cd) = cd_target {
+        write_cd_redirect(output, cd);
+    }
+    exit_cancelled(0, 0);
+}
+
 /// Sequential (non-TTY) execution path — the original sync flow.
-fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
+///
+/// Cancellation here is coarser than the TUI path: the active git
+/// subprocess is torn down by the shared seams, and the flag is checked
+/// at phase boundaries — a cancelled phase exits 130 without starting
+/// the next one.
+fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) -> Result<()> {
     let config = OutputConfig::with_autocd(false, args.verbose >= 2, settings.autocd);
     let mut output = CliOutput::new(config);
 
@@ -253,10 +340,22 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
     )?;
 
     // Phase 1: Prune stale branches and worktrees
-    let prune_result = run_prune_phase(&mut output, &settings, force)?;
+    let prune_result = run_prune_phase(&mut output, &settings, force, cancel);
+    if cancel.is_cancelled() {
+        // Prune may have removed our cwd before the cancel landed — salvage
+        // its cd target so the shell still redirects out of the deleted
+        // worktree (#663).
+        let cd = prune_result.as_ref().ok().and_then(|r| r.cd_target.clone());
+        exit_cancelled_with_cd(&mut output, cd.as_ref());
+    }
+    let prune_result = prune_result?;
 
     // Phase 2: Update all remaining worktrees
-    run_update_phase(&mut output, &settings, force, &default_branch)?;
+    let update_result = run_update_phase(&mut output, &settings, force, &default_branch, cancel);
+    if cancel.is_cancelled() {
+        exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
+    }
+    update_result?;
 
     // Compute ownership filter for rebase/push phases.
     // When --include filters are specified or user.email is set, only owned
@@ -325,7 +424,12 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
             args.autostash,
             &default_branch,
             included_branches.as_ref(),
-        )?;
+            cancel,
+        );
+        if cancel.is_cancelled() {
+            exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
+        }
+        let result = result?;
         result
             .results
             .iter()
@@ -357,34 +461,39 @@ fn run_sequential(args: Args, settings: DaftSettings) -> Result<()> {
                 }
             }
         }
-        run_push_phase(
+        let push_result = run_push_phase(
             &mut output,
             &settings,
             args.force_with_lease,
             args.no_verify,
             &push_skip,
             &default_branch,
-        )?;
+            cancel,
+        );
+        if cancel.is_cancelled() {
+            exit_cancelled_with_cd(&mut output, prune_result.cd_target.as_ref());
+        }
+        push_result?;
     }
 
     // Write the cd target for the shell wrapper (from prune phase)
     if let Some(ref cd_target) = prune_result.cd_target {
-        if std::env::var(CD_FILE_ENV).is_ok() {
-            output.cd_path(cd_target);
-        } else {
-            output.result(&format!(
-                "Run `cd {}` (your previous working directory was removed)",
-                cd_target.display()
-            ));
-        }
+        write_cd_redirect(&mut output, cd_target);
     }
 
     Ok(())
 }
 
 /// Interactive TUI execution path — parallel DAG executor with inline ratatui display.
-fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+fn run_tui(
+    args: Args,
+    settings: DaftSettings,
+    cancel: &Arc<CancelFlag>,
+    cancel_render: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    let git = GitCommand::new(false)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     // Clean up stale temp worktrees from previous crashes.
@@ -660,9 +769,23 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     // Ownership filtering for the orchestrator
     let shared_include: Arc<Vec<String>> = Arc::new(args.include.clone());
 
+    let orch_cancel = Arc::clone(cancel);
+
     let orchestrator_handle = std::thread::spawn(move || {
         // ── Phase 1: Fetch ─────────────────────────────────────────────
-        if !sync_shared::run_fetch_phase(&tx, orch_settings.use_gitoxide, &orch_settings.remote) {
+        if !sync_shared::run_fetch_phase(
+            &tx,
+            orch_settings.use_gitoxide,
+            &orch_settings.remote,
+            Some(&orch_cancel),
+        ) {
+            return;
+        }
+
+        // Cancelled during (or right after) the fetch: skip the refresh
+        // and never build the DAG — nothing per-branch has started yet.
+        if orch_cancel.is_cancelled() {
+            let _ = tx.send(sync_dag::DagEvent::AllDone);
             return;
         }
 
@@ -679,7 +802,13 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // ── Phase 2: Identify gone branches + build DAG ────────────────
         let gone_branches = {
-            let git = GitCommand::new(false).with_gitoxide(orch_settings.use_gitoxide);
+            // Carry the cancel flag: its `ls-remote` probes are network
+            // calls that must be torn down on the first Ctrl+C, like every
+            // other orchestrator git op (#663) — otherwise a stalled remote
+            // here ignores the cancel until it returns.
+            let git = GitCommand::new(false)
+                .with_gitoxide(orch_settings.use_gitoxide)
+                .with_cancel(Arc::clone(&orch_cancel));
             let mut sink = NullBridge;
             prune::identify_gone_branches(
                 &git,
@@ -724,7 +853,8 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
         // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
         let tx_for_tasks = tx.clone();
-        let executor = DagExecutor::new(dag, tx);
+        let task_cancel = Arc::clone(&orch_cancel);
+        let executor = DagExecutor::new(dag, tx).with_cancel(Arc::clone(&orch_cancel));
         executor.run(
             move |task: &SyncTask,
                   outcomes: &std::collections::HashSet<
@@ -786,6 +916,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             &shared_project_root,
                             &shared_pull_args,
                             shared_force,
+                            &task_cancel,
                         );
                         if status == TaskStatus::Succeeded {
                             spawn_post_task_refresh(
@@ -814,6 +945,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_force,
                             shared_autostash,
                             outcomes,
+                            &task_cancel,
                         );
                         if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
@@ -846,6 +978,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_hook_present,
                             &tx_for_tasks,
                             outcomes,
+                            &task_cancel,
                         );
                         if status == TaskStatus::Succeeded {
                             spawn_post_task_refresh(
@@ -927,8 +1060,31 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
             seeded_fields,
         },
         unowned_start_index,
-    );
-    let completed = table.run()?;
+    )
+    .with_cancel_signal(Arc::clone(&cancel_render));
+
+    // Raw mode so Ctrl+C reaches the render loop as a key event (and ^C
+    // isn't echoed mid-render); the process-global SIGINT handler stays
+    // as the fallback. Scoped: the guard must drop before the joins
+    // below so a second Ctrl+C — cooked mode again — reaches the handler
+    // as a signal and escalates to hard-kill.
+    let completed = {
+        let _raw_guard = crate::output::tui::enable_raw_mode_guard();
+        table.run()?
+    };
+
+    // A cancel that arrived as a raw-mode key event never went through
+    // the signal handler: the flag may still be at level 0. Lift it 0 → 1
+    // atomically — a check-then-escalate would race the ctrlc handler
+    // thread (SIGTERM/SIGHUP via the `termination` feature) and could
+    // compound to level 2, SIGKILL'ing hook subtrees off one graceful
+    // keypress (#8). `soft_escalate_once` no-ops if a cancel already landed.
+    let run_cancelled = completed.cancelled || cancel.is_cancelled();
+    if run_cancelled {
+        cancel.soft_escalate_once();
+        eprintln!();
+        eprintln!("Cancelling — waiting for running tasks (press Ctrl+C again to force-kill)…");
+    }
 
     if let Some(handle) = collector_handle {
         handle.cancel(); // Renderer is gone, don't keep workers running.
@@ -939,6 +1095,23 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
     orchestrator_handle
         .join()
         .map_err(|_| anyhow::anyhow!("DAG orchestrator thread panicked"))?;
+
+    // ── Cancelled: report partial progress and exit 130 ────────────────
+    // Deliberately skips the deferred-prune handling below — removing the
+    // user's current worktree after they aborted the run is the opposite
+    // of what Ctrl+C asked for. Stale temp worktrees are reclaimed by
+    // cleanup_stale on the next sync.
+    if run_cancelled {
+        use crate::output::tui::{FinalStatus, WorktreeStatus};
+        let done = completed
+            .rows
+            .iter()
+            .filter(|w| {
+                matches!(&w.status, WorktreeStatus::Done(s) if !matches!(s, FinalStatus::Skipped))
+            })
+            .count();
+        exit_cancelled(done, completed.rows.len().saturating_sub(done));
+    }
 
     // Surface untrusted-hook notices the TUI buffered (TuiBridge warnings
     // never reach stderr). Before the deferred-branch removal below, so the
@@ -1066,6 +1239,7 @@ fn spawn_post_task_refresh(
 }
 
 /// Execute a single update task for a DAG worker.
+#[allow(clippy::too_many_arguments)]
 fn execute_update_task(
     branch_name: &str,
     worktree_path: Option<&PathBuf>,
@@ -1073,13 +1247,22 @@ fn execute_update_task(
     project_root: &std::path::Path,
     pull_args: &[String],
     force: bool,
+    cancel: &Arc<CancelFlag>,
 ) -> (TaskStatus, TaskMessage) {
+    // A worker may pop a task in the same instant the cancel sweep runs;
+    // resolve it without spawning anything.
+    if cancel.is_cancelled() {
+        return (TaskStatus::Cancelled, TaskMessage::Cancelled);
+    }
+
     let Some(target_path) = worktree_path else {
         // Local-only branch: attempt fast-forward from upstream.
         return execute_local_branch_update(branch_name, project_root);
     };
 
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1120,6 +1303,10 @@ fn execute_update_task(
         (TaskStatus::Succeeded, TaskMessage::UpToDate)
     } else if result.success {
         (TaskStatus::Succeeded, TaskMessage::Ok(result.message))
+    } else if cancel.is_cancelled() {
+        // The pull was torn down by the cancel cascade — that's a user
+        // decision, not a worktree failure.
+        (TaskStatus::Cancelled, TaskMessage::Cancelled)
     } else {
         (TaskStatus::Failed, TaskMessage::Failed(result.message))
     }
@@ -1136,7 +1323,16 @@ fn execute_rebase_task(
     force: bool,
     autostash: bool,
     branch_outcomes: &HashSet<TaskOutcome>,
+    cancel: &Arc<CancelFlag>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
+    if cancel.is_cancelled() {
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
+
     let target_path: PathBuf;
     let _temp_guard: Option<temp_worktree::TempWorktreeGuard>;
 
@@ -1161,7 +1357,9 @@ fn execute_rebase_task(
     }
     let target_path = &target_path;
 
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1181,6 +1379,18 @@ fn execute_rebase_task(
         autostash,
         &mut sink,
     );
+
+    // A rebase torn down by the cancel cascade surfaces through the same
+    // error arm as a conflict (rebase_single_worktree already ran
+    // `git rebase --abort`, restoring the worktree — including the
+    // --autostash stash). Relabel it: cancellation is not a conflict.
+    if cancel.is_cancelled() && (result.conflict || !result.success) {
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
 
     if result.skipped {
         (
@@ -1219,7 +1429,16 @@ fn execute_push_task(
     hook_present: bool,
     tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
     branch_outcomes: &HashSet<TaskOutcome>,
+    cancel: &Arc<CancelFlag>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
+    if cancel.is_cancelled() {
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
+
     // Push doesn't need the branch's worktree; any git dir works.
     // For local-only branches, fall back to the project root.
     let fallback_path = project_root.to_path_buf();
@@ -1233,7 +1452,9 @@ fn execute_push_task(
         );
     }
 
-    let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(false)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1276,6 +1497,34 @@ fn execute_push_task(
         presenter.as_ref(),
         Some(hook_present),
     );
+
+    // A push (or its pre-push hook subtree) torn down by the cancel
+    // cascade is a cancellation, not a push failure or a divergence.
+    if cancel.is_cancelled() && !result.success {
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
+
+    // A push that job-control-stopped on an interactive auth prompt daft
+    // can't forward is a real, actionable failure — never the benign
+    // "diverged" the hook-less branch below would assign it. Independent
+    // of the cancel flag: the tty-stop is detected at level 0 (#663).
+    if result.needs_terminal {
+        let hint = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or("push needs terminal input for interactive auth")
+            .to_string();
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed(hint),
+            branch_outcomes.clone(),
+        );
+    }
 
     if result.no_upstream {
         (
@@ -1328,22 +1577,23 @@ fn execute_local_branch_update(
     branch_name: &str,
     git_dir: &std::path::Path,
 ) -> (TaskStatus, TaskMessage) {
-    use std::process::Command;
+    use crate::utils::git_command_at;
 
     let upstream = format!("{branch_name}@{{upstream}}");
 
     // Check if the branch can be fast-forwarded to its upstream.
-    let is_ancestor = Command::new("git")
+    // git_command_at (not a raw `git` + current_dir) so an inherited
+    // GIT_DIR can't retarget these to the hook-calling repo when sync
+    // itself runs inside a git hook.
+    let is_ancestor = git_command_at(git_dir)
         .args(["merge-base", "--is-ancestor", branch_name, &upstream])
-        .current_dir(git_dir)
         .output();
 
     match is_ancestor {
         Ok(output) if output.status.success() => {
             // Can fast-forward — move the branch pointer.
-            let ff = Command::new("git")
+            let ff = git_command_at(git_dir)
                 .args(["branch", "-f", branch_name, &upstream])
-                .current_dir(git_dir)
                 .output();
 
             match ff {
@@ -1367,9 +1617,8 @@ fn execute_local_branch_update(
         Ok(output) => {
             // Check if already up-to-date (upstream is ancestor of branch,
             // i.e. branch is at or ahead of upstream).
-            let reverse = Command::new("git")
+            let reverse = git_command_at(git_dir)
                 .args(["merge-base", "--is-ancestor", &upstream, branch_name])
-                .current_dir(git_dir)
                 .output();
 
             match reverse {
@@ -1395,6 +1644,7 @@ fn run_prune_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
     force: bool,
+    cancel: &Arc<CancelFlag>,
 ) -> Result<prune::PruneResult> {
     let params = prune::PruneParams {
         force,
@@ -1402,6 +1652,9 @@ fn run_prune_phase(
         is_quiet: output.is_quiet(),
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
+        // Sequential path: make the prune's `git fetch --prune` cancellable
+        // like the update/rebase/push phases (#663).
+        cancel: Some(Arc::clone(cancel)),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -1429,12 +1682,15 @@ fn run_update_phase(
     settings: &DaftSettings,
     force: bool,
     base_branch: &str,
+    cancel: &Arc<CancelFlag>,
 ) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     // Merge config-based args
@@ -1463,6 +1719,14 @@ fn run_update_phase(
     };
     output.finish_spinner();
     let result = exec_result?;
+
+    // Cancelled mid-phase: the torn-down worktrees would render as genuine
+    // update failures. Skip the per-worktree failures + summary and let
+    // run_sequential print the cancel notice and exit 130 — cancellation is
+    // not a failure (#663; the TUI path relabels these Cancelled likewise).
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
 
     render_fetch_result(&result, output, base_branch);
 
@@ -1609,6 +1873,7 @@ fn print_summary(result: &fetch::FetchResult, output: &mut dyn Output) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_rebase_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
@@ -1617,12 +1882,15 @@ fn run_rebase_phase(
     autostash: bool,
     default_branch: &str,
     included_branches: Option<&HashSet<String>>,
+    cancel: &Arc<CancelFlag>,
 ) -> Result<rebase::RebaseResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     let params = rebase::RebaseParams {
@@ -1639,6 +1907,14 @@ fn run_rebase_phase(
     };
     output.finish_spinner();
     let result = exec_result?;
+
+    // Cancelled mid-phase: a rebase torn down by the cancel cascade surfaces
+    // as a conflict (rebase_single_worktree aborts on any error). Don't
+    // render those as genuine conflicts — run_sequential exits 130 and
+    // cancellation is not a conflict (#663).
+    if cancel.is_cancelled() {
+        return Ok(result);
+    }
 
     render_rebase_result(&result, output, default_branch);
 
@@ -1757,6 +2033,7 @@ fn print_rebase_summary(result: &rebase::RebaseResult, output: &mut dyn Output) 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_push_phase(
     output: &mut dyn Output,
     settings: &DaftSettings,
@@ -1764,12 +2041,15 @@ fn run_push_phase(
     no_verify: bool,
     skip_branches: &HashSet<String>,
     base_branch: &str,
+    cancel: &Arc<CancelFlag>,
 ) -> Result<()> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
+    let git = GitCommand::new(wt_config.quiet)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
     let project_root = get_project_root()?;
 
     let params = push::PushParams {
@@ -1813,6 +2093,13 @@ fn run_push_phase(
     }
     let result = exec_result?;
 
+    // Cancelled mid-phase: torn-down pushes would render as diverged/failed.
+    // Skip the summary; run_sequential prints the cancel notice and exits
+    // 130 — cancellation is not a push failure (#663).
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
     render_push_result(&result, output, base_branch);
 
     if result.failed_count() > 0 {
@@ -1820,6 +2107,17 @@ fn run_push_phase(
             "{} branch(es) failed to push",
             result.failed_count()
         ));
+    }
+
+    // A push that job-control-stopped on interactive auth daft can't forward
+    // did not happen and needs terminal action — exit non-zero with the hint
+    // rather than leaving it a benign "diverged" warning (#663).
+    let needs_terminal = result.needs_terminal_count();
+    if needs_terminal > 0 {
+        anyhow::bail!(
+            "{needs_terminal} push(es) stopped waiting for terminal input (interactive auth?); \
+             run the push manually there, or configure an ssh-agent/credential helper"
+        );
     }
 
     // A pre-push gate saying no must surface as a failure, not a warning.
@@ -1866,6 +2164,10 @@ fn render_push_worktree_status(
         } else {
             output.info(&format!(" * {} {name}", tag_pushed()));
         }
+    } else if r.needs_terminal {
+        // Job-control-stopped on interactive auth: not a benign divergence
+        // — the push did not happen and needs terminal action (#663).
+        output.error(&format!(" * {} {name} — needs terminal auth", tag_failed()));
     } else {
         output.warning(&format!(" * {} {name}", tag_diverged()));
     }

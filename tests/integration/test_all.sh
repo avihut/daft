@@ -19,6 +19,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_flow_adopt.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_rename.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_flow_eject.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_sync.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_sync_cancel.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_unknown_command.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
@@ -313,6 +314,7 @@ run_all_integration_tests() {
     run_flow_adopt_tests
     run_flow_eject_tests
     run_sync_tests
+    run_sync_cancel_tests
     run_unknown_command_tests
     run_exec_tests
     run_list_tests

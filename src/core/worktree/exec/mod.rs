@@ -14,49 +14,15 @@ use crate::executor::presenter::{JobPresenter, NullPresenter};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Cancellation level for in-flight exec runs.
-///
-/// 0 = running normally.
-/// 1 = soft-cancel: children get SIGTERM; we wait for them to exit.
-/// 2 = hard-cancel: children get SIGKILL.
-///
-/// Escalation is monotonic — the flag never goes down.
-pub struct CancelFlag(AtomicUsize);
-
-impl CancelFlag {
-    pub fn new() -> Self {
-        Self(AtomicUsize::new(0))
-    }
-
-    pub fn level(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.level() >= 1
-    }
-
-    pub fn escalate(&self) {
-        // 0 → 1, 1 → 2, 2 → 2 (saturates). Atomic compare-and-swap so
-        // concurrent escalations can't regress the level under contention.
-        let _ = self
-            .0
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
-                (cur < 2).then_some(cur + 1)
-            });
-    }
-}
-
-impl Default for CancelFlag {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// The escalation flag lives in `git::cancel` so the git-layer subprocess
+// teardown helpers can use it without a core→git dependency inversion
+// (`daft sync` shares it too). Re-exported to keep this module's public
+// surface stable for exec consumers.
+pub use crate::git::cancel::CancelFlag;
 
 #[cfg(unix)]
 fn terminate_child(child: &std::process::Child) {
@@ -1388,20 +1354,6 @@ mod tests {
         );
         assert!(s.contains("exit 101"), "missing exit code");
         assert!(s.contains("panicked!"), "missing failed output dump");
-    }
-
-    #[test]
-    fn cancel_flag_monotonic_escalation() {
-        let f = CancelFlag::new();
-        assert_eq!(f.level(), 0);
-        assert!(!f.is_cancelled());
-        f.escalate();
-        assert_eq!(f.level(), 1);
-        assert!(f.is_cancelled());
-        f.escalate();
-        assert_eq!(f.level(), 2);
-        f.escalate(); // saturates
-        assert_eq!(f.level(), 2);
     }
 }
 

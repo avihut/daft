@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::{Once, OnceLock};
 
 mod branch;
+pub mod cancel;
 mod clone;
 mod config;
 pub(crate) mod oxide;
@@ -55,6 +56,11 @@ pub struct GitCommand {
     pub(crate) quiet: bool,
     pub(crate) use_gitoxide: bool,
     pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
+    /// Shared cancellation flag observed by the long-running subprocess
+    /// seams (fetch/pull/rebase/push). `None` keeps those seams
+    /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
+    /// their flag here so every worker-thread git call inherits it.
+    pub(crate) cancel: Option<std::sync::Arc<cancel::CancelFlag>>,
 }
 
 impl GitCommand {
@@ -63,12 +69,40 @@ impl GitCommand {
             quiet,
             use_gitoxide: false,
             gix_repo: OnceLock::new(),
+            cancel: None,
         }
     }
 
     pub fn with_gitoxide(mut self, enabled: bool) -> Self {
         self.use_gitoxide = enabled;
         self
+    }
+
+    /// Attach a shared cancel flag, opting this command's subprocess
+    /// seams (fetch/pull/rebase/push) into supervision: each child gets
+    /// its own process group, escalations tear the tree down by pgid,
+    /// and a job-control stop (background-group tty read) surfaces as
+    /// [`cancel::NeedsTerminal`]. Without a flag the seams keep classic
+    /// blocking behavior in the caller's group — terminal auth prompts
+    /// and Ctrl+C reach them exactly as before cancellation existed.
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<cancel::CancelFlag>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// The injected cancel flag, in the borrowed form the subprocess
+    /// helpers take.
+    pub(crate) fn cancel_flag(&self) -> Option<&cancel::CancelFlag> {
+        self.cancel.as_deref()
+    }
+
+    /// Whether an attached cancel flag has gone active. Cheap enough to
+    /// poll at the top of a per-worktree loop so sequential engines stop
+    /// scheduling new work the moment a cancel lands (rather than
+    /// fast-failing every remaining worktree through a torn-down subprocess).
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancel_flag()
+            .is_some_and(cancel::CancelFlag::is_cancelled)
     }
 
     /// Returns true (once per process) if the gitoxide notice should be shown.

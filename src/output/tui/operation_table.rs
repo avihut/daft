@@ -48,6 +48,9 @@ pub struct TableConfig {
 
 /// Result returned after the TUI completes.
 pub struct CompletedTable {
+    /// The render loop exited on a cancel (Ctrl+C key event or external
+    /// cancel signal) rather than on all tasks completing.
+    pub cancelled: bool,
     /// Final worktree row states.
     pub rows: Vec<WorktreeRow>,
     /// Hook entries that need a post-TUI summary (warnings / failures).
@@ -74,6 +77,9 @@ pub struct OperationTable {
     config: TableConfig,
     /// Index of the first unowned worktree row (`None` if no unowned section).
     unowned_start_index: Option<usize>,
+    /// External cancel signal forwarded to the renderer (see
+    /// [`Self::with_cancel_signal`]).
+    cancel_signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl OperationTable {
@@ -101,7 +107,19 @@ impl OperationTable {
             receiver,
             config,
             unowned_start_index,
+            cancel_signal: None,
         }
+    }
+
+    /// Observe an external cancel signal (see `TuiRenderer::with_cancel_signal`):
+    /// the renderer exits its loop when the flag flips, and Ctrl+C key
+    /// events (raw mode) store into the same flag.
+    pub fn with_cancel_signal(
+        mut self,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancel_signal = Some(cancel);
+        self
     }
 
     /// Run the TUI render loop and return the final table state.
@@ -125,12 +143,16 @@ impl OperationTable {
             self.config.seeded_fields,
         );
 
-        let renderer =
+        let mut renderer =
             TuiRenderer::new(state, self.receiver).with_extra_rows(self.config.extra_rows);
+        if let Some(cancel) = self.cancel_signal {
+            renderer = renderer.with_cancel_signal(cancel);
+        }
 
         let final_state = renderer.run()?;
 
         Ok(CompletedTable {
+            cancelled: final_state.live.cancelled,
             rows: final_state.live.rows,
             hook_summaries: final_state.hook_summaries,
         })
@@ -175,9 +197,11 @@ mod tests {
     fn completed_table_fields_accessible() {
         // Ensure the public struct fields are accessible for downstream callers.
         let completed = CompletedTable {
+            cancelled: false,
             rows: Vec::new(),
             hook_summaries: Vec::new(),
         };
+        assert!(!completed.cancelled);
         assert!(completed.rows.is_empty());
         assert!(completed.hook_summaries.is_empty());
     }

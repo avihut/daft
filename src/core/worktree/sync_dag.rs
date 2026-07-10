@@ -53,6 +53,10 @@ pub enum TaskStatus {
     DepFailed,
     /// Task checked preconditions and chose not to run.
     PreconditionFailed,
+    /// The run was cancelled (Ctrl+C / SIGTERM) before or during this
+    /// task. Distinct from `Failed` so cancellation never trips the
+    /// failure exit path.
+    Cancelled,
 }
 
 impl TaskStatus {
@@ -65,6 +69,7 @@ impl TaskStatus {
                 | Self::Skipped
                 | Self::DepFailed
                 | Self::PreconditionFailed
+                | Self::Cancelled
         )
     }
 }
@@ -100,6 +105,8 @@ pub enum TaskMessage {
     NoPushUpstream,
     /// Task failed with error message.
     Failed(String),
+    /// The run was cancelled before/during this task.
+    Cancelled,
     /// Worktree was created during clone.
     Created,
     /// Base worktree was created during clone.
@@ -625,12 +632,27 @@ struct DagState {
 pub struct DagExecutor {
     dag: SyncDag,
     sender: mpsc::Sender<DagEvent>,
+    cancel: Option<std::sync::Arc<crate::git::cancel::CancelFlag>>,
 }
 
 impl DagExecutor {
     /// Create a new executor for the given DAG, sending events through `sender`.
     pub fn new(dag: SyncDag, sender: mpsc::Sender<DagEvent>) -> Self {
-        Self { dag, sender }
+        Self {
+            dag,
+            sender,
+            cancel: None,
+        }
+    }
+
+    /// Observe a shared cancel flag: once it goes active, workers stop
+    /// popping new tasks and every still-pending task resolves as
+    /// `Cancelled` (with a `TaskCompleted` event, so UI rows converge).
+    /// In-flight tasks finish on their own — their subprocess seams
+    /// observe the same flag.
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<crate::git::cancel::CancelFlag>) -> Self {
+        self.cancel = Some(cancel);
+        self
     }
 
     /// Execute all tasks in the DAG, calling `task_fn` for each task.
@@ -684,6 +706,7 @@ impl DagExecutor {
         let task_fn = &task_fn;
         let dag = &self.dag;
         let sender = &self.sender;
+        let cancel = self.cancel.as_deref();
 
         std::thread::scope(|scope| {
             for _ in 0..max_workers {
@@ -697,6 +720,35 @@ impl DagExecutor {
                             let mut s = lock.lock().unwrap();
 
                             loop {
+                                // A live cancel resolves every still-pending
+                                // task in place of popping it. Each swept task
+                                // still gets its TaskCompleted event — UI rows
+                                // must converge or the render loop never ends.
+                                // Idempotent by construction: the sweep leaves
+                                // no Pending tasks for a second pass to find.
+                                if let Some(flag) = cancel
+                                    && flag.is_cancelled()
+                                {
+                                    let mut swept = false;
+                                    for idx in 0..n {
+                                        if s.status[idx] == TaskStatus::Pending {
+                                            s.status[idx] = TaskStatus::Cancelled;
+                                            s.done += 1;
+                                            swept = true;
+                                            let _ = sender.send(DagEvent::TaskCompleted {
+                                                phase: dag.tasks[idx].phase.clone(),
+                                                branch_name: dag.tasks[idx].branch_name.clone(),
+                                                status: TaskStatus::Cancelled,
+                                                message: TaskMessage::Cancelled,
+                                            });
+                                        }
+                                    }
+                                    s.ready.clear();
+                                    if swept {
+                                        cvar.notify_all();
+                                    }
+                                }
+
                                 // Try to pop a ready task.
                                 if let Some(idx) = s.ready.pop() {
                                     task_idx = idx;

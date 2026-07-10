@@ -13,7 +13,7 @@ pub mod shared_picker;
 mod state;
 
 pub use columns::Column;
-pub use driver::TuiRenderer;
+pub use driver::{RawModeGuard, TuiRenderer, enable_raw_mode_guard};
 pub use live_table::{LiveTable, LiveTableConfig};
 pub use operation_table::{CompletedTable, OperationTable, TableConfig};
 pub use presenter::TuiPresenter;
