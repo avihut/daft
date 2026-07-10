@@ -1,8 +1,8 @@
 ---
 title: Why daft
 description:
-  daft helps you parallelize development through isolation, and (eventually)
-  coordinate changes across repos.
+  daft helps you parallelize development through isolation, and coordinate
+  changes across the repo graph.
 ---
 
 # Why daft
@@ -12,9 +12,10 @@ daft is built on one thesis:
 > **Parallelize development through isolation; coordinate across the repo
 > graph.**
 
-The first half — parallelize through isolation — is what daft does today. The
-second half — coordinate across repos — is in design
-([#357](https://github.com/avihut/daft/issues/357)).
+The first half — parallelize through isolation — is worktrees and hooks. The
+second half — coordinate across repos — is the [Graph pillar](/graph/): a
+self-maintaining repo catalog plus a committed manifest of cross-repo
+relationships.
 
 ## The problem
 
@@ -41,10 +42,9 @@ Three pillars, each idempotent — you can adopt one without the others.
 - **[Hooks](/hooks/)**: declarative automation at every code-evolution boundary.
   Local equivalent of GitHub Actions, but enforced before code leaves your
   machine.
-- **Graph** ([#357](https://github.com/avihut/daft/issues/357)): coordinate
-  changes across the repo graph. A repo catalog plus a manifest of cross-repo
-  relationships, so a change that touches three services can be propagated
-  coherently.
+- **[Graph](/graph/)**: coordinate changes across the repo graph. A repo catalog
+  plus a manifest of cross-repo relationships, so a change that touches three
+  services can be propagated coherently.
 
 The pillars are loosely coupled. A user who only wants worktrees never has to
 learn hooks. A user who only wants hooks doesn't need to adopt worktrees (once

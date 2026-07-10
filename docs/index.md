@@ -9,7 +9,7 @@ hero:
   text: Parallel dev, by default
   tagline:
     Each branch in its own directory. Hooks at every code-evolution boundary.
-    Coordinate across repos. (One of these is still in design.)
+    Coordinate across the repo graph.
   actions:
     - theme: brand
       text: Get Started
@@ -32,6 +32,13 @@ features:
       git-hooks lifecycle is on the roadmap.
     link: /hooks/
     linkText: Hooks pillar
+  - title: Graph
+    details:
+      Coordinate changes across repositories. A self-maintaining repo catalog
+      plus a committed relations manifest — jump between repos with `daft go`,
+      open one branch everywhere, run commands across the set.
+    link: /graph/
+    linkText: Graph pillar
   - title: Recipes
     details:
       Patterns for adopting daft alongside your existing tooling — mise, direnv,

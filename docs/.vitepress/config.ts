@@ -217,6 +217,7 @@ export default defineConfig({
     nav: [
       { text: "Worktrees", link: "/worktrees/" },
       { text: "Hooks", link: "/hooks/" },
+      { text: "Graph", link: "/graph/" },
       { text: "Recipes", link: "/recipes/" },
       { text: `v${version}`, link: "/about/changelog" },
       { text: "GitHub", link: "https://github.com/avihut/daft" },
@@ -269,6 +270,18 @@ export default defineConfig({
           { text: "YAML reference", link: "/hooks/yaml-reference" },
           { text: "Trust & security", link: "/hooks/trust-and-security" },
           { text: "Roadmap", link: "/hooks/roadmap" },
+        ],
+      },
+      {
+        text: "Graph",
+        items: [
+          { text: "Overview", link: "/graph/" },
+          { text: "Concepts", link: "/graph/concepts" },
+          { text: "Repo catalog", link: "/graph/repo-catalog" },
+          {
+            text: "Coordinated changes",
+            link: "/graph/coordinated-changes",
+          },
         ],
       },
       {
@@ -355,6 +368,14 @@ export default defineConfig({
             items: [
               { text: "Declarative envs", link: "/recipes/declarative-envs" },
               { text: "CI parity", link: "/recipes/ci-parity" },
+              {
+                text: "Coordinating service & client",
+                link: "/recipes/coordinating-service-and-client",
+              },
+              {
+                text: "Polyrepo monorepo",
+                link: "/recipes/polyrepo-monorepo",
+              },
             ],
           },
           {
@@ -426,8 +447,20 @@ export default defineConfig({
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
                   {
+                    text: "repo add",
+                    link: "/reference/cli/daft-repo-add",
+                  },
+                  {
+                    text: "repo info",
+                    link: "/reference/cli/daft-repo-info",
+                  },
+                  {
                     text: "repo install",
                     link: "/reference/cli/daft-repo-install",
+                  },
+                  {
+                    text: "repo list",
+                    link: "/reference/cli/daft-repo-list",
                   },
                   {
                     text: "repo remove",

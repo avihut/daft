@@ -34,5 +34,5 @@
 /contributing                             /about/contributing                    301
 /changelog                                /about/changelog                       301
 
-# Retired: networking-roadmap stub page (content lived in #357 only)
-/about/networking-roadmap                 /about/why-daft                        301
+# Legacy URL: the "networking" pillar shipped as Graph (#357)
+/about/networking-roadmap                 /graph/                                301

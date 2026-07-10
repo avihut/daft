@@ -57,6 +57,26 @@ These are smaller-scope tools targeting specific workflow gaps:
 When to pick one of those: you have a narrow workflow gap that one of them fills
 better than daft, or you don't need worktrees at all.
 
+## vs git-submodule + custom scripts
+
+The repo graph has no direct comparable; the closest incumbent is submodules (or
+a monorepo migration) plus a folder of shell scripts that loops over sibling
+checkouts.
+
+- **git-submodule** entangles histories: the parent repo pins child commits,
+  every cross-repo change needs a pointer-bump commit, and each clone must learn
+  the submodule dance. daft's [graph](/graph/) keeps repositories fully
+  independent — relations are a committed `daft.yml` declaration, resolution is
+  per-machine through the catalog, and any repo still works alone.
+- **Custom `for d in ../*/` scripts** hardcode one person's directory layout.
+  The catalog is the layout-independent index those scripts wish they had:
+  `daft exec --all-repos` / `--related` fan out over the actual clones on each
+  machine, and `daft go` replaces the muscle-memory `cd`s.
+
+When to pick submodules instead: you genuinely need one repo's history to pin
+exact versions of others (vendored dependencies, reproducible super-builds) —
+that is version binding, which the graph deliberately does not do.
+
 ## vs GitHub Actions PR checks
 
 (Speculative — fully realized once

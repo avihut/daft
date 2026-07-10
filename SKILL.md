@@ -242,6 +242,39 @@ these as `git` subcommands (e.g., `daft worktree-checkout` is
 All worktree commands can be run from **any directory** within any worktree.
 They find the project root automatically via `git rev-parse --git-common-dir`.
 
+### Repo Catalog and the Graph
+
+daft keeps a machine-local **repo catalog** — every repo it touches registers
+automatically (clone, init, adopt, or any daft command run inside the repo).
+Names derive from the remote URL (collisions auto-suffix: `api`, `api-2`). The
+catalog powers cross-repo navigation and fleet commands:
+
+| Command                                          | Description                                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `daft repo add [<path>] [--name <name>]`         | Explicitly register a repo (only needed for repos daft never touched), or rename the current repo's entry with `--name`. Explicit `--name` collisions error; automatic registration auto-suffixes.                                                     |
+| `daft repo list [--all] [--format <FMT>]`        | List cataloged repos (NAME, BRANCH, PATH). `--all` includes removed entries.                                                                                                                                                                           |
+| `daft repo info [<repo>] [--format <FMT>]`       | One entry in full — identity, paths, remote, default branch — plus the repo's resolved relations. Accepts name, path, or uuid; defaults to the cwd repo.                                                                                               |
+| `daft go <repo>`                                 | Jump to another cataloged repo's default-branch worktree. Local resolution always wins: a branch named like a repo shadows it (use `--repo`). A catalog match beats `daft.go.autoStart`; `--start` forces branch creation. Works outside any git repo. |
+| `daft go <repo> <branch>`                        | Open a specific branch's worktree in another repo (created on demand). `daft go --repo <name> [-b <branch> [base]]` is the explicit/creating form. After a hop, `daft go -` returns to the source worktree.                                            |
+| `daft exec --repo <name> \| --all-repos [...]`   | Run commands in another repo's worktrees, or across every cataloged repo's default-branch worktree. Multi-repo rows are labeled `repo:branch`.                                                                                                         |
+| `daft exec --related [...]`                      | Run across the current repo and its **relations** (see below), targeting each repo's worktree for the current branch; repos lacking that worktree are skipped with a notice.                                                                           |
+| `daft start <branch> --with-related`             | Create the same branch in the current repo and every related repo (each based on its own default branch). All related repos must be cloned; hooks run in a related repo only if it is trusted; `--carry`/`-x` stay local.                              |
+| `daft list\|update\|prune\|doctor --repo <name>` | Run the command in another cataloged repo from anywhere. `--all-repos` sweeps every live entry (prune runs the current repo last; doctor adds per-repo sections).                                                                                      |
+| `daft hooks jobs --repo <name\|path\|uuid>`      | List/inspect another repo's hook-job history — **including removed repos**, whose logs stay addressable.                                                                                                                                               |
+| `daft clone <name>`                              | Re-clone a cataloged (typically removed) repo from its recorded remote URL. `daft repo remove` tombstones the catalog entry rather than deleting it, so removal is reversible.                                                                         |
+
+**Relations manifest**: cross-repo edges are committed in `daft.yml` under a
+top-level `relations:` key — `url:` required (resolution matches normalized URLs
+against the catalog, so the manifest is portable across machines),
+`name:`/`kind:` optional, edges directed:
+
+```yaml
+relations:
+  - url: git@github.com:acme/api-client.git
+    name: client
+    kind: consumer
+```
+
 ### Ad-hoc Commands vs Hooks
 
 For ad-hoc commands across worktrees (without creating a hook), use

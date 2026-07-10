@@ -44,6 +44,29 @@ Additionally:
 | `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`) |
 | `hooks`            | map         | Hook definitions, keyed by hook name                                     |
 | `log`              | object      | Log configuration (see [Log configuration](#log-configuration))          |
+| `relations`        | list        | Related repositories (see [Relations](#relations))                       |
+
+## Relations
+
+The Graph pillar's [relations manifest](/graph/concepts) lives in `daft.yml` as
+a top-level `relations:` list — directed edges to the repositories this one
+coordinates with:
+
+```yaml
+relations:
+  - url: git@github.com:acme/api-client.git # required — the resolution key
+    name: client # optional friendly label
+    kind: consumer # optional, free-form
+```
+
+| Field  | Type   | Description                                                        |
+| ------ | ------ | ------------------------------------------------------------------ |
+| `url`  | string | Remote URL of the related repo (required; normalized for matching) |
+| `name` | string | Friendly label used in output (optional)                           |
+| `kind` | string | Free-form relationship kind, e.g. `client`, `library` (optional)   |
+
+Consumed by `daft exec --related`, `daft start --with-related`, and
+`daft repo info`. Older daft versions ignore the key.
 
 ## Hook entries
 
