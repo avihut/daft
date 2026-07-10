@@ -30,6 +30,14 @@ pub struct HookEmbed {
     /// stays alive for the whole splice — `insert_before` panics on a
     /// removed anchor, so liveness is a hard invariant.
     pub anchor: ProgressBar,
+    /// Whether the region renders ANSI (NO_COLOR tracks the rail, not the
+    /// renderer's own stderr probe).
+    pub use_color: bool,
+    /// The consumed row's plan label ("post-create hooks") when the step is
+    /// a hook phase — the succinct renderer's section anchor. `None` for
+    /// gate embeds (pre-push under an active Push/DeleteRemote row), whose
+    /// section label derives from the phase name instead.
+    pub section_label: Option<String>,
 }
 
 enum Slot {
@@ -417,10 +425,17 @@ impl TimelineCore {
         // The block is visible content: flush notes and this span's anchor.
         self.flush_above(idx);
         self.clear_detail();
-        if let Slot::Step { bar, state, .. } = &mut self.slots[idx] {
+        let mut section_label = None;
+        if let Slot::Step { spec, bar, state } = &mut self.slots[idx] {
             if let Some(taken) = bar.take() {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
+            }
+            // The consumed row's own label names the section for the
+            // succinct renderer. Gate embeds (pre-push mid-Push) keep their
+            // step label for the outcome row below — no section label.
+            if spec.key.id.is_hook_phase() {
+                section_label = Some(display_label(spec, StepPhase::Pending));
             }
             // A PENDING hook row is replaced by the block outright. An
             // ACTIVE row (a gate hook rendering mid-step, e.g. pre-push
@@ -439,6 +454,8 @@ impl TimelineCore {
         Some(HookEmbed {
             mp: self.mp.clone(),
             anchor,
+            use_color: self.use_color,
+            section_label,
         })
     }
 

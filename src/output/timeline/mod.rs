@@ -581,6 +581,9 @@ mod tests {
             .handle()
             .begin_hook_embed(&StepKey::new(StageId::PostCreateHooks))
             .expect("region live, key known");
+        // The consumed hook row's plan label names the section for the
+        // succinct renderer.
+        assert_eq!(embed.section_label.as_deref(), Some("post-create hooks"));
         // The anchor must be a linked member of the shared MultiProgress —
         // `insert_before` panics otherwise, so exercise it directly.
         let inserted = embed
@@ -590,6 +593,26 @@ mod tests {
 
         tl.finish("Ready");
         assert!(!tl.region_live());
+    }
+
+    #[test]
+    fn gate_embed_on_an_active_step_has_no_section_label() {
+        let mut tl = interactive();
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::Push))),
+        ]));
+        let push = StepKey::new(StageId::Push);
+        tl.on_stage(&push, StageEvent::Started);
+        // A pre-push gate hook embeds on the ACTIVE Push row: the step label
+        // belongs to the outcome row below the section, not the anchor.
+        let embed = tl
+            .handle()
+            .begin_hook_embed(&push)
+            .expect("region live, key known");
+        assert_eq!(embed.section_label, None);
+        tl.on_stage(&push, StageEvent::Completed { annotation: None });
+        tl.finish("Ready");
     }
 
     #[test]
