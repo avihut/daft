@@ -24,8 +24,9 @@ Explicit management exists for the gaps:
 daft repo add                  # register the current repo (one daft never touched)
 daft repo add ~/code/legacy    # register a repo by path
 daft repo add --name api       # rename the current repo's entry
-daft repo list                 # live entries: NAME, BRANCH, PATH
-daft repo list --all           # include removed entries
+daft repo list                 # live entries: name, worktrees, path, remote
+daft repo list --all           # include removed entries (dimmed)
+daft repo list --sizes         # add a disk-usage column (sizes stream in live)
 daft repo info client          # one entry in full, with resolved relations
 ```
 

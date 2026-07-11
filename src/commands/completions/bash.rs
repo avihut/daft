@@ -615,7 +615,7 @@ _daft() {
                 ;;
             list)
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-a --all --format --template --no-headers -q --quiet -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "-a --all --sizes --format --template --no-headers -q --quiet -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

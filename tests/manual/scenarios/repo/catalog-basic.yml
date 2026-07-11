@@ -27,8 +27,42 @@ steps:
     expect:
       exit_code: 0
       output_contains:
+        - "Name"
+        - "Worktrees"
+        - "Remote"
         - "test-repo"
-        - "main"
+
+  # Regression guard for the render path: the first shipped renderer fused
+  # header and rows onto a single line (output.raw is `print!`, no newline).
+  # Substring assertions can't see line boundaries, so count them.
+  - name: repo list emits a header line plus one line per repo
+    run:
+      test "$(daft repo list 2>/dev/null | wc -l)" -eq 2 && echo
+      LINE_STRUCTURE_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "LINE_STRUCTURE_OK"
+
+  # Piped stdio forces the blocking renderer; header + 1 repo row + blank
+  # separator + TOTAL row = 4 lines.
+  - name: repo list --sizes adds a size column with a total row
+    run:
+      daft repo list --sizes && test "$(daft repo list --sizes 2>/dev/null | wc
+      -l)" -eq 4 && echo SIZES_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Size"
+        - "SIZES_OK"
+
+  - name: structured output carries worktrees and size_bytes
+    run: daft repo list --sizes --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"worktrees": 1'
+        - '"size_bytes":'
 
   - name: repo info resolves by name
     run: daft repo info test-repo

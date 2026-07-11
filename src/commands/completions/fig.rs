@@ -535,11 +535,18 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         load_spec: None,
         subcommands: None,
         args: None,
-        options: Some(vec![FigOption {
-            name: FigName::Multiple(vec!["--all".into(), "-a".into()]),
-            description: "Include removed repositories".into(),
-            args: None,
-        }]),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--all".into(), "-a".into()]),
+                description: "Include removed repositories".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--sizes".into()),
+                description: "Add a disk-usage column".into(),
+                args: None,
+            },
+        ]),
     };
 
     let install = FigSubcommand {

@@ -773,7 +773,7 @@ _daft() {
                 ;;
             list)
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -a --all --format --template --no-headers -q --quiet -h --help
+                    compadd -- -a --all --sizes --format --template --no-headers -q --quiet -h --help
                 fi
                 return
                 ;;

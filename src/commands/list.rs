@@ -705,8 +705,8 @@ fn build_emit_table(
 /// in very narrow terminals — the TUI's `fit_widths_to_available` only
 /// shrinks `{Branch, Path, LastCommit}`. Excluding more columns here would
 /// be a separate scope.
-struct PriorityMaxExcept {
-    excluded: Vec<usize>,
+pub(crate) struct PriorityMaxExcept {
+    pub(crate) excluded: Vec<usize>,
 }
 
 impl Peaker for PriorityMaxExcept {

@@ -426,6 +426,7 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l template -r -d 'Tera template string'
 # repo list: flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -s a -l all -d 'Include removed repositories'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l sizes -d 'Add a disk-usage column'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l format -r -d 'Output format'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l template -r -d 'Tera template string'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l no-headers -d 'Omit header row (tsv/csv only)'

@@ -4,7 +4,7 @@
 .SH NAME
 git\-daft\-repo\-list \- List repositories in the repo catalog
 .SH SYNOPSIS
-\fBgit\-daft\-repo\-list\fR [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-daft\-repo\-list\fR [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-sizes\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists the repositories daft knows about. The catalog fills itself: cloning,
@@ -18,6 +18,9 @@ addressable and `git daft clone <name>` can restore them); show them with
 .TP
 \fB\-a\fR, \fB\-\-all\fR
 Include removed repositories
+.TP
+\fB\-\-sizes\fR
+Add a disk\-usage column (walks every repository, like `git daft list \-\-columns +size`)
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR
 Output format. Mutually exclusive with \-\-template

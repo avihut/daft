@@ -28,6 +28,7 @@ git daft-repo-list [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-a, --all` | Include removed repositories |  |
+| `--sizes` | Add a disk-usage column (walks every repository, like `git daft list --columns +size`) |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
 | `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
 | `--no-headers` | Omit header row (tsv/csv only) |  |
