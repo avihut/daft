@@ -92,6 +92,18 @@ steps:
       output_contains:
         - "ONE_ROW_HIGHLIGHTED"
 
+  # repo info is the single-repo deep view: same tree, same order contract
+  # (default branch first, named branches, detached last).
+  - name: repo info expands the worktrees as a tree
+    run: daft repo info test-repo
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Worktrees        3"
+        - "├ main"
+        - "├ feature/extra"
+        - "└ (detached)"
+
   - name: structured output nests a worktrees array per repo
     run: daft repo list --worktrees --format json
     expect:

@@ -9,10 +9,17 @@ Show a repository's catalog entry
 
 ## Description
 
-Shows a repository's catalog entry: name, location, remote, default branch,
-identity, and removed-state. The repository may be addressed by catalog
-name, path, or uuid; with no argument the repo containing the current
-directory is shown.
+Shows a repository's catalog entry: name, status, location, remote, default
+branch, recorded worktree layout, its worktrees (branch and checkout path
+per line), and any daft.yml relations resolved against the catalog. The
+repository may be addressed by catalog name, path, or uuid; with no
+argument the repo containing the current directory is shown.
+
+Paths render relative to your working directory when that form is shorter
+(same rule as `git daft repo list`). Identity plumbing lives in structured
+output only: `--format json` carries every recorded field — uuid, git
+common dir, raw canonical paths, registration timestamps — plus the
+worktrees as a `{branch, path}` array.
 
 Removed repositories resolve too — their entries are retained so job logs
 stay addressable and `git daft clone <name>` can restore them.

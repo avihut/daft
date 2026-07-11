@@ -20,10 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::catalog::Catalog;
+use crate::catalog::worktrees::{WorktreeChild, worktree_children};
 use crate::commands::list::PriorityMaxExcept;
 use crate::core::columns::{RepoColumnSelection, RepoListColumn, ResolvedColumns};
 use crate::core::worktree::list::compute_directory_size;
-use crate::core::worktree::remove_repo::{RepoTarget, enumerate_worktrees};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::{display_path, format_human_size};
 use crate::output::tui::{
@@ -277,16 +277,6 @@ fn current_location() -> CurrentLocation {
     }
 }
 
-/// One enumerated worktree of a catalog repo, in raw form: canonical path
-/// for the structured payload and current-worktree matching. The display
-/// copy (tilde-abbreviated path) is derived in `build_display_cells`.
-#[derive(Debug)]
-struct WorktreeChild {
-    branch: Option<String>,
-    path: String,
-    current: bool,
-}
-
 /// Enumerate every repo's worktrees (`--worktrees`). A repo that can't be
 /// opened (stale path, removed entry) yields `None`, mirroring
 /// `worktree_count` — the table shows `-` and structured output `null`.
@@ -295,42 +285,8 @@ fn collect_worktree_children(
     current_workdir: Option<&Path>,
 ) -> Vec<Option<Vec<WorktreeChild>>> {
     rows.iter()
-        .map(|row| {
-            // Synthetic target built from the recorded catalog paths, for
-            // enumeration only — it skips `resolve_repo`'s canonicalize
-            // contract, so don't hand it to the removal machinery.
-            let target = RepoTarget {
-                bare_git_dir: PathBuf::from(&row.git_common_dir),
-                project_root: PathBuf::from(&row.path),
-            };
-            let mut children: Vec<WorktreeChild> = enumerate_worktrees(&target, true)
-                .ok()?
-                .into_iter()
-                .map(|entry| WorktreeChild {
-                    current: current_workdir.is_some_and(|cur| cur == entry.path.as_path()),
-                    branch: entry.branch,
-                    path: entry.path.to_string_lossy().into_owned(),
-                })
-                .collect();
-            sort_children(&mut children, row.default_branch.as_deref());
-            Some(children)
-        })
+        .map(|row| worktree_children(row, current_workdir))
         .collect()
-}
-
-/// Deterministic child order: the repo's default branch first, the rest by
-/// branch name, detached worktrees last. (gix enumerates linked worktrees by
-/// admin-dir name — the last path segment, so `feature/x` sorts as `x` — not
-/// a stable user-facing order.)
-fn sort_children(children: &mut [WorktreeChild], default_branch: Option<&str>) {
-    children.sort_by(|a, b| {
-        let rank = |c: &WorktreeChild| match c.branch.as_deref() {
-            Some(branch) if Some(branch) == default_branch => 0,
-            Some(_) => 1,
-            None => 2,
-        };
-        (rank(a), a.branch.as_deref()).cmp(&(rank(b), b.branch.as_deref()))
-    });
 }
 
 fn build_display_cells(
@@ -1142,28 +1098,6 @@ mod tests {
             !lines[2].contains(styles::CURRENT_ROW_BG),
             "children stay unpainted: {:?}",
             lines[2]
-        );
-    }
-
-    #[test]
-    fn sort_children_pins_default_branch_first_detached_last() {
-        let raw = |branch: Option<&str>| WorktreeChild {
-            branch: branch.map(String::from),
-            path: "/tmp/x".to_string(),
-            current: false,
-        };
-        let mut children = vec![
-            raw(Some("zeta")),
-            raw(None),
-            raw(Some("main")),
-            raw(Some("alpha")),
-        ];
-        sort_children(&mut children, Some("main"));
-        let order: Vec<Option<&str>> = children.iter().map(|c| c.branch.as_deref()).collect();
-        assert_eq!(
-            order,
-            [Some("main"), Some("alpha"), Some("zeta"), None],
-            "default branch first, then by name, detached last"
         );
     }
 

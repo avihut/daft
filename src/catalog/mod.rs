@@ -28,6 +28,7 @@ pub mod normalize;
 pub mod registration;
 pub mod relations;
 pub mod service;
+pub mod worktrees;
 
 pub use registration::{gather_facts, note_repo_removed, register_repo, touch_current_repo};
 pub use service::{

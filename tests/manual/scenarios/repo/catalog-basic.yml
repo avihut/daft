@@ -150,6 +150,9 @@ steps:
       output_contains:
         - "GO_REPO_COMPLETION_OK"
 
+  # The human card: display paths, recorded layout, and the worktrees as a
+  # tree. Identity plumbing (uuid, git dir, registration time) is
+  # structured-output-only.
   - name: repo info resolves by name
     run: daft repo info test-repo
     expect:
@@ -158,6 +161,34 @@ steps:
         - "test-repo"
         - "live"
         - "main"
+        - "contained"
+        - "└ main"
+      output_not_contains:
+        - "UUID"
+        - "Git dir"
+        - "Registered"
+
+  # Same display rule as repo list: cwd-relative when shorter. Exact-match
+  # the field — an absolute path would still CONTAIN the relative form.
+  - name: repo info paths render relative to the cwd
+    run:
+      test "$(daft repo info test-repo 2>/dev/null | awk '$1=="Path"{print
+      $2}')" = "test-repo" && echo INFO_PATHS_RELATIVE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INFO_PATHS_RELATIVE"
+
+  - name: repo info structured output keeps the identity plumbing
+    run: daft repo info test-repo --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"uuid":'
+        - '"git_common_dir":'
+        - '"layout": "contained"'
+        - '"worktrees": ['
+        - '"branch": "main"'
 
   - name: repo info with no argument shows the current repo
     run: daft repo info
@@ -171,7 +202,8 @@ steps:
   # Regression: the first shipped renderer emitted every field through
   # output.raw (print!, no newline), fusing the card into ONE line. The
   # substring assertions above can't see line boundaries, so count them:
-  # Name/Status/Path/Git dir/Remote/Default branch/UUID/Registered = 8.
+  # Name/Status/Path/Remote/Default branch/Layout/Worktrees = 7 fields,
+  # plus one tree line for the single worktree = 8.
   - name: repo info renders one line per field
     run:
       test "$(daft repo info test-repo 2>/dev/null | wc -l)" -eq 8 && echo
