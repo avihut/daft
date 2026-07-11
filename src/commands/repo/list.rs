@@ -2,10 +2,14 @@
 //!
 //! Renders through the same visual language as `daft list`: a blank-style
 //! table with dim-underlined headers, a cyan `>` marking the repo the user
-//! is standing in, removed rows dimmed, and — with `--sizes` on a terminal —
-//! the shared live inline table ([`CatalogTable`]) shimmer-loading each
-//! repo's disk-size walk as it streams in. Piped/structured output takes the
-//! blocking path, mirroring `daft list`'s `should_use_live` gating.
+//! is standing in, removed rows dimmed, and — with `--columns +size` on a
+//! terminal — the shared live inline table ([`CatalogTable`]) shimmer-loading
+//! each repo's disk-size walk as it streams in. Piped/structured output takes
+//! the blocking path, mirroring `daft list`'s `should_use_live` gating.
+//!
+//! Column selection speaks the house `--columns` grammar (replace mode /
+//! `+col,-col` modifiers) shared with list/sync/prune/clone; the repo-specific
+//! column family lives in [`crate::core::columns::RepoListColumn`].
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -17,6 +21,7 @@ use std::sync::mpsc;
 
 use crate::catalog::Catalog;
 use crate::commands::list::PriorityMaxExcept;
+use crate::core::columns::{RepoColumnSelection, RepoListColumn, ResolvedColumns};
 use crate::core::worktree::list::compute_directory_size;
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::format_human_size;
@@ -37,16 +42,27 @@ automatically; `git daft repo add` registers one manually.
 Removed repositories keep a catalog entry (so their job logs stay
 addressable and `git daft clone <name>` can restore them); show them with
 --all.
+
+Use --columns to select which columns are shown and in what order.
+  Replace mode:  --columns name,path,remote (exact set and order)
+  Modifier mode: --columns -remote (remove from defaults)
+  Add optional:  --columns +size,+branch (add to defaults)
+
+The size column is not shown by default — it walks every repository, so it
+is opt-in, same as the worktree commands. On a terminal the sizes stream in
+live while the table renders immediately, with a total row summing them.
+The recorded default branch is likewise opt-in (+branch); structured output
+includes it by default.
 "#)]
 pub struct Args {
     #[arg(short = 'a', long = "all", help = "Include removed repositories")]
     all: bool,
 
     #[arg(
-        long = "sizes",
-        help = "Add a disk-usage column (walks every repository, like `git daft list --columns +size`)"
+        long = "columns",
+        help = "Columns to display (comma-separated). Replace: name,path,remote. Modify defaults: +col,-col. Available: annotation, name, worktrees, branch, path, size, remote"
     )]
-    sizes: bool,
+    columns: Option<String>,
 
     #[command(flatten)]
     emit: EmitArgs,
@@ -68,6 +84,14 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(argv);
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, false));
 
+    // Validate the column spec before any catalog IO so a typo fails fast.
+    let resolved = match args.columns.as_deref() {
+        Some(input) => RepoColumnSelection::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => ResolvedColumns::defaults(RepoListColumn::repo_list_defaults()),
+    };
+    let columns = resolved.columns;
+    let has_size = columns.contains(&RepoListColumn::Size);
+
     let rows = match Catalog::open_ro().context("could not open the repo catalog")? {
         Some(catalog) => catalog.list(args.all)?,
         None => Vec::new(),
@@ -78,8 +102,8 @@ pub fn run() -> Result<()> {
     if args.emit.is_structured() {
         // Structured consumers get everything in one shot — walks run
         // synchronously when requested.
-        let sizes = args.sizes.then(|| compute_sizes(&rows));
-        let payload = build_payload(&rows, &cells, sizes.as_deref());
+        let sizes = has_size.then(|| compute_sizes(&rows));
+        let payload = build_payload(&rows, &cells, sizes.as_deref(), &columns);
         return emit::emit_and_handle("repo list", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
@@ -94,20 +118,21 @@ pub fn run() -> Result<()> {
     }
 
     // Live inline table only when the size walks give it something to
-    // stream — every other cell is seeded synchronously, so without
-    // --sizes a static table is already final. Gating mirrors
+    // stream — every other cell is seeded synchronously, so without the
+    // size column a static table is already final. Gating mirrors
     // `list::should_use_live`.
-    if args.sizes && use_live_table() {
-        return run_live(cells, &rows);
+    if has_size && use_live_table() {
+        return run_live(cells, &rows, columns);
     }
 
-    let sizes = args.sizes.then(|| compute_sizes(&rows));
+    let sizes = has_size.then(|| compute_sizes(&rows));
     let term_width = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
     println!(
         "{}",
         build_blocking_table(
             &cells,
             sizes.as_deref(),
+            &columns,
             styles::colors_enabled(),
             term_width
         )
@@ -125,7 +150,11 @@ fn use_live_table() -> bool {
 /// walker thread per repo (the walks are independent and IO-bound); a
 /// supervisor joins them and emits the `Done` sentinel while the renderer
 /// listens.
-fn run_live(cells: Vec<CatalogRepoCells>, rows: &[CatalogRepoRow]) -> Result<()> {
+fn run_live(
+    cells: Vec<CatalogRepoCells>,
+    rows: &[CatalogRepoRow],
+    columns: Vec<RepoListColumn>,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel::<CatalogEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
 
@@ -167,7 +196,8 @@ fn run_live(cells: Vec<CatalogRepoCells>, rows: &[CatalogRepoRow]) -> Result<()>
     // Raw mode routes Ctrl-C into the render loop as a key event; the RAII
     // guard restores cooked mode on every exit path.
     let _raw_guard = crate::output::tui::enable_raw_mode_guard();
-    let renderer = TuiRenderer::new(CatalogTable::new(cells), rx).with_cancel_signal(cancel);
+    let renderer =
+        TuiRenderer::new(CatalogTable::new(cells, columns), rx).with_cancel_signal(cancel);
     let screen = renderer.run()?;
 
     // On normal completion the walkers are already done and the join returns
@@ -227,6 +257,7 @@ fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
                 removed: row.removed_at.is_some(),
                 name,
                 worktrees: worktree_count(Path::new(&row.git_common_dir)),
+                branch: row.default_branch.clone(),
                 path: tilde_path(&row.path),
                 remote: row.remote_url.clone(),
             }
@@ -244,39 +275,75 @@ fn build_payload(
     rows: &[CatalogRepoRow],
     cells: &[CatalogRepoCells],
     sizes: Option<&[Option<u64>]>,
+    columns: &[RepoListColumn],
 ) -> EmitPayload {
-    let mut headers = vec![
-        "name",
-        "worktrees",
-        "default_branch",
-        "path",
-        "remote_url",
-        "removed_at",
-    ];
+    // Mirrors `daft list`'s emit semantics: the default column set emits the
+    // full cheap field set — including default_branch, which has no default
+    // table column — while a customized selection narrows the fields to
+    // match. size_bytes appears only when the size column was selected;
+    // removed_at is row status, not a column, and is always present.
+    let is_default = columns == RepoListColumn::repo_list_defaults();
+    let has = |col: RepoListColumn| is_default || columns.contains(&col);
+
+    let mut headers = Vec::new();
+    if has(RepoListColumn::Name) {
+        headers.push("name");
+    }
+    if has(RepoListColumn::Worktrees) {
+        headers.push("worktrees");
+    }
+    if has(RepoListColumn::Branch) {
+        headers.push("default_branch");
+    }
+    if has(RepoListColumn::Path) {
+        headers.push("path");
+    }
+    if has(RepoListColumn::Remote) {
+        headers.push("remote_url");
+    }
+    headers.push("removed_at");
     if sizes.is_some() {
         headers.push("size_bytes");
     }
+
     let mut table = Table::new(headers);
     for (i, row) in rows.iter().enumerate() {
-        let mut record = vec![
-            Cell::str(&row.name),
-            cells[i]
-                .worktrees
-                .map(|n| Cell::int(n as i64))
-                .unwrap_or(Cell::Null),
-            row.default_branch
-                .as_deref()
-                .map(Cell::str)
-                .unwrap_or(Cell::Null),
-            Cell::str(&row.path),
-            row.remote_url
-                .as_deref()
-                .map(Cell::str)
-                .unwrap_or(Cell::Null),
+        let mut record = Vec::new();
+        if has(RepoListColumn::Name) {
+            record.push(Cell::str(&row.name));
+        }
+        if has(RepoListColumn::Worktrees) {
+            record.push(
+                cells[i]
+                    .worktrees
+                    .map(|n| Cell::int(n as i64))
+                    .unwrap_or(Cell::Null),
+            );
+        }
+        if has(RepoListColumn::Branch) {
+            record.push(
+                row.default_branch
+                    .as_deref()
+                    .map(Cell::str)
+                    .unwrap_or(Cell::Null),
+            );
+        }
+        if has(RepoListColumn::Path) {
+            record.push(Cell::str(&row.path));
+        }
+        if has(RepoListColumn::Remote) {
+            record.push(
+                row.remote_url
+                    .as_deref()
+                    .map(Cell::str)
+                    .unwrap_or(Cell::Null),
+            );
+        }
+        record.push(
             row.removed_at
                 .map(|t| Cell::str(t.to_rfc3339()))
                 .unwrap_or(Cell::Null),
-        ];
+        );
         if let Some(sizes) = sizes {
             record.push(sizes[i].map(|b| Cell::int(b as i64)).unwrap_or(Cell::Null));
         }
@@ -293,6 +360,7 @@ fn build_payload(
 fn build_blocking_table(
     cells: &[CatalogRepoCells],
     sizes: Option<&[Option<u64>]>,
+    columns: &[RepoListColumn],
     use_color: bool,
     term_width: Option<usize>,
 ) -> String {
@@ -300,7 +368,15 @@ fn build_blocking_table(
     use tabled::settings::peaker::Priority;
     use tabled::settings::{Padding, Style, Width, object::Columns};
 
-    let annotation = cells.iter().any(|c| c.current);
+    // The annotation column collapses when no row is current, keeping piped
+    // output free of a phantom leading column.
+    let annotation =
+        columns.contains(&RepoListColumn::Annotation) && cells.iter().any(|c| c.current);
+    let data_columns: Vec<RepoListColumn> = columns
+        .iter()
+        .copied()
+        .filter(|c| *c != RepoListColumn::Annotation)
+        .collect();
     let dim = |s: &str, apply: bool| -> String {
         if apply && use_color {
             styles::dim(s)
@@ -313,15 +389,12 @@ fn build_blocking_table(
     if annotation {
         headers.push(String::new());
     }
-    let mut labels = vec!["Name", "Worktrees", "Path", "Remote"];
-    if sizes.is_some() {
-        labels.push("Size");
-    }
-    headers.extend(labels.iter().map(|l| {
+    headers.extend(data_columns.iter().map(|c| {
+        let label = c.header_label();
         if use_color {
-            styles::dim_underline(l)
+            styles::dim_underline(label)
         } else {
-            (*l).to_string()
+            label.to_string()
         }
     }));
 
@@ -340,36 +413,45 @@ fn build_blocking_table(
                 String::new()
             });
         }
-        record.push(dim(&cell.name, cell.removed));
-        record.push(dim(
-            &cell
-                .worktrees
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            cell.removed,
-        ));
-        record.push(dim(&cell.path, cell.removed));
-        // Remote is reference info, not the primary signal — always dim.
-        record.push(dim(cell.remote.as_deref().unwrap_or("-"), true));
-        if let Some(sizes) = sizes {
-            record.push(dim(
-                &sizes[i]
-                    .map(format_human_size)
-                    .unwrap_or_else(|| "-".to_string()),
-                cell.removed,
-            ));
+        for col in &data_columns {
+            record.push(match col {
+                RepoListColumn::Annotation => unreachable!("filtered above"),
+                RepoListColumn::Name => dim(&cell.name, cell.removed),
+                RepoListColumn::Worktrees => dim(
+                    &cell
+                        .worktrees
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    cell.removed,
+                ),
+                RepoListColumn::Branch => dim(cell.branch.as_deref().unwrap_or("-"), cell.removed),
+                RepoListColumn::Path => dim(&cell.path, cell.removed),
+                RepoListColumn::Size => dim(
+                    &sizes
+                        .and_then(|s| s[i])
+                        .map(format_human_size)
+                        .unwrap_or_else(|| "-".to_string()),
+                    cell.removed,
+                ),
+                // Remote is reference info, not the primary signal — always dim.
+                RepoListColumn::Remote => dim(cell.remote.as_deref().unwrap_or("-"), true),
+            });
         }
         builder.push_record(record);
     }
 
     // TOTAL footer under the Size column, matching `daft list`.
-    if let Some(sizes) = sizes {
+    let size_idx = data_columns
+        .iter()
+        .position(|c| *c == RepoListColumn::Size)
+        .map(|p| p + usize::from(annotation));
+    if let (Some(sizes), Some(size_idx)) = (sizes, size_idx) {
         let total: u64 = sizes.iter().filter_map(|s| *s).sum();
         let total_cell = dim(&format_human_size(total), true);
-        let data_cols = 4 + usize::from(annotation);
-        let mut separator: Vec<String> = vec![String::new(); data_cols + 1];
+        let cols_total = data_columns.len() + usize::from(annotation);
+        let mut separator: Vec<String> = vec![String::new(); cols_total];
         builder.push_record(separator.clone());
-        separator[data_cols] = total_cell;
+        separator[size_idx] = total_cell;
         builder.push_record(separator);
     }
 
@@ -378,21 +460,18 @@ fn build_blocking_table(
     table.modify(Columns::first(), Padding::new(1, 0, 0, 0));
 
     if let Some(width) = term_width {
-        match sizes.is_some() {
+        match size_idx {
             // Exclude the Size column from the shrink candidate set — its
             // TOTAL summary cell can be wider than any data cell and gets
             // truncated otherwise (#501, same as `daft list`).
-            true => {
-                let size_idx = 4 + usize::from(annotation);
-                table.with(
-                    Width::truncate(width)
-                        .suffix("...")
-                        .priority(PriorityMaxExcept {
-                            excluded: vec![size_idx],
-                        }),
-                )
-            }
-            false => table.with(
+            Some(size_idx) if sizes.is_some() => table.with(
+                Width::truncate(width)
+                    .suffix("...")
+                    .priority(PriorityMaxExcept {
+                        excluded: vec![size_idx],
+                    }),
+            ),
+            _ => table.with(
                 Width::truncate(width)
                     .suffix("...")
                     .priority(Priority::max(true)),
@@ -413,9 +492,18 @@ mod tests {
             removed,
             name: name.to_string(),
             worktrees: Some(3),
+            branch: Some("main".to_string()),
             path: format!("~/src/{name}"),
             remote: Some(format!("git@example.com:acme/{name}.git")),
         }
+    }
+
+    fn defaults() -> Vec<RepoListColumn> {
+        RepoListColumn::repo_list_defaults().to_vec()
+    }
+
+    fn defaults_plus_size() -> Vec<RepoListColumn> {
+        RepoColumnSelection::parse("+size").unwrap().columns
     }
 
     /// Regression: the first shipped renderer emitted every line through
@@ -426,6 +514,7 @@ mod tests {
         let table = build_blocking_table(
             &[cells("alpha", false, false), cells("beta", false, false)],
             None,
+            &defaults(),
             false,
             None,
         );
@@ -444,6 +533,7 @@ mod tests {
             );
         }
         assert!(!lines[0].contains("Size"), "Size column is opt-in");
+        assert!(!lines[0].contains("Branch"), "Branch column is opt-in");
         assert!(lines[1].contains("alpha"));
         assert!(lines[1].contains("git@example.com:acme/alpha.git"));
         assert!(lines[2].contains("beta"));
@@ -454,6 +544,7 @@ mod tests {
         let table = build_blocking_table(
             &[cells("alpha", true, false), cells("beta", false, false)],
             None,
+            &defaults(),
             false,
             None,
         );
@@ -476,7 +567,13 @@ mod tests {
 
     #[test]
     fn blocking_table_annotation_column_absent_when_no_current() {
-        let table = build_blocking_table(&[cells("alpha", false, false)], None, false, None);
+        let table = build_blocking_table(
+            &[cells("alpha", false, false)],
+            None,
+            &defaults(),
+            false,
+            None,
+        );
         let lines: Vec<&str> = table.lines().collect();
         assert!(
             lines[0].trim_start().starts_with("Name"),
@@ -490,6 +587,7 @@ mod tests {
         let table = build_blocking_table(
             &[cells("alpha", false, false), cells("beta", false, false)],
             Some(&[Some(1024 * 1024), Some(1024 * 1024)]),
+            &defaults_plus_size(),
             false,
             None,
         );
@@ -505,12 +603,73 @@ mod tests {
         );
     }
 
+    /// The size column's canonical slot is between Path and Remote, so the
+    /// TOTAL cell must land mid-row, not in the last column.
+    #[test]
+    fn blocking_table_total_lands_under_the_size_column() {
+        let table = build_blocking_table(
+            &[cells("alpha", false, false)],
+            Some(&[Some(1024)]),
+            &defaults_plus_size(),
+            false,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        let header = lines[0];
+        let size_start = header.find("Size").expect("Size header present");
+        let total_start = lines[3].find("1K").expect("total rendered");
+        assert!(
+            total_start.abs_diff(size_start) <= 4,
+            "total should sit under the Size header (size at {size_start}, total at {total_start}): {table:?}"
+        );
+        assert!(
+            header.find("Remote").expect("Remote header present") > size_start,
+            "Remote renders after Size: {header:?}"
+        );
+    }
+
+    #[test]
+    fn blocking_table_replace_mode_narrows_columns() {
+        let table = build_blocking_table(
+            &[cells("alpha", true, false)],
+            None,
+            &[RepoListColumn::Name, RepoListColumn::Path],
+            false,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].contains("Name") && lines[0].contains("Path"));
+        assert!(
+            !lines[0].contains("Remote") && !lines[0].contains("Worktrees"),
+            "replace mode drops unselected columns: {:?}",
+            lines[0]
+        );
+        assert!(
+            !lines[1]
+                .trim_start()
+                .starts_with(styles::CURRENT_WORKTREE_SYMBOL),
+            "annotation dropped when not selected: {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn blocking_table_branch_column_is_opt_in() {
+        let columns = RepoColumnSelection::parse("+branch").unwrap().columns;
+        let table =
+            build_blocking_table(&[cells("alpha", false, false)], None, &columns, false, None);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].contains("Branch"), "header: {:?}", lines[0]);
+        assert!(lines[1].contains("main"), "row: {:?}", lines[1]);
+    }
+
     #[test]
     fn blocking_table_shows_dash_for_missing_count_size_and_remote() {
         let mut cell = cells("alpha", false, true);
         cell.worktrees = None;
         cell.remote = None;
-        let table = build_blocking_table(&[cell], Some(&[None]), false, None);
+        let table =
+            build_blocking_table(&[cell], Some(&[None]), &defaults_plus_size(), false, None);
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines[1].contains("alpha"));
         let dashes = lines[1].matches('-').count();
@@ -537,9 +696,8 @@ mod tests {
         assert_eq!(worktree_count(tmp.path()), None);
     }
 
-    #[test]
-    fn payload_includes_worktrees_and_optional_size_bytes() {
-        let row = CatalogRepoRow {
+    fn sample_row() -> CatalogRepoRow {
+        CatalogRepoRow {
             uuid: "0198c0de-0000-7000-8000-000000000000".to_string(),
             name: "alpha".to_string(),
             path: "/tmp/alpha".to_string(),
@@ -550,19 +708,29 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             removed_at: None,
-        };
-        let cell = cells("alpha", false, false);
+        }
+    }
 
-        let payload = build_payload(
-            std::slice::from_ref(&row),
-            std::slice::from_ref(&cell),
-            None,
-        );
+    fn payload_headers(payload: EmitPayload) -> Vec<String> {
         let EmitPayload::Tabular(table) = payload else {
             panic!("expected tabular payload");
         };
+        table.headers
+    }
+
+    #[test]
+    fn payload_default_columns_emit_the_full_field_set() {
+        let row = sample_row();
+        let cell = cells("alpha", false, false);
+
+        let headers = payload_headers(build_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            None,
+            &defaults(),
+        ));
         assert_eq!(
-            table.headers,
+            headers,
             [
                 "name",
                 "worktrees",
@@ -573,14 +741,28 @@ mod tests {
             ]
         );
 
-        let payload = build_payload(
+        let headers = payload_headers(build_payload(
             std::slice::from_ref(&row),
             std::slice::from_ref(&cell),
             Some(&[Some(42)]),
-        );
-        let EmitPayload::Tabular(table) = payload else {
-            panic!("expected tabular payload");
-        };
-        assert_eq!(table.headers.last().map(String::as_str), Some("size_bytes"));
+            &defaults_plus_size(),
+        ));
+        assert_eq!(headers.last().map(String::as_str), Some("size_bytes"));
+    }
+
+    /// Mirrors `daft list`'s EmitColumns: a customized selection narrows the
+    /// emitted fields; removed_at rides along as row status.
+    #[test]
+    fn payload_narrows_to_a_customized_selection() {
+        let row = sample_row();
+        let cell = cells("alpha", false, false);
+
+        let headers = payload_headers(build_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            None,
+            &[RepoListColumn::Name, RepoListColumn::Path],
+        ));
+        assert_eq!(headers, ["name", "path", "removed_at"]);
     }
 }

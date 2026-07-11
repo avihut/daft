@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 /// precisely because those details are subtle and must not fork per consumer.
 /// Screens stay pure state + drawing. [`TuiState`] (worktree operations and
 /// `daft list`) is the original implementor; the catalog table
-/// (`daft repo list --sizes`) is the second.
+/// (`daft repo list --columns +size`) is the second.
 pub trait LiveScreen {
     /// Event type produced by this screen's collector.
     type Event;

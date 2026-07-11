@@ -772,8 +772,37 @@ _daft() {
                 return
                 ;;
             list)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--columns" ]]; then
+                    local -a column_values
+                    column_values=(
+                        'annotation:Current repo marker'
+                        'name:Catalog name'
+                        'worktrees:Worktree count'
+                        'branch:Default branch'
+                        'path:Repository path'
+                        'size:Disk size of repository'
+                        'remote:Remote URL'
+                        '+annotation:Add current repo marker'
+                        '+name:Add catalog name'
+                        '+worktrees:Add worktree count'
+                        '+branch:Add default branch'
+                        '+path:Add repository path'
+                        '+size:Add disk size of repository'
+                        '+remote:Add remote URL'
+                        '-annotation:Remove current repo marker'
+                        '-name:Remove catalog name'
+                        '-worktrees:Remove worktree count'
+                        '-branch:Remove default branch'
+                        '-path:Remove repository path'
+                        '-size:Remove disk size of repository'
+                        '-remote:Remove remote URL'
+                    )
+                    _describe 'column' column_values
+                    return
+                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -a --all --sizes --format --template --no-headers -q --quiet -h --help
+                    compadd -- -a --all --columns --format --template --no-headers -q --quiet -h --help
                 fi
                 return
                 ;;

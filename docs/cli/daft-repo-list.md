@@ -13,24 +13,31 @@ they render dimmed with a `(removed)` note.
 
 ## Usage
 
-    daft repo list [--all] [--sizes] [--format <fmt> | --template <tera>] [--no-headers]
+    daft repo list [--all] [--columns <cols>] [--format <fmt> | --template <tera>] [--no-headers]
 
 | Flag                | Description                                                                                                                                                                              |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a`, `--all`       | Include removed repositories.                                                                                                                                                            |
-| `--sizes`           | Add a disk-usage column with a total row. Walks every repository, so it is opt-in (like `daft list --columns +size`); on a terminal the sizes stream in live while the table renders immediately. |
+| `--columns <cols>`  | Columns to display, in the shared grammar: replace mode (`name,path,remote` — exact set and order) or modifier mode (`+size`, `-remote`). Available: annotation, name, worktrees, branch, path, size, remote. |
 | `--format <fmt>`    | Structured output: json, ndjson, tsv, csv, yaml, …                                                                                                                                       |
 | `--template <tera>` | Custom Tera template output.                                                                                                                                                             |
 | `--no-headers`      | Omit the header row (tsv/csv only).                                                                                                                                                      |
 
-Structured output always includes the worktree count (`worktrees`) and the
-recorded default branch; `--sizes` adds `size_bytes`.
+The size column is opt-in (`--columns +size`, same as `daft list`) because it
+walks every repository; on a terminal the sizes stream in live with a total
+row while the rest of the table renders immediately. The recorded default
+branch is likewise opt-in (`+branch`).
+
+By default, structured output includes the worktree count (`worktrees`) and
+the recorded default branch; a customized `--columns` selection narrows the
+emitted fields to match, and `+size` adds `size_bytes`.
 
 ## Examples
 
     daft repo list
     daft repo list --all
-    daft repo list --sizes
+    daft repo list --columns +size
+    daft repo list --columns name,remote
     daft repo list --format json | jq '.[].name'
 
     $ daft repo list

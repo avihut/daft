@@ -1,4 +1,5 @@
-//! Column definitions for the `--columns` flag on list/sync/prune commands.
+//! Column definitions for the `--columns` flag on list/sync/prune/repo-list
+//! commands.
 //!
 //! Defines the user-facing column names, canonical ordering, and per-command
 //! default sets. Separate from the TUI `Column` enum which includes TUI-only
@@ -462,6 +463,167 @@ impl FromStr for CompletionColumn {
     }
 }
 
+/// A column that can be selected via `--columns` on `repo list`.
+///
+/// The repo catalog table is a different entity set from the worktree table,
+/// so it gets its own column family rather than widening [`ListColumn`] with
+/// repo-only variants — `remote` even means different things (remote URL
+/// here, ahead/behind counts there).
+///
+/// Variants are ordered by canonical display position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoListColumn {
+    /// Current-repo annotation marker (`>`).
+    Annotation,
+    /// Catalog name.
+    Name,
+    /// Worktree count (main working tree plus linked worktrees).
+    Worktrees,
+    /// Recorded default branch.
+    Branch,
+    /// Repository path.
+    Path,
+    /// Disk size of the repository folder.
+    Size,
+    /// Remote URL.
+    Remote,
+}
+
+impl RepoListColumn {
+    /// All columns in canonical display order.
+    pub fn all() -> &'static [RepoListColumn] {
+        &[
+            RepoListColumn::Annotation,
+            RepoListColumn::Name,
+            RepoListColumn::Worktrees,
+            RepoListColumn::Branch,
+            RepoListColumn::Path,
+            RepoListColumn::Size,
+            RepoListColumn::Remote,
+        ]
+    }
+
+    /// The default column set for `repo list`. Size is excluded (it walks
+    /// every repository — add it with `--columns +size`, like the worktree
+    /// commands); Branch is excluded as a structured-output-first detail
+    /// (add it with `--columns +branch`).
+    pub fn repo_list_defaults() -> &'static [RepoListColumn] {
+        &[
+            RepoListColumn::Annotation,
+            RepoListColumn::Name,
+            RepoListColumn::Worktrees,
+            RepoListColumn::Path,
+            RepoListColumn::Remote,
+        ]
+    }
+
+    /// Canonical display position (used to order columns in modifier mode).
+    /// Size sits right after Path, mirroring the worktree commands.
+    pub fn canonical_position(self) -> u8 {
+        match self {
+            Self::Annotation => 1,
+            Self::Name => 2,
+            Self::Worktrees => 3,
+            Self::Branch => 4,
+            Self::Path => 5,
+            Self::Size => 6,
+            Self::Remote => 7,
+        }
+    }
+
+    /// CLI-facing name for this column.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Annotation => "annotation",
+            Self::Name => "name",
+            Self::Worktrees => "worktrees",
+            Self::Branch => "branch",
+            Self::Path => "path",
+            Self::Size => "size",
+            Self::Remote => "remote",
+        }
+    }
+
+    /// Title-case table header label, shared by the blocking and live
+    /// renderers. Annotation renders as an unlabeled marker column.
+    pub fn header_label(self) -> &'static str {
+        match self {
+            Self::Annotation => "",
+            Self::Name => "Name",
+            Self::Worktrees => "Worktrees",
+            Self::Branch => "Branch",
+            Self::Path => "Path",
+            Self::Size => "Size",
+            Self::Remote => "Remote",
+        }
+    }
+
+    /// All valid CLI column names, for use in error messages.
+    pub fn valid_names() -> String {
+        Self::all()
+            .iter()
+            .map(|c| c.cli_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl fmt::Display for RepoListColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.cli_name())
+    }
+}
+
+impl FromStr for RepoListColumn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "annotation" => Ok(Self::Annotation),
+            "name" => Ok(Self::Name),
+            "worktrees" => Ok(Self::Worktrees),
+            "branch" => Ok(Self::Branch),
+            "path" => Ok(Self::Path),
+            "size" => Ok(Self::Size),
+            "remote" => Ok(Self::Remote),
+            _ => Err(format!(
+                "unknown column '{}'\n  valid columns: {}",
+                s.trim(),
+                Self::valid_names()
+            )),
+        }
+    }
+}
+
+impl SelectableColumn for RepoListColumn {
+    fn canonical_position(self) -> u8 {
+        RepoListColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        RepoListColumn::cli_name(self)
+    }
+}
+
+/// Parser for `repo list --columns` values.
+pub struct RepoColumnSelection;
+
+impl RepoColumnSelection {
+    /// Parse a comma-separated column spec into a resolved column list.
+    pub fn parse(input: &str) -> Result<ResolvedColumns<RepoListColumn>, String> {
+        let (columns, explicit) = parse_selection(
+            input,
+            RepoListColumn::repo_list_defaults(),
+            ModeExamples {
+                replace: "--columns name,path,remote",
+                modifier: "--columns -remote,+size",
+            },
+            |_| Ok(()),
+        )?;
+        Ok(ResolvedColumns { columns, explicit })
+    }
+}
+
 impl SelectableColumn for CompletionColumn {
     fn canonical_position(self) -> u8 {
         CompletionColumn::canonical_position(self)
@@ -800,5 +962,73 @@ mod tests {
     fn completion_column_parse_duplicate_error() {
         let err = CompletionColumnSelection::parse("age,age").unwrap_err();
         assert!(err.contains("duplicate"));
+    }
+
+    // RepoListColumn tests
+
+    #[test]
+    fn repo_list_defaults_exclude_size_and_branch() {
+        assert!(!RepoListColumn::repo_list_defaults().contains(&RepoListColumn::Size));
+        assert!(!RepoListColumn::repo_list_defaults().contains(&RepoListColumn::Branch));
+        assert!(RepoListColumn::all().contains(&RepoListColumn::Size));
+        assert!(RepoListColumn::all().contains(&RepoListColumn::Branch));
+    }
+
+    #[test]
+    fn repo_list_column_display_roundtrip() {
+        for col in RepoListColumn::all() {
+            assert_eq!(col.cli_name().parse::<RepoListColumn>().unwrap(), *col);
+        }
+    }
+
+    #[test]
+    fn repo_list_all_is_in_canonical_order() {
+        let all = RepoListColumn::all();
+        for (i, col) in all.iter().enumerate() {
+            assert!(
+                i == 0 || col.canonical_position() > all[i - 1].canonical_position(),
+                "Columns must be in ascending canonical position order"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_modifier_add_size_lands_after_path_before_remote() {
+        let resolved = RepoColumnSelection::parse("+size").unwrap();
+        assert!(!resolved.explicit);
+        let pos = |c: RepoListColumn| resolved.columns.iter().position(|x| *x == c).unwrap();
+        assert!(pos(RepoListColumn::Size) > pos(RepoListColumn::Path));
+        assert!(pos(RepoListColumn::Size) < pos(RepoListColumn::Remote));
+    }
+
+    #[test]
+    fn repo_replace_mode_keeps_given_order() {
+        let resolved = RepoColumnSelection::parse("remote,name").unwrap();
+        assert!(resolved.explicit);
+        assert_eq!(
+            resolved.columns,
+            vec![RepoListColumn::Remote, RepoListColumn::Name]
+        );
+    }
+
+    #[test]
+    fn repo_modifier_remove_remote() {
+        let resolved = RepoColumnSelection::parse("-remote").unwrap();
+        assert!(!resolved.columns.contains(&RepoListColumn::Remote));
+        assert!(resolved.columns.contains(&RepoListColumn::Name));
+    }
+
+    #[test]
+    fn repo_unknown_column_error_names_the_repo_family() {
+        let err = RepoColumnSelection::parse("age").unwrap_err();
+        assert!(err.contains("unknown column 'age'"), "Got: {err}");
+        assert!(err.contains("worktrees"), "Got: {err}");
+    }
+
+    #[test]
+    fn repo_mixed_mode_error_uses_repo_examples() {
+        let err = RepoColumnSelection::parse("name,+size").unwrap_err();
+        assert!(err.contains("cannot mix"), "Got: {err}");
+        assert!(err.contains("--columns name,path,remote"), "Got: {err}");
     }
 }

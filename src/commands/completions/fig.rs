@@ -529,6 +529,33 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         options: None,
     };
 
+    // Column name suggestions for repo list --columns, mirroring the
+    // worktree commands' +/- triples.
+    let repo_column_defs = [
+        ("annotation", "Current repo marker"),
+        ("name", "Catalog name"),
+        ("worktrees", "Worktree count"),
+        ("branch", "Default branch"),
+        ("path", "Repository path"),
+        ("size", "Disk size of repository"),
+        ("remote", "Remote URL"),
+    ];
+    let mut repo_column_suggestions: Vec<FigSuggestion> = Vec::new();
+    for (name, description) in &repo_column_defs {
+        repo_column_suggestions.push(FigSuggestion {
+            name: name.to_string(),
+            description: description.to_string(),
+        });
+        repo_column_suggestions.push(FigSuggestion {
+            name: format!("+{name}"),
+            description: format!("Add {description}"),
+        });
+        repo_column_suggestions.push(FigSuggestion {
+            name: format!("-{name}"),
+            description: format!("Remove {description}"),
+        });
+    }
+
     let list = FigSubcommand {
         name: "list".to_string(),
         description: Some("List repositories in the repo catalog".to_string()),
@@ -542,9 +569,12 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
                 args: None,
             },
             FigOption {
-                name: FigName::Single("--sizes".into()),
-                description: "Add a disk-usage column".into(),
-                args: None,
+                name: FigName::Single("--columns".into()),
+                description: "Columns to display (comma-separated)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: Some(repo_column_suggestions),
+                    template: None,
+                }),
             },
         ]),
     };

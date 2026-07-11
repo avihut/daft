@@ -26,7 +26,7 @@ daft repo add ~/code/legacy    # register a repo by path
 daft repo add --name api       # rename the current repo's entry
 daft repo list                 # live entries: name, worktrees, path, remote
 daft repo list --all           # include removed entries (dimmed)
-daft repo list --sizes         # add a disk-usage column (sizes stream in live)
+daft repo list --columns +size # add a disk-usage column (sizes stream in live)
 daft repo info client          # one entry in full, with resolved relations
 ```
 

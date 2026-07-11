@@ -614,8 +614,15 @@ _daft() {
                 return 0
                 ;;
             list)
+                if [[ "$prev" == "--columns" ]]; then
+                    local columns="annotation name worktrees branch path size remote"
+                    local prefixed=""
+                    for c in $columns; do prefixed="$prefixed $c +$c -$c"; done
+                    COMPREPLY=( $(compgen -W "$prefixed" -- "$cur") )
+                    return 0
+                fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-a --all --sizes --format --template --no-headers -q --quiet -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "-a --all --columns --format --template --no-headers -q --quiet -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

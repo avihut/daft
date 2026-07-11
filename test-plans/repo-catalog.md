@@ -9,14 +9,17 @@ branch: daft-357/feat/repo-catalog
 - [ ] Fresh clone registers automatically: `daft repo list` shows it with the
       right name, worktree count, path, and remote (one line per repo)
 - [ ] From inside a repo, `daft repo list` marks it with a cyan `>`
-- [ ] `daft repo list --sizes` in a terminal shimmer-loads the Size cells and
-      settles into values plus a TOTAL row; piped output prints them directly
+- [ ] `daft repo list --columns +size` in a terminal shimmer-loads the Size
+      cells and settles into values plus a total row; piped output prints them
+      directly
+- [ ] `daft repo list --columns name,path` narrows to those columns;
+      `--columns bogus` errors listing the valid names
 - [ ] `daft repo info` (no arg, inside the repo) shows the entry
 - [ ] Second clone of the same remote elsewhere auto-suffixes (`x`, `x-2`) with
       a notice
 - [ ] `daft repo add --name` renames; renaming to a taken name errors with a tip
 - [ ] `daft repo list --format json` emits well-formed structured output
-      including `worktrees` (and `size_bytes` with `--sizes`)
+      including `worktrees` (and `size_bytes` with `--columns +size`)
 
 ## Cross-repo go
 

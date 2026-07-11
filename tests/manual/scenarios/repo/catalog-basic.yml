@@ -45,24 +45,51 @@ steps:
         - "LINE_STRUCTURE_OK"
 
   # Piped stdio forces the blocking renderer; header + 1 repo row + blank
-  # separator + TOTAL row = 4 lines.
-  - name: repo list --sizes adds a size column with a total row
+  # separator + TOTAL row = 4 lines. The size column rides the house
+  # --columns grammar shared with list/sync/prune, not a bespoke flag.
+  - name: repo list --columns +size adds a size column with a total row
     run:
-      daft repo list --sizes && test "$(daft repo list --sizes 2>/dev/null | wc
-      -l)" -eq 4 && echo SIZES_OK
+      daft repo list --columns +size && test "$(daft repo list --columns +size
+      2>/dev/null | wc -l)" -eq 4 && echo SIZES_OK
     expect:
       exit_code: 0
       output_contains:
         - "Size"
         - "SIZES_OK"
 
+  - name: replace mode narrows the table to the named columns
+    run: daft repo list --columns name,path
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Name"
+        - "test-repo"
+      output_not_contains:
+        - "Worktrees"
+        - "Remote"
+
+  - name: an unknown column fails fast listing the valid names
+    run: daft repo list --columns bogus 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown column 'bogus'"
+        - "valid columns:"
+
   - name: structured output carries worktrees and size_bytes
-    run: daft repo list --sizes --format json
+    run: daft repo list --columns +size --format json
     expect:
       exit_code: 0
       output_contains:
         - '"worktrees": 1'
         - '"size_bytes":'
+
+  - name: default structured output keeps the default branch field
+    run: daft repo list --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "main"'
 
   - name: repo info resolves by name
     run: daft repo info test-repo
