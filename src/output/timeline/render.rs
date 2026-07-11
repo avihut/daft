@@ -108,13 +108,22 @@ pub(super) fn final_row(
     match face {
         RowFace::Done { duration } => {
             let glyph = paint(styles::GREEN, "\u{2713}", use_color);
-            let body = row_body(label, annotation, label_width);
-            match duration.filter(|d| *d >= DURATION_THRESHOLD) {
-                Some(d) => {
-                    let dur = paint(GREY, &format!("({})", format_duration(d)), use_color);
-                    format!("{glyph}  {body}  {dur}")
+            let dur = duration
+                .filter(|d| *d >= DURATION_THRESHOLD)
+                .map(|d| paint(GREY, &format!("({})", format_duration(d)), use_color));
+            match (annotation.filter(|a| !a.is_empty()), dur) {
+                // Both: the annotation owns its column, duration trails it.
+                (Some(_), Some(d)) => {
+                    format!("{glyph}  {}  {d}", row_body(label, annotation, label_width))
                 }
-                None => format!("{glyph}  {body}"),
+                // A lone duration seats in the annotation column — section
+                // receipts share one duration column instead of each
+                // hugging its own name (and Done matches Failed, which
+                // already passes its duration as the annotation).
+                (None, Some(d)) => {
+                    format!("{glyph}  {}", row_body(label, Some(&d), label_width))
+                }
+                _ => format!("{glyph}  {}", row_body(label, annotation, label_width)),
             }
         }
         RowFace::Failed => {
@@ -181,6 +190,15 @@ mod tests {
         let line = final_row(&face, "Pushed", Some("\u{2192} origin/x"), 6, false);
         assert!(line.starts_with("\u{2713}  Pushed"), "got: {line}");
         assert!(line.ends_with("(1.9s)"), "got: {line}");
+    }
+
+    #[test]
+    fn lone_duration_seats_in_the_annotation_column() {
+        let face = RowFace::Done {
+            duration: Some(Duration::from_millis(2100)),
+        };
+        let line = final_row(&face, "prepare-db", None, 12, false);
+        assert_eq!(line, "\u{2713}  prepare-db    (2.1s)");
     }
 
     #[test]
