@@ -9,10 +9,21 @@ use std::path::PathBuf;
 #[command(version = crate::VERSION)]
 #[command(about = "Remove a Git repository and all its worktrees")]
 #[command(long_about = r#"
-Removes a Git repository identified by <path> (or the current directory if no
-path is given), including the git dir and every checked-out
+Removes a Git repository identified by `<path>` (or the current directory if
+no path is given), including the git dir and every checked-out
 worktree. For each worktree, the worktree-pre-remove and worktree-post-remove
 lifecycle hooks are run when the repository is daft-managed and trusted.
+
+`--repo <name>` addresses a cataloged repository by name instead of a path
+and is mutually exclusive with the positional.
+
+`--keep-files` removes the repository from the repo catalog only: nothing on
+disk is touched, no hooks run, and no confirmation is asked (the operation
+is reversible — daft re-registers repos it runs inside, and removed entries
+are restorable by name with `git daft clone <name>`). Combined with `--repo`
+it also works when the recorded directory is already gone, dropping the
+stale entry. When the repository is cataloged, the interactive confirmation
+offers this as the `k` choice.
 
 Hook failures do not abort removal; failed hooks are summarized after the
 operation completes. The repo is removed regardless.
@@ -26,6 +37,20 @@ Refuses to operate on paths that are not inside a Git repository.
 pub struct Args {
     #[arg(help = "Path to the repo or any directory inside it (default: cwd)")]
     pub path: Option<PathBuf>,
+
+    #[arg(
+        long = "repo",
+        value_name = "NAME",
+        conflicts_with = "path",
+        help = "Cataloged repository to remove (instead of a path)"
+    )]
+    pub repo: Option<String>,
+
+    #[arg(
+        long = "keep-files",
+        help = "Only remove the repo from the catalog; leave all files on disk"
+    )]
+    pub keep_files: bool,
 
     #[arg(short = 'y', long = "force", help = "Skip the confirmation prompt")]
     pub force: bool,
@@ -84,13 +109,40 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
         eprintln!("[experimental] Using gitoxide backend for git operations");
     }
 
+    // --repo addresses a cataloged repo by name (exec-shape grammar). The
+    // missing-path-tolerant resolver lets `--keep-files --repo <name>` drop
+    // a stale entry whose directory is already gone; the full-removal path
+    // re-checks existence below with a removal-appropriate error.
+    let catalog_row = match args.repo.as_deref() {
+        Some(needle) => Some(crate::catalog::resolve_repo_arg_missing_ok(needle)?),
+        None => None,
+    };
+
+    if args.keep_files {
+        return remove_catalog_entry_only(args, catalog_row.as_ref(), use_gitoxide);
+    }
+
     // Honor user-configured hook settings (timeout, output verbosity,
     // per-hook trust defaults). Loading from global mirrors the
     // `load_global()` call above — same rationale, same failure-mode
     // tolerance for cwd-outside-any-repo invocations.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
 
-    let target = resolve_repo(args.path.as_deref(), use_gitoxide)?;
+    let target = match &catalog_row {
+        Some(row) => {
+            if !std::path::Path::new(&row.path).is_dir() {
+                bail!(
+                    "catalog entry '{}' points at '{}', which no longer exists\n  \
+                     tip: `{}` drops the entry without touching disk",
+                    row.name,
+                    row.path,
+                    crate::daft_cmd(&format!("repo remove --keep-files --repo {}", row.name)),
+                );
+            }
+            resolve_repo(Some(std::path::Path::new(&row.path)), use_gitoxide)?
+        }
+        None => resolve_repo(args.path.as_deref(), use_gitoxide)?,
+    };
     let worktrees = enumerate_worktrees(&target, use_gitoxide)?;
 
     if args.dry_run {
@@ -102,9 +154,16 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             bail!("Refusing to run without --force in non-interactive mode");
         }
-        if !confirm_prompt(&target, worktrees.len())? {
-            println!("aborted");
-            return Ok(());
+        // The catalog-only escape hatch is offered only when there is a
+        // live entry to drop.
+        let offer_keep = crate::catalog::live_catalog_row_for(&target.bare_git_dir).is_some();
+        match confirm_prompt(&target, worktrees.len(), offer_keep)? {
+            RemoveChoice::Remove => {}
+            RemoveChoice::KeepFiles => return finish_keep_files(&target),
+            RemoveChoice::Abort => {
+                println!("aborted");
+                return Ok(());
+            }
         }
     }
 
@@ -192,24 +251,143 @@ fn print_plan(
     println!("  trust marker for {}", target.bare_git_dir.display());
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveChoice {
+    Remove,
+    KeepFiles,
+    Abort,
+}
+
+/// Interpret one line of confirmation input. `keep_offered` mirrors whether
+/// the prompt advertised the `k` choice — when it didn't, `k` falls through
+/// to abort like any other unrecognized answer.
+fn parse_remove_choice(line: &str, keep_offered: bool) -> RemoveChoice {
+    match line.trim() {
+        "y" | "Y" => RemoveChoice::Remove,
+        "k" | "K" if keep_offered => RemoveChoice::KeepFiles,
+        _ => RemoveChoice::Abort,
+    }
+}
+
 fn confirm_prompt(
     target: &crate::core::worktree::remove_repo::RepoTarget,
     n: usize,
-) -> Result<bool> {
+    offer_keep: bool,
+) -> Result<RemoveChoice> {
     use std::io::{BufRead, Write};
     let suffix = match n {
         0 => "No worktrees to remove — this will delete the repo.".to_string(),
         1 => "This will delete 1 worktree and the repo.".to_string(),
         n => format!("This will delete {n} worktrees and the repo."),
     };
-    print!(
-        "Remove repo at {}? {suffix} [y/N] ",
-        target.project_root.display()
-    );
+    if offer_keep {
+        println!("Remove repo at {}? {suffix}", target.project_root.display());
+        print!("[y] remove  [k] keep files, only drop the catalog entry  [N] abort: ");
+    } else {
+        print!(
+            "Remove repo at {}? {suffix} [y/N] ",
+            target.project_root.display()
+        );
+    }
     std::io::stdout().flush()?;
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
-    Ok(matches!(line.trim(), "y" | "Y"))
+    Ok(parse_remove_choice(&line, offer_keep))
+}
+
+/// `--keep-files`: drop the catalog entry, touch nothing on disk. No hooks
+/// run and no confirmation is asked — the operation is reversible (daft
+/// re-registers repos it runs inside, and re-cloning by name restores
+/// removed entries).
+fn remove_catalog_entry_only(
+    args: &Args,
+    catalog_row: Option<&crate::store::CatalogRepoRow>,
+    use_gitoxide: bool,
+) -> Result<()> {
+    match catalog_row {
+        Some(row) => {
+            if args.dry_run {
+                if std::path::Path::new(&row.path).is_dir() {
+                    println!(
+                        "Would remove '{}' from the catalog (files kept at {})",
+                        row.name,
+                        display(&row.path),
+                    );
+                } else {
+                    println!(
+                        "Would remove stale entry '{}' from the catalog ({} no longer exists)",
+                        row.name, row.path,
+                    );
+                }
+                return Ok(());
+            }
+            crate::catalog::mark_row_removed(&row.uuid)?;
+            report_catalog_only_removal(&row.name, std::path::Path::new(&row.path));
+            Ok(())
+        }
+        None => {
+            let target = crate::core::worktree::remove_repo::resolve_repo(
+                args.path.as_deref(),
+                use_gitoxide,
+            )?;
+            if args.dry_run {
+                match crate::catalog::live_catalog_row_for(&target.bare_git_dir) {
+                    Some(row) => println!(
+                        "Would remove '{}' from the catalog (files kept at {})",
+                        row.name,
+                        display(&row.path),
+                    ),
+                    None => println!(
+                        "{} is not in the catalog — nothing to remove",
+                        target.project_root.display()
+                    ),
+                }
+                return Ok(());
+            }
+            finish_keep_files(&target)
+        }
+    }
+}
+
+/// Tombstone the catalog entry for an on-disk repo and report the outcome.
+/// Shared by `--keep-files` and the interactive `k` choice.
+fn finish_keep_files(target: &crate::core::worktree::remove_repo::RepoTarget) -> Result<()> {
+    match crate::catalog::remove_from_catalog_only(&target.bare_git_dir, &target.project_root)? {
+        Some(name) => {
+            report_catalog_only_removal(&name, &target.project_root);
+            Ok(())
+        }
+        None => bail!(
+            "{} is not in the catalog — nothing to remove",
+            target.project_root.display()
+        ),
+    }
+}
+
+fn report_catalog_only_removal(name: &str, project_root: &std::path::Path) {
+    if project_root.is_dir() {
+        println!(
+            "Removed '{name}' from the catalog — files kept at {}",
+            display(&project_root.to_string_lossy()),
+        );
+        eprintln!(
+            "note: daft re-registers repos it runs inside — the entry returns the next \
+             time daft touches this repo"
+        );
+    } else {
+        println!(
+            "Removed stale entry '{name}' from the catalog ({} no longer exists)",
+            project_root.display()
+        );
+    }
+}
+
+/// Display-path rule for human output (same as `repo list` / `repo info`).
+fn display(path: &str) -> String {
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|c| c.canonicalize().ok());
+    crate::output::format::display_path(path, cwd.as_deref())
 }
 
 fn run_sequential(
@@ -720,6 +898,8 @@ mod tests {
 
         let args = Args {
             path: Some(tmp.path().to_path_buf()),
+            repo: None,
+            keep_files: false,
             force: false,
             dry_run: true,
             verbose: 0,
@@ -737,6 +917,8 @@ mod tests {
 
         let args = Args {
             path: Some(tmp.path().to_path_buf()),
+            repo: None,
+            keep_files: false,
             force: true,
             dry_run: false,
             verbose: 2, // force sequential path
@@ -748,6 +930,77 @@ mod tests {
             "bare git dir must be gone"
         );
         assert!(!wt.exists(), "worktree must be gone");
+    }
+
+    // --keep-files never touches the filesystem, runs no hooks, and — for a
+    // repo that was never cataloged — reports there is nothing to remove.
+    // (Ambient catalog writes are gated off in unit tests, which maps every
+    // uncataloged temp repo onto exactly this branch.)
+    #[test]
+    fn keep_files_leaves_disk_untouched_and_reports_uncataloged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = make_repo_with_worktree(tmp.path());
+
+        let args = Args {
+            path: Some(tmp.path().to_path_buf()),
+            repo: None,
+            keep_files: true,
+            force: false,
+            dry_run: false,
+            verbose: 0,
+        };
+        let err = run_with_args(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("not in the catalog"),
+            "uncataloged repo must report nothing to remove, got: {err}"
+        );
+        assert!(tmp.path().join(".git").exists(), "bare git dir must remain");
+        assert!(wt.exists(), "worktree must remain");
+    }
+
+    #[test]
+    fn keep_files_dry_run_touches_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = make_repo_with_worktree(tmp.path());
+
+        let args = Args {
+            path: Some(tmp.path().to_path_buf()),
+            repo: None,
+            keep_files: true,
+            force: false,
+            dry_run: true,
+            verbose: 0,
+        };
+        run_with_args(&args).unwrap();
+
+        assert!(tmp.path().join(".git").exists(), "bare git dir must remain");
+        assert!(wt.exists(), "worktree must remain");
+    }
+
+    #[test]
+    fn repo_flag_is_exclusive_with_the_path_positional() {
+        let err = Args::try_parse_from(["git-daft-repo-remove", "--repo", "api", "/tmp/x"])
+            .expect_err("--repo together with a path must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let ok = Args::try_parse_from(["git-daft-repo-remove", "--repo", "api", "--keep-files"])
+            .expect("--repo with --keep-files must parse");
+        assert_eq!(ok.repo.as_deref(), Some("api"));
+        assert!(ok.keep_files);
+    }
+
+    #[test]
+    fn parse_remove_choice_maps_answers() {
+        use super::RemoveChoice::*;
+        assert_eq!(parse_remove_choice("y\n", true), Remove);
+        assert_eq!(parse_remove_choice("Y\n", false), Remove);
+        assert_eq!(parse_remove_choice("  k \n", true), KeepFiles);
+        assert_eq!(parse_remove_choice("K\n", true), KeepFiles);
+        // `k` aborts when the prompt didn't offer it (repo not cataloged).
+        assert_eq!(parse_remove_choice("k\n", false), Abort);
+        assert_eq!(parse_remove_choice("\n", true), Abort);
+        assert_eq!(parse_remove_choice("n\n", true), Abort);
+        assert_eq!(parse_remove_choice("yes\n", true), Abort);
     }
 
     use crate::core::worktree::list::EntryKind;

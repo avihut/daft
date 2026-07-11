@@ -30,8 +30,11 @@ pub mod relations;
 pub mod service;
 pub mod worktrees;
 
-pub use registration::{gather_facts, note_repo_removed, register_repo, touch_current_repo};
+pub use registration::{
+    gather_facts, live_catalog_row_for, mark_row_removed, note_repo_removed, register_repo,
+    remove_from_catalog_only, touch_current_repo,
+};
 pub use service::{
     Catalog, CatalogError, RegistrationFacts, RegistrationOutcome, effective_default_branch,
-    resolve_repo_arg,
+    resolve_repo_arg, resolve_repo_arg_missing_ok,
 };

@@ -843,8 +843,15 @@ _daft() {
                 return
                 ;;
             remove)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--repo" ]]; then
+                    local -a repos
+                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                    (( ${#repos} )) && compadd -- "${repos[@]}"
+                    return
+                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -y --force --dry-run -v --verbose -h --help
+                    compadd -- --repo --keep-files -y --force --dry-run -v --verbose -h --help
                     return
                 fi
                 _files -/

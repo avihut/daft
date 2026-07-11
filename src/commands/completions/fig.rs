@@ -638,6 +638,20 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         })),
         options: Some(vec![
             FigOption {
+                name: FigName::Single("--repo".into()),
+                description: "Cataloged repository to remove (instead of a path)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Single("--keep-files".into()),
+                description: "Only remove the repo from the catalog; leave all files on disk"
+                    .into(),
+                args: None,
+            },
+            FigOption {
                 name: FigName::Multiple(vec!["--force".into(), "-y".into()]),
                 description: "Skip the confirmation prompt".into(),
                 args: None,
@@ -1246,6 +1260,15 @@ mod tests {
         assert!(
             spec.contains("repo-name"),
             "list spec must generate catalog repo names for its positional"
+        );
+    }
+
+    #[test]
+    fn fig_repo_remove_spec_offers_repo_and_keep_files() {
+        let spec = serde_json::to_string(&build_fig_repo_subcommand()).unwrap();
+        assert!(
+            spec.contains("--repo") && spec.contains("--keep-files"),
+            "repo remove spec must offer --repo and --keep-files"
         );
     }
 

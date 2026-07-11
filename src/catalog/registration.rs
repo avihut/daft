@@ -20,6 +20,7 @@ use crate::catalog::normalize;
 use crate::catalog::service::{Catalog, RegistrationFacts};
 use crate::core::repo_identity::compute_repo_id_from_common_dir;
 use crate::output::Output;
+use crate::store::CatalogRepoRow;
 use std::path::Path;
 
 /// Build [`RegistrationFacts`] for a repo whose git common dir and project
@@ -106,22 +107,66 @@ pub fn note_repo_removed(bare_git_dir: &Path, project_root: &Path) {
     if !ambient_writes_allowed() {
         return;
     }
-    let _ = note_repo_removed_impl(bare_git_dir, project_root);
+    let _ = tombstone_repo_at(bare_git_dir, project_root);
 }
 
-fn note_repo_removed_impl(bare_git_dir: &Path, project_root: &Path) -> anyhow::Result<()> {
+/// Explicit catalog-only removal (`repo remove --keep-files`): tombstone the
+/// entry for the repo at `bare_git_dir`, leaving the files alone. Unlike
+/// [`note_repo_removed`] this is the operation the user asked for, so
+/// failures propagate. Returns the cataloged name, or `None` when the repo
+/// has no identity and no row — nothing to remove.
+pub fn remove_from_catalog_only(
+    bare_git_dir: &Path,
+    project_root: &Path,
+) -> anyhow::Result<Option<String>> {
+    if !ambient_writes_allowed() {
+        return Ok(None);
+    }
+    tombstone_repo_at(bare_git_dir, project_root)
+}
+
+/// Tombstone one already-resolved catalog row (`repo remove --keep-files
+/// --repo <name>`). Explicit user request: failures propagate.
+pub fn mark_row_removed(uuid: &str) -> anyhow::Result<()> {
+    if !ambient_writes_allowed() {
+        return Ok(());
+    }
+    Ok(Catalog::open_rw()?.mark_removed(uuid)?)
+}
+
+/// The live catalog row for the repo whose git dir is `bare_git_dir`, if
+/// any. Read-only; `repo remove` uses it to decide whether its confirmation
+/// prompt offers the keep-files (catalog-only) choice.
+pub fn live_catalog_row_for(bare_git_dir: &Path) -> Option<CatalogRepoRow> {
+    let catalog = Catalog::open_ro().ok().flatten()?;
+    let daft_id = std::fs::read_to_string(bare_git_dir.join("daft-id"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| uuid::Uuid::parse_str(s).is_ok());
+    let row = match daft_id {
+        Some(id) => catalog.get_by_uuid(&id).ok().flatten(),
+        None => {
+            let canonical = bare_git_dir
+                .canonicalize()
+                .unwrap_or_else(|_| bare_git_dir.to_path_buf());
+            catalog.resolve(&canonical.to_string_lossy()).ok().flatten()
+        }
+    }?;
+    row.removed_at.is_none().then_some(row)
+}
+
+fn tombstone_repo_at(bare_git_dir: &Path, project_root: &Path) -> anyhow::Result<Option<String>> {
     let daft_id = std::fs::read_to_string(bare_git_dir.join("daft-id"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| uuid::Uuid::parse_str(s).is_ok());
 
-    let uuid = if daft_id.is_some() {
+    let identity = if daft_id.is_some() {
         // Repo has an identity: make sure the catalog knows its final facts
         // (registers it if daft never cataloged it) before the tombstone.
         let facts = gather_facts(bare_git_dir, project_root, None, None)?;
-        let catalog = Catalog::open_rw()?;
-        catalog.register(&facts)?;
-        Some(facts.uuid)
+        let outcome = Catalog::open_rw()?.register(&facts)?;
+        Some((facts.uuid, outcome.assigned_name))
     } else {
         // No identity file — nothing to preserve unless a stale row points
         // here; look it up while the path still canonicalizes.
@@ -130,13 +175,14 @@ fn note_repo_removed_impl(bare_git_dir: &Path, project_root: &Path) -> anyhow::R
             .unwrap_or_else(|_| bare_git_dir.to_path_buf());
         Catalog::open_ro()?
             .and_then(|catalog| catalog.resolve(&canonical.to_string_lossy()).ok().flatten())
-            .map(|row| row.uuid)
+            .map(|row| (row.uuid, row.name))
     };
 
-    if let Some(uuid) = uuid {
-        Catalog::open_rw()?.mark_removed(&uuid)?;
-    }
-    Ok(())
+    let Some((uuid, name)) = identity else {
+        return Ok(None);
+    };
+    Catalog::open_rw()?.mark_removed(&uuid)?;
+    Ok(Some(name))
 }
 
 fn touch_current_repo_impl() -> anyhow::Result<()> {

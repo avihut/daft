@@ -465,6 +465,8 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -l git-exclude -d 'Add /daft.yml to .git/info/exclude without prompting'
 # repo remove: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)" -d 'Cataloged repository to remove'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l keep-files -d 'Only remove the repo from the catalog; leave all files on disk'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'

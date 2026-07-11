@@ -86,14 +86,24 @@ vanished, identity drift, duplicate names — and `--fix` reconciles them.
 `daft repo remove` tombstones the catalog entry instead of forgetting it:
 
 ```bash
-daft repo remove -y client     # repo gone; entry marked removed
-daft repo list --all           # …still visible here
-daft hooks jobs --repo client  # its hook-job history is still addressable
-daft clone client              # restored from the recorded remote URL
+daft repo remove -y ./client       # repo gone; entry marked removed
+daft repo remove --repo client -y  # same, addressed by catalog name
+daft repo list --all               # …still visible here
+daft hooks jobs --repo client      # its hook-job history is still addressable
+daft clone client                  # restored from the recorded remote URL
 ```
 
 Re-cloning (by name or URL) at any path brings the repo back as a fresh live
 entry; the old identity remains as a removed record so its logs stay reachable.
+
+To drop the catalog entry while keeping the repository on disk, pass
+`--keep-files`: nothing is deleted, no hooks run, and no confirmation is asked.
+The interactive prompt offers the same choice as `k` whenever the repo being
+removed is cataloged. Because registration is ambient, the entry returns the
+next time daft runs inside the kept repo — `--keep-files` is for repos leaving
+daft's orbit, and for retiring a stale entry whose directory is already gone
+(`daft repo remove --keep-files --repo old-name`; `daft doctor --fix` does the
+same for every stale entry at once).
 
 ## Storage
 

@@ -673,6 +673,49 @@ mod tests {
         );
     }
 
+    /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
+    /// sections of the umbrella completions are hardcoded per shell, so a
+    /// new flag must land in all three (fig has its own spec test).
+    #[test]
+    fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        assert!(
+            zsh.contains("compadd -- --repo --keep-files -y --force"),
+            "zsh repo-remove flag list must include --repo and --keep-files"
+        );
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            bash.contains("--repo --keep-files -y --force --dry-run"),
+            "bash repo-remove flag list must include --repo and --keep-files"
+        );
+        // Both umbrellas complete the --repo VALUE with catalog names inside
+        // the repo section's remove arm (the same `daft __complete repo-name`
+        // helper the other repo-aware commands use). Bound the probe to that
+        // arm: the umbrella also has a top-level worktree `remove` verb.
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            let repo_section = script
+                .split("# repo: complete subcommands")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must have a repo section"));
+            let remove_arm = repo_section
+                .split("remove)")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} repo section must have a remove arm"));
+            let arm = &remove_arm[..remove_arm.find(";;").unwrap_or(remove_arm.len())];
+            assert!(
+                arm.contains("daft __complete repo-name"),
+                "{shell} repo-remove arm must complete --repo values with catalog names"
+            );
+        }
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains(
+                "__fish_seen_subcommand_from remove' -l repo -x -a \"(daft __complete repo-name"
+            ) && fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
+            "fish repo-remove must complete --repo values and offer --keep-files"
+        );
+    }
+
     /// Regression: the `daft go` position-1 helper appends a catalog `repo`
     /// group (`name\trepo\tpath`), but the zsh renderer's per-group parser
     /// only knew worktree/local/remote — catalog repos silently vanished

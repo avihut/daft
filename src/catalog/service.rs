@@ -324,6 +324,18 @@ impl Catalog {
 /// fail with an actionable message. The shared front door for fleet-style
 /// flags (`exec --repo`, `list --repo`, …).
 pub fn resolve_repo_arg(needle: &str) -> anyhow::Result<CatalogRepoRow> {
+    resolve_repo_arg_impl(needle, true)
+}
+
+/// [`resolve_repo_arg`] minus the directory-exists requirement, for
+/// catalog-metadata operations where the files' presence is irrelevant —
+/// `repo remove --keep-files --repo <name>` must be able to drop an entry
+/// whose directory is already gone.
+pub fn resolve_repo_arg_missing_ok(needle: &str) -> anyhow::Result<CatalogRepoRow> {
+    resolve_repo_arg_impl(needle, false)
+}
+
+fn resolve_repo_arg_impl(needle: &str, require_path: bool) -> anyhow::Result<CatalogRepoRow> {
     let Some(catalog) = Catalog::open_ro()? else {
         anyhow::bail!(
             "the repo catalog is empty — clone a repo or run `{}` first",
@@ -332,7 +344,7 @@ pub fn resolve_repo_arg(needle: &str) -> anyhow::Result<CatalogRepoRow> {
     };
     match catalog.resolve(needle)? {
         Some(row) if row.removed_at.is_none() => {
-            if !Path::new(&row.path).is_dir() {
+            if require_path && !Path::new(&row.path).is_dir() {
                 anyhow::bail!(
                     "catalog entry '{}' points at '{}', which no longer exists\n  \
                      tip: if the repo moved, run `{}` from its new location; \

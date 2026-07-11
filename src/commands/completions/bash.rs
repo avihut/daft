@@ -648,8 +648,14 @@ _daft() {
                 return 0
                 ;;
             remove)
+                if [[ "$prev" == "--repo" ]]; then
+                    local repos
+                    repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                    COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+                    return 0
+                fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-y --force --dry-run -v --verbose -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--repo --keep-files -y --force --dry-run -v --verbose -h --help" -- "$cur") )
                     return 0
                 fi
                 COMPREPLY=( $(compgen -d -- "$cur") )
