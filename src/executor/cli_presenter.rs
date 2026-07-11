@@ -12,9 +12,10 @@ use crate::settings::HookOutputConfig;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// The renderer behind the presenter: the full hook block, or the succinct
-/// rail rows (#651). Embedded phases pick per `HookOutputConfig::verbose` at
-/// `on_phase_start`; every non-embedded path is a block.
+/// The renderer behind the presenter: the rail rows (#651) for embedded
+/// phases — succinct by default, threading each job's log when
+/// `HookOutputConfig::verbose` — or the standalone hook block for every
+/// non-embedded path (and the degraded no-region fallback).
 enum EmbedRenderer {
     Block(HookRenderer),
     /// Boxed: the rail renderer carries three `ProgressStyle`s and dwarfs
@@ -297,11 +298,9 @@ impl JobPresenter for CliPresenter {
                 EmbedTarget::Stage(id) => handle.resolve_key(*id, target),
             };
             let fresh = match key.and_then(|k| handle.begin_hook_embed(&k)) {
-                // The succinct rail rows are the default; `-v` or
-                // `daft.hooks.output.verbose` picks the full block (#651).
-                Some(embed) if config.verbose => {
-                    EmbedRenderer::Block(HookRenderer::embedded(config, embed.mp, embed.anchor))
-                }
+                // Embedded phases always render rail-native (#651) — the
+                // rail renderer reads `config.verbose` itself and threads
+                // each job's log under its row.
                 Some(embed) => EmbedRenderer::Rail(Box::new(RailHookRenderer::new(
                     embed,
                     handle.clone(),
@@ -435,7 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn verbose_config_picks_the_full_block() {
+    fn verbose_embed_stays_on_the_rail() {
+        // Verbose no longer swaps in the welded block — the rail renderer
+        // itself threads the log (#651).
         let tl = hook_timeline();
         let config = HookOutputConfig {
             verbose: true,
@@ -444,7 +445,7 @@ mod tests {
         let presenter =
             CliPresenter::embedded(&config, tl.handle(), StepKey::new(StageId::PostCreateHooks));
         presenter.on_phase_start("worktree-post-create", None);
-        assert_eq!(presenter.renderer_kind(), Some("block"));
+        assert_eq!(presenter.renderer_kind(), Some("rail"));
     }
 
     #[test]
