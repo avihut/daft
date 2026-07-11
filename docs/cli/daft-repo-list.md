@@ -18,19 +18,21 @@ they render dimmed with a `(removed)` note.
 | Flag                | Description                                                                                                                                                                              |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a`, `--all`       | Include removed repositories.                                                                                                                                                            |
-| `--columns <cols>`  | Columns to display, in the shared grammar: replace mode (`name,path,remote` — exact set and order) or modifier mode (`+size`, `-remote`). Available: annotation, name, worktrees, branch, path, size, remote. |
+| `--columns <cols>`  | Columns to display, in the shared grammar: replace mode (`name,path,remote` — exact set and order) or modifier mode (`+size`, `-remote`). Available: annotation, name, worktrees, layout, branch, path, size, remote. |
 | `--format <fmt>`    | Structured output: json, ndjson, tsv, csv, yaml, …                                                                                                                                       |
 | `--template <tera>` | Custom Tera template output.                                                                                                                                                             |
 | `--no-headers`      | Omit the header row (tsv/csv only).                                                                                                                                                      |
 
 The size column is opt-in (`--columns +size`, same as `daft list`) because it
 walks every repository; on a terminal the sizes stream in live with a total
-row while the rest of the table renders immediately. The recorded default
-branch is likewise opt-in (`+branch`).
+row while the rest of the table renders immediately. The recorded worktree
+layout (`+layout`) and default branch (`+branch`) are likewise opt-in; the
+layout is the one recorded in daft's repo store at clone/adopt time (or via
+`daft layout set`), shown as `-` for repositories daft never laid out.
 
-By default, structured output includes the worktree count (`worktrees`) and
-the recorded default branch; a customized `--columns` selection narrows the
-emitted fields to match, and `+size` adds `size_bytes`.
+By default, structured output includes the worktree count (`worktrees`), the
+recorded layout, and the recorded default branch; a customized `--columns`
+selection narrows the emitted fields to match, and `+size` adds `size_bytes`.
 
 ## Examples
 

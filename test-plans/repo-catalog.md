@@ -16,6 +16,8 @@ branch: daft-357/feat/repo-catalog
       directly
 - [ ] `daft repo list --columns name,path` narrows to those columns;
       `--columns bogus` errors listing the valid names
+- [ ] `daft repo list --columns +layout` shows each repo's recorded layout (`-`
+      for repos daft never laid out); JSON carries `layout` by default
 - [ ] `daft repo info` (no arg, inside the repo) shows the entry
 - [ ] Second clone of the same remote elsewhere auto-suffixes (`x`, `x-2`) with
       a notice

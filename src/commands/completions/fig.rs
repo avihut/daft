@@ -535,6 +535,7 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         ("annotation", "Current repo marker"),
         ("name", "Catalog name"),
         ("worktrees", "Worktree count"),
+        ("layout", "Worktree layout"),
         ("branch", "Default branch"),
         ("path", "Repository path"),
         ("size", "Disk size of repository"),

@@ -429,6 +429,7 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'annotation +annotation -annotation' -d 'Current repo marker'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'name +name -name' -d 'Catalog name'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'worktrees +worktrees -worktrees' -d 'Worktree count'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'layout +layout -layout' -d 'Worktree layout'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'branch +branch -branch' -d 'Default branch'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'path +path -path' -d 'Repository path'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'size +size -size' -d 'Disk size of repository'

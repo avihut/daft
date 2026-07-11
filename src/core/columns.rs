@@ -479,6 +479,8 @@ pub enum RepoListColumn {
     Name,
     /// Worktree count (main working tree plus linked worktrees).
     Worktrees,
+    /// Recorded worktree layout (from the repo store).
+    Layout,
     /// Recorded default branch.
     Branch,
     /// Repository path.
@@ -496,6 +498,7 @@ impl RepoListColumn {
             RepoListColumn::Annotation,
             RepoListColumn::Name,
             RepoListColumn::Worktrees,
+            RepoListColumn::Layout,
             RepoListColumn::Branch,
             RepoListColumn::Path,
             RepoListColumn::Size,
@@ -505,8 +508,8 @@ impl RepoListColumn {
 
     /// The default column set for `repo list`. Size is excluded (it walks
     /// every repository — add it with `--columns +size`, like the worktree
-    /// commands); Branch is excluded as a structured-output-first detail
-    /// (add it with `--columns +branch`).
+    /// commands); Layout and Branch are excluded as structured-output-first
+    /// details (add them with `--columns +layout,+branch`).
     pub fn repo_list_defaults() -> &'static [RepoListColumn] {
         &[
             RepoListColumn::Annotation,
@@ -518,16 +521,18 @@ impl RepoListColumn {
     }
 
     /// Canonical display position (used to order columns in modifier mode).
+    /// Layout sits beside Worktrees (both describe the worktree structure);
     /// Size sits right after Path, mirroring the worktree commands.
     pub fn canonical_position(self) -> u8 {
         match self {
             Self::Annotation => 1,
             Self::Name => 2,
             Self::Worktrees => 3,
-            Self::Branch => 4,
-            Self::Path => 5,
-            Self::Size => 6,
-            Self::Remote => 7,
+            Self::Layout => 4,
+            Self::Branch => 5,
+            Self::Path => 6,
+            Self::Size => 7,
+            Self::Remote => 8,
         }
     }
 
@@ -537,6 +542,7 @@ impl RepoListColumn {
             Self::Annotation => "annotation",
             Self::Name => "name",
             Self::Worktrees => "worktrees",
+            Self::Layout => "layout",
             Self::Branch => "branch",
             Self::Path => "path",
             Self::Size => "size",
@@ -551,6 +557,7 @@ impl RepoListColumn {
             Self::Annotation => "",
             Self::Name => "Name",
             Self::Worktrees => "Worktrees",
+            Self::Layout => "Layout",
             Self::Branch => "Branch",
             Self::Path => "Path",
             Self::Size => "Size",
@@ -582,6 +589,7 @@ impl FromStr for RepoListColumn {
             "annotation" => Ok(Self::Annotation),
             "name" => Ok(Self::Name),
             "worktrees" => Ok(Self::Worktrees),
+            "layout" => Ok(Self::Layout),
             "branch" => Ok(Self::Branch),
             "path" => Ok(Self::Path),
             "size" => Ok(Self::Size),
@@ -967,11 +975,15 @@ mod tests {
     // RepoListColumn tests
 
     #[test]
-    fn repo_list_defaults_exclude_size_and_branch() {
-        assert!(!RepoListColumn::repo_list_defaults().contains(&RepoListColumn::Size));
-        assert!(!RepoListColumn::repo_list_defaults().contains(&RepoListColumn::Branch));
-        assert!(RepoListColumn::all().contains(&RepoListColumn::Size));
-        assert!(RepoListColumn::all().contains(&RepoListColumn::Branch));
+    fn repo_list_defaults_exclude_size_layout_and_branch() {
+        for optional in [
+            RepoListColumn::Size,
+            RepoListColumn::Layout,
+            RepoListColumn::Branch,
+        ] {
+            assert!(!RepoListColumn::repo_list_defaults().contains(&optional));
+            assert!(RepoListColumn::all().contains(&optional));
+        }
     }
 
     #[test]

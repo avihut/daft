@@ -46,13 +46,13 @@ addressable and `git daft clone <name>` can restore them); show them with
 Use --columns to select which columns are shown and in what order.
   Replace mode:  --columns name,path,remote (exact set and order)
   Modifier mode: --columns -remote (remove from defaults)
-  Add optional:  --columns +size,+branch (add to defaults)
+  Add optional:  --columns +size,+layout,+branch (add to defaults)
 
 The size column is not shown by default — it walks every repository, so it
 is opt-in, same as the worktree commands. On a terminal the sizes stream in
 live while the table renders immediately, with a total row summing them.
-The recorded default branch is likewise opt-in (+branch); structured output
-includes it by default.
+The recorded worktree layout (+layout) and default branch (+branch) are
+likewise opt-in; structured output includes both by default.
 "#)]
 pub struct Args {
     #[arg(short = 'a', long = "all", help = "Include removed repositories")]
@@ -60,7 +60,7 @@ pub struct Args {
 
     #[arg(
         long = "columns",
-        help = "Columns to display (comma-separated). Replace: name,path,remote. Modify defaults: +col,-col. Available: annotation, name, worktrees, branch, path, size, remote"
+        help = "Columns to display (comma-separated). Replace: name,path,remote. Modify defaults: +col,-col. Available: annotation, name, worktrees, layout, branch, path, size, remote"
     )]
     columns: Option<String>,
 
@@ -242,6 +242,10 @@ fn current_git_common_dir() -> Option<PathBuf> {
 
 fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
     let current_gcd = current_git_common_dir();
+    // One read-only load serves every row's layout lookup. The repo store
+    // (repos.json) is where clone/adopt/`layout set` record each repo's
+    // layout; repos daft never laid out simply have no entry.
+    let trust_db = crate::hooks::TrustDatabase::load().ok();
     rows.iter()
         .map(|row| {
             let current = current_gcd.as_deref().is_some_and(|cur| {
@@ -257,6 +261,10 @@ fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
                 removed: row.removed_at.is_some(),
                 name,
                 worktrees: worktree_count(Path::new(&row.git_common_dir)),
+                layout: trust_db
+                    .as_ref()
+                    .and_then(|db| db.get_layout(Path::new(&row.git_common_dir)))
+                    .map(String::from),
                 branch: row.default_branch.clone(),
                 path: tilde_path(&row.path),
                 remote: row.remote_url.clone(),
@@ -292,6 +300,9 @@ fn build_payload(
     if has(RepoListColumn::Worktrees) {
         headers.push("worktrees");
     }
+    if has(RepoListColumn::Layout) {
+        headers.push("layout");
+    }
     if has(RepoListColumn::Branch) {
         headers.push("default_branch");
     }
@@ -317,6 +328,15 @@ fn build_payload(
                 cells[i]
                     .worktrees
                     .map(|n| Cell::int(n as i64))
+                    .unwrap_or(Cell::Null),
+            );
+        }
+        if has(RepoListColumn::Layout) {
+            record.push(
+                cells[i]
+                    .layout
+                    .as_deref()
+                    .map(Cell::str)
                     .unwrap_or(Cell::Null),
             );
         }
@@ -424,6 +444,7 @@ fn build_blocking_table(
                         .unwrap_or_else(|| "-".to_string()),
                     cell.removed,
                 ),
+                RepoListColumn::Layout => dim(cell.layout.as_deref().unwrap_or("-"), cell.removed),
                 RepoListColumn::Branch => dim(cell.branch.as_deref().unwrap_or("-"), cell.removed),
                 RepoListColumn::Path => dim(&cell.path, cell.removed),
                 RepoListColumn::Size => dim(
@@ -516,6 +537,7 @@ mod tests {
             removed,
             name: name.to_string(),
             worktrees: Some(3),
+            layout: Some("contained".to_string()),
             branch: Some("main".to_string()),
             path: format!("~/src/{name}"),
             remote: Some(format!("git@example.com:acme/{name}.git")),
@@ -687,6 +709,40 @@ mod tests {
         assert!(lines[1].contains("main"), "row: {:?}", lines[1]);
     }
 
+    #[test]
+    fn blocking_table_layout_column_is_opt_in() {
+        let table = build_blocking_table(
+            &[cells("alpha", false, false)],
+            None,
+            &defaults(),
+            false,
+            None,
+        );
+        assert!(
+            !table.lines().next().unwrap().contains("Layout"),
+            "layout column is opt-in: {table:?}"
+        );
+
+        let columns = RepoColumnSelection::parse("+layout").unwrap().columns;
+        let mut unrecorded = cells("beta", false, false);
+        unrecorded.layout = None;
+        let table = build_blocking_table(
+            &[cells("alpha", false, false), unrecorded],
+            None,
+            &columns,
+            false,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].contains("Layout"), "header: {:?}", lines[0]);
+        assert!(lines[1].contains("contained"), "row: {:?}", lines[1]);
+        assert!(
+            lines[2].contains('-'),
+            "unrecorded layout renders '-': {:?}",
+            lines[2]
+        );
+    }
+
     /// Full parity with `daft list`: the current repo's row carries the
     /// dark-gray background in colored output, continuous across the styled
     /// cells (every RESET re-asserts it).
@@ -794,6 +850,7 @@ mod tests {
             [
                 "name",
                 "worktrees",
+                "layout",
                 "default_branch",
                 "path",
                 "remote_url",

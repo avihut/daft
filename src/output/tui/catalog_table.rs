@@ -46,6 +46,8 @@ pub struct CatalogRepoCells {
     pub name: String,
     /// Worktree count, `None` when the repo couldn't be opened.
     pub worktrees: Option<usize>,
+    /// Recorded worktree layout, `None` when the repo store has no entry.
+    pub layout: Option<String>,
     /// Recorded default branch, `None` when unknown.
     pub branch: Option<String>,
     /// Display path (tilde-abbreviated).
@@ -145,6 +147,7 @@ impl CatalogTable {
                                 .map(|n| n.to_string())
                                 .unwrap_or_else(|| "-".to_string()),
                         ),
+                        RepoListColumn::Layout => char_w(row.layout.as_deref().unwrap_or("-")),
                         RepoListColumn::Branch => char_w(row.branch.as_deref().unwrap_or("-")),
                         RepoListColumn::Path => char_w(&row.path),
                         RepoListColumn::Remote => char_w(row.remote.as_deref().unwrap_or("-")),
@@ -265,6 +268,10 @@ impl LiveScreen for CatalogTable {
                             .unwrap_or_else(|| "-".to_string()),
                         base,
                     )),
+                    RepoListColumn::Layout => Cell::from(Span::styled(
+                        row.layout.as_deref().unwrap_or("-").to_string(),
+                        base,
+                    )),
                     RepoListColumn::Branch => Cell::from(Span::styled(
                         truncate_with_ellipsis(row.branch.as_deref().unwrap_or("-"), *width),
                         base,
@@ -377,6 +384,7 @@ mod tests {
             removed,
             name: name.to_string(),
             worktrees: Some(2),
+            layout: Some("contained".to_string()),
             branch: Some("main".to_string()),
             path: format!("~/src/{name}"),
             remote: Some(format!("git@example.com:acme/{name}.git")),

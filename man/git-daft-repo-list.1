@@ -18,20 +18,20 @@ addressable and `git daft clone <name>` can restore them); show them with
 Use \-\-columns to select which columns are shown and in what order.
   Replace mode:  \-\-columns name,path,remote (exact set and order)
   Modifier mode: \-\-columns \-remote (remove from defaults)
-  Add optional:  \-\-columns +size,+branch (add to defaults)
+  Add optional:  \-\-columns +size,+layout,+branch (add to defaults)
 .PP
 The size column is not shown by default — it walks every repository, so it
 is opt\-in, same as the worktree commands. On a terminal the sizes stream in
 live while the table renders immediately, with a total row summing them.
-The recorded default branch is likewise opt\-in (+branch); structured output
-includes it by default.
+The recorded worktree layout (+layout) and default branch (+branch) are
+likewise opt\-in; structured output includes both by default.
 .SH OPTIONS
 .TP
 \fB\-a\fR, \fB\-\-all\fR
 Include removed repositories
 .TP
 \fB\-\-columns\fR \fI<COLUMNS>\fR
-Columns to display (comma\-separated). Replace: name,path,remote. Modify defaults: +col,\-col. Available: annotation, name, worktrees, branch, path, size, remote
+Columns to display (comma\-separated). Replace: name,path,remote. Modify defaults: +col,\-col. Available: annotation, name, worktrees, layout, branch, path, size, remote
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR
 Output format. Mutually exclusive with \-\-template
