@@ -36,13 +36,16 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Carry: with uncommitted changes `✓ Carried changes`; with a clean tree the
       carry row vanishes once execution reaches it
 - [ ] Shared files (`shared:` in daft.yml + collected storage): a `│` spacer
-      then `├ shared files` anchor with one row per path, `✓ .env` per landed
-      link, placed between Carry/Push and the hooks section
-- [ ] Shared file declared but never collected: yellow `↓ <path>` row saying
-      `missing from shared storage` with the `daft shared sync` remedy — never
-      silent
-- [ ] Shared path materialized in this worktree: dim `○ <path>  materialized`;
-      already-linked: dim `○ <path>  already linked`
+      then `├─ shared files` anchor with one gutter row per path (`│  ✓  .env` —
+      tucked inside the rail), placed between Carry/Push and the hooks section;
+      the pending plan already shows the tree shape (`│  ○  .env` under the dim
+      anchor)
+- [ ] Shared file declared but never collected: yellow `│  ↓  <path>` gutter row
+      saying `missing from shared storage` with the `daft shared sync` remedy —
+      never silent
+- [ ] Shared path materialized in this worktree: dim gutter row
+      `│  ○  <path>  materialized`; already-linked:
+      `│  ○  <path>  already linked`
 - [ ] Section planned from the source config but the target branch's daft.yml
       drops `shared:`: rows and anchor vanish — no stranded anchor above the
       hook weld
@@ -61,9 +64,11 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Remote deletion off (default, `daft config remote-sync` local only, or
       `--local`): no remote row or note anywhere in the rail — the remote is
       never mentioned
-- [ ] Multi-branch remove: one rail, `├` branch-name anchors each with a `│`
+- [ ] Multi-branch remove: one rail, `├─` branch-name anchors each with a `│`
       spacer above (the first leans on the header's spacer — never doubled),
-      count footer; current-worktree branch deferred to last
+      every branch's step rows and notes in the gutter —
+      `│  ✓  Removed worktree`, `│  ○  no remote branch` — count footer;
+      current-worktree branch deferred to last
 - [ ] `daft clone <url>` single-branch: `✓ Cloned repository ← <url>` as a
       pre-completed row (bare-clone spinner runs before the layout prompt), then
       `Create worktree`, hooks, footer
@@ -73,15 +78,18 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 
 ## Hook sections (succinct default)
 
-- [ ] Hook step pending as `○ post-create hooks`; when the phase runs it becomes
-      a `│` spacer + `├ post-create hooks` anchor with one row per job; pending
-      rows + `└ …` stay visible below while jobs run
-- [ ] Active job row: spinner + name + the job's latest output line as a dim
-      annotation updating in place; long lines truncate, never wrap
+- [ ] Hook step pending as `○ post-create hooks` (on the spine); when the phase
+      runs it becomes a `│` spacer + `├─ post-create hooks` anchor with one
+      gutter row per job (`│  ✓  <job>`); pending rows + `└ …` stay visible
+      below while jobs run
+- [ ] Active job row: `│  ⠹  name  <latest output>` — gutter, spinner, and the
+      job's latest output line as a dim annotation updating in place; long lines
+      truncate, never wrap
 - [ ] Job description shows as the annotation until the first output line
       arrives
-- [ ] Finished jobs resolve in place: `✓ name` with dim duration only at ≥ 1s;
-      parallel jobs persist in completion order
+- [ ] Finished jobs resolve in place: `│  ✓  name` with dim duration only at ≥
+      1s, seated in the shared annotation column; parallel jobs persist in
+      completion order
 - [ ] Failed job (failMode warn): red `✗ name`, command completes, footer
       `Finished with failures…`, and the job's full captured output prints BELOW
       the footer as `error: hook job '<name>' failed:` + indented lines; the
@@ -89,14 +97,15 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Failed job (failMode abort, `worktree-pre-create`): command aborts, dump
       still prints after the abort footer, before the command error
 - [ ] `--skip-hooks <job>`: yellow
-      `↓ <job>  skipped — requested     (--skip-hooks)` row inside the section;
-      dependents render `skipped — depends on …`
+      `│  ↓  <job>  skipped — requested (--skip-hooks)` gutter row inside the
+      section; dependents render `skipped — depends on …`
 - [ ] Job with `skip:`/`only:` condition false: no row at all (check
       `daft hooks jobs` still records it)
 - [ ] Hook-level `skip:`/`only:` condition false: the whole hook row vanishes
       silently
-- [ ] Background job: blue `↻ name  background` receipt row; the
-      `⟳ N background job(s) running` notice still prints above the rail
+- [ ] Background job: blue `│  ↻  name  background` receipt row; the
+      `⟳ N background job(s) running` notice rides the gutter as section content
+      (`│  ⟳ …`)
 - [ ] `daft.hooks.output.quiet`: job rows and durations still render, but no
       live output annotation and no failure dump
 - [ ] Multi-phase (pre-create AND post-create in one run): two sections, each
@@ -109,10 +118,10 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       suggestions) persists above the rail, not torn through the live bars
 - [ ] `--skip-hooks all`: yellow ↓ row on the hook step
 - [ ] Pre-push hook (git hook in repo) during `daft start` with push on:
-      `├ pre-push hooks` section under the active Push row; on rejection
+      `├─ pre-push hooks` section under the active Push row; on rejection
       `✗ Push` + worktree still completes + non-zero exit (#599 semantics)
-- [ ] Remove with remote deletion + pre-push hook: per-branch `├ pre-push hooks`
-      section under each active `Delete remote branch` row
+- [ ] Remove with remote deletion + pre-push hook: per-branch
+      `├─ pre-push hooks` section under each active `Delete remote branch` row
 
 ## Hook block (verbose)
 

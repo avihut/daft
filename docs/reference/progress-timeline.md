@@ -23,14 +23,14 @@ rail persists in your scrollback as a receipt.
 ✓  Created worktree   ../daft-652/cool-feature
 ✓  Pushed             → origin/daft-652/cool-feature  (1.8s)
 │
-├  shared files
-✓  .env
-✓  .claude/settings.json
+├─ shared files
+│  ✓  .env
+│  ✓  .claude/settings.json
 │
-├  post-create hooks
-✓  prepare-db         (2.1s)
-✓  bun-install        (2.9s)
-↻  check-todos        background
+├─ post-create hooks
+│  ✓  prepare-db    (2.1s)
+│  ✓  bun-install   (2.9s)
+│  ↻  check-todos   background
 │
 └  Ready in 6.3s
 ```
@@ -44,8 +44,12 @@ rail persists in your scrollback as a receipt.
 | `✓`   | Done — past-tense label, dim duration when the step took ≥ 1s                |
 | `✗`   | Failed — the label stays imperative (the fact never happened)                |
 | `↓`   | Skipped for an attention-worthy reason (e.g. repo not trusted)               |
-| `├`   | A section anchor (shared files, hook phases, multi-branch remove's branches) |
+| `├─`  | A section anchor (shared files, hook phases, multi-branch remove's branches) |
 | `↻`   | A hook job handed to the background coordinator                              |
+
+Rows belonging to a section render tucked inside the rail (`│  ✓  .env`), so the
+rail stays a continuous wire and each `├─` anchor visibly carries its children —
+in the pending plan, while running, and in the finished receipt.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration.
@@ -69,7 +73,7 @@ rail persists in your scrollback as a receipt.
   `daft.branchDelete.remote` off (the default), or `--local` — the rail never
   mentions them, exactly as an unconfigured push plans no row.
 - [Shared files](../cli/daft-shared.md) get their own section under a
-  `├ shared files` anchor: one receipt row per declared path stating its state.
+  `├─ shared files` anchor: one receipt row per declared path stating its state.
   `✓` means the symlink landed; `○ already linked` and `○ materialized` are the
   quiet no-ops; a path never collected into shared storage renders the yellow
   `↓ … missing from shared storage` row with the `daft shared sync` remedy, and
@@ -77,9 +81,9 @@ rail persists in your scrollback as a receipt.
   silently ignores a declaration it could not honor.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
-  local branch. Multi-branch removals group rows under `├` branch anchors.
+  local branch. Multi-branch removals group rows under `├─` branch anchors.
 - Lifecycle hooks appear as a plan row; when they actually run, the row becomes
-  a `├ post-create hooks` section with one receipt row per job. While a job
+  a `├─ post-create hooks` section with one receipt row per job. While a job
   runs, its latest output line rides the spinner as a dim annotation — one line
   of liveness per job. A finished job resolves green with the usual dim
   duration; a failed one turns its row red and its captured output prints below
