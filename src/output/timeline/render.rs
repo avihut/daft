@@ -102,15 +102,20 @@ pub(super) fn footer(text: &str, use_color: bool) -> String {
 
 /// `├─ feat/a` — section heading anchor, branching off the rail toward its
 /// bold label (a `│` spacer always precedes it). The stroke swallows the
-/// first gap space, so the label keeps the glyph-column rhythm.
-pub(super) fn group(label: &str, use_color: bool) -> String {
+/// first gap space, so the label keeps the glyph-column rhythm. An
+/// annotation (the verbose hook anchor's `worktree-post-create · daft v…`)
+/// trails the label a tier down, in the scaffolding grey.
+pub(super) fn group(label: &str, annotation: Option<&str>, use_color: bool) -> String {
     let rail = paint(GREY, "\u{251c}\u{2500}", use_color);
     let label = if use_color {
         format!("{}{label}{}", styles::BOLD, styles::RESET)
     } else {
         label.to_string()
     };
-    format!("{rail} {label}")
+    match annotation.filter(|a| !a.is_empty()) {
+        Some(a) => format!("{rail} {label}  {}", paint(GREY, a, use_color)),
+        None => format!("{rail} {label}"),
+    }
 }
 
 /// Tuck a rendered row inside the rail: `│  <row>`. Section members (group
@@ -531,13 +536,13 @@ mod tests {
     fn group_anchor_branches_off_the_rail() {
         // The stroke replaces the first gap space: the label stays in the
         // same column as every other row's body.
-        let line = group("post-create hooks", false);
+        let line = group("post-create hooks", None, false);
         assert_eq!(line, "\u{251c}\u{2500} post-create hooks");
     }
 
     #[test]
     fn group_anchor_label_is_a_bold_heading() {
-        let line = group("post-create hooks", true);
+        let line = group("post-create hooks", None, true);
         assert!(
             line.contains(&format!(
                 "{}post-create hooks{}",
@@ -547,6 +552,36 @@ mod tests {
             "got: {line:?}"
         );
         assert!(!line.contains(DARK_GREY), "headings are not scaffolding");
+    }
+
+    #[test]
+    fn group_anchor_annotation_trails_grey() {
+        let plain = group("post-create hooks", Some("worktree-post-create"), false);
+        assert_eq!(
+            plain,
+            "\u{251c}\u{2500} post-create hooks  worktree-post-create"
+        );
+        let line = group("post-create hooks", Some("worktree-post-create"), true);
+        assert!(
+            line.contains(&format!("{GREY}worktree-post-create{}", styles::RESET)),
+            "annotation sits in the scaffolding grey: {line:?}"
+        );
+        assert!(
+            line.contains(&format!(
+                "{}post-create hooks{}",
+                styles::BOLD,
+                styles::RESET
+            )),
+            "label stays a bold heading: {line:?}"
+        );
+    }
+
+    #[test]
+    fn group_anchor_empty_annotation_is_none() {
+        assert_eq!(
+            group("shared files", Some(""), false),
+            "\u{251c}\u{2500} shared files"
+        );
     }
 
     #[test]

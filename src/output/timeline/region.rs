@@ -157,7 +157,8 @@ impl TimelineCore {
                     in_group = true;
                     let spacer = (!slots.is_empty())
                         .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
-                    let bar = add_line_bar(&mp, &static_style, render::group(&label, use_color));
+                    let bar =
+                        add_line_bar(&mp, &static_style, render::group(&label, None, use_color));
                     Slot::Group {
                         label,
                         bar: Some(bar),
@@ -815,7 +816,7 @@ impl TimelineCore {
             if !self.last_persisted_was_spacer {
                 self.mp.println(render::spacer(use_color)).ok();
             }
-            self.mp.println(render::group(label, use_color)).ok();
+            self.mp.println(render::group(label, None, use_color)).ok();
             self.last_persisted_was_spacer = false;
         }
     }

@@ -17,7 +17,9 @@ use std::time::Duration;
 /// `on_phase_start`; every non-embedded path is a block.
 enum EmbedRenderer {
     Block(HookRenderer),
-    Rail(RailHookRenderer),
+    /// Boxed: the rail renderer carries three `ProgressStyle`s and dwarfs
+    /// the block variant (clippy::large_enum_variant).
+    Rail(Box<RailHookRenderer>),
 }
 
 impl EmbedRenderer {
@@ -300,9 +302,11 @@ impl JobPresenter for CliPresenter {
                 Some(embed) if config.verbose => {
                     EmbedRenderer::Block(HookRenderer::embedded(config, embed.mp, embed.anchor))
                 }
-                Some(embed) => {
-                    EmbedRenderer::Rail(RailHookRenderer::new(embed, handle.clone(), config))
-                }
+                Some(embed) => EmbedRenderer::Rail(Box::new(RailHookRenderer::new(
+                    embed,
+                    handle.clone(),
+                    config,
+                ))),
                 // Region gone or step unknown (error paths, unplanned
                 // phase) — degrade to the standalone renderer rather than
                 // losing the block. Rail rows make no sense without a
