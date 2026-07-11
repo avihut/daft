@@ -96,6 +96,19 @@ pub(super) struct TimelineCore {
     verbose: bool,
     label_width: usize,
     slots: Vec<Slot>,
+    /// Seeded header text, retained until the plan lands (the plan may
+    /// replace it with the resolved intent).
+    header: String,
+    /// The planning face's removable header (`┌  <seed>`) — `Some` from
+    /// [`Self::open_planning`] until [`Self::install_plan`] persists the
+    /// real header. Doubles as the is-planning flag: the committed header
+    /// is scrollback, only the face's is a bar.
+    header_bar: Option<ProgressBar>,
+    /// The planning face's removable top spacer (`│`).
+    top_spacer_bar: Option<ProgressBar>,
+    /// The static `⠹  <label>` row shown while the command resolves its
+    /// plan; removed when the plan installs or the face collapses.
+    planning_row: Option<ProgressBar>,
     /// Dim `│` above the footer; lives until teardown. Doubles as the
     /// hook-embed anchor when no pending row remains.
     bottom_spacer: ProgressBar,
@@ -123,11 +136,13 @@ pub(super) struct TimelineCore {
 }
 
 impl TimelineCore {
-    /// Materialize the region: header + top spacer persist immediately, every
-    /// plan row becomes a live bar, then the bottom spacer and the footer
-    /// placeholder. `started` is the command's own clock (the footer's
-    /// elapsed counter must agree with the total the final footer reports).
-    /// The caller provides the `MultiProgress` (production:
+    /// Materialize the region with its full plan in one shot (the direct
+    /// path — clone commits after its bare phase): header + top spacer
+    /// persist immediately, every plan row becomes a live bar, then the
+    /// bottom spacer and the footer placeholder. `header` is the command's
+    /// seed; the plan may replace it. `started` is the command's own clock
+    /// (the footer's elapsed counter must agree with the total the final
+    /// footer reports). The caller provides the `MultiProgress` (production:
     /// `MultiProgress::new()`; tests: an `InMemoryTerm` draw target so the
     /// persisted line sequence is assertable).
     pub(super) fn new(
@@ -138,122 +153,71 @@ impl TimelineCore {
         use_color: bool,
         started: Instant,
     ) -> Self {
-        let label_width = plan
-            .steps()
-            .map(|s| display_label(s, StepPhase::Pending).chars().count())
-            .max()
-            .unwrap_or(0);
+        let mut core = Self::scaffold(mp, header, verbose, use_color, started);
+        core.install_plan(plan);
+        core
+    }
 
-        mp.println(render::header(
-            &header,
-            plan.header_annotation.as_deref(),
-            use_color,
-        ))
-        .ok();
-        mp.println(render::spacer(use_color)).ok();
-
+    /// Open the region before the plan is known: the seeded header, a `│`,
+    /// and a static planning row render as *bars* (the committed header is
+    /// scrollback; the face's must stay removable), so a command that
+    /// resolves into an early exit or a pre-plan error can collapse the
+    /// whole face without a trace. The stopwatch footer, echo guard, and
+    /// Ctrl-C collapse are the committed region's own — they carry through
+    /// [`Self::install_plan`] untouched, so the swap never blinks.
+    pub(super) fn open_planning(
+        mp: MultiProgress,
+        header: String,
+        planning_label: &str,
+        verbose: bool,
+        use_color: bool,
+        started: Instant,
+    ) -> Self {
         let static_style = line_style();
-        let mut last_persisted_was_spacer = true;
-        let mut slots: Vec<Slot> = Vec::with_capacity(plan.rows.len());
-        // Whether the row being materialized sits inside an open group span
-        // (`Group` opens, `EndGroup` closes) — such rows render in the
-        // gutter, tucked under their anchor.
-        let mut in_group = false;
-        let mut rows = plan.rows.into_iter().peekable();
-        while let Some(row) = rows.next() {
-            let slot = match row {
-                Row::Group { label } => {
-                    in_group = true;
-                    let spacer = (!slots.is_empty())
-                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
-                    let bar =
-                        add_line_bar(&mp, &static_style, render::group(&label, None, use_color));
-                    Slot::Group {
-                        label,
-                        bar: Some(bar),
-                        spacer,
-                    }
-                }
-                Row::EndGroup => {
-                    in_group = false;
-                    Slot::EndGroup
-                }
-                Row::Note { text } => {
-                    let line = in_span(render::note(&text, use_color), in_group, use_color);
-                    let bar = add_line_bar(&mp, &static_style, line);
-                    Slot::Note {
-                        text,
-                        bar: Some(bar),
-                        in_group,
-                    }
-                }
-                Row::Step(spec) => {
-                    let inks = super::plan::subject_inks_for(spec.key.id);
-                    if let Some(elapsed) = spec.pre_completed {
-                        // Completed before the region existed (clone's bare
-                        // phase) — persist directly, no bar.
-                        let line = render::final_row(
-                            &RowFace::Done {
-                                duration: Some(elapsed),
-                            },
-                            &display_label(&spec, StepPhase::Done),
-                            spec.annotation.as_deref(),
-                            label_width,
-                            inks,
-                            use_color,
-                        );
-                        mp.println(in_span(line, in_group, use_color)).ok();
-                        last_persisted_was_spacer = false;
-                        Slot::Step {
-                            spec,
-                            bar: None,
-                            state: StepState::Resolved,
-                            in_group,
-                            spacer_above: None,
-                            spacer_below: None,
-                        }
-                    } else {
-                        // A top-level hook phase opens as a `├─` section when
-                        // it runs; its `│` spacers are part of the plan's
-                        // shape, so they are laid down now. Skipped where a
-                        // neighbor already provides the gap: the header or a
-                        // preceding section above, the bottom spacer or a
-                        // group's own spacer below.
-                        let section = !in_group && spec.key.id.is_hook_phase();
-                        let spacer_above = (section
-                            && !slots.is_empty()
-                            && !matches!(
-                                slots.last(),
-                                Some(Slot::Step { spec: s, in_group: false, .. })
-                                    if s.key.id.is_hook_phase()
-                            ))
-                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
-                        let line = render::pending_row(
-                            &display_label(&spec, StepPhase::Pending),
-                            spec.annotation.as_deref(),
-                            label_width,
-                            inks,
-                            use_color,
-                        );
-                        let bar =
-                            add_line_bar(&mp, &static_style, in_span(line, in_group, use_color));
-                        let spacer_below = (section
-                            && matches!(rows.peek(), Some(Row::Note { .. } | Row::Step(_))))
-                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
-                        Slot::Step {
-                            spec,
-                            bar: Some(bar),
-                            state: StepState::Pending,
-                            in_group,
-                            spacer_above,
-                            spacer_below,
-                        }
-                    }
-                }
-            };
-            slots.push(slot);
-        }
+        let header_bar = add_line_bar(&mp, &static_style, render::header(&header, None, use_color));
+        let top_spacer_bar = add_line_bar(&mp, &static_style, render::spacer(use_color));
+        // The planning row wears the active-step dress (cyan spinner) with a
+        // grey label — busy, but meta: it is not one of the plan's rows and
+        // vanishes when they land.
+        let planning_row = mp.add(ProgressBar::new_spinner());
+        planning_row.set_style(active_style(use_color, false));
+        planning_row.set_message(render::paint(
+            crate::output::palette::GREY,
+            planning_label,
+            use_color,
+        ));
+        // No steady tick under cfg(test): a wall-clock spinner repaint would
+        // flake the InMemoryTerm sequence assertions (the footer ticker
+        // stays off there for the same reason). The explicit tick paints the
+        // face immediately.
+        #[cfg(not(test))]
+        planning_row.enable_steady_tick(Duration::from_millis(80));
+        planning_row.tick();
 
+        let mut core = Self::scaffold(mp, header, verbose, use_color, started);
+        core.header_bar = Some(header_bar);
+        core.top_spacer_bar = Some(top_spacer_bar);
+        core.planning_row = Some(planning_row);
+        core
+    }
+
+    /// Whether the region is still the planning face (no plan installed).
+    pub(super) fn is_planning(&self) -> bool {
+        self.header_bar.is_some()
+    }
+
+    /// The shared region shell: bottom spacer + stopwatch footer (+ ticker),
+    /// echo guard, and the Ctrl-C collapse — everything that survives from
+    /// the planning face into the committed plan. Slots come later via
+    /// [`Self::install_plan`].
+    fn scaffold(
+        mp: MultiProgress,
+        header: String,
+        verbose: bool,
+        use_color: bool,
+        started: Instant,
+    ) -> Self {
+        let static_style = line_style();
         let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
         // The pending footer is a stopwatch from its first frame: `└  142ms`
         // → `└  1.0s` → … (grey — the rail's duration vocabulary), on the
@@ -310,17 +274,214 @@ impl TimelineCore {
             mp,
             use_color,
             verbose,
-            label_width,
-            slots,
+            label_width: 0,
+            slots: Vec::new(),
+            header,
+            header_bar: None,
+            top_spacer_bar: None,
+            planning_row: None,
             bottom_spacer,
             footer,
             footer_done,
             detail_bar: None,
             _echo_guard: echo_guard,
-            last_persisted_was_spacer,
+            last_persisted_was_spacer: true,
             hook_block_open: false,
             open_hook_below: None,
         }
+    }
+
+    /// The plan landed: drop the planning face (if one is up), persist the
+    /// header — the plan may replace the seed with the resolved intent
+    /// (`daft remove .` → `Removing <branch>`) — and materialize every plan
+    /// row as a live bar between the persisted history and the surviving
+    /// bottom spacer.
+    pub(super) fn install_plan(&mut self, plan: PlanCommit) {
+        debug_assert!(self.slots.is_empty(), "plan installed twice");
+        // The face leaves without a trace; the plan replaces it in place
+        // (the shell below — bottom spacer, footer, guards — carries on).
+        for bar in [
+            self.planning_row.take(),
+            self.top_spacer_bar.take(),
+            self.header_bar.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bar.disable_steady_tick();
+            self.mp.remove(&bar);
+        }
+
+        let header = plan.header.clone().unwrap_or_else(|| self.header.clone());
+        let use_color = self.use_color;
+        let label_width = plan
+            .steps()
+            .map(|s| display_label(s, StepPhase::Pending).chars().count())
+            .max()
+            .unwrap_or(0);
+        self.label_width = label_width;
+
+        // Printlns land above the live bars — i.e. above the surviving
+        // bottom spacer and footer, exactly where the plan's history belongs.
+        self.mp
+            .println(render::header(
+                &header,
+                plan.header_annotation.as_deref(),
+                use_color,
+            ))
+            .ok();
+        self.mp.println(render::spacer(use_color)).ok();
+
+        let static_style = line_style();
+        // Rows insert directly above the surviving bottom spacer; successive
+        // inserts keep plan order (each lands below the previous one).
+        let mp = self.mp.clone();
+        let anchor = self.bottom_spacer.clone();
+        let mut last_persisted_was_spacer = true;
+        let mut slots: Vec<Slot> = Vec::with_capacity(plan.rows.len());
+        // Whether the row being materialized sits inside an open group span
+        // (`Group` opens, `EndGroup` closes) — such rows render in the
+        // gutter, tucked under their anchor.
+        let mut in_group = false;
+        let mut rows = plan.rows.into_iter().peekable();
+        while let Some(row) = rows.next() {
+            let slot = match row {
+                Row::Group { label } => {
+                    in_group = true;
+                    let spacer = (!slots.is_empty()).then(|| {
+                        insert_line_bar(&mp, &anchor, &static_style, render::spacer(use_color))
+                    });
+                    let bar = insert_line_bar(
+                        &mp,
+                        &anchor,
+                        &static_style,
+                        render::group(&label, None, use_color),
+                    );
+                    Slot::Group {
+                        label,
+                        bar: Some(bar),
+                        spacer,
+                    }
+                }
+                Row::EndGroup => {
+                    in_group = false;
+                    Slot::EndGroup
+                }
+                Row::Note { text } => {
+                    let line = in_span(render::note(&text, use_color), in_group, use_color);
+                    let bar = insert_line_bar(&mp, &anchor, &static_style, line);
+                    Slot::Note {
+                        text,
+                        bar: Some(bar),
+                        in_group,
+                    }
+                }
+                Row::Step(spec) => {
+                    let inks = super::plan::subject_inks_for(spec.key.id);
+                    if let Some(elapsed) = spec.pre_completed {
+                        // Completed before the region existed (clone's bare
+                        // phase) — persist directly, no bar. Pre-completed
+                        // rows lead the plan, so no live row bar sits above
+                        // for this println to misorder against.
+                        let line = render::final_row(
+                            &RowFace::Done {
+                                duration: Some(elapsed),
+                            },
+                            &display_label(&spec, StepPhase::Done),
+                            spec.annotation.as_deref(),
+                            label_width,
+                            inks,
+                            use_color,
+                        );
+                        mp.println(in_span(line, in_group, use_color)).ok();
+                        last_persisted_was_spacer = false;
+                        Slot::Step {
+                            spec,
+                            bar: None,
+                            state: StepState::Resolved,
+                            in_group,
+                            spacer_above: None,
+                            spacer_below: None,
+                        }
+                    } else {
+                        // A top-level hook phase opens as a `├─` section when
+                        // it runs; its `│` spacers are part of the plan's
+                        // shape, so they are laid down now. Skipped where a
+                        // neighbor already provides the gap: the header or a
+                        // preceding section above, the bottom spacer or a
+                        // group's own spacer below.
+                        let section = !in_group && spec.key.id.is_hook_phase();
+                        let spacer_above = (section
+                            && !slots.is_empty()
+                            && !matches!(
+                                slots.last(),
+                                Some(Slot::Step { spec: s, in_group: false, .. })
+                                    if s.key.id.is_hook_phase()
+                            ))
+                        .then(|| {
+                            insert_line_bar(&mp, &anchor, &static_style, render::spacer(use_color))
+                        });
+                        let line = render::pending_row(
+                            &display_label(&spec, StepPhase::Pending),
+                            spec.annotation.as_deref(),
+                            label_width,
+                            inks,
+                            use_color,
+                        );
+                        let bar = insert_line_bar(
+                            &mp,
+                            &anchor,
+                            &static_style,
+                            in_span(line, in_group, use_color),
+                        );
+                        let spacer_below = (section
+                            && matches!(rows.peek(), Some(Row::Note { .. } | Row::Step(_))))
+                        .then(|| {
+                            insert_line_bar(&mp, &anchor, &static_style, render::spacer(use_color))
+                        });
+                        Slot::Step {
+                            spec,
+                            bar: Some(bar),
+                            state: StepState::Pending,
+                            in_group,
+                            spacer_above,
+                            spacer_below,
+                        }
+                    }
+                }
+            };
+            slots.push(slot);
+        }
+        self.slots = slots;
+        self.last_persisted_was_spacer = last_persisted_was_spacer;
+    }
+
+    /// Tear down a region that never got its plan (navigation early exits,
+    /// resolve-phase errors, remove's validation bail): remove every bar and
+    /// print nothing — the command's legacy output owns the terminal again.
+    pub(super) fn collapse(self) {
+        debug_assert!(
+            self.is_planning(),
+            "collapse tears down the planning face only"
+        );
+        self.footer_done.store(true, Ordering::SeqCst);
+        for bar in [&self.planning_row, &self.top_spacer_bar, &self.header_bar]
+            .into_iter()
+            .flatten()
+        {
+            bar.disable_steady_tick();
+            self.mp.remove(bar);
+        }
+        self.mp.remove(&self.bottom_spacer);
+        self.mp.remove(&self.footer);
+        // Removals alone leave the erase to the rate-limited next draw —
+        // which never comes (nothing else touches this region). Clear is
+        // the forced final frame.
+        self.mp.clear().ok();
+        // The region is gone; Ctrl-C reverts to the default exit.
+        crate::interrupt::clear_behavior();
+        // `self.mp` (and the echo guard) drop with zero live bars — nothing
+        // to strand, echo restored.
     }
 
     /// Print a permanent line above the live bars (warnings, errors).
@@ -1066,6 +1227,20 @@ fn active_style(use_color: bool, in_group: bool) -> ProgressStyle {
 
 fn add_line_bar(mp: &MultiProgress, style: &ProgressStyle, line: String) -> ProgressBar {
     let bar = mp.add(ProgressBar::new_spinner());
+    bar.set_style(style.clone());
+    bar.set_message(line);
+    bar
+}
+
+/// Single-line bar inserted directly above `anchor` (successive inserts keep
+/// their call order — each lands between the previous one and the anchor).
+fn insert_line_bar(
+    mp: &MultiProgress,
+    anchor: &ProgressBar,
+    style: &ProgressStyle,
+    line: String,
+) -> ProgressBar {
+    let bar = mp.insert_before(anchor, ProgressBar::new_spinner());
     bar.set_style(style.clone());
     bar.set_message(line);
     bar

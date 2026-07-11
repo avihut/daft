@@ -79,11 +79,30 @@ struct Inner {
     /// because `finish` consumes the core before the footer exists in
     /// scrollback.
     deferred_after_footer: Vec<String>,
-    /// Test-only: a draw target injected before `commit_plan`, so sequence
-    /// tests capture the persisted lines through an `InMemoryTerm` instead
-    /// of the (unattended) stderr target.
+    /// Test-only: a draw target injected before the region materializes
+    /// (`open_planning` or `commit_plan`, whichever comes first), so
+    /// sequence tests capture the persisted lines through an `InMemoryTerm`
+    /// instead of the (unattended) stderr target.
     #[cfg(test)]
     test_draw_target: Option<indicatif::ProgressDrawTarget>,
+}
+
+impl Inner {
+    /// The region's `MultiProgress` — production stderr, or the injected
+    /// test target.
+    fn make_multi_progress(&mut self) -> indicatif::MultiProgress {
+        #[cfg(not(test))]
+        {
+            indicatif::MultiProgress::new()
+        }
+        #[cfg(test)]
+        {
+            match self.test_draw_target.take() {
+                Some(target) => indicatif::MultiProgress::with_draw_target(target),
+                None => indicatif::MultiProgress::new(),
+            }
+        }
+    }
 }
 
 /// Cloneable handle to the live region, for components that render into it
@@ -194,27 +213,53 @@ impl Timeline {
         }
     }
 
-    /// Materialize the region (Interactive only; no-op otherwise). Called by
-    /// the bridge when the core commits its plan.
-    pub fn commit_plan(&mut self, plan: PlanCommit) {
+    /// Open the live region before the plan is known (Interactive only):
+    /// the seeded header, a static `⠹  <label>` planning row (grey), and
+    /// the stopwatch footer. `commit_plan` replaces the middle in place; a
+    /// command that returns without committing (navigation early exit,
+    /// resolve-phase error) collapses the face without a trace — via
+    /// [`Self::abandon_planning`], or implicitly through `finish`/`abort` —
+    /// and keeps its legacy output.
+    pub fn open_planning(&mut self, planning_label: &str) {
         if !self.is_interactive() {
             return;
         }
         let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
         if inner.core.is_some() {
-            debug_assert!(false, "plan committed twice for one invocation");
             return;
         }
-        // The core may replace the seeded header with the resolved intent
-        // (`daft remove .` → `Removing <branch>`).
-        let header = plan.header.clone().unwrap_or_else(|| inner.header.clone());
-        #[cfg(not(test))]
-        let mp = indicatif::MultiProgress::new();
-        #[cfg(test)]
-        let mp = match inner.test_draw_target.take() {
-            Some(target) => indicatif::MultiProgress::with_draw_target(target),
-            None => indicatif::MultiProgress::new(),
-        };
+        let mp = inner.make_multi_progress();
+        let header = inner.header.clone();
+        inner.core = Some(TimelineCore::open_planning(
+            mp,
+            header,
+            planning_label,
+            inner.verbose,
+            inner.use_color,
+            self.started,
+        ));
+    }
+
+    /// Materialize the region (Interactive only; no-op otherwise). Called by
+    /// the bridge when the core commits its plan. Over an open planning face
+    /// the plan installs in place (the face's bars leave, the stopwatch
+    /// footer carries on); with no face this is the direct path (clone's
+    /// flow, where the bare phase runs before the timeline can exist).
+    pub fn commit_plan(&mut self, plan: PlanCommit) {
+        if !self.is_interactive() {
+            return;
+        }
+        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        if let Some(core) = inner.core.as_mut() {
+            if core.is_planning() {
+                core.install_plan(plan);
+            } else {
+                debug_assert!(false, "plan committed twice for one invocation");
+            }
+            return;
+        }
+        let mp = inner.make_multi_progress();
+        let header = inner.header.clone();
         inner.core = Some(TimelineCore::new(
             mp,
             header,
@@ -223,6 +268,25 @@ impl Timeline {
             inner.use_color,
             self.started,
         ));
+    }
+
+    /// Collapse a still-planning region without a trace (no footer, no
+    /// receipt). Commands call this after the core returns without
+    /// committing a plan — the legacy result/error lines can then print
+    /// without tearing through live bars. No-op once the plan has committed
+    /// (and without a region).
+    pub fn abandon_planning(&mut self) {
+        let core = {
+            let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+            if inner.core.as_ref().is_some_and(TimelineCore::is_planning) {
+                inner.core.take()
+            } else {
+                None
+            }
+        };
+        if let Some(core) = core {
+            core.collapse();
+        }
     }
 
     /// Route a stage event onto the region.
@@ -387,7 +451,14 @@ impl Timeline {
             )
         };
         if let Some(core) = core {
-            core.finish(footer_text, policy);
+            if core.is_planning() {
+                // The plan never landed: nothing painted earned a receipt.
+                // Collapse silently so resolve errors and navigation early
+                // exits keep their legacy single-line output.
+                core.collapse();
+            } else {
+                core.finish(footer_text, policy);
+            }
         }
         // Deferred content (failed hook-job output) lands below the footer,
         // blank-line separated — the region is gone, so plain stderr is the
@@ -415,8 +486,8 @@ impl Timeline {
         matches!(self.mode, TimelineMode::Interactive { .. })
     }
 
-    /// Whether the live region has materialized (plan committed, not yet
-    /// finished).
+    /// Whether a live region owns the terminal — the planning face or the
+    /// committed plan, until finish/abort/collapse.
     pub fn region_live(&self) -> bool {
         self.handle.region_live()
     }
@@ -427,7 +498,8 @@ impl Timeline {
 
     /// Test-only: route the region's draw calls into `target` (an
     /// `InMemoryTerm`) so tests assert the persisted line sequence, not just
-    /// the state machine. Must be called before `commit_plan`.
+    /// the state machine. Must be called before the region materializes
+    /// (`open_planning` or `commit_plan`, whichever comes first).
     #[cfg(test)]
     pub(crate) fn set_test_draw_target(&self, target: indicatif::ProgressDrawTarget) {
         self.handle
@@ -786,6 +858,142 @@ mod tests {
              \u{2502}\n\
              \u{2514}  Removed 2 worktrees in 0.1s"
         );
+    }
+
+    // ── planning face (the region opens before the plan) ─────────────────
+    //
+    // The rail opens at t=0 with the seeded header, a static planning row,
+    // and the stopwatch footer; `commit_plan` replaces the middle in place.
+    // A command that returns without committing collapses the face without
+    // a trace — resolve errors and navigation early exits keep their legacy
+    // single-line output.
+
+    #[test]
+    fn planning_face_paints_header_planning_row_and_stopwatch() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.open_planning("Validating branches");
+        assert!(tl.region_live());
+        let contents = term.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines[0], "\u{250c}  Removing feat/x");
+        assert_eq!(lines[1], "\u{2502}");
+        // The spinner glyph varies by tick; the label is the contract.
+        assert!(
+            lines[2].ends_with("  Validating branches"),
+            "planning row: {:?}",
+            lines[2]
+        );
+        assert_eq!(lines[3], "\u{2502}");
+        assert_eq!(lines[4], "\u{2514}  0ms");
+        assert_eq!(lines.len(), 5);
+        tl.abandon_planning();
+    }
+
+    #[test]
+    fn committing_over_the_planning_face_matches_the_direct_commit() {
+        let (mut direct, direct_term) = captured("Opening feat/x");
+        direct.commit_plan(plan());
+
+        let (mut planned, planned_term) = captured("Opening feat/x");
+        planned.open_planning("Resolving branch");
+        planned.commit_plan(plan());
+
+        // The face leaves no residue: both paths paint the same plan.
+        assert!(!planned_term.contents().contains("Resolving branch"));
+        assert_eq!(planned_term.contents(), direct_term.contents());
+
+        direct.finish("Ready in 0.1s");
+        planned.finish("Ready in 0.1s");
+        assert_eq!(planned_term.contents(), direct_term.contents());
+    }
+
+    #[test]
+    fn plan_header_override_replaces_the_planning_seed() {
+        let (mut tl, term) = captured("Removing 1 branch");
+        tl.open_planning("Validating branches");
+        tl.commit_plan(
+            PlanCommit::new(vec![Row::Step(StepSpec::new(StepKey::scoped(
+                StageId::RemoveWorktree,
+                "a",
+            )))])
+            .with_header("Removing feat/a"),
+        );
+        let contents = term.contents();
+        assert!(contents.starts_with("\u{250c}  Removing feat/a"));
+        assert!(!contents.contains("Removing 1 branch"));
+        tl.finish("Removed in 0.1s");
+    }
+
+    #[test]
+    fn finishing_while_planning_collapses_without_a_trace() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        tl.finish("Ready in 0.1s");
+        assert!(!tl.region_live());
+        assert_eq!(term.contents(), "");
+    }
+
+    #[test]
+    fn aborting_while_planning_collapses_without_a_trace() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        tl.abort("Failed after 0.1s");
+        assert!(!tl.region_live());
+        assert_eq!(term.contents(), "");
+    }
+
+    #[test]
+    fn abandoned_face_collapses_and_the_late_finish_is_a_noop() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        tl.abandon_planning();
+        assert!(!tl.region_live());
+        // The command epilogue's ordinary finish must not resurrect a footer.
+        tl.finish("Ready in 0.1s");
+        assert_eq!(term.contents(), "");
+    }
+
+    #[test]
+    fn dropped_while_planning_collapses_without_a_trace() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        drop(tl);
+        assert_eq!(term.contents(), "");
+    }
+
+    #[test]
+    fn abandon_after_commit_leaves_the_region_alone() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        tl.commit_plan(plan());
+        tl.abandon_planning();
+        assert!(tl.region_live());
+        complete(&mut tl, &StepKey::new(StageId::CheckOut));
+        complete(&mut tl, &StepKey::new(StageId::CreateWorktree));
+        tl.resolve_silently(&StepKey::new(StageId::PostCreateHooks));
+        tl.finish("Ready in 0.1s");
+        assert!(term.contents().ends_with("\u{2514}  Ready in 0.1s"));
+    }
+
+    #[test]
+    fn warning_during_planning_persists_above_the_face() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.open_planning("Validating branches");
+        tl.println_above("warning: remote is unreachable");
+        assert!(
+            term.contents()
+                .starts_with("warning: remote is unreachable")
+        );
+        tl.abandon_planning();
+        // The face vanished; the warning is scrollback.
+        assert_eq!(term.contents(), "warning: remote is unreachable");
+    }
+
+    #[test]
+    fn open_planning_is_plain_mode_inert() {
+        let mut tl = Timeline::new(TimelineMode::Plain, false, "Opening feat/x");
+        tl.open_planning("Resolving branch");
+        assert!(!tl.region_live());
     }
 
     #[test]
