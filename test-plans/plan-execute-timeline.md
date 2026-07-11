@@ -13,8 +13,13 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 
 - [ ] `daft start <name>`: full plan appears at once (pending rows dim), steps
       fill in place top-to-bottom, footer `└ Ready in <t>` persists
+- [ ] The rail opens the moment the command starts: header + grey planning row
+      (`⠹ Resolving branch` for go, `⠹ Resolving base branch` for start,
+      `⠹ Validating branches` for remove) + ticking stopwatch — no legacy
+      spinner anywhere before or under the rail; the committed plan replaces the
+      middle in place (no duplicated header, no flicker)
 - [ ] The pending footer opens as a dim ticking elapsed counter from the moment
-      the plan commits (`└ 142ms`, `└ 1.2s` — never an ellipsis), and resolves
+      the rail opens (`└ 142ms`, `└ 1.2s` — never an ellipsis), and resolves
       into the outcome footer
 - [ ] Header shows the requested base immediately: `┌ Starting <name> ← <base>`;
       when the fetch resolves a fresher remote ref, the branch row carries it —
@@ -31,8 +36,17 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] With a remote + `daft.checkout.push=true`: `✓ Pushed  → origin/<name>`
       with a dim duration when ≥ 1s
 - [ ] `daft go <existing-remote-branch>`: `✓ Checked out branch ← origin/<b>`
+- [ ] `daft go` with `daft.checkout.fetch` on: the plan commits before the
+      network — the `Fetch remote` row leads it, the `Check out branch` row
+      starts bare, and the provenance (`← origin/<b>`, `tracking origin/<b>`,
+      `local only`) lands on the pending row when the fetch resolves
+- [ ] `daft go <missing>` with fetch on: the committed rail closes as a Failed
+      receipt — `✓ Fetched remote`, later rows `(not run)`,
+      `└ Failed after <t>`, error + tip below; with fetch off the planning face
+      collapses and only today's plain error + tip print (no residue)
 - [ ] `daft go <local-branch>` (worktree exists): single "Switched to existing
-      worktree" line, **no rail**
+      worktree" line, **no rail** — the planning face collapses without a trace
+      above it
 - [ ] `daft go -`: previous-worktree navigation unchanged, no rail
 - [ ] `daft go <missing> --start`: morphs into the start rail (exactly one rail
       for the whole invocation)
@@ -65,7 +79,14 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       no vanish churn; per-branch on multi-remove (each worktree's own config
       decides its pre-remove row)
 - [ ] `daft remove .` (worktree-path shorthand): header names the resolved
-      branch — `Removing <branch>`, never `.`
+      branch — `Removing <branch>`, never `.` (the planning face shows the seed
+      header, the committed plan swaps in the resolved one)
+- [ ] `daft remove` validation failure (dirty worktree, unmerged): the planning
+      face collapses without a trace, then the plain `error: cannot delete …`
+      lines and the aborting summary print
+- [ ] Consolidation prompt (refined visitor daft file, unforced remove): the
+      face suspends for the prompt (summary + `[c/d/A]` on a clear terminal),
+      and answering redraws the region, which then commits the plan and proceeds
 - [ ] `daft remove` with remote deletion on (`daft.branchDelete.remote` true):
       `✓ Deleted remote branch`, or dim `○ no remote branch` when the branch has
       no upstream
@@ -205,6 +226,11 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Carry conflict: red Carry row pointing at `git stash pop`
 - [ ] Ctrl-C mid-run: region collapses once, no stranded frames, no duplicate
       footer (after step 7 lands)
+- [ ] Ctrl-C while the planning face is up: the face collapses, nothing
+      persists, exit 130
+- [ ] Ctrl-C after a consolidation prompt resolved (mid-hook): the region still
+      collapses cleanly — the prompt restores the region's interrupt behavior
+      instead of clearing it
 
 ## Modes
 

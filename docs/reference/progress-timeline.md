@@ -65,17 +65,30 @@ hook renderer's summary also speaks), failure details and skip reasons always
 render plain, and a dimmed row — pending glyphs, expected skips, `(not run)` —
 never keeps an identity ink.
 
+- The rail opens the moment the command starts (after any pre-flight prompts):
+  the header, a grey planning row (`⠹ Validating branches`,
+  `⠹ Resolving branch`), and the ticking stopwatch appear immediately, and the
+  committed plan replaces the middle in place as soon as the command has
+  resolved its work. A run that resolves into a navigation early-exit or a
+  resolve-phase error collapses the face without a trace and keeps its
+  single-line response.
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration. While the command
   runs, the pending footer is a stopwatch — a dim elapsed counter (`└ 1.2s`)
-  ticking from the moment the plan commits until the outcome replaces it.
-- With `daft.checkout.fetch` on, the remote fetch is planned work: `daft start`
-  opens its rail with the `Fetch remote` and `Set up tracking` rows instead of
-  running them as a spinner before it. A failed fetch turns its row yellow
+  ticking from the moment the rail opens until the outcome replaces it.
+- With `daft.checkout.fetch` on, the remote fetch is planned work committed
+  before the network round-trip: `daft start` opens its rail with the
+  `Fetch remote` and `Set up tracking` rows, and `daft go` leads its plan with a
+  `Fetch remote` row and notes the branch's provenance (`← origin/x`,
+  `tracking origin/x`, `local only`) onto the pending `Check out branch` row
+  once the fetch lands. A failed fetch turns its row yellow
   (`↓ Fetch remote  failed — continuing with local refs`) and the command
-  proceeds on local refs. The header names the requested base; when the fetch
-  reveals a fresher remote ref, the `Created branch` row carries the resolved
-  provenance (`← origin/main`).
+  proceeds on local refs. A branch the fetch fails to reveal closes `daft go`'s
+  rail as a `Failed` receipt with the error below it; with the fetch off, the
+  branch probe precedes the plan and an unknown branch keeps the plain error.
+  For `daft start` the header names the requested base; when the fetch reveals a
+  fresher remote ref, the `Created branch` row carries the resolved provenance
+  (`← origin/main`).
 - The rail lists only work that happens. A step known to be off at planning time
   (push with `daft.checkout.push` off or `--local`) plans no row, and a step
   that resolves as a no-op (carry with a clean tree) removes its row — the
@@ -158,7 +171,8 @@ prints exactly the output it printed before the timeline existed:
   color support; this matches the previous spinner's behavior).
 - **`--quiet`** — warnings and errors only.
 - **Navigation early-exits** — `daft go` to an existing worktree and `daft go -`
-  remain single-line responses; there is no plan to show.
+  remain single-line responses; there is no plan to show (the just-opened
+  planning face collapses without leaving a trace).
 
 `daft prune`, `daft repo remove`, and multi-branch `daft clone`'s satellite
 phase keep their inline operation table, which already shows all rows up front
