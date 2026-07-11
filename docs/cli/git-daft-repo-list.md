@@ -28,6 +28,11 @@ live while the table renders immediately, with a total row summing them.
 The recorded worktree layout (+layout) and default branch (+branch) are
 likewise opt-in; structured output includes both by default.
 
+With --worktrees, each repository expands into its worktrees — one tree line
+per worktree with its branch and checkout path. Structured output then nests
+a worktrees array per repository in place of the count, which narrows the
+supported formats to json, yaml, toon, and markdown.
+
 ## Usage
 
 ```
@@ -39,6 +44,7 @@ git daft-repo-list [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|----------|
 | `-a, --all` | Include removed repositories |  |
+| `-w, --worktrees` | Expand each repository with its worktrees |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: name,path,remote. Modify defaults: +col,-col. Available: annotation, name, worktrees, layout, branch, path, size, remote |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
 | `--template <STR>` | Tera template string. Mutually exclusive with --format |  |

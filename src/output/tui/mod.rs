@@ -13,7 +13,9 @@ mod render;
 pub mod shared_picker;
 mod state;
 
-pub use catalog_table::{CatalogEvent, CatalogRepoCells, CatalogTable};
+pub use catalog_table::{
+    CatalogEvent, CatalogRepoCells, CatalogTable, CatalogWorktreeCells, tree_glyph,
+};
 pub use columns::Column;
 pub use driver::{LiveScreen, RawModeGuard, TuiRenderer, enable_raw_mode_guard};
 pub use live_table::{LiveTable, LiveTableConfig};

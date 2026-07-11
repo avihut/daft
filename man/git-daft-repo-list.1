@@ -4,7 +4,7 @@
 .SH NAME
 git\-daft\-repo\-list \- List repositories in the repo catalog
 .SH SYNOPSIS
-\fBgit\-daft\-repo\-list\fR [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-columns\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-daft\-repo\-list\fR [\fB\-a\fR|\fB\-\-all\fR] [\fB\-w\fR|\fB\-\-worktrees\fR] [\fB\-\-columns\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Lists the repositories daft knows about. The catalog fills itself: cloning,
@@ -25,10 +25,18 @@ is opt\-in, same as the worktree commands. On a terminal the sizes stream in
 live while the table renders immediately, with a total row summing them.
 The recorded worktree layout (+layout) and default branch (+branch) are
 likewise opt\-in; structured output includes both by default.
+.PP
+With \-\-worktrees, each repository expands into its worktrees — one tree line
+per worktree with its branch and checkout path. Structured output then nests
+a worktrees array per repository in place of the count, which narrows the
+supported formats to json, yaml, toon, and markdown.
 .SH OPTIONS
 .TP
 \fB\-a\fR, \fB\-\-all\fR
 Include removed repositories
+.TP
+\fB\-w\fR, \fB\-\-worktrees\fR
+Expand each repository with its worktrees
 .TP
 \fB\-\-columns\fR \fI<COLUMNS>\fR
 Columns to display (comma\-separated). Replace: name,path,remote. Modify defaults: +col,\-col. Available: annotation, name, worktrees, layout, branch, path, size, remote

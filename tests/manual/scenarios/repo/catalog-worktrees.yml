@@ -1,0 +1,108 @@
+name: Repo catalog worktree tree
+description:
+  repo list --worktrees expands each repo into tree rows — branch under Name,
+  worktree path under Path — moves the current-row highlight onto the current
+  worktree's line, and nests a worktrees array in structured output
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and grow a second worktree plus a detached one
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO &&
+      cd "$WORK_DIR/test-repo/main" &&
+      git-worktree-checkout -b feature/extra &&
+      git -C "$WORK_DIR/test-repo/main" worktree add --detach "$WORK_DIR/test-repo/parked"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+        - "$WORK_DIR/test-repo/feature/extra"
+        - "$WORK_DIR/test-repo/parked"
+
+  - name: repo list --worktrees expands the repo into tree rows
+    run: daft repo list --worktrees
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "├ main"
+        - "├ feature/extra"
+        - "└ (detached)"
+
+  # Substring assertions can't see line boundaries; count them. Header +
+  # 1 repo row + 3 worktree children = 5 lines, and the short flag is the
+  # same code path.
+  - name: the tree adds one line per worktree
+    run:
+      test "$(daft repo list -w 2>/dev/null | wc -l)" -eq 5 && echo
+      TREE_LINES_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "TREE_LINES_OK"
+
+  - name: the worktrees count column agrees with the tree
+    run: daft repo list --worktrees --columns name,worktrees
+    expect:
+      exit_code: 0
+      output_contains:
+        - "3"
+      output_not_contains:
+        - "Path"
+
+  # With children rendered, the gray row background moves from the repo row
+  # to the current worktree's line — still exactly one painted line, and the
+  # repo row keeps the cyan > marker.
+  - name: the highlight moves to the current worktree line
+    run:
+      CLICOLOR_FORCE=1 daft repo list -w 2>/dev/null | grep "48;5;235" | grep -c
+      "test-repo/main" | xargs test 1 -eq && echo CHILD_HIGHLIGHTED
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CHILD_HIGHLIGHTED"
+
+  - name: exactly one line is highlighted from inside a worktree
+    run:
+      CLICOLOR_FORCE=1 daft repo list -w 2>/dev/null | grep -c "48;5;235" |
+      xargs test 1 -eq && echo ONE_ROW_HIGHLIGHTED
+    cwd: "$WORK_DIR/test-repo/feature/extra"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW_HIGHLIGHTED"
+
+  - name: structured output nests a worktrees array per repo
+    run: daft repo list --worktrees --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"worktrees": ['
+        - '"branch": "main"'
+        - '"branch": "feature/extra"'
+        - '"branch": null'
+
+  # The nested array doesn't fit flat formats; the emit dispatch rejects the
+  # combination with its standard supported-formats error.
+  - name: flat formats are rejected with the supported list
+    run: daft repo list --worktrees --format tsv 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "'repo list' does not support --format tsv"
+        - "supported formats: json, yaml, toon, markdown"
+
+  # Document-array payloads get the same `items` template variable as
+  # tabular ones (filter-free template: tera 2.0 trimmed the built-ins).
+  - name: templates iterate the repos via items
+    run:
+      daft repo list -w --template '{% for r in items %}repo={{ r.name }}{%
+      endfor %}'
+    expect:
+      exit_code: 0
+      output_contains:
+        - "repo=test-repo"

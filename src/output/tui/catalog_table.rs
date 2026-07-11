@@ -19,7 +19,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Position},
     style::{Color, Modifier, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::{Cell, Row, Table},
 };
 
@@ -54,6 +54,39 @@ pub struct CatalogRepoCells {
     pub path: String,
     /// Remote URL, `None` for local-only repos.
     pub remote: Option<String>,
+    /// Worktree child rows (`repo list --worktrees`), rendered as a tree
+    /// under this repo: glyph + branch in the Name column, path in the Path
+    /// column. Empty unless the flag is set.
+    pub children: Vec<CatalogWorktreeCells>,
+}
+
+/// Pre-formatted display cells for one worktree child row under a repo.
+#[derive(Debug, Clone)]
+pub struct CatalogWorktreeCells {
+    /// The user's cwd is inside this worktree — the row highlight moves here
+    /// (the parent repo keeps the `>` marker).
+    pub current: bool,
+    /// Checked-out branch; `None` for a detached HEAD.
+    pub branch: Option<String>,
+    /// Display path (tilde-abbreviated).
+    pub path: String,
+}
+
+impl CatalogWorktreeCells {
+    /// The Name-column text for this child, minus the tree glyph.
+    pub fn branch_label(&self) -> &str {
+        self.branch.as_deref().unwrap_or("(detached)")
+    }
+}
+
+/// Tree glyph for child row `index` of `count` — sync/prune's sub-row
+/// language: `└ ` closes the tree, `├ ` continues it.
+pub fn tree_glyph(index: usize, count: usize) -> &'static str {
+    if index + 1 == count {
+        "\u{2514} "
+    } else {
+        "\u{251C} "
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,12 +95,14 @@ enum SizeCell {
     Loaded(Option<u64>),
 }
 
-/// Column shrink floors when the table overflows the terminal width. Name
-/// and Worktrees never shrink (short by construction); Path gives way first,
-/// then Remote, then Branch.
+/// Column shrink floors when the table overflows the terminal width.
+/// Worktrees never shrinks (short by construction); Path gives way first,
+/// then Remote, then Branch, and Name last — repo names are short, but with
+/// `--worktrees` the Name column also carries branch names of any length.
 const PATH_MIN_WIDTH: u16 = 16;
 const REMOTE_MIN_WIDTH: u16 = 12;
 const BRANCH_MIN_WIDTH: u16 = 10;
+const NAME_MIN_WIDTH: u16 = 12;
 /// Natural width floor for the Size column while walks are in flight, so the
 /// shimmer bar has presence before any value is known ("999.9M" = 6).
 const SIZE_LOADING_WIDTH: u16 = 6;
@@ -112,6 +147,15 @@ impl CatalogTable {
         self.columns.contains(&RepoListColumn::Size)
     }
 
+    /// Total worktree child rows across all repos. Children render only when
+    /// the Name column (their tree anchor) is selected.
+    fn child_count(&self) -> usize {
+        if !self.columns.contains(&RepoListColumn::Name) {
+            return 0;
+        }
+        self.rows.iter().map(|r| r.children.len()).sum()
+    }
+
     /// Sum of the size walks that have landed so far — the TOTAL footer
     /// grows live as cells fill, matching the worktree live table.
     fn total_loaded_bytes(&self) -> u64 {
@@ -141,7 +185,13 @@ impl CatalogTable {
                 for (row, size) in self.rows.iter().zip(self.sizes.iter()) {
                     w = w.max(match col {
                         RepoListColumn::Annotation => 0,
-                        RepoListColumn::Name => char_w(&row.name),
+                        // Name also hosts the worktree children: glyph (2)
+                        // plus the branch label.
+                        RepoListColumn::Name => row
+                            .children
+                            .iter()
+                            .map(|c| char_w(c.branch_label()) + 2)
+                            .fold(char_w(&row.name), u16::max),
                         RepoListColumn::Worktrees => char_w(
                             &row.worktrees
                                 .map(|n| n.to_string())
@@ -149,7 +199,11 @@ impl CatalogTable {
                         ),
                         RepoListColumn::Layout => char_w(row.layout.as_deref().unwrap_or("-")),
                         RepoListColumn::Branch => char_w(row.branch.as_deref().unwrap_or("-")),
-                        RepoListColumn::Path => char_w(&row.path),
+                        RepoListColumn::Path => row
+                            .children
+                            .iter()
+                            .map(|c| char_w(&c.path))
+                            .fold(char_w(&row.path), u16::max),
                         RepoListColumn::Remote => char_w(row.remote.as_deref().unwrap_or("-")),
                         RepoListColumn::Size => match size {
                             SizeCell::Loading => SIZE_LOADING_WIDTH,
@@ -173,6 +227,7 @@ impl CatalogTable {
             (RepoListColumn::Path, PATH_MIN_WIDTH),
             (RepoListColumn::Remote, REMOTE_MIN_WIDTH),
             (RepoListColumn::Branch, BRANCH_MIN_WIDTH),
+            (RepoListColumn::Name, NAME_MIN_WIDTH),
         ] {
             if overflow == 0 {
                 break;
@@ -207,10 +262,11 @@ impl LiveScreen for CatalogTable {
     type Event = CatalogEvent;
 
     fn viewport_height(&self, extra_rows: u16) -> u16 {
-        // Header row + data rows + TOTAL footer (separator + total, present
-        // only when a size column streams) + one row for cursor parking.
+        // Header row + data rows (repos plus any worktree child rows) +
+        // TOTAL footer (separator + total, present only when a size column
+        // streams) + one row for cursor parking.
         let footer: u16 = if self.has_size() { 2 } else { 0 };
-        1 + self.rows.len() as u16 + footer + 1 + extra_rows
+        1 + (self.rows.len() + self.child_count()) as u16 + footer + 1 + extra_rows
     }
 
     fn render(&self, frame: &mut Frame<'_>, final_frame: bool) {
@@ -239,6 +295,9 @@ impl LiveScreen for CatalogTable {
                 .map(|c| Cell::from(Span::styled(c.header_label(), dim_underline))),
         );
 
+        // Children anchor their tree glyph in the Name column; without it
+        // there is nowhere coherent to hang them, so they are omitted.
+        let name_selected = data_columns.contains(&RepoListColumn::Name);
         let mut all_rows: Vec<Row> = Vec::new();
         for (idx, row) in self.rows.iter().enumerate() {
             let dim = row.removed;
@@ -261,7 +320,10 @@ impl LiveScreen for CatalogTable {
             for (col, width) in data_columns.iter().zip(widths.iter()) {
                 cells.push(match col {
                     RepoListColumn::Annotation => unreachable!("filtered by data_columns"),
-                    RepoListColumn::Name => Cell::from(Span::styled(row.name.clone(), base)),
+                    RepoListColumn::Name => Cell::from(Span::styled(
+                        truncate_with_ellipsis(&row.name, *width),
+                        base,
+                    )),
                     RepoListColumn::Worktrees => Cell::from(Span::styled(
                         row.worktrees
                             .map(|n| n.to_string())
@@ -289,15 +351,58 @@ impl LiveScreen for CatalogTable {
                 });
             }
             let mut table_row = Row::new(cells);
-            if row.current {
-                // Same highlight the worktree live table gives the current
-                // worktree's row; the blocking table paints it via
-                // `styles::paint_current_row`.
+            // Same highlight the worktree live table gives the current
+            // worktree's row; the blocking table paints it via
+            // `styles::paint_current_row`. With child rows rendered, the
+            // highlight moves to the current worktree's line — the repo row
+            // keeps only the `>` marker.
+            let current_child_rendered = name_selected && row.children.iter().any(|c| c.current);
+            if row.current && !current_child_rendered {
                 table_row = table_row.style(
                     Style::default().bg(Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX)),
                 );
             }
             all_rows.push(table_row);
+
+            if name_selected {
+                let child_total = row.children.len();
+                for (ci, child) in row.children.iter().enumerate() {
+                    let glyph_style = Style::default().add_modifier(Modifier::DIM);
+                    let mut child_cells: Vec<Cell> = Vec::new();
+                    if annotation {
+                        child_cells.push(Cell::from(""));
+                    }
+                    for (col, width) in data_columns.iter().zip(widths.iter()) {
+                        child_cells.push(match col {
+                            RepoListColumn::Name => Cell::from(Line::from(vec![
+                                Span::styled(tree_glyph(ci, child_total), glyph_style),
+                                Span::styled(
+                                    truncate_with_ellipsis(
+                                        child.branch_label(),
+                                        width.saturating_sub(2),
+                                    ),
+                                    base,
+                                ),
+                            ])),
+                            // Child paths are reference info under the repo's
+                            // own path — always dim, like Remote.
+                            RepoListColumn::Path => Cell::from(Span::styled(
+                                truncate_with_ellipsis(&child.path, *width),
+                                Style::default().add_modifier(Modifier::DIM),
+                            )),
+                            _ => Cell::from(""),
+                        });
+                    }
+                    let mut child_row = Row::new(child_cells);
+                    if child.current {
+                        child_row = child_row.style(
+                            Style::default()
+                                .bg(Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX)),
+                        );
+                    }
+                    all_rows.push(child_row);
+                }
+            }
         }
 
         // TOTAL footer: blank separator + dim total under the Size column.
@@ -331,8 +436,9 @@ impl LiveScreen for CatalogTable {
         frame.render_widget(table, area);
 
         if final_frame {
-            // Header + data rows + any footer rows.
-            let content_bottom = area.y + 1 + self.rows.len() as u16 + footer_rows;
+            // Header + data rows (repos + children) + any footer rows.
+            let content_bottom =
+                area.y + 1 + (self.rows.len() + self.child_count()) as u16 + footer_rows;
             frame.set_cursor_position(Position {
                 x: 0,
                 y: content_bottom,
@@ -388,6 +494,15 @@ mod tests {
             branch: Some("main".to_string()),
             path: format!("~/src/{name}"),
             remote: Some(format!("git@example.com:acme/{name}.git")),
+            children: Vec::new(),
+        }
+    }
+
+    fn child(branch: &str, current: bool) -> CatalogWorktreeCells {
+        CatalogWorktreeCells {
+            current,
+            branch: Some(branch.to_string()),
+            path: format!("~/src/x/{branch}"),
         }
     }
 
@@ -583,6 +698,153 @@ mod tests {
         assert!(
             row.contains('\u{2014}'),
             "pending cell shows em-dash: {row:?}"
+        );
+    }
+
+    #[test]
+    fn viewport_height_counts_worktree_child_rows() {
+        let mut a = cells("a", false, false);
+        a.children = vec![child("main", false), child("feat/x", false)];
+        let table = CatalogTable::new(vec![a, cells("b", false, false)], columns());
+        // 1 header + 2 repo rows + 2 child rows + 2 footer + 1 parking.
+        assert_eq!(table.viewport_height(0), 8);
+    }
+
+    #[test]
+    fn worktree_children_interleave_under_their_repo() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child("main", false), child("feat/login", false)];
+        let table = CatalogTable::new(vec![alpha, cells("beta", false, false)], columns());
+        let backend = TestBackend::new(100, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+
+        assert!(buffer_row(&terminal, 1, 100).contains("alpha"));
+        let first_child = buffer_row(&terminal, 2, 100);
+        assert!(
+            first_child.contains("\u{251C} main"),
+            "first child continues the tree: {first_child:?}"
+        );
+        assert!(
+            first_child.contains("~/src/x/main"),
+            "child path lands in the Path column: {first_child:?}"
+        );
+        let last_child = buffer_row(&terminal, 3, 100);
+        assert!(
+            last_child.contains("\u{2514} feat/login"),
+            "last child closes the tree: {last_child:?}"
+        );
+        assert!(
+            buffer_row(&terminal, 4, 100).contains("beta"),
+            "next repo follows the children"
+        );
+    }
+
+    #[test]
+    fn current_child_takes_the_highlight_from_its_repo() {
+        let mut alpha = cells("alpha", true, false);
+        alpha.children = vec![child("main", false), child("feat/login", true)];
+        let table = CatalogTable::new(vec![alpha], columns());
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let bg = Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX);
+        assert_ne!(
+            buffer[(4u16, 1u16)].style().bg,
+            Some(bg),
+            "repo row cedes the highlight when a child is current"
+        );
+        assert_eq!(
+            buffer[(4u16, 3u16)].style().bg,
+            Some(bg),
+            "current worktree child carries the highlight"
+        );
+        // The repo keeps its `>` marker either way.
+        assert!(
+            buffer_row(&terminal, 1, 100)
+                .trim_start()
+                .starts_with(crate::styles::CURRENT_WORKTREE_SYMBOL)
+        );
+    }
+
+    #[test]
+    fn children_are_omitted_without_the_name_column() {
+        let selection = RepoColumnSelection::parse("path,size").unwrap().columns;
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child("main", false)];
+        let table = CatalogTable::new(vec![alpha], selection);
+        assert_eq!(
+            table.viewport_height(0),
+            5,
+            "no child rows without their Name anchor"
+        );
+        let backend = TestBackend::new(100, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let row = buffer_row(&terminal, 2, 100);
+        assert!(!row.contains('\u{2514}'), "no tree glyph rendered: {row:?}");
+    }
+
+    #[test]
+    fn total_footer_lands_after_the_child_rows() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child("main", false)];
+        let mut table = CatalogTable::new(vec![alpha], columns());
+        table.apply_event(&CatalogEvent::Size {
+            index: 0,
+            bytes: Some(1024 * 1024),
+        });
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        // Rows: 0 header, 1 repo, 2 child, 3 separator, 4 total.
+        let total_row = buffer_row(&terminal, 4, 100);
+        assert!(
+            total_row.contains("1.0M"),
+            "footer renders after children: {total_row:?}"
+        );
+    }
+
+    #[test]
+    fn long_child_branches_shrink_the_name_column_with_ellipsis() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child(
+            "feature/an-extremely-long-branch-name-that-cannot-possibly-fit-anywhere",
+            false,
+        )];
+        let table = CatalogTable::new(vec![alpha], columns());
+        let backend = TestBackend::new(60, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let child_row = buffer_row(&terminal, 2, 60);
+        assert!(
+            child_row.contains("feature...") && !child_row.contains("anywhere"),
+            "over-long branch truncates with an ellipsis: {child_row:?}"
+        );
+        let header = buffer_row(&terminal, 0, 60);
+        assert!(
+            header.contains("Size"),
+            "rightmost columns survive the squeeze: {header:?}"
+        );
+    }
+
+    #[test]
+    fn detached_children_render_the_placeholder_label() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![CatalogWorktreeCells {
+            current: false,
+            branch: None,
+            path: "~/src/x/detached".to_string(),
+        }];
+        let table = CatalogTable::new(vec![alpha], columns());
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let row = buffer_row(&terminal, 2, 100);
+        assert!(
+            row.contains("(detached)"),
+            "detached HEAD renders the placeholder: {row:?}"
         );
     }
 

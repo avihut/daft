@@ -426,6 +426,7 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l template -r -d 'Tera template string'
 # repo list: flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -s a -l all -d 'Include removed repositories'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -s w -l worktrees -d 'Expand each repository with its worktrees'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'annotation +annotation -annotation' -d 'Current repo marker'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'name +name -name' -d 'Catalog name'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'worktrees +worktrees -worktrees' -d 'Worktree count'

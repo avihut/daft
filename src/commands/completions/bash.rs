@@ -622,7 +622,7 @@ _daft() {
                     return 0
                 fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-a --all --columns --format --template --no-headers -q --quiet -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "-a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

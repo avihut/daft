@@ -23,9 +23,13 @@ use crate::catalog::Catalog;
 use crate::commands::list::PriorityMaxExcept;
 use crate::core::columns::{RepoColumnSelection, RepoListColumn, ResolvedColumns};
 use crate::core::worktree::list::compute_directory_size;
+use crate::core::worktree::remove_repo::{RepoTarget, enumerate_worktrees};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::format_human_size;
-use crate::output::tui::{CatalogEvent, CatalogRepoCells, CatalogTable, LiveScreen, TuiRenderer};
+use crate::output::tui::{
+    CatalogEvent, CatalogRepoCells, CatalogTable, CatalogWorktreeCells, LiveScreen, TuiRenderer,
+    tree_glyph,
+};
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::store::CatalogRepoRow;
 use crate::styles;
@@ -53,10 +57,22 @@ is opt-in, same as the worktree commands. On a terminal the sizes stream in
 live while the table renders immediately, with a total row summing them.
 The recorded worktree layout (+layout) and default branch (+branch) are
 likewise opt-in; structured output includes both by default.
+
+With --worktrees, each repository expands into its worktrees — one tree line
+per worktree with its branch and checkout path. Structured output then nests
+a worktrees array per repository in place of the count, which narrows the
+supported formats to json, yaml, toon, and markdown.
 "#)]
 pub struct Args {
     #[arg(short = 'a', long = "all", help = "Include removed repositories")]
     all: bool,
+
+    #[arg(
+        short = 'w',
+        long = "worktrees",
+        help = "Expand each repository with its worktrees"
+    )]
+    worktrees: bool,
 
     #[arg(
         long = "columns",
@@ -97,13 +113,26 @@ pub fn run() -> Result<()> {
         None => Vec::new(),
     };
 
-    let cells = build_display_cells(&rows);
+    let location = current_location();
+    let children = args
+        .worktrees
+        .then(|| collect_worktree_children(&rows, location.workdir.as_deref()));
+    let cells = build_display_cells(
+        &rows,
+        children.as_deref(),
+        location.git_common_dir.as_deref(),
+    );
 
     if args.emit.is_structured() {
         // Structured consumers get everything in one shot — walks run
         // synchronously when requested.
         let sizes = has_size.then(|| compute_sizes(&rows));
-        let payload = build_payload(&rows, &cells, sizes.as_deref(), &columns);
+        let payload = match &children {
+            Some(children) => {
+                build_document_payload(&rows, &cells, children, sizes.as_deref(), &columns)
+            }
+            None => build_payload(&rows, &cells, sizes.as_deref(), &columns),
+        };
         return emit::emit_and_handle("repo list", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
@@ -233,22 +262,102 @@ fn tilde_path(path: &str) -> String {
     path.to_string()
 }
 
-/// The canonical git-common-dir of the repo the user is standing in, if any.
-fn current_git_common_dir() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    let repo = gix::discover(&cwd).ok()?;
-    std::fs::canonicalize(repo.common_dir()).ok()
+/// Where the user is standing: the canonical git-common-dir of the enclosing
+/// repo (matched against catalog rows) and the canonical root of the
+/// enclosing worktree (matched against enumerated children). Both `None`
+/// outside any repo; `workdir` alone is `None` when standing in a bare git
+/// dir — the row highlight then stays on the repo line.
+struct CurrentLocation {
+    git_common_dir: Option<PathBuf>,
+    workdir: Option<PathBuf>,
 }
 
-fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
-    let current_gcd = current_git_common_dir();
+fn current_location() -> CurrentLocation {
+    let discovered = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| gix::discover(cwd).ok());
+    let git_common_dir = discovered
+        .as_ref()
+        .and_then(|repo| std::fs::canonicalize(repo.common_dir()).ok());
+    let workdir = discovered
+        .as_ref()
+        .and_then(|repo| repo.workdir())
+        .and_then(|w| std::fs::canonicalize(w).ok());
+    CurrentLocation {
+        git_common_dir,
+        workdir,
+    }
+}
+
+/// One enumerated worktree of a catalog repo, in raw form: canonical path
+/// for the structured payload and current-worktree matching. The display
+/// copy (tilde-abbreviated path) is derived in `build_display_cells`.
+#[derive(Debug)]
+struct WorktreeChild {
+    branch: Option<String>,
+    path: String,
+    current: bool,
+}
+
+/// Enumerate every repo's worktrees (`--worktrees`). A repo that can't be
+/// opened (stale path, removed entry) yields `None`, mirroring
+/// `worktree_count` — the table shows `-` and structured output `null`.
+fn collect_worktree_children(
+    rows: &[CatalogRepoRow],
+    current_workdir: Option<&Path>,
+) -> Vec<Option<Vec<WorktreeChild>>> {
+    rows.iter()
+        .map(|row| {
+            // Synthetic target built from the recorded catalog paths, for
+            // enumeration only — it skips `resolve_repo`'s canonicalize
+            // contract, so don't hand it to the removal machinery.
+            let target = RepoTarget {
+                bare_git_dir: PathBuf::from(&row.git_common_dir),
+                project_root: PathBuf::from(&row.path),
+            };
+            let mut children: Vec<WorktreeChild> = enumerate_worktrees(&target, true)
+                .ok()?
+                .into_iter()
+                .map(|entry| WorktreeChild {
+                    current: current_workdir.is_some_and(|cur| cur == entry.path.as_path()),
+                    branch: entry.branch,
+                    path: entry.path.to_string_lossy().into_owned(),
+                })
+                .collect();
+            sort_children(&mut children, row.default_branch.as_deref());
+            Some(children)
+        })
+        .collect()
+}
+
+/// Deterministic child order: the repo's default branch first, the rest by
+/// branch name, detached worktrees last. (gix enumerates linked worktrees by
+/// admin-dir name — the last path segment, so `feature/x` sorts as `x` — not
+/// a stable user-facing order.)
+fn sort_children(children: &mut [WorktreeChild], default_branch: Option<&str>) {
+    children.sort_by(|a, b| {
+        let rank = |c: &WorktreeChild| match c.branch.as_deref() {
+            Some(branch) if Some(branch) == default_branch => 0,
+            Some(_) => 1,
+            None => 2,
+        };
+        (rank(a), a.branch.as_deref()).cmp(&(rank(b), b.branch.as_deref()))
+    });
+}
+
+fn build_display_cells(
+    rows: &[CatalogRepoRow],
+    children: Option<&[Option<Vec<WorktreeChild>>]>,
+    current_gcd: Option<&Path>,
+) -> Vec<CatalogRepoCells> {
     // One read-only load serves every row's layout lookup. The repo store
     // (repos.json) is where clone/adopt/`layout set` record each repo's
     // layout; repos daft never laid out simply have no entry.
     let trust_db = crate::hooks::TrustDatabase::load().ok();
     rows.iter()
-        .map(|row| {
-            let current = current_gcd.as_deref().is_some_and(|cur| {
+        .enumerate()
+        .map(|(i, row)| {
+            let current = current_gcd.is_some_and(|cur| {
                 std::fs::canonicalize(&row.git_common_dir).is_ok_and(|gcd| gcd == cur)
             });
             let name = if row.removed_at.is_some() {
@@ -260,7 +369,13 @@ fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
                 current,
                 removed: row.removed_at.is_some(),
                 name,
-                worktrees: worktree_count(Path::new(&row.git_common_dir)),
+                // With children enumerated, the count derives from them —
+                // one repo open instead of two, and the Worktrees column
+                // can never disagree with the tree below it.
+                worktrees: match children {
+                    Some(children) => children[i].as_ref().map(Vec::len),
+                    None => worktree_count(Path::new(&row.git_common_dir)),
+                },
                 layout: trust_db
                     .as_ref()
                     .and_then(|db| db.get_layout(Path::new(&row.git_common_dir)))
@@ -268,6 +383,16 @@ fn build_display_cells(rows: &[CatalogRepoRow]) -> Vec<CatalogRepoCells> {
                 branch: row.default_branch.clone(),
                 path: tilde_path(&row.path),
                 remote: row.remote_url.clone(),
+                children: children
+                    .and_then(|children| children[i].as_deref())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| CatalogWorktreeCells {
+                        current: c.current,
+                        branch: c.branch.clone(),
+                        path: tilde_path(&c.path),
+                    })
+                    .collect(),
             }
         })
         .collect()
@@ -372,6 +497,73 @@ fn build_payload(
     EmitPayload::Tabular(table)
 }
 
+/// The `--worktrees` structured payload: the same repo fields as the tabular
+/// emit (narrowed by a customized `--columns` the same way), except
+/// `worktrees` becomes the enumerated array — `{branch, path}` per worktree,
+/// raw paths, `null` branch for a detached HEAD — or `null` when the repo
+/// couldn't be opened. Arrays don't fit `Cell`, hence the Document shape;
+/// tabular-only formats (tsv/csv/ndjson) are rejected by the emit dispatch
+/// with the standard supported-formats error.
+fn build_document_payload(
+    rows: &[CatalogRepoRow],
+    cells: &[CatalogRepoCells],
+    children: &[Option<Vec<WorktreeChild>>],
+    sizes: Option<&[Option<u64>]>,
+    columns: &[RepoListColumn],
+) -> EmitPayload {
+    use serde_json::{Map, Value, json};
+
+    let is_default = columns == RepoListColumn::repo_list_defaults();
+    let has = |col: RepoListColumn| is_default || columns.contains(&col);
+
+    let repos: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut obj = Map::new();
+            if has(RepoListColumn::Name) {
+                obj.insert("name".into(), json!(row.name));
+            }
+            // The array is the point of --worktrees: always emitted, even
+            // under a narrowed column selection.
+            obj.insert(
+                "worktrees".into(),
+                match &children[i] {
+                    Some(list) => Value::Array(
+                        list.iter()
+                            .map(|c| json!({ "branch": c.branch, "path": c.path }))
+                            .collect(),
+                    ),
+                    None => Value::Null,
+                },
+            );
+            if has(RepoListColumn::Layout) {
+                obj.insert("layout".into(), json!(cells[i].layout));
+            }
+            if has(RepoListColumn::Branch) {
+                obj.insert("default_branch".into(), json!(row.default_branch));
+            }
+            if has(RepoListColumn::Path) {
+                obj.insert("path".into(), json!(row.path));
+            }
+            if has(RepoListColumn::Remote) {
+                obj.insert("remote_url".into(), json!(row.remote_url));
+            }
+            obj.insert(
+                "removed_at".into(),
+                row.removed_at
+                    .map(|t| json!(t.to_rfc3339()))
+                    .unwrap_or(Value::Null),
+            );
+            if let Some(sizes) = sizes {
+                obj.insert("size_bytes".into(), json!(sizes[i]));
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    EmitPayload::Document(Value::Array(repos))
+}
+
 /// Build the blocking (non-live) table — the same house style as `daft
 /// list`'s `print_table`: `Style::blank`, dim-underlined Title-case headers,
 /// a leading pad, annotation column only when a row is current, removed rows
@@ -418,9 +610,19 @@ fn build_blocking_table(
         }
     }));
 
+    // Children anchor their tree glyph in the Name column; without it there
+    // is nowhere coherent to hang them, so they are omitted.
+    let name_selected = data_columns.contains(&RepoListColumn::Name);
+    // Which rendered data line carries the current-row background: the
+    // current worktree child when rendered (`--worktrees`), else its repo's
+    // own row — exactly one line either way. Pushed in lockstep with the
+    // records so index k maps to rendered line 1 + k.
+    let mut paint_rows: Vec<bool> = Vec::new();
+
     let mut builder = Builder::new();
     builder.push_record(headers);
     for (i, cell) in cells.iter().enumerate() {
+        let current_child_rendered = name_selected && cell.children.iter().any(|c| c.current);
         let mut record: Vec<String> = Vec::new();
         if annotation {
             record.push(if cell.current {
@@ -459,6 +661,32 @@ fn build_blocking_table(
             });
         }
         builder.push_record(record);
+        paint_rows.push(cell.current && !current_child_rendered);
+
+        if name_selected {
+            let child_total = cell.children.len();
+            for (ci, child) in cell.children.iter().enumerate() {
+                let mut child_record: Vec<String> = Vec::new();
+                if annotation {
+                    child_record.push(String::new());
+                }
+                for col in &data_columns {
+                    child_record.push(match col {
+                        RepoListColumn::Name => format!(
+                            "{}{}",
+                            dim(tree_glyph(ci, child_total), true),
+                            dim(child.branch_label(), cell.removed),
+                        ),
+                        // Child paths are reference info under the repo's own
+                        // path — always dim, like Remote.
+                        RepoListColumn::Path => dim(&child.path, true),
+                        _ => String::new(),
+                    });
+                }
+                builder.push_record(child_record);
+                paint_rows.push(child.current);
+            }
+        }
     }
 
     // TOTAL footer under the Size column, matching `daft list`.
@@ -505,19 +733,21 @@ fn build_blocking_table(
         return rendered;
     }
 
-    // Background-highlight the current repo's row, matching the live tables
-    // (worktree and catalog both paint `CURRENT_ROW_BG_INDEX`). Line 0 is the
-    // header, data row i renders on line 1 + i, and any TOTAL footer lines
-    // fall past the cell count, so they never match.
+    // Background-highlight the current row, matching the live tables
+    // (worktree and catalog both paint `CURRENT_ROW_BG_INDEX`). Line 0 is
+    // the header, data line 1 + k maps to `paint_rows[k]` (repos and their
+    // worktree children were pushed in lockstep with it), and any TOTAL
+    // footer lines fall past the vec, so they never match.
     rendered
         .lines()
         .enumerate()
         .map(|(i, line)| {
-            let current = i
+            let paint = i
                 .checked_sub(1)
-                .and_then(|idx| cells.get(idx))
-                .is_some_and(|c| c.current);
-            if current {
+                .and_then(|idx| paint_rows.get(idx))
+                .copied()
+                .unwrap_or(false);
+            if paint {
                 styles::paint_current_row(line)
             } else {
                 line.to_string()
@@ -541,6 +771,15 @@ mod tests {
             branch: Some("main".to_string()),
             path: format!("~/src/{name}"),
             remote: Some(format!("git@example.com:acme/{name}.git")),
+            children: Vec::new(),
+        }
+    }
+
+    fn child(branch: Option<&str>, current: bool) -> CatalogWorktreeCells {
+        CatalogWorktreeCells {
+            current,
+            branch: branch.map(String::from),
+            path: format!("~/src/x/{}", branch.unwrap_or("detached")),
         }
     }
 
@@ -794,6 +1033,217 @@ mod tests {
             "missing count, remote, and size all render '-': {:?}",
             lines[1]
         );
+    }
+
+    /// `--worktrees`: children interleave as grid rows under their repo —
+    /// glyph + branch in the Name column, path in the Path column, the last
+    /// child closing the tree with `└`.
+    #[test]
+    fn blocking_table_expands_worktree_children() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child(Some("main"), false), child(Some("feat/login"), false)];
+        let table = build_blocking_table(
+            &[alpha, cells("beta", false, false)],
+            None,
+            &defaults(),
+            false,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 5, "header + 2 repos + 2 children: {table:?}");
+        assert!(lines[1].contains("alpha"));
+        assert!(
+            lines[2].contains("\u{251C} main") && lines[2].contains("~/src/x/main"),
+            "first child continues the tree with its path: {:?}",
+            lines[2]
+        );
+        assert!(
+            lines[3].contains("\u{2514} feat/login"),
+            "last child closes the tree: {:?}",
+            lines[3]
+        );
+        assert!(lines[4].contains("beta"), "next repo follows the children");
+        let header = lines[0];
+        let path_col = header.find("Path").expect("Path header");
+        let child_path = lines[2].find("~/src/x/main").expect("child path rendered");
+        assert!(
+            child_path.abs_diff(path_col) <= 2,
+            "child path aligns under the Path column (path at {path_col}, child at {child_path}): {table:?}"
+        );
+    }
+
+    #[test]
+    fn blocking_table_detached_child_renders_placeholder() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child(None, false)];
+        let table = build_blocking_table(&[alpha], None, &defaults(), false, None);
+        assert!(
+            table
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("\u{2514} (detached)"),
+            "detached HEAD renders the placeholder: {table:?}"
+        );
+    }
+
+    /// Children hang off the Name column; a selection without it renders
+    /// plain repo rows only.
+    #[test]
+    fn blocking_table_children_require_the_name_column() {
+        let mut alpha = cells("alpha", false, false);
+        alpha.children = vec![child(Some("main"), false)];
+        let table = build_blocking_table(
+            &[alpha],
+            None,
+            &[RepoListColumn::Path, RepoListColumn::Remote],
+            false,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 2, "header + repo row only: {table:?}");
+        assert!(!table.contains('\u{2514}'), "no tree glyphs: {table:?}");
+    }
+
+    /// With children rendered, the row highlight moves to the current
+    /// worktree's line; the repo row keeps only the `>` marker. Exactly one
+    /// line is painted.
+    #[test]
+    fn blocking_table_paints_the_current_child_not_the_repo() {
+        let mut alpha = cells("alpha", true, false);
+        alpha.children = vec![child(Some("main"), false), child(Some("feat/login"), true)];
+        let table = build_blocking_table(&[alpha], None, &defaults(), true, None);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(
+            !lines[1].contains(styles::CURRENT_ROW_BG),
+            "repo row cedes the highlight: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains(styles::CURRENT_WORKTREE_SYMBOL),
+            "repo row keeps the marker: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[3].starts_with(styles::CURRENT_ROW_BG),
+            "current worktree line painted: {:?}",
+            lines[3]
+        );
+        let painted = lines
+            .iter()
+            .filter(|l| l.contains(styles::CURRENT_ROW_BG))
+            .count();
+        assert_eq!(painted, 1, "exactly one highlighted line: {table:?}");
+    }
+
+    /// Standing in the repo but not in any enumerated worktree (bare git
+    /// dir) keeps the highlight on the repo row.
+    #[test]
+    fn blocking_table_paint_falls_back_to_the_repo_row() {
+        let mut alpha = cells("alpha", true, false);
+        alpha.children = vec![child(Some("main"), false)];
+        let table = build_blocking_table(&[alpha], None, &defaults(), true, None);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(
+            lines[1].starts_with(styles::CURRENT_ROW_BG),
+            "repo row keeps the highlight: {:?}",
+            lines[1]
+        );
+        assert!(
+            !lines[2].contains(styles::CURRENT_ROW_BG),
+            "children stay unpainted: {:?}",
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn sort_children_pins_default_branch_first_detached_last() {
+        let raw = |branch: Option<&str>| WorktreeChild {
+            branch: branch.map(String::from),
+            path: "/tmp/x".to_string(),
+            current: false,
+        };
+        let mut children = vec![
+            raw(Some("zeta")),
+            raw(None),
+            raw(Some("main")),
+            raw(Some("alpha")),
+        ];
+        sort_children(&mut children, Some("main"));
+        let order: Vec<Option<&str>> = children.iter().map(|c| c.branch.as_deref()).collect();
+        assert_eq!(
+            order,
+            [Some("main"), Some("alpha"), Some("zeta"), None],
+            "default branch first, then by name, detached last"
+        );
+    }
+
+    /// `--worktrees` structured output: Document array with a nested
+    /// worktree list per repo — raw paths, null branch when detached, null
+    /// list when the repo couldn't be opened — and the array survives a
+    /// narrowed column selection.
+    #[test]
+    fn document_payload_nests_worktree_arrays() {
+        let row = sample_row();
+        let cell = cells("alpha", false, false);
+        let children = vec![Some(vec![
+            WorktreeChild {
+                branch: Some("main".to_string()),
+                path: "/tmp/alpha/main".to_string(),
+                current: false,
+            },
+            WorktreeChild {
+                branch: None,
+                path: "/tmp/alpha/detached".to_string(),
+                current: false,
+            },
+        ])];
+
+        let payload = build_document_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            &children,
+            None,
+            &defaults(),
+        );
+        let EmitPayload::Document(value) = payload else {
+            panic!("expected a document payload");
+        };
+        let repo = &value.as_array().expect("array of repos")[0];
+        assert_eq!(repo["name"], "alpha");
+        assert_eq!(repo["layout"], "contained");
+        assert_eq!(repo["default_branch"], "main");
+        assert_eq!(repo["worktrees"][0]["branch"], "main");
+        assert_eq!(repo["worktrees"][0]["path"], "/tmp/alpha/main");
+        assert!(repo["worktrees"][1]["branch"].is_null());
+
+        // A narrowed selection still carries the worktree array.
+        let payload = build_document_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            &children,
+            None,
+            &[RepoListColumn::Name],
+        );
+        let EmitPayload::Document(value) = payload else {
+            panic!("expected a document payload");
+        };
+        let repo = &value.as_array().unwrap()[0];
+        assert!(repo.get("path").is_none(), "narrowing still applies");
+        assert_eq!(repo["worktrees"].as_array().map(Vec::len), Some(2));
+
+        // Unopenable repo: worktrees is null, not an empty array.
+        let payload = build_document_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            &[None],
+            None,
+            &defaults(),
+        );
+        let EmitPayload::Document(value) = payload else {
+            panic!("expected a document payload");
+        };
+        assert!(value.as_array().unwrap()[0]["worktrees"].is_null());
     }
 
     #[test]

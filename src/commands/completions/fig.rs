@@ -570,6 +570,11 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
                 args: None,
             },
             FigOption {
+                name: FigName::Multiple(vec!["--worktrees".into(), "-w".into()]),
+                description: "Expand each repository with its worktrees".into(),
+                args: None,
+            },
+            FigOption {
                 name: FigName::Single("--columns".into()),
                 description: "Columns to display (comma-separated)".into(),
                 args: Some(FigOptionArg {

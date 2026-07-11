@@ -805,7 +805,7 @@ _daft() {
                     return
                 fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -a --all --columns --format --template --no-headers -q --quiet -h --help
+                    compadd -- -a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help
                 fi
                 return
                 ;;

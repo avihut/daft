@@ -18,6 +18,12 @@ branch: daft-357/feat/repo-catalog
       `--columns bogus` errors listing the valid names
 - [ ] `daft repo list --columns +layout` shows each repo's recorded layout (`-`
       for repos daft never laid out); JSON carries `layout` by default
+- [ ] `daft repo list --worktrees` expands each repo into a tree of its
+      worktrees (branch + path per line, `(detached)` for a detached HEAD); from
+      inside a worktree the row highlight sits on that worktree's line while the
+      repo row keeps the `>` marker
+- [ ] `daft repo list -w --format json` nests a `worktrees` array per repo;
+      `-w --format tsv` fails fast listing the supported formats
 - [ ] `daft repo info` (no arg, inside the repo) shows the entry
 - [ ] Second clone of the same remote elsewhere auto-suffixes (`x`, `x-2`) with
       a notice
