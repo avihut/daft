@@ -163,6 +163,7 @@ impl TimelineCore {
                     }
                 }
                 Row::Step(spec) => {
+                    let inks = super::plan::subject_inks_for(spec.key.id);
                     if let Some(elapsed) = spec.pre_completed {
                         // Completed before the region existed (clone's bare
                         // phase) — persist directly, no bar.
@@ -173,6 +174,7 @@ impl TimelineCore {
                             &display_label(&spec, StepPhase::Done),
                             spec.annotation.as_deref(),
                             label_width,
+                            inks,
                             use_color,
                         );
                         mp.println(in_span(line, in_group, use_color)).ok();
@@ -188,6 +190,7 @@ impl TimelineCore {
                             &display_label(&spec, StepPhase::Pending),
                             spec.annotation.as_deref(),
                             label_width,
+                            inks,
                             use_color,
                         );
                         let bar =
@@ -285,6 +288,8 @@ impl TimelineCore {
                 &display_label(spec, StepPhase::Active),
                 spec.annotation.as_deref(),
                 label_width,
+                super::plan::subject_inks_for(spec.key.id),
+                use_color,
             );
             bar.set_style(active_style(use_color, *in_group));
             bar.set_message(msg);
@@ -373,6 +378,7 @@ impl TimelineCore {
                     &display_label(spec, phase),
                     spec.annotation.as_deref(),
                     label_width,
+                    super::plan::subject_inks_for(spec.key.id),
                     use_color,
                 );
                 self.mp.println(in_span(line, in_group, use_color)).ok();
@@ -403,6 +409,7 @@ impl TimelineCore {
         } = &mut self.slots[idx]
         {
             spec.annotation = Some(annotation);
+            let inks = super::plan::subject_inks_for(spec.key.id);
             if let Some(bar) = bar.as_ref() {
                 match state {
                     StepState::Pending => bar.set_message(in_span(
@@ -410,6 +417,7 @@ impl TimelineCore {
                             &display_label(spec, StepPhase::Pending),
                             spec.annotation.as_deref(),
                             label_width,
+                            inks,
                             use_color,
                         ),
                         *in_group,
@@ -419,6 +427,8 @@ impl TimelineCore {
                         &display_label(spec, StepPhase::Active),
                         spec.annotation.as_deref(),
                         label_width,
+                        inks,
+                        use_color,
                     )),
                     StepState::Resolved => {}
                 }
@@ -578,6 +588,7 @@ impl TimelineCore {
                                 &display_label(spec, StepPhase::Pending),
                                 None,
                                 label_width,
+                                render::PLAIN_INKS,
                                 use_color,
                             );
                             self.mp.println(in_span(line, *in_group, use_color)).ok();

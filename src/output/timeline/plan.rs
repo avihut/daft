@@ -142,6 +142,62 @@ pub fn labels_for(id: StageId) -> StepLabels {
     }
 }
 
+/// Ink class of a row's subject parts (#651): what *kind* of thing the text
+/// names. Identity inks are constant across lifecycle states — state stays
+/// in the glyph; these mark whose thing the row touches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubjectInk {
+    /// daft's own vocabulary or free text — carries no ink of its own.
+    Plain,
+    /// A remote name or ref (`origin`, `← origin/master`, `→ origin/x`) —
+    /// ANSI cyan, the network.
+    Remote,
+    /// An ordinary filesystem path (worktree directory) — manila.
+    Path,
+    /// A shared file — violet, daft-managed and linked across worktrees.
+    Shared,
+}
+
+/// Label + annotation inks for one stage.
+#[derive(Clone, Copy)]
+pub struct SubjectInks {
+    pub label: SubjectInk,
+    pub annotation: SubjectInk,
+}
+
+/// The subject table: which ink each stage's label / annotation wears.
+/// Annotation inks apply to the stage's own subject (pending, active, done,
+/// `Note` updates); failure details and skip reasons are composed text and
+/// always render plain — the caller forces that at resolution time.
+pub fn subject_inks_for(id: StageId) -> SubjectInks {
+    let (label, annotation) = match id {
+        // Remote subjects: the network is cyan.
+        StageId::Fetch
+        | StageId::Tracking
+        | StageId::CreateBranch
+        | StageId::CheckOut
+        | StageId::Push
+        | StageId::DeleteRemote
+        | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),
+        // Path subjects: worktree directories are manila.
+        StageId::CreateWorktree | StageId::CreateBaseWorktree | StageId::RemoveWorktree => {
+            (SubjectInk::Plain, SubjectInk::Path)
+        }
+        // Shared files: the row's label IS the path, violet.
+        StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
+        // Everything else speaks daft's own vocabulary.
+        StageId::Carry
+        | StageId::DeleteLocalBranch
+        | StageId::Install
+        | StageId::PreCreateHooks
+        | StageId::PostCreateHooks
+        | StageId::PreRemoveHooks
+        | StageId::PostRemoveHooks
+        | StageId::PostCloneHooks => (SubjectInk::Plain, SubjectInk::Plain),
+    };
+    SubjectInks { label, annotation }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +223,27 @@ mod tests {
         assert_eq!(
             labels_for(StageId::DeleteRemote).skipped,
             "remote branch kept"
+        );
+    }
+
+    #[test]
+    fn subject_table_types_the_identities() {
+        assert_eq!(
+            subject_inks_for(StageId::Push).annotation,
+            SubjectInk::Remote
+        );
+        assert_eq!(
+            subject_inks_for(StageId::CreateWorktree).annotation,
+            SubjectInk::Path
+        );
+        assert_eq!(
+            subject_inks_for(StageId::SharedFile).label,
+            SubjectInk::Shared
+        );
+        // Free-text annotations (was merged into <default>) stay plain.
+        assert_eq!(
+            subject_inks_for(StageId::DeleteLocalBranch).annotation,
+            SubjectInk::Plain
         );
     }
 }

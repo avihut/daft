@@ -51,6 +51,17 @@ Rows belonging to a section render tucked inside the rail (`│  ✓  .env`), so
 rail stays a continuous wire and each `├─` anchor visibly carries its children —
 in the pending plan, while running, and in the finished receipt.
 
+Color follows one grammar. State lives in the glyph (green done, bold-red
+failed, yellow attention, cyan spinner) and daft's own vocabulary stays plain,
+with section headings bold. Subjects wear identity inks that never change with
+state — so the committed plan is as readable as the receipt: remote names and
+refs (`origin`, `← origin/master`, `→ origin/x`) are cyan, worktree paths are
+manila, shared files are violet, and background work is blue. The exceptions are
+deliberate: hook job names take their outcome's color (the same scheme as the
+verbose block's summary), failure details and skip reasons always render plain,
+and a dimmed row — pending glyphs, expected skips, `(not run)` — never keeps an
+identity ink.
+
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration.
 - With `daft.checkout.fetch` on, the remote fetch is planned work: `daft start`

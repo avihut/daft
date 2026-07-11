@@ -134,6 +134,24 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Plain mode (`2>&1 | cat`) with `-v`: each job's command line appears
       (`daft.hooks.output.verbose` plain-mode behavior); without it, absent
 
+## Ink grammar
+
+- [ ] Committed plan is readable at a glance: pending rows show a dim `○` with a
+      plain (default-ink) label — never a whole-row grey slab
+- [ ] Section headings (`shared files`, `post-create hooks`, remove's branch
+      anchors) render bold, in the plan and in the receipt
+- [ ] Identity inks constant across states: `origin` / `← origin/master` /
+      `→ origin/x` cyan, worktree path manila, shared file paths violet —
+      pending, active, and done alike
+- [ ] Hook job names wear their outcome: green succeeded, red failed, yellow
+      skipped, blue background — matching the verbose block's summary colors
+- [ ] Failure details and skip reasons render plain (never the stage's identity
+      ink); dimmed rows (expected skips, `(not run)`) drop identity inks
+      entirely
+- [ ] `⟳ N background jobs` notice and `○ no remote branch` notes sit one grey
+      tier below content, above the pending glyph's dark grey
+- [ ] `NO_COLOR` / piped: byte-identical plain output, zero ANSI
+
 ## Failure states
 
 - [ ] Mid-plan failure (e.g. worktree dir exists): `✗` row with detail,

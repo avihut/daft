@@ -13,7 +13,7 @@
 //! not dumped inline; it rides [`TimelineHandle::defer_after_footer`] and
 //! lands below the rail footer, where the rail already puts failure detail.
 
-use super::render::{self, RowFace};
+use super::render::{self, HookJobFace};
 use super::{HookEmbed, TimelineHandle};
 use crate::output::hook_progress::{JobOutcome, JobResultEntry};
 use crate::output::palette::{DARK_GREY, GREY};
@@ -146,8 +146,8 @@ impl RailHookRenderer {
 
     pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
         self.remove_bar(name);
-        self.persist_receipt(render::final_row(
-            &RowFace::Done {
+        self.persist_receipt(render::hook_job_row(
+            &HookJobFace::Done {
                 duration: Some(duration),
             },
             name,
@@ -164,8 +164,8 @@ impl RailHookRenderer {
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
         let output = self.remove_bar(name);
-        self.persist_receipt(render::final_row(
-            &RowFace::Failed,
+        self.persist_receipt(render::hook_job_row(
+            &HookJobFace::Failed,
             name,
             self.duration_annotation(duration).as_deref(),
             self.name_width,
@@ -206,8 +206,8 @@ impl RailHookRenderer {
     ) {
         self.remove_bar(name);
         if !is_condition_skip(reason) {
-            self.persist_receipt(render::final_row(
-                &RowFace::SkippedAttention,
+            self.persist_receipt(render::hook_job_row(
+                &HookJobFace::SkippedAttention,
                 name,
                 Some(&format!("skipped \u{2014} {reason}")),
                 self.name_width,
@@ -228,8 +228,8 @@ impl RailHookRenderer {
     /// it always runs the block renderer) — defensive parity.
     pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
         self.remove_bar(name);
-        self.persist_receipt(render::final_row(
-            &RowFace::Failed,
+        self.persist_receipt(render::hook_job_row(
+            &HookJobFace::Failed,
             name,
             Some("cancelled"),
             self.name_width,
@@ -247,8 +247,8 @@ impl RailHookRenderer {
     /// under the coordinator, visible via `daft hooks jobs`.
     pub fn show_background_job(&mut self, name: &str, _description: Option<&str>) {
         self.grow_width_to(name.chars().count());
-        self.persist_receipt(render::final_row(
-            &RowFace::Background,
+        self.persist_receipt(render::hook_job_row(
+            &HookJobFace::Background,
             name,
             None,
             self.name_width,
@@ -281,7 +281,10 @@ impl RailHookRenderer {
             .any(|name| msg.starts_with(&format!("Job '{name}' failed")));
         if !redundant {
             for line in msg.lines() {
-                self.mp.println(render::gutter(line, self.use_color)).ok();
+                // Notice tier: recessed like notes, not competing with the
+                // section's own receipt rows.
+                let line = render::paint(GREY, line, self.use_color);
+                self.mp.println(render::gutter(&line, self.use_color)).ok();
             }
         }
     }
