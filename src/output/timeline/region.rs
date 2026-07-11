@@ -16,6 +16,8 @@
 use super::render::{self, RowFace};
 use crate::core::stage::{PlanCommit, Row, StepKey, StepSpec};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// House braille spinner frames (same set as the hook job spinners).
@@ -97,8 +99,12 @@ pub(super) struct TimelineCore {
     /// Dim `│` above the footer; lives until teardown. Doubles as the
     /// hook-embed anchor when no pending row remains.
     bottom_spacer: ProgressBar,
-    /// `└  …` placeholder; lives until teardown.
+    /// `└  …` placeholder; lives until teardown. Once the run outlives the
+    /// duration threshold, a ticker thread seats a grey elapsed counter in
+    /// its message (`└  1.2s`) until [`Self::finish`] retires it.
     footer: ProgressBar,
+    /// Stops the footer's elapsed ticker at teardown.
+    footer_done: Arc<AtomicBool>,
     /// Dim free-text sub-line under the active step (`-v` only).
     detail_bar: Option<ProgressBar>,
     /// Suppresses the TTY's `^C` echo for the region's lifetime — the echo
@@ -119,7 +125,9 @@ pub(super) struct TimelineCore {
 impl TimelineCore {
     /// Materialize the region: header + top spacer persist immediately, every
     /// plan row becomes a live bar, then the bottom spacer and the footer
-    /// placeholder. The caller provides the `MultiProgress` (production:
+    /// placeholder. `started` is the command's own clock (the footer's
+    /// elapsed counter must agree with the total the final footer reports).
+    /// The caller provides the `MultiProgress` (production:
     /// `MultiProgress::new()`; tests: an `InMemoryTerm` draw target so the
     /// persisted line sequence is assertable).
     pub(super) fn new(
@@ -128,6 +136,7 @@ impl TimelineCore {
         plan: PlanCommit,
         verbose: bool,
         use_color: bool,
+        started: Instant,
     ) -> Self {
         let label_width = plan
             .steps()
@@ -248,6 +257,43 @@ impl TimelineCore {
         let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
         let footer = add_line_bar(&mp, &static_style, render::footer("\u{2026}", use_color));
 
+        // The placeholder becomes a stopwatch once the run outlives the
+        // duration threshold: `└  …` → `└  1.0s` → `└  1.1s` … (grey — the
+        // rail's duration vocabulary; sub-second runs keep the quiet
+        // ellipsis, matching the ≥ 1s rule everywhere else). A straggler
+        // write after `finish` pokes a bar already detached from the
+        // MultiProgress and draws nothing (the promoter ticker's contract).
+        // Not spawned under cfg(test): the InMemoryTerm sequence tests
+        // assert the committed plan's face, and a wall-clock repaint racing
+        // the assertion would flake them — the live behavior is a
+        // pty-verified cosmetic.
+        let footer_done = Arc::new(AtomicBool::new(false));
+        #[cfg(not(test))]
+        {
+            let bar = footer.clone();
+            let done = Arc::clone(&footer_done);
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if done.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let elapsed = started.elapsed();
+                    if elapsed < render::DURATION_THRESHOLD {
+                        continue;
+                    }
+                    let counter = render::paint(
+                        crate::output::palette::GREY,
+                        &crate::output::hook_progress::format_duration(elapsed),
+                        use_color,
+                    );
+                    bar.set_message(render::footer(&counter, use_color));
+                }
+            });
+        }
+        #[cfg(test)]
+        let _ = &started;
+
         // Ctrl-C while the region is live: collapse it once (erase the live
         // bars; persisted history stays) and exit — printing nothing more,
         // per the stranded-frame lesson from the test runner's cancel path.
@@ -274,6 +320,7 @@ impl TimelineCore {
             slots,
             bottom_spacer,
             footer,
+            footer_done,
             detail_bar: None,
             _echo_guard: echo_guard,
             last_persisted_was_spacer,
@@ -735,6 +782,7 @@ impl TimelineCore {
         if let Some(g) = pending_group {
             self.drop_group_bar_at(g); // span printed nothing
         }
+        self.footer_done.store(true, Ordering::SeqCst);
         self.mp.remove(&self.bottom_spacer);
         self.mp.remove(&self.footer);
         self.mp.println(render::spacer(use_color)).ok();

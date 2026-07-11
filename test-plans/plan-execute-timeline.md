@@ -13,6 +13,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 
 - [ ] `daft start <name>`: full plan appears at once (pending rows dim), steps
       fill in place top-to-bottom, footer `└ Ready in <t>` persists
+- [ ] A run past 1s: the footer placeholder `└ …` becomes a dim ticking elapsed
+      counter (`└ 1.2s`), then resolves into the outcome footer; sub-second runs
+      keep the quiet ellipsis throughout
 - [ ] Header shows the requested base immediately: `┌ Starting <name> ← <base>`;
       when the fetch resolves a fresher remote ref, the branch row carries it —
       `✓ Created branch  ← origin/<base>`
@@ -89,8 +92,8 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       none doubled with the header's, the footer's, or a group's own spacer)
 - [ ] When the phase runs, the pending row becomes the `├─ post-create hooks`
       anchor in place with one gutter row per job (`│  ✓  <job>`) — no row below
-      shifts (only job rows grow the section); pending rows + `└ …` stay visible
-      below while jobs run
+      shifts (only job rows grow the section); pending rows + the footer
+      placeholder stay visible below while jobs run
 - [ ] Active job row: `│  ⠹  name  <latest output>` — gutter, spinner, and the
       job's latest output line as a dim annotation updating in place; long lines
       truncate, never wrap
@@ -160,8 +163,12 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Failed job: single `error: hook job '<name>' failed (exit code: N)` line
       after the footer — no output dump repeat (check failMode warn AND abort)
 - [ ] Job that prints nothing: dark-grey `(no output)` thread line
-- [ ] Section closes with the grey `○ all jobs in <t>` note (before the
-      reconnect spacer; skipped when no jobs ran)
+- [ ] Section closes with its own rail end — the grey `└ all jobs in <t>` note
+      (before the reconnect spacer; skipped when no jobs ran)
+- [ ] `daft remove -v` with pre-remove hooks but no post-remove hooks: exactly
+      one rail end at line start — the `└ …` placeholder never strands above
+      `└ Removed in <t>` (#651 field test: the unplanned phase's debug line
+      leaked to raw stdout mid-region)
 - [ ] Job silent past `timerDelay`: dim `(<elapsed>)` joins the spinner row;
       first output retires it
 - [ ] `daft.hooks.output.quiet` + verbose: threads vanish entirely (rows, note,

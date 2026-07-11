@@ -221,6 +221,7 @@ impl Timeline {
             plan,
             inner.verbose,
             inner.use_color,
+            self.started,
         ));
     }
 
@@ -1101,6 +1102,70 @@ mod tests {
              \u{25cb}  no remote branch\n\
              \u{2502}\n\
              \u{2514}  Removed in 0.1s"
+        );
+    }
+
+    #[test]
+    fn verbose_section_before_later_steps_leaves_no_footer_ghost() {
+        // #651 field test: `daft remove -v` stranded the footer placeholder
+        // (`│` + `└ …`) in scrollback above the real footer. Drive the real
+        // verbose renderer over a remove-shaped plan (hook phase FIRST, spine
+        // steps after) and assert the receipt contains exactly one footer.
+        let term = indicatif::InMemoryTerm::new(60, 100);
+        let mut tl = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            true,
+            "Removing feat-x",
+        );
+        tl.set_test_draw_target(indicatif::ProgressDrawTarget::term_like(Box::new(
+            term.clone(),
+        )));
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PreRemoveHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::RemoveWorktree))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::DeleteLocalBranch))),
+        ]));
+        let pre = StepKey::new(StageId::PreRemoveHooks);
+        let embed = tl.handle().begin_hook_embed(&pre).expect("region live");
+        let config = crate::settings::HookOutputConfig {
+            verbose: true,
+            ..Default::default()
+        };
+        let mut renderer = RailHookRenderer::new(embed, tl.handle(), &config);
+        renderer.print_header("worktree-pre-remove", None);
+        renderer.start_job_with_description("pg-test", None, Some("echo pg-test"));
+        renderer.update_job_output("pg-test", "pg-test");
+        renderer.finish_job_success("pg-test", std::time::Duration::from_millis(400));
+        renderer.print_summary(std::time::Duration::from_millis(400));
+        drop(renderer);
+        tl.close_hook_embed();
+        // `-v` free-text detail rides under the active row — the real remove
+        // emits these ("Removing worktree at …", "Deleting local branch …").
+        let wt = StepKey::new(StageId::RemoveWorktree);
+        tl.on_stage(&wt, StageEvent::Started);
+        tl.detail("Removing worktree at /tmp/x/proj/feat-x...");
+        tl.detail("Removed worktree 'feat-x'");
+        tl.on_stage(&wt, StageEvent::Completed { annotation: None });
+        let br = StepKey::new(StageId::DeleteLocalBranch);
+        tl.on_stage(&br, StageEvent::Started);
+        tl.detail("Deleting local branch feat-x...");
+        tl.on_stage(&br, StageEvent::Completed { annotation: None });
+        tl.detail("No worktree-post-remove hooks found");
+        tl.finish("Removed in 0.1s");
+        let contents = term.contents();
+        assert!(
+            !contents.contains('\u{2026}'),
+            "the footer placeholder must not survive into the receipt:\n{contents}"
+        );
+        // Exactly one rail end on the spine (the section's own `└ all jobs…`
+        // note sits inside the gutter, not at line start).
+        assert_eq!(
+            contents
+                .lines()
+                .filter(|l| l.starts_with('\u{2514}'))
+                .count(),
+            1,
+            "exactly one rail end:\n{contents}"
         );
     }
 

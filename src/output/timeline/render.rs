@@ -130,6 +130,13 @@ pub(super) fn note(text: &str, use_color: bool) -> String {
     paint(GREY, &format!("\u{25cb}  {text}"), use_color)
 }
 
+/// `└  all jobs in 3.0s` — a section's own closing note, recessed a tier.
+/// The curved end terminates the section's inner column the way the rail's
+/// `└` closes the whole command.
+pub(super) fn section_close(text: &str, use_color: bool) -> String {
+    paint(GREY, &format!("\u{2514}  {text}"), use_color)
+}
+
 /// A pending step row: dim `○` glyph, plain (readable) label, annotation a
 /// tier below unless it wears an identity ink — the committed plan must be
 /// glanceable, not a grey slab.

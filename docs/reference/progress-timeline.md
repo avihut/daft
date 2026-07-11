@@ -66,7 +66,10 @@ render plain, and a dimmed row — pending glyphs, expected skips, `(not run)` �
 never keeps an identity ink.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
-  footer closes the rail with the outcome and total duration.
+  footer closes the rail with the outcome and total duration. While the command
+  runs, the footer placeholder keeps count — once the run passes a second, `└ …`
+  becomes a dim elapsed counter (`└ 1.2s`) ticking until the outcome replaces
+  it.
 - With `daft.checkout.fetch` on, the remote fetch is planned work: `daft start`
   opens its rail with the `Fetch remote` and `Set up tracking` rows instead of
   running them as a spinner before it. A failed fetch turns its row yellow
@@ -131,15 +134,16 @@ never keeps an identity ink.
   one that failed (evidence stays loud), `(no output)` when it printed nothing.
   Each thread closes with an empty thread line (`│  │`), so consecutive blocks
   keep their own air — live and in the receipt — while the rail's lone `│` stays
-  a section boundary. The section closes with a dim `○ all jobs in <t>` total,
-  and a job still silent after `daft.hooks.output.timerDelay` seconds shows a
-  dim elapsed counter until its first output. A failed job's exit status still
-  prints after the footer (`error: hook job '<name>' failed (exit code: N)`) —
-  but not its output, which already sits inline. When nothing is configured to
-  run, the hook row disappears — and `daft remove` goes further: its hook config
-  sources are on disk and exact before the plan commits, so the row is never
-  planned. Skips worth noticing (untrusted repository, `--skip-hooks all`)
-  render the yellow `↓` row instead.
+  a section boundary. The section closes with its own rail end — a dim
+  `└ all jobs in <t>` total — and a job still silent after
+  `daft.hooks.output.timerDelay` seconds shows a dim elapsed counter until its
+  first output. A failed job's exit status still prints after the footer
+  (`error: hook job '<name>' failed (exit code: N)`) — but not its output, which
+  already sits inline. When nothing is configured to run, the hook row
+  disappears — and `daft remove` goes further: its hook config sources are on
+  disk and exact before the plan commits, so the row is never planned. Skips
+  worth noticing (untrusted repository, `--skip-hooks all`) render the yellow
+  `↓` row instead.
 
 - If a step fails, later steps persist as dim `(not run)` rows and the footer
   reports `Failed after <t>` — the receipt shows exactly how far the command

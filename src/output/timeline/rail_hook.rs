@@ -15,7 +15,7 @@
 //! persists the full log into the receipt when it resolves — grey under a
 //! success (a receipt), default ink under a failure (evidence). The anchor
 //! carries the hook key + engine version as a grey annotation, and the
-//! section closes with an `○ all jobs in <t>` note. With the log inline, a
+//! section closes with a `└ all jobs in <t>` note. With the log inline, a
 //! failure defers only the runner's one-line exit fact after the footer —
 //! never a dump repeat.
 
@@ -471,13 +471,14 @@ impl RailHookRenderer {
 
     /// Succinct: no summary — every job already has exactly one receipt
     /// row. Verbose: the legacy summary's one surviving fact, the phase
-    /// total, closes the section as a recessed note (always with the total;
-    /// the 1s threshold is for row durations, not the relocated "done in").
+    /// total, closes the section as a recessed `└` note — the section's own
+    /// rail end (always with the total; the 1s threshold is for row
+    /// durations, not the relocated "done in").
     pub fn print_summary(&self, total_duration: Duration) {
         if !self.verbose || self.finished.is_empty() {
             return;
         }
-        let note = render::note(
+        let note = render::section_close(
             &format!("all jobs in {}", format_duration(total_duration)),
             self.use_color,
         );
@@ -1095,8 +1096,8 @@ mod tests {
         r.print_summary(Duration::from_millis(3000));
         assert!(
             term.contents()
-                .ends_with("\u{2502}  \u{25cb}  all jobs in 3.0s"),
-            "got: {}",
+                .ends_with("\u{2502}  \u{2514}  all jobs in 3.0s"),
+            "the section closes with its own rail end, got: {}",
             term.contents()
         );
     }
