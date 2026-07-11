@@ -46,6 +46,19 @@ pub(super) fn is_condition_skip(reason: &str) -> bool {
     reason.starts_with("skip: ") || reason.starts_with("only: ")
 }
 
+/// One-line rendering of a job's command for the `❯` provenance line:
+/// block-scalar `run:` commands carry embedded newlines that would tear the
+/// thread apart (a println line must stay a line), so everything past the
+/// first non-empty line collapses into `…`.
+fn command_line(cmd: &str) -> String {
+    let mut lines = cmd.lines().filter(|l| !l.trim().is_empty());
+    let first = lines.next().unwrap_or("").trim_end();
+    match lines.next() {
+        Some(_) => format!("{first} \u{2026}"),
+        None => first.to_string(),
+    }
+}
+
 struct JobState {
     bar: ProgressBar,
     /// The `❯ <command>` provenance thread bar (verbose, preview known).
@@ -199,7 +212,7 @@ impl RailHookRenderer {
                 pb.set_style(self.thread_style.clone());
                 pb.set_message(render::paint(
                     DARK_GREY,
-                    &format!("\u{276f} {cmd}"),
+                    &format!("\u{276f} {}", command_line(cmd)),
                     self.use_color,
                 ));
                 pb
@@ -499,7 +512,7 @@ impl RailHookRenderer {
         if let Some(cmd) = &state.command_preview {
             lines.push(self.thread_line(render::paint(
                 DARK_GREY,
-                &format!("\u{276f} {cmd}"),
+                &format!("\u{276f} {}", command_line(cmd)),
                 self.use_color,
             )));
         }
@@ -951,6 +964,27 @@ mod tests {
         assert!(
             failure[0].ends_with("    some output"),
             "evidence keeps the default ink: {failure:?}"
+        );
+    }
+
+    #[test]
+    fn multiline_command_flattens_to_one_thread_line() {
+        // Block-scalar `run:` commands carry newlines; a thread line must
+        // stay a single line or the gutter tears.
+        assert_eq!(
+            command_line("echo one\necho two\nexit 7\n"),
+            "echo one \u{2026}"
+        );
+        assert_eq!(command_line("cargo build"), "cargo build");
+        assert_eq!(command_line("cargo build\n"), "cargo build");
+        let (mut r, term, _h) = harness_with(verbose_config(), None, false);
+        r.start_job_with_description("build", None, Some("echo one\nexit 7"));
+        r.finish_job_success("build", Duration::from_millis(100));
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{2713}  build\n\
+             \u{2502}  \u{2502}    \u{276f} echo one \u{2026}\n\
+             \u{2502}  \u{2502}    (no output)"
         );
     }
 
