@@ -553,9 +553,10 @@ fn run_branch_delete(
         };
 
     if interactive {
-        // Resolve-phase feedback until the plan commits (the bridge finishes
-        // this spinner at on_plan).
-        output.start_spinner("Validating branches...");
+        // The rail opens immediately; validation runs under the planning
+        // face (the consolidation prompts suspend it for their duration)
+        // and the plan replaces the face in place when validation commits.
+        timeline.open_planning("Validating branches");
     } else if !push_hook_will_render {
         output.start_spinner("Deleting branches...");
     }
@@ -564,13 +565,16 @@ fn run_branch_delete(
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
         branch_delete::execute(&params, push_presenter.as_ref(), &mut bridge)
     };
+    // A run that never committed a plan (validation errors, nothing to
+    // delete) collapses the face here, before its legacy error/info lines
+    // print — raw writes must not tear through live bars.
+    timeline.abandon_planning();
     if interactive && exec_result.is_err() {
         timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
     }
     if !interactive && !push_hook_will_render {
         output.finish_spinner();
     }
-    output.finish_spinner();
     let result = exec_result?;
 
     // Handle validation errors
