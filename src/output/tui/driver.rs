@@ -4,7 +4,7 @@ use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
-    Terminal, TerminalOptions, Viewport,
+    Frame, Terminal, TerminalOptions, Viewport,
     layout::{Constraint, Layout, Position},
 };
 use std::io::Write;
@@ -13,11 +13,55 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Drives the inline TUI render loop, consuming `DagEvent`s and updating the
-/// ratatui terminal until all tasks complete.
-pub struct TuiRenderer {
-    pub(crate) state: TuiState,
-    receiver: mpsc::Receiver<DagEvent>,
+/// A screen the inline TUI driver can run: a self-contained model that knows
+/// its own viewport geometry, how to draw itself, and how to fold producer
+/// events into its state.
+///
+/// The driver owns everything terminal-shaped — the inline viewport,
+/// tick cadence, Ctrl-C/raw-mode interplay, and final-frame cursor parking —
+/// precisely because those details are subtle and must not fork per consumer.
+/// Screens stay pure state + drawing. [`TuiState`] (worktree operations and
+/// `daft list`) is the original implementor; the catalog table
+/// (`daft repo list --sizes`) is the second.
+pub trait LiveScreen {
+    /// Event type produced by this screen's collector.
+    type Event;
+
+    /// Total viewport rows to reserve, including `extra_rows` requested by
+    /// the caller for rows that may be discovered after the TUI starts.
+    fn viewport_height(&self, extra_rows: u16) -> u16;
+
+    /// Draw one frame. When `final_frame` is true this is the last draw
+    /// before the terminal is dropped: the screen must also park the cursor
+    /// past its content so the shell prompt lands on a fresh line.
+    fn render(&self, frame: &mut Frame<'_>, final_frame: bool);
+
+    /// Fold one collector event into the screen state.
+    fn apply_event(&mut self, event: &Self::Event);
+
+    /// True when the screen has reached a terminal state and the render loop
+    /// should exit after one final draw.
+    fn is_complete(&self) -> bool;
+
+    /// Transition into the cancelled terminal state (Ctrl-C or external
+    /// cancel signal). Must leave `is_complete()` true.
+    fn mark_cancelled(&mut self);
+
+    /// Whether the run ended via `mark_cancelled` — the driver emits a
+    /// trailing newline in that case (the cursor can land inside the last
+    /// table row when the terminal clamps the inline viewport).
+    fn is_cancelled(&self) -> bool;
+
+    /// Advance animations. Called at the driver's tick rate with the elapsed
+    /// time since the render loop started.
+    fn on_tick(&mut self, render_start_elapsed: Duration);
+}
+
+/// Drives the inline TUI render loop, consuming collector events and updating
+/// the ratatui terminal until the screen reports completion.
+pub struct TuiRenderer<S: LiveScreen> {
+    pub(crate) state: S,
+    receiver: mpsc::Receiver<S::Event>,
     /// Extra rows to reserve in the viewport for dynamically discovered branches
     /// (e.g., gone branches found after fetch).
     extra_rows: u16,
@@ -27,8 +71,8 @@ pub struct TuiRenderer {
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
 }
 
-impl TuiRenderer {
-    pub fn new(state: TuiState, receiver: mpsc::Receiver<DagEvent>) -> Self {
+impl<S: LiveScreen> TuiRenderer<S> {
+    pub fn new(state: S, receiver: mpsc::Receiver<S::Event>) -> Self {
         Self {
             state,
             receiver,
@@ -52,115 +96,11 @@ impl TuiRenderer {
         self
     }
 
-    /// Whether `render_table` will emit a "Sorted by …" summary line above the
-    /// table (true sort spec set AND its keys aren't all already shown as
-    /// column-header arrows). Always 2 rows when present: summary + spacer.
-    fn sort_summary_rows(&self) -> u16 {
-        let Some(spec) = self.state.live.cfg.sort_spec.as_ref() else {
-            return 0;
-        };
-        let displayed: Vec<crate::core::columns::ListColumn> = self
-            .state
-            .live
-            .cfg
-            .columns
-            .as_ref()
-            .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
-            .unwrap_or_else(|| crate::core::columns::ListColumn::list_defaults().to_vec());
-        if spec.needs_summary_line(&displayed) {
-            2
-        } else {
-            0
-        }
-    }
-
-    /// Total rendered rows beneath the table header — data rows, divider,
-    /// optional Size summary footer, and any hook/job sub-rows expanded in
-    /// verbose mode. Used for cursor positioning after the final draw.
-    fn total_rendered_rows(&self) -> u16 {
-        let base = self.state.live.rows.len() as u16;
-        let divider = if self.state.live.unowned_start_index.is_some() {
-            1
-        } else {
-            0
-        };
-        // Summary footer: 2 rows (separator + total) when Size column is present
-        let summary = if self
-            .state
-            .live
-            .cfg
-            .columns
-            .as_ref()
-            .is_some_and(|cols| cols.contains(&Column::Size))
-        {
-            2
-        } else {
-            0
-        };
-        if self.state.show_hook_sub_rows {
-            base + divider
-                + summary
-                + self
-                    .state
-                    .live
-                    .rows
-                    .iter()
-                    .map(|wt| {
-                        let hooks = wt.hook_sub_rows.len() as u16;
-                        let jobs: u16 = wt
-                            .hook_sub_rows
-                            .iter()
-                            .map(|h| h.job_sub_rows.len() as u16)
-                            .sum();
-                        hooks + jobs
-                    })
-                    .sum::<u16>()
-        } else {
-            base + divider + summary
-        }
-    }
-
-    /// Run the render loop until all tasks complete.
-    /// Returns the final `TuiState` for post-render summary.
-    pub fn run(mut self) -> anyhow::Result<TuiState> {
+    /// Run the render loop until the screen completes.
+    /// Returns the final screen state for post-render summary.
+    pub fn run(mut self) -> anyhow::Result<S> {
         let render_start = Instant::now();
-        // `+1` is the phase header label row when phases exist; zero phases =
-        // no header at all (daft list).
-        let header_height = if self.state.phases.is_empty() {
-            0
-        } else {
-            self.state.phases.len() as u16 + 1
-        };
-        let divider_row = if self.state.live.unowned_start_index.is_some() {
-            1
-        } else {
-            0
-        };
-        // Size summary footer: 2 rows (blank separator + total) when present.
-        let size_summary_rows: u16 = if self
-            .state
-            .live
-            .cfg
-            .columns
-            .as_ref()
-            .is_some_and(|cols| cols.contains(&Column::Size))
-        {
-            2
-        } else {
-            0
-        };
-        // table_height = sort summary (rendered inside chunks[1] when present)
-        // + table header row + 1 trailing row for cursor parking + data rows
-        // + extra room for late-arriving rows + divider + size summary footer.
-        let sort_rows = self.sort_summary_rows();
-        let table_height = sort_rows
-            + self.state.live.rows.len() as u16
-            + 2
-            + self.extra_rows
-            + divider_row
-            + size_summary_rows;
-        let footer_height: u16 = if self.state.show_hook_sub_rows { 1 } else { 0 };
-        let viewport_height = header_height + table_height + footer_height;
+        let viewport_height = self.state.viewport_height(self.extra_rows);
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
         let mut terminal = Terminal::with_options(
@@ -173,35 +113,14 @@ impl TuiRenderer {
         let tick_rate = Duration::from_millis(80);
         let mut last_tick = Instant::now();
 
-        // Helper: emit one last draw with the cursor placed past the table so
-        // the shell prompt does not overwrite content. Used by all exit paths
+        // Helper: emit one last draw with the cursor placed past the content so
+        // the shell prompt does not overwrite it. Used by all exit paths
         // (completion, channel disconnect, Ctrl-C).
         macro_rules! final_draw_and_return {
             () => {{
-                let total_rows = self.total_rendered_rows();
-                terminal.draw(|frame| {
-                    let area = frame.area();
-                    let chunks = Layout::vertical([
-                        Constraint::Length(header_height),
-                        Constraint::Fill(1),
-                        Constraint::Length(footer_height),
-                    ])
-                    .split(area);
-                    render::render_header(&self.state, frame, chunks[0]);
-                    render::render_table(&self.state, frame, chunks[1]);
-                    render::render_footer(&self.state, frame, chunks[2]);
-
-                    // sort summary rows (when present) + table header (1 row)
-                    // + data rows (including hook sub-rows / size summary).
-                    let content_bottom =
-                        area.y + header_height + sort_rows + 1 + total_rows + footer_height;
-                    frame.set_cursor_position(Position {
-                        x: 0,
-                        y: content_bottom,
-                    });
-                })?;
+                terminal.draw(|frame| self.state.render(frame, true))?;
                 drop(terminal);
-                if self.state.live.cancelled {
+                if self.state.is_cancelled() {
                     // After a cancelled run the cursor can land inside the
                     // last table row (terminal-height clamping of the inline
                     // viewport). Emit a newline so the shell prompt starts on
@@ -219,25 +138,12 @@ impl TuiRenderer {
             if let Some(sig) = &self.cancel_signal
                 && sig.load(Ordering::Relaxed)
             {
-                self.state.live.mark_cancelled();
-                self.state.done = true;
+                self.state.mark_cancelled();
                 final_draw_and_return!();
             }
 
             // Render current state.
-            terminal.draw(|frame| {
-                let area = frame.area();
-                let chunks = Layout::vertical([
-                    Constraint::Length(header_height),
-                    Constraint::Fill(1),
-                    Constraint::Length(footer_height),
-                ])
-                .split(area);
-
-                render::render_header(&self.state, frame, chunks[0]);
-                render::render_table(&self.state, frame, chunks[1]);
-                render::render_footer(&self.state, frame, chunks[2]);
-            })?;
+            terminal.draw(|frame| self.state.render(frame, false))?;
 
             // Process all pending events.
             loop {
@@ -257,8 +163,8 @@ impl TuiRenderer {
 
             // Poll for keyboard events (Ctrl-C). Non-blocking. If a Ctrl-C
             // is observed, flip the optional cancel signal so the producer
-            // exits cooperatively, mark state done and live as cancelled,
-            // and emit a final draw.
+            // exits cooperatively, mark the screen cancelled, and emit a
+            // final draw.
             if event::poll(Duration::from_millis(0)).unwrap_or(false)
                 && let Ok(Event::Key(key)) = event::read()
                 && key.code == KeyCode::Char('c')
@@ -267,20 +173,181 @@ impl TuiRenderer {
                 if let Some(sig) = &self.cancel_signal {
                     sig.store(true, Ordering::Relaxed);
                 }
-                self.state.live.mark_cancelled();
-                self.state.done = true;
+                self.state.mark_cancelled();
                 final_draw_and_return!();
             }
 
             // Tick spinner animation.
             if last_tick.elapsed() >= tick_rate {
-                self.state.render_start_elapsed = render_start.elapsed();
-                self.state.tick();
+                self.state.on_tick(render_start.elapsed());
                 last_tick = Instant::now();
             }
 
             std::thread::sleep(Duration::from_millis(16));
         }
+    }
+}
+
+impl TuiState {
+    /// Phase header rows: one row per phase plus a label row when phases
+    /// exist; zero phases = no header at all (daft list).
+    fn header_height(&self) -> u16 {
+        if self.phases.is_empty() {
+            0
+        } else {
+            self.phases.len() as u16 + 1
+        }
+    }
+
+    fn footer_height(&self) -> u16 {
+        if self.show_hook_sub_rows { 1 } else { 0 }
+    }
+
+    /// Size summary footer: 2 rows (blank separator + total) when the Size
+    /// column is present.
+    fn size_summary_rows(&self) -> u16 {
+        if self
+            .live
+            .cfg
+            .columns
+            .as_ref()
+            .is_some_and(|cols| cols.contains(&Column::Size))
+        {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Whether `render_table` will emit a "Sorted by …" summary line above the
+    /// table (true sort spec set AND its keys aren't all already shown as
+    /// column-header arrows). Always 2 rows when present: summary + spacer.
+    fn sort_summary_rows(&self) -> u16 {
+        let Some(spec) = self.live.cfg.sort_spec.as_ref() else {
+            return 0;
+        };
+        let displayed: Vec<crate::core::columns::ListColumn> = self
+            .live
+            .cfg
+            .columns
+            .as_ref()
+            .map(|cols| cols.iter().filter_map(|c| c.to_list_column()).collect())
+            .unwrap_or_else(|| crate::core::columns::ListColumn::list_defaults().to_vec());
+        if spec.needs_summary_line(&displayed) {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Total rendered rows beneath the table header — data rows, divider,
+    /// optional Size summary footer, and any hook/job sub-rows expanded in
+    /// verbose mode. Used for cursor positioning after the final draw.
+    fn total_rendered_rows(&self) -> u16 {
+        let base = self.live.rows.len() as u16;
+        let divider = if self.live.unowned_start_index.is_some() {
+            1
+        } else {
+            0
+        };
+        let summary = self.size_summary_rows();
+        if self.show_hook_sub_rows {
+            base + divider
+                + summary
+                + self
+                    .live
+                    .rows
+                    .iter()
+                    .map(|wt| {
+                        let hooks = wt.hook_sub_rows.len() as u16;
+                        let jobs: u16 = wt
+                            .hook_sub_rows
+                            .iter()
+                            .map(|h| h.job_sub_rows.len() as u16)
+                            .sum();
+                        hooks + jobs
+                    })
+                    .sum::<u16>()
+        } else {
+            base + divider + summary
+        }
+    }
+}
+
+impl LiveScreen for TuiState {
+    type Event = DagEvent;
+
+    fn viewport_height(&self, extra_rows: u16) -> u16 {
+        let divider_row = if self.live.unowned_start_index.is_some() {
+            1
+        } else {
+            0
+        };
+        // table_height = sort summary (rendered inside the table chunk when
+        // present) + table header row + 1 trailing row for cursor parking
+        // + data rows + extra room for late-arriving rows + divider + size
+        // summary footer.
+        let table_height = self.sort_summary_rows()
+            + self.live.rows.len() as u16
+            + 2
+            + extra_rows
+            + divider_row
+            + self.size_summary_rows();
+        self.header_height() + table_height + self.footer_height()
+    }
+
+    fn render(&self, frame: &mut Frame<'_>, final_frame: bool) {
+        let header_height = self.header_height();
+        let footer_height = self.footer_height();
+        let area = frame.area();
+        let chunks = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Fill(1),
+            Constraint::Length(footer_height),
+        ])
+        .split(area);
+        render::render_header(self, frame, chunks[0]);
+        render::render_table(self, frame, chunks[1]);
+        render::render_footer(self, frame, chunks[2]);
+
+        if final_frame {
+            // sort summary rows (when present) + table header (1 row)
+            // + data rows (including hook sub-rows / size summary).
+            let content_bottom = area.y
+                + header_height
+                + self.sort_summary_rows()
+                + 1
+                + self.total_rendered_rows()
+                + footer_height;
+            frame.set_cursor_position(Position {
+                x: 0,
+                y: content_bottom,
+            });
+        }
+    }
+
+    fn apply_event(&mut self, event: &DagEvent) {
+        // Resolves to the inherent `TuiState::apply_event` (inherent methods
+        // take precedence over trait methods in path resolution).
+        Self::apply_event(self, event);
+    }
+
+    fn is_complete(&self) -> bool {
+        Self::is_complete(self)
+    }
+
+    fn mark_cancelled(&mut self) {
+        self.live.mark_cancelled();
+        self.done = true;
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.live.cancelled
+    }
+
+    fn on_tick(&mut self, render_start_elapsed: Duration) {
+        self.render_start_elapsed = render_start_elapsed;
+        self.tick();
     }
 }
 
@@ -374,11 +441,11 @@ mod tests {
     }
 
     #[test]
-    fn mark_cancelled_via_state_flips_live_cancelled() {
-        // Direct unit test for the post-Ctrl-C state mutation that the
-        // driver's Ctrl-C arm performs. We can't easily synthesize a
-        // crossterm Event in a unit test, so we exercise the same
-        // mutation path the arm performs.
+    fn mark_cancelled_flips_live_cancelled_and_done() {
+        // Direct unit test for the post-Ctrl-C state mutation the driver's
+        // Ctrl-C arm performs via `LiveScreen::mark_cancelled`. We can't
+        // easily synthesize a crossterm Event in a unit test, so we exercise
+        // the trait method the arm calls.
         let phases = Vec::<crate::core::worktree::sync_dag::OperationPhase>::new();
         let infos = vec![crate::core::worktree::list::WorktreeInfo::empty("a")];
         let mut state = TuiState::new(
@@ -399,11 +466,40 @@ mod tests {
         assert!(!state.live.cancelled);
         assert!(!state.live.collection_complete);
 
-        state.live.mark_cancelled();
-        state.done = true;
+        LiveScreen::mark_cancelled(&mut state);
 
         assert!(state.live.cancelled);
         assert!(state.live.collection_complete);
         assert!(state.done);
+        assert!(LiveScreen::is_complete(&state));
+        assert!(LiveScreen::is_cancelled(&state));
+    }
+
+    #[test]
+    fn viewport_height_matches_phaseless_geometry() {
+        // daft list geometry: no phases (no header), no hooks footer, no
+        // divider, no sort spec, no Size column → rows + header row + cursor
+        // parking row + extra.
+        let infos = vec![
+            crate::core::worktree::list::WorktreeInfo::empty("a"),
+            crate::core::worktree::list::WorktreeInfo::empty("b"),
+        ];
+        let state = TuiState::new(
+            Vec::new(),
+            infos,
+            PathBuf::from("/tmp"),
+            PathBuf::from("/tmp"),
+            Stat::Summary,
+            0,
+            None,
+            false,
+            None,
+            None,
+            false,
+            false,
+            crate::core::worktree::info_field::FieldSet::EMPTY,
+        );
+        assert_eq!(state.viewport_height(0), 2 + 2);
+        assert_eq!(state.viewport_height(3), 2 + 2 + 3);
     }
 }

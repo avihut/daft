@@ -651,7 +651,7 @@ const SKELETON_GRAY_BRIGHTEST: u8 = 252;
 /// via a triangle wave. The rectangle char is centered vertically in the
 /// cell and shorter than `█`, giving the bar a soft low-profile feel
 /// without any height-mismatch caps.
-fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
+pub(super) fn loading_shimmer_cell(width: u16, tick: usize) -> Cell<'static> {
     if width == 0 {
         return Cell::from("");
     }
@@ -684,7 +684,7 @@ fn skeleton_pulse_color(tick: usize) -> u8 {
 /// `Color::Gray`, centered within the column's assigned `width` via leading
 /// spaces. Distinct from the loading shimmer (full-width bar of U+25AC) and
 /// from a legitimately-empty cell (a blank).
-fn not_loaded_cell(width: u16) -> Cell<'static> {
+pub(super) fn not_loaded_cell(width: u16) -> Cell<'static> {
     if width == 0 {
         return Cell::from("");
     }
