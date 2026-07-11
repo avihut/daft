@@ -45,13 +45,36 @@ fn ensure_installed() {
     });
 }
 
+/// A previously installed behavior, saved by [`swap_behavior`] so a nested
+/// phase can put it back. Opaque: the only thing to do with one is hand it
+/// to [`restore_behavior`].
+pub struct SavedBehavior(Option<Behavior>);
+
 /// Install the interrupt behavior for the current phase of the command.
 /// The behavior runs on the signal-handler thread and is expected to exit
 /// the process (or deliberately return to let execution continue).
 pub fn set_behavior(behavior: impl FnOnce() + Send + 'static) {
+    let _ = swap_behavior(behavior);
+}
+
+/// Install `behavior` and hand back whatever was installed before. A nested
+/// phase (a single-key prompt firing under the timeline's live region)
+/// restores the outer behavior with [`restore_behavior`] when it resolves —
+/// clearing the slot instead would strand the region without its Ctrl-C
+/// collapse.
+pub fn swap_behavior(behavior: impl FnOnce() + Send + 'static) -> SavedBehavior {
     ensure_installed();
+    match SLOT.lock() {
+        Ok(mut slot) => SavedBehavior(slot.replace(Box::new(behavior))),
+        Err(_) => SavedBehavior(None),
+    }
+}
+
+/// Reinstate a behavior saved by [`swap_behavior`] (an empty save restores
+/// the default hard exit).
+pub fn restore_behavior(saved: SavedBehavior) {
     if let Ok(mut slot) = SLOT.lock() {
-        *slot = Some(Box::new(behavior));
+        *slot = saved.0;
     }
 }
 

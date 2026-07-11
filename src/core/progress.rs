@@ -116,8 +116,10 @@ impl ProgressSink for CommandBridge<'_> {
 }
 
 /// Interactive consolidation prompt, shared by `CommandBridge` and
-/// `TimelineBridge`. The prompts fire during *validation* — before any
-/// timeline region materializes — so plain terminal IO is safe in both.
+/// `TimelineBridge`. The prompts fire during *validation* — the plan has
+/// not committed. `CommandBridge` has no region at all; `TimelineBridge`
+/// may have the planning face up and wraps this in `suspend`, so plain
+/// terminal IO is safe in both.
 fn prompt_refined(output: &mut dyn Output, req: &ConsolidationRequest) -> ConsolidationChoice {
     // The summary must be visible above the prompt, so suspend any
     // running spinner for the duration (same contract as run_hook).
@@ -479,20 +481,22 @@ impl HookRunner for TimelineBridge<'_> {
 }
 
 impl ConsolidationPrompter for TimelineBridge<'_> {
+    // The consolidation prompts fire during validation, which since #651
+    // runs under the rail's live planning face — so the whole interaction
+    // (summary lines, question, key read) runs inside `suspend`, which
+    // clears the region for the duration and redraws it after. With no
+    // region live, `suspend` runs the prompt directly (Plain mode
+    // unchanged).
     fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
-        debug_assert!(
-            !self.timeline.region_live(),
-            "consolidation prompts must precede the plan commit"
-        );
-        prompt_refined(self.output, req)
+        let handle = self.timeline.handle();
+        let output = &mut *self.output;
+        handle.suspend(|| prompt_refined(output, req))
     }
 
     fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
-        debug_assert!(
-            !self.timeline.region_live(),
-            "consolidation prompts must precede the plan commit"
-        );
-        prompt_conflict_side(self.output, filename, keys)
+        let handle = self.timeline.handle();
+        let output = &mut *self.output;
+        handle.suspend(|| prompt_conflict_side(output, filename, keys))
     }
 }
 
@@ -628,5 +632,49 @@ mod tests {
             output.entries()
         );
         timeline.finish("Removed in 0.1s");
+    }
+
+    /// The consolidation prompts fire during validation, under the live
+    /// planning face (#651). They must run inside the region suspension —
+    /// not assert the region away — and leave the face live for the plan
+    /// that follows. (Under `cargo test` stdin is not a terminal, so the
+    /// prompt resolves to its non-interactive default without blocking.)
+    #[test]
+    fn consolidation_prompt_survives_a_live_planning_face() {
+        use crate::core::{ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest};
+        use crate::output::OutputConfig;
+        use crate::output::timeline::{Timeline, TimelineMode};
+
+        let hooks_config = HooksConfig::default();
+        let executor = HookExecutor::new(hooks_config).expect("create executor");
+        let mut output = TestOutput::with_config(OutputConfig::new(false, false));
+        let mut timeline = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            false,
+            "Removing feature",
+        );
+        timeline.open_planning("Validating branches");
+        assert!(timeline.region_live());
+
+        let req = ConsolidationRequest {
+            branch: "feature".into(),
+            worktree_display: "../feature".into(),
+            target_display: "master".into(),
+            files: Vec::new(),
+        };
+        let choice = {
+            let mut bridge = TimelineBridge::new(
+                &mut output,
+                &mut timeline,
+                executor,
+                HookOutputConfig::default(),
+            );
+            bridge.on_refined(&req)
+        };
+        // Non-interactive stdin resolves to the safe default.
+        assert_eq!(choice, ConsolidationChoice::Abort);
+        // The suspension must restore the face, not tear it down.
+        assert!(timeline.region_live());
+        timeline.abandon_planning();
     }
 }

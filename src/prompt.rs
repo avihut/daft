@@ -166,12 +166,14 @@ fn read_from_terminal(config: &PromptConfig) -> PromptResult {
     // every return path.
     let _guard = PromptActiveGuard::arm(config.cancel_message.clone());
     // Route this prompt's own Ctrl+C through the process-global dispatcher
-    // (`crate::interrupt`, #651) rather than a bare `ctrlc::set_handler`, so it
-    // clears when the prompt resolves (below) and a later phase (the
-    // plan-execute timeline) can own the interrupt. Both handler-ownership
-    // paths converge on `exit_for_cancelled_prompt` (cancel message, exit 130),
-    // matching the timeline region's own Ctrl+C.
-    crate::interrupt::set_behavior(|| exit_for_cancelled_prompt());
+    // (`crate::interrupt`, #651) rather than a bare `ctrlc::set_handler`.
+    // Swap-and-restore, not set-and-clear: a prompt can fire while the
+    // plan-execute timeline's planning face is live (remove's consolidation
+    // prompts run before the plan commits), and clearing the slot on resolve
+    // would strand that region without its Ctrl-C collapse. Both
+    // handler-ownership paths converge on `exit_for_cancelled_prompt`
+    // (cancel message, exit 130), matching the timeline region's own Ctrl+C.
+    let outer = crate::interrupt::swap_behavior(|| exit_for_cancelled_prompt());
 
     let result = loop {
         let key = match term.read_key() {
@@ -193,7 +195,7 @@ fn read_from_terminal(config: &PromptConfig) -> PromptResult {
             _ => {} // Ignore arrow keys, etc.
         }
     };
-    crate::interrupt::clear_behavior();
+    crate::interrupt::restore_behavior(outer);
     result
 }
 
