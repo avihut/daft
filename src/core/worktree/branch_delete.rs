@@ -265,7 +265,8 @@ pub fn execute(
         validated.iter().partition(|b| b.is_current_worktree);
     let exec_order: Vec<&ValidatedBranch> =
         regular.iter().chain(deferred.iter()).copied().collect();
-    sink.on_plan(build_plan(&exec_order, params));
+    let hook_rows = HookRowPlan::probe(&exec_order, &ctx.source_worktree, sink);
+    sink.on_plan(build_plan(&exec_order, params, &hook_rows));
 
     // Execute deletions
     let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, &worktree_map, sink);
@@ -282,12 +283,53 @@ pub fn execute(
 
 // ── Timeline plan (#651) ───────────────────────────────────────────────────
 
+/// Which hook-phase rows the committed plan includes: a row is planned only
+/// when the phase has hooks discoverable at plan time — the rail lists only
+/// work that happens, and remove's hook config sources exist and are exact
+/// before the plan commits. Pre-remove hooks are read from each branch's
+/// own worktree; post-remove hooks from the source worktree (the tree the
+/// executor reads once the target is gone). Runtime discovery stays
+/// authoritative: hooks run regardless of planning, and a planned row can
+/// still vanish (condition skips) or turn yellow (trust refusal).
+struct HookRowPlan {
+    /// Parallel to the plan's execution order.
+    pre_remove: Vec<bool>,
+    post_remove: bool,
+}
+
+impl HookRowPlan {
+    fn probe(
+        exec_order: &[&ValidatedBranch],
+        source_worktree: &Path,
+        runner: &impl HookRunner,
+    ) -> Self {
+        let pre_remove = exec_order
+            .iter()
+            .map(|b| {
+                b.worktree_path
+                    .as_deref()
+                    .is_some_and(|wt| runner.hook_phase_has_work(HookType::PreRemove, wt))
+            })
+            .collect();
+        let post_remove = exec_order.iter().any(|b| b.worktree_path.is_some())
+            && runner.hook_phase_has_work(HookType::PostRemove, source_worktree);
+        Self {
+            pre_remove,
+            post_remove,
+        }
+    }
+}
+
 /// Build the plan rows for the branches in execution order. Steps mirror the
 /// conditionals of `delete_single_branch` exactly. Remote fate shows only
 /// when remote deletion is in scope for the invocation: the `DeleteRemote`
 /// step, or a dim `no remote branch` note when there is no upstream to
 /// delete. A daft configured local-only never mentions remotes.
-fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> PlanCommit {
+fn build_plan(
+    exec_order: &[&ValidatedBranch],
+    params: &BranchDeleteParams,
+    hook_rows: &HookRowPlan,
+) -> PlanCommit {
     let multi = exec_order.len() > 1;
     // Replace the seeded header: raw args may be worktree-path shorthands
     // (`daft remove .`), and the count can shrink during validation.
@@ -298,7 +340,7 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
     };
     let mut rows = Vec::new();
 
-    for branch in exec_order {
+    for (i, branch) in exec_order.iter().enumerate() {
         let key = |id: StageId| StepKey::scoped(id, branch.name.clone());
         if multi {
             rows.push(Row::Group {
@@ -313,7 +355,7 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
             && branch.remote_name.is_some()
             && branch.remote_branch_name.is_some();
 
-        if has_worktree {
+        if has_worktree && hook_rows.pre_remove[i] {
             rows.push(Row::Step(StepSpec::new(key(StageId::PreRemoveHooks))));
         }
         if deletes_remote {
@@ -338,7 +380,7 @@ fn build_plan(exec_order: &[&ValidatedBranch], params: &BranchDeleteParams) -> P
             }
             rows.push(Row::Step(spec));
         }
-        if has_worktree {
+        if has_worktree && hook_rows.post_remove {
             rows.push(Row::Step(StepSpec::new(key(StageId::PostRemoveHooks))));
         }
 
@@ -1513,6 +1555,15 @@ fn cleanup_empty_parent_dirs(
 mod tests {
     use super::*;
 
+    /// Plan fixture where every hook phase has discoverable work — the
+    /// pre-gating shape, for tests exercising other row conditionals.
+    fn all_hook_rows(n: usize) -> HookRowPlan {
+        HookRowPlan {
+            pre_remove: vec![true; n],
+            post_remove: true,
+        }
+    }
+
     #[test]
     fn plan_header_names_resolved_branches_not_raw_args() {
         let branch = |name: &str| ValidatedBranch {
@@ -1543,11 +1594,11 @@ mod tests {
 
         // The raw arg was a path shorthand; the header carries the branch.
         let a = branch("feat-x");
-        let plan = build_plan(&[&a], &params);
+        let plan = build_plan(&[&a], &params, &all_hook_rows(1));
         assert_eq!(plan.header.as_deref(), Some("Removing feat-x"));
 
         let b = branch("feat-y");
-        let plan = build_plan(&[&a, &b], &params);
+        let plan = build_plan(&[&a, &b], &params, &all_hook_rows(2));
         assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
     }
 
@@ -1590,7 +1641,7 @@ mod tests {
 
         // Remote deletion off (config default, remote-sync local-only, or
         // --local): the plan never mentions the remote.
-        let plan = build_plan(&[&branch(false)], &params(false));
+        let plan = build_plan(&[&branch(false)], &params(false), &all_hook_rows(1));
         assert!(
             notes(&plan).is_empty(),
             "out-of-scope remote plans no note: {:?}",
@@ -1599,17 +1650,17 @@ mod tests {
 
         // Remote deletion on but the branch has no upstream: the dim note
         // records there was nothing to delete.
-        let plan = build_plan(&[&branch(false)], &params(true));
+        let plan = build_plan(&[&branch(false)], &params(true), &all_hook_rows(1));
         assert_eq!(notes(&plan), vec!["no remote branch".to_string()]);
 
         // Default-branch worktree removal keeps its explanation, mentioning
         // the remote only while remote deletion is in scope.
-        let plan = build_plan(&[&branch(true)], &params(false));
+        let plan = build_plan(&[&branch(true)], &params(false), &all_hook_rows(1));
         assert_eq!(
             notes(&plan),
             vec!["branch kept (default branch)".to_string()]
         );
-        let plan = build_plan(&[&branch(true)], &params(true));
+        let plan = build_plan(&[&branch(true)], &params(true), &all_hook_rows(1));
         assert_eq!(
             notes(&plan),
             vec!["branch and remote kept (default branch)".to_string()]
@@ -2005,7 +2056,9 @@ mod tests {
             .collect();
         // Execution order: hooks bracket the removal; no DeleteRemote step
         // and no remote-fate note — remote deletion is off, so the plan
-        // never mentions the remote.
+        // never mentions the remote. (The hook rows are present because
+        // `RecordingStageSink` keeps speculative rows via the trait's
+        // default probe; row gating is pinned separately below.)
         assert_eq!(
             ids,
             vec![
@@ -2041,6 +2094,173 @@ mod tests {
                 crate::hooks::HookType::PostRemove
             ]
         );
+    }
+
+    #[test]
+    fn hook_rows_planned_only_when_the_phase_has_work() {
+        let branch = |name: &str| ValidatedBranch {
+            name: name.to_string(),
+            worktree_path: Some(PathBuf::from(format!("/tmp/{name}"))),
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only: false,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = BranchDeleteParams {
+            branches: vec!["feat-x".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+        let ids = |plan: &PlanCommit| -> Vec<StageId> { plan.steps().map(|s| s.key.id).collect() };
+
+        // Nothing discoverable: neither hook row — the rail lists only
+        // work that happens (these rows used to be planned speculatively
+        // and vanish at resolution).
+        let a = branch("feat-x");
+        let none = HookRowPlan {
+            pre_remove: vec![false],
+            post_remove: false,
+        };
+        assert_eq!(
+            ids(&build_plan(&[&a], &params, &none)),
+            vec![StageId::RemoveWorktree, StageId::DeleteLocalBranch],
+        );
+
+        // Pre-remove discovery is per-branch (each worktree carries its own
+        // config); post-remove is per-invocation (source worktree).
+        let b = branch("feat-y");
+        let mixed = HookRowPlan {
+            pre_remove: vec![true, false],
+            post_remove: false,
+        };
+        let plan = build_plan(&[&a, &b], &params, &mixed);
+        let pre_scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::PreRemoveHooks)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(pre_scopes, vec![Some("feat-x".to_string())]);
+        assert!(plan.steps().all(|s| s.key.id != StageId::PostRemoveHooks));
+    }
+
+    #[test]
+    #[serial]
+    fn plan_omits_hook_rows_but_execution_still_fires_hooks() {
+        use crate::core::RecordingStageSink;
+        use std::cell::RefCell;
+
+        // A sink whose probe finds no work anywhere — the real bridges
+        // delegate to `HookExecutor::hook_phase_has_work`; this pins the
+        // core's wiring: which phases get probed, with which source paths,
+        // and that gating the row never gates the run.
+        struct GatedSink {
+            inner: RecordingStageSink,
+            probes: RefCell<Vec<(crate::hooks::HookType, PathBuf)>>,
+        }
+        impl ProgressSink for GatedSink {
+            fn on_step(&mut self, msg: &str) {
+                self.inner.on_step(msg);
+            }
+            fn on_warning(&mut self, msg: &str) {
+                self.inner.on_warning(msg);
+            }
+            fn on_debug(&mut self, msg: &str) {
+                self.inner.on_debug(msg);
+            }
+            fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
+                self.inner.on_plan(plan);
+            }
+            fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
+                self.inner.on_stage(key, event);
+            }
+        }
+        impl crate::core::ConsolidationPrompter for GatedSink {}
+        impl crate::core::HookRunner for GatedSink {
+            fn hook_phase_has_work(
+                &self,
+                hook_type: crate::hooks::HookType,
+                hook_source_worktree: &Path,
+            ) -> bool {
+                self.probes
+                    .borrow_mut()
+                    .push((hook_type, hook_source_worktree.to_path_buf()));
+                false
+            }
+            fn run_hook(
+                &mut self,
+                ctx: &crate::hooks::HookContext,
+            ) -> anyhow::Result<crate::core::HookOutcome> {
+                self.inner.run_hook(ctx)
+            }
+        }
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: true,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-f/--force".to_string(),
+        };
+        let mut sink = GatedSink {
+            inner: RecordingStageSink::default(),
+            probes: RefCell::new(Vec::new()),
+        };
+        let result = execute(&params, None, &mut sink).unwrap();
+        assert!(result.validation_errors.is_empty());
+
+        // No discoverable hooks: the plan omits both hook rows...
+        let plan = sink.inner.plan.as_ref().expect("plan must be committed");
+        assert!(
+            plan.steps().all(|s| !s.key.id.is_hook_phase()),
+            "no hook rows without discoverable work: {:?}",
+            plan.rows
+        );
+        // ...while execution still consults the executor for both phases.
+        assert_eq!(
+            sink.inner.hooks_run,
+            vec![
+                crate::hooks::HookType::PreRemove,
+                crate::hooks::HookType::PostRemove
+            ]
+        );
+        // Each phase was probed at its true config source: the branch's own
+        // worktree for pre-remove, the source worktree for post-remove.
+        let probes = sink.probes.borrow();
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].0, crate::hooks::HookType::PreRemove);
+        assert!(
+            probes[0].1.ends_with("feat"),
+            "pre-remove probes the branch worktree: {}",
+            probes[0].1.display()
+        );
+        assert_eq!(probes[1].0, crate::hooks::HookType::PostRemove);
     }
 
     #[test]

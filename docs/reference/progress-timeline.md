@@ -95,7 +95,10 @@ identity ink.
   silently ignores a declaration it could not honor.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
-  local branch. Multi-branch removals group rows under `├─` branch anchors.
+  local branch. Multi-branch removals group rows under `├─` branch anchors. Its
+  hook rows are planned only when the phase has hooks discoverable at plan time:
+  a repository configuring no `worktree-post-remove` hooks plans no
+  `post-remove hooks` row at all.
 - Lifecycle hooks appear as a plan row framed by its section's rail gaps; when
   they actually run, the row becomes a `├─ post-create hooks` section in place,
   with one receipt row per job. While a job runs, its latest output line rides
@@ -110,9 +113,10 @@ identity ink.
   version banner, rolling output tails, every job's complete output, and the
   summary, welded into the rail (`├────┐`) exactly as the block renders
   standalone. `daft.hooks.output.timerDelay` and `tailLines` only apply to this
-  block. When nothing is configured to run, the hook row disappears; skips worth
-  noticing (untrusted repository, `--skip-hooks all`) render the yellow `↓` row
-  instead.
+  block. When nothing is configured to run, the hook row disappears — and
+  `daft remove` goes further: its hook config sources are on disk and exact
+  before the plan commits, so the row is never planned. Skips worth noticing
+  (untrusted repository, `--skip-hooks all`) render the yellow `↓` row instead.
 - If a step fails, later steps persist as dim `(not run)` rows and the footer
   reports `Failed after <t>` — the receipt shows exactly how far the command
   got.

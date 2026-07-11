@@ -122,6 +122,19 @@ pub struct HookOutcome {
 pub trait HookRunner {
     /// Execute the hook described by `ctx`.
     fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome>;
+
+    /// Whether `hook_type` has anything discoverable to run from
+    /// `hook_source_worktree` — plan-time hook-row gating (#651: the rail
+    /// lists only work that happens). Runners that cannot probe keep the
+    /// speculative row via the default; execution stays authoritative
+    /// either way (hooks run regardless of what was planned).
+    fn hook_phase_has_work(
+        &self,
+        _hook_type: crate::hooks::HookType,
+        _hook_source_worktree: &std::path::Path,
+    ) -> bool {
+        true
+    }
 }
 
 /// A no-op hook runner that reports all hooks as successful.

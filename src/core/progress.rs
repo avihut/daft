@@ -231,6 +231,15 @@ impl ConsolidationPrompter for CommandBridge<'_> {
 }
 
 impl HookRunner for CommandBridge<'_> {
+    fn hook_phase_has_work(
+        &self,
+        hook_type: crate::hooks::HookType,
+        hook_source_worktree: &std::path::Path,
+    ) -> bool {
+        self.executor
+            .hook_phase_has_work(hook_type, hook_source_worktree)
+    }
+
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
         let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
         // The hook executor may render its own indicatif MultiProgress, which
@@ -393,6 +402,15 @@ impl ProgressSink for TimelineBridge<'_> {
 }
 
 impl HookRunner for TimelineBridge<'_> {
+    fn hook_phase_has_work(
+        &self,
+        hook_type: crate::hooks::HookType,
+        hook_source_worktree: &std::path::Path,
+    ) -> bool {
+        self.executor
+            .hook_phase_has_work(hook_type, hook_source_worktree)
+    }
+
     fn run_hook(&mut self, ctx: &crate::hooks::HookContext) -> anyhow::Result<HookOutcome> {
         use crate::core::stage::StageId;
 

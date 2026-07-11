@@ -62,6 +62,15 @@ impl ProgressSink for TuiBridge {
 impl crate::core::ConsolidationPrompter for TuiBridge {}
 
 impl HookRunner for TuiBridge {
+    fn hook_phase_has_work(
+        &self,
+        hook_type: crate::hooks::HookType,
+        hook_source_worktree: &std::path::Path,
+    ) -> bool {
+        self.executor
+            .hook_phase_has_work(hook_type, hook_source_worktree)
+    }
+
     fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome> {
         let hook_type = ctx.hook_type;
 

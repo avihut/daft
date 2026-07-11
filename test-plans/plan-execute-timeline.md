@@ -56,6 +56,11 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       paths
 - [ ] `daft remove <branch>`: execution order (remote → worktree → branch),
       `Deleted branch` annotated `was merged into <default>`
+- [ ] `daft remove` plans hook rows only for phases with discoverable hooks:
+      pre-remove hooks configured but no post-remove → only the
+      `pre-remove hooks` row (and its `│` frame); no hooks at all → neither row,
+      no vanish churn; per-branch on multi-remove (each worktree's own config
+      decides its pre-remove row)
 - [ ] `daft remove .` (worktree-path shorthand): header names the resolved
       branch — `Removing <branch>`, never `.`
 - [ ] `daft remove` with remote deletion on (`daft.branchDelete.remote` true):
@@ -116,8 +121,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       with its own spacer + anchor, no doubled spacers between them
 - [ ] Sequential (piped) hooks: receipt rows may persist before a later, wider
       job name raises the alignment column — accepted cosmetic limit
-- [ ] No hooks configured: the hook row vanishes silently, taking its planned
-      `│` gaps with it — no stray blank rail lines
+- [ ] No hooks configured: `daft start` / `daft go`'s hook row vanishes silently
+      when execution reaches it, taking its planned `│` gaps with it — no stray
+      blank rail lines (`daft remove` never plans the row; see Rail basics)
 - [ ] Untrusted repo: `↓ post-create hooks  skipped — Repository not trusted`
       keeping the planned `│` frame around the row, and the contextual
       `Untrusted repo — …` notice (#654: trust + replay suggestions) persists
