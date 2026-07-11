@@ -39,6 +39,10 @@ pub(super) fn output_suppressed() -> bool {
 /// above flows into the banner when the block renders embedded in a
 /// timeline (#651). The bottom corner stays `└`: the banner closes, and the
 /// job blocks below hang beneath it unwelded.
+///
+/// NOTE(preserved): only the embedded path welds, and nothing constructs an
+/// embedded block today (see `HookRenderer::embedded`) — every live caller
+/// passes `false`. Kept for possible reuse by full git hooks rendering.
 pub(super) fn format_header_lines(
     hook_name: &str,
     target: Option<&str>,

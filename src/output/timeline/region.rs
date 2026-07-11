@@ -1,11 +1,11 @@
 //! Live-region driver for the rail timeline.
 //!
 //! One `MultiProgress` per command. The composition invariant that makes the
-//! hook-block weld work: **completed content is persisted eagerly**
+//! hook-section embed work: **completed content is persisted eagerly**
 //! (`mp.remove(bar)` + `mp.println(line)` — the atomic visual swap), so at any
 //! moment the live bars are exactly `{active?, pending…, bottom spacer,
 //! footer placeholder}`. Any `mp.println` — a warning, or the embedded hook
-//! renderer's header/dumps/summary — therefore lands *between* the persisted
+//! renderer's anchor/rows/log lines — therefore lands *between* the persisted
 //! history above and the remaining plan below.
 //!
 //! indicatif discipline (in-tree lessons, see `hook_progress/interactive.rs`):

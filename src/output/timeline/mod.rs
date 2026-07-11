@@ -2,9 +2,9 @@
 //!
 //! Renders a command's full step plan up front as a live stderr region, fills
 //! each step in place as the core executes, and leaves a persistent
-//! append-only receipt in scrollback. Hook phases expand in place into the
-//! existing hook-progress block (welded onto the rail — see
-//! `hook_progress::formatting::format_header_lines`).
+//! append-only receipt in scrollback. Hook phases expand in place into a
+//! rail-native section ([`RailHookRenderer`]) — succinct receipt rows by
+//! default, threading each job's log when verbose.
 //!
 //! Not to be confused with `crate::output::outline`, the *static* outline
 //! renderer — this module owns the live plan-execute region.

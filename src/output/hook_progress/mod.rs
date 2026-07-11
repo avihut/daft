@@ -70,6 +70,14 @@ impl HookRenderer {
     /// renderer shares the timeline's `MultiProgress` and inserts its job
     /// bars above `anchor`, with the rail welded into the header box's top
     /// corner.
+    ///
+    /// NOTE(preserved, currently unused): the timeline renders verbose
+    /// embeds natively (`timeline::RailHookRenderer` threads the log), so
+    /// nothing constructs a welded block today. Kept deliberately — the
+    /// welded-block embed mechanics (shared `MultiProgress` +
+    /// insert-before-anchor + corner weld) are a candidate UI for full git
+    /// hooks rendering. Once git hooks land, delete this path if it is
+    /// still unused.
     pub fn embedded(
         config: &HookOutputConfig,
         mp: indicatif::MultiProgress,
