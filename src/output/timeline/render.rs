@@ -60,11 +60,19 @@ pub(super) fn footer(text: &str, use_color: bool) -> String {
     format!("{corner}  {text}")
 }
 
-/// `├  feat/a` — dim structural anchor for a row group, edged off the rail
-/// like the header and footer corners (a `│` spacer always precedes it).
+/// `├─ feat/a` — dim structural anchor for a row group, branching off the
+/// rail toward its label (a `│` spacer always precedes it). The stroke
+/// swallows the first gap space, so the label keeps the glyph-column rhythm.
 pub(super) fn group(label: &str, use_color: bool) -> String {
-    let rail = paint(GREY, "\u{251c}", use_color);
-    format!("{rail}  {}", paint(DARK_GREY, label, use_color))
+    let rail = paint(GREY, "\u{251c}\u{2500}", use_color);
+    format!("{rail} {}", paint(DARK_GREY, label, use_color))
+}
+
+/// Tuck a rendered row inside the rail: `│  <row>`. Section members (group
+/// spans, hook jobs) render this way so the rail stays continuous and the
+/// anchor's `├─` visibly carries its children.
+pub(super) fn gutter(row: &str, use_color: bool) -> String {
+    format!("{}  {row}", paint(GREY, "\u{2502}", use_color))
 }
 
 /// `○  no remote branch` — a non-step annotation.
@@ -203,9 +211,24 @@ mod tests {
     }
 
     #[test]
-    fn group_anchor_edges_off_the_rail() {
+    fn group_anchor_branches_off_the_rail() {
+        // The stroke replaces the first gap space: the label stays in the
+        // same column as every other row's body.
         let line = group("post-create hooks", false);
-        assert_eq!(line, "\u{251c}  post-create hooks");
+        assert_eq!(line, "\u{251c}\u{2500} post-create hooks");
+    }
+
+    #[test]
+    fn gutter_tucks_a_row_inside_the_rail() {
+        let row = final_row(&RowFace::Done { duration: None }, ".env", None, 4, false);
+        assert_eq!(gutter(&row, false), "\u{2502}  \u{2713}  .env");
+    }
+
+    #[test]
+    fn gutter_rail_glyph_is_grey_body_untouched() {
+        let line = gutter("\u{2713}  .env", true);
+        assert!(line.starts_with(GREY), "got: {line}");
+        assert!(line.ends_with("\u{2713}  .env"), "got: {line}");
     }
 
     #[test]

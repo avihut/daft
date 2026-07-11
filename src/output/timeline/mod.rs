@@ -704,7 +704,8 @@ mod tests {
     //
     // The tests above exercise the state machine; these capture the actual
     // persisted lines. The contract under test is the section dialect: a
-    // `│` spacer then a `├  <label>` anchor, never doubled.
+    // `│` spacer, a `├─ <label>` anchor, and every row in the anchor's span
+    // tucked into the rail gutter (`│  <row>`) — spacers never doubled.
 
     fn captured(header: &str) -> (Timeline, indicatif::InMemoryTerm) {
         let term = indicatif::InMemoryTerm::new(60, 100);
@@ -747,8 +748,8 @@ mod tests {
              \u{2502}\n\
              \u{2713}  Created worktree\n\
              \u{2502}\n\
-             \u{251c}  shared files\n\
-             \u{2713}  .env\n\
+             \u{251c}\u{2500} shared files\n\
+             \u{2502}  \u{2713}  .env\n\
              \u{2502}\n\
              \u{2514}  Ready in 0.1s"
         );
@@ -776,11 +777,11 @@ mod tests {
             term.contents(),
             "\u{250c}  Removing 2 branches\n\
              \u{2502}\n\
-             \u{251c}  feat/a\n\
-             \u{2713}  Removed worktree\n\
+             \u{251c}\u{2500} feat/a\n\
+             \u{2502}  \u{2713}  Removed worktree\n\
              \u{2502}\n\
-             \u{251c}  feat/b\n\
-             \u{2713}  Removed worktree\n\
+             \u{251c}\u{2500} feat/b\n\
+             \u{2502}  \u{2713}  Removed worktree\n\
              \u{2502}\n\
              \u{2514}  Removed 2 worktrees in 0.1s"
         );
@@ -822,8 +823,8 @@ mod tests {
              \u{2502}\n\
              block content\n\
              \u{2502}\n\
-             \u{251c}  shared files\n\
-             \u{2713}  .env\n\
+             \u{251c}\u{2500} shared files\n\
+             \u{2502}  \u{2713}  .env\n\
              \u{2502}\n\
              \u{2514}  Ready in 0.1s"
         );
@@ -897,6 +898,47 @@ mod tests {
              \u{2713}  Created worktree\n\
              \u{2502}\n\
              \u{2514}  Ready in 0.1s"
+        );
+    }
+
+    #[test]
+    fn span_notes_and_not_reached_rows_stay_in_the_gutter() {
+        // Every face a span row can persist with — a note, a completed step,
+        // and a not-reached step on the failure teardown — renders tucked
+        // into the gutter; the spine row before the section does not.
+        let (mut tl, term) = captured("Removing feat/a");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Group {
+                label: "feat/a".into(),
+            },
+            Row::Note {
+                text: "no remote branch".into(),
+            },
+            Row::Step(StepSpec::new(StepKey::scoped(StageId::RemoveWorktree, "a"))),
+            Row::Step(StepSpec::new(StepKey::scoped(
+                StageId::DeleteLocalBranch,
+                "a",
+            ))),
+        ]));
+        let key = StepKey::scoped(StageId::RemoveWorktree, "a");
+        tl.on_stage(&key, StageEvent::Started);
+        tl.on_stage(
+            &key,
+            StageEvent::Failed {
+                detail: "dirty".into(),
+            },
+        );
+        tl.abort("Failed after 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/a\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} feat/a\n\
+             \u{2502}  \u{25cb}  no remote branch\n\
+             \u{2502}  \u{2717}  Remove worktree  dirty\n\
+             \u{2502}  \u{25cb}  Delete branch    (not run)\n\
+             \u{2502}\n\
+             \u{2514}  Failed after 0.1s"
         );
     }
 }

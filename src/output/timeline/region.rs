@@ -45,7 +45,7 @@ enum Slot {
         label: String,
         bar: Option<ProgressBar>,
         /// The `│` spacer line above the anchor (the section dialect:
-        /// `│` then `├  <label>`). `None` for the plan's first slot — the
+        /// `│` then `├─ <label>`). `None` for the plan's first slot — the
         /// header's own top spacer already provides that gap — and after
         /// the group persists or drops.
         spacer: Option<ProgressBar>,
@@ -55,11 +55,17 @@ enum Slot {
     Note {
         text: String,
         bar: Option<ProgressBar>,
+        /// Inside a group span: renders tucked into the rail gutter
+        /// (`│  ○ …`) so the anchor's `├─` visibly carries it.
+        in_group: bool,
     },
     Step {
         spec: StepSpec,
         bar: Option<ProgressBar>,
         state: StepState,
+        /// Inside a group span: every face of this row (pending, active,
+        /// final) renders in the rail gutter.
+        in_group: bool,
     },
 }
 
@@ -126,9 +132,14 @@ impl TimelineCore {
         let static_style = line_style();
         let mut last_persisted_was_spacer = true;
         let mut slots = Vec::with_capacity(plan.rows.len());
+        // Whether the row being materialized sits inside an open group span
+        // (`Group` opens, `EndGroup` closes) — such rows render in the
+        // gutter, tucked under their anchor.
+        let mut in_group = false;
         for row in plan.rows {
             let slot = match row {
                 Row::Group { label } => {
+                    in_group = true;
                     let spacer = (!slots.is_empty())
                         .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
                     let bar = add_line_bar(&mp, &static_style, render::group(&label, use_color));
@@ -138,19 +149,24 @@ impl TimelineCore {
                         spacer,
                     }
                 }
-                Row::EndGroup => Slot::EndGroup,
+                Row::EndGroup => {
+                    in_group = false;
+                    Slot::EndGroup
+                }
                 Row::Note { text } => {
-                    let bar = add_line_bar(&mp, &static_style, render::note(&text, use_color));
+                    let line = in_span(render::note(&text, use_color), in_group, use_color);
+                    let bar = add_line_bar(&mp, &static_style, line);
                     Slot::Note {
                         text,
                         bar: Some(bar),
+                        in_group,
                     }
                 }
                 Row::Step(spec) => {
                     if let Some(elapsed) = spec.pre_completed {
                         // Completed before the region existed (clone's bare
                         // phase) — persist directly, no bar.
-                        mp.println(render::final_row(
+                        let line = render::final_row(
                             &RowFace::Done {
                                 duration: Some(elapsed),
                             },
@@ -158,13 +174,14 @@ impl TimelineCore {
                             spec.annotation.as_deref(),
                             label_width,
                             use_color,
-                        ))
-                        .ok();
+                        );
+                        mp.println(in_span(line, in_group, use_color)).ok();
                         last_persisted_was_spacer = false;
                         Slot::Step {
                             spec,
                             bar: None,
                             state: StepState::Resolved,
+                            in_group,
                         }
                     } else {
                         let line = render::pending_row(
@@ -173,11 +190,13 @@ impl TimelineCore {
                             label_width,
                             use_color,
                         );
-                        let bar = add_line_bar(&mp, &static_style, line);
+                        let bar =
+                            add_line_bar(&mp, &static_style, in_span(line, in_group, use_color));
                         Slot::Step {
                             spec,
                             bar: Some(bar),
                             state: StepState::Pending,
+                            in_group,
                         }
                     }
                 }
@@ -254,7 +273,12 @@ impl TimelineCore {
         self.reconnect_after_block();
         let use_color = self.use_color;
         let label_width = self.label_width;
-        if let Slot::Step { spec, bar, state } = &mut self.slots[idx]
+        if let Slot::Step {
+            spec,
+            bar,
+            state,
+            in_group,
+        } = &mut self.slots[idx]
             && let Some(bar) = bar.as_ref()
         {
             let msg = render::active_message(
@@ -262,7 +286,7 @@ impl TimelineCore {
                 spec.annotation.as_deref(),
                 label_width,
             );
-            bar.set_style(active_style(use_color));
+            bar.set_style(active_style(use_color, *in_group));
             bar.set_message(msg);
             bar.enable_steady_tick(Duration::from_millis(80));
             bar.tick();
@@ -295,9 +319,16 @@ impl TimelineCore {
         self.clear_detail();
         let use_color = self.use_color;
         let label_width = self.label_width;
-        let Slot::Step { spec, bar, state } = &mut self.slots[idx] else {
+        let Slot::Step {
+            spec,
+            bar,
+            state,
+            in_group,
+        } = &mut self.slots[idx]
+        else {
             return;
         };
+        let in_group = *in_group;
         let started = match state {
             StepState::Active { started } => Some(*started),
             _ => None,
@@ -344,7 +375,7 @@ impl TimelineCore {
                     label_width,
                     use_color,
                 );
-                self.mp.println(line).ok();
+                self.mp.println(in_span(line, in_group, use_color)).ok();
                 self.last_persisted_was_spacer = false;
             }
         }
@@ -364,14 +395,24 @@ impl TimelineCore {
         };
         let use_color = self.use_color;
         let label_width = self.label_width;
-        if let Slot::Step { spec, bar, state } = &mut self.slots[idx] {
+        if let Slot::Step {
+            spec,
+            bar,
+            state,
+            in_group,
+        } = &mut self.slots[idx]
+        {
             spec.annotation = Some(annotation);
             if let Some(bar) = bar.as_ref() {
                 match state {
-                    StepState::Pending => bar.set_message(render::pending_row(
-                        &display_label(spec, StepPhase::Pending),
-                        spec.annotation.as_deref(),
-                        label_width,
+                    StepState::Pending => bar.set_message(in_span(
+                        render::pending_row(
+                            &display_label(spec, StepPhase::Pending),
+                            spec.annotation.as_deref(),
+                            label_width,
+                            use_color,
+                        ),
+                        *in_group,
                         use_color,
                     )),
                     StepState::Active { .. } => bar.set_message(render::active_message(
@@ -426,7 +467,10 @@ impl TimelineCore {
         self.flush_above(idx);
         self.clear_detail();
         let mut section_label = None;
-        if let Slot::Step { spec, bar, state } = &mut self.slots[idx] {
+        if let Slot::Step {
+            spec, bar, state, ..
+        } = &mut self.slots[idx]
+        {
             if let Some(taken) = bar.take() {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
@@ -515,7 +559,13 @@ impl TimelineCore {
                     {
                         self.print_group_at(g);
                     }
-                    let Slot::Step { spec, bar, state } = &mut self.slots[i] else {
+                    let Slot::Step {
+                        spec,
+                        bar,
+                        state,
+                        in_group,
+                    } = &mut self.slots[i]
+                    else {
                         unreachable!("matched Step above");
                     };
                     let taken = bar.take().expect("matched Some above");
@@ -523,15 +573,14 @@ impl TimelineCore {
                     self.mp.remove(&taken);
                     match unresolved {
                         UnresolvedPolicy::NotReached => {
-                            self.mp
-                                .println(render::final_row(
-                                    &RowFace::NotReached,
-                                    &display_label(spec, StepPhase::Pending),
-                                    None,
-                                    label_width,
-                                    use_color,
-                                ))
-                                .ok();
+                            let line = render::final_row(
+                                &RowFace::NotReached,
+                                &display_label(spec, StepPhase::Pending),
+                                None,
+                                label_width,
+                                use_color,
+                            );
+                            self.mp.println(in_span(line, *in_group, use_color)).ok();
                         }
                         UnresolvedPolicy::Drop => {}
                     }
@@ -611,7 +660,7 @@ impl TimelineCore {
 
     /// Persist the group anchor at slot `i` (no-op if already gone): a `│`
     /// spacer first — skipped when the previously persisted line is already
-    /// one (e.g. a hook block's reconnect spacer) — then the `├` anchor.
+    /// one (e.g. a hook block's reconnect spacer) — then the `├─` anchor.
     fn print_group_at(&mut self, i: usize) {
         let use_color = self.use_color;
         if let Slot::Group { label, bar, spacer } = &mut self.slots[i]
@@ -632,11 +681,16 @@ impl TimelineCore {
     /// Persist the note at slot `i` (no-op if already gone).
     fn print_note_at(&mut self, i: usize) {
         let use_color = self.use_color;
-        if let Slot::Note { text, bar } = &mut self.slots[i]
+        if let Slot::Note {
+            text,
+            bar,
+            in_group,
+        } = &mut self.slots[i]
             && let Some(taken) = bar.take()
         {
+            let line = in_span(render::note(text, use_color), *in_group, use_color);
             self.mp.remove(&taken);
-            self.mp.println(render::note(text, use_color)).ok();
+            self.mp.println(line).ok();
             self.last_persisted_was_spacer = false;
         }
     }
@@ -780,13 +834,25 @@ fn line_style() -> ProgressStyle {
     ProgressStyle::with_template("{msg}").expect("static template is valid")
 }
 
-fn active_style(use_color: bool) -> ProgressStyle {
-    let template = if use_color {
+/// Wrap a rendered row in the rail gutter when it belongs to a group span.
+fn in_span(line: String, in_group: bool, use_color: bool) -> String {
+    if in_group {
+        render::gutter(&line, use_color)
+    } else {
+        line
+    }
+}
+
+fn active_style(use_color: bool, in_group: bool) -> ProgressStyle {
+    let base = if use_color {
         "{spinner:.cyan}  {msg}"
     } else {
         "{spinner}  {msg}"
     };
-    ProgressStyle::with_template(template)
+    // In-span rows carry the gutter in the template — the spinner glyph
+    // lives there, so the message alone can't provide the prefix.
+    let template = in_span(base.to_string(), in_group, use_color);
+    ProgressStyle::with_template(&template)
         .expect("active template is valid")
         .tick_chars(TICK_CHARS)
 }

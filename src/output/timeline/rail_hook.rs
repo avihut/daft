@@ -1,9 +1,10 @@
 //! Succinct rail-native renderer for hook jobs (#651).
 //!
 //! The default hook appearance on the rail: one receipt row per job in the
-//! rail's own grammar, under a `├  <section>` anchor — no banner, no output
-//! dumps, no summary. The full block (`hook_progress::HookProgressRenderer`)
-//! remains the verbose appearance (`-v` / `daft.hooks.output.verbose`).
+//! rail's own grammar, tucked into the rail gutter (`│  ✓  <job>`) under a
+//! `├─ <section>` anchor — no banner, no output dumps, no summary. The full
+//! block (`hook_progress::HookProgressRenderer`) remains the verbose
+//! appearance (`-v` / `daft.hooks.output.verbose`).
 //!
 //! Live shape: each running job is a spinner bar whose annotation is the
 //! job's latest output line, dim, updating in place — one line of liveness
@@ -68,13 +69,14 @@ impl RailHookRenderer {
     pub fn new(embed: HookEmbed, handle: TimelineHandle, config: &HookOutputConfig) -> Self {
         // `wide_msg`, not `msg`: hook output is arbitrary — a line wider
         // than the terminal must truncate, or it wraps and desyncs
-        // indicatif's line accounting.
-        let template = if embed.use_color {
+        // indicatif's line accounting. The rail gutter rides the template —
+        // the spinner glyph lives there, so the message can't provide it.
+        let base = if embed.use_color {
             "{spinner:.cyan}  {wide_msg}"
         } else {
             "{spinner}  {wide_msg}"
         };
-        let job_style = ProgressStyle::with_template(template)
+        let job_style = ProgressStyle::with_template(&render::gutter(base, embed.use_color))
             .expect("job template is valid")
             .tick_chars(super::region::TICK_CHARS);
         Self {
@@ -92,7 +94,7 @@ impl RailHookRenderer {
         }
     }
 
-    /// The `├  <section>` anchor. The consumed rail row's label names the
+    /// The `├─ <section>` anchor. The consumed rail row's label names the
     /// section; gate embeds (pre-push under an active Push row) fall back to
     /// the phase name.
     pub fn print_header(&self, hook_name: &str, _target: Option<&str>) {
@@ -144,17 +146,15 @@ impl RailHookRenderer {
 
     pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
         self.remove_bar(name);
-        self.mp
-            .println(render::final_row(
-                &RowFace::Done {
-                    duration: Some(duration),
-                },
-                name,
-                None,
-                self.name_width,
-                self.use_color,
-            ))
-            .ok();
+        self.persist_receipt(render::final_row(
+            &RowFace::Done {
+                duration: Some(duration),
+            },
+            name,
+            None,
+            self.name_width,
+            self.use_color,
+        ));
         self.finished.push(JobResultEntry {
             name: name.to_string(),
             outcome: JobOutcome::Success,
@@ -164,15 +164,13 @@ impl RailHookRenderer {
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
         let output = self.remove_bar(name);
-        self.mp
-            .println(render::final_row(
-                &RowFace::Failed,
-                name,
-                self.duration_annotation(duration).as_deref(),
-                self.name_width,
-                self.use_color,
-            ))
-            .ok();
+        self.persist_receipt(render::final_row(
+            &RowFace::Failed,
+            name,
+            self.duration_annotation(duration).as_deref(),
+            self.name_width,
+            self.use_color,
+        ));
         self.failed.insert(name.to_string());
         // The captured output lands below the rail footer — the rail's
         // errors-after pattern — not torn through the live bars. `quiet`
@@ -208,15 +206,13 @@ impl RailHookRenderer {
     ) {
         self.remove_bar(name);
         if !is_condition_skip(reason) {
-            self.mp
-                .println(render::final_row(
-                    &RowFace::SkippedAttention,
-                    name,
-                    Some(&format!("skipped \u{2014} {reason}")),
-                    self.name_width,
-                    self.use_color,
-                ))
-                .ok();
+            self.persist_receipt(render::final_row(
+                &RowFace::SkippedAttention,
+                name,
+                Some(&format!("skipped \u{2014} {reason}")),
+                self.name_width,
+                self.use_color,
+            ));
         }
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -232,15 +228,13 @@ impl RailHookRenderer {
     /// it always runs the block renderer) — defensive parity.
     pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
         self.remove_bar(name);
-        self.mp
-            .println(render::final_row(
-                &RowFace::Failed,
-                name,
-                Some("cancelled"),
-                self.name_width,
-                self.use_color,
-            ))
-            .ok();
+        self.persist_receipt(render::final_row(
+            &RowFace::Failed,
+            name,
+            Some("cancelled"),
+            self.name_width,
+            self.use_color,
+        ));
         self.failed.insert(name.to_string());
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -253,15 +247,13 @@ impl RailHookRenderer {
     /// under the coordinator, visible via `daft hooks jobs`.
     pub fn show_background_job(&mut self, name: &str, _description: Option<&str>) {
         self.grow_width_to(name.chars().count());
-        self.mp
-            .println(render::final_row(
-                &RowFace::Background,
-                name,
-                None,
-                self.name_width,
-                self.use_color,
-            ))
-            .ok();
+        self.persist_receipt(render::final_row(
+            &RowFace::Background,
+            name,
+            None,
+            self.name_width,
+            self.use_color,
+        ));
     }
 
     pub fn push_finished_job(&mut self, entry: JobResultEntry) {
@@ -280,14 +272,24 @@ impl RailHookRenderer {
         // The runner follows every on_job_failure with a
         // `Job '<name>' failed…` message (runner::report_completion) — on
         // the rail that is redundant with the `✗` row and the deferred
-        // dump. Author-supplied `fail_text` and other messages pass through.
+        // dump. Author-supplied `fail_text` and other messages (e.g. the
+        // `⟳ N background jobs running` notice) pass through as section
+        // content, each line tucked into the gutter.
         let redundant = self
             .failed
             .iter()
             .any(|name| msg.starts_with(&format!("Job '{name}' failed")));
         if !redundant {
-            self.mp.println(msg).ok();
+            for line in msg.lines() {
+                self.mp.println(render::gutter(line, self.use_color)).ok();
+            }
         }
+    }
+
+    /// Persist a receipt row inside the rail gutter — every job row is
+    /// section content under the `├─` anchor.
+    fn persist_receipt(&self, row: String) {
+        self.mp.println(render::gutter(&row, self.use_color)).ok();
     }
 
     /// Bump the alignment column and re-pad every live bar when it grows.
@@ -396,7 +398,7 @@ mod tests {
         r.finish_job_success("build", Duration::from_millis(2100));
         assert_eq!(
             term.contents(),
-            "\u{251c}  post-create hooks\n\u{2713}  build  (2.1s)"
+            "\u{251c}\u{2500} post-create hooks\n\u{2502}  \u{2713}  build  (2.1s)"
         );
         let jobs = r.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
@@ -408,14 +410,14 @@ mod tests {
         let (mut r, term, _h) = harness(None, false);
         r.start_job("fmt", None);
         r.finish_job_success("fmt", Duration::from_millis(300));
-        assert_eq!(term.contents(), "\u{2713}  fmt");
+        assert_eq!(term.contents(), "\u{2502}  \u{2713}  fmt");
     }
 
     #[test]
     fn gate_embed_derives_anchor_from_phase_name() {
         let (r, term, _h) = harness(None, false);
         r.print_header("pre-push", Some("feat/x"));
-        assert_eq!(term.contents(), "\u{251c}  pre-push hooks");
+        assert_eq!(term.contents(), "\u{251c}\u{2500} pre-push hooks");
     }
 
     #[test]
@@ -425,7 +427,7 @@ mod tests {
         r.update_job_output("build", "error: lockfile out of date");
         r.update_job_output("build", "note: run bun install");
         r.finish_job_failure("build", Duration::from_millis(2900));
-        assert_eq!(term.contents(), "\u{2717}  build  (2.9s)");
+        assert_eq!(term.contents(), "\u{2502}  \u{2717}  build  (2.9s)");
         assert_eq!(
             deferred(&h),
             vec![
@@ -475,7 +477,7 @@ mod tests {
             r.finish_job_skipped("lint", reason, Duration::ZERO, false, None);
             assert_eq!(
                 term.contents(),
-                format!("\u{2193}  lint  skipped \u{2014} {reason}"),
+                format!("\u{2502}  \u{2193}  lint  skipped \u{2014} {reason}"),
                 "reason {reason:?} must render the attention row"
             );
         }
@@ -507,7 +509,10 @@ mod tests {
             outcome: JobOutcome::Background { description: None },
             duration: Duration::ZERO,
         });
-        assert_eq!(term.contents(), "\u{21bb}  check-todos  background");
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{21bb}  check-todos  background"
+        );
         assert!(matches!(
             r.take_finished_jobs()[0].outcome,
             JobOutcome::Background { .. }
@@ -522,14 +527,15 @@ mod tests {
         // Both report_completion shapes (with and without an exit code).
         r.println("Job 'build' failed (exit code: 2)");
         r.println("Job 'build' failed");
-        // Author fail_text and unrelated messages pass through.
+        // Author fail_text and unrelated messages pass through as section
+        // content — inside the gutter.
         r.println("see docs/build.md");
         let contents = term.contents();
         assert!(
             !contents.contains("Job 'build' failed"),
             "redundant runner line must be dropped: {contents}"
         );
-        assert!(contents.contains("see docs/build.md"));
+        assert!(contents.contains("\u{2502}  see docs/build.md"));
     }
 
     #[test]
