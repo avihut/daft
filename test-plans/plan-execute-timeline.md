@@ -148,6 +148,9 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       line survives into the receipt
 - [ ] Live: rolling window of `tailLines` grey lines per running job; the
       persisted receipt keeps the full log (never windowed)
+- [ ] Each job's thread closes with a bare `│` spacer line — after every
+      persisted log, and under every running job's live block (parallel blocks
+      never fuse)
 - [ ] Live annotation keeps the job's description while output rolls in the
       thread (no duplicated newest line)
 - [ ] Success log recedes grey; a failed job's log keeps default ink

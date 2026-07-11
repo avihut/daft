@@ -65,6 +65,10 @@ struct JobState {
     cmd_bar: Option<ProgressBar>,
     /// Rolling live-tail thread bars (verbose; capped at `tail_lines`).
     tail_bars: Vec<ProgressBar>,
+    /// Blank spacer bar at the bottom of the job's live block (verbose) so
+    /// parallel blocks don't fuse — the live twin of the receipt's trailing
+    /// spacer line.
+    trailer: Option<ProgressBar>,
     /// Everything the job printed, buffered for the receipt log (verbose)
     /// or the deferred failure dump (succinct).
     output: Vec<String>,
@@ -101,6 +105,8 @@ pub struct RailHookRenderer {
     /// Static thread-bar template: `│  │    {wide_msg}` (inner `│` a tier
     /// below the rail).
     thread_style: ProgressStyle,
+    /// The live block's bottom spacer (a bare rail `│`).
+    trailer_style: ProgressStyle,
     /// The job template with a dim `({elapsed})` suffix — swapped in by the
     /// promoter thread on silent jobs, swapped back on first output.
     promoted_style: ProgressStyle,
@@ -134,6 +140,11 @@ impl RailHookRenderer {
             embed.use_color,
         ))
         .expect("thread template is valid");
+        // The live trailer renders as the rail spacer. `{msg}` + a
+        // set_message at creation (the `add_line_bar` pattern): a bar that
+        // never receives a state poke never draws.
+        let trailer_style =
+            ProgressStyle::with_template("{msg}").expect("trailer template is valid");
         // The promoted template trades `wide_msg` for `msg` so the elapsed
         // suffix stays visible — a silent job's message is short (name, or
         // name + description), so truncation is not in play.
@@ -161,6 +172,7 @@ impl RailHookRenderer {
             section_label: embed.section_label,
             job_style,
             thread_style,
+            trailer_style,
             promoted_style,
             jobs: HashMap::new(),
             failed: HashSet::new(),
@@ -221,6 +233,19 @@ impl RailHookRenderer {
             None
         };
 
+        // The block's bottom air, so parallel live blocks don't fuse. Sits
+        // below the cmd bar; tails insert above it (`insert_after` the last
+        // tail / cmd / job bar places them before this one).
+        let trailer = if self.verbose && !self.quiet {
+            let anchor = cmd_bar.as_ref().unwrap_or(&bar);
+            let pb = self.mp.insert_after(anchor, ProgressBar::new_spinner());
+            pb.set_style(self.trailer_style.clone());
+            pb.set_message(render::spacer(self.use_color));
+            Some(pb)
+        } else {
+            None
+        };
+
         let output_seen = Arc::new(AtomicBool::new(false));
         let resolved = Arc::new(AtomicBool::new(false));
         let promoted = Arc::new(AtomicBool::new(false));
@@ -247,6 +272,7 @@ impl RailHookRenderer {
             bar,
             cmd_bar,
             tail_bars: Vec::new(),
+            trailer,
             output: Vec::new(),
             annotation: description.map(str::to_string),
             command_preview: command_preview.map(str::to_string),
@@ -489,7 +515,8 @@ impl RailHookRenderer {
         self.mp.println(render::gutter(&row, self.use_color)).ok();
     }
 
-    /// Verbose receipt log: the job's full thread, persisted under its row.
+    /// Verbose receipt log: the job's full thread, persisted under its row,
+    /// closed with one bare rail line so consecutive blocks don't fuse.
     /// Quiet suppresses the whole thread.
     fn persist_log(&self, state: Option<&JobState>, failed: bool) {
         if !self.verbose || self.quiet {
@@ -501,6 +528,7 @@ impl RailHookRenderer {
         for line in self.compose_log(state, failed) {
             self.mp.println(line).ok();
         }
+        self.mp.println(render::spacer(self.use_color)).ok();
     }
 
     /// The receipt log's lines. `❯ <command>` provenance and the
@@ -589,6 +617,9 @@ impl RailHookRenderer {
             self.mp.remove(pb);
         }
         for pb in &state.tail_bars {
+            self.mp.remove(pb);
+        }
+        if let Some(pb) = &state.trailer {
             self.mp.remove(pb);
         }
         Some(state)
@@ -859,7 +890,8 @@ mod tests {
             "\u{2502}  \u{2713}  build  (2.1s)\n\
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
              \u{2502}  \u{2502}    compiling daft\n\
-             \u{2502}  \u{2502}    finished dev profile"
+             \u{2502}  \u{2502}    finished dev profile\n\
+             \u{2502}"
         );
     }
 
@@ -928,7 +960,8 @@ mod tests {
             term.contents(),
             "\u{2502}  \u{2717}  build  (2.9s)\n\
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
-             \u{2502}  \u{2502}    error: lockfile out of date"
+             \u{2502}  \u{2502}    error: lockfile out of date\n\
+             \u{2502}"
         );
         assert_eq!(
             deferred(&h),
@@ -984,7 +1017,8 @@ mod tests {
             term.contents(),
             "\u{2502}  \u{2713}  build\n\
              \u{2502}  \u{2502}    \u{276f} echo one \u{2026}\n\
-             \u{2502}  \u{2502}    (no output)"
+             \u{2502}  \u{2502}    (no output)\n\
+             \u{2502}"
         );
     }
 
@@ -997,7 +1031,8 @@ mod tests {
             term.contents(),
             "\u{2502}  \u{2713}  build\n\
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
-             \u{2502}  \u{2502}    (no output)"
+             \u{2502}  \u{2502}    (no output)\n\
+             \u{2502}"
         );
     }
 
