@@ -5,7 +5,134 @@
 //! variants like `Status`.
 
 use std::fmt;
+use std::hash::Hash;
 use std::str::FromStr;
+
+/// Shared contract for column enums selectable through the `--columns`
+/// replace/modifier grammar. Implementors plug into [`parse_selection`],
+/// which owns the grammar; families only supply names, ordering, defaults,
+/// and any bespoke token validation.
+trait SelectableColumn: Copy + Eq + Hash + FromStr<Err = String> {
+    /// Canonical display position (orders modifier-mode results).
+    fn canonical_position(self) -> u8;
+    /// CLI-facing name, used in error messages.
+    fn cli_name(self) -> &'static str;
+}
+
+/// Family-specific wording for the mixed-mode error — flags say
+/// `--columns branch,path`, config values say `age,path`.
+struct ModeExamples {
+    replace: &'static str,
+    modifier: &'static str,
+}
+
+/// Parse a comma-separated column spec: replace mode (`a,b,c` — exact set
+/// and order) or modifier mode (`+a,-b` applied to `defaults`, result in
+/// canonical order). Returns the resolved columns and whether the user chose
+/// an explicit set (replace mode). `validate_token` runs before each name
+/// parse so families can inject bespoke errors (the status-column check on
+/// sync/prune/clone).
+fn parse_selection<C: SelectableColumn>(
+    input: &str,
+    defaults: &[C],
+    examples: ModeExamples,
+    validate_token: impl Fn(&str) -> Result<(), String>,
+) -> Result<(Vec<C>, bool), String> {
+    let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
+    if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
+        return Err("no columns specified".to_string());
+    }
+
+    let has_modifier = tokens
+        .iter()
+        .any(|t| t.starts_with('+') || t.starts_with('-'));
+    let has_plain = tokens
+        .iter()
+        .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
+
+    if has_modifier && has_plain {
+        return Err(format!(
+            "cannot mix column names with +/- modifiers\n  \
+             use either replace mode:   {}\n  \
+             or modifier mode:          {}",
+            examples.replace, examples.modifier
+        ));
+    }
+
+    if has_modifier {
+        let columns = parse_modifier_tokens(&tokens, defaults, &validate_token)?;
+        Ok((columns, false))
+    } else {
+        let columns = parse_replace_tokens(&tokens, &validate_token)?;
+        Ok((columns, true))
+    }
+}
+
+fn parse_replace_tokens<C: SelectableColumn>(
+    tokens: &[&str],
+    validate_token: &impl Fn(&str) -> Result<(), String>,
+) -> Result<Vec<C>, String> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        validate_token(token)?;
+        let col: C = token.parse()?;
+        if !seen.insert(col) {
+            return Err(format!("duplicate column '{}'", col.cli_name()));
+        }
+        result.push(col);
+    }
+
+    if result.is_empty() {
+        return Err("no columns specified".to_string());
+    }
+
+    Ok(result)
+}
+
+fn parse_modifier_tokens<C: SelectableColumn>(
+    tokens: &[&str],
+    defaults: &[C],
+    validate_token: &impl Fn(&str) -> Result<(), String>,
+) -> Result<Vec<C>, String> {
+    let mut active: std::collections::HashSet<C> = defaults.iter().copied().collect();
+
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        let (add, name) = if let Some(rest) = token.strip_prefix('+') {
+            (true, rest)
+        } else if let Some(rest) = token.strip_prefix('-') {
+            (false, rest)
+        } else {
+            return Err(format!("expected +/- prefix on '{token}'"));
+        };
+
+        validate_token(name)?;
+        let col: C = name.parse()?;
+        if add {
+            active.insert(col);
+        } else {
+            active.remove(&col);
+        }
+    }
+
+    if active.is_empty() {
+        let modifiers = tokens.join(",");
+        return Err(format!(
+            "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
+        ));
+    }
+
+    let mut result: Vec<C> = active.into_iter().collect();
+    result.sort_by_key(|c| c.canonical_position());
+    Ok(result)
+}
 
 /// A column that can be selected via `--columns` on list, sync, and prune.
 ///
@@ -173,19 +300,29 @@ pub enum CommandKind {
 
 /// The resolved column list with mode information.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedColumns {
-    pub columns: Vec<ListColumn>,
+pub struct ResolvedColumns<C = ListColumn> {
+    pub columns: Vec<C>,
     /// True if the user explicitly chose columns (replace mode).
     /// False if they used modifier mode or if defaults are used.
     pub explicit: bool,
 }
 
-impl ResolvedColumns {
-    pub fn defaults(defaults: &[ListColumn]) -> Self {
+impl<C: Copy> ResolvedColumns<C> {
+    pub fn defaults(defaults: &[C]) -> Self {
         Self {
             columns: defaults.to_vec(),
             explicit: false,
         }
+    }
+}
+
+impl SelectableColumn for ListColumn {
+    fn canonical_position(self) -> u8 {
+        ListColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        ListColumn::cli_name(self)
     }
 }
 
@@ -195,107 +332,21 @@ pub struct ColumnSelection;
 impl ColumnSelection {
     /// Parse a comma-separated column spec into a resolved column list.
     pub fn parse(input: &str, command: CommandKind) -> Result<ResolvedColumns, String> {
-        let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
-        if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
-            return Err("no columns specified".to_string());
-        }
-
-        let has_modifier = tokens
-            .iter()
-            .any(|t| t.starts_with('+') || t.starts_with('-'));
-        let has_plain = tokens
-            .iter()
-            .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
-
-        if has_modifier && has_plain {
-            return Err("cannot mix column names with +/- modifiers\n  \
-                 use either replace mode:   --columns branch,path,age\n  \
-                 or modifier mode:          --columns -annotation,-remote"
-                .to_string());
-        }
-
-        if has_modifier {
-            let columns = Self::parse_modifier(&tokens, command)?;
-            Ok(ResolvedColumns {
-                columns,
-                explicit: false,
-            })
-        } else {
-            let columns = Self::parse_replace(&tokens, command)?;
-            Ok(ResolvedColumns {
-                columns,
-                explicit: true,
-            })
-        }
-    }
-
-    fn parse_replace(tokens: &[&str], command: CommandKind) -> Result<Vec<ListColumn>, String> {
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            Self::check_status_token(token, command)?;
-            let col: ListColumn = token.parse()?;
-            if !seen.insert(col) {
-                return Err(format!("duplicate column '{}'", col.cli_name()));
-            }
-            result.push(col);
-        }
-
-        if result.is_empty() {
-            return Err("no columns specified".to_string());
-        }
-
-        Ok(result)
-    }
-
-    fn parse_modifier(tokens: &[&str], command: CommandKind) -> Result<Vec<ListColumn>, String> {
         let defaults = match command {
             CommandKind::List => ListColumn::list_defaults(),
             CommandKind::Sync | CommandKind::Prune => ListColumn::tui_defaults(),
             CommandKind::Clone => ListColumn::clone_defaults(),
         };
-        let mut active: std::collections::HashSet<ListColumn> = defaults.iter().copied().collect();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let (prefix, name) = if let Some(rest) = token.strip_prefix('+') {
-                ('+', rest)
-            } else if let Some(rest) = token.strip_prefix('-') {
-                ('-', rest)
-            } else {
-                return Err(format!("expected +/- prefix on '{token}'"));
-            };
-
-            Self::check_status_token(name, command)?;
-            let col: ListColumn = name.parse()?;
-
-            match prefix {
-                '+' => {
-                    active.insert(col);
-                }
-                '-' => {
-                    active.remove(&col);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        if active.is_empty() {
-            let modifiers = tokens.join(",");
-            return Err(format!(
-                "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
-            ));
-        }
-
-        let mut result: Vec<ListColumn> = active.into_iter().collect();
-        result.sort_by_key(|c| c.canonical_position());
-        Ok(result)
+        let (columns, explicit) = parse_selection(
+            input,
+            defaults,
+            ModeExamples {
+                replace: "--columns branch,path,age",
+                modifier: "--columns -annotation,-remote",
+            },
+            |name| Self::check_status_token(name, command),
+        )?;
+        Ok(ResolvedColumns { columns, explicit })
     }
 
     fn check_status_token(name: &str, command: CommandKind) -> Result<(), String> {
@@ -411,6 +462,16 @@ impl FromStr for CompletionColumn {
     }
 }
 
+impl SelectableColumn for CompletionColumn {
+    fn canonical_position(self) -> u8 {
+        CompletionColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        CompletionColumn::cli_name(self)
+    }
+}
+
 /// Parser for `daft.completions.branches.columns` config values.
 pub struct CompletionColumnSelection;
 
@@ -418,94 +479,16 @@ impl CompletionColumnSelection {
     /// Parse a comma-separated column spec into a resolved column list.
     /// Supports replace mode (`age,path`) and modifier mode (`+tracked-changes,-author`).
     pub fn parse(input: &str) -> Result<Vec<CompletionColumn>, String> {
-        let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
-        if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
-            return Err("no columns specified".to_string());
-        }
-
-        let has_modifier = tokens
-            .iter()
-            .any(|t| t.starts_with('+') || t.starts_with('-'));
-        let has_plain = tokens
-            .iter()
-            .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
-
-        if has_modifier && has_plain {
-            return Err("cannot mix column names with +/- modifiers\n  \
-                 use either replace mode:   age,path,tracked-changes\n  \
-                 or modifier mode:          +tracked-changes,-author"
-                .to_string());
-        }
-
-        if has_modifier {
-            Self::parse_modifier(&tokens)
-        } else {
-            Self::parse_replace(&tokens)
-        }
-    }
-
-    fn parse_replace(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let col: CompletionColumn = token.parse()?;
-            if !seen.insert(col) {
-                return Err(format!("duplicate column '{}'", col.cli_name()));
-            }
-            result.push(col);
-        }
-
-        if result.is_empty() {
-            return Err("no columns specified".to_string());
-        }
-
-        Ok(result)
-    }
-
-    fn parse_modifier(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
-        let defaults = CompletionColumn::completion_defaults();
-        let mut active: std::collections::HashSet<CompletionColumn> =
-            defaults.iter().copied().collect();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let (prefix, name) = if let Some(rest) = token.strip_prefix('+') {
-                ('+', rest)
-            } else if let Some(rest) = token.strip_prefix('-') {
-                ('-', rest)
-            } else {
-                return Err(format!("expected +/- prefix on '{token}'"));
-            };
-
-            let col: CompletionColumn = name.parse()?;
-
-            match prefix {
-                '+' => {
-                    active.insert(col);
-                }
-                '-' => {
-                    active.remove(&col);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        if active.is_empty() {
-            let modifiers = tokens.join(",");
-            return Err(format!(
-                "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
-            ));
-        }
-
-        let mut result: Vec<CompletionColumn> = active.into_iter().collect();
-        result.sort_by_key(|c| c.canonical_position());
-        Ok(result)
+        let (columns, _explicit) = parse_selection(
+            input,
+            CompletionColumn::completion_defaults(),
+            ModeExamples {
+                replace: "age,path,tracked-changes",
+                modifier: "+tracked-changes,-author",
+            },
+            |_| Ok(()),
+        )?;
+        Ok(columns)
     }
 }
 
