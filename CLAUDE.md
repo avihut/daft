@@ -423,6 +423,28 @@ the input is per-run and the next push to master returns to auto-compute. Useful
 when conventional-commit detection picks a different bump than you want (e.g.
 demote a `feat:` from minor to patch).
 
+## Repo-Aware Command Grammar
+
+Structure commands repo-aware: anything that can act on another cataloged repo
+takes exactly one of two shapes.
+
+1. **Go-shape (positional, preferred)** — `daft go <repo> [<branch>]`,
+   `daft list [<repo>]`. Only when the slot is free (previously an error — never
+   reinterpret an existing positional; `update`/`exec` targets are variadic
+   worktree selectors) and the command is read-only, so a wrong guess is
+   harmless. Mutating verbs never take a positional repo.
+2. **Exec-shape (flags, fallback)** — `--repo <name>` (long-only) plus
+   `--all-repos`, as in `update`/`exec`/`prune`. Positionals keep their local
+   meaning; bare `--repo` targets the repo's default-branch worktree.
+
+Either way: `--repo` stays the canonical spelling (the positional is sugar,
+clap-exclusive with it); resolve through `catalog::resolve_repo_arg` /
+`fleet::for_each_repo` — never hand-rolled lookups; positional resolution is
+repo-only outside `go` (hard error on a miss); wire completions via
+`command_has_repo_flag` / `command_has_repo_positional`
+(`src/commands/completions/mod.rs`); fleet forms work from outside any repo and
+never prompt interactively.
+
 ## Adding a New Command
 
 1. Create `src/commands/<name>.rs` with clap `Args` struct (include `about`,
@@ -441,6 +463,10 @@ demote a `feat:` from minor to patch).
    wrapper: write `DAFT_CD_FILE` from the binary AND add the verb to the
    `daft()` wrapper in `src/commands/shell_init.rs` (both bash/zsh and fish).
    See the Shell integration section for the full contract.
+10. **Decide how the command addresses other cataloged repos** — follow the
+    Repo-Aware Command Grammar section above (go-shape positional when the slot
+    is free and the command is read-only; exec-shape `--repo`/ `--all-repos`
+    flags otherwise).
 
 ## Adding a New DB-backed Feature
 
