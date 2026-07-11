@@ -901,6 +901,209 @@ mod tests {
         );
     }
 
+    // ── planned section spacers (#651 field test) ────────────────────────
+    //
+    // A top-level hook row opens as a `├─` section when it runs; its `│`
+    // spacers are laid down with the plan, so the committed plan shows the
+    // receipt's rail rhythm and starting a section never shifts the rows
+    // below it.
+
+    #[test]
+    fn plan_lays_down_section_spacers_and_sections_fill_in_place() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PreRemoveHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::RemoveWorktree))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::DeleteLocalBranch))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostRemoveHooks))),
+        ]));
+        // The committed plan already carries the receipt's rhythm: a `│`
+        // everywhere a section will open — none doubled with the header's
+        // spacer (first slot) or the bottom spacer (last slot).
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             \u{25cb}  pre-remove hooks\n\
+             \u{2502}\n\
+             \u{25cb}  Remove worktree\n\
+             \u{25cb}  Delete branch\n\
+             \u{2502}\n\
+             \u{25cb}  post-remove hooks\n\
+             \u{2502}\n\
+             \u{2514}  \u{2026}"
+        );
+
+        let pre = StepKey::new(StageId::PreRemoveHooks);
+        let embed = tl.handle().begin_hook_embed(&pre).expect("region live");
+        embed
+            .mp
+            .println("\u{251c}\u{2500} pre-remove hooks")
+            .unwrap();
+        embed
+            .mp
+            .println("\u{2502}  \u{2713}  direnv-revoke")
+            .unwrap();
+        tl.close_hook_embed();
+        complete(&mut tl, &StepKey::new(StageId::RemoveWorktree));
+        complete(&mut tl, &StepKey::new(StageId::DeleteLocalBranch));
+        let post = StepKey::new(StageId::PostRemoveHooks);
+        let embed = tl.handle().begin_hook_embed(&post).expect("region live");
+        embed
+            .mp
+            .println("\u{251c}\u{2500} post-remove hooks")
+            .unwrap();
+        embed.mp.println("\u{2502}  \u{2713}  scrub-cache").unwrap();
+        tl.close_hook_embed();
+        tl.finish("Removed in 0.1s");
+        // Every `│` in the receipt was already in the plan: the sections
+        // filled their pre-spaced slots without inserting a line.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} pre-remove hooks\n\
+             \u{2502}  \u{2713}  direnv-revoke\n\
+             \u{2502}\n\
+             \u{2713}  Removed worktree\n\
+             \u{2713}  Deleted branch\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} post-remove hooks\n\
+             \u{2502}  \u{2713}  scrub-cache\n\
+             \u{2502}\n\
+             \u{2514}  Removed in 0.1s"
+        );
+    }
+
+    #[test]
+    fn attention_skipped_hook_keeps_its_planned_frame() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PreRemoveHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::RemoveWorktree))),
+        ]));
+        tl.resolve_hook_step(
+            &StepKey::new(StageId::PreRemoveHooks),
+            true,
+            Some("Repository not trusted"),
+        );
+        complete(&mut tl, &StepKey::new(StageId::RemoveWorktree));
+        tl.finish("Removed in 0.1s");
+        // The section never opened, but the plan promised it air — the `↓`
+        // row keeps the planned frame instead of yanking lines out.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             \u{2193}  pre-remove hooks  skipped \u{2014} Repository not trusted\n\
+             \u{2502}\n\
+             \u{2713}  Removed worktree\n\
+             \u{2502}\n\
+             \u{2514}  Removed in 0.1s"
+        );
+    }
+
+    #[test]
+    fn silently_skipped_hook_takes_its_planned_spacers_along() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PreRemoveHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::RemoveWorktree))),
+        ]));
+        // Hook-level `skip:` condition — the row and both its planned
+        // spacers vanish together, no residue.
+        tl.resolve_hook_step(
+            &StepKey::new(StageId::PreRemoveHooks),
+            true,
+            Some("skip: true"),
+        );
+        complete(&mut tl, &StepKey::new(StageId::RemoveWorktree));
+        tl.finish("Removed in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             \u{2713}  Removed worktree\n\
+             \u{2502}\n\
+             \u{2514}  Removed in 0.1s"
+        );
+    }
+
+    #[test]
+    fn adjacent_hook_phases_share_one_planned_spacer() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PreRemoveHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostRemoveHooks))),
+        ]));
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             \u{25cb}  pre-remove hooks\n\
+             \u{2502}\n\
+             \u{25cb}  post-remove hooks\n\
+             \u{2502}\n\
+             \u{2514}  \u{2026}"
+        );
+    }
+
+    #[test]
+    fn hook_row_before_a_group_leans_on_its_spacer() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks))),
+            Row::Group {
+                label: "shared files".into(),
+            },
+            Row::Step(
+                StepSpec::new(StepKey::scoped(StageId::SharedFile, ".env")).with_label(".env"),
+            ),
+            Row::EndGroup,
+        ]));
+        // The group's own spacer provides the gap below the hook row —
+        // exactly one `│` between them in the plan.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Opening feat/x\n\
+             \u{2502}\n\
+             \u{25cb}  post-create hooks\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} shared files\n\
+             \u{2502}  \u{25cb}  .env\n\
+             \u{2502}\n\
+             \u{2514}  \u{2026}"
+        );
+    }
+
+    #[test]
+    fn section_reconnect_lands_before_a_trailing_note() {
+        let (mut tl, term) = captured("Removing feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostRemoveHooks))),
+            Row::Note {
+                text: "no remote branch".into(),
+            },
+        ]));
+        let post = StepKey::new(StageId::PostRemoveHooks);
+        let embed = tl.handle().begin_hook_embed(&post).expect("region live");
+        embed.mp.println("block content").unwrap();
+        tl.close_hook_embed();
+        tl.finish("Removed in 0.1s");
+        // A note is visible content too: the planned below-`│` persists as
+        // the reconnect even though no *step* remains.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing feat/x\n\
+             \u{2502}\n\
+             block content\n\
+             \u{2502}\n\
+             \u{25cb}  no remote branch\n\
+             \u{2502}\n\
+             \u{2514}  Removed in 0.1s"
+        );
+    }
+
     #[test]
     fn span_notes_and_not_reached_rows_stay_in_the_gutter() {
         // Every face a span row can persist with — a note, a completed step,

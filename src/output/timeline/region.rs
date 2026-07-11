@@ -26,7 +26,8 @@ pub(super) const TICK_CHARS: &str =
 pub struct HookEmbed {
     pub mp: MultiProgress,
     /// Insertion anchor: hook job bars go `insert_before(anchor)`. Always a
-    /// live rail bar (first pending row, else the bottom spacer), which
+    /// live rail bar (the section's own planned below-`│` when the plan laid
+    /// one down, else the first pending row, else the bottom spacer), which
     /// stays alive for the whole splice — `insert_before` panics on a
     /// removed anchor, so liveness is a hard invariant.
     pub anchor: ProgressBar,
@@ -66,6 +67,15 @@ enum Slot {
         /// Inside a group span: every face of this row (pending, active,
         /// final) renders in the rail gutter.
         in_group: bool,
+        /// Pre-laid section spacers for top-level hook-phase rows: the `│`
+        /// above/below where the section will open, materialized with the
+        /// plan so the committed plan carries the receipt's rail rhythm and
+        /// opening the section never shifts the rows below it (#651 field
+        /// test: remove's pending half read crammed while the executed half
+        /// had air). `None` where a neighbor already provides the gap, and
+        /// after consumption.
+        spacer_above: Option<ProgressBar>,
+        spacer_below: Option<ProgressBar>,
     },
 }
 
@@ -100,6 +110,10 @@ pub(super) struct TimelineCore {
     last_persisted_was_spacer: bool,
     /// A hook block is currently rendering in place of one of our rows.
     hook_block_open: bool,
+    /// The open section's planned below-`│`, taken from its slot at
+    /// `begin_hook_embed` so the close path persists it exactly once (and
+    /// job bars can anchor above it). `None` for gate embeds.
+    open_hook_below: Option<ProgressBar>,
 }
 
 impl TimelineCore {
@@ -131,12 +145,13 @@ impl TimelineCore {
 
         let static_style = line_style();
         let mut last_persisted_was_spacer = true;
-        let mut slots = Vec::with_capacity(plan.rows.len());
+        let mut slots: Vec<Slot> = Vec::with_capacity(plan.rows.len());
         // Whether the row being materialized sits inside an open group span
         // (`Group` opens, `EndGroup` closes) — such rows render in the
         // gutter, tucked under their anchor.
         let mut in_group = false;
-        for row in plan.rows {
+        let mut rows = plan.rows.into_iter().peekable();
+        while let Some(row) = rows.next() {
             let slot = match row {
                 Row::Group { label } => {
                     in_group = true;
@@ -184,8 +199,25 @@ impl TimelineCore {
                             bar: None,
                             state: StepState::Resolved,
                             in_group,
+                            spacer_above: None,
+                            spacer_below: None,
                         }
                     } else {
+                        // A top-level hook phase opens as a `├─` section when
+                        // it runs; its `│` spacers are part of the plan's
+                        // shape, so they are laid down now. Skipped where a
+                        // neighbor already provides the gap: the header or a
+                        // preceding section above, the bottom spacer or a
+                        // group's own spacer below.
+                        let section = !in_group && spec.key.id.is_hook_phase();
+                        let spacer_above = (section
+                            && !slots.is_empty()
+                            && !matches!(
+                                slots.last(),
+                                Some(Slot::Step { spec: s, in_group: false, .. })
+                                    if s.key.id.is_hook_phase()
+                            ))
+                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
                         let line = render::pending_row(
                             &display_label(&spec, StepPhase::Pending),
                             spec.annotation.as_deref(),
@@ -195,11 +227,16 @@ impl TimelineCore {
                         );
                         let bar =
                             add_line_bar(&mp, &static_style, in_span(line, in_group, use_color));
+                        let spacer_below = (section
+                            && matches!(rows.peek(), Some(Row::Note { .. } | Row::Step(_))))
+                        .then(|| add_line_bar(&mp, &static_style, render::spacer(use_color)));
                         Slot::Step {
                             spec,
                             bar: Some(bar),
                             state: StepState::Pending,
                             in_group,
+                            spacer_above,
+                            spacer_below,
                         }
                     }
                 }
@@ -240,6 +277,7 @@ impl TimelineCore {
             _echo_guard: echo_guard,
             last_persisted_was_spacer,
             hook_block_open: false,
+            open_hook_below: None,
         }
     }
 
@@ -260,6 +298,11 @@ impl TimelineCore {
     fn reconnect_after_block(&mut self) {
         if self.hook_block_open {
             self.hook_block_open = false;
+            // A section's planned below-`│` hands its line to the reconnect
+            // (net zero); gate embeds, which planned none, insert one.
+            if let Some(bar) = self.open_hook_below.take() {
+                self.mp.remove(&bar);
+            }
             self.mp.println(render::spacer(self.use_color)).ok();
             self.last_persisted_was_spacer = true;
         }
@@ -281,6 +324,7 @@ impl TimelineCore {
             bar,
             state,
             in_group,
+            ..
         } = &mut self.slots[idx]
             && let Some(bar) = bar.as_ref()
         {
@@ -329,11 +373,24 @@ impl TimelineCore {
             bar,
             state,
             in_group,
+            spacer_above,
+            spacer_below,
         } = &mut self.slots[idx]
         else {
             return;
         };
         let in_group = *in_group;
+        // A section-to-be resolving as a plain row (attention skip) keeps
+        // its planned `│` frame — persisted around the row below; a silent
+        // resolution takes the spacers with it.
+        let above = spacer_above.take();
+        let below = spacer_below.take();
+        if let Some(b) = &above {
+            self.mp.remove(b);
+        }
+        if let Some(b) = &below {
+            self.mp.remove(b);
+        }
         let started = match state {
             StepState::Active { started } => Some(*started),
             _ => None,
@@ -381,8 +438,15 @@ impl TimelineCore {
                     super::plan::subject_inks_for(spec.key.id),
                     use_color,
                 );
+                if above.is_some() && !self.last_persisted_was_spacer {
+                    self.mp.println(render::spacer(use_color)).ok();
+                }
                 self.mp.println(in_span(line, in_group, use_color)).ok();
                 self.last_persisted_was_spacer = false;
+                if below.is_some() {
+                    self.mp.println(render::spacer(use_color)).ok();
+                    self.last_persisted_was_spacer = true;
+                }
             }
         }
         *state = StepState::Resolved;
@@ -406,6 +470,7 @@ impl TimelineCore {
             bar,
             state,
             in_group,
+            ..
         } = &mut self.slots[idx]
         {
             spec.annotation = Some(annotation);
@@ -478,13 +543,25 @@ impl TimelineCore {
         self.clear_detail();
         let mut section_label = None;
         if let Slot::Step {
-            spec, bar, state, ..
+            spec,
+            bar,
+            state,
+            spacer_above,
+            spacer_below,
+            ..
         } = &mut self.slots[idx]
         {
             if let Some(taken) = bar.take() {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
             }
+            // The planned section spacers hand over to the block: the `│`
+            // above persists via the print below (net zero — its bar leaves
+            // here), the one below is stashed for the close path.
+            if let Some(sp) = spacer_above.take() {
+                self.mp.remove(&sp);
+            }
+            self.open_hook_below = spacer_below.take();
             // The consumed row's own label names the section for the
             // succinct renderer. Gate embeds (pre-push mid-Push) keep their
             // step label for the outcome row below — no section label.
@@ -504,7 +581,12 @@ impl TimelineCore {
             self.last_persisted_was_spacer = true;
         }
         self.hook_block_open = true;
-        let anchor = self.first_live_bar_after(idx);
+        // Job bars land above the section's own below-`│` when the plan
+        // laid one down; gate embeds fall back to the next live rail bar.
+        let anchor = self
+            .open_hook_below
+            .clone()
+            .unwrap_or_else(|| self.first_live_bar_after(idx));
         Some(HookEmbed {
             mp: self.mp.clone(),
             anchor,
@@ -521,6 +603,18 @@ impl TimelineCore {
             return;
         }
         self.hook_block_open = false;
+        // The section's planned below-`│` persists as the reconnect (net
+        // zero — the plan already showed it, and its presence encodes that
+        // visible content follows, notes included).
+        if let Some(bar) = self.open_hook_below.take() {
+            self.mp.remove(&bar);
+            self.mp.println(render::spacer(self.use_color)).ok();
+            self.last_persisted_was_spacer = true;
+            return;
+        }
+        // No planned spacer (a gate embed, or a section whose gap the next
+        // group's own spacer provides): insert one only while plan rows
+        // remain below.
         let steps_remain = self
             .slots
             .iter()
@@ -540,6 +634,9 @@ impl TimelineCore {
     pub(super) fn finish(mut self, footer_text: &str, unresolved: UnresolvedPolicy) {
         // The closing spacer below doubles as the block reconnect.
         self.hook_block_open = false;
+        if let Some(bar) = self.open_hook_below.take() {
+            self.mp.remove(&bar);
+        }
         self.clear_detail();
         let use_color = self.use_color;
         let label_width = self.label_width;
@@ -574,6 +671,8 @@ impl TimelineCore {
                         bar,
                         state,
                         in_group,
+                        spacer_above,
+                        spacer_below,
                     } = &mut self.slots[i]
                     else {
                         unreachable!("matched Step above");
@@ -581,6 +680,16 @@ impl TimelineCore {
                     let taken = bar.take().expect("matched Some above");
                     taken.disable_steady_tick();
                     self.mp.remove(&taken);
+                    // A never-reached section-to-be keeps its planned `│`
+                    // frame in the receipt; a dropped one takes it along.
+                    let above = spacer_above.take();
+                    let below = spacer_below.take();
+                    if let Some(b) = &above {
+                        self.mp.remove(b);
+                    }
+                    if let Some(b) = &below {
+                        self.mp.remove(b);
+                    }
                     match unresolved {
                         UnresolvedPolicy::NotReached => {
                             let line = render::final_row(
@@ -591,13 +700,35 @@ impl TimelineCore {
                                 render::PLAIN_INKS,
                                 use_color,
                             );
+                            if above.is_some() && !self.last_persisted_was_spacer {
+                                self.mp.println(render::spacer(use_color)).ok();
+                            }
                             self.mp.println(in_span(line, *in_group, use_color)).ok();
+                            self.last_persisted_was_spacer = false;
+                            if below.is_some() {
+                                self.mp.println(render::spacer(use_color)).ok();
+                                self.last_persisted_was_spacer = true;
+                            }
                         }
                         UnresolvedPolicy::Drop => {}
                     }
                     *state = StepState::Resolved;
                 }
-                Slot::Step { bar: None, .. } => {}
+                Slot::Step { bar: None, .. } => {
+                    // Insurance for the zero-live-bars teardown invariant:
+                    // a resolved row's spacers are consumed with it, but a
+                    // stray one must never outlive the region.
+                    if let Slot::Step {
+                        spacer_above,
+                        spacer_below,
+                        ..
+                    } = &mut self.slots[i]
+                    {
+                        for b in spacer_above.take().into_iter().chain(spacer_below.take()) {
+                            self.mp.remove(&b);
+                        }
+                    }
+                }
             }
         }
         if let Some(g) = pending_group {
@@ -765,15 +896,19 @@ impl TimelineCore {
         self.slots[idx + 1..]
             .iter()
             .find_map(|s| match s {
-                // A group's topmost live bar is its spacer: content inserted
-                // `insert_before` this anchor must land above the blank line,
-                // not between it and the `├` — below the blank it would read
-                // as part of the next section.
+                // A group's (or section-to-be's) topmost live bar is its
+                // spacer: content inserted `insert_before` this anchor must
+                // land above the blank line, not between it and the row —
+                // below the blank it would read as part of the next section.
                 Slot::Group {
                     spacer: Some(b), ..
                 }
                 | Slot::Group { bar: Some(b), .. }
                 | Slot::Note { bar: Some(b), .. }
+                | Slot::Step {
+                    spacer_above: Some(b),
+                    ..
+                }
                 | Slot::Step { bar: Some(b), .. } => Some(b.clone()),
                 _ => None,
             })

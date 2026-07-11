@@ -49,7 +49,10 @@ rail persists in your scrollback as a receipt.
 
 Rows belonging to a section render tucked inside the rail (`│  ✓  .env`), so the
 rail stays a continuous wire and each `├─` anchor visibly carries its children —
-in the pending plan, while running, and in the finished receipt.
+in the pending plan, while running, and in the finished receipt. A hook phase
+that will open as a section already owns its blank rail lines in the committed
+plan, so the plan carries the receipt's rhythm and no row shifts when the
+section starts to fill.
 
 Color follows one grammar. State lives in the glyph (green done, bold-red
 failed, yellow attention, cyan spinner) and daft's own vocabulary stays plain,
@@ -93,16 +96,16 @@ identity ink.
 - `daft remove` lists steps in true execution order — the remote branch is
   deleted first (it is the hardest to recreate), then the worktree, then the
   local branch. Multi-branch removals group rows under `├─` branch anchors.
-- Lifecycle hooks appear as a plan row; when they actually run, the row becomes
-  a `├─ post-create hooks` section with one receipt row per job. While a job
-  runs, its latest output line rides the spinner as a dim annotation — one line
-  of liveness per job. A finished job resolves green with the usual dim
-  duration; a failed one turns its row red and its captured output prints below
-  the rail footer. Jobs excluded with `--skip-hooks` (and jobs skipped because a
-  dependency failed) render yellow `↓` rows; jobs skipped by their own
-  `skip:`/`only:` conditions leave no trace, and a whole phase skipped that way
-  vanishes with them. Background jobs get a blue `↻ name  background` receipt —
-  `daft hooks jobs` manages them from there.
+- Lifecycle hooks appear as a plan row framed by its section's rail gaps; when
+  they actually run, the row becomes a `├─ post-create hooks` section in place,
+  with one receipt row per job. While a job runs, its latest output line rides
+  the spinner as a dim annotation — one line of liveness per job. A finished job
+  resolves green with the usual dim duration; a failed one turns its row red and
+  its captured output prints below the rail footer. Jobs excluded with
+  `--skip-hooks` (and jobs skipped because a dependency failed) render yellow
+  `↓` rows; jobs skipped by their own `skip:`/`only:` conditions leave no trace,
+  and a whole phase skipped that way vanishes with them. Background jobs get a
+  blue `↻ name  background` receipt — `daft hooks jobs` manages them from there.
 - Pass `-v` — or set `daft.hooks.output.verbose` — for the full hook block:
   version banner, rolling output tails, every job's complete output, and the
   summary, welded into the rail (`├────┐`) exactly as the block renders

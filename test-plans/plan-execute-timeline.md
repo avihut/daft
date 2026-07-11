@@ -78,9 +78,13 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 
 ## Hook sections (succinct default)
 
-- [ ] Hook step pending as `○ post-create hooks` (on the spine); when the phase
-      runs it becomes a `│` spacer + `├─ post-create hooks` anchor with one
-      gutter row per job (`│  ✓  <job>`); pending rows + `└ …` stay visible
+- [ ] Hook step pending as `○ post-create hooks` (on the spine), already framed
+      by its section's `│` gaps — the committed plan shows the receipt's rail
+      rhythm (remove: both phases framed; start: one gap above the hook row;
+      none doubled with the header's, the footer's, or a group's own spacer)
+- [ ] When the phase runs, the pending row becomes the `├─ post-create hooks`
+      anchor in place with one gutter row per job (`│  ✓  <job>`) — no row below
+      shifts (only job rows grow the section); pending rows + `└ …` stay visible
       below while jobs run
 - [ ] Active job row: `│  ⠹  name  <latest output>` — gutter, spinner, and the
       job's latest output line as a dim annotation updating in place; long lines
@@ -112,10 +116,12 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       with its own spacer + anchor, no doubled spacers between them
 - [ ] Sequential (piped) hooks: receipt rows may persist before a later, wider
       job name raises the alignment column — accepted cosmetic limit
-- [ ] No hooks configured: the hook row vanishes silently
-- [ ] Untrusted repo: `↓ post-create hooks  skipped — Repository not trusted`,
-      and the contextual `Untrusted repo — …` notice (#654: trust + replay
-      suggestions) persists above the rail, not torn through the live bars
+- [ ] No hooks configured: the hook row vanishes silently, taking its planned
+      `│` gaps with it — no stray blank rail lines
+- [ ] Untrusted repo: `↓ post-create hooks  skipped — Repository not trusted`
+      keeping the planned `│` frame around the row, and the contextual
+      `Untrusted repo — …` notice (#654: trust + replay suggestions) persists
+      above the rail, not torn through the live bars
 - [ ] `--skip-hooks all`: yellow ↓ row on the hook step
 - [ ] Pre-push hook (git hook in repo) during `daft start` with push on:
       `├─ pre-push hooks` section under the active Push row; on rejection
