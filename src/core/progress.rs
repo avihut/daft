@@ -440,6 +440,29 @@ impl HookRunner for TimelineBridge<'_> {
             });
         }
 
+        // Region live but the plan has no row for this phase (`daft remove`
+        // plans hook rows only where hooks are discoverable): the executor
+        // still runs for its side effects (skip recording, trust notices),
+        // but its output must compose with the region. A raw stdout/stderr
+        // line mid-region moves the cursor underneath indicatif and strands
+        // ghost rows in scrollback (#651 field test: the post-remove
+        // `debug: No … hooks found` line under `-v` froze the `│` + `└ …`
+        // footer placeholder above the real footer).
+        if self.timeline.region_live() {
+            let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
+            let mut region_output = crate::output::timeline::RegionOutput::new(
+                self.timeline.handle(),
+                self.output.is_quiet(),
+                self.output.is_verbose(),
+            );
+            let result = self.executor.execute(ctx, &mut region_output, presenter)?;
+            return Ok(HookOutcome {
+                success: result.success,
+                skipped: result.skipped,
+                skip_reason: result.skip_reason.clone(),
+            });
+        }
+
         // Region-less (Plain/Hidden, or pre-plan): byte-identical to
         // CommandBridge.
         let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
@@ -537,5 +560,73 @@ mod tests {
             pause_idx < resume_idx,
             "pause must come before resume around hook execution"
         );
+    }
+
+    /// Regression test (#651 field test): a hook phase the plan laid no row
+    /// for — `daft remove` plans hook rows only where hooks are discoverable
+    /// — still executes while the region is live. Its output must route
+    /// through the region (RegionOutput), never the raw CliOutput: a raw
+    /// stdout/stderr line mid-region moves the cursor underneath indicatif
+    /// and strands ghost rows (`│` + `└ …` froze into scrollback above the
+    /// real footer in `daft remove -v`).
+    #[test]
+    fn unplanned_hook_phase_with_a_live_region_bypasses_the_raw_output() {
+        use crate::core::stage::{PlanCommit, Row, StageId, StepKey, StepSpec};
+        use crate::output::OutputConfig;
+        use crate::output::timeline::{Timeline, TimelineMode};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let worktree = tmp.path().join("feature");
+        std::fs::create_dir_all(&worktree).expect("create worktree dir");
+
+        // Hooks enabled, discovery empty (bare tempdir, user dir pointed
+        // inside it): execute() reaches the `No … hooks found` debug line —
+        // the write that leaked to the raw output.
+        let hooks_config = HooksConfig {
+            user_directory: tmp.path().join("user-hooks"),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(hooks_config).expect("create executor");
+
+        // `-v` semantics: the raw output is verbose, so a routed-through
+        // debug line WOULD print. TestOutput records it either way.
+        let mut output = TestOutput::with_config(OutputConfig::new(false, true));
+        let mut timeline = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            true,
+            "Removing feature",
+        );
+        // The committed plan has no PostRemoveHooks row.
+        timeline.commit_plan(PlanCommit::new(vec![Row::Step(StepSpec::new(
+            StepKey::new(StageId::RemoveWorktree),
+        ))]));
+        assert!(timeline.region_live());
+
+        let ctx = HookContext::new(
+            HookType::PostRemove,
+            "test-remove",
+            tmp.path().to_path_buf(),
+            tmp.path().join(".git"),
+            "origin",
+            worktree.clone(),
+            worktree,
+            "feature",
+        );
+        let outcome = {
+            let mut bridge = TimelineBridge::new(
+                &mut output,
+                &mut timeline,
+                executor,
+                HookOutputConfig::default(),
+            );
+            bridge.run_hook(&ctx).expect("run_hook")
+        };
+        assert!(outcome.skipped, "no hooks to run");
+        assert!(
+            output.entries().is_empty(),
+            "the raw output must stay untouched while the region is live: {:?}",
+            output.entries()
+        );
+        timeline.finish("Removed in 0.1s");
     }
 }
