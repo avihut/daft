@@ -60,10 +60,10 @@ with section headings bold. Subjects wear identity inks that never change with
 state — so the committed plan is as readable as the receipt: remote names and
 refs (`origin`, `← origin/master`, `→ origin/x`) are cyan, worktree paths are
 manila, shared files are violet, and background work is blue. The exceptions are
-deliberate: hook job names take their outcome's color (the same scheme as the
-verbose block's summary), failure details and skip reasons always render plain,
-and a dimmed row — pending glyphs, expected skips, `(not run)` — never keeps an
-identity ink.
+deliberate: hook job names take their outcome's color (the scheme the standalone
+hook renderer's summary also speaks), failure details and skip reasons always
+render plain, and a dimmed row — pending glyphs, expected skips, `(not run)` —
+never keeps an identity ink.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration.
@@ -109,14 +109,32 @@ identity ink.
   `↓` rows; jobs skipped by their own `skip:`/`only:` conditions leave no trace,
   and a whole phase skipped that way vanishes with them. Background jobs get a
   blue `↻ name  background` receipt — `daft hooks jobs` manages them from there.
-- Pass `-v` — or set `daft.hooks.output.verbose` — for the full hook block:
-  version banner, rolling output tails, every job's complete output, and the
-  summary, welded into the rail (`├────┐`) exactly as the block renders
-  standalone. `daft.hooks.output.timerDelay` and `tailLines` only apply to this
-  block. When nothing is configured to run, the hook row disappears — and
-  `daft remove` goes further: its hook config sources are on disk and exact
-  before the plan commits, so the row is never planned. Skips worth noticing
-  (untrusted repository, `--skip-hooks all`) render the yellow `↓` row instead.
+- Pass `-v` — or set `daft.hooks.output.verbose` — to thread each job's log
+  under its row. The section anchor gains the hook key and engine version
+  (`├─ post-create hooks  worktree-post-create · daft v1.18.1`), and each job's
+  output hangs from its glyph column on an inner thread:
+
+  ```
+  │  ✓  prepare-db   (2.1s)
+  │  │    ❯ ./scripts/prepare-db.sh
+  │  │    applying migration 0
+  │  │    applying migration 1
+  ```
+
+  The thread opens with the dim `❯ <command>` provenance line, shows a rolling
+  window of `daft.hooks.output.tailLines` lines while the job runs, and the
+  receipt keeps every line — grey under a job that succeeded, default ink under
+  one that failed (evidence stays loud), `(no output)` when it printed nothing.
+  The section closes with a dim `○ all jobs in <t>` total, and a job still
+  silent after `daft.hooks.output.timerDelay` seconds shows a dim elapsed
+  counter until its first output. A failed job's exit status still prints after
+  the footer (`error: hook job '<name>' failed (exit code: N)`) — but not its
+  output, which already sits inline. When nothing is configured to run, the hook
+  row disappears — and `daft remove` goes further: its hook config sources are
+  on disk and exact before the plan commits, so the row is never planned. Skips
+  worth noticing (untrusted repository, `--skip-hooks all`) render the yellow
+  `↓` row instead.
+
 - If a step fails, later steps persist as dim `(not run)` rows and the footer
   reports `Failed after <t>` — the receipt shows exactly how far the command
   got.

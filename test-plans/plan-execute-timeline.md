@@ -135,14 +135,33 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] Remove with remote deletion + pre-push hook: per-branch
       `├─ pre-push hooks` section under each active `Delete remote branch` row
 
-## Hook block (verbose)
+## Threaded log (verbose)
 
-- [ ] `-v`: the phase renders the full welded block instead — banner (`├───┐` …
-      `└───┘`), live rolling tails, full per-job output dump, summary —
-      byte-identical to the standalone renderer's interior
-- [ ] `daft.hooks.output.verbose=true` without `-v`: same full block
-- [ ] Rail spacers (`│`) separate the block from rows above and below, never
-      doubled — including a group anchor persisting right after the block
+- [ ] `-v`: the hook section threads each job's log under its row —
+      `│  │    <line>` hanging from the glyph column; the job rows themselves
+      are byte-identical to the succinct dialect (glyphs, floods, durations)
+- [ ] `daft.hooks.output.verbose=true` without `-v`: same threaded log
+- [ ] Anchor annotation: bold label then grey
+      `worktree-post-create · daft v<version>`; no `on: <target>` segment
+      anywhere (the header / branch anchor already names the target)
+- [ ] Each thread opens with the dim `❯ <command>` provenance line, and that
+      line survives into the receipt
+- [ ] Live: rolling window of `tailLines` grey lines per running job; the
+      persisted receipt keeps the full log (never windowed)
+- [ ] Live annotation keeps the job's description while output rolls in the
+      thread (no duplicated newest line)
+- [ ] Success log recedes grey; a failed job's log keeps default ink
+- [ ] Failed job: single `error: hook job '<name>' failed (exit code: N)` line
+      after the footer — no output dump repeat (check failMode warn AND abort)
+- [ ] Job that prints nothing: dark-grey `(no output)` thread line
+- [ ] Section closes with the grey `○ all jobs in <t>` note (before the
+      reconnect spacer; skipped when no jobs ran)
+- [ ] Job silent past `timerDelay`: dim `(<elapsed>)` joins the spinner row;
+      first output retires it
+- [ ] `daft.hooks.output.quiet` + verbose: threads vanish entirely (rows, note,
+      and the after-footer exit fact remain)
+- [ ] No `├───┐` banner box anywhere on the timeline; `┌ daft hooks v…┐` remains
+      only in standalone contexts (`daft hooks run`, merge hooks)
 - [ ] Plain mode (`2>&1 | cat`) with `-v`: each job's command line appears
       (`daft.hooks.output.verbose` plain-mode behavior); without it, absent
 
