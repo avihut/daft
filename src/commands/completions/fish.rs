@@ -1,6 +1,6 @@
 use super::{
-    VERB_ALIAS_GROUPS, allows_path_completion, emit_formats_for, get_command_for_name,
-    get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
+    VERB_ALIAS_GROUPS, allows_path_completion, command_has_repo_positional, emit_formats_for,
+    get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -32,6 +32,22 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             output.push_str(&format!(
                 "complete -c git -n '__fish_seen_subcommand_from {}' -f -a \"(daft __complete {} '')\"\n",
                 git_subcommand, command_name
+            ));
+        }
+        output.push('\n');
+    }
+
+    // Positional repo-name completion (daft list [<repo>]). The token-count
+    // gate limits it to the first argument, which also keeps repo names out
+    // of value-flag positions.
+    if command_has_repo_positional(command_name) {
+        output.push_str("# Positional cataloged-repo completion\n");
+        output.push_str(&format!(
+            "complete -c {command_name} -n 'test (count (commandline -opc)) -eq 1' -f -a \"(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)\"\n",
+        ));
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}; and test (count (commandline -opc)) -eq 2' -f -a \"(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)\"\n",
             ));
         }
         output.push('\n');
@@ -393,6 +409,9 @@ complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandlin
 complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 3' -f -a "(env DAFT_COMPLETE_GO_FIRST=(commandline -opc)[3] daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
 # --repo flag values complete to catalog repo names
 complete -c daft -n '__fish_seen_subcommand_from go list update exec prune' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+# list's optional positional is a cataloged repo (sugar for --repo); the
+# token-count gate keeps this off `daft repo list` and off flag values
+complete -c daft -n '__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"

@@ -1,7 +1,8 @@
 name: List across repos
 description:
-  daft list --repo shows another cataloged repo's worktrees and --all-repos
-  sweeps the whole catalog — both work from outside any repository
+  daft list --repo (or its positional sugar, daft list <repo>) shows another
+  cataloged repo's worktrees and --all-repos sweeps the whole catalog — both
+  work from outside any repository
 
 repos:
   - name: test-repo-a
@@ -25,6 +26,25 @@ steps:
       output_contains:
         - "main"
 
+  # go-shape positional sugar: `daft list <repo>` ≡ `daft list --repo <repo>`.
+  # Assert on the branch column instead of the repo name — the repo name
+  # appears in the argument itself, so it can't prove the right table rendered.
+  - name: a positional repo is sugar for --repo
+    run: daft list test-repo-b
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+
+  - name: the positional works from outside any repository
+    run: daft list test-repo-a
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+
   - name: --all-repos works from outside any repository
     run: daft list --all-repos
     cwd: "$WORK_DIR"
@@ -41,3 +61,23 @@ steps:
       exit_code: 1
       output_contains:
         - "not found in the catalog"
+
+  # Repo-only resolution: the positional never falls back to branch or
+  # worktree meaning, so a miss is a hard catalog error with suggestions.
+  - name: an unknown positional fails with catalog suggestions
+    run: daft list test-repo-x 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+        - "did you mean"
+
+  # The two spellings are exclusive — clap rejects the contradiction.
+  - name: mixing the positional with --repo is rejected
+    run: daft list test-repo-a --repo test-repo-b 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

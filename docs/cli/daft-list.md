@@ -10,7 +10,7 @@ List all worktrees with status information
 ## Usage
 
 ```
-daft list [OPTIONS]
+daft list [REPO] [OPTIONS]
 ```
 
 ## Description
@@ -63,10 +63,22 @@ When `git config user.email` is set, the output is split into two sections:
 This makes it easy to identify your active work at a glance. The section
 divider is only shown when both sections are non-empty.
 
+### Listing other repositories
+
+Give a [cataloged repository](/graph/repo-catalog) as the positional argument
+to list its worktrees from anywhere — `daft list api` is sugar for
+`daft list --repo api`. The name must be in the repo catalog; a miss is a hard
+error with suggestions (the positional never falls back to a branch or
+worktree meaning). Use `--all-repos` to sweep every cataloged repository, one
+section per repo. Both forms work from outside any repository.
+
 ## Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `[REPO]` | Cataloged repository to list (same as `--repo`) | |
+| `--repo <REPO>` | List another cataloged repository's worktrees | |
+| `--all-repos` | List every cataloged repository's worktrees | |
 | `--format <FORMAT>` | Output format: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown` | |
 | `--template <STR>` | Tera template string for custom output | |
 | `--no-headers` | Omit header row (tsv/csv only) | |
@@ -117,6 +129,12 @@ daft list --columns +owner
 
 # Show branch, path, and owner only
 daft list --columns branch,path,owner
+
+# List another cataloged repo's worktrees (sugar for --repo api)
+daft list api
+
+# Every cataloged repo, one section per repo
+daft list --all-repos
 ```
 
 ## Structured Output

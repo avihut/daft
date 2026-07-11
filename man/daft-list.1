@@ -4,12 +4,16 @@
 .SH NAME
 daft\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBdaft\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-merging\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-merging\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPO\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
 including uncommitted changes, ahead/behind counts vs. both the base branch
 and the remote tracking branch, branch age, and last commit details.
+.PP
+Give a cataloged repository as the positional argument to list that
+repository\*(Aqs worktrees from anywhere (sugar for `\-\-repo`; the name must be
+in the repo catalog). Use \-\-all\-repos to sweep every cataloged repository.
 .PP
 Each worktree is shown with:
   \- A `>` marker for the current worktree
@@ -135,5 +139,8 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
+.TP
+[\fIREPO\fR]
+Cataloged repository to list (same as \-\-repo)
 .SH VERSION
 v1.18.1

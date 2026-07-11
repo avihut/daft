@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, emit_formats_for, extract_flags,
-    get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
+    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -216,6 +216,25 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str(&format!("        format_values=( {format_list} )\n"));
         output.push_str("        compadd -a format_values\n");
         output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Positional repo-name completion (daft list [<repo>]). Placed after
+    // every value-flag prev block (each returns on match) so flag values
+    // never receive repo names; --template and --stat have no prev block,
+    // so they are excluded explicitly.
+    if command_has_repo_positional(command_name) {
+        output.push_str("    # Positional cataloged-repo completion\n");
+        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+        output.push_str(
+            "    if [[ \"$curword\" != -* && \"$prev_word\" != \"--template\" && \"$prev_word\" != \"--stat\" ]]; then\n",
+        );
+        output.push_str("        local -a repos\n");
+        output.push_str(
+            "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
+        );
+        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
         output.push_str("    fi\n");
         output.push('\n');
     }

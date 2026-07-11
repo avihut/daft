@@ -44,6 +44,10 @@ Lists all worktrees in the current project with enriched status information
 including uncommitted changes, ahead/behind counts vs. both the base branch
 and the remote tracking branch, branch age, and last commit details.
 
+Give a cataloged repository as the positional argument to list that
+repository's worktrees from anywhere (sugar for `--repo`; the name must be
+in the repo catalog). Use --all-repos to sweep every cataloged repository.
+
 Each worktree is shown with:
   - A `>` marker for the current worktree
   - Branch name, with `✦` for the default branch
@@ -94,6 +98,19 @@ the output (e.g. --sort -size without --columns +size). Defaults can be set
 with daft.list.sort.
 "#)]
 pub struct Args {
+    /// Positional sugar for `--repo` — `daft list api`. Repo-only
+    /// resolution (hard error with suggestions on a miss): the slot was
+    /// previously an error, so no local meaning is shadowed, and `list`
+    /// is read-only so a wrong guess costs nothing. Mutating fleet
+    /// commands (update/exec/prune) deliberately do NOT get this sugar —
+    /// see the repo-aware command grammar section in CLAUDE.md.
+    #[arg(
+        value_name = "REPO",
+        conflicts_with_all = ["repo", "all_repos"],
+        help = "Cataloged repository to list (same as --repo)"
+    )]
+    pub(crate) repo_arg: Option<String>,
+
     #[command(flatten)]
     pub(crate) emit: EmitArgs,
 
@@ -193,11 +210,13 @@ pub fn run() -> Result<()> {
     init_logging(args.verbose);
 
     // Fleet scopes work from anywhere; the single-repo form needs a repo.
-    if args.repo.is_some() || args.all_repos {
+    // The positional and --repo are clap-exclusive, so `or` never merges.
+    let repo_needle = args.repo.as_ref().or(args.repo_arg.as_ref());
+    if repo_needle.is_some() || args.all_repos {
         if is_git_repository()? {
             crate::catalog::touch_current_repo();
         }
-        let scope = match &args.repo {
+        let scope = match repo_needle {
             Some(needle) => crate::catalog::fleet::FleetScope::Single(needle.clone()),
             None => crate::catalog::fleet::FleetScope::AllRepos,
         };
@@ -1487,6 +1506,23 @@ mod dispatch_tests {
         // Even if other conditions are favorable, structured output forces
         // blocking. Whatever the TTY/env give us, the result must be false.
         assert!(!should_use_live(&args));
+    }
+
+    /// `daft list api` is positional sugar for `--repo api` (go-shape grammar
+    /// for a read-only command). The two spellings are clap-exclusive with
+    /// each other and with --all-repos — a contradiction, never a merge.
+    #[test]
+    fn repo_positional_is_exclusive_sugar_for_the_repo_flag() {
+        let args = Args::parse_from(["git-worktree-list", "api"]);
+        assert_eq!(args.repo_arg.as_deref(), Some("api"));
+        assert!(args.repo.is_none());
+
+        let flag = Args::parse_from(["git-worktree-list", "--repo", "api"]);
+        assert_eq!(flag.repo.as_deref(), Some("api"));
+        assert!(flag.repo_arg.is_none());
+
+        assert!(Args::try_parse_from(["git-worktree-list", "api", "--repo", "webapp"]).is_err());
+        assert!(Args::try_parse_from(["git-worktree-list", "api", "--all-repos"]).is_err());
     }
 
     #[test]

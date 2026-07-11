@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, command_has_repo_flag, emit_formats_for, extract_flags,
-    get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
+    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -134,6 +134,27 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
             "        COMPREPLY=( $(compgen -W \"{format_list}\" -- \"$cur\") )\n"
         ));
         output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Positional repo-name completion (daft list [<repo>]). Placed after
+    // every value-flag prev block (each returns on match) so flag values
+    // never receive repo names; --template and --stat have no prev block,
+    // so they are excluded explicitly.
+    if command_has_repo_positional(command_name) {
+        output.push_str("    # Positional cataloged-repo completion\n");
+        output.push_str(
+            "    if [[ \"$cur\" != -* && \"$prev\" != \"--template\" && \"$prev\" != \"--stat\" ]]; then\n",
+        );
+        output.push_str("        local repos\n");
+        output.push_str(
+            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        if [[ -n \"$repos\" ]]; then\n");
+        output.push_str("            COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
+        output.push_str("            return 0\n");
+        output.push_str("        fi\n");
         output.push_str("    fi\n");
         output.push('\n');
     }

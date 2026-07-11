@@ -17,6 +17,10 @@ Lists all worktrees in the current project with enriched status information
 including uncommitted changes, ahead/behind counts vs. both the base branch
 and the remote tracking branch, branch age, and last commit details.
 
+Give a cataloged repository as the positional argument to list that
+repository's worktrees from anywhere (sugar for `--repo`; the name must be
+in the repo catalog). Use --all-repos to sweep every cataloged repository.
+
 Each worktree is shown with:
   - A `>` marker for the current worktree
   - Branch name, with `✦` for the default branch
@@ -69,8 +73,14 @@ with daft.list.sort.
 ## Usage
 
 ```
-git worktree-list [OPTIONS]
+git worktree-list [OPTIONS] [REPO]
 ```
+
+## Arguments
+
+| Argument | Description | Required |
+|----------|-------------|----------|
+| `<REPO>` | Cataloged repository to list (same as --repo) | No |
 
 ## Options
 

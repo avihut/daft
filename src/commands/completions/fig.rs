@@ -1,5 +1,6 @@
 use super::{
-    COMMANDS, emit_formats_for, get_command_for_name, get_flag_descriptions, uses_rich_completions,
+    COMMANDS, command_has_repo_positional, emit_formats_for, get_command_for_name,
+    get_flag_descriptions, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 use clap::Command;
@@ -120,6 +121,19 @@ fn build_fig_generator(command_name: &str, position: usize) -> FigGenerator {
     }
 }
 
+/// Generator for a positional cataloged-repo name (`daft list [<repo>]`).
+fn repo_name_generator() -> FigGenerator {
+    FigGenerator {
+        script: vec![
+            "daft".into(),
+            "__complete".into(),
+            "repo-name".into(),
+            String::new(),
+        ],
+        split_on: "\n".to_string(),
+    }
+}
+
 /// Get positional arguments from a clap Command
 /// Returns (name, help_text, position_index) for each positional arg
 fn get_positional_args(cmd: &Command) -> Vec<(String, String, usize)> {
@@ -172,6 +186,8 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 },
                 generators: if has_branches {
                     Some(build_fig_generator(command_name, *index))
+                } else if command_has_repo_positional(command_name) && *index == 1 {
+                    Some(repo_name_generator())
                 } else {
                     None
                 },
@@ -1220,6 +1236,16 @@ mod tests {
         assert!(
             !spec.contains("generators"),
             "prune spec should not have generators"
+        );
+    }
+
+    /// `daft list [<repo>]` — the positional completes catalog repo names.
+    #[test]
+    fn fig_list_spec_completes_the_repo_positional() {
+        let spec = generate_fig_completion_string("git-worktree-list").unwrap();
+        assert!(
+            spec.contains("repo-name"),
+            "list spec must generate catalog repo names for its positional"
         );
     }
 

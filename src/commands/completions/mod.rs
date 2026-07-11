@@ -121,6 +121,14 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
     )
 }
 
+/// Whether a command's first positional is an optional cataloged-repo name
+/// (`daft list [<repo>]`, positional sugar for `--repo`), completed via
+/// `daft __complete repo-name`. Per the repo-aware command grammar
+/// (CLAUDE.md), only read-only commands with a free positional slot qualify.
+pub(super) fn command_has_repo_positional(command_name: &str) -> bool {
+    command_name == "git-worktree-list"
+}
+
 /// Whether a command accepts worktree paths as positional arguments and should
 /// fall back to filesystem directory completion when the dynamic source has
 /// nothing to offer (or as an additional candidate set). This keeps the
@@ -630,6 +638,38 @@ mod tests {
         assert!(
             !script.contains("\n    _describe"),
             "daft-go must NOT call _describe (triggers tag-retry 3x repetition)"
+        );
+    }
+
+    /// `daft list [<repo>]` — the positional is sugar for --repo, so every
+    /// shell must offer catalog repo names at the first positional (fig has
+    /// its own test beside its generator).
+    #[test]
+    fn list_repo_positional_completes_catalog_names_in_all_shells() {
+        let zsh = zsh::generate_zsh_completion_string("git-worktree-list").expect("zsh gen");
+        assert!(
+            zsh.contains("daft __complete repo-name")
+                && zsh.contains("\"$curword\" != -* && \"$prev_word\" != \"--template\""),
+            "zsh list completion must complete the positional repo outside flag values"
+        );
+        let bash = bash::generate_bash_completion_string("git-worktree-list").expect("bash gen");
+        assert!(
+            bash.contains("\"$cur\" != -* && \"$prev\" != \"--template\""),
+            "bash list completion must complete the positional repo outside flag values"
+        );
+        let fish = fish::generate_fish_completion_string("git-worktree-list").expect("fish gen");
+        assert!(
+            fish.contains(
+                "complete -c git-worktree-list -n 'test (count (commandline -opc)) -eq 1'"
+            ),
+            "fish list completion must complete the positional repo at the first token"
+        );
+        let umbrella = fish::generate_daft_fish_completions();
+        assert!(
+            umbrella.contains(
+                "__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2"
+            ),
+            "fish umbrella must complete daft list's positional repo"
         );
     }
 

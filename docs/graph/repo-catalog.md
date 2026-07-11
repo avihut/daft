@@ -64,9 +64,12 @@ creation. Tab completion offers repo names after your branches, and
 ## Fleet commands
 
 Every catalog-aware command accepts `--repo <name>` (act on one repo from
-anywhere) and `--all-repos` (sweep every live entry):
+anywhere) and `--all-repos` (sweep every live entry). `daft list` — read-only,
+with a free argument slot — additionally takes the repo as a positional, like
+`daft go`:
 
 ```bash
+daft list api                  # another repo's worktrees (sugar for --repo api)
 daft list --all-repos          # every repo's worktrees, sectioned per repo
 daft update --all-repos        # fetch/update the whole fleet
 daft prune --all-repos         # prune everywhere (current repo last)
