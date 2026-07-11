@@ -67,9 +67,14 @@ never keeps an identity ink.
 
 - The rail opens the moment the command starts (after any pre-flight prompts):
   the header, a grey planning row (`⠹ Validating branches`,
-  `⠹ Resolving branch`), and the ticking stopwatch appear immediately, and the
-  committed plan replaces the middle in place as soon as the command has
-  resolved its work. A run that resolves into a navigation early-exit or a
+  `⠹ Resolving branch`, `⠹ Cloning repository`), and the ticking stopwatch
+  appear immediately, and the committed plan replaces the middle in place as
+  soon as the command has resolved its work. The label follows the resolve phase
+  — `daft clone` runs its whole network clone under the face, flips to
+  `⠹ Resolving branches`, and commits a plan led by the already-done
+  `✓ Cloned repository` row. A prompt that must own the terminal mid-resolve
+  (the first-clone layout prompt) makes the face step aside tracelessly and
+  return once answered. A run that resolves into a navigation early-exit or a
   resolve-phase error collapses the face without a trace and keeps its
   single-line response.
 - The header names the resolved intent (`Starting <branch> ← <base>`); the

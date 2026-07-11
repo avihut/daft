@@ -15,9 +15,10 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       fill in place top-to-bottom, footer `└ Ready in <t>` persists
 - [ ] The rail opens the moment the command starts: header + grey planning row
       (`⠹ Resolving branch` for go, `⠹ Resolving base branch` for start,
-      `⠹ Validating branches` for remove) + ticking stopwatch — no legacy
-      spinner anywhere before or under the rail; the committed plan replaces the
-      middle in place (no duplicated header, no flicker)
+      `⠹ Validating branches` for remove, `⠹ Cloning repository` for clone) +
+      ticking stopwatch — no legacy spinner anywhere before or under the rail;
+      the committed plan replaces the middle in place (no duplicated header, no
+      flicker)
 - [ ] The pending footer opens as a dim ticking elapsed counter from the moment
       the rail opens (`└ 142ms`, `└ 1.2s` — never an ellipsis), and resolves
       into the outcome footer
@@ -98,12 +99,29 @@ synthetic rail + a real embedded hook block for quick visual iteration.
       every branch's step rows and notes in the gutter —
       `│  ✓  Removed worktree`, `│  ○  no remote branch` — count footer;
       current-worktree branch deferred to last
-- [ ] `daft clone <url>` single-branch: `✓ Cloned repository ← <url>` as a
-      pre-completed row (bare-clone spinner runs before the layout prompt), then
-      `Create worktree`, hooks, footer
-- [ ] `daft clone --branch a,b,c` (multi-branch): rail closes with
-      `└ Base worktree ready in <t>` BEFORE the satellite table; hooks render
-      after the table exactly as before
+- [ ] `daft clone <url>`: the face is the first paint — `┌ Cloning <repo>` +
+      grey `⠹ Cloning repository` + stopwatch, no legacy spinner anywhere — and
+      the label flips to `⠹ Resolving branches` once the bare phase lands
+- [ ] Clone receipt unchanged: `✓ Cloned repository ← <url>` leads as a
+      pre-completed row, then `Create worktree`, hooks, footer
+- [ ] First clone with no layout configured anywhere: the face steps aside
+      before the layout prompt draws (no bars behind it) and returns with
+      `⠹ Resolving branches` once answered; the rail renders below the prompt's
+      scrollback
+- [ ] Second unconfigured clone (hint already answered): no prompt and no face
+      blink — the rail stays up through the silent default
+- [ ] Clone resolve errors (unreachable URL, `--no-checkout` on a non-bare
+      layout, ls-remote failure): the face collapses without a trace and the
+      bare error stands alone
+- [ ] `daft clone -b <missing>`: both missing-branch warnings persist above the
+      rail; receipt closes `Finished in <t>` with the yellow
+      `↓ Create worktree  skipped — branch not found` row
+- [ ] Ctrl-C while the clone face is up: live bars collapse, exit 130, nothing
+      partial left in scrollback
+- [ ] `daft clone --branch a,b,c` (multi-branch): the plan carries no hook rows,
+      the rail closes BEFORE the satellite table, and hooks render after the
+      table exactly as before (known pre-existing quirk: the table's first draw
+      eats the `└ Base worktree ready in <t>` footer line)
 
 ## Hook sections (succinct default)
 
