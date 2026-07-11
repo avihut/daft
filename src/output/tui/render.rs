@@ -403,7 +403,8 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         };
         let mut row = Row::new(main_cells);
         if wt.info.is_current {
-            row = row.style(Style::default().bg(Color::Indexed(235)));
+            row =
+                row.style(Style::default().bg(Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX)));
         }
         all_rows.push(row);
         if is_pruned {

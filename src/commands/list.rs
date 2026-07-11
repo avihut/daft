@@ -1133,7 +1133,40 @@ fn print_table(
         };
     }
 
-    println!("{table}");
+    println!(
+        "{}",
+        paint_current_rows(&table.to_string(), infos, use_color)
+    );
+}
+
+/// Background-highlight the current worktree's row in the rendered blocking
+/// table, matching the live table's `CURRENT_ROW_BG_INDEX` row style. Line 0
+/// is the header, data row i renders on line 1 + i, and the TOTAL footer
+/// lines fall past `infos`, so they never match.
+fn paint_current_rows(
+    rendered: &str,
+    infos: &[crate::core::worktree::list::WorktreeInfo],
+    use_color: bool,
+) -> String {
+    if !use_color {
+        return rendered.to_string();
+    }
+    rendered
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let current = i
+                .checked_sub(1)
+                .and_then(|idx| infos.get(idx))
+                .is_some_and(|info| info.is_current);
+            if current {
+                styles::paint_current_row(line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The visible column index of `Size` in the rendered blocking table, or `None`
@@ -1223,6 +1256,67 @@ mod tests {
         assert!(!table.headers.contains(&"hash".to_string()));
         // Empty infos means no rows.
         assert_eq!(table.rows.len(), 0);
+    }
+
+    /// Full parity with the live table: the blocking renderer paints the
+    /// current worktree's line with the shared row background; header,
+    /// other rows, and the no-color path stay untouched.
+    #[test]
+    fn paint_current_rows_highlights_only_the_current_worktree_line() {
+        use crate::core::worktree::list::{EntryKind, WorktreeInfo};
+        let info = |name: &str, is_current: bool| WorktreeInfo {
+            kind: EntryKind::Worktree,
+            name: name.to_string(),
+            path: Some(std::path::PathBuf::from("/tmp/proj")),
+            is_current,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_hash: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+            owner: None,
+            size_bytes: None,
+            working_tree_mtime: None,
+            is_sandbox: false,
+        };
+        let infos = [info("main", true), info("feat", false)];
+        let rendered = "  Branch  Path\n  main    /tmp/proj\n  feat    /tmp/proj";
+
+        let painted = paint_current_rows(rendered, &infos, true);
+        let lines: Vec<&str> = painted.lines().collect();
+        assert!(
+            !lines[0].contains(styles::CURRENT_ROW_BG),
+            "header: {lines:?}"
+        );
+        assert!(
+            lines[1].starts_with(styles::CURRENT_ROW_BG),
+            "current row: {lines:?}"
+        );
+        assert!(
+            !lines[2].contains(styles::CURRENT_ROW_BG),
+            "other row: {lines:?}"
+        );
+
+        assert_eq!(
+            paint_current_rows(rendered, &infos, false),
+            rendered,
+            "no-color output is untouched"
+        );
     }
 
     #[test]

@@ -91,6 +91,26 @@ steps:
       output_contains:
         - '"default_branch": "main"'
 
+  # Full parity with daft list: colored output paints the current repo's row
+  # with the shared dark-gray background (48;5;235) — exactly one line from
+  # inside the repo, none from outside it.
+  - name: colored output highlights the current repo row
+    run:
+      CLICOLOR_FORCE=1 daft repo list 2>/dev/null | grep -c "48;5;235" | xargs
+      test 1 -eq && echo ONE_ROW_HIGHLIGHTED
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW_HIGHLIGHTED"
+
+  - name: no row highlight outside any repo
+    run: CLICOLOR_FORCE=1 daft repo list 2>/dev/null
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "48;5;235"
+
   - name: repo info resolves by name
     run: daft repo info test-repo
     expect:

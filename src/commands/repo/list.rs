@@ -479,7 +479,31 @@ fn build_blocking_table(
         };
     }
 
-    table.to_string()
+    let rendered = table.to_string();
+    if !use_color {
+        return rendered;
+    }
+
+    // Background-highlight the current repo's row, matching the live tables
+    // (worktree and catalog both paint `CURRENT_ROW_BG_INDEX`). Line 0 is the
+    // header, data row i renders on line 1 + i, and any TOTAL footer lines
+    // fall past the cell count, so they never match.
+    rendered
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let current = i
+                .checked_sub(1)
+                .and_then(|idx| cells.get(idx))
+                .is_some_and(|c| c.current);
+            if current {
+                styles::paint_current_row(line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -661,6 +685,42 @@ mod tests {
         let lines: Vec<&str> = table.lines().collect();
         assert!(lines[0].contains("Branch"), "header: {:?}", lines[0]);
         assert!(lines[1].contains("main"), "row: {:?}", lines[1]);
+    }
+
+    /// Full parity with `daft list`: the current repo's row carries the
+    /// dark-gray background in colored output, continuous across the styled
+    /// cells (every RESET re-asserts it).
+    #[test]
+    fn blocking_table_paints_current_row_background_when_colored() {
+        let table = build_blocking_table(
+            &[cells("alpha", true, false), cells("beta", false, false)],
+            None,
+            &defaults(),
+            true,
+            None,
+        );
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(
+            lines[1].starts_with(styles::CURRENT_ROW_BG),
+            "current row painted: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains(&format!("{}{}", styles::RESET, styles::CURRENT_ROW_BG)),
+            "background re-asserted after cell resets: {:?}",
+            lines[1]
+        );
+        assert!(lines[1].ends_with(styles::RESET));
+        assert!(
+            !lines[0].contains(styles::CURRENT_ROW_BG),
+            "header unpainted: {:?}",
+            lines[0]
+        );
+        assert!(
+            !lines[2].contains(styles::CURRENT_ROW_BG),
+            "other rows unpainted: {:?}",
+            lines[2]
+        );
     }
 
     #[test]

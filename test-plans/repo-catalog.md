@@ -8,7 +8,9 @@ branch: daft-357/feat/repo-catalog
 
 - [ ] Fresh clone registers automatically: `daft repo list` shows it with the
       right name, worktree count, path, and remote (one line per repo)
-- [ ] From inside a repo, `daft repo list` marks it with a cyan `>`
+- [ ] From inside a repo, `daft repo list` marks it with a cyan `>` and a
+      dark-gray row background (same highlight as `daft list`), in both the
+      plain table and the `--columns +size` live table
 - [ ] `daft repo list --columns +size` in a terminal shimmer-loads the Size
       cells and settles into values plus a total row; piped output prints them
       directly

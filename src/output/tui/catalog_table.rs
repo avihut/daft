@@ -281,7 +281,16 @@ impl LiveScreen for CatalogTable {
                     RepoListColumn::Size => self.size_cell(idx, *width, dim),
                 });
             }
-            all_rows.push(Row::new(cells));
+            let mut table_row = Row::new(cells);
+            if row.current {
+                // Same highlight the worktree live table gives the current
+                // worktree's row; the blocking table paints it via
+                // `styles::paint_current_row`.
+                table_row = table_row.style(
+                    Style::default().bg(Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX)),
+                );
+            }
+            all_rows.push(table_row);
         }
 
         // TOTAL footer: blank separator + dim total under the Size column.
@@ -442,6 +451,29 @@ mod tests {
         assert!(
             !header.contains("Remote") && !header.contains("Path"),
             "unselected columns must not render: {header:?}"
+        );
+    }
+
+    #[test]
+    fn current_row_carries_the_background_highlight() {
+        let table = CatalogTable::new(
+            vec![cells("alpha", true, false), cells("beta", false, false)],
+            columns(),
+        );
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let bg = Color::Indexed(crate::styles::CURRENT_ROW_BG_INDEX);
+        assert_eq!(
+            buffer[(4u16, 1u16)].style().bg,
+            Some(bg),
+            "current repo row carries the highlight"
+        );
+        assert_ne!(
+            buffer[(4u16, 2u16)].style().bg,
+            Some(bg),
+            "other rows do not"
         );
     }
 
