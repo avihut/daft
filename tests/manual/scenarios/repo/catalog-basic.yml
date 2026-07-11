@@ -168,6 +168,19 @@ steps:
         - "test-repo"
         - "live"
 
+  # Regression: the first shipped renderer emitted every field through
+  # output.raw (print!, no newline), fusing the card into ONE line. The
+  # substring assertions above can't see line boundaries, so count them:
+  # Name/Status/Path/Git dir/Remote/Default branch/UUID/Registered = 8.
+  - name: repo info renders one line per field
+    run:
+      test "$(daft repo info test-repo 2>/dev/null | wc -l)" -eq 8 && echo
+      INFO_LINE_STRUCTURE_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INFO_LINE_STRUCTURE_OK"
+
   - name: repo info on an unknown name fails with a suggestion
     run: daft repo info test-rep 2>&1
     expect:

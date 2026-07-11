@@ -143,30 +143,36 @@ fn render(
     relations: &[crate::catalog::relations::ResolvedRelation],
     output: &mut dyn Output,
 ) {
-    output.raw(&format!("Name:            {}", row.name));
+    output.raw(&card(row, relations));
+}
+
+/// The human card, one field per line, trailing newline included —
+/// `output.raw()` is `print!`, so the card brings its own newlines.
+fn card(row: &CatalogRepoRow, relations: &[crate::catalog::relations::ResolvedRelation]) -> String {
+    let mut lines = vec![format!("Name:            {}", row.name)];
     let status = match row.removed_at {
         Some(t) => format!("removed {}", t.format("%Y-%m-%d %H:%M UTC")),
         None => "live".to_string(),
     };
-    output.raw(&format!("Status:          {status}"));
-    output.raw(&format!("Path:            {}", row.path));
-    output.raw(&format!("Git dir:         {}", row.git_common_dir));
-    output.raw(&format!(
+    lines.push(format!("Status:          {status}"));
+    lines.push(format!("Path:            {}", row.path));
+    lines.push(format!("Git dir:         {}", row.git_common_dir));
+    lines.push(format!(
         "Remote:          {}",
         row.remote_url.as_deref().unwrap_or("-")
     ));
-    output.raw(&format!(
+    lines.push(format!(
         "Default branch:  {}",
         row.default_branch.as_deref().unwrap_or("-")
     ));
-    output.raw(&format!("UUID:            {}", row.uuid));
-    output.raw(&format!(
+    lines.push(format!("UUID:            {}", row.uuid));
+    lines.push(format!(
         "Registered:      {}",
         row.created_at.format("%Y-%m-%d %H:%M UTC")
     ));
 
     if !relations.is_empty() {
-        output.raw("Relations:");
+        lines.push("Relations:".to_string());
         for relation in relations {
             let kind = relation
                 .entry
@@ -181,7 +187,45 @@ fn render(
                     crate::daft_cmd(&format!("clone {}", relation.entry.url))
                 ),
             };
-            output.raw(&format!("  {}{kind} → {target}", relation.entry.label()));
+            lines.push(format!("  {}{kind} → {target}", relation.entry.label()));
         }
+    }
+
+    let mut card = lines.join("\n");
+    card.push('\n');
+    card
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row() -> CatalogRepoRow {
+        CatalogRepoRow {
+            uuid: "0195-test".to_string(),
+            name: "api".to_string(),
+            path: "/tmp/x/api".to_string(),
+            git_common_dir: "/tmp/x/api/.git".to_string(),
+            remote_url: Some("git@example.com:acme/api.git".to_string()),
+            remote_url_normalized: None,
+            default_branch: Some("main".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            removed_at: None,
+        }
+    }
+
+    /// Regression: the first shipped renderer emitted every field through
+    /// `output.raw()` (`print!`, no newline), fusing the whole card into a
+    /// single line. Substring scenario assertions can't see line boundaries,
+    /// so the line structure is guarded here.
+    #[test]
+    fn card_emits_one_line_per_field() {
+        let card = card(&row(), &[]);
+        assert!(card.ends_with('\n'), "card must end with a newline");
+        let lines: Vec<&str> = card.trim_end().lines().collect();
+        assert_eq!(lines.len(), 8, "8 fields, one line each: {card:?}");
+        assert!(lines[0].starts_with("Name:"));
+        assert!(lines[7].starts_with("Registered:"));
     }
 }
