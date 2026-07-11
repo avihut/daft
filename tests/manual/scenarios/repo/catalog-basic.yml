@@ -136,6 +136,20 @@ steps:
       output_not_contains:
         - "48;5;235"
 
+  # `daft go` position-1 completions offer catalog repos as a `repo` group
+  # (the shell renderers key on that group tag) with the display-path rule
+  # for the description. Exact-match all three fields: the name alone would
+  # still appear if the group tag or the path prettification regressed.
+  - name: go completions offer catalog repos with display paths
+    run:
+      test "$(daft __complete daft-go '' --position 1 2>/dev/null | awk -F'\t'
+      '$1=="test-repo" && $2=="repo" {print $3}')" = "test-repo" && echo
+      GO_REPO_COMPLETION_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GO_REPO_COMPLETION_OK"
+
   - name: repo info resolves by name
     run: daft repo info test-repo
     expect:

@@ -25,7 +25,7 @@ use crate::core::columns::{RepoColumnSelection, RepoListColumn, ResolvedColumns}
 use crate::core::worktree::list::compute_directory_size;
 use crate::core::worktree::remove_repo::{RepoTarget, enumerate_worktrees};
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
-use crate::output::format::format_human_size;
+use crate::output::format::{display_path, format_human_size};
 use crate::output::tui::{
     CatalogEvent, CatalogRepoCells, CatalogTable, CatalogWorktreeCells, LiveScreen, TuiRenderer,
     tree_glyph,
@@ -242,38 +242,6 @@ fn worktree_count(git_common_dir: &Path) -> Option<usize> {
     let repo = gix::open(git_common_dir).ok()?;
     let linked = repo.worktrees().map(|w| w.len()).unwrap_or(0);
     Some(linked + usize::from(repo.workdir().is_some()))
-}
-
-/// Display form of a repo or worktree path: relative to the cwd (same
-/// `relative_display_path` as `daft list`) when that form is no longer than
-/// the `~`-abbreviated absolute one, which stays the fallback — a global
-/// catalog can list repos far from the cwd, where pure relativization
-/// degenerates into `../../..` chains. Structured output keeps raw paths.
-fn display_path(path: &str, cwd: Option<&Path>) -> String {
-    let tilde = tilde_path(path);
-    let Some(cwd) = cwd else {
-        return tilde;
-    };
-    let relative = crate::output::format::relative_display_path(Path::new(path), cwd, cwd);
-    if relative.chars().count() <= tilde.chars().count() {
-        relative
-    } else {
-        tilde
-    }
-}
-
-/// Abbreviate `$HOME` to `~` for display. Structured output keeps raw paths.
-fn tilde_path(path: &str) -> String {
-    if let Some(home) = dirs::home_dir()
-        && let Ok(rest) = Path::new(path).strip_prefix(&home)
-    {
-        return if rest.as_os_str().is_empty() {
-            "~".to_string()
-        } else {
-            format!("~/{}", rest.display())
-        };
-    }
-    path.to_string()
 }
 
 /// Where the user is standing: the canonical cwd (anchor for relative
@@ -1265,52 +1233,6 @@ mod tests {
             panic!("expected a document payload");
         };
         assert!(value.as_array().unwrap()[0]["worktrees"].is_null());
-    }
-
-    /// Regression: repo list showed absolute paths where `daft list`
-    /// relativizes. Display paths prefer the cwd-relative form (same helper
-    /// as `daft list`) unless the tilde-absolute form is shorter — a global
-    /// catalog lists repos far from the cwd, where relativization
-    /// degenerates into ../-chains.
-    #[test]
-    fn display_path_prefers_the_shorter_of_relative_and_tilde() {
-        let cwd = Path::new("/tmp/sandbox/test");
-        assert_eq!(display_path("/tmp/sandbox/test/api", Some(cwd)), "api");
-        assert_eq!(
-            display_path("/tmp/sandbox/test/api/main", Some(cwd)),
-            "api/main"
-        );
-        assert_eq!(display_path("/tmp/sandbox/test", Some(cwd)), ".");
-        assert_eq!(
-            display_path(
-                "/tmp/sandbox/test",
-                Some(Path::new("/tmp/sandbox/test/api"))
-            ),
-            ".."
-        );
-        assert_eq!(
-            display_path("/opt/elsewhere", None),
-            "/opt/elsewhere",
-            "no cwd falls back to the tilde/absolute form"
-        );
-        if let Some(home) = dirs::home_dir() {
-            let repo = format!("{}/src/api", home.display());
-            assert_eq!(
-                display_path(&repo, Some(Path::new("/tmp/sandbox/deeply/nested/dir"))),
-                "~/src/api",
-                "far from the cwd the tilde form is shorter than a ../-chain"
-            );
-        }
-    }
-
-    #[test]
-    fn tilde_path_abbreviates_home_and_passes_others_through() {
-        if let Some(home) = dirs::home_dir() {
-            let inside = format!("{}/src/thing", home.display());
-            assert_eq!(tilde_path(&inside), "~/src/thing");
-            assert_eq!(tilde_path(&home.display().to_string()), "~");
-        }
-        assert_eq!(tilde_path("/opt/elsewhere"), "/opt/elsewhere");
     }
 
     #[test]

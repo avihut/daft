@@ -350,11 +350,13 @@ __{func_name}_impl() {{
     local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
+    local -a repo_names repo_paths
     raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
+    # Catalog repo lines have 3 fields: name\trepo\tpath
     # Worktree names may have *? dirty indicators — strip for completion
     # value, keep for display. (* and ? are invalid in git branch names.)
     local line name rest group desc max_len=0 len clean_name
@@ -402,13 +404,19 @@ __{func_name}_impl() {{
                 auth_len=${{#${{desc#*$'\t'}}}}
                 (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 ;;
+            repo)
+                repo_names+=("$name")
+                # desc is the repo's display path
+                repo_paths+=("$desc")
+                ;;
         esac
     done
 
     # Second pass: build padded display strings.
     # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
-    local -a wt_display local_display remote_display
+    # Catalog repos: two columns (name, path).
+    local -a wt_display local_display remote_display repo_display
     local i pad apad authpad
     (( max_len += 2 ))
     (( max_age_len += 2 ))
@@ -431,11 +439,17 @@ __{func_name}_impl() {{
         authpad=$(( max_auth_len - ${{#remote_authors[$i]}} ))
         remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_ages[$i]}}${{(l:$apad:: :)}}  ${{remote_authors[$i]}}")
     done
+    for (( i=1; i<=${{#repo_names}}; i++ )); do
+        pad=$(( max_len - ${{#repo_names[$i]}} ))
+        repo_display+=("${{repo_names[$i]}}${{(l:$pad:: :)}}  ${{repo_paths[$i]}}")
+    done
 
-    # -V preserves group insertion order: worktrees first, then local, then remote.
+    # -V preserves group insertion order: worktrees first, then local, then
+    # remote, then catalog repos (cross-repo navigation).
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
+    (( ${{#repo_names}} ))   && compadd -V repo -l -d repo_display -a repo_names
 {path_post}}}
 
 _{func_name}() {{

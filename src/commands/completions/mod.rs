@@ -633,6 +633,37 @@ mod tests {
         );
     }
 
+    /// Regression: the `daft go` position-1 helper appends a catalog `repo`
+    /// group (`name\trepo\tpath`), but the zsh renderer's per-group parser
+    /// only knew worktree/local/remote — catalog repos silently vanished
+    /// from the menu, and outside a repo (where they are the ONLY entries)
+    /// `daft go <TAB>` completed nothing. Fish's shared awk had no 3-field
+    /// branch and rendered a dangling `path · ` description.
+    #[test]
+    fn go_first_arg_renders_the_catalog_repo_group_in_zsh_and_fish() {
+        let zsh = zsh::generate_zsh_completion_string("daft-go").expect("zsh gen");
+        assert!(
+            zsh.contains("repo)") && zsh.contains("repo_paths"),
+            "zsh parser must collect repo-group lines"
+        );
+        assert!(
+            zsh.contains("compadd -V repo "),
+            "zsh must render the catalog repo group"
+        );
+
+        // 3-field repo lines display as name\tpath — no age/author columns.
+        let repo_branch = "else printf \\\"%s\\t%s\\n\\\",c,$3";
+        let fish = fish::generate_fish_completion_string("daft-go").expect("fish gen");
+        assert!(
+            fish.contains(repo_branch),
+            "fish per-command awk must handle 3-field repo lines"
+        );
+        assert!(
+            fish::generate_daft_fish_completions().contains(repo_branch),
+            "fish umbrella awk for `daft go` must handle 3-field repo lines"
+        );
+    }
+
     #[test]
     fn zsh_daft_go_passes_fetch_on_miss_flag() {
         let script =

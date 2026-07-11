@@ -74,3 +74,13 @@ steps:
     run: daft completions zsh --command=git-worktree-flow-eject 2>&1
     expect:
       exit_code: 0
+
+  # Regression: the daft-go renderer dropped the catalog `repo` group —
+  # its per-group parser only knew worktree/local/remote, so `daft go <TAB>`
+  # offered no repo names at position 1.
+  - name: Zsh go completion renders the catalog repo group
+    run: daft completions zsh --command=daft-go 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "compadd -V repo"

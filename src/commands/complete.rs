@@ -650,12 +650,18 @@ fn catalog_repo_entries(
     let Ok(rows) = catalog.list(false) else {
         return Vec::new();
     };
+    // Canonicalize like `repo list` does: catalog rows store canonical
+    // paths, so a symlinked cwd (macOS /tmp) would otherwise never
+    // relativize.
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
     rows.into_iter()
         .filter(|row| row.name.starts_with(prefix) && !exclude.contains(&row.name))
         .map(|row| CompletionEntry {
+            description: crate::output::format::display_path(&row.path, cwd.as_deref()),
             name: row.name,
             group: CompletionGroup::Repo,
-            description: row.path,
         })
         .collect()
 }
