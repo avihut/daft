@@ -39,6 +39,11 @@ line (the repo row keeps the `>` marker). Structured output then nests a
 for a detached HEAD — in place of the count, which narrows the supported
 formats to json, yaml, toon, and markdown.
 
+Paths render relative to your working directory when that form is shorter
+(same relativization as `daft list`), falling back to the `~`-abbreviated
+absolute path for repositories far from where you stand. Structured output
+always carries raw absolute paths.
+
 By default, structured output includes the worktree count (`worktrees`), the
 recorded layout, and the recorded default branch; a customized `--columns`
 selection narrows the emitted fields to match, and `+size` adds `size_bytes`.

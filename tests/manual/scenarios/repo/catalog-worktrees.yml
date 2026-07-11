@@ -53,13 +53,29 @@ steps:
       output_not_contains:
         - "Path"
 
+  # Display paths relativize against the cwd (structured output keeps raw
+  # absolute paths) — from the workspace root the children render as
+  # test-repo/<branch>. Exact-match the cell: an absolute path would still
+  # CONTAIN the relative form, so a substring assertion can't catch a
+  # regression here.
+  - name: child paths render relative to the cwd
+    run:
+      test "$(daft repo list -w --columns name,path 2>/dev/null | grep '├ main'
+      | awk '{print $NF}')" = "test-repo/main" && echo CHILD_PATHS_RELATIVE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "CHILD_PATHS_RELATIVE"
+
   # With children rendered, the gray row background moves from the repo row
   # to the current worktree's line — still exactly one painted line, and the
-  # repo row keeps the cyan > marker.
+  # repo row keeps the cyan > marker. The painted line is the `main` child
+  # (its path renders as `.` from inside it), not the repo row (which would
+  # carry `test-repo` in its Name and Remote cells).
   - name: the highlight moves to the current worktree line
     run:
-      CLICOLOR_FORCE=1 daft repo list -w 2>/dev/null | grep "48;5;235" | grep -c
-      "test-repo/main" | xargs test 1 -eq && echo CHILD_HIGHLIGHTED
+      CLICOLOR_FORCE=1 daft repo list -w 2>/dev/null | grep "48;5;235" | grep
+      main | grep -vc test-repo | xargs test 1 -eq && echo CHILD_HIGHLIGHTED
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

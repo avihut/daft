@@ -117,11 +117,7 @@ pub fn run() -> Result<()> {
     let children = args
         .worktrees
         .then(|| collect_worktree_children(&rows, location.workdir.as_deref()));
-    let cells = build_display_cells(
-        &rows,
-        children.as_deref(),
-        location.git_common_dir.as_deref(),
-    );
+    let cells = build_display_cells(&rows, children.as_deref(), &location);
 
     if args.emit.is_structured() {
         // Structured consumers get everything in one shot — walks run
@@ -248,6 +244,24 @@ fn worktree_count(git_common_dir: &Path) -> Option<usize> {
     Some(linked + usize::from(repo.workdir().is_some()))
 }
 
+/// Display form of a repo or worktree path: relative to the cwd (same
+/// `relative_display_path` as `daft list`) when that form is no longer than
+/// the `~`-abbreviated absolute one, which stays the fallback — a global
+/// catalog can list repos far from the cwd, where pure relativization
+/// degenerates into `../../..` chains. Structured output keeps raw paths.
+fn display_path(path: &str, cwd: Option<&Path>) -> String {
+    let tilde = tilde_path(path);
+    let Some(cwd) = cwd else {
+        return tilde;
+    };
+    let relative = crate::output::format::relative_display_path(Path::new(path), cwd, cwd);
+    if relative.chars().count() <= tilde.chars().count() {
+        relative
+    } else {
+        tilde
+    }
+}
+
 /// Abbreviate `$HOME` to `~` for display. Structured output keeps raw paths.
 fn tilde_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir()
@@ -262,20 +276,25 @@ fn tilde_path(path: &str) -> String {
     path.to_string()
 }
 
-/// Where the user is standing: the canonical git-common-dir of the enclosing
-/// repo (matched against catalog rows) and the canonical root of the
-/// enclosing worktree (matched against enumerated children). Both `None`
-/// outside any repo; `workdir` alone is `None` when standing in a bare git
-/// dir — the row highlight then stays on the repo line.
+/// Where the user is standing: the canonical cwd (anchor for relative
+/// display paths), the canonical git-common-dir of the enclosing repo
+/// (matched against catalog rows), and the canonical root of the enclosing
+/// worktree (matched against enumerated children). The repo fields are
+/// `None` outside any repo; `workdir` alone is `None` when standing in a
+/// bare git dir — the row highlight then stays on the repo line.
 struct CurrentLocation {
+    cwd: Option<PathBuf>,
     git_common_dir: Option<PathBuf>,
     workdir: Option<PathBuf>,
 }
 
 fn current_location() -> CurrentLocation {
-    let discovered = std::env::current_dir()
+    // Canonicalized so comparisons and relativization survive macOS's
+    // `/tmp` → `/private/tmp` symlink (catalog rows store canonical paths).
+    let cwd = std::env::current_dir()
         .ok()
-        .and_then(|cwd| gix::discover(cwd).ok());
+        .and_then(|cwd| std::fs::canonicalize(cwd).ok());
+    let discovered = cwd.as_ref().and_then(|cwd| gix::discover(cwd).ok());
     let git_common_dir = discovered
         .as_ref()
         .and_then(|repo| std::fs::canonicalize(repo.common_dir()).ok());
@@ -284,6 +303,7 @@ fn current_location() -> CurrentLocation {
         .and_then(|repo| repo.workdir())
         .and_then(|w| std::fs::canonicalize(w).ok());
     CurrentLocation {
+        cwd,
         git_common_dir,
         workdir,
     }
@@ -348,8 +368,9 @@ fn sort_children(children: &mut [WorktreeChild], default_branch: Option<&str>) {
 fn build_display_cells(
     rows: &[CatalogRepoRow],
     children: Option<&[Option<Vec<WorktreeChild>>]>,
-    current_gcd: Option<&Path>,
+    location: &CurrentLocation,
 ) -> Vec<CatalogRepoCells> {
+    let cwd = location.cwd.as_deref();
     // One read-only load serves every row's layout lookup. The repo store
     // (repos.json) is where clone/adopt/`layout set` record each repo's
     // layout; repos daft never laid out simply have no entry.
@@ -357,7 +378,7 @@ fn build_display_cells(
     rows.iter()
         .enumerate()
         .map(|(i, row)| {
-            let current = current_gcd.is_some_and(|cur| {
+            let current = location.git_common_dir.as_deref().is_some_and(|cur| {
                 std::fs::canonicalize(&row.git_common_dir).is_ok_and(|gcd| gcd == cur)
             });
             let name = if row.removed_at.is_some() {
@@ -381,7 +402,7 @@ fn build_display_cells(
                     .and_then(|db| db.get_layout(Path::new(&row.git_common_dir)))
                     .map(String::from),
                 branch: row.default_branch.clone(),
-                path: tilde_path(&row.path),
+                path: display_path(&row.path, cwd),
                 remote: row.remote_url.clone(),
                 children: children
                     .and_then(|children| children[i].as_deref())
@@ -390,7 +411,7 @@ fn build_display_cells(
                     .map(|c| CatalogWorktreeCells {
                         current: c.current,
                         branch: c.branch.clone(),
-                        path: tilde_path(&c.path),
+                        path: display_path(&c.path, cwd),
                     })
                     .collect(),
             }
@@ -1244,6 +1265,42 @@ mod tests {
             panic!("expected a document payload");
         };
         assert!(value.as_array().unwrap()[0]["worktrees"].is_null());
+    }
+
+    /// Regression: repo list showed absolute paths where `daft list`
+    /// relativizes. Display paths prefer the cwd-relative form (same helper
+    /// as `daft list`) unless the tilde-absolute form is shorter — a global
+    /// catalog lists repos far from the cwd, where relativization
+    /// degenerates into ../-chains.
+    #[test]
+    fn display_path_prefers_the_shorter_of_relative_and_tilde() {
+        let cwd = Path::new("/tmp/sandbox/test");
+        assert_eq!(display_path("/tmp/sandbox/test/api", Some(cwd)), "api");
+        assert_eq!(
+            display_path("/tmp/sandbox/test/api/main", Some(cwd)),
+            "api/main"
+        );
+        assert_eq!(display_path("/tmp/sandbox/test", Some(cwd)), ".");
+        assert_eq!(
+            display_path(
+                "/tmp/sandbox/test",
+                Some(Path::new("/tmp/sandbox/test/api"))
+            ),
+            ".."
+        );
+        assert_eq!(
+            display_path("/opt/elsewhere", None),
+            "/opt/elsewhere",
+            "no cwd falls back to the tilde/absolute form"
+        );
+        if let Some(home) = dirs::home_dir() {
+            let repo = format!("{}/src/api", home.display());
+            assert_eq!(
+                display_path(&repo, Some(Path::new("/tmp/sandbox/deeply/nested/dir"))),
+                "~/src/api",
+                "far from the cwd the tilde form is shorter than a ../-chain"
+            );
+        }
     }
 
     #[test]

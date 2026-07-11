@@ -32,6 +32,20 @@ steps:
         - "Remote"
         - "test-repo"
 
+  # Display paths relativize against the cwd when that form is shorter
+  # (mirroring daft list); from the workspace root the repo renders as
+  # `test-repo`, never the absolute sandbox path.
+  # Exact-match the cell: an absolute path would still CONTAIN "test-repo",
+  # so a substring assertion can't catch a regression here.
+  - name: paths render relative to the cwd
+    run:
+      test "$(daft repo list --columns path 2>/dev/null | tail -1 | awk '{print
+      $1}')" = "test-repo" && echo PATHS_RELATIVE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PATHS_RELATIVE"
+
   # Regression guard for the render path: the first shipped renderer fused
   # header and rows onto a single line (output.raw is `print!`, no newline).
   # Substring assertions can't see line boundaries, so count them.
