@@ -2,16 +2,17 @@
 //!
 //! Drives a fake `daft start` rail plus a REAL embedded hook phase through
 //! the actual `CliPresenter::embedded` path — the succinct rail rows by
-//! default, the welded `HookProgressRenderer` block under `hooks-verbose` —
-//! so the indicatif splice mechanics can be verified on a live terminal.
+//! default, the threaded log under `hooks-verbose` — so the indicatif
+//! splice mechanics can be verified on a live terminal.
 //!
 //! Run on a real TTY:
 //! ```sh
-//! cargo run --example timeline_spike                   # succinct hook rows
-//! cargo run --example timeline_spike -- hooks-verbose  # full welded block
-//! cargo run --example timeline_spike -- hooks-fail     # ✗ row + dump after footer
-//! cargo run --example timeline_spike -- fail           # mid-plan failure teardown
-//! cargo run --example timeline_spike -- skip           # attention-skip row
+//! cargo run --example timeline_spike                        # succinct hook rows
+//! cargo run --example timeline_spike -- hooks-verbose       # threaded log
+//! cargo run --example timeline_spike -- hooks-fail          # ✗ row + dump after footer
+//! cargo run --example timeline_spike -- hooks-verbose-fail  # inline evidence + exit fact
+//! cargo run --example timeline_spike -- fail                # mid-plan failure teardown
+//! cargo run --example timeline_spike -- skip                # attention-skip row
 //! ```
 //! (`DAFT_TESTING` must be unset; a non-TTY stderr renders nothing.)
 
@@ -186,6 +187,7 @@ fn main() {
         },
     );
 
+    let hooks_fail = matches!(scenario.as_str(), "hooks-fail" | "hooks-verbose-fail");
     if scenario == "skip" {
         tl.on_stage(
             &StepKey::new(StageId::PostCreateHooks),
@@ -194,13 +196,13 @@ fn main() {
             },
         );
     } else {
-        drive_hook_phase(&tl, scenario == "hooks-verbose", scenario == "hooks-fail");
+        drive_hook_phase(&tl, scenario.starts_with("hooks-verbose"), hooks_fail);
     }
 
     sleep(Duration::from_millis(300));
     // A failed hook job under failMode=warn does not fail the command; the
-    // deferred dump prints below this footer.
-    let footer = if scenario == "hooks-fail" {
+    // deferred failure detail prints below this footer.
+    let footer = if hooks_fail {
         format!("Finished with failures in {}", tl.elapsed_display())
     } else {
         format!("Ready in {}", tl.elapsed_display())

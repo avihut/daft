@@ -257,8 +257,9 @@ impl RailHookRenderer {
         if self.quiet {
             return;
         }
-        state.annotation = Some(line.trim_end().to_string());
         if self.verbose {
+            // The thread carries the liveness — the annotation slot keeps
+            // the job's description instead of racing the newest tail line.
             // Output un-promotes: the elapsed suffix answers "is this
             // silent job alive?", and output answers it better. Checked on
             // every line (not just the first) so a promoter racing past the
@@ -284,8 +285,12 @@ impl RailHookRenderer {
                 let text = state.output.get(start + i).map_or("", String::as_str);
                 pb.set_message(render::paint(GREY, text, self.use_color));
             }
+        } else {
+            // Succinct's single line of liveness: the latest output line
+            // rides the annotation slot.
+            state.annotation = Some(line.trim_end().to_string());
+            self.refresh_bar(name);
         }
-        self.refresh_bar(name);
     }
 
     pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
@@ -873,7 +878,7 @@ mod tests {
             ..Default::default()
         };
         let (mut r, _term, _h) = harness_with(config, None, false);
-        r.start_job_with_description("build", None, Some("cargo build"));
+        r.start_job_with_description("build", Some("Compile the project"), Some("cargo build"));
         {
             let state = r.jobs.get("build").unwrap();
             let cmd = state.cmd_bar.as_ref().expect("verbose opens a ❯ cmd bar");
@@ -891,6 +896,11 @@ mod tests {
         assert_eq!(state.tail_bars[0].message(), "line 3");
         assert_eq!(state.tail_bars[1].message(), "line 4");
         assert_eq!(state.output.len(), 5, "the receipt buffer is unwindowed");
+        assert!(
+            state.bar.message().contains("Compile the project"),
+            "the thread carries liveness — the annotation keeps the description: {:?}",
+            state.bar.message()
+        );
     }
 
     #[test]
