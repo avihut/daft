@@ -67,9 +67,8 @@ never keeps an identity ink.
 
 - The header names the resolved intent (`Starting <branch> ← <base>`); the
   footer closes the rail with the outcome and total duration. While the command
-  runs, the footer placeholder keeps count — once the run passes a second, `└ …`
-  becomes a dim elapsed counter (`└ 1.2s`) ticking until the outcome replaces
-  it.
+  runs, the pending footer is a stopwatch — a dim elapsed counter (`└ 1.2s`)
+  ticking from the moment the plan commits until the outcome replaces it.
 - With `daft.checkout.fetch` on, the remote fetch is planned work: `daft start`
   opens its rail with the `Fetch remote` and `Set up tracking` rows instead of
   running them as a spinner before it. A failed fetch turns its row yellow

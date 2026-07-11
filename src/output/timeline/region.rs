@@ -99,9 +99,9 @@ pub(super) struct TimelineCore {
     /// Dim `│` above the footer; lives until teardown. Doubles as the
     /// hook-embed anchor when no pending row remains.
     bottom_spacer: ProgressBar,
-    /// `└  …` placeholder; lives until teardown. Once the run outlives the
-    /// duration threshold, a ticker thread seats a grey elapsed counter in
-    /// its message (`└  1.2s`) until [`Self::finish`] retires it.
+    /// The pending footer; lives until teardown. Opens as a grey elapsed
+    /// counter (`└  142ms`, `└  1.2s`) that a ticker thread keeps current
+    /// until [`Self::finish`] retires it into the outcome footer.
     footer: ProgressBar,
     /// Stops the footer's elapsed ticker at teardown.
     footer_done: Arc<AtomicBool>,
@@ -255,18 +255,20 @@ impl TimelineCore {
         }
 
         let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
-        let footer = add_line_bar(&mp, &static_style, render::footer("\u{2026}", use_color));
-
-        // The placeholder becomes a stopwatch once the run outlives the
-        // duration threshold: `└  …` → `└  1.0s` → `└  1.1s` … (grey — the
-        // rail's duration vocabulary; sub-second runs keep the quiet
-        // ellipsis, matching the ≥ 1s rule everywhere else). A straggler
-        // write after `finish` pokes a bar already detached from the
-        // MultiProgress and draws nothing (the promoter ticker's contract).
-        // Not spawned under cfg(test): the InMemoryTerm sequence tests
-        // assert the committed plan's face, and a wall-clock repaint racing
-        // the assertion would flake them — the live behavior is a
-        // pty-verified cosmetic.
+        // The pending footer is a stopwatch from its first frame: `└  142ms`
+        // → `└  1.0s` → … (grey — the rail's duration vocabulary), on the
+        // command's own clock so it agrees with the total the outcome footer
+        // reports. A straggler write after `finish` pokes a bar already
+        // detached from the MultiProgress and draws nothing (the promoter
+        // ticker's contract). The ticker is not spawned under cfg(test) —
+        // the InMemoryTerm sequence tests assert the committed plan's face,
+        // and a wall-clock repaint racing the assertion would flake them
+        // (footer_counter is zeroed there for the same reason).
+        let footer = add_line_bar(
+            &mp,
+            &static_style,
+            render::footer(&footer_counter(started, use_color), use_color),
+        );
         let footer_done = Arc::new(AtomicBool::new(false));
         #[cfg(not(test))]
         {
@@ -278,21 +280,13 @@ impl TimelineCore {
                     if done.load(Ordering::SeqCst) {
                         break;
                     }
-                    let elapsed = started.elapsed();
-                    if elapsed < render::DURATION_THRESHOLD {
-                        continue;
-                    }
-                    let counter = render::paint(
-                        crate::output::palette::GREY,
-                        &crate::output::hook_progress::format_duration(elapsed),
+                    bar.set_message(render::footer(
+                        &footer_counter(started, use_color),
                         use_color,
-                    );
-                    bar.set_message(render::footer(&counter, use_color));
+                    ));
                 }
             });
         }
-        #[cfg(test)]
-        let _ = &started;
 
         // Ctrl-C while the region is live: collapse it once (erase the live
         // bars; persisted history stays) and exit — printing nothing more,
@@ -1027,6 +1021,24 @@ fn display_label(spec: &StepSpec, phase: StepPhase) -> String {
 /// rendered row has at least a glyph).
 fn line_style() -> ProgressStyle {
     ProgressStyle::with_template("{msg}").expect("static template is valid")
+}
+
+/// The pending footer's stopwatch face: the command's elapsed so far, in the
+/// rail's grey. Zeroed under cfg(test) so the InMemoryTerm sequence
+/// assertions stay deterministic (no ticker repaints it there either).
+fn footer_counter(started: Instant, use_color: bool) -> String {
+    #[cfg(test)]
+    let elapsed = {
+        let _ = started;
+        Duration::ZERO
+    };
+    #[cfg(not(test))]
+    let elapsed = started.elapsed();
+    render::paint(
+        crate::output::palette::GREY,
+        &crate::output::hook_progress::format_duration(elapsed),
+        use_color,
+    )
 }
 
 /// Wrap a rendered row in the rail gutter when it belongs to a group span.

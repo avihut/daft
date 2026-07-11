@@ -932,7 +932,7 @@ mod tests {
              \u{2502}\n\
              \u{25cb}  post-remove hooks\n\
              \u{2502}\n\
-             \u{2514}  \u{2026}"
+             \u{2514}  0ms"
         );
 
         let pre = StepKey::new(StageId::PreRemoveHooks);
@@ -1045,7 +1045,7 @@ mod tests {
              \u{2502}\n\
              \u{25cb}  post-remove hooks\n\
              \u{2502}\n\
-             \u{2514}  \u{2026}"
+             \u{2514}  0ms"
         );
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
              \u{251c}\u{2500} shared files\n\
              \u{2502}  \u{25cb}  .env\n\
              \u{2502}\n\
-             \u{2514}  \u{2026}"
+             \u{2514}  0ms"
         );
     }
 
