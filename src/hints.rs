@@ -174,6 +174,27 @@ pub enum LayoutPromptResult {
     Cancelled,
 }
 
+/// Whether [`maybe_prompt_layout_choice`] would actually render its prompt.
+///
+/// The exact gate the prompt applies internally, in one place — callers that
+/// must yield the terminal before the prompt draws (clone's planning face
+/// steps aside for it) check this first, so the silent-`Default` paths
+/// (hint already answered, hints disabled, quiet, non-TTY stdin) never
+/// disturb what they own on screen.
+pub fn layout_prompt_applicable(output: &dyn Output) -> bool {
+    if hints_disabled() || output.is_quiet() {
+        return false;
+    }
+    let state = HintsState::load().unwrap_or_default();
+    if state.has_shown(LAYOUT_HINT) {
+        return false;
+    }
+    // Only prompt on interactive terminals (or in test mode where stdin is
+    // piped).
+    let is_testing = env::var("DAFT_TESTING").is_ok();
+    is_testing || std::io::stdin().is_terminal()
+}
+
 /// Prompt the user to choose a layout on their first clone or init.
 ///
 /// Called when no `--layout` flag, no global config default, and this
@@ -188,24 +209,11 @@ pub fn maybe_prompt_layout_choice(
     output: &mut dyn Output,
     cancel_message: &str,
 ) -> LayoutPromptResult {
-    if hints_disabled() {
-        return LayoutPromptResult::Default;
-    }
-
-    if output.is_quiet() {
+    if !layout_prompt_applicable(output) {
         return LayoutPromptResult::Default;
     }
 
     let mut state = HintsState::load().unwrap_or_default();
-    if state.has_shown(LAYOUT_HINT) {
-        return LayoutPromptResult::Default;
-    }
-
-    // Only prompt on interactive terminals (or in test mode where stdin is piped)
-    let is_testing = env::var("DAFT_TESTING").is_ok();
-    if !is_testing && !std::io::stdin().is_terminal() {
-        return LayoutPromptResult::Default;
-    }
 
     use crate::styles;
     use std::io::Write;
@@ -324,6 +332,23 @@ pub fn maybe_prompt_layout_choice(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn layout_prompt_gate_blocks_quiet_and_the_prompt_defers_to_it() {
+        // The extracted gate and the prompt must agree: when
+        // `layout_prompt_applicable` says no, `maybe_prompt_layout_choice`
+        // returns `Default` without rendering a single line — that silence
+        // is what lets clone keep its planning face up.
+        let mut output = crate::output::TestOutput::quiet();
+        assert!(!layout_prompt_applicable(&output));
+        let result = maybe_prompt_layout_choice(&mut output, "cancelled");
+        assert!(matches!(result, LayoutPromptResult::Default));
+        assert!(
+            output.entries().is_empty(),
+            "a silent Default must render nothing: {:?}",
+            output.entries()
+        );
+    }
 
     #[test]
     fn test_hints_state_default() {

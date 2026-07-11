@@ -254,8 +254,8 @@ impl Timeline {
     /// Materialize the region (Interactive only; no-op otherwise). Called by
     /// the bridge when the core commits its plan. Over an open planning face
     /// the plan installs in place (the face's bars leave, the stopwatch
-    /// footer carries on); with no face this is the direct path (clone's
-    /// flow, where the bare phase runs before the timeline can exist).
+    /// footer carries on); with no face this is the direct path (a command
+    /// that commits without opening a planning face first).
     pub fn commit_plan(&mut self, plan: PlanCommit) {
         if !self.is_interactive() {
             return;

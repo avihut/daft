@@ -1,7 +1,7 @@
 use crate::{
     check_dependencies,
     core::{
-        HookRunner, NullSink, OutputSink, TimelineSink, TuiBridge,
+        HookRunner, NullSink, OutputSink, ProgressSink, TimelineSink, TuiBridge,
         global_config::GlobalConfig,
         layout::{
             Layout, TemplateContext,
@@ -20,7 +20,10 @@ use crate::{
     },
     executor::cli_presenter::CliPresenter,
     git::{GitCommand, should_show_gitoxide_notice},
-    hints::{LayoutPromptResult, maybe_prompt_layout_choice, maybe_show_shell_hint},
+    hints::{
+        LayoutPromptResult, layout_prompt_applicable, maybe_prompt_layout_choice,
+        maybe_show_shell_hint,
+    },
     hooks::{
         HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel, get_remote_url_for_git_dir,
         yaml_config_loader,
@@ -289,18 +292,37 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // Phase 1 completes before the timeline can exist (the layout prompt and
-    // branch resolution sit between them), so it keeps its transient spinner
-    // and later appears on the rail as a pre-completed row.
+    // Plan-execute rail timeline (#651): the rail opens the moment the
+    // command starts. The header's repo name is pure URL parsing — the same
+    // derivation the bare phase repeats — so a malformed URL still errors
+    // before any region exists. The plan itself commits only once the
+    // resolve span (bare clone, layout, branch resolution) has the facts;
+    // until then the planning face carries the liveness, and the bare phase
+    // later appears on the rail as a pre-completed row.
+    let repo_name = crate::extract_repo_name(&args.repository_url)?;
+    let mut timeline = Timeline::new(
+        TimelineMode::auto(output.is_quiet()),
+        output.is_verbose(),
+        format!("Cloning {repo_name}"),
+    );
+    timeline.open_planning("Cloning repository");
+
     let bare_started = std::time::Instant::now();
-    output.start_spinner("Cloning repository...");
     let bare_result = {
-        let mut sink = OutputSink(output);
+        let mut sink = TimelineSink::new(output, &mut timeline);
         clone::clone_bare_phase(&bare_params, &mut sink)
     };
-    output.finish_spinner();
-    let bare_result = bare_result?;
+    let bare_result = match bare_result {
+        Ok(result) => result,
+        Err(e) => {
+            timeline.abandon_planning();
+            return Err(e);
+        }
+    };
     let bare_elapsed = bare_started.elapsed();
+
+    // The clone landed; the rest of the resolve span is branch work.
+    timeline.set_planning_label("Resolving branches");
 
     // Phase 2: Read daft.yml from the bare repo (if no --layout flag)
     let yaml_layout = if args.layout.is_none() && !bare_result.is_empty {
@@ -308,7 +330,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
             Ok(Some(config)) => config.layout,
             Ok(None) => None,
             Err(e) => {
-                output.warning(&format!("Could not read daft.yml: {e}"));
+                TimelineSink::new(output, &mut timeline)
+                    .on_warning(&format!("Could not read daft.yml: {e}"));
                 None
             }
         }
@@ -316,14 +339,27 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         None
     };
 
-    // Phase 3: Resolve layout with full context
+    // Phase 3: Resolve layout with full context. The first-clone layout
+    // prompt owns the terminal while it draws — the planning face steps
+    // aside for it (a pre-flight prompt, per the rail's contract) and
+    // returns once answered. Gated on `layout_prompt_applicable` so the
+    // silent-Default paths (hint already answered, hints disabled, non-TTY
+    // stdin) never blink the face.
     let prompted_layout = if args.layout.is_none()
         && yaml_layout.is_none()
         && global_config.defaults.layout.is_none()
+        && layout_prompt_applicable(output)
     {
+        timeline.abandon_planning();
         match maybe_prompt_layout_choice(output, "Clone cancelled. Nothing was changed.") {
-            LayoutPromptResult::Chosen(layout) => Some(layout),
-            LayoutPromptResult::Default => None,
+            LayoutPromptResult::Chosen(layout) => {
+                timeline.open_planning("Resolving branches");
+                Some(layout)
+            }
+            LayoutPromptResult::Default => {
+                timeline.open_planning("Resolving branches");
+                None
+            }
             LayoutPromptResult::Cancelled => {
                 // Clean up: we already cloned, so delete it
                 change_directory(&original_dir).ok();
@@ -348,6 +384,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     if let Err(e) = check_no_checkout_compat(args.no_checkout, &layout) {
         // The bare clone already landed on disk — remove it so a rejected
         // clone leaves no orphan directory behind.
+        timeline.abandon_planning();
         change_directory(&original_dir).ok();
         remove_directory(&bare_result.parent_dir).ok();
         return Err(e);
@@ -355,17 +392,24 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Report layout decision
     if layout.needs_bare() {
-        output.step(&format!(
+        TimelineSink::new(output, &mut timeline).on_step(&format!(
             "Using layout '{}' (worktrees inside repo)",
             layout.name
         ));
     } else {
-        output.step(&format!("Using layout '{}'", layout.name));
+        TimelineSink::new(output, &mut timeline)
+            .on_step(&format!("Using layout '{}'", layout.name));
     }
 
     // Resolve branches against the remote
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-    let remote_branches = git.list_remote_branches(&bare_params.remote_name)?;
+    let remote_branches = match git.list_remote_branches(&bare_params.remote_name) {
+        Ok(branches) => branches,
+        Err(e) => {
+            timeline.abandon_planning();
+            return Err(e);
+        }
+    };
     let remote_branch_refs: Vec<&str> = remote_branches.iter().map(|s| s.as_str()).collect();
     let branch_plan = branch_source.resolve(
         &bare_result.default_branch,
@@ -375,7 +419,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Warn about missing branches
     for branch in &branch_plan.not_found {
-        output.warning(&format!("Branch '{}' not found on remote", branch));
+        TimelineSink::new(output, &mut timeline)
+            .on_warning(&format!("Branch '{}' not found on remote", branch));
     }
 
     // Determine if this is a multi-branch clone (Multiple or All source with
@@ -428,21 +473,16 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         branch_plan.satellites.clone()
     };
 
-    // Plan-execute rail timeline (#651). Every prompt has fired; commit the
-    // plan directly (it spans several core phases, so the command owns it).
-    // When the satellite OperationTable will run (multi-branch on a TTY),
-    // the rail closes before the table and the post-clone/post-create hooks
-    // render standalone after it, exactly as today — so their rows are only
-    // planned for the single-target journeys.
+    // Every prompt has fired and the resolve span has its facts; commit the
+    // plan onto the planning face (it spans several core phases, so the
+    // command owns it). When the satellite OperationTable will run
+    // (multi-branch on a TTY), the rail closes before the table and the
+    // post-clone/post-create hooks render standalone after it, exactly as
+    // today — so their rows are only planned for the single-target journeys.
     let will_use_satellite_tui = is_multi_branch
         && !filtered_satellites.is_empty()
         && std::io::IsTerminal::is_terminal(&std::io::stderr())
         && args.verbose < 2;
-    let mut timeline = Timeline::new(
-        TimelineMode::auto(output.is_quiet()),
-        output.is_verbose(),
-        format!("Cloning {}", bare_result.repo_name),
-    );
     // Shared files the cloned config declares get a section between the hook
     // stages (post-clone hooks may seed shared storage, the links land before
     // post-create hooks). No worktree exists yet, so the probe reads the
