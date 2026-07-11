@@ -80,9 +80,16 @@ fn drive_hook_phase(tl: &Timeline, verbose: bool, fail_install: bool) {
         false,
         None,
     );
+    // Paragraph-long description: must truncate at the terminal edge, never
+    // wrap and tear the region (the {wide_msg} contract).
     presenter.on_job_start(
         "bun-install",
-        Some("Install JS dependencies"),
+        Some(
+            "Install JS dependencies and write .direnv/deps_hash so direnv \
+             skips its own redundant install when this worktree is later \
+             entered. Without that marker the first shell entry re-runs the \
+             whole dependency resolution a second time.",
+        ),
         Some("bun install"),
     );
     presenter.on_job_start("prepare-db", None, Some("./scripts/prepare-db.sh"));

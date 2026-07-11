@@ -119,7 +119,7 @@ never keeps an identity ink.
   │  │    ❯ ./scripts/prepare-db.sh
   │  │    applying migration 0
   │  │    applying migration 1
-  │
+  │  │
   │  ✓  bun-install  (2.9s)
   │  │    ❯ bun install
   │  │    resolving package cluster 11
@@ -129,17 +129,17 @@ never keeps an identity ink.
   window of `daft.hooks.output.tailLines` lines while the job runs, and the
   receipt keeps every line — grey under a job that succeeded, default ink under
   one that failed (evidence stays loud), `(no output)` when it printed nothing.
-  Each thread closes with a bare rail line, so consecutive blocks keep their own
-  air — live and in the receipt. The section closes with a dim
-  `○ all jobs in <t>` total, and a job still silent after
-  `daft.hooks.output.timerDelay` seconds shows a dim elapsed counter until its
-  first output. A failed job's exit status still prints after the footer
-  (`error: hook job '<name>' failed (exit code: N)`) — but not its output, which
-  already sits inline. When nothing is configured to run, the hook row
-  disappears — and `daft remove` goes further: its hook config sources are on
-  disk and exact before the plan commits, so the row is never planned. Skips
-  worth noticing (untrusted repository, `--skip-hooks all`) render the yellow
-  `↓` row instead.
+  Each thread closes with an empty thread line (`│  │`), so consecutive blocks
+  keep their own air — live and in the receipt — while the rail's lone `│` stays
+  a section boundary. The section closes with a dim `○ all jobs in <t>` total,
+  and a job still silent after `daft.hooks.output.timerDelay` seconds shows a
+  dim elapsed counter until its first output. A failed job's exit status still
+  prints after the footer (`error: hook job '<name>' failed (exit code: N)`) —
+  but not its output, which already sits inline. When nothing is configured to
+  run, the hook row disappears — and `daft remove` goes further: its hook config
+  sources are on disk and exact before the plan commits, so the row is never
+  planned. Skips worth noticing (untrusted repository, `--skip-hooks all`)
+  render the yellow `↓` row instead.
 
 - If a step fails, later steps persist as dim `(not run)` rows and the footer
   reports `Failed after <t>` — the receipt shows exactly how far the command

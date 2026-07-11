@@ -77,13 +77,13 @@ struct JobState {
     annotation: Option<String>,
     /// The command preview, kept for the receipt log's `❯` line.
     command_preview: Option<String>,
-    /// Set on the first displayed output line; the promoter thread checks
-    /// it before swapping in the elapsed template (output un-promotes).
+    /// Set on the first displayed output line; the promoter ticker exits
+    /// once it's up (output un-promotes).
     output_seen: Arc<AtomicBool>,
     /// Set when the job's bars leave the region; stops a pending promoter.
     resolved: Arc<AtomicBool>,
-    /// Whether the elapsed suffix is currently shown — set by the promoter,
-    /// cleared (with a style reset) when output arrives.
+    /// Whether the elapsed counter currently occupies the annotation slot —
+    /// set by the promoter ticker, cleared when output arrives.
     promoted: Arc<AtomicBool>,
 }
 
@@ -105,11 +105,8 @@ pub struct RailHookRenderer {
     /// Static thread-bar template: `│  │    {wide_msg}` (inner `│` a tier
     /// below the rail).
     thread_style: ProgressStyle,
-    /// The live block's bottom spacer (a bare rail `│`).
+    /// The live block's bottom spacer (an empty thread line `│  │`).
     trailer_style: ProgressStyle,
-    /// The job template with a dim `({elapsed})` suffix — swapped in by the
-    /// promoter thread on silent jobs, swapped back on first output.
-    promoted_style: ProgressStyle,
     jobs: HashMap<String, JobState>,
     /// Jobs already resolved `✗` — used to intercept the runner's redundant
     /// `Job '<name>' failed…` message (the row carries the fact; verbose
@@ -140,26 +137,11 @@ impl RailHookRenderer {
             embed.use_color,
         ))
         .expect("thread template is valid");
-        // The live trailer renders as the rail spacer. `{msg}` + a
-        // set_message at creation (the `add_line_bar` pattern): a bar that
-        // never receives a state poke never draws.
+        // The live trailer renders the thread's empty closing line. `{msg}`
+        // + a set_message at creation (the `add_line_bar` pattern): a bar
+        // that never receives a state poke never draws.
         let trailer_style =
             ProgressStyle::with_template("{msg}").expect("trailer template is valid");
-        // The promoted template trades `wide_msg` for `msg` so the elapsed
-        // suffix stays visible — a silent job's message is short (name, or
-        // name + description), so truncation is not in play.
-        let promoted_base = if embed.use_color {
-            format!(
-                "{{spinner:.cyan}}  {{msg}} {GREY}({{elapsed}}){}",
-                styles::RESET
-            )
-        } else {
-            "{spinner}  {msg} ({elapsed})".to_string()
-        };
-        let promoted_style =
-            ProgressStyle::with_template(&render::gutter(&promoted_base, embed.use_color))
-                .expect("promoted template is valid")
-                .tick_chars(super::region::TICK_CHARS);
         Self {
             mp: embed.mp,
             anchor: embed.anchor,
@@ -173,7 +155,6 @@ impl RailHookRenderer {
             job_style,
             thread_style,
             trailer_style,
-            promoted_style,
             jobs: HashMap::new(),
             failed: HashSet::new(),
             finished: Vec::new(),
@@ -240,33 +221,11 @@ impl RailHookRenderer {
             let anchor = cmd_bar.as_ref().unwrap_or(&bar);
             let pb = self.mp.insert_after(anchor, ProgressBar::new_spinner());
             pb.set_style(self.trailer_style.clone());
-            pb.set_message(render::spacer(self.use_color));
+            pb.set_message(self.thread_air());
             Some(pb)
         } else {
             None
         };
-
-        let output_seen = Arc::new(AtomicBool::new(false));
-        let resolved = Arc::new(AtomicBool::new(false));
-        let promoted = Arc::new(AtomicBool::new(false));
-        if self.verbose {
-            // One-shot promoter: a job still silent past `timerDelay` gets
-            // the elapsed suffix. Wall-clock driven (the old block's
-            // lesson: long silent jobs never trigger output-driven swaps).
-            let bar = bar.clone();
-            let style = self.promoted_style.clone();
-            let delay = self.timer_delay;
-            let seen = Arc::clone(&output_seen);
-            let done = Arc::clone(&resolved);
-            let flag = Arc::clone(&promoted);
-            std::thread::spawn(move || {
-                std::thread::sleep(delay);
-                if !done.load(Ordering::SeqCst) && !seen.load(Ordering::SeqCst) {
-                    bar.set_style(style);
-                    flag.store(true, Ordering::SeqCst);
-                }
-            });
-        }
 
         let state = JobState {
             bar,
@@ -276,15 +235,66 @@ impl RailHookRenderer {
             output: Vec::new(),
             annotation: description.map(str::to_string),
             command_preview: command_preview.map(str::to_string),
-            output_seen,
-            resolved,
-            promoted,
+            output_seen: Arc::new(AtomicBool::new(false)),
+            resolved: Arc::new(AtomicBool::new(false)),
+            promoted: Arc::new(AtomicBool::new(false)),
         };
         self.jobs.insert(name.to_string(), state);
         self.grow_width_to(name.chars().count());
         self.refresh_bar(name);
         if let Some(state) = self.jobs.get(name) {
             state.bar.enable_steady_tick(Duration::from_millis(80));
+            if self.verbose {
+                // Ticking promoter: a job still silent past `timerDelay`
+                // shows a dim elapsed counter in its annotation slot,
+                // refreshed once a second, until output or resolution.
+                // Wall-clock driven (the old block's lesson: long silent
+                // jobs never trigger output-driven swaps). The message
+                // always travels the `{wide_msg}` template — a
+                // template-side `{elapsed}` would need `{msg}`, and
+                // unbounded content in `{msg}` wraps and desyncs
+                // indicatif's line accounting (a paragraph-long job
+                // description is unbounded content).
+                let bar = state.bar.clone();
+                let seen = Arc::clone(&state.output_seen);
+                let done = Arc::clone(&state.resolved);
+                let flag = Arc::clone(&state.promoted);
+                let delay = self.timer_delay;
+                let use_color = self.use_color;
+                let width = self.name_width;
+                let name = name.to_string();
+                let started = std::time::Instant::now();
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    // The message to fall back to if an iteration races a
+                    // just-arrived first output line: the composition as of
+                    // promotion time (name + description annotation).
+                    let resting = bar.message();
+                    loop {
+                        if done.load(Ordering::SeqCst) || seen.load(Ordering::SeqCst) {
+                            flag.store(false, Ordering::SeqCst);
+                            break;
+                        }
+                        flag.store(true, Ordering::SeqCst);
+                        let elapsed = render::paint(
+                            GREY,
+                            &format!("({})", format_duration(started.elapsed())),
+                            use_color,
+                        );
+                        bar.set_message(format!("{name:<width$}  {elapsed}"));
+                        // Re-check after writing: if output landed in the
+                        // gap, this write clobbered a fresher message and
+                        // nothing else will repaint a silent-again bar —
+                        // put the resting composition back.
+                        if done.load(Ordering::SeqCst) || seen.load(Ordering::SeqCst) {
+                            flag.store(false, Ordering::SeqCst);
+                            bar.set_message(resting);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                });
+            }
         }
     }
 
@@ -299,14 +309,13 @@ impl RailHookRenderer {
         if self.verbose {
             // The thread carries the liveness — the annotation slot keeps
             // the job's description instead of racing the newest tail line.
-            // Output un-promotes: the elapsed suffix answers "is this
+            // Output un-promotes: the elapsed counter answers "is this
             // silent job alive?", and output answers it better. Checked on
             // every line (not just the first) so a promoter racing past the
-            // first line still loses on the next one.
+            // first line still loses on the next one; the ticker itself
+            // exits on its next wake.
             state.output_seen.store(true, Ordering::SeqCst);
-            if state.promoted.swap(false, Ordering::SeqCst) {
-                state.bar.set_style(self.job_style.clone());
-            }
+            let unpromoted = state.promoted.swap(false, Ordering::SeqCst);
             // Grow the thread one bar per line until the window is full…
             if state.tail_bars.len() < self.tail_lines {
                 let anchor = state
@@ -323,6 +332,11 @@ impl RailHookRenderer {
             for (i, pb) in state.tail_bars.iter().enumerate() {
                 let text = state.output.get(start + i).map_or("", String::as_str);
                 pb.set_message(render::paint(GREY, text, self.use_color));
+            }
+            if unpromoted {
+                // Put the description annotation back in place of the
+                // elapsed counter.
+                self.refresh_bar(name);
             }
         } else {
             // Succinct's single line of liveness: the latest output line
@@ -516,7 +530,7 @@ impl RailHookRenderer {
     }
 
     /// Verbose receipt log: the job's full thread, persisted under its row,
-    /// closed with one bare rail line so consecutive blocks don't fuse.
+    /// closed with one empty thread line so consecutive blocks don't fuse.
     /// Quiet suppresses the whole thread.
     fn persist_log(&self, state: Option<&JobState>, failed: bool) {
         if !self.verbose || self.quiet {
@@ -528,7 +542,15 @@ impl RailHookRenderer {
         for line in self.compose_log(state, failed) {
             self.mp.println(line).ok();
         }
-        self.mp.println(render::spacer(self.use_color)).ok();
+        self.mp.println(self.thread_air()).ok();
+    }
+
+    /// The thread's empty closing line: `│  │` — the air stays inside the
+    /// section (the job's own thread), never spending the rail's lone-`│`
+    /// section-boundary glyph on intra-section spacing.
+    fn thread_air(&self) -> String {
+        let inner = render::paint(DARK_GREY, "\u{2502}", self.use_color);
+        render::gutter(&inner, self.use_color)
     }
 
     /// The receipt log's lines. `❯ <command>` provenance and the
@@ -891,7 +913,7 @@ mod tests {
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
              \u{2502}  \u{2502}    compiling daft\n\
              \u{2502}  \u{2502}    finished dev profile\n\
-             \u{2502}"
+             \u{2502}  \u{2502}"
         );
     }
 
@@ -961,7 +983,7 @@ mod tests {
             "\u{2502}  \u{2717}  build  (2.9s)\n\
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
              \u{2502}  \u{2502}    error: lockfile out of date\n\
-             \u{2502}"
+             \u{2502}  \u{2502}"
         );
         assert_eq!(
             deferred(&h),
@@ -1018,7 +1040,7 @@ mod tests {
             "\u{2502}  \u{2713}  build\n\
              \u{2502}  \u{2502}    \u{276f} echo one \u{2026}\n\
              \u{2502}  \u{2502}    (no output)\n\
-             \u{2502}"
+             \u{2502}  \u{2502}"
         );
     }
 
@@ -1032,7 +1054,7 @@ mod tests {
             "\u{2502}  \u{2713}  build\n\
              \u{2502}  \u{2502}    \u{276f} cargo build\n\
              \u{2502}  \u{2502}    (no output)\n\
-             \u{2502}"
+             \u{2502}  \u{2502}"
         );
     }
 
@@ -1110,21 +1132,37 @@ mod tests {
             ..Default::default()
         };
         let (mut r, _term, _h) = harness_with(config, None, false);
-        r.start_job("build", None);
-        // The promoter runs on a detached thread; poll rather than sleep a
-        // fixed amount (same pattern as the block renderer's test).
+        r.start_job_with_description("build", Some("Compile everything"), None);
+        // The promoter runs on a detached ticker thread; poll rather than
+        // sleep a fixed amount (same pattern as the block renderer's test).
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !r.timer_promoted("build") && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
             r.timer_promoted("build"),
-            "a silent job past timerDelay gains the elapsed suffix"
+            "a silent job past timerDelay gains the elapsed counter"
+        );
+        let msg = r.jobs.get("build").unwrap().bar.message();
+        assert!(
+            msg.starts_with("build") && msg.contains('('),
+            "the counter seats in the annotation slot: {msg:?}"
         );
         r.update_job_output("build", "first line");
+        // A ticker iteration that raced past the flags settles on its next
+        // wake (≤ 1s); poll for the restored annotation.
+        let settled = |r: &RailHookRenderer| {
+            let msg = r.jobs.get("build").unwrap().bar.message();
+            !r.timer_promoted("build") && msg.contains("Compile everything") && !msg.contains('(')
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !settled(&r) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(
-            !r.timer_promoted("build"),
-            "output answers the liveness question — the suffix retires"
+            settled(&r),
+            "output retires the counter and the description returns: {:?}",
+            r.jobs.get("build").unwrap().bar.message()
         );
     }
 
