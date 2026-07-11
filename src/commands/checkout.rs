@@ -804,9 +804,11 @@ fn run_checkout(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // Plan-execute rail timeline (#651). The region materializes when the
-    // core commits its plan; the early-exit paths (existing worktree,
-    // `go -`) never commit and keep today's single-line output.
+    // Plan-execute rail timeline (#651). The rail opens immediately with a
+    // planning face; the core replaces it with the committed plan. The
+    // early-exit paths (existing worktree, `go -`, fetch-off branch not
+    // found) never commit — the face collapses without a trace and today's
+    // single-line output renders.
     let mut timeline = Timeline::new(
         TimelineMode::auto(output.is_quiet()),
         output.is_verbose(),
@@ -814,17 +816,18 @@ fn run_checkout(
     );
     let interactive = timeline.is_interactive();
 
-    output.start_spinner("Preparing worktree...");
+    timeline.open_planning("Resolving branch");
     let checkout_result = {
         let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         checkout::execute(&params, git, &project_root, &mut bridge)
     };
-    output.finish_spinner();
+    timeline.abandon_planning();
     let result = match checkout_result {
         Ok(result) => result,
         Err(e) => {
-            // No-op unless the plan committed (BranchNotFound and other
-            // resolve-phase errors leave no region behind).
+            // With a committed plan (fetch-on branch not found, step
+            // failures) this closes the rail into a Failed receipt; a
+            // resolve-phase error left no region behind and this no-ops.
             timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
             return Err(e);
         }
@@ -945,13 +948,13 @@ fn run_create_branch(
         None
     };
 
-    // Always show the "Creating worktree..." spinner. When the pre-push hook
-    // renders, core pauses this spinner across the render and resumes it after
-    // (push_if_enabled, via ProgressSink::pause_spinner/resume_spinner), so the
-    // two never fight — and the common ref-only case, where the hook is skipped,
-    // keeps a visible spinner instead of going silent (#686). On the rail the
-    // timeline takes over once the plan commits; finish_spinner stops it below.
-    output.start_spinner("Creating worktree...");
+    // The rail opens immediately with a planning face; the plan commits
+    // milliseconds later (start's resolution is local — the fetch and push
+    // are planned rows). The pre-push hook embeds under the active Push row
+    // (#686's silent-gap concern is covered by the rail itself); core's
+    // pause_spinner/resume_spinner bracketing in push_if_enabled stays for
+    // the legacy CommandBridge commands.
+    timeline.open_planning("Resolving base branch");
     let checkout_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
@@ -963,7 +966,7 @@ fn run_create_branch(
             &mut bridge,
         )
     };
-    output.finish_spinner();
+    timeline.abandon_planning();
     let result = match checkout_result {
         Ok(result) => result,
         Err(e) => {

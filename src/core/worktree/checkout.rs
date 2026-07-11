@@ -214,24 +214,100 @@ pub fn execute(
         });
     }
 
-    // Fetch latest changes from remote
-    let fetch_failed = if params.checkout_fetch {
-        !fetch_branch(git, &params.remote_name, &params.branch_name, sink)
-    } else {
-        false
+    // The CheckOut row's provenance annotation, from the existence probe.
+    let annotation_for = |local_exists: bool, remote_exists: bool| {
+        if !local_exists {
+            format!("\u{2190} {}/{}", params.remote_name, params.branch_name)
+        } else if remote_exists && params.checkout_upstream {
+            format!("tracking {}/{}", params.remote_name, params.branch_name)
+        } else {
+            "local only".to_string()
+        }
     };
 
-    // Check if local and/or remote branch exists
-    let (local_exists, remote_exists) =
-        check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+    // Without a fetch every branch fact is local: probe now, so an unknown
+    // branch errors before any plan commits (no rail renders for resolve
+    // errors). With `daft.checkout.fetch` on the probe must follow the
+    // network — it moves below the plan commit, and the fetch becomes
+    // planned work instead of hiding behind the planning face.
+    let pre_fetch_probe = if params.checkout_fetch {
+        None
+    } else {
+        let (local_exists, remote_exists) =
+            check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+        if !local_exists && !remote_exists {
+            return Err(CheckoutError::BranchNotFound {
+                branch: params.branch_name.clone(),
+                remote: params.remote_name.clone(),
+                fetch_failed: false,
+            });
+        }
+        Some((local_exists, remote_exists))
+    };
 
-    if !local_exists && !remote_exists {
-        return Err(CheckoutError::BranchNotFound {
-            branch: params.branch_name.clone(),
-            remote: params.remote_name.clone(),
-            fetch_failed,
-        });
+    // Commit the execution plan (#651): the worktree path is resolved and
+    // everything left is planned work. Earlier returns (existing worktree,
+    // fetch-off branch not found) never reach this point, so no rail
+    // renders for them.
+    let should_carry = params.carry || (!params.no_carry && params.checkout_carry);
+    let mut plan_rows = Vec::new();
+    if params.checkout_fetch {
+        plan_rows.push(Row::Step(
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone()),
+        ));
     }
+    let checkout_spec = match pre_fetch_probe {
+        // Fetch off: the provenance is already resolved.
+        Some((local, remote)) => StepSpec::new(StepKey::new(StageId::CheckOut))
+            .with_annotation(annotation_for(local, remote)),
+        // Fetch on: resolved post-fetch, noted onto the pending row.
+        None => StepSpec::new(StepKey::new(StageId::CheckOut)),
+    };
+    plan_rows.extend([
+        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
+        Row::Step(checkout_spec),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CreateWorktree))
+                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+        ),
+    ]);
+    if should_carry {
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
+    }
+    // Shared files declared in the source worktree's config get a section
+    // (see checkout_branch.rs for the probe-vs-execution contract).
+    let planned_shared =
+        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
+    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+        StageId::PostCreateHooks,
+    ))));
+    sink.on_plan(PlanCommit::new(plan_rows));
+
+    // Fetch (planned above; a failure warns, turns the row yellow, and the
+    // checkout continues on local refs), then the post-fetch probe.
+    let local_exists = match pre_fetch_probe {
+        Some((local_exists, _)) => local_exists,
+        None => {
+            let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            let (local_exists, remote_exists) =
+                check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+            if !local_exists && !remote_exists {
+                // The plan is committed: the command layer aborts the rail
+                // into a Failed receipt, and this error prints below it.
+                return Err(CheckoutError::BranchNotFound {
+                    branch: params.branch_name.clone(),
+                    remote: params.remote_name.clone(),
+                    fetch_failed,
+                });
+            }
+            sink.on_stage(
+                &StepKey::new(StageId::CheckOut),
+                StageEvent::Note(annotation_for(local_exists, remote_exists)),
+            );
+            local_exists
+        }
+    };
 
     let use_local_branch = if local_exists {
         sink.on_step(&format!(
@@ -246,40 +322,6 @@ pub fn execute(
         ));
         false
     };
-
-    // Commit the execution plan (#651): the branch is resolved, mutation is
-    // about to begin. Earlier returns (existing worktree, branch not found)
-    // never reach this point, so no rail renders for them.
-    let should_carry = params.carry || (!params.no_carry && params.checkout_carry);
-    let checkout_annotation = if !local_exists {
-        format!("\u{2190} {}/{}", params.remote_name, params.branch_name)
-    } else if remote_exists && params.checkout_upstream {
-        format!("tracking {}/{}", params.remote_name, params.branch_name)
-    } else {
-        "local only".to_string()
-    };
-    let mut plan_rows = vec![
-        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
-        Row::Step(
-            StepSpec::new(StepKey::new(StageId::CheckOut)).with_annotation(checkout_annotation),
-        ),
-        Row::Step(
-            StepSpec::new(StepKey::new(StageId::CreateWorktree))
-                .with_annotation(super::branch_delete::display_path(&worktree_path)),
-        ),
-    ];
-    if should_carry {
-        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
-    }
-    // Shared files declared in the source worktree's config get a section
-    // (see checkout_branch.rs for the probe-vs-execution contract).
-    let planned_shared =
-        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
-    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
-    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
-        StageId::PostCreateHooks,
-    ))));
-    sink.on_plan(PlanCommit::new(plan_rows));
 
     // Stash uncommitted changes if carry is enabled
     let stash_created = stash_if_carry(params, git, sink)?;
@@ -482,6 +524,10 @@ fn fetch_branch(
     branch_name: &str,
     sink: &mut impl ProgressSink,
 ) -> bool {
+    // The fetch is a planned rail row (mirrors checkout_branch's
+    // `fetch_remote`): it resolves green on success and yellow — with the
+    // continuing-anyway fact — when both fetches failed.
+    sink.on_stage(&StepKey::new(StageId::Fetch), StageEvent::Started);
     sink.on_step(&format!(
         "Fetching latest changes from remote '{remote_name}'..."
     ));
@@ -505,7 +551,21 @@ fn fetch_branch(
         }
     };
 
-    general_ok || specific_ok
+    if general_ok || specific_ok {
+        sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::Completed { annotation: None },
+        );
+        true
+    } else {
+        sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::SkippedAttention {
+                reason: "failed \u{2014} continuing with local refs".to_string(),
+            },
+        );
+        false
+    }
 }
 
 /// Check whether local and remote branch refs exist.
@@ -672,4 +732,255 @@ pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> 
     }
 
     names
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use crate::core::RecordingStageSink;
+    use crate::core::stage::{StageEvent, StageId, StepKey};
+    use serial_test::serial;
+    use std::process::{Command as ShellCommand, Stdio};
+
+    fn git(dir: &Path, args: &[&str]) {
+        ShellCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable"),
+            }
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
+
+    fn params(branch: &str, at: PathBuf, fetch: bool) -> CheckoutParams {
+        CheckoutParams {
+            branch_name: branch.to_string(),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_carry: false,
+            checkout_upstream: true,
+            checkout_fetch: fetch,
+            layout: None,
+            at_path: Some(at),
+        }
+    }
+
+    /// Fetch off: every branch fact is local, so the probe precedes the
+    /// plan — no Fetch row, and the CheckOut row carries its resolved
+    /// provenance from the moment the plan commits (#651).
+    #[test]
+    #[serial]
+    fn fetch_off_plans_no_fetch_row_and_resolves_the_annotation_up_front() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(
+            &params("feat-x", worktree_path.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+        assert!(!result.already_existed);
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::PreCreateHooks,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::PostCreateHooks,
+            ],
+            "fetch off => no Fetch row"
+        );
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation,
+            Some("local only"),
+            "no remote ref => local-only provenance, resolved at plan time"
+        );
+        assert!(
+            sink.events.iter().all(|(k, _)| k.id != StageId::Fetch),
+            "no Fetch events without a planned row: {:?}",
+            sink.events
+        );
+    }
+
+    /// Fetch off + unknown branch: the resolve-phase error fires before any
+    /// plan commits, so no rail ever renders for it.
+    #[test]
+    #[serial]
+    fn fetch_off_unknown_branch_errors_before_any_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let Err(err) = execute(
+            &params("no-such-branch", tmp.path().join("wt"), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        ) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(sink.plan.is_none(), "no plan for a resolve-phase error");
+    }
+
+    /// Fetch on: the plan commits before the network — a Fetch row leads it,
+    /// the CheckOut row starts without provenance, and the post-fetch probe
+    /// notes the resolved annotation onto the pending row (#651).
+    #[test]
+    #[serial]
+    fn fetch_on_plans_the_fetch_row_and_notes_the_annotation() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&origin, &["branch", "feat-y"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("feat-y-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("feat-y", worktree_path.clone(), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::Fetch,
+                StageId::PreCreateHooks,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::PostCreateHooks,
+            ],
+            "fetch on => the Fetch row leads the plan"
+        );
+        let fetch_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::Fetch)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(fetch_annotation, Some("origin"));
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation, None,
+            "provenance is unknown until the fetch lands"
+        );
+
+        // The fetch row resolves, then the probe notes the provenance onto
+        // the pending CheckOut row.
+        let fetch_key = StepKey::new(StageId::Fetch);
+        assert!(
+            sink.events
+                .contains(&(fetch_key.clone(), StageEvent::Started))
+        );
+        assert!(
+            sink.events
+                .contains(&(fetch_key, StageEvent::Completed { annotation: None }))
+        );
+        // The specific-branch fetch materialized the local ref, and the
+        // remote-tracking ref exists from the clone: tracking provenance.
+        assert!(
+            sink.events.contains(&(
+                StepKey::new(StageId::CheckOut),
+                StageEvent::Note("tracking origin/feat-y".to_string())
+            )),
+            "events: {:?}",
+            sink.events
+        );
+    }
+
+    /// Fetch on + unknown branch: the plan is already committed when the
+    /// post-fetch probe fails — the command layer aborts the rail into a
+    /// Failed receipt (the accepted #651 semantic for fetch-on go).
+    #[test]
+    #[serial]
+    fn fetch_on_unknown_branch_errors_after_the_committed_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let Err(err) = execute(
+            &params("no-such-branch", tmp.path().join("wt"), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        ) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(
+            sink.plan.is_some(),
+            "fetch on commits the plan before the probe can fail"
+        );
+    }
 }
