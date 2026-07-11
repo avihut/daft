@@ -240,6 +240,17 @@ impl Timeline {
         ));
     }
 
+    /// Update the planning face's label in place ("Cloning repository" →
+    /// "Resolving branches") — liveness for a resolve phase that moves
+    /// between kinds of work. No-op without a face (Plain mode, plan already
+    /// committed, abandoned region).
+    pub fn set_planning_label(&mut self, label: &str) {
+        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        if let Some(core) = inner.core.as_mut() {
+            core.set_planning_label(label);
+        }
+    }
+
     /// Materialize the region (Interactive only; no-op otherwise). Called by
     /// the bridge when the core commits its plan. Over an open planning face
     /// the plan installs in place (the face's bars leave, the stopwatch
@@ -987,6 +998,103 @@ mod tests {
         tl.abandon_planning();
         // The face vanished; the warning is scrollback.
         assert_eq!(term.contents(), "warning: remote is unreachable");
+    }
+
+    /// Clone's plan shape: a pre-completed row (the bare phase finished
+    /// before the plan could commit) leading the pending rows.
+    fn clone_plan() -> PlanCommit {
+        PlanCommit::new(vec![
+            Row::Step(
+                StepSpec::new(StepKey::new(StageId::CloneBare))
+                    .with_annotation("\u{2190} file://src/proj")
+                    .pre_completed(Duration::from_secs(2)),
+            ),
+            Row::Step(
+                StepSpec::new(StepKey::new(StageId::CreateBaseWorktree)).with_annotation("master"),
+            ),
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostCloneHooks))),
+            Row::Step(StepSpec::new(StepKey::new(StageId::PostCreateHooks))),
+        ])
+    }
+
+    #[test]
+    fn pre_completed_rows_over_the_face_match_the_direct_commit() {
+        let (mut direct, direct_term) = captured("Cloning proj");
+        direct.commit_plan(clone_plan());
+
+        let (mut planned, planned_term) = captured("Cloning proj");
+        planned.open_planning("Cloning repository");
+        planned.commit_plan(clone_plan());
+
+        // The pre-completed `✓` row persists above the pending bars on both
+        // paths (the println-vs-live-bars ordering the face must not
+        // disturb), and the face leaves no residue.
+        assert!(!planned_term.contents().contains("Cloning repository"));
+        assert_eq!(planned_term.contents(), direct_term.contents());
+        assert!(
+            planned_term
+                .contents()
+                .contains("\u{2713}  Cloned repository")
+        );
+
+        for tl in [&mut direct, &mut planned] {
+            complete(tl, &StepKey::new(StageId::CreateBaseWorktree));
+            tl.resolve_silently(&StepKey::new(StageId::PostCloneHooks));
+            tl.resolve_silently(&StepKey::new(StageId::PostCreateHooks));
+            tl.finish("Ready in 2.4s");
+        }
+        assert_eq!(planned_term.contents(), direct_term.contents());
+    }
+
+    #[test]
+    fn planning_label_update_repaints_the_face() {
+        let (mut tl, term) = captured("Cloning proj");
+        tl.open_planning("Cloning repository");
+        tl.set_planning_label("Resolving branches");
+        let contents = term.contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert!(
+            lines[2].ends_with("  Resolving branches"),
+            "planning row: {:?}",
+            lines[2]
+        );
+        assert!(!contents.contains("Cloning repository"));
+        tl.abandon_planning();
+    }
+
+    #[test]
+    fn planning_label_update_after_commit_is_a_noop() {
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.open_planning("Resolving branch");
+        tl.commit_plan(plan());
+        let committed = term.contents();
+        tl.set_planning_label("Too late");
+        assert_eq!(term.contents(), committed);
+        tl.finish("Ready in 0.1s");
+        assert!(!term.contents().contains("Too late"));
+    }
+
+    #[test]
+    fn reopened_face_after_abandon_commits_cleanly() {
+        // The layout-prompt path: the face steps aside for the prompt, then
+        // returns with a fresh label, and the plan lands on the reopened
+        // face. (The test draw target is consumed per region, so the reopen
+        // re-arms it — production regions each get their own stderr target.)
+        let (mut direct, direct_term) = captured("Cloning proj");
+        direct.commit_plan(clone_plan());
+
+        let (mut tl, term) = captured("Cloning proj");
+        tl.open_planning("Cloning repository");
+        tl.abandon_planning();
+        assert!(!tl.region_live());
+        assert_eq!(term.contents(), "");
+        tl.set_test_draw_target(indicatif::ProgressDrawTarget::term_like(Box::new(
+            term.clone(),
+        )));
+        tl.open_planning("Resolving branches");
+        assert!(tl.region_live());
+        tl.commit_plan(clone_plan());
+        assert_eq!(term.contents(), direct_term.contents());
     }
 
     #[test]

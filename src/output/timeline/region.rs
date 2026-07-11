@@ -206,6 +206,22 @@ impl TimelineCore {
         self.header_bar.is_some()
     }
 
+    /// Repaint the planning row's label in place — the face's liveness copy
+    /// follows the resolve phase between kinds of work ("Cloning repository"
+    /// → "Resolving branches"). No-op once the plan has installed (the face
+    /// is gone). The explicit tick paints the new label immediately, matching
+    /// [`Self::open_planning`]'s first frame (no steady tick under test).
+    pub(super) fn set_planning_label(&mut self, label: &str) {
+        if let Some(row) = &self.planning_row {
+            row.set_message(render::paint(
+                crate::output::palette::GREY,
+                label,
+                self.use_color,
+            ));
+            row.tick();
+        }
+    }
+
     /// The shared region shell: bottom spacer + stopwatch footer (+ ticker),
     /// echo guard, and the Ctrl-C collapse — everything that survives from
     /// the planning face into the committed plan. Slots come later via
