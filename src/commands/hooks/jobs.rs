@@ -52,6 +52,18 @@ fn format_duration(d: chrono::Duration) -> String {
     format!("{days}d{h}h")
 }
 
+/// The `>` current-worktree marker: shown only for the worktree the user is
+/// standing in, and only when there IS a current context. `current_worktree`
+/// is blanked when `--repo <other>` addresses a repo the user isn't in, so a
+/// same-named worktree there is never mismarked "you are here" (#357 C8).
+fn current_marker(worktree: &str, current_worktree: &str) -> &'static str {
+    if !current_worktree.is_empty() && worktree == current_worktree {
+        CURRENT_WORKTREE_SYMBOL
+    } else {
+        " "
+    }
+}
+
 /// One-line worktree header. The marker is `CURRENT_WORKTREE_SYMBOL` (`">"`)
 /// for the current worktree; non-current worktrees pass a single space so
 /// the worktree-name column lines up across both.
@@ -921,7 +933,17 @@ fn build_invocation_node(
 /// Default subcommand: list jobs grouped by worktree and invocation.
 fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
     let repo_hash = resolve_repo_hash(args.repo.as_deref())?;
-    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    // The `>` "current worktree" marker only applies to the repo the user is
+    // standing in. Under `--repo <other>` none of the listed worktrees is
+    // current, so blank the marker branch unless the addressed repo IS the cwd
+    // repo (compute_repo_id errors harmlessly outside any repo).
+    let addresses_current_repo = args.repo.is_none()
+        || crate::core::repo_identity::compute_repo_id().is_ok_and(|id| id == repo_hash);
+    let current_worktree = if addresses_current_repo {
+        crate::core::repo::get_current_branch().unwrap_or_default()
+    } else {
+        String::new()
+    };
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
@@ -1087,11 +1109,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         sections: sections_by_worktree
             .into_iter()
             .map(|(worktree, secs)| {
-                let marker = if worktree == current_worktree {
-                    CURRENT_WORKTREE_SYMBOL
-                } else {
-                    " "
-                };
+                let marker = current_marker(&worktree, &current_worktree);
                 Section {
                     header: worktree_header(marker, &worktree),
                     nodes: secs
@@ -2086,6 +2104,16 @@ fn format_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_marker_only_marks_the_current_worktree() {
+        // #357 C8: the `>` marker shows only for the worktree the user is in.
+        // Under `--repo <other>`, list_jobs blanks current_worktree, so no row
+        // is marked — not even a same-named worktree in the addressed repo.
+        assert_eq!(current_marker("main", "main"), CURRENT_WORKTREE_SYMBOL);
+        assert_eq!(current_marker("feature", "main"), " ");
+        assert_eq!(current_marker("main", ""), " ");
+    }
 
     #[test]
     fn cancel_inv_alone_counts_as_filter() {
