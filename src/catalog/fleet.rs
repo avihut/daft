@@ -100,8 +100,16 @@ pub fn for_each_repo(
             output.raw(&format!("── {} ──", row.name));
         }
         crate::utils::change_directory(path)?;
+        // `action` is assumed not to unwind; a panic here would skip the
+        // restore below and strand the process in `path`.
         let result = action(row);
-        crate::utils::change_directory(&original)?;
+        // Best-effort restore: the action may have deleted `original` (e.g.
+        // `prune --all-repos` removing the cwd's own worktree — which
+        // `current_repo_last` orders to run last). A failed restore must not
+        // turn a fully successful sweep into a failure; the next iteration
+        // chdir's by absolute path and the shell cd-redirect owns the user's
+        // final cwd.
+        let _ = crate::utils::change_directory(&original);
         match result {
             Ok(()) => outcome.ran += 1,
             Err(e) => {
