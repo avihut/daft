@@ -7,13 +7,12 @@ use crate::VERSION;
 use crate::styles;
 use std::time::Duration;
 
-// ANSI color codes for hook output (256-color palette)
+// ANSI color codes for hook output (256-color palette). The scaffolding
+// greys and the attention yellow are shared with the plan-execute timeline
+// (`crate::output::palette`) so the two surfaces compose seamlessly (#651).
 pub(super) const ORANGE: &str = "\x1b[38;5;208m";
-pub(super) const YELLOW: &str = "\x1b[38;5;220m";
-pub(super) const GREY: &str = "\x1b[38;5;245m";
+pub(super) use crate::output::palette::{BLUE, DARK_GREY, GREY, YELLOW};
 pub(super) const BRIGHT_WHITE: &str = "\x1b[97m";
-pub(super) const DARK_GREY: &str = "\x1b[38;5;240m";
-pub(super) const BLUE: &str = "\x1b[38;5;75m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 
 /// Default name-column width used when no target list is available to compute
@@ -22,25 +21,40 @@ pub(crate) const DEFAULT_NAME_COLUMN_WIDTH: usize = 24;
 
 /// Check if hook visual output should be suppressed (e.g. during tests).
 ///
-/// Returns true when running unit tests (`cfg!(test)`) or when `DAFT_TESTING`
-/// env var is set (for integration tests that invoke the binary as a subprocess).
+/// Delegates to the shared predicate in `crate::output::palette` so the hook
+/// renderer and the timeline suppress under exactly the same conditions.
 pub(super) fn output_suppressed() -> bool {
-    cfg!(test) || std::env::var("DAFT_TESTING").is_ok()
+    crate::output::palette::testing_suppressed()
 }
 
-/// Generate the hook header lines (dark-grey framed box).
+/// Generate the hook header lines (dark-grey framed banner box).
 ///
 /// `target` names the entity the hook is acting on (e.g. the worktree/branch
 /// being removed for `worktree-pre-remove`). When provided, the title gains an
 /// ` on: <target>` segment so multi-source operations don't leave the user
 /// guessing which worktree the hooks are touching. `None` for project-scoped
 /// hooks (`pre-merge`, `post-merge`, `post-clone`).
+///
+/// `weld` swaps only the box's top-left corner `┌` for `├`, so the rail
+/// above flows into the banner when the block renders embedded in a
+/// timeline (#651). The bottom corner stays `└`: the banner closes, and the
+/// job blocks below hang beneath it unwelded.
+///
+/// NOTE(preserved): only the embedded path welds, and nothing constructs an
+/// embedded block today (see `HookRenderer::embedded`) — every live caller
+/// passes `false`. Kept for possible reuse by full git hooks rendering.
 pub(super) fn format_header_lines(
     hook_name: &str,
     target: Option<&str>,
     use_color: bool,
+    weld: bool,
 ) -> Vec<String> {
+    let top_corner = if weld { "\u{251c}" } else { "\u{250c}" };
     let target_segment = target.map(|t| format!("  on: {t}")).unwrap_or_default();
+    let target_part = target
+        .map(|t| format!("  {GREY}on: {BRIGHT_WHITE}{t}{}", styles::RESET))
+        .unwrap_or_default();
+
     let content_width = " daft hooks v".len()
         + VERSION.len()
         + "  ".len()
@@ -50,11 +64,8 @@ pub(super) fn format_header_lines(
     let border_h = "\u{2500}".repeat(content_width);
 
     if use_color {
-        let target_part = target
-            .map(|t| format!("  {GREY}on: {BRIGHT_WHITE}{t}{}", styles::RESET))
-            .unwrap_or_default();
         vec![
-            format!("{GREY}\u{250c}{border_h}\u{2510}{}", styles::RESET),
+            format!("{GREY}{top_corner}{border_h}\u{2510}{}", styles::RESET),
             format!(
                 "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
                 styles::BOLD,
@@ -65,7 +76,7 @@ pub(super) fn format_header_lines(
         ]
     } else {
         vec![
-            format!("\u{250c}{border_h}\u{2510}"),
+            format!("{top_corner}{border_h}\u{2510}"),
             format!("\u{2502} daft hooks v{VERSION}  {hook_name}{target_segment} \u{2502}"),
             format!("\u{2514}{border_h}\u{2518}"),
         ]
@@ -181,7 +192,10 @@ pub(super) fn format_summary_lines(
 /// - Under 1 second: milliseconds (e.g., "112ms")
 /// - 1-60 seconds: seconds with one decimal (e.g., "2.3s")
 /// - Over 60 seconds: minutes and seconds (e.g., "1m 5s")
-pub(super) fn format_duration(d: Duration) -> String {
+///
+/// `pub(crate)` so the plan-execute timeline renders durations in exactly
+/// the same vocabulary as the hook rows it composes with.
+pub(crate) fn format_duration(d: Duration) -> String {
     let millis = d.as_millis();
     if millis < 1000 {
         format!("{millis}ms")

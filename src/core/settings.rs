@@ -1040,6 +1040,17 @@ impl Default for HookOutputConfig {
     }
 }
 
+impl HookOutputConfig {
+    /// The configured output settings with the CLI's `-v` folded in — the
+    /// flag opts into the full hook block on the rail (#651) on top of
+    /// whatever `daft.hooks.output.verbose` says.
+    pub fn with_cli_verbose(&self, cli_verbose: bool) -> Self {
+        let mut config = self.clone();
+        config.verbose |= cli_verbose;
+        config
+    }
+}
+
 /// Load hooks configuration from git config.
 ///
 /// This loads hooks settings from the current repository's config,

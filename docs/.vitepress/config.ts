@@ -391,6 +391,7 @@ export default defineConfig({
           { text: "Overview", link: "/reference/" },
           { text: "Configuration", link: "/reference/configuration" },
           { text: "Output formats", link: "/reference/output-formats" },
+          { text: "Progress timeline", link: "/reference/progress-timeline" },
           { text: "Agent skill", link: "/reference/agent-skill" },
           {
             text: "CLI",

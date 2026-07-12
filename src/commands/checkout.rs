@@ -1,7 +1,7 @@
 use crate::{
     WorktreeConfig,
     core::{
-        CommandBridge,
+        TimelineBridge,
         global_config::GlobalConfig,
         layout::{
             BuiltinLayout, Layout,
@@ -15,7 +15,10 @@ use crate::{
     hooks::{HookExecutor, TrustDatabase, yaml_config_loader},
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        CliOutput, Output, OutputConfig,
+        timeline::{Timeline, TimelineMode},
+    },
     settings::{DaftSettings, PushVerify},
     utils::*,
 };
@@ -787,9 +790,16 @@ fn run_checkout(
         },
         layout: Some(layout),
         at_path: args.at.clone(),
+        // The morph (branch missing → run_create_branch) must leave no rail
+        // behind: hold the plan until the branch is known to exist, so the
+        // fetch runs under the planning face and a not-found dissolves the
+        // face tracelessly instead of closing a Failed receipt before
+        // start's rail opens.
+        defer_plan_until_branch_known: args.start || settings.go_auto_start,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -798,15 +808,43 @@ fn run_checkout(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    output.start_spinner("Preparing worktree...");
+    // Plan-execute rail timeline (#651). The rail opens immediately with a
+    // planning face; the core replaces it with the committed plan. The
+    // early-exit paths (existing worktree, `go -`, fetch-off branch not
+    // found) never commit — the face collapses without a trace and today's
+    // single-line output renders.
+    let mut timeline = Timeline::new(
+        TimelineMode::auto(output.is_quiet()),
+        output.is_verbose(),
+        format!("Opening {}", args.branch_name),
+    );
+
+    timeline.open_planning("Resolving branch");
     let checkout_result = {
-        let mut bridge = CommandBridge::new(output, executor);
+        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
         checkout::execute(&params, git, &project_root, &mut bridge)
     };
-    output.finish_spinner();
-    let result = checkout_result?;
+    timeline.abandon_planning();
+    let result = match checkout_result {
+        Ok(result) => result,
+        Err(e) => {
+            // With a committed plan (fetch-on branch not found, step
+            // failures) this closes the rail into a Failed receipt; a
+            // resolve-phase error left no region behind and this no-ops.
+            timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+            return Err(e);
+        }
+    };
 
-    render_checkout_result(&result, output);
+    if timeline.region_live() {
+        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+    }
+    // On the rail, the header + footer are the record; Plain/Hidden (and the
+    // no-rail early exits) keep the result line byte-identical to before —
+    // and so does a redirected stdout, which never saw the rail.
+    if !timeline.replaces_stdout_record() || result.already_existed {
+        render_checkout_result(&result, output);
+    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);
@@ -868,7 +906,7 @@ fn run_create_branch(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
-    let hook_output_config = hooks_config.output.clone();
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -877,31 +915,51 @@ fn run_create_branch(
         output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
-    // The auto-upstream push may run the repo's pre-push hook and render its
-    // phase/job output through this presenter (#599). Create it whenever a hook
-    // COULD fire — a conservative upper bound, since whether the hook actually
-    // runs is decided in core (push_if_enabled), after the post-fetch ref-only
-    // probe (#679). A skipped hook simply never fires the presenter.
+    // Plan-execute rail timeline (#651).
+    let mut timeline = Timeline::new(
+        TimelineMode::auto(output.is_quiet()),
+        output.is_verbose(),
+        format!("Starting {}", args.branch_name),
+    );
+    let interactive = timeline.is_interactive();
+
+    // Presenter for the pre-push hook run on the auto-upstream push. On the
+    // rail it embeds under the active Push row; off the rail, keep the legacy
+    // #599 behavior (presenter only when a hook could fire, spinner otherwise).
+    // Whether the hook ACTUALLY runs is decided in core (push_if_enabled) after
+    // the post-fetch ref-only probe (#679); this gate is a conservative upper
+    // bound, so `PushVerify::Never` (hook never consulted) is excluded and a
+    // skipped hook simply never fires the presenter.
     let push_hook_may_render = params.checkout_push
         && !params.no_verify
         && params.push_verify != PushVerify::Never
         && git.pre_push_hook_exists(&project_root);
-    let push_presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
-        if push_hook_may_render {
-            let p: Arc<dyn crate::executor::presenter::JobPresenter> =
-                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config);
-            Some(p)
-        } else {
-            None
-        };
+    let push_presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> = if interactive {
+        Some(
+            crate::executor::cli_presenter::CliPresenter::embedded_for_stage(
+                &hook_output_config,
+                timeline.handle(),
+                crate::core::stage::StageId::Push,
+            ),
+        )
+    } else if push_hook_may_render {
+        Some(crate::executor::cli_presenter::CliPresenter::auto(
+            &hook_output_config,
+        ))
+    } else {
+        None
+    };
 
-    // Always show the spinner for the worktree checkout. When the pre-push hook
-    // renders, core pauses this spinner across the render and resumes it after
-    // (push_if_enabled), so the two never fight — and the common ref-only case,
-    // where the hook is skipped, keeps a visible spinner instead of going silent.
-    output.start_spinner("Creating worktree...");
+    // The rail opens immediately with a planning face; the plan commits
+    // milliseconds later (start's resolution is local — the fetch and push
+    // are planned rows). The pre-push hook embeds under the active Push row
+    // (#686's silent-gap concern is covered by the rail itself); core's
+    // pause_spinner/resume_spinner bracketing in push_if_enabled stays for
+    // the legacy CommandBridge commands.
+    timeline.open_planning("Resolving base branch");
     let checkout_result = {
-        let mut bridge = CommandBridge::new(output, executor);
+        let mut bridge =
+            TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
         checkout_branch::execute(
             &params,
             git,
@@ -910,10 +968,21 @@ fn run_create_branch(
             &mut bridge,
         )
     };
-    output.finish_spinner();
-    let result = checkout_result?;
+    timeline.abandon_planning();
+    let result = match checkout_result {
+        Ok(result) => result,
+        Err(e) => {
+            timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+            return Err(e);
+        }
+    };
 
-    render_create_result(&result, output);
+    if timeline.region_live() {
+        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+    }
+    if !timeline.replaces_stdout_record() {
+        render_create_result(&result, output);
+    }
 
     // Run exec commands (after hooks, before cd_path)
     let exec_result = crate::exec::run_exec_commands(&args.exec, output);

@@ -5,6 +5,7 @@ mod interactive;
 mod plain;
 
 pub(crate) use formatting::DEFAULT_NAME_COLUMN_WIDTH;
+pub(crate) use formatting::format_duration;
 pub use interactive::HookProgressRenderer;
 pub use plain::PlainHookRenderer;
 
@@ -63,6 +64,28 @@ impl HookRenderer {
     #[cfg(test)]
     pub fn new_hidden(config: &HookOutputConfig) -> Self {
         HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)))
+    }
+
+    /// Render inside a plan-execute timeline's live region (#651): the rich
+    /// renderer shares the timeline's `MultiProgress` and inserts its job
+    /// bars above `anchor`, with the rail welded into the header box's top
+    /// corner.
+    ///
+    /// NOTE(preserved, currently unused): the timeline renders verbose
+    /// embeds natively (`timeline::RailHookRenderer` threads the log), so
+    /// nothing constructs a welded block today. Kept deliberately — the
+    /// welded-block embed mechanics (shared `MultiProgress` +
+    /// insert-before-anchor + corner weld) are a candidate UI for full git
+    /// hooks rendering. Once git hooks land, delete this path if it is
+    /// still unused.
+    pub fn embedded(
+        config: &HookOutputConfig,
+        mp: indicatif::MultiProgress,
+        anchor: indicatif::ProgressBar,
+    ) -> Self {
+        HookRenderer::Progress(Box::new(HookProgressRenderer::new_embedded(
+            config, mp, anchor,
+        )))
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
@@ -229,6 +252,24 @@ mod tests {
         assert_eq!(output.len(), 10);
 
         renderer.finish_job_success("test-job", Duration::from_secs(1));
+    }
+
+    #[test]
+    fn description_bar_is_tracked_for_removal() {
+        // Regression guard (#651): the description bar must live in JobState
+        // so remove_job_bars can mp.remove it. Untracked, its last handle
+        // drops through indicatif's zombie path and strands a line when the
+        // MultiProgress outlives the job (the shared-region case).
+        let config = HookOutputConfig::default();
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job_with_description("job", Some("a description"), None);
+        assert!(renderer.has_description_bar("job"));
+        renderer.finish_job_success("job", Duration::from_secs(1));
+        assert!(!renderer.has_description_bar("job"));
+
+        renderer.start_job_with_description("bare", None, None);
+        assert!(!renderer.has_description_bar("bare"));
+        renderer.finish_job_success("bare", Duration::from_secs(1));
     }
 
     #[test]
@@ -417,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_format_header_lines_plain() {
-        let lines = formatting::format_header_lines("worktree-post-create", None, false);
+        let lines = formatting::format_header_lines("worktree-post-create", None, false, false);
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with('\u{250c}'));
         assert!(lines[1].contains("daft hooks"));
@@ -429,7 +470,8 @@ mod tests {
 
     #[test]
     fn format_header_lines_includes_target_segment_when_provided() {
-        let lines = formatting::format_header_lines("worktree-pre-remove", Some("test"), false);
+        let lines =
+            formatting::format_header_lines("worktree-pre-remove", Some("test"), false, false);
         assert_eq!(lines.len(), 3);
         assert!(
             lines[1].contains("worktree-pre-remove  on: test"),
@@ -445,7 +487,7 @@ mod tests {
 
     #[test]
     fn format_header_lines_drops_redundant_hook_label() {
-        let lines = formatting::format_header_lines("post-clone", None, false);
+        let lines = formatting::format_header_lines("post-clone", None, false, false);
         // The legacy title carried a "hook:" prefix; the new title drops it
         // because the box border itself signals "this is a hook".
         assert!(
@@ -453,6 +495,21 @@ mod tests {
             "title must not carry the redundant 'hook:' label, got: {:?}",
             lines[1]
         );
+    }
+
+    #[test]
+    fn format_header_lines_weld_opens_the_top_corner_only() {
+        let plain = formatting::format_header_lines("worktree-post-create", None, false, false);
+        let welded = formatting::format_header_lines("worktree-post-create", None, false, true);
+        // The rail welds into the banner's top corner (#651)…
+        assert!(welded[0].starts_with('\u{251c}'), "got: {:?}", welded[0]);
+        // …while the banner still closes below — the job blocks hang
+        // beneath it unwelded…
+        assert!(welded[2].starts_with('\u{2514}'), "got: {:?}", welded[2]);
+        // …and everything else is byte-identical to the standalone box.
+        assert_eq!(plain[0][3..], welded[0][3..]); // past the 3-byte corner
+        assert_eq!(plain[1], welded[1]);
+        assert_eq!(plain[2], welded[2]);
     }
 
     #[test]

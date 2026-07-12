@@ -215,6 +215,38 @@ impl HookExecutor {
         self
     }
 
+    /// Plan-time mirror of [`Self::execute`]'s discovery: whether this hook
+    /// phase has anything discoverable to run from `hook_source_worktree` —
+    /// a YAML definition, legacy scripts, or deprecated files pending
+    /// migration. Deliberately *before* the trust and skip-flag gates:
+    /// those decide how a planned row resolves (yellow `↓`, vanish), not
+    /// whether work exists. Keep in lockstep with `execute`.
+    ///
+    /// Only meaningful for hook types whose config source is a live
+    /// worktree (`get_hook_source_worktree`); `PreCreate` reads its YAML
+    /// from branch content instead and must not be probed this way.
+    pub fn hook_phase_has_work(&self, hook_type: HookType, hook_source_worktree: &Path) -> bool {
+        if !self.config.enabled {
+            return false;
+        }
+        // A per-hook `enabled: false` skips at run time (`execute`'s second
+        // gate) — mirror it here so no row is planned for it either.
+        if !self.config.get_hook_config(hook_type).enabled {
+            return false;
+        }
+        // A `Err` from the loader mirrors `execute`: fall through to the
+        // legacy discovery (the runtime path warns and does the same).
+        if let Ok(Some(yaml)) = yaml_config_loader::load_merged_config(hook_source_worktree)
+            && yaml.hooks.contains_key(hook_type.yaml_name())
+        {
+            return true;
+        }
+        let discovery = find_hooks(hook_type, hook_source_worktree, &self.config);
+        // Deprecated-only discoveries count as work: their runtime skip
+        // ("run `daft hooks migrate`") renders visibly and needs its row.
+        !discovery.hooks.is_empty() || !discovery.deprecation_warnings.is_empty()
+    }
+
     /// Execute a hook with the given context.
     ///
     /// This method handles:
@@ -825,6 +857,74 @@ mod tests {
         let result = executor.execute(&ctx, &mut output, presenter).unwrap();
         assert!(result.skipped);
         assert_eq!(result.skip_reason, Some("No hook files found".to_string()));
+    }
+
+    #[test]
+    fn hook_phase_has_work_mirrors_discovery() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+        // Pin the user hooks dir inside the tempdir so the developer's real
+        // user-level hooks can't leak into the probe.
+        let config = HooksConfig {
+            user_directory: temp_dir.path().join("user-hooks"),
+            ..Default::default()
+        };
+        let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
+
+        // Nothing on disk: no work for any phase.
+        assert!(!executor.hook_phase_has_work(HookType::PreRemove, &worktree));
+        assert!(!executor.hook_phase_has_work(HookType::PostRemove, &worktree));
+
+        // A YAML definition counts, and only for its own hook type.
+        fs::write(
+            worktree.join("daft.yml"),
+            "hooks:\n  worktree-pre-remove:\n    jobs:\n      - name: a\n        run: \"true\"\n",
+        )
+        .unwrap();
+        assert!(executor.hook_phase_has_work(HookType::PreRemove, &worktree));
+        assert!(!executor.hook_phase_has_work(HookType::PostRemove, &worktree));
+
+        // A per-hook `enabled: false` mirrors `execute`'s second gate: the
+        // phase skips at run time, so it must plan no row either.
+        let mut disabled_config = HooksConfig {
+            user_directory: temp_dir.path().join("user-hooks"),
+            ..Default::default()
+        };
+        disabled_config.worktree_pre_remove.enabled = false;
+        let disabled = HookExecutor::with_trust_db(disabled_config, TrustDatabase::default());
+        assert!(!disabled.hook_phase_has_work(HookType::PreRemove, &worktree));
+
+        // Legacy scripts count too (the executor's fallback path).
+        create_test_hook(&worktree, "worktree-post-remove", "#!/bin/bash\ntrue");
+        assert!(executor.hook_phase_has_work(HookType::PostRemove, &worktree));
+    }
+
+    #[test]
+    fn hook_phase_has_work_counts_deprecated_files_and_respects_global_disable() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        // Deprecated-only discovery is work: its runtime skip ("run daft
+        // hooks migrate") renders visibly and needs its planned row.
+        create_test_hook(&worktree, "pre-remove", "#!/bin/bash\ntrue");
+        let user_dir = temp_dir.path().join("user-hooks");
+        let config = HooksConfig {
+            user_directory: user_dir.clone(),
+            ..Default::default()
+        };
+        let executor = HookExecutor::with_trust_db(config, TrustDatabase::default());
+        assert!(executor.hook_phase_has_work(HookType::PreRemove, &worktree));
+
+        // Globally disabled: nothing runs, so nothing is planned.
+        let disabled = HooksConfig {
+            enabled: false,
+            user_directory: user_dir,
+            ..Default::default()
+        };
+        let executor = HookExecutor::with_trust_db(disabled, TrustDatabase::default());
+        assert!(!executor.hook_phase_has_work(HookType::PreRemove, &worktree));
     }
 
     /// Build a context whose git dir exists (so the skip record can compute

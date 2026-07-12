@@ -115,13 +115,27 @@ impl Drop for PromptActiveGuard {
 /// convention. With ctrlc's `termination` feature this also covers
 /// SIGTERM, and a killed prompt must not read as success to calling
 /// scripts.
-fn exit_for_cancelled_prompt() -> ! {
+///
+/// `pub(crate)`: the timeline's [`suspend_for_prompt`] arms this as the
+/// interrupt behavior for the whole prompt window, not just the key read.
+///
+/// [`suspend_for_prompt`]: crate::output::timeline::TimelineHandle::suspend_for_prompt
+pub(crate) fn exit_for_cancelled_prompt() -> ! {
     use std::io::IsTerminal;
+    // A prompt can fire under the timeline's live region, whose EchoCtlGuard
+    // turned `^C` echo off for the region's lifetime. process::exit skips
+    // the guard's drop, so restore by hand — exactly like the region's own
+    // interrupt arm does with its saved copy.
+    crate::output::term_guard::restore_active_termios();
+    // swap(false), not load: when two exit paths race (the dispatcher thread
+    // and the in-band takeover in `read_from_terminal`), only the first
+    // prints the cancel line.
+    let was_active = PROMPT_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst);
     let msg = PROMPT_CANCEL_MSG
         .lock()
         .ok()
         .and_then(|m| m.clone())
-        .filter(|_| PROMPT_ACTIVE.load(std::sync::atomic::Ordering::SeqCst));
+        .filter(|_| was_active);
     let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
     eprintln!();
     if let Some(msg) = msg {
@@ -158,39 +172,65 @@ fn read_from_terminal(config: &PromptConfig) -> PromptResult {
         .map(|o| o.key.to_ascii_lowercase())
         .collect();
 
-    // Install Ctrl+C handler for clean exit with cancel message.
-    // console::Term doesn't suppress ^C echo on its own. When another
-    // subsystem already owns the process-global handler this is a
-    // silent no-op — that owner honors the contract instead via
-    // `exit_if_prompt_active` (armed by the guard below).
+    // Arm the process-wide takeover state (#672): store this prompt's cancel
+    // message and mark a prompt parked in read_key, so a command that already
+    // owns the ctrlc handler (sync's two-stage cancel) honors the cancel
+    // contract via `exit_if_prompt_active` — and so `exit_for_cancelled_prompt`
+    // has the message to print no matter which handler fires. Drop disarms on
+    // every return path.
     let _guard = PromptActiveGuard::arm(config.cancel_message.clone());
-    let _ = ctrlc::set_handler(|| {
-        // Persists process-wide once installed (ctrlc handlers cannot
-        // be unregistered): with a prompt active it prints that
-        // prompt's message; on any later signal it exits 130 plain.
-        exit_for_cancelled_prompt();
-    });
+    // Route this prompt's own Ctrl+C through the process-global dispatcher
+    // (`crate::interrupt`, #651) rather than a bare `ctrlc::set_handler`.
+    // Swap-and-restore, not set-and-clear: a prompt can fire while the
+    // plan-execute timeline's planning face is live (remove's consolidation
+    // prompts run before the plan commits), and clearing the slot on resolve
+    // would strand that region without its Ctrl-C collapse. Both
+    // handler-ownership paths converge on `exit_for_cancelled_prompt`
+    // (cancel message, exit 130), matching the timeline region's own Ctrl+C.
+    let outer = crate::interrupt::swap_behavior(|| exit_for_cancelled_prompt());
 
-    loop {
+    let result = loop {
         let key = match term.read_key() {
             Ok(k) => k,
-            Err(_) => return PromptResult::Cancelled,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    // Ctrl-C: console restored its raw-mode termios and
+                    // re-raised SIGINT *before* handing back this error, so
+                    // the dispatcher thread is about to run whatever sits in
+                    // the slot. Racing it to `restore_behavior` below would
+                    // hand the outer behavior (the region's collapse, or the
+                    // bare default — neither prints this prompt's cancel
+                    // line) the exit that belongs here. Take the slot back
+                    // and run the cancel exit on this thread; `None` means
+                    // the dispatcher already owns the exit — park and let
+                    // it finish.
+                    if let Some(behavior) = crate::interrupt::take_behavior() {
+                        behavior();
+                    }
+                    loop {
+                        std::thread::park();
+                    }
+                }
+                break PromptResult::Cancelled;
+            }
         };
 
         match key {
             Key::Char(c) => {
                 let lower = c.to_ascii_lowercase();
                 if valid_keys.contains(&lower) {
-                    return PromptResult::Selected(lower);
+                    break PromptResult::Selected(lower);
                 }
                 // Ignore unrecognized characters
             }
             Key::Enter | Key::Escape => {
-                return PromptResult::Selected(default_key(config));
+                break PromptResult::Selected(default_key(config));
             }
             _ => {} // Ignore arrow keys, etc.
         }
-    }
+    };
+    crate::interrupt::restore_behavior(outer);
+    result
 }
 
 fn default_key(config: &PromptConfig) -> char {

@@ -3,6 +3,7 @@
 //! Creates a worktree for an existing branch.
 
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
+use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -77,6 +78,21 @@ pub struct CheckoutParams {
     /// Explicit path override for worktree placement (`--at` flag).
     /// When `Some`, takes priority over both `layout` and the default path computation.
     pub at_path: Option<PathBuf>,
+    /// The caller morphs a missing branch into branch creation (`daft go
+    /// --start` / `daft.go.autoStart`), and the morph must leave no rail
+    /// behind — so with the fetch on, the fetch runs under the planning
+    /// face and the plan commits only once the branch is known to exist,
+    /// leading with the already-done fetch row. Without this, the morph
+    /// rendered go's `Failed` receipt and then start's rail — two rails on
+    /// an exit-0 invocation.
+    pub defer_plan_until_branch_known: bool,
+}
+
+/// Outcome of a fetch that ran before the plan committed (the morph-armed
+/// `defer_plan_until_branch_known` path).
+struct Prefetch {
+    elapsed: std::time::Duration,
+    failed: bool,
 }
 
 /// Result of a checkout operation.
@@ -213,24 +229,146 @@ pub fn execute(
         });
     }
 
-    // Fetch latest changes from remote
-    let fetch_failed = if params.checkout_fetch {
-        !fetch_branch(git, &params.remote_name, &params.branch_name, sink)
-    } else {
-        false
+    // The CheckOut row's provenance annotation, from the existence probe.
+    let annotation_for = |local_exists: bool, remote_exists: bool| {
+        if !local_exists {
+            format!("\u{2190} {}/{}", params.remote_name, params.branch_name)
+        } else if remote_exists && params.checkout_upstream {
+            format!("tracking {}/{}", params.remote_name, params.branch_name)
+        } else {
+            "local only".to_string()
+        }
     };
 
-    // Check if local and/or remote branch exists
-    let (local_exists, remote_exists) =
-        check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+    // Without a fetch every branch fact is local: probe now, so an unknown
+    // branch errors before any plan commits (no rail renders for resolve
+    // errors). With `daft.checkout.fetch` on the probe must follow the
+    // network — it moves below the plan commit, and the fetch becomes
+    // planned work instead of hiding behind the planning face. The
+    // exception is a morph-armed caller (`defer_plan_until_branch_known`):
+    // the fetch runs under the face — its stage events land on no row —
+    // and joins the committed plan as a pre-completed row, so a missing
+    // branch still errors before any plan commits and the morph's own rail
+    // is the only rail.
+    let mut prefetch: Option<Prefetch> = None;
+    let pre_plan_probe = if params.checkout_fetch {
+        if params.defer_plan_until_branch_known {
+            let fetch_started = std::time::Instant::now();
+            let failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            prefetch = Some(Prefetch {
+                elapsed: fetch_started.elapsed(),
+                failed,
+            });
+            let (local_exists, remote_exists) =
+                check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+            if !local_exists && !remote_exists {
+                return Err(CheckoutError::BranchNotFound {
+                    branch: params.branch_name.clone(),
+                    remote: params.remote_name.clone(),
+                    fetch_failed: failed,
+                });
+            }
+            Some((local_exists, remote_exists))
+        } else {
+            None
+        }
+    } else {
+        let (local_exists, remote_exists) =
+            check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+        if !local_exists && !remote_exists {
+            return Err(CheckoutError::BranchNotFound {
+                branch: params.branch_name.clone(),
+                remote: params.remote_name.clone(),
+                fetch_failed: false,
+            });
+        }
+        Some((local_exists, remote_exists))
+    };
 
-    if !local_exists && !remote_exists {
-        return Err(CheckoutError::BranchNotFound {
-            branch: params.branch_name.clone(),
-            remote: params.remote_name.clone(),
-            fetch_failed,
-        });
+    // Commit the execution plan (#651): the worktree path is resolved and
+    // everything left is planned work. Earlier returns (existing worktree,
+    // fetch-off branch not found) never reach this point, so no rail
+    // renders for them.
+    let should_carry = params.carry || (!params.no_carry && params.checkout_carry);
+    let mut plan_rows = Vec::new();
+    if params.checkout_fetch {
+        let mut fetch_spec =
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone());
+        // A deferred fetch that succeeded leads the plan as a receipt row,
+        // like clone's bare phase; a failed one keeps the normal row and
+        // resolves yellow right after the commit (below).
+        if let Some(pf) = &prefetch
+            && !pf.failed
+        {
+            fetch_spec = fetch_spec.pre_completed(pf.elapsed);
+        }
+        plan_rows.push(Row::Step(fetch_spec));
     }
+    let checkout_spec = match pre_plan_probe {
+        // Probe already ran (fetch off, or a deferred fetch): the
+        // provenance is resolved.
+        Some((local, remote)) => StepSpec::new(StepKey::new(StageId::CheckOut))
+            .with_annotation(annotation_for(local, remote)),
+        // Fetch on: resolved post-fetch, noted onto the pending row.
+        None => StepSpec::new(StepKey::new(StageId::CheckOut)),
+    };
+    plan_rows.extend([
+        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
+        Row::Step(checkout_spec),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CreateWorktree))
+                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+        ),
+    ]);
+    if should_carry {
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
+    }
+    // Shared files declared in the source worktree's config get a section
+    // (see checkout_branch.rs for the probe-vs-execution contract).
+    let planned_shared =
+        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
+    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+        StageId::PostCreateHooks,
+    ))));
+    sink.on_plan(PlanCommit::new(plan_rows));
+
+    // Fetch (planned above; a failure warns, turns the row yellow, and the
+    // checkout continues on local refs), then the post-fetch probe.
+    let local_exists = match pre_plan_probe {
+        Some((local_exists, _)) => {
+            // A deferred fetch that failed planned the normal row — resolve
+            // it yellow now, exactly like the planned-fetch path below.
+            if prefetch.as_ref().is_some_and(|pf| pf.failed) {
+                sink.on_stage(
+                    &StepKey::new(StageId::Fetch),
+                    StageEvent::SkippedAttention {
+                        reason: super::FETCH_FAILED_REASON.to_string(),
+                    },
+                );
+            }
+            local_exists
+        }
+        None => {
+            let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            let (local_exists, remote_exists) =
+                check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+            if !local_exists && !remote_exists {
+                // The plan is committed: the command layer aborts the rail
+                // into a Failed receipt, and this error prints below it.
+                return Err(CheckoutError::BranchNotFound {
+                    branch: params.branch_name.clone(),
+                    remote: params.remote_name.clone(),
+                    fetch_failed,
+                });
+            }
+            sink.on_stage(
+                &StepKey::new(StageId::CheckOut),
+                StageEvent::Note(annotation_for(local_exists, remote_exists)),
+            );
+            local_exists
+        }
+    };
 
     let use_local_branch = if local_exists {
         sink.on_step(&format!(
@@ -267,7 +405,10 @@ pub fn execute(
         return Err(anyhow::anyhow!("Pre-create hook failed").into());
     }
 
-    // Create worktree
+    // Create worktree. `git worktree add` materializes the branch checkout
+    // and the worktree in one call; the two plan rows resolve around it as a
+    // cosmetic split of the same operation.
+    sink.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
     let worktree_result = if use_local_branch {
         git.worktree_add(&worktree_path, &params.branch_name)
     } else {
@@ -276,17 +417,38 @@ pub fn execute(
     };
 
     if let Err(e) = worktree_result {
+        sink.on_stage(
+            &StepKey::new(StageId::CheckOut),
+            StageEvent::Failed {
+                detail: "failed (see below)".to_string(),
+            },
+        );
         restore_stash_on_failure(stash_created, git, sink);
         return Err(anyhow::anyhow!("Failed to create git worktree: {}", e).into());
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CheckOut),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CreateWorktree), StageEvent::Started);
 
     if !worktree_path.exists() {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateWorktree),
+            StageEvent::Failed {
+                detail: "directory was not created".to_string(),
+            },
+        );
         return Err(anyhow::anyhow!(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         )
         .into());
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateWorktree),
+        StageEvent::Completed { annotation: None },
+    );
 
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
     if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
@@ -306,7 +468,11 @@ pub fn execute(
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
+    if stash_created {
+        sink.on_stage(&StepKey::new(StageId::Carry), StageEvent::Started);
+    }
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
+    super::resolve_carry_row(should_carry, stash_created, stash_applied, sink);
 
     // Set upstream tracking
     let (upstream_set, upstream_skipped) = set_upstream_if_enabled(params, git, sink)?;
@@ -346,7 +512,9 @@ pub fn execute(
     // arrives via the git checkout regardless of order, which is why this bug was
     // invisible until visitor configs existed — do not move this back above
     // propagation.) Linking before hooks lets hooks depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
@@ -403,6 +571,10 @@ fn fetch_branch(
     branch_name: &str,
     sink: &mut impl ProgressSink,
 ) -> bool {
+    // The fetch is a planned rail row (mirrors checkout_branch's
+    // `fetch_remote`): it resolves green on success and yellow — with the
+    // continuing-anyway fact — when both fetches failed.
+    sink.on_stage(&StepKey::new(StageId::Fetch), StageEvent::Started);
     sink.on_step(&format!(
         "Fetching latest changes from remote '{remote_name}'..."
     ));
@@ -426,7 +598,21 @@ fn fetch_branch(
         }
     };
 
-    general_ok || specific_ok
+    if general_ok || specific_ok {
+        sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::Completed { annotation: None },
+        );
+        true
+    } else {
+        sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::SkippedAttention {
+                reason: super::FETCH_FAILED_REASON.to_string(),
+            },
+        );
+        false
+    }
 }
 
 /// Check whether local and remote branch refs exist.
@@ -593,4 +779,342 @@ pub fn collect_branch_names(git: &GitCommand, remote_name: &str) -> Vec<String> 
     }
 
     names
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use crate::core::RecordingStageSink;
+    use crate::core::stage::{StageEvent, StageId, StepKey};
+    use serial_test::serial;
+    use std::process::Stdio;
+
+    /// Run git through `utils::git_command_at`, which scrubs the full set
+    /// of `GIT_*` discovery vars (a hand-rolled remove of GIT_DIR /
+    /// GIT_WORK_TREE misses the rest — the Test Hygiene rule exists for
+    /// exactly this). Local test identity only, never global config.
+    fn git(dir: &Path, args: &[&str]) {
+        crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable"),
+            }
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
+
+    fn params(branch: &str, at: PathBuf, fetch: bool) -> CheckoutParams {
+        CheckoutParams {
+            branch_name: branch.to_string(),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_carry: false,
+            checkout_upstream: true,
+            checkout_fetch: fetch,
+            layout: None,
+            at_path: Some(at),
+            defer_plan_until_branch_known: false,
+        }
+    }
+
+    /// Fetch off: every branch fact is local, so the probe precedes the
+    /// plan — no Fetch row, and the CheckOut row carries its resolved
+    /// provenance from the moment the plan commits (#651).
+    #[test]
+    #[serial]
+    fn fetch_off_plans_no_fetch_row_and_resolves_the_annotation_up_front() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(
+            &params("feat-x", worktree_path.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+        assert!(!result.already_existed);
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::PreCreateHooks,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::PostCreateHooks,
+            ],
+            "fetch off => no Fetch row"
+        );
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation,
+            Some("local only"),
+            "no remote ref => local-only provenance, resolved at plan time"
+        );
+        assert!(
+            sink.events.iter().all(|(k, _)| k.id != StageId::Fetch),
+            "no Fetch events without a planned row: {:?}",
+            sink.events
+        );
+    }
+
+    /// Fetch off + unknown branch: the resolve-phase error fires before any
+    /// plan commits, so no rail ever renders for it.
+    #[test]
+    #[serial]
+    fn fetch_off_unknown_branch_errors_before_any_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let Err(err) = execute(
+            &params("no-such-branch", tmp.path().join("wt"), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        ) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(sink.plan.is_none(), "no plan for a resolve-phase error");
+    }
+
+    /// Fetch on: the plan commits before the network — a Fetch row leads it,
+    /// the CheckOut row starts without provenance, and the post-fetch probe
+    /// notes the resolved annotation onto the pending row (#651).
+    #[test]
+    #[serial]
+    fn fetch_on_plans_the_fetch_row_and_notes_the_annotation() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&origin, &["branch", "feat-y"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("feat-y-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("feat-y", worktree_path.clone(), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::Fetch,
+                StageId::PreCreateHooks,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::PostCreateHooks,
+            ],
+            "fetch on => the Fetch row leads the plan"
+        );
+        let fetch_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::Fetch)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(fetch_annotation, Some("origin"));
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation, None,
+            "provenance is unknown until the fetch lands"
+        );
+
+        // The fetch row resolves, then the probe notes the provenance onto
+        // the pending CheckOut row.
+        let fetch_key = StepKey::new(StageId::Fetch);
+        assert!(
+            sink.events
+                .contains(&(fetch_key.clone(), StageEvent::Started))
+        );
+        assert!(
+            sink.events
+                .contains(&(fetch_key, StageEvent::Completed { annotation: None }))
+        );
+        // The specific-branch fetch materialized the local ref, and the
+        // remote-tracking ref exists from the clone: tracking provenance.
+        assert!(
+            sink.events.contains(&(
+                StepKey::new(StageId::CheckOut),
+                StageEvent::Note("tracking origin/feat-y".to_string())
+            )),
+            "events: {:?}",
+            sink.events
+        );
+    }
+
+    /// Fetch on + unknown branch: the plan is already committed when the
+    /// post-fetch probe fails — the command layer aborts the rail into a
+    /// Failed receipt (the accepted #651 semantic for fetch-on go).
+    #[test]
+    #[serial]
+    fn fetch_on_unknown_branch_errors_after_the_committed_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let Err(err) = execute(
+            &params("no-such-branch", tmp.path().join("wt"), true),
+            &git_cmd,
+            &work,
+            &mut sink,
+        ) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(
+            sink.plan.is_some(),
+            "fetch on commits the plan before the probe can fail"
+        );
+    }
+
+    /// Morph-armed (`go --start` / autoStart) + fetch on + unknown branch:
+    /// the fetch runs under the planning face and no plan ever commits —
+    /// the face dissolves tracelessly and the morph's own rail is the only
+    /// rail (two rails + a Failed receipt on an exit-0 run otherwise).
+    #[test]
+    #[serial]
+    fn deferred_unknown_branch_commits_no_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let mut p = params("no-such-branch", tmp.path().join("wt"), true);
+        p.defer_plan_until_branch_known = true;
+        let Err(err) = execute(&p, &git_cmd, &work, &mut sink) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(
+            sink.plan.is_none(),
+            "a morph-armed miss must leave no plan behind"
+        );
+    }
+
+    /// Morph-armed + fetch on + branch exists: the plan commits with the
+    /// already-done fetch leading it as a pre-completed row, and the
+    /// CheckOut row carries its provenance from the moment the plan
+    /// commits (no post-fetch `Note` needed).
+    #[test]
+    #[serial]
+    fn deferred_fetch_leads_the_plan_pre_completed() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&origin, &["branch", "feat-z"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("feat-z-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let mut p = params("feat-z", worktree_path.clone(), true);
+        p.defer_plan_until_branch_known = true;
+        execute(&p, &git_cmd, &work, &mut sink).expect("checkout succeeds");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let fetch_spec = plan
+            .steps()
+            .find(|s| s.key.id == StageId::Fetch)
+            .expect("the fetch row still leads the plan");
+        assert!(
+            fetch_spec.pre_completed.is_some(),
+            "the deferred fetch joins the plan as a receipt row"
+        );
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation,
+            Some("tracking origin/feat-z"),
+            "provenance is resolved at plan time"
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|(k, e)| k.id == StageId::CheckOut && matches!(e, StageEvent::Note(_))),
+            "no post-fetch Note — the plan already carried the provenance: {:?}",
+            sink.events
+        );
+    }
 }

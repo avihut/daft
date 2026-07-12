@@ -73,6 +73,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - "src/output/**"
+          - "src/interrupt.rs" # SIGINT dispatcher for progress surfaces (#651)
 
 "area:docs":
   - changed-files:

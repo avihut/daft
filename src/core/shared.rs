@@ -286,6 +286,36 @@ pub fn read_shared_paths(worktree_root: &Path) -> Result<Vec<String>> {
     Ok(config.and_then(|c| c.shared).unwrap_or_default())
 }
 
+/// Read the `shared:` list from a committed daft config blob
+/// (`<reference>:daft.yml` and the other accepted names), for probing before
+/// any worktree exists — clone plans its shared section right after the bare
+/// clone, when the config is only reachable through the object store. Any
+/// miss (no such ref, no config, parse error) yields an empty list.
+pub fn read_shared_paths_from_ref(repo_dir: &Path, reference: &str) -> Vec<String> {
+    // The loader's candidate list is canonical — the ref-blob probe must
+    // recognize every filename the runtime config loader would.
+    for (name, _) in crate::hooks::yaml_config_loader::CONFIG_CANDIDATES {
+        let output = crate::utils::git_command_at(repo_dir)
+            .args(["show", &format!("{reference}:{name}")])
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let Ok(contents) = String::from_utf8(output.stdout) else {
+            continue;
+        };
+        let Ok(config) = serde_yaml::from_str::<crate::hooks::yaml_config::YamlConfig>(&contents)
+        else {
+            continue;
+        };
+        return config.shared.unwrap_or_default();
+    }
+    Vec::new()
+}
+
 /// Add paths to the `shared:` list in daft.yml.
 /// Creates daft.yml if it doesn't exist. Avoids duplicates.
 ///
@@ -866,10 +896,28 @@ pub enum LinkFileOutcome {
     Linked(String),
     /// File already correctly linked (no action needed).
     AlreadyLinked(String),
+    /// This worktree deliberately materialized the file (a real copy
+    /// instead of the link) — linking honors that choice and skips.
+    Materialized(String),
+    /// Declared in `shared:` but never collected into shared storage.
+    NoSource(String),
     /// A real file exists at the path (conflict).
     Conflict(String),
     /// Failed to create symlink.
     Error(String, String),
+}
+
+impl LinkFileOutcome {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Linked(p)
+            | Self::AlreadyLinked(p)
+            | Self::Materialized(p)
+            | Self::NoSource(p)
+            | Self::Conflict(p)
+            | Self::Error(p, _) => p,
+        }
+    }
 }
 
 /// Result of linking shared files during worktree creation.
@@ -901,8 +949,11 @@ impl LinkSharedResult {
 ///
 /// - Reads `shared:` from daft.yml found via `project_root`.
 /// - Creates symlinks for each path that exists in shared storage.
-/// - Renders results immediately to stderr (before hooks take over).
 /// - Never errors fatally.
+///
+/// Pure work — no rendering. Rail-covered call sites report through
+/// [`report_link_results`]; legacy call sites (clone's post-rail satellite
+/// worktrees) render via [`render_link_results`].
 pub fn link_shared_files_on_create(
     worktree_path: &Path,
     git_common_dir: &Path,
@@ -922,6 +973,7 @@ pub fn link_shared_files_on_create(
 
     for rel_path in &shared_paths {
         if materialized.is_materialized(rel_path, worktree_path) {
+            outcomes.push(LinkFileOutcome::Materialized(rel_path.clone()));
             continue;
         }
 
@@ -935,19 +987,165 @@ pub fn link_shared_files_on_create(
             Ok(LinkResult::Conflict) => {
                 outcomes.push(LinkFileOutcome::Conflict(rel_path.clone()));
             }
-            Ok(LinkResult::NoSource) => {} // Declared only, skip silently
+            Ok(LinkResult::NoSource) => {
+                outcomes.push(LinkFileOutcome::NoSource(rel_path.clone()));
+            }
             Err(e) => {
                 outcomes.push(LinkFileOutcome::Error(rel_path.clone(), e.to_string()));
             }
         }
     }
 
-    let result = LinkSharedResult { outcomes };
-    render_link_results(&result);
-    result
+    LinkSharedResult { outcomes }
 }
 
-/// Render shared file linking results to stderr with colors.
+/// The `warning:` body for a shared-path conflict — shared between the rail
+/// row's reason and the legacy line so both modes tell the same story.
+fn conflict_reason(path: &str) -> String {
+    format!("'{path}' exists but is not shared. Run `daft shared link {path}` to replace.")
+}
+
+/// The `warning:` body for a declared path with nothing in shared storage.
+fn missing_reason(path: &str) -> String {
+    // `daft_cmd`, not a literal: a git-style invocation (`git daft …`,
+    // `git worktree-checkout …`) must suggest `git daft shared sync`.
+    format!(
+        "'{path}' missing from shared storage — `{}` collects it",
+        crate::daft_cmd("shared sync")
+    )
+}
+
+/// The `warning:` body for a failed link.
+fn link_error_reason(path: &str, err: &str) -> String {
+    format!("Failed to link shared file '{path}': {err}")
+}
+
+/// Append the shared-files section to a creation plan: a dim group anchor
+/// plus one row per declared path, each carrying the path as its fixed
+/// label, closed with an `EndGroup` so the ungrouped rows that follow
+/// (hooks) never adopt the anchor (#651). No-op when nothing is declared.
+pub fn push_shared_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[String]) {
+    use crate::core::stage::{Row, StageId, StepKey, StepSpec};
+
+    if planned.is_empty() {
+        return;
+    }
+    rows.push(Row::Group {
+        label: "shared files".into(),
+    });
+    for path in planned {
+        rows.push(Row::Step(
+            StepSpec::new(StepKey::scoped(StageId::SharedFile, path.as_str()))
+                .with_label(path.as_str()),
+        ));
+    }
+    rows.push(Row::EndGroup);
+}
+
+/// Report link outcomes as stage events against the planned shared-files
+/// section (#651). Every declared file leaves a receipt row — the section
+/// answers "what state is each shared file in?": linked completes (`✓`),
+/// already-linked and materialized resolve as dim expected skips, a path
+/// with nothing in shared storage resolves as a yellow attention skip
+/// naming it missing (with the `daft shared sync` remedy), and conflicts /
+/// link failures carry their warning body. Only a planned row whose path
+/// produced no outcome at all (the target branch's config dropped it)
+/// vanishes silently. Outcomes for paths the plan never saw still emit —
+/// the region persists their legacy line above the bars and the Plain
+/// fallback prints it.
+pub fn report_link_results(
+    result: &LinkSharedResult,
+    planned: &[String],
+    sink: &mut impl crate::core::ProgressSink,
+) {
+    use crate::core::stage::{StageEvent, StageId, StepKey};
+
+    for outcome in &result.outcomes {
+        let event = match outcome {
+            LinkFileOutcome::Linked(_) => StageEvent::Completed { annotation: None },
+            LinkFileOutcome::AlreadyLinked(_) => StageEvent::SkippedExpected {
+                reason: "already linked".to_string(),
+            },
+            LinkFileOutcome::Materialized(_) => StageEvent::SkippedExpected {
+                reason: "materialized".to_string(),
+            },
+            LinkFileOutcome::NoSource(p) => StageEvent::SkippedAttention {
+                reason: missing_reason(p),
+            },
+            LinkFileOutcome::Conflict(p) => StageEvent::SkippedAttention {
+                reason: conflict_reason(p),
+            },
+            LinkFileOutcome::Error(p, err) => StageEvent::SkippedAttention {
+                reason: link_error_reason(p, err),
+            },
+        };
+        sink.on_stage(&StepKey::scoped(StageId::SharedFile, outcome.path()), event);
+    }
+    for path in planned {
+        if !result.outcomes.iter().any(|o| o.path() == path) {
+            sink.on_stage(
+                &StepKey::scoped(StageId::SharedFile, path.as_str()),
+                StageEvent::SkippedSilent,
+            );
+        }
+    }
+}
+
+/// The legacy line for one `SharedFile` stage event — `Linked <path>` for a
+/// completion, `warning: <reason>` for an attention skip, `None` for silent
+/// resolutions and non-shared stages. Shared between the Plain-mode sink
+/// fallback and the rail's handling of outcomes its plan never saw.
+pub fn legacy_shared_stage_line(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+    use_color: bool,
+) -> Option<String> {
+    use crate::core::stage::{StageEvent, StageId};
+    use crate::styles;
+
+    if key.id != StageId::SharedFile {
+        return None;
+    }
+    let path = key.scope.as_deref()?;
+    match event {
+        StageEvent::Completed { .. } => Some(if use_color {
+            format!("{}Linked{} {}", styles::GREEN, styles::RESET, path)
+        } else {
+            format!("Linked {}", path)
+        }),
+        StageEvent::SkippedAttention { reason } => Some(if use_color {
+            format!("{}warning:{} {}", styles::YELLOW, styles::RESET, reason)
+        } else {
+            format!("warning: {}", reason)
+        }),
+        _ => None,
+    }
+}
+
+/// Legacy stderr rendering for one `SharedFile` stage event, byte-identical
+/// to [`render_link_results`]. Sinks that route stage events call this when
+/// no live region owns the terminal (Plain mode, quiet, tests) so the
+/// pre-timeline output contract holds; silent resolutions print nothing.
+pub fn render_shared_stage_fallback(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+) {
+    let use_color = crate::styles::colors_enabled_stderr();
+    if let Some(line) = legacy_shared_stage_line(key, event, use_color) {
+        eprintln!("{line}");
+    }
+}
+
+/// Render shared file linking results to stderr with colors — the legacy
+/// line-based reporter for clone's satellite worktrees (after the rail
+/// closed, or from the TUI's worker threads).
+///
+/// `NoSource` stays quiet here: the satellite paths run once per created
+/// worktree, and on a fresh clone shared storage is legitimately empty —
+/// the base worktree's shared section (or its legacy fallback line) already
+/// carries the `daft shared sync` remedy once per declared path. Repeating
+/// it N-paths × M-worktrees through a live operation table is noise, not
+/// honesty. Real problems (conflicts, IO errors) still warn per worktree.
 ///
 /// Clears the current line first to avoid leaving spinner artifacts,
 /// since this may be called while a spinner is active.
@@ -966,44 +1164,33 @@ pub fn render_link_results(result: &LinkSharedResult) {
     let use_color = styles::colors_enabled_stderr();
 
     for outcome in &result.outcomes {
-        match outcome {
+        let warning_body = match outcome {
             LinkFileOutcome::Linked(path) => {
                 if use_color {
                     eprintln!("{}Linked{} {}", styles::GREEN, styles::RESET, path,);
                 } else {
                     eprintln!("Linked {}", path);
                 }
+                continue;
             }
-            LinkFileOutcome::AlreadyLinked(_) => {} // Silent
-            LinkFileOutcome::Conflict(path) => {
-                if use_color {
-                    eprintln!(
-                        "{}warning:{} '{}' exists but is not shared. Run `daft shared link {}` to replace.",
-                        styles::YELLOW,
-                        styles::RESET,
-                        path,
-                        path,
-                    );
-                } else {
-                    eprintln!(
-                        "warning: '{}' exists but is not shared. Run `daft shared link {}` to replace.",
-                        path, path,
-                    );
-                }
-            }
-            LinkFileOutcome::Error(path, err) => {
-                if use_color {
-                    eprintln!(
-                        "{}warning:{} Failed to link shared file '{}': {}",
-                        styles::YELLOW,
-                        styles::RESET,
-                        path,
-                        err,
-                    );
-                } else {
-                    eprintln!("warning: Failed to link shared file '{}': {}", path, err);
-                }
-            }
+            // Quiet no-ops: the linked state already holds / was chosen —
+            // and `NoSource`, which the base worktree already warned about
+            // once (see the fn doc).
+            LinkFileOutcome::AlreadyLinked(_)
+            | LinkFileOutcome::Materialized(_)
+            | LinkFileOutcome::NoSource(_) => continue,
+            LinkFileOutcome::Conflict(path) => conflict_reason(path),
+            LinkFileOutcome::Error(path, err) => link_error_reason(path, err),
+        };
+        if use_color {
+            eprintln!(
+                "{}warning:{} {}",
+                styles::YELLOW,
+                styles::RESET,
+                warning_body
+            );
+        } else {
+            eprintln!("warning: {}", warning_body);
         }
     }
 }
@@ -1012,6 +1199,130 @@ pub fn render_link_results(result: &LinkSharedResult) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn push_shared_section_plans_anchor_and_path_labeled_rows() {
+        use crate::core::stage::{Row, StageId};
+        let mut rows = Vec::new();
+        push_shared_section(&mut rows, &[]);
+        assert!(rows.is_empty(), "nothing declared, nothing planned");
+
+        push_shared_section(
+            &mut rows,
+            &[".env".to_string(), "conf/dev.toml".to_string()],
+        );
+        assert!(matches!(&rows[0], Row::Group { label } if label == "shared files"));
+        let Row::Step(spec) = &rows[1] else {
+            panic!("expected step row");
+        };
+        assert_eq!(spec.key.id, StageId::SharedFile);
+        assert_eq!(spec.key.scope.as_deref(), Some(".env"));
+        assert_eq!(spec.label.as_deref(), Some(".env"));
+        assert!(
+            matches!(rows.last(), Some(Row::EndGroup)),
+            "the section closes its span so following rows stay ungrouped"
+        );
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn read_shared_paths_from_ref_reads_the_committed_config_blob() {
+        use std::process::{Command, Stdio};
+        let dir = tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        git(&["add", "daft.yml"]);
+        git(&["commit", "-q", "-m", "cfg"]);
+
+        assert_eq!(
+            read_shared_paths_from_ref(dir.path(), "main"),
+            vec![".env".to_string()]
+        );
+        // Unknown ref and config-less ref both probe empty, never error.
+        assert!(read_shared_paths_from_ref(dir.path(), "no-such-branch").is_empty());
+    }
+
+    #[test]
+    fn report_link_results_maps_outcomes_and_sweeps_planned_leftovers() {
+        use crate::core::RecordingStageSink;
+        use crate::core::stage::StageEvent;
+
+        let result = LinkSharedResult {
+            outcomes: vec![
+                LinkFileOutcome::Linked(".env".into()),
+                LinkFileOutcome::NoSource(".envrc".into()),
+                LinkFileOutcome::AlreadyLinked("a.txt".into()),
+                LinkFileOutcome::Materialized("m.txt".into()),
+                LinkFileOutcome::Conflict("b.txt".into()),
+                LinkFileOutcome::Error("c.txt".into(), "boom".into()),
+            ],
+        };
+        let planned = vec![".env".to_string(), "dropped.txt".to_string()];
+        let mut sink = RecordingStageSink::default();
+        report_link_results(&result, &planned, &mut sink);
+
+        let events: Vec<_> = sink
+            .events
+            .iter()
+            .map(|(k, e)| (k.scope.clone().unwrap(), e.clone()))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (".env".into(), StageEvent::Completed { annotation: None }),
+                // Declared but never collected: says so, loudly.
+                (
+                    ".envrc".into(),
+                    StageEvent::SkippedAttention {
+                        reason: missing_reason(".envrc"),
+                    }
+                ),
+                // The linked state already holds / was deliberately traded
+                // for a real copy: dim receipt rows.
+                (
+                    "a.txt".into(),
+                    StageEvent::SkippedExpected {
+                        reason: "already linked".into(),
+                    }
+                ),
+                (
+                    "m.txt".into(),
+                    StageEvent::SkippedExpected {
+                        reason: "materialized".into(),
+                    }
+                ),
+                (
+                    "b.txt".into(),
+                    StageEvent::SkippedAttention {
+                        reason: conflict_reason("b.txt"),
+                    }
+                ),
+                (
+                    "c.txt".into(),
+                    StageEvent::SkippedAttention {
+                        reason: link_error_reason("c.txt", "boom"),
+                    }
+                ),
+                // Planned but no outcome at all: vanishes silently.
+                ("dropped.txt".into(), StageEvent::SkippedSilent),
+            ]
+        );
+    }
 
     #[test]
     fn test_materialized_state_roundtrip() {

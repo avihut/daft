@@ -19,12 +19,14 @@ pub mod repo_identity;
 pub mod settings;
 pub mod shared;
 pub mod sort;
+pub mod stage;
 mod tui_bridge;
 pub mod worktree;
 
 pub use tui_bridge::TuiBridge;
 
-pub use progress::{CommandBridge, OutputSink};
+pub use progress::{CommandBridge, OutputSink, TimelineBridge, TimelineSink};
+pub use stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 
 use crate::hooks::HookContext;
 use anyhow::Result;
@@ -47,6 +49,30 @@ pub trait ProgressSink {
 
     /// Report a debug message (shown in verbose mode).
     fn on_debug(&mut self, msg: &str);
+
+    // ── Plan-then-execute timeline (#651) ────────────────────────────────
+    // Default no-ops so every existing sink (OutputSink, CommandBridge,
+    // TuiBridge, NullSink, test sinks) compiles and behaves unchanged.
+    // Only timeline-aware sinks (TimelineBridge) override these.
+
+    /// Commit the execution plan. Emitted exactly once, after all
+    /// resolution/validation and before the first mutation. Cores that
+    /// return early (nothing to do, validation failure) never call this.
+    fn on_plan(&mut self, plan: stage::PlanCommit) {
+        let _ = plan;
+    }
+
+    /// Report a lifecycle event for one committed plan step.
+    ///
+    /// The default renders the legacy stderr lines for `SharedFile` events
+    /// (`Linked <path>`, conflict warnings) and ignores everything else:
+    /// pre-#651 those lines printed unconditionally from
+    /// `link_shared_files_on_create`, so every non-rail sink keeps that
+    /// output byte-identical. Rail sinks override and route to the region,
+    /// falling back to the same renderer while no region is live.
+    fn on_stage(&mut self, key: &stage::StepKey, event: stage::StageEvent) {
+        crate::core::shared::render_shared_stage_fallback(key, &event);
+    }
 
     /// Suspend any running command-level spinner so a nested progress UI
     /// (e.g. the pre-push hook's `MultiProgress`) can own the terminal without
@@ -96,6 +122,19 @@ pub struct HookOutcome {
 pub trait HookRunner {
     /// Execute the hook described by `ctx`.
     fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome>;
+
+    /// Whether `hook_type` has anything discoverable to run from
+    /// `hook_source_worktree` — plan-time hook-row gating (#651: the rail
+    /// lists only work that happens). Runners that cannot probe keep the
+    /// speculative row via the default; execution stays authoritative
+    /// either way (hooks run regardless of what was planned).
+    fn hook_phase_has_work(
+        &self,
+        _hook_type: crate::hooks::HookType,
+        _hook_source_worktree: &std::path::Path,
+    ) -> bool {
+        true
+    }
 }
 
 /// A no-op hook runner that reports all hooks as successful.
@@ -203,3 +242,58 @@ pub trait ConsolidationPrompter {
 
 impl ConsolidationPrompter for NullBridge {}
 impl ConsolidationPrompter for NullSink {}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Test support
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Recording sink for core-level timeline contract tests: captures the
+/// committed plan, every stage event, free-text steps, and each hook type
+/// that fired — so tests can assert "plan committed after validation",
+/// "Push failed but post-create hooks still ran", etc., without a terminal.
+#[cfg(test)]
+#[derive(Default)]
+pub struct RecordingStageSink {
+    pub plan: Option<stage::PlanCommit>,
+    pub events: Vec<(stage::StepKey, stage::StageEvent)>,
+    pub steps: Vec<String>,
+    pub warnings: Vec<String>,
+    pub hooks_run: Vec<crate::hooks::HookType>,
+}
+
+#[cfg(test)]
+impl ProgressSink for RecordingStageSink {
+    fn on_step(&mut self, msg: &str) {
+        self.steps.push(msg.to_string());
+    }
+
+    fn on_warning(&mut self, msg: &str) {
+        self.warnings.push(msg.to_string());
+    }
+
+    fn on_debug(&mut self, _msg: &str) {}
+
+    fn on_plan(&mut self, plan: stage::PlanCommit) {
+        assert!(self.plan.is_none(), "plan committed twice");
+        self.plan = Some(plan);
+    }
+
+    fn on_stage(&mut self, key: &stage::StepKey, event: stage::StageEvent) {
+        self.events.push((key.clone(), event));
+    }
+}
+
+#[cfg(test)]
+impl HookRunner for RecordingStageSink {
+    fn run_hook(&mut self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.hooks_run.push(ctx.hook_type);
+        Ok(HookOutcome {
+            success: true,
+            skipped: true,
+            skip_reason: Some("hooks disabled".to_string()),
+        })
+    }
+}
+
+#[cfg(test)]
+impl ConsolidationPrompter for RecordingStageSink {}

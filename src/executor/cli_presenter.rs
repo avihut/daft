@@ -5,24 +5,231 @@
 
 use super::presenter::JobPresenter;
 use super::{JobResult, NodeStatus};
+use crate::core::stage::{StageId, StepKey};
 use crate::output::hook_progress::{HookRenderer, JobOutcome, JobResultEntry};
+use crate::output::timeline::{RailHookRenderer, TimelineHandle};
 use crate::settings::HookOutputConfig;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+/// The renderer behind the presenter: the rail rows (#651) for embedded
+/// phases — succinct by default, threading each job's log when
+/// `HookOutputConfig::verbose` — or the standalone hook block for every
+/// non-embedded path (and the degraded no-region fallback).
+enum EmbedRenderer {
+    Block(HookRenderer),
+    /// Boxed: the rail renderer carries three `ProgressStyle`s and dwarfs
+    /// the block variant (clippy::large_enum_variant).
+    Rail(Box<RailHookRenderer>),
+}
+
+impl EmbedRenderer {
+    fn print_header(&mut self, hook_name: &str, target: Option<&str>) {
+        match self {
+            Self::Block(r) => r.print_header(hook_name, target),
+            Self::Rail(r) => r.print_header(hook_name, target),
+        }
+    }
+
+    fn start_job_with_description(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        command_preview: Option<&str>,
+    ) {
+        match self {
+            Self::Block(r) => r.start_job_with_description(name, description, command_preview),
+            Self::Rail(r) => r.start_job_with_description(name, description, command_preview),
+        }
+    }
+
+    fn update_job_output(&mut self, name: &str, line: &str) {
+        match self {
+            Self::Block(r) => r.update_job_output(name, line),
+            Self::Rail(r) => r.update_job_output(name, line),
+        }
+    }
+
+    fn finish_job_success(&mut self, name: &str, duration: Duration) {
+        match self {
+            Self::Block(r) => r.finish_job_success(name, duration),
+            Self::Rail(r) => r.finish_job_success(name, duration),
+        }
+    }
+
+    fn finish_job_failure(&mut self, name: &str, duration: Duration) {
+        match self {
+            Self::Block(r) => r.finish_job_failure(name, duration),
+            Self::Rail(r) => r.finish_job_failure(name, duration),
+        }
+    }
+
+    fn finish_job_skipped(
+        &mut self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+        command_preview: Option<&str>,
+    ) {
+        match self {
+            Self::Block(r) => {
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+            }
+            Self::Rail(r) => {
+                r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+            }
+        }
+    }
+
+    fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        match self {
+            Self::Block(r) => r.finish_job_cancelled(name, duration),
+            Self::Rail(r) => r.finish_job_cancelled(name, duration),
+        }
+    }
+
+    fn show_background_job(&mut self, name: &str, description: Option<&str>) {
+        match self {
+            Self::Block(r) => r.show_background_job(name, description),
+            Self::Rail(r) => r.show_background_job(name, description),
+        }
+    }
+
+    fn record_background_job(&mut self, name: &str, description: Option<&str>) {
+        match self {
+            Self::Block(r) => r.record_background_job(name, description),
+            Self::Rail(r) => r.push_finished_job(JobResultEntry {
+                name: name.to_string(),
+                outcome: JobOutcome::Background {
+                    description: description.map(String::from),
+                },
+                duration: Duration::ZERO,
+            }),
+        }
+    }
+
+    fn print_summary(&self, total_duration: Duration) {
+        match self {
+            Self::Block(r) => r.print_summary(total_duration),
+            Self::Rail(r) => r.print_summary(total_duration),
+        }
+    }
+
+    fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
+        match self {
+            Self::Block(r) => r.take_finished_jobs(),
+            Self::Rail(r) => r.take_finished_jobs(),
+        }
+    }
+
+    fn println(&self, msg: &str) {
+        match self {
+            Self::Block(r) => r.println(msg),
+            Self::Rail(r) => r.println(msg),
+        }
+    }
+
+    /// Compact-finalization column width — a block-only concern
+    /// (`daft exec`); the rail derives its own alignment from job names.
+    fn set_name_column_width(&mut self, width: usize) {
+        match self {
+            Self::Block(r) => r.set_name_column_width(width),
+            Self::Rail(_) => {}
+        }
+    }
+
+    /// Seed the rail's name column from the phase's planned job list — its
+    /// receipts persist immediately and cannot re-pad when a wider name
+    /// starts in a later wave. The block renderer re-pads live bars on its
+    /// own and needs no seed.
+    fn seed_name_width(&mut self, width: usize) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.seed_name_width(width),
+        }
+    }
+}
+
+/// Which plan row an embedded presenter renders into.
+enum EmbedTarget {
+    /// One exact step, resolved by the caller (`TimelineBridge::run_hook`).
+    Exact(StepKey),
+    /// A stage whose scope is resolved per phase from the phase's `target`
+    /// (the pre-push presenter: one presenter serves every branch's push,
+    /// re-embedding — with a fresh, live anchor — at each `on_phase_start`).
+    Stage(StageId),
+}
+
+/// Renderer state behind the presenter mutex.
+///
+/// The embedded variant (#651) must resolve lazily: the hook step's rail row
+/// is consumed the moment the block starts rendering, and that must happen at
+/// `on_phase_start` — not at presenter construction, which the commands do
+/// eagerly (e.g. the pre-push presenter exists before the plan even commits).
+enum PresenterState {
+    Ready(EmbedRenderer),
+    Embed {
+        config: HookOutputConfig,
+        handle: TimelineHandle,
+        target: EmbedTarget,
+        /// The renderer for the phase currently (or last) rendering.
+        /// Replaced with a fresh embed at each phase start so the insertion
+        /// anchor is always a live bar.
+        renderer: Option<EmbedRenderer>,
+    },
+}
 
 /// Thread-safe CLI presenter backed by [`HookRenderer`].
 ///
 /// Wraps a `HookRenderer` in a `Mutex` so it can be shared across threads
 /// via `Arc<CliPresenter>`. All trait methods lock the mutex briefly.
 pub struct CliPresenter {
-    renderer: Mutex<HookRenderer>,
+    renderer: Mutex<PresenterState>,
 }
 
 impl CliPresenter {
     /// Create a presenter that auto-detects TTY vs plain output.
     pub fn auto(config: &HookOutputConfig) -> Arc<Self> {
         Arc::new(Self {
-            renderer: Mutex::new(HookRenderer::auto(config)),
+            renderer: Mutex::new(PresenterState::Ready(EmbedRenderer::Block(
+                HookRenderer::auto(config),
+            ))),
+        })
+    }
+
+    /// Create a presenter that renders the hook block inside a plan-execute
+    /// timeline (#651). Lazy: each `on_phase_start` expands the `key` step's
+    /// rail row into the block (via `begin_hook_embed`) and builds the
+    /// embedded renderer; if the region is gone by then, it degrades to
+    /// `auto`.
+    pub fn embedded(config: &HookOutputConfig, handle: TimelineHandle, key: StepKey) -> Arc<Self> {
+        Arc::new(Self {
+            renderer: Mutex::new(PresenterState::Embed {
+                config: config.clone(),
+                handle,
+                target: EmbedTarget::Exact(key),
+                renderer: None,
+            }),
+        })
+    }
+
+    /// Like [`CliPresenter::embedded`], but the step is resolved per phase:
+    /// `stage` plus the phase's `target` (the branch name for pre-push
+    /// phases) pick the plan row, so one presenter can serve repeated
+    /// phases across a multi-branch plan.
+    pub fn embedded_for_stage(
+        config: &HookOutputConfig,
+        handle: TimelineHandle,
+        stage: StageId,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            renderer: Mutex::new(PresenterState::Embed {
+                config: config.clone(),
+                handle,
+                target: EmbedTarget::Stage(stage),
+                renderer: None,
+            }),
         })
     }
 
@@ -30,14 +237,32 @@ impl CliPresenter {
     #[cfg(test)]
     pub fn from_renderer(renderer: HookRenderer) -> Arc<Self> {
         Arc::new(Self {
-            renderer: Mutex::new(renderer),
+            renderer: Mutex::new(PresenterState::Ready(EmbedRenderer::Block(renderer))),
         })
+    }
+
+    /// Test-only: which renderer currently backs the presenter.
+    #[cfg(test)]
+    fn renderer_kind(&self) -> Option<&'static str> {
+        let kind = |r: &EmbedRenderer| match r {
+            EmbedRenderer::Block(_) => "block",
+            EmbedRenderer::Rail(_) => "rail",
+        };
+        match &*self.lock() {
+            PresenterState::Ready(r) => Some(kind(r)),
+            PresenterState::Embed { renderer, .. } => renderer.as_ref().map(kind),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, PresenterState> {
+        self.renderer.lock().expect("CliPresenter mutex poisoned")
     }
 
     /// Set the name-column width used when rendering compact finalization rows.
     pub fn set_name_column_width(&self, width: usize) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.set_name_column_width(width);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.set_name_column_width(width);
+        }
     }
 
     /// Convert a `JobResultEntry` (from `HookRenderer`) into our generic `JobResult`.
@@ -61,30 +286,87 @@ impl CliPresenter {
     }
 }
 
+/// The active renderer behind the state, if any.
+fn ready(state: &mut PresenterState) -> Option<&mut EmbedRenderer> {
+    match state {
+        PresenterState::Ready(r) => Some(r),
+        PresenterState::Embed { renderer, .. } => renderer.as_mut(),
+    }
+}
+
 impl JobPresenter for CliPresenter {
     fn on_phase_start(&self, phase_name: &str, target: Option<&str>) {
-        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.print_header(phase_name, target);
+        let mut guard = self.lock();
+        if let PresenterState::Embed {
+            config,
+            handle,
+            target: embed_target,
+            renderer,
+        } = &mut *guard
+        {
+            let key = match embed_target {
+                EmbedTarget::Exact(key) => Some(key.clone()),
+                EmbedTarget::Stage(id) => handle.resolve_key(*id, target),
+            };
+            *renderer = match key.and_then(|k| handle.begin_hook_embed(&k)) {
+                // Embedded phases always render rail-native (#651) — the
+                // rail renderer reads `config.verbose` itself and threads
+                // each job's log under its row.
+                Some(embed) => Some(EmbedRenderer::Rail(Box::new(RailHookRenderer::new(
+                    embed,
+                    handle.clone(),
+                    config,
+                )))),
+                // Step unknown while the region still owns the terminal —
+                // render nothing rather than tear the rail: the standalone
+                // renderer's own `MultiProgress` would fight the region for
+                // the cursor. (A `None` renderer no-ops every callback;
+                // executor failures still surface through the routed
+                // output.)
+                None if handle.region_live() => None,
+                // Region gone (error paths, post-rail phases) — degrade to
+                // the standalone renderer rather than losing the block.
+                // Rail rows make no sense without a region.
+                None => Some(EmbedRenderer::Block(HookRenderer::auto(config))),
+            };
+        }
+        if let Some(r) = ready(&mut guard) {
+            r.print_header(phase_name, target);
+        }
+    }
+
+    fn on_jobs_planned(&self, names: &[String]) {
+        let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+        if width == 0 {
+            return;
+        }
+        if let Some(r) = ready(&mut self.lock()) {
+            r.seed_name_width(width);
+        }
     }
 
     fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.start_job_with_description(name, description, command_preview);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.start_job_with_description(name, description, command_preview);
+        }
     }
 
     fn on_job_output(&self, name: &str, line: &str) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.update_job_output(name, line);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.update_job_output(name, line);
+        }
     }
 
     fn on_job_success(&self, name: &str, duration: Duration) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.finish_job_success(name, duration);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_job_success(name, duration);
+        }
     }
 
     fn on_job_failure(&self, name: &str, duration: Duration) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.finish_job_failure(name, duration);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_job_failure(name, duration);
+        }
     }
 
     fn on_job_skipped(
@@ -95,48 +377,116 @@ impl JobPresenter for CliPresenter {
         show_duration: bool,
         command_preview: Option<&str>,
     ) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_job_skipped(name, reason, duration, show_duration, command_preview);
+        }
     }
 
     fn on_job_cancelled(&self, name: &str, duration: Duration) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.finish_job_cancelled(name, duration);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_job_cancelled(name, duration);
+        }
     }
 
     fn on_job_background(&self, name: &str, description: Option<&str>) {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.show_background_job(name, description);
-        r.record_background_job(name, description);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.show_background_job(name, description);
+            r.record_background_job(name, description);
+        }
     }
 
     fn on_message(&self, msg: &str) {
-        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.println(msg);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.println(msg);
+        }
     }
 
     fn on_phase_complete(&self, total_duration: Duration) {
-        let r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.print_summary(total_duration);
+        if let Some(r) = ready(&mut self.lock()) {
+            r.print_summary(total_duration);
+        }
     }
 
     fn take_results(&self) -> Vec<JobResult> {
-        let mut r = self.renderer.lock().expect("CliPresenter mutex poisoned");
-        r.take_finished_jobs()
-            .into_iter()
-            .map(Self::entry_to_job_result)
-            .collect()
+        match ready(&mut self.lock()) {
+            Some(r) => r
+                .take_finished_jobs()
+                .into_iter()
+                .map(Self::entry_to_job_result)
+                .collect(),
+            None => Vec::new(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::stage::{PlanCommit, Row, StepSpec};
+    use crate::output::timeline::{Timeline, TimelineMode};
 
     #[test]
     fn cli_presenter_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CliPresenter>();
+    }
+
+    /// A live timeline whose plan carries a post-create hook row.
+    fn hook_timeline() -> Timeline {
+        let mut tl = Timeline::new(TimelineMode::Interactive { color: false }, false, "t");
+        tl.commit_plan(PlanCommit::new(vec![Row::Step(StepSpec::new(
+            StepKey::new(StageId::PostCreateHooks),
+        ))]));
+        tl
+    }
+
+    #[test]
+    fn embedded_phase_defaults_to_rail_rows() {
+        let tl = hook_timeline();
+        let presenter = CliPresenter::embedded(
+            &HookOutputConfig::default(),
+            tl.handle(),
+            StepKey::new(StageId::PostCreateHooks),
+        );
+        presenter.on_phase_start("worktree-post-create", Some("feat/x"));
+        assert_eq!(presenter.renderer_kind(), Some("rail"));
+
+        // The rail renderer feeds take_results exactly like the block.
+        presenter.on_job_start("install", None, None);
+        presenter.on_job_success("install", Duration::from_secs(2));
+        let results = presenter.take_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, NodeStatus::Succeeded);
+    }
+
+    #[test]
+    fn verbose_embed_stays_on_the_rail() {
+        // Verbose no longer swaps in the welded block — the rail renderer
+        // itself threads the log (#651).
+        let tl = hook_timeline();
+        let config = HookOutputConfig {
+            verbose: true,
+            ..Default::default()
+        };
+        let presenter =
+            CliPresenter::embedded(&config, tl.handle(), StepKey::new(StageId::PostCreateHooks));
+        presenter.on_phase_start("worktree-post-create", None);
+        assert_eq!(presenter.renderer_kind(), Some("rail"));
+    }
+
+    #[test]
+    fn dead_region_degrades_to_the_standalone_block() {
+        // No commit_plan: the region never materializes, so the embed fails
+        // and the presenter must fall back to the auto block — rail rows
+        // make no sense without a region.
+        let tl = Timeline::new(TimelineMode::Interactive { color: false }, false, "t");
+        let presenter = CliPresenter::embedded(
+            &HookOutputConfig::default(),
+            tl.handle(),
+            StepKey::new(StageId::PostCreateHooks),
+        );
+        presenter.on_phase_start("worktree-post-create", None);
+        assert_eq!(presenter.renderer_kind(), Some("block"));
     }
 
     #[test]

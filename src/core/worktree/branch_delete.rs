@@ -2,6 +2,7 @@
 //!
 //! Deletes branches and their associated worktrees.
 
+use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{PushAction, push_with_hooks};
 use crate::core::{
@@ -143,6 +144,10 @@ struct ValidatedBranch {
     /// When true, only the worktree is removed — local branch ref and remote
     /// branch are preserved. Used for the default branch.
     worktree_only: bool,
+    /// The default branch this branch was verified merged into (Check 4),
+    /// surfaced as a timeline annotation. `None` when the check was skipped
+    /// (--force, keep_local_branch, merge's own validation).
+    merged_into: Option<String>,
     /// What to do with the worktree's untracked daft files before removal.
     daft_files: DaftFilePlan,
 }
@@ -252,6 +257,17 @@ pub fn execute(
         });
     }
 
+    // Commit the execution plan (#651): validation is done, every prompt has
+    // fired, mutation is about to begin. Rows are ordered exactly as
+    // `execute_deletions` will run them — regular branches first, the
+    // current-worktree branch deferred to last.
+    let (deferred, regular): (Vec<&ValidatedBranch>, Vec<&ValidatedBranch>) =
+        validated.iter().partition(|b| b.is_current_worktree);
+    let exec_order: Vec<&ValidatedBranch> =
+        regular.iter().chain(deferred.iter()).copied().collect();
+    let hook_rows = HookRowPlan::probe(&exec_order, &ctx.source_worktree, sink);
+    sink.on_plan(build_plan(&exec_order, params, &hook_rows));
+
     // Execute deletions
     let (deletions, cd_target) = execute_deletions(&ctx, &validated, params, &worktree_map, sink);
 
@@ -263,6 +279,149 @@ pub fn execute(
         cd_target,
         nothing_to_delete: false,
     })
+}
+
+// ── Timeline plan (#651) ───────────────────────────────────────────────────
+
+/// Which hook-phase rows the committed plan includes: a row is planned only
+/// when the phase has hooks discoverable at plan time — the rail lists only
+/// work that happens, and remove's hook config sources exist and are exact
+/// before the plan commits. Pre-remove hooks are read from each branch's
+/// own worktree; post-remove hooks from the source worktree (the tree the
+/// executor reads once the target is gone). Runtime discovery stays
+/// authoritative: hooks run regardless of planning, and a planned row can
+/// still vanish (condition skips) or turn yellow (trust refusal).
+struct HookRowPlan {
+    /// Parallel to the plan's execution order.
+    pre_remove: Vec<bool>,
+    post_remove: bool,
+}
+
+impl HookRowPlan {
+    fn probe(
+        exec_order: &[&ValidatedBranch],
+        source_worktree: &Path,
+        runner: &impl HookRunner,
+    ) -> Self {
+        let pre_remove = exec_order
+            .iter()
+            .map(|b| {
+                b.worktree_path
+                    .as_deref()
+                    .is_some_and(|wt| runner.hook_phase_has_work(HookType::PreRemove, wt))
+            })
+            .collect();
+        let post_remove = exec_order.iter().any(|b| b.worktree_path.is_some())
+            && runner.hook_phase_has_work(HookType::PostRemove, source_worktree);
+        Self {
+            pre_remove,
+            post_remove,
+        }
+    }
+}
+
+/// Build the plan rows for the branches in execution order. Steps mirror the
+/// conditionals of `delete_single_branch` exactly. Remote fate shows only
+/// when remote deletion is in scope for the invocation: the `DeleteRemote`
+/// step, or a dim `no remote branch` note when there is no upstream to
+/// delete. A daft configured local-only never mentions remotes.
+fn build_plan(
+    exec_order: &[&ValidatedBranch],
+    params: &BranchDeleteParams,
+    hook_rows: &HookRowPlan,
+) -> PlanCommit {
+    let multi = exec_order.len() > 1;
+    // Replace the seeded header: raw args may be worktree-path shorthands
+    // (`daft remove .`), and the count can shrink during validation.
+    let header = if multi {
+        format!("Removing {} branches", exec_order.len())
+    } else {
+        format!("Removing {}", exec_order[0].name)
+    };
+    let mut rows = Vec::new();
+
+    for (i, branch) in exec_order.iter().enumerate() {
+        let key = |id: StageId| StepKey::scoped(id, branch.name.clone());
+        if multi {
+            rows.push(Row::Group {
+                label: branch.name.clone(),
+            });
+        }
+
+        let has_worktree = branch.worktree_path.is_some();
+        let deletes_remote = !params.keep_local_branch
+            && !branch.worktree_only
+            && (params.delete_remote || params.remote_only)
+            && branch.remote_name.is_some()
+            && branch.remote_branch_name.is_some();
+
+        if has_worktree && hook_rows.pre_remove[i] {
+            rows.push(Row::Step(StepSpec::new(key(StageId::PreRemoveHooks))));
+        }
+        if deletes_remote {
+            let annotation = format!(
+                "{}/{}",
+                branch.remote_name.as_deref().unwrap_or_default(),
+                branch.remote_branch_name.as_deref().unwrap_or_default()
+            );
+            rows.push(Row::Step(
+                StepSpec::new(key(StageId::DeleteRemote)).with_annotation(annotation),
+            ));
+        }
+        if let Some(ref wt) = branch.worktree_path {
+            rows.push(Row::Step(
+                StepSpec::new(key(StageId::RemoveWorktree)).with_annotation(display_path(wt)),
+            ));
+        }
+        if !params.remote_only && !params.keep_local_branch && !branch.worktree_only {
+            let mut spec = StepSpec::new(key(StageId::DeleteLocalBranch));
+            if let Some(ref target) = branch.merged_into {
+                spec = spec.with_annotation(format!("was merged into {target}"));
+            }
+            rows.push(Row::Step(spec));
+        }
+        if has_worktree && hook_rows.post_remove {
+            rows.push(Row::Step(StepSpec::new(key(StageId::PostRemoveHooks))));
+        }
+
+        // Remote fate is a topic only while remote deletion is in scope for
+        // this invocation. When configuration takes remotes out of scope
+        // (`daft.branchDelete.remote` off — the default, and what
+        // `daft config remote-sync` "local only" sets — or `--local`), the
+        // rail never mentions them, mirroring the create rail's push row.
+        let remote_in_scope = params.delete_remote || params.remote_only;
+        if !params.keep_local_branch {
+            if branch.worktree_only {
+                let text = if remote_in_scope {
+                    "branch and remote kept (default branch)"
+                } else {
+                    "branch kept (default branch)"
+                };
+                rows.push(Row::Note {
+                    text: text.to_string(),
+                });
+            } else if remote_in_scope && !deletes_remote {
+                // In scope but no DeleteRemote step: the branch has no
+                // upstream, so there was nothing to delete.
+                rows.push(Row::Note {
+                    text: "no remote branch".to_string(),
+                });
+            }
+        }
+    }
+
+    PlanCommit::new(rows).with_header(header)
+}
+
+/// Path annotation for a worktree row: relative to the current directory
+/// when that is shorter to read, absolute otherwise.
+pub(crate) fn display_path(path: &Path) -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| pathdiff::diff_paths(path, &cwd))
+        .filter(|rel| rel.components().count() <= path.components().count())
+        .map(|rel| rel.display().to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 // ── Argument resolution ────────────────────────────────────────────────────
@@ -433,6 +592,7 @@ fn validate_branches(
                 remote_branch_name,
                 is_current_worktree: false,
                 worktree_only: false,
+                merged_into: None,
                 daft_files: DaftFilePlan::Nothing,
             });
             continue;
@@ -507,6 +667,7 @@ fn validate_branches(
                     // consolidation target, so there is nothing to preserve
                     // elsewhere.
                     worktree_only: true,
+                    merged_into: None,
                     daft_files: DaftFilePlan::Nothing,
                 });
                 continue;
@@ -539,10 +700,12 @@ fn validate_branches(
 
         // Check 4: Merged into default branch (skip with --force,
         // keep_local_branch, or the merge cleanup's own validation)
+        let mut merged_into = None;
         if !force && !keep_local_branch && !skip_merge_validation {
             match is_branch_merged(ctx, branch) {
                 Ok(true) => {
                     sink.on_step(&format!("Branch '{branch}' is merged into default branch"));
+                    merged_into = Some(ctx.default_branch.clone());
                 }
                 Ok(false) => {
                     errors.push(ValidationError {
@@ -684,6 +847,7 @@ fn validate_branches(
             remote_branch_name,
             is_current_worktree: is_current,
             worktree_only: false,
+            merged_into,
             daft_files,
         });
     }
@@ -1003,6 +1167,7 @@ fn delete_single_branch(
     };
 
     let has_worktree = branch.worktree_path.is_some();
+    let stage_key = |id: StageId| StepKey::scoped(id, branch.name.clone());
 
     // Step 1: Cancel any running background jobs for this worktree, then
     // run the pre-remove hook (only if worktree exists). The cancel is
@@ -1034,6 +1199,7 @@ fn delete_single_branch(
             "Deleting remote branch {}/{}...",
             remote, remote_branch
         ));
+        sink.on_stage(&stage_key(StageId::DeleteRemote), StageEvent::Started);
         // Run from the branch's worktree when it still exists (Step 3 removes
         // it later) so the repo's pre-push hook fires there; otherwise any
         // directory inside the repo works for a remote delete.
@@ -1062,8 +1228,18 @@ fn delete_single_branch(
                     "Remote branch {}/{} deleted",
                     remote, remote_branch
                 ));
+                sink.on_stage(
+                    &stage_key(StageId::DeleteRemote),
+                    StageEvent::Completed { annotation: None },
+                );
             }
             Err(e) => {
+                sink.on_stage(
+                    &stage_key(StageId::DeleteRemote),
+                    StageEvent::Failed {
+                        detail: "failed (see below)".to_string(),
+                    },
+                );
                 result.errors.push(format!(
                     "Failed to delete remote branch {remote}/{remote_branch}: {e}"
                 ));
@@ -1140,6 +1316,12 @@ fn delete_single_branch(
         // cannot be removed. In non-bare layouts, this is the original clone directory.
         let git_entry = wt_path.join(".git");
         if git_entry.is_dir() {
+            sink.on_stage(
+                &stage_key(StageId::RemoveWorktree),
+                StageEvent::Failed {
+                    detail: "main working tree — cannot remove".to_string(),
+                },
+            );
             result.errors.push(format!(
                 "Cannot remove '{}': this is the main working tree. \
                  Use `daft layout transform` to restructure, or delete other worktrees instead.",
@@ -1147,12 +1329,23 @@ fn delete_single_branch(
             ));
         } else if wt_path.exists() {
             sink.on_step(&format!("Removing worktree at {}...", wt_path.display()));
+            sink.on_stage(&stage_key(StageId::RemoveWorktree), StageEvent::Started);
             match ctx.git.worktree_remove(wt_path, force) {
                 Ok(()) => {
                     result.worktree_removed = true;
                     sink.on_step(&format!("Removed worktree '{}'", branch.name));
+                    sink.on_stage(
+                        &stage_key(StageId::RemoveWorktree),
+                        StageEvent::Completed { annotation: None },
+                    );
                 }
                 Err(e) => {
+                    sink.on_stage(
+                        &stage_key(StageId::RemoveWorktree),
+                        StageEvent::Failed {
+                            detail: "failed (see below)".to_string(),
+                        },
+                    );
                     result.errors.push(format!(
                         "Failed to remove worktree {}: {e}",
                         wt_path.display()
@@ -1165,12 +1358,25 @@ fn delete_single_branch(
                 "Worktree directory {} not found. Attempting to force remove record.",
                 wt_path.display()
             ));
+            sink.on_stage(&stage_key(StageId::RemoveWorktree), StageEvent::Started);
             match ctx.git.worktree_remove(wt_path, true) {
                 Ok(()) => {
                     result.worktree_removed = true;
                     sink.on_step(&format!("Removed worktree '{}'", branch.name));
+                    sink.on_stage(
+                        &stage_key(StageId::RemoveWorktree),
+                        StageEvent::Completed {
+                            annotation: Some("orphaned record removed".to_string()),
+                        },
+                    );
                 }
                 Err(e) => {
+                    sink.on_stage(
+                        &stage_key(StageId::RemoveWorktree),
+                        StageEvent::Failed {
+                            detail: "failed (see below)".to_string(),
+                        },
+                    );
                     result.errors.push(format!(
                         "Failed to remove orphaned worktree record {}: {e}",
                         wt_path.display()
@@ -1190,12 +1396,23 @@ fn delete_single_branch(
     if !keep_local_branch && !branch.worktree_only {
         // Always use force-delete (-D) here because our validation has already passed.
         sink.on_step(&format!("Deleting local branch {}...", branch.name));
+        sink.on_stage(&stage_key(StageId::DeleteLocalBranch), StageEvent::Started);
         match ctx.git.branch_delete(&branch.name, true) {
             Ok(()) => {
                 result.branch_deleted = true;
                 sink.on_step(&format!("Branch {} deleted", branch.name));
+                sink.on_stage(
+                    &stage_key(StageId::DeleteLocalBranch),
+                    StageEvent::Completed { annotation: None },
+                );
             }
             Err(e) => {
+                sink.on_stage(
+                    &stage_key(StageId::DeleteLocalBranch),
+                    StageEvent::Failed {
+                        detail: "failed (see below)".to_string(),
+                    },
+                );
                 result.errors.push(format!(
                     "Failed to delete local branch {}: {e}",
                     branch.name
@@ -1338,6 +1555,118 @@ fn cleanup_empty_parent_dirs(
 mod tests {
     use super::*;
 
+    /// Plan fixture where every hook phase has discoverable work — the
+    /// pre-gating shape, for tests exercising other row conditionals.
+    fn all_hook_rows(n: usize) -> HookRowPlan {
+        HookRowPlan {
+            pre_remove: vec![true; n],
+            post_remove: true,
+        }
+    }
+
+    #[test]
+    fn plan_header_names_resolved_branches_not_raw_args() {
+        let branch = |name: &str| ValidatedBranch {
+            name: name.to_string(),
+            worktree_path: None,
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only: false,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = BranchDeleteParams {
+            branches: vec![".".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+
+        // The raw arg was a path shorthand; the header carries the branch.
+        let a = branch("feat-x");
+        let plan = build_plan(&[&a], &params, &all_hook_rows(1));
+        assert_eq!(plan.header.as_deref(), Some("Removing feat-x"));
+
+        let b = branch("feat-y");
+        let plan = build_plan(&[&a, &b], &params, &all_hook_rows(2));
+        assert_eq!(plan.header.as_deref(), Some("Removing 2 branches"));
+    }
+
+    #[test]
+    fn remote_fate_note_planned_only_when_remote_deletion_in_scope() {
+        let branch = |worktree_only: bool| ValidatedBranch {
+            name: "feat-x".to_string(),
+            worktree_path: None,
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = |delete_remote: bool| BranchDeleteParams {
+            branches: vec!["feat-x".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+        let notes = |plan: &PlanCommit| -> Vec<String> {
+            plan.rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Note { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Remote deletion off (config default, remote-sync local-only, or
+        // --local): the plan never mentions the remote.
+        let plan = build_plan(&[&branch(false)], &params(false), &all_hook_rows(1));
+        assert!(
+            notes(&plan).is_empty(),
+            "out-of-scope remote plans no note: {:?}",
+            plan.rows
+        );
+
+        // Remote deletion on but the branch has no upstream: the dim note
+        // records there was nothing to delete.
+        let plan = build_plan(&[&branch(false)], &params(true), &all_hook_rows(1));
+        assert_eq!(notes(&plan), vec!["no remote branch".to_string()]);
+
+        // Default-branch worktree removal keeps its explanation, mentioning
+        // the remote only while remote deletion is in scope.
+        let plan = build_plan(&[&branch(true)], &params(false), &all_hook_rows(1));
+        assert_eq!(
+            notes(&plan),
+            vec!["branch kept (default branch)".to_string()]
+        );
+        let plan = build_plan(&[&branch(true)], &params(true), &all_hook_rows(1));
+        assert_eq!(
+            notes(&plan),
+            vec!["branch and remote kept (default branch)".to_string()]
+        );
+    }
+
     #[test]
     fn test_validated_branch_fields() {
         let vb = ValidatedBranch {
@@ -1347,6 +1676,7 @@ mod tests {
             remote_branch_name: Some("feature/test".to_string()),
             is_current_worktree: false,
             worktree_only: false,
+            merged_into: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert_eq!(vb.name, "feature/test");
@@ -1364,6 +1694,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: false,
+            merged_into: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_path.is_none());
@@ -1380,6 +1711,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: true,
+            merged_into: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_only);
@@ -1678,6 +2010,257 @@ mod tests {
         assert_eq!(result.deletions.len(), 1);
         assert!(result.deletions[0].worktree_removed);
         assert!(!result.deletions[0].branch_deleted);
+    }
+
+    #[test]
+    #[serial]
+    fn plan_commits_after_validation_in_execution_order() {
+        use crate::core::RecordingStageSink;
+        use crate::core::stage::{Row, StageEvent, StageId};
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: true, // skip merged/sync checks (no real remote here)
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-f/--force".to_string(),
+        };
+        let mut sink = RecordingStageSink::default();
+        let result = execute(&params, None, &mut sink).unwrap();
+        assert!(result.validation_errors.is_empty());
+
+        // Exactly one plan, committed before any deletion executed.
+        let plan = sink.plan.as_ref().expect("plan must be committed");
+        let ids: Vec<StageId> = plan
+            .steps()
+            .map(|s| {
+                assert_eq!(s.key.scope.as_deref(), Some("feature"), "rows are scoped");
+                s.key.id
+            })
+            .collect();
+        // Execution order: hooks bracket the removal; no DeleteRemote step
+        // and no remote-fate note — remote deletion is off, so the plan
+        // never mentions the remote. (The hook rows are present because
+        // `RecordingStageSink` keeps speculative rows via the trait's
+        // default probe; row gating is pinned separately below.)
+        assert_eq!(
+            ids,
+            vec![
+                StageId::PreRemoveHooks,
+                StageId::RemoveWorktree,
+                StageId::DeleteLocalBranch,
+                StageId::PostRemoveHooks,
+            ]
+        );
+        assert!(
+            !plan.rows.iter().any(|r| matches!(r, Row::Note { .. })),
+            "remote out of scope plans no note: {:?}",
+            plan.rows
+        );
+        // Single-branch plans carry no group anchors.
+        assert!(!plan.rows.iter().any(|r| matches!(r, Row::Group { .. })));
+
+        // Events: worktree and branch both started and completed, in order.
+        let completed: Vec<StageId> = sink
+            .events
+            .iter()
+            .filter_map(|(k, e)| matches!(e, StageEvent::Completed { .. }).then_some(k.id))
+            .collect();
+        assert_eq!(
+            completed,
+            vec![StageId::RemoveWorktree, StageId::DeleteLocalBranch]
+        );
+        // Both removal hooks fired through the sink.
+        assert_eq!(
+            sink.hooks_run,
+            vec![
+                crate::hooks::HookType::PreRemove,
+                crate::hooks::HookType::PostRemove
+            ]
+        );
+    }
+
+    #[test]
+    fn hook_rows_planned_only_when_the_phase_has_work() {
+        let branch = |name: &str| ValidatedBranch {
+            name: name.to_string(),
+            worktree_path: Some(PathBuf::from(format!("/tmp/{name}"))),
+            remote_name: None,
+            remote_branch_name: None,
+            is_current_worktree: false,
+            worktree_only: false,
+            merged_into: None,
+            daft_files: DaftFilePlan::Nothing,
+        };
+        let params = BranchDeleteParams {
+            branches: vec!["feat-x".to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-D/--force".to_string(),
+        };
+        let ids = |plan: &PlanCommit| -> Vec<StageId> { plan.steps().map(|s| s.key.id).collect() };
+
+        // Nothing discoverable: neither hook row — the rail lists only
+        // work that happens (these rows used to be planned speculatively
+        // and vanish at resolution).
+        let a = branch("feat-x");
+        let none = HookRowPlan {
+            pre_remove: vec![false],
+            post_remove: false,
+        };
+        assert_eq!(
+            ids(&build_plan(&[&a], &params, &none)),
+            vec![StageId::RemoveWorktree, StageId::DeleteLocalBranch],
+        );
+
+        // Pre-remove discovery is per-branch (each worktree carries its own
+        // config); post-remove is per-invocation (source worktree).
+        let b = branch("feat-y");
+        let mixed = HookRowPlan {
+            pre_remove: vec![true, false],
+            post_remove: false,
+        };
+        let plan = build_plan(&[&a, &b], &params, &mixed);
+        let pre_scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::PreRemoveHooks)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(pre_scopes, vec![Some("feat-x".to_string())]);
+        assert!(plan.steps().all(|s| s.key.id != StageId::PostRemoveHooks));
+    }
+
+    #[test]
+    #[serial]
+    fn plan_omits_hook_rows_but_execution_still_fires_hooks() {
+        use crate::core::RecordingStageSink;
+        use std::cell::RefCell;
+
+        // A sink whose probe finds no work anywhere — the real bridges
+        // delegate to `HookExecutor::hook_phase_has_work`; this pins the
+        // core's wiring: which phases get probed, with which source paths,
+        // and that gating the row never gates the run.
+        struct GatedSink {
+            inner: RecordingStageSink,
+            probes: RefCell<Vec<(crate::hooks::HookType, PathBuf)>>,
+        }
+        impl ProgressSink for GatedSink {
+            fn on_step(&mut self, msg: &str) {
+                self.inner.on_step(msg);
+            }
+            fn on_warning(&mut self, msg: &str) {
+                self.inner.on_warning(msg);
+            }
+            fn on_debug(&mut self, msg: &str) {
+                self.inner.on_debug(msg);
+            }
+            fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
+                self.inner.on_plan(plan);
+            }
+            fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
+                self.inner.on_stage(key, event);
+            }
+        }
+        impl crate::core::ConsolidationPrompter for GatedSink {}
+        impl crate::core::HookRunner for GatedSink {
+            fn hook_phase_has_work(
+                &self,
+                hook_type: crate::hooks::HookType,
+                hook_source_worktree: &Path,
+            ) -> bool {
+                self.probes
+                    .borrow_mut()
+                    .push((hook_type, hook_source_worktree.to_path_buf()));
+                false
+            }
+            fn run_hook(
+                &mut self,
+                ctx: &crate::hooks::HookContext,
+            ) -> anyhow::Result<crate::core::HookOutcome> {
+                self.inner.run_hook(ctx)
+            }
+        }
+
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let params = BranchDeleteParams {
+            branches: vec!["feature".to_string()],
+            force: true,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-f/--force".to_string(),
+        };
+        let mut sink = GatedSink {
+            inner: RecordingStageSink::default(),
+            probes: RefCell::new(Vec::new()),
+        };
+        let result = execute(&params, None, &mut sink).unwrap();
+        assert!(result.validation_errors.is_empty());
+
+        // No discoverable hooks: the plan omits both hook rows...
+        let plan = sink.inner.plan.as_ref().expect("plan must be committed");
+        assert!(
+            plan.steps().all(|s| !s.key.id.is_hook_phase()),
+            "no hook rows without discoverable work: {:?}",
+            plan.rows
+        );
+        // ...while execution still consults the executor for both phases.
+        assert_eq!(
+            sink.inner.hooks_run,
+            vec![
+                crate::hooks::HookType::PreRemove,
+                crate::hooks::HookType::PostRemove
+            ]
+        );
+        // Each phase was probed at its true config source: the branch's own
+        // worktree for pre-remove, the source worktree for post-remove.
+        let probes = sink.probes.borrow();
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].0, crate::hooks::HookType::PreRemove);
+        assert!(
+            probes[0].1.ends_with("feat"),
+            "pre-remove probes the branch worktree: {}",
+            probes[0].1.display()
+        );
+        assert_eq!(probes[1].0, crate::hooks::HookType::PostRemove);
     }
 
     #[test]

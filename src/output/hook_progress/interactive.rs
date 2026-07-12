@@ -12,6 +12,12 @@ use std::time::Duration;
 
 struct JobState {
     spinner: ProgressBar,
+    /// The dim description line under the spinner, when the job has one.
+    /// Must be tracked so `remove_job_bars` can `mp.remove` it: an untracked
+    /// bar's last handle drops through indicatif's zombie path
+    /// (`mark_zombie`), which strands its line once the `MultiProgress`
+    /// outlives the job — exactly the case under a shared region (#651).
+    description: Option<ProgressBar>,
     separator: Option<ProgressBar>,
     tail_lines: Vec<ProgressBar>,
     trailer: Option<ProgressBar>,
@@ -39,6 +45,15 @@ pub struct HookProgressRenderer {
     tail_style: ProgressStyle,
     trailer_style: ProgressStyle,
     name_column_width: usize,
+    /// When embedded in a plan-execute timeline (#651): new job bars are
+    /// `insert_before` this rail bar instead of appended (`mp.add` would
+    /// land them *below* the rail's pending rows and footer). The anchor
+    /// must stay linked for the whole hook run — the timeline guarantees
+    /// this by handing out a pending-row or spacer bar that only leaves the
+    /// region at teardown.
+    insert_anchor: Option<ProgressBar>,
+    /// Weld the header box's left corners onto the rail (`┌`/`└` → `├`).
+    welded: bool,
 }
 
 impl HookProgressRenderer {
@@ -56,6 +71,20 @@ impl HookProgressRenderer {
             MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
             false,
         )
+    }
+
+    /// Render inside a plan-execute timeline's live region (#651): share its
+    /// `MultiProgress`, insert job bars above `anchor` (a live rail bar),
+    /// and weld the rail into the header box's top corner.
+    ///
+    /// NOTE(preserved, currently unused): see `HookRenderer::embedded` —
+    /// kept for possible reuse by full git hooks rendering; delete after
+    /// git hooks land if still unused.
+    pub fn new_embedded(config: &HookOutputConfig, mp: MultiProgress, anchor: ProgressBar) -> Self {
+        let mut renderer = Self::create(config, mp, styles::colors_enabled_stderr());
+        renderer.insert_anchor = Some(anchor);
+        renderer.welded = true;
+        renderer
     }
 
     fn create(config: &HookOutputConfig, mp: MultiProgress, use_color: bool) -> Self {
@@ -108,6 +137,18 @@ impl HookProgressRenderer {
             tail_style,
             trailer_style,
             name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
+            insert_anchor: None,
+            welded: false,
+        }
+    }
+
+    /// Add a top-level job bar: appended normally, `insert_before` the rail
+    /// anchor when embedded (the only insertion-point difference between the
+    /// standalone and embedded renderers).
+    fn add_job_bar(&self, bar: ProgressBar) -> ProgressBar {
+        match &self.insert_anchor {
+            Some(anchor) => self.mp.insert_before(anchor, bar),
+            None => self.mp.add(bar),
         }
     }
 
@@ -118,7 +159,9 @@ impl HookProgressRenderer {
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
-        for line in super::formatting::format_header_lines(hook_name, target, self.use_color) {
+        for line in
+            super::formatting::format_header_lines(hook_name, target, self.use_color, self.welded)
+        {
             self.mp.println(line).ok();
         }
     }
@@ -133,7 +176,7 @@ impl HookProgressRenderer {
         description: Option<&str>,
         command_preview: Option<&str>,
     ) {
-        let spinner = self.mp.add(ProgressBar::new_spinner());
+        let spinner = self.add_job_bar(ProgressBar::new_spinner());
         spinner.set_style(self.spinner_style.clone());
 
         let display_name = match command_preview {
@@ -155,6 +198,7 @@ impl HookProgressRenderer {
 
         // Show description below the spinner if provided
         let mut last_bar = spinner.clone();
+        let mut description_bar = None;
         if let Some(desc) = description {
             let desc_bar = self.mp.insert_after(&last_bar, ProgressBar::new_spinner());
             let desc_style =
@@ -166,7 +210,8 @@ impl HookProgressRenderer {
                 desc.to_string()
             };
             desc_bar.set_message(desc_msg);
-            last_bar = desc_bar;
+            last_bar = desc_bar.clone();
+            description_bar = Some(desc_bar);
         }
 
         // Trailer is a blank spacer bar that sits at the bottom of this job's
@@ -200,6 +245,7 @@ impl HookProgressRenderer {
             name.to_string(),
             JobState {
                 spinner,
+                description: description_bar,
                 separator: None,
                 tail_lines: Vec::new(),
                 trailer: Some(trailer),
@@ -402,6 +448,9 @@ impl HookProgressRenderer {
     /// so the next `mp.println` does an atomic redraw that cleanly
     /// clears the old bar lines.
     fn remove_job_bars(&self, state: &JobState) {
+        if let Some(ref desc) = state.description {
+            self.mp.remove(desc);
+        }
         if let Some(ref sep) = state.separator {
             self.mp.remove(sep);
         }
@@ -564,6 +613,18 @@ impl HookProgressRenderer {
         self.jobs
             .get(name)
             .map(|s| s.trailer.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Test-only: whether the job's description bar is tracked in its state.
+    /// Regression guard for the zombie-line bug — an untracked description
+    /// bar escapes `remove_job_bars` and strands a line under a shared
+    /// `MultiProgress` (#651).
+    #[cfg(test)]
+    pub fn has_description_bar(&self, name: &str) -> bool {
+        self.jobs
+            .get(name)
+            .map(|s| s.description.is_some())
             .unwrap_or(false)
     }
 

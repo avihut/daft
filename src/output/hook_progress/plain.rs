@@ -48,7 +48,7 @@ impl PlainHookRenderer {
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
-        for line in super::formatting::format_header_lines(hook_name, target, false) {
+        for line in super::formatting::format_header_lines(hook_name, target, false, false) {
             eprintln!("{line}");
         }
     }

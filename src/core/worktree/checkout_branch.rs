@@ -5,6 +5,7 @@
 use crate::config::git::{COMMITS_AHEAD_THRESHOLD, DEFAULT_COMMIT_COUNT};
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::settings::PushVerify;
+use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
@@ -119,13 +120,72 @@ pub fn execute(
         )
     };
 
-    // Fetch latest changes
+    // Commit the execution plan (#651): the requested base and the worktree
+    // path are resolved, and everything left to do is planned work — the
+    // remote fetch included, so the rail appears before the network
+    // round-trips instead of hiding them behind a spinner. The plan lists
+    // only steps that will actually be attempted — a push or fetch known to
+    // be off (config or --local) plans no row. The header carries the
+    // requested base; when the three-way selection lands on a different ref
+    // (`origin/<base>` was fresher), the branch row picks it up via `Note`.
+    let should_carry = params.carry || (!params.no_carry && params.checkout_branch_carry);
+    let mut plan_rows = Vec::new();
+    if params.checkout_fetch {
+        plan_rows.push(Row::Step(
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone()),
+        ));
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Tracking))));
+    }
+    plan_rows.extend([
+        Row::Step(StepSpec::new(StepKey::new(StageId::PreCreateHooks))),
+        Row::Step(StepSpec::new(StepKey::new(StageId::CreateBranch))),
+        Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut))),
+        Row::Step(
+            StepSpec::new(StepKey::new(StageId::CreateWorktree))
+                .with_annotation(super::branch_delete::display_path(&worktree_path)),
+        ),
+    ]);
+    if should_carry {
+        plan_rows.push(Row::Step(StepSpec::new(StepKey::new(StageId::Carry))));
+    }
+    if params.checkout_push {
+        plan_rows.push(Row::Step(
+            StepSpec::new(StepKey::new(StageId::Push)).with_annotation(format!(
+                "\u{2192} {}/{}",
+                params.remote_name, params.new_branch_name
+            )),
+        ));
+    }
+    // Shared files declared in the source worktree's config get a section:
+    // a dim anchor plus one row per file. The probe reads the same config
+    // that propagation carries into the new worktree, so plan and execution
+    // agree except when the target branch's tracked daft.yml diverges —
+    // rows that turn out to be no-ops vanish silently either way.
+    let planned_shared =
+        crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
+    crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
+    plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
+        StageId::PostCreateHooks,
+    ))));
+    sink.on_plan(
+        PlanCommit::new(plan_rows).with_header_annotation(format!("\u{2190} {base_branch}")),
+    );
+
+    // Fetch latest changes (planned above; failures warn and continue)
     if params.checkout_fetch {
         fetch_remote(git, &params.remote_name, sink);
     }
 
-    // Determine the best checkout base (three-way branch selection)
+    // Determine the best checkout base (three-way branch selection). The
+    // header already names the requested base; record the resolved ref on
+    // the branch row only when the selection differs.
     let checkout_base = select_checkout_base(git, &base_branch, &params.remote_name, sink)?;
+    if checkout_base != base_branch {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateBranch),
+            StageEvent::Note(format!("\u{2190} {checkout_base}")),
+        );
+    }
 
     // Stash uncommitted changes if carry is enabled
     let (stash_created, carry_source) = stash_if_carry(params, git, &base_branch, sink)?;
@@ -161,22 +221,52 @@ pub fn execute(
     // (the checkout base may be a remote-tracking ref like origin/master).
     let no_track = !params.checkout_push;
 
+    // `git worktree add -b` creates the branch, checks it out, and creates
+    // the worktree in one call; the three plan rows resolve around it as a
+    // cosmetic split of the same operation.
+    sink.on_stage(&StepKey::new(StageId::CreateBranch), StageEvent::Started);
     if let Err(e) = git.worktree_add_new_branch(
         &worktree_path,
         &params.new_branch_name,
         &checkout_base,
         no_track,
     ) {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateBranch),
+            StageEvent::Failed {
+                detail: "failed (see below)".to_string(),
+            },
+        );
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateBranch),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CheckOut), StageEvent::Started);
+    sink.on_stage(
+        &StepKey::new(StageId::CheckOut),
+        StageEvent::Completed { annotation: None },
+    );
+    sink.on_stage(&StepKey::new(StageId::CreateWorktree), StageEvent::Started);
 
     if !worktree_path.exists() {
+        sink.on_stage(
+            &StepKey::new(StageId::CreateWorktree),
+            StageEvent::Failed {
+                detail: "directory was not created".to_string(),
+            },
+        );
         anyhow::bail!(
             "Worktree directory was not created at '{}'",
             worktree_path.display()
         );
     }
+    sink.on_stage(
+        &StepKey::new(StageId::CreateWorktree),
+        StageEvent::Completed { annotation: None },
+    );
 
     // Auto-add worktree parent directory to .gitignore for in-repo layouts
     if let Err(e) = auto_gitignore_if_needed(project_root, &worktree_path, params.layout.as_ref()) {
@@ -190,7 +280,11 @@ pub fn execute(
     change_directory(&worktree_path)?;
 
     // Apply stashed changes
+    if stash_created {
+        sink.on_stage(&StepKey::new(StageId::Carry), StageEvent::Started);
+    }
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
+    super::resolve_carry_row(should_carry, stash_created, stash_applied, sink);
 
     // Push and set upstream. A pre-push gate refusal is deferred, not an
     // immediate bail: the worktree must still be fully initialized
@@ -244,7 +338,9 @@ pub fn execute(
     // arrives via the git checkout regardless of order, which is why this bug was
     // invisible until visitor configs existed — do not move this back above
     // propagation.) Linking before hooks lets hooks depend on .env etc.
-    crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    let link_result =
+        crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
+    crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
@@ -371,20 +467,53 @@ pub(crate) fn resolve_source_worktree(
 }
 
 /// Fetch latest changes from the remote.
+///
+/// Both fetches are planned rail rows (`Fetch`, then `Tracking`). Failures
+/// are non-fatal by design — the command continues on local refs — so a
+/// failed fetch resolves its row as a yellow attention skip and the full
+/// error lands above the rail as a warning.
 fn fetch_remote(git: &GitCommand, remote_name: &str, sink: &mut impl ProgressSink) {
+    const FETCH_FAILED: &str = super::FETCH_FAILED_REASON;
+
+    sink.on_stage(&StepKey::new(StageId::Fetch), StageEvent::Started);
     sink.on_step(&format!(
         "Fetching latest changes from remote '{remote_name}'..."
     ));
-    if let Err(e) = git.fetch(remote_name, false) {
-        sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+    match git.fetch(remote_name, false) {
+        Ok(()) => sink.on_stage(
+            &StepKey::new(StageId::Fetch),
+            StageEvent::Completed { annotation: None },
+        ),
+        Err(e) => {
+            sink.on_stage(
+                &StepKey::new(StageId::Fetch),
+                StageEvent::SkippedAttention {
+                    reason: FETCH_FAILED.to_string(),
+                },
+            );
+            sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+        }
     }
 
+    sink.on_stage(&StepKey::new(StageId::Tracking), StageEvent::Started);
     sink.on_step("Setting up remote tracking branches...");
-    if let Err(e) = git.fetch_refspec(
+    match git.fetch_refspec(
         remote_name,
         &format!("+refs/heads/*:refs/remotes/{remote_name}/*"),
     ) {
-        sink.on_warning(&format!("Failed to set up remote tracking branches: {e}"));
+        Ok(()) => sink.on_stage(
+            &StepKey::new(StageId::Tracking),
+            StageEvent::Completed { annotation: None },
+        ),
+        Err(e) => {
+            sink.on_stage(
+                &StepKey::new(StageId::Tracking),
+                StageEvent::SkippedAttention {
+                    reason: FETCH_FAILED.to_string(),
+                },
+            );
+            sink.on_warning(&format!("Failed to set up remote tracking branches: {e}"));
+        }
     }
 }
 
@@ -581,14 +710,17 @@ fn push_if_enabled(
     sink: &mut impl ProgressSink,
 ) -> (bool, bool, Option<String>) {
     if !params.checkout_push {
+        // A known-off push plans no row (#651), so there is nothing to resolve.
         sink.on_step("Skipping push (disabled in config)");
         return (false, true, None);
     }
+    let push_key = StepKey::new(StageId::Push);
 
     sink.on_step(&format!(
         "Pushing and setting upstream to '{}/{}'...",
         params.remote_name, params.new_branch_name
     ));
+    sink.on_stage(&push_key, StageEvent::Started);
 
     // Probe lazily: hook existence only when `auto` can act on it, and the
     // unpushed-commit count only when a hook is actually present (with no
@@ -673,11 +805,27 @@ fn push_if_enabled(
                     "Push to '{}' and upstream tracking set successfully",
                     params.remote_name
                 ));
+                sink.on_stage(&push_key, StageEvent::Completed { annotation: None });
                 return (true, false, None);
             }
             Some(msg) => {
                 let gated = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed);
                 if gated {
+                    // The rail detail must not blame the hook for a push it
+                    // let through (`HookVerdict::failure_cause` draws the
+                    // same line): `Rejected` means the gate — or
+                    // pre-negotiation transport — refused; `Passed` means
+                    // the remote rejected it downstream.
+                    let detail = match outcome.hook {
+                        HookVerdict::Rejected => "pre-push gate refused (see below)",
+                        _ => "remote rejected (see below)",
+                    };
+                    sink.on_stage(
+                        &push_key,
+                        StageEvent::Failed {
+                            detail: detail.to_string(),
+                        },
+                    );
                     let hint = if outcome.hook.no_verify_might_help() {
                         " (or re-run with --no-verify to bypass the hook)"
                     } else {
@@ -711,6 +859,15 @@ fn push_if_enabled(
                 // on the remote. Hook-less repos (verdict NoHook) keep the legacy
                 // warn-and-continue behavior.
                 if outcome.hook == HookVerdict::Bypassed {
+                    // Resolve the Push row this branch Started — returning
+                    // without an event would leave it to render as a dim
+                    // "(not run)" under a hard push error.
+                    sink.on_stage(
+                        &push_key,
+                        StageEvent::Failed {
+                            detail: "failed (see below)".to_string(),
+                        },
+                    );
                     return (
                         false,
                         false,
@@ -733,6 +890,12 @@ fn push_if_enabled(
         Err(e) => format!("{e}"),
     };
 
+    sink.on_stage(
+        &push_key,
+        StageEvent::Failed {
+            detail: "failed (see below)".to_string(),
+        },
+    );
     sink.on_warning(&format!(
         "Could not push '{}' to '{}': {}. The worktree is ready locally. Push manually with: git push -u {} {}",
         params.new_branch_name, params.remote_name, failure,
@@ -798,6 +961,7 @@ mod tests {
     use super::{CheckoutBranchParams, PrePushDecision, push_if_enabled, resolve_pre_push};
     use crate::core::ProgressSink;
     use crate::core::settings::PushVerify;
+    use crate::core::stage::{StageEvent, StageId, StepKey};
     use crate::executor::presenter::{JobPresenter, NullPresenter};
     use crate::git::GitCommand;
     use crate::utils::git_command_at;
@@ -1014,6 +1178,404 @@ mod tests {
             !sink.events.contains(&"pause"),
             "a skipped hook must not pause the spinner: {:?}",
             sink.events
+        );
+    }
+
+    // --- the Push row resolves on every failure shape (#688 review) ---
+
+    fn push_failure_detail(sink: &crate::core::RecordingStageSink) -> Option<String> {
+        let push_key = StepKey::new(StageId::Push);
+        sink.events.iter().find_map(|(k, e)| match e {
+            StageEvent::Failed { detail } if *k == push_key => Some(detail.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn bypassed_push_failure_resolves_the_push_row() {
+        // The Bypassed branch returned without resolving the Push row it
+        // Started, so the receipt rendered the failed push as a dim
+        // "(not run)" directly above a hard "Could not push" error.
+        let (_dir, work) = repo_with_hook_and_remote();
+        git_in(
+            &work,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "/nonexistent/daft-remote.git",
+            ],
+        );
+        let git = GitCommand::new(false);
+        let mut params = params_for("feat", PushVerify::Auto);
+        params.no_verify = true; // hook present + bypassed
+        let mut sink = crate::core::RecordingStageSink::default();
+
+        let (push_set, skipped, gate) = push_if_enabled(&params, &git, &work, None, &mut sink);
+
+        assert!(!push_set && !skipped, "the push must hard-fail: {gate:?}");
+        assert_eq!(
+            push_failure_detail(&sink).as_deref(),
+            Some("failed (see below)"),
+            "the Started push row must resolve Failed: {:?}",
+            sink.events
+        );
+    }
+
+    #[test]
+    fn passed_hook_remote_rejection_does_not_blame_the_gate() {
+        // `Passed` means the pre-push hook let the push through and the
+        // remote rejected it downstream — the rail detail must not read
+        // "pre-push gate refused" (push.rs's failure_cause tests guard the
+        // same attribution line for the error text).
+        let (dir, work) = repo_with_hook_and_remote();
+        let remote_hook = dir
+            .path()
+            .join("remote.git")
+            .join("hooks")
+            .join("pre-receive");
+        std::fs::write(&remote_hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&remote_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let git = GitCommand::new(false);
+        let params = params_for("feat", PushVerify::Always);
+        let mut sink = crate::core::RecordingStageSink::default();
+
+        let (push_set, _skipped, gate) = push_if_enabled(&params, &git, &work, None, &mut sink);
+
+        assert!(!push_set, "the remote must reject the push: {gate:?}");
+        assert_eq!(
+            push_failure_detail(&sink).as_deref(),
+            Some("remote rejected (see below)"),
+            "a passed hook must not be blamed for the rejection: {:?}",
+            sink.events
+        );
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+    use crate::core::RecordingStageSink;
+    use crate::core::stage::{Row, StageEvent, StageId};
+    use serial_test::serial;
+    use std::process::Stdio;
+
+    /// Run git through `utils::git_command_at`, which scrubs the full set
+    /// of `GIT_*` discovery vars (a hand-rolled remove of GIT_DIR /
+    /// GIT_WORK_TREE misses the rest — the Test Hygiene rule exists for
+    /// exactly this). Local test identity only, never global config.
+    fn git(dir: &Path, args: &[&str]) {
+        crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original: std::env::current_dir().expect("cwd readable"),
+            }
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if std::env::set_current_dir(&self.original).is_err() {
+                let _ = std::env::set_current_dir(std::env::temp_dir());
+            }
+        }
+    }
+
+    /// The plan commits with the locked row set, the header carries the
+    /// requested base, and events narrate the cosmetic
+    /// branch/checkout/worktree split plus the expected push skip (#651).
+    #[test]
+    #[serial]
+    fn plan_commits_with_locked_row_set_and_push_skip() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            push_verify: PushVerify::Auto,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(&params, &git_cmd, tmp.path(), None, &mut sink)
+            .expect("checkout-branch succeeds");
+        assert_eq!(result.new_branch_name, "feat-x");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            plan.header_annotation.as_deref(),
+            Some("\u{2190} main"),
+            "header carries the resolved base"
+        );
+        let ids: Vec<StageId> = plan.steps().map(|s| s.key.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                StageId::PreCreateHooks,
+                StageId::CreateBranch,
+                StageId::CheckOut,
+                StageId::CreateWorktree,
+                StageId::PostCreateHooks,
+            ],
+            "carry off => no Carry row; push off => no Push row"
+        );
+        assert!(!plan.rows.iter().any(|r| matches!(r, Row::Group { .. })));
+
+        // A push known to be off is not planned, so no Push event may fire.
+        assert!(
+            sink.events.iter().all(|(k, _)| k.id != StageId::Push),
+            "events: {:?}",
+            sink.events
+        );
+        // The atomic worktree-add narrates all three creation steps, in order.
+        let completed: Vec<StageId> = sink
+            .events
+            .iter()
+            .filter_map(|(k, e)| matches!(e, StageEvent::Completed { .. }).then_some(k.id))
+            .collect();
+        assert_eq!(
+            completed,
+            vec![
+                StageId::CreateBranch,
+                StageId::CheckOut,
+                StageId::CreateWorktree
+            ]
+        );
+        // Hooks fired through the sink (pre + post).
+        assert_eq!(
+            sink.hooks_run,
+            vec![
+                crate::hooks::HookType::PreCreate,
+                crate::hooks::HookType::PostCreate
+            ]
+        );
+    }
+
+    /// With `daft.checkout.fetch` on, the fetch is planned work: the rail
+    /// opens with `Fetch` + `Tracking` rows (no pre-rail spinner), the header
+    /// names the requested base, and the resolved base reaches the branch row
+    /// via `Note` when the three-way selection picks a different ref. Fetch
+    /// failures are non-fatal: the rows resolve as attention skips and the
+    /// worktree is still created.
+    #[test]
+    #[serial]
+    fn fetch_rows_planned_first_and_resolved_base_noted_on_branch_row() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        // Fake a remote-tracking ref at HEAD: the three-way selection sees
+        // local and remote in sync and picks `origin/main`. No `origin`
+        // remote is configured, so both fetches fail (non-fatally).
+        git(
+            tmp.path(),
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            push_verify: PushVerify::Auto,
+            checkout_fetch: true,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let result = execute(&params, &git_cmd, tmp.path(), None, &mut sink)
+            .expect("fetch failure is non-fatal");
+        assert!(worktree_path.exists());
+        // The result reports the resolved base — the selection picked the
+        // remote-tracking ref.
+        assert_eq!(result.base_branch, "origin/main");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            plan.header_annotation.as_deref(),
+            Some("\u{2190} main"),
+            "header names the requested base, known before the fetch"
+        );
+        let specs: Vec<_> = plan.steps().collect();
+        assert_eq!(specs[0].key.id, StageId::Fetch);
+        assert_eq!(
+            specs[0].annotation.as_deref(),
+            Some("origin"),
+            "fetch row names the remote"
+        );
+        assert_eq!(specs[1].key.id, StageId::Tracking);
+        assert_eq!(specs[2].key.id, StageId::PreCreateHooks);
+
+        // Both fetch rows started and resolved as attention skips.
+        for id in [StageId::Fetch, StageId::Tracking] {
+            let events: Vec<_> = sink
+                .events
+                .iter()
+                .filter(|(k, _)| k.id == id)
+                .map(|(_, e)| e.clone())
+                .collect();
+            assert_eq!(events[0], StageEvent::Started, "{id:?}");
+            assert!(
+                matches!(
+                    &events[1],
+                    StageEvent::SkippedAttention { reason }
+                        if reason.contains("continuing with local refs")
+                ),
+                "{id:?} resolves as attention skip, got {events:?}"
+            );
+        }
+
+        // The selection picked the remote ref; the branch row records it.
+        assert!(
+            sink.events
+                .iter()
+                .any(|(k, e)| k.id == StageId::CreateBranch
+                    && *e == StageEvent::Note("\u{2190} origin/main".to_string())),
+            "resolved base noted on the branch row: {:?}",
+            sink.events
+        );
+    }
+
+    /// A `shared:` declaration in the source worktree plans the shared-files
+    /// section (anchor + one row per path); execution completes the row of a
+    /// collected file and silently vanishes the row of a declared-but-never-
+    /// collected one (#651).
+    #[test]
+    #[serial]
+    fn plan_shared_section_rows_resolve_by_outcome() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(
+            tmp.path().join("daft.yml"),
+            "shared:\n  - .env\n  - .envrc\n",
+        )
+        .unwrap();
+        git(tmp.path(), &["add", "daft.yml"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        // Collect `.env` into shared storage; leave `.envrc` declared only.
+        let storage = crate::core::shared::shared_storage_dir(&tmp.path().join(".git"));
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(storage.join(".env"), "SECRET=1\n").unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            push_verify: PushVerify::Auto,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(&params, &git_cmd, tmp.path(), None, &mut sink).expect("checkout-branch succeeds");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert!(
+            plan.rows
+                .iter()
+                .any(|r| matches!(r, Row::Group { label } if label == "shared files")),
+            "shared anchor planned"
+        );
+        let shared_labels: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::SharedFile)
+            .map(|s| (s.key.scope.clone(), s.label.clone()))
+            .collect();
+        assert_eq!(
+            shared_labels,
+            vec![
+                (Some(".env".into()), Some(".env".into())),
+                (Some(".envrc".into()), Some(".envrc".into())),
+            ],
+            "one row per declared path, path as fixed label"
+        );
+
+        let shared_events: Vec<_> = sink
+            .events
+            .iter()
+            .filter(|(k, _)| k.id == StageId::SharedFile)
+            .map(|(k, e)| (k.scope.clone().unwrap(), e.clone()))
+            .collect();
+        assert_eq!(shared_events.len(), 2);
+        assert_eq!(
+            shared_events[0],
+            (".env".into(), StageEvent::Completed { annotation: None }),
+            "collected file completes its row"
+        );
+        // Declared but never collected: the receipt must say the file is
+        // missing, not drop the row.
+        let (path, event) = &shared_events[1];
+        assert_eq!(path, ".envrc");
+        assert!(
+            matches!(
+                event,
+                StageEvent::SkippedAttention { reason } if reason.contains("missing from shared storage")
+            ),
+            "declared-only file resolves as missing, got {event:?}"
+        );
+        assert!(
+            worktree_path.join(".env").is_symlink(),
+            "the link really happened"
         );
     }
 }

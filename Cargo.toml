@@ -159,6 +159,10 @@ tempfile = "3.8"
 assert_cmd = "2.2"
 predicates = "3.0"
 serial_test = "3.0"
+# `in_memory` (InMemoryTerm) lets timeline tests assert the persisted line
+# sequence instead of just the state machine. Dev-only: feature unification
+# does not leak dev-dependency features into `cargo build`.
+indicatif = { version = "0.18", features = ["in_memory"] }
 
 [profile.release]
 opt-level = "z"      # Optimize for size
