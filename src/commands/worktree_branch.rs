@@ -630,7 +630,7 @@ fn run_branch_delete(
                 output.error(err);
             }
         }
-        if !interactive {
+        if !timeline.replaces_stdout_record() {
             let parts = deletion.deleted_parts();
             if !parts.is_empty() {
                 output.result(&format!("Deleted {} ({})", deletion.branch, parts));

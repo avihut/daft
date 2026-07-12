@@ -814,7 +814,6 @@ fn run_checkout(
         output.is_verbose(),
         format!("Opening {}", args.branch_name),
     );
-    let interactive = timeline.is_interactive();
 
     timeline.open_planning("Resolving branch");
     let checkout_result = {
@@ -837,8 +836,9 @@ fn run_checkout(
         timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
     }
     // On the rail, the header + footer are the record; Plain/Hidden (and the
-    // no-rail early exits) keep the result line byte-identical to before.
-    if !interactive || result.already_existed {
+    // no-rail early exits) keep the result line byte-identical to before —
+    // and so does a redirected stdout, which never saw the rail.
+    if !timeline.replaces_stdout_record() || result.already_existed {
         render_checkout_result(&result, output);
     }
 
@@ -978,7 +978,7 @@ fn run_create_branch(
     if timeline.region_live() {
         timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
     }
-    if !interactive {
+    if !timeline.replaces_stdout_record() {
         render_create_result(&result, output);
     }
 

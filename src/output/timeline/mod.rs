@@ -113,18 +113,30 @@ pub struct TimelineHandle {
 }
 
 impl TimelineHandle {
+    /// Lock the shared state, recovering from poison. A panic while the lock
+    /// was held (an EPIPE print inside `suspend`) poisons it, but the state
+    /// is structurally sound render bookkeeping — whereas panicking again
+    /// turns the original unwind into a double panic inside `Timeline::drop`
+    /// and aborts the process: no destructors, terminal left with `^C` echo
+    /// off, live bars stranded, the real panic message lost.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Expand the given hook step into its block: the step's rail row is
     /// removed (the block replaces it) and the caller gets the shared
     /// `MultiProgress` plus a live insertion anchor. `None` when no region
     /// is live or the key is unknown.
     pub fn begin_hook_embed(&self, key: &StepKey) -> Option<HookEmbed> {
-        let mut inner = self.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.lock();
         inner.core.as_mut()?.begin_hook_embed(key)
     }
 
     /// Print a permanent line above the live bars (no-op without a region).
     pub fn println_above(&self, line: &str) {
-        let mut inner = self.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.lock();
         if let Some(core) = inner.core.as_mut() {
             core.println_above(line);
         }
@@ -138,13 +150,13 @@ impl TimelineHandle {
         id: crate::core::stage::StageId,
         scope: Option<&str>,
     ) -> Option<StepKey> {
-        let inner = self.inner.lock().expect("timeline lock poisoned");
+        let inner = self.lock();
         inner.core.as_ref()?.resolve_key(id, scope)
     }
 
     /// `-v` free-text detail under the active step (no-op without a region).
     pub fn detail(&self, text: &str) {
-        let mut inner = self.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.lock();
         if let Some(core) = inner.core.as_mut() {
             core.detail(text);
         }
@@ -155,20 +167,31 @@ impl TimelineHandle {
     pub fn suspend<R>(&self, f: impl FnOnce() -> R) -> R {
         // Hold the lock for the duration: `f` is a short print, and the
         // region must not mutate underneath the cleared frame.
-        let inner = self.inner.lock().expect("timeline lock poisoned");
+        let inner = self.lock();
         match inner.core.as_ref() {
             Some(core) => core.suspend(f),
             None => f(),
         }
     }
 
+    /// Yield the terminal to a blocking prompt: the region clears for the
+    /// duration ([`Self::suspend`]) and Ctrl-C routes to the prompt-cancel
+    /// exit for the *whole* window, not just the key read. The region's
+    /// collapse behavior must not stay armed here — this thread holds the
+    /// timeline mutex and indicatif's draw lock while suspended, and the
+    /// collapse takes both, so a Ctrl-C landing between the suspend and the
+    /// prompt's own interrupt swap would deadblock the dispatcher. The
+    /// prompt exit leaves the (already cleared) region alone.
+    pub fn suspend_for_prompt<R>(&self, f: impl FnOnce() -> R) -> R {
+        let outer = crate::interrupt::swap_behavior(|| crate::prompt::exit_for_cancelled_prompt());
+        let result = self.suspend(f);
+        crate::interrupt::restore_behavior(outer);
+        result
+    }
+
     /// Whether a live region currently owns the terminal.
     pub fn region_live(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("timeline lock poisoned")
-            .core
-            .is_some()
+        self.lock().core.is_some()
     }
 
     /// Hold `lines` back until the rail closes; the timeline prints them
@@ -176,11 +199,7 @@ impl TimelineHandle {
     /// rest of the handle: with no region the lines still drain at teardown,
     /// but only region-embedded renderers ever defer.
     pub fn defer_after_footer(&self, lines: Vec<String>) {
-        self.inner
-            .lock()
-            .expect("timeline lock poisoned")
-            .deferred_after_footer
-            .extend(lines);
+        self.lock().deferred_after_footer.extend(lines);
     }
 }
 
@@ -224,7 +243,7 @@ impl Timeline {
         if !self.is_interactive() {
             return;
         }
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         if inner.core.is_some() {
             return;
         }
@@ -245,7 +264,7 @@ impl Timeline {
     /// between kinds of work. No-op without a face (Plain mode, plan already
     /// committed, abandoned region).
     pub fn set_planning_label(&mut self, label: &str) {
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         if let Some(core) = inner.core.as_mut() {
             core.set_planning_label(label);
         }
@@ -260,13 +279,19 @@ impl Timeline {
         if !self.is_interactive() {
             return;
         }
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         if let Some(core) = inner.core.as_mut() {
-            if core.is_planning() {
+            let installing_over_face = core.is_planning();
+            if installing_over_face {
                 core.install_plan(plan);
-            } else {
-                debug_assert!(false, "plan committed twice for one invocation");
             }
+            // Assert only after the lock is released: a debug-build panic
+            // while the guard is held would poison the lock mid-unwind.
+            drop(inner);
+            debug_assert!(
+                installing_over_face,
+                "plan committed twice for one invocation"
+            );
             return;
         }
         let mp = inner.make_multi_progress();
@@ -288,7 +313,7 @@ impl Timeline {
     /// (and without a region).
     pub fn abandon_planning(&mut self) {
         let core = {
-            let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+            let mut inner = self.handle.lock();
             if inner.core.as_ref().is_some_and(TimelineCore::is_planning) {
                 inner.core.take()
             } else {
@@ -302,7 +327,7 @@ impl Timeline {
 
     /// Route a stage event onto the region.
     pub fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         let use_color = inner.use_color;
         let Some(core) = inner.core.as_mut() else {
             return;
@@ -370,7 +395,7 @@ impl Timeline {
     /// The hook block for an embedded step finished rendering; reconnect
     /// the rail (no-op if no block opened).
     pub fn close_hook_embed(&mut self) {
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         if let Some(core) = inner.core.as_mut() {
             core.close_hook_embed();
         }
@@ -416,7 +441,7 @@ impl Timeline {
     /// Resolve a step without leaving a row (benign hook skip: no hooks
     /// configured, hooks globally disabled).
     pub fn resolve_silently(&mut self, key: &StepKey) {
-        let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+        let mut inner = self.handle.lock();
         if let Some(core) = inner.core.as_mut() {
             core.resolve(key, Resolution::Silent);
         }
@@ -455,7 +480,7 @@ impl Timeline {
 
     fn teardown(&mut self, footer_text: &str, policy: UnresolvedPolicy) {
         let (core, deferred) = {
-            let mut inner = self.handle.inner.lock().expect("timeline lock poisoned");
+            let mut inner = self.handle.lock();
             (
                 inner.core.take(),
                 std::mem::take(&mut inner.deferred_after_footer),
@@ -497,6 +522,17 @@ impl Timeline {
         matches!(self.mode, TimelineMode::Interactive { .. })
     }
 
+    /// Whether the rail replaces the legacy stdout record for this run.
+    ///
+    /// The receipt supersedes the record only for eyes on the terminal. The
+    /// rail keys off *stderr*, so `daft go x > file` (or a pipe, or `$(…)`)
+    /// still renders it — but the redirected stdout is the machine-readable
+    /// outcome and must keep the record, exactly as it read before the
+    /// timeline existed.
+    pub fn replaces_stdout_record(&self) -> bool {
+        self.is_interactive() && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    }
+
     /// Whether a live region owns the terminal — the planning face or the
     /// committed plan, until finish/abort/collapse.
     pub fn region_live(&self) -> bool {
@@ -513,11 +549,7 @@ impl Timeline {
     /// (`open_planning` or `commit_plan`, whichever comes first).
     #[cfg(test)]
     pub(crate) fn set_test_draw_target(&self, target: indicatif::ProgressDrawTarget) {
-        self.handle
-            .inner
-            .lock()
-            .expect("timeline lock poisoned")
-            .test_draw_target = Some(target);
+        self.handle.lock().test_draw_target = Some(target);
     }
 }
 
@@ -573,6 +605,27 @@ mod tests {
         tl.resolve_silently(&StepKey::new(StageId::PostCreateHooks));
         tl.finish("Ready in 0.1s");
         assert!(!tl.region_live());
+    }
+
+    #[test]
+    fn poisoned_lock_recovers_instead_of_double_panicking() {
+        // A panic while the Inner lock is held (an EPIPE print inside
+        // `suspend`) poisons the mutex mid-unwind. Every later lock — most
+        // critically the one in `Timeline::drop → region_live` — must
+        // recover instead of panicking again: a panic inside Drop during
+        // unwind aborts the process (no destructors, termios left broken,
+        // the original panic message lost).
+        let mut tl = interactive();
+        tl.commit_plan(plan());
+        let handle = tl.handle();
+        std::thread::spawn(move || {
+            let _guard = handle.lock();
+            panic!("poison the timeline lock");
+        })
+        .join()
+        .unwrap_err();
+        assert!(tl.region_live(), "recovered read of the poisoned state");
+        drop(tl); // The Drop safety net must survive the poisoned lock.
     }
 
     #[test]

@@ -287,6 +287,33 @@ fn sanitize_extracted_name(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// A repository URL safe to echo back to the terminal.
+///
+/// Strips the userinfo component (`user`, `user:password`) from scheme URLs
+/// that carry one before the host — access tokens ride that slot
+/// (`https://ci-bot:ghp_…@github.com/…`), and the rail receipt persists in
+/// scrollback, so painted URLs must never repeat credentials. Git strips the
+/// same component when it prints URLs. Scp-like syntax (`git@host:path`) has
+/// no password slot and is shown unchanged.
+pub fn display_url(url: &str) -> String {
+    // Only scheme URLs (`scheme://authority/…`) can carry userinfo.
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find('/')
+        .map_or(url.len(), |i| authority_start + i);
+    match url[authority_start..authority_end].rfind('@') {
+        Some(at) => format!(
+            "{}{}",
+            &url[..authority_start],
+            &url[authority_start + at + 1..]
+        ),
+        None => url.to_string(),
+    }
+}
+
 /// Check that required external tools are installed.
 pub fn check_dependencies() -> Result<()> {
     let required_tools = vec!["git", "basename", "awk"];
@@ -328,6 +355,45 @@ mod tests {
         let url = "user:repo.git";
         let name = extract_repo_name(url).unwrap();
         assert_eq!(name, "repo");
+    }
+
+    #[test]
+    fn display_url_strips_userinfo_from_scheme_urls() {
+        // Tokens ride the username slot as often as the password slot.
+        assert_eq!(
+            display_url("https://ci-bot:ghp_token@github.com/org/repo.git"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            display_url("https://ghp_token@github.com/org/repo.git"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            display_url("ssh://git@github.com/org/repo.git"),
+            "ssh://github.com/org/repo.git"
+        );
+        // No authority `/` at all — the whole remainder is the authority.
+        assert_eq!(display_url("https://user@host"), "https://host");
+    }
+
+    #[test]
+    fn display_url_leaves_credential_free_forms_alone() {
+        assert_eq!(
+            display_url("https://github.com/org/repo.git"),
+            "https://github.com/org/repo.git"
+        );
+        // Scp-like syntax has no password slot; git shows it as typed.
+        assert_eq!(
+            display_url("git@github.com:org/repo.git"),
+            "git@github.com:org/repo.git"
+        );
+        assert_eq!(display_url("file:///tmp/src/proj"), "file:///tmp/src/proj");
+        assert_eq!(display_url("/local/path/repo"), "/local/path/repo");
+        // An `@` in the path is not userinfo.
+        assert_eq!(
+            display_url("https://host/org/repo@v2.git"),
+            "https://host/org/repo@v2.git"
+        );
     }
 
     // ── WorktreePosition resolution ──────────────────────────────────────────

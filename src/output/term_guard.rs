@@ -9,10 +9,19 @@
 //!
 //! Used by the multi-worktree exec renderer and the plan-execute timeline.
 
+/// The termios saved by the currently live guard, for interrupt-exit paths
+/// that cannot reach the guard itself: a single-key prompt's cancel exit can
+/// fire while the timeline's region (and its guard) is live, several frames
+/// away. One slot suffices — regions never nest.
+#[cfg(unix)]
+static ACTIVE_ORIGINAL: std::sync::Mutex<Option<nix::sys::termios::Termios>> =
+    std::sync::Mutex::new(None);
+
 /// Temporarily disable the terminal driver's `^C` echo on stderr.
 ///
 /// The original termios is restored on drop. Interrupt handlers that exit
-/// the process (bypassing drop) should restore via [`EchoCtlGuard::saved`].
+/// the process (bypassing drop) should restore via [`EchoCtlGuard::saved`]
+/// — or, where the guard is out of reach, [`restore_active_termios`].
 #[cfg(unix)]
 pub(crate) struct EchoCtlGuard {
     /// Held by-value so the guard owns a valid fd for its lifetime; the
@@ -51,6 +60,9 @@ impl EchoCtlGuard {
                 original: None,
             };
         }
+        if let Ok(mut active) = ACTIVE_ORIGINAL.lock() {
+            *active = Some(current.clone());
+        }
         Self {
             stderr,
             original: Some(current),
@@ -69,6 +81,9 @@ impl Drop for EchoCtlGuard {
     fn drop(&mut self) {
         use std::os::fd::AsFd;
         if let Some(original) = self.original.as_ref() {
+            if let Ok(mut active) = ACTIVE_ORIGINAL.lock() {
+                *active = None;
+            }
             // Best-effort restore; if the fd is gone (process torn down),
             // there's nothing useful we can do.
             let _ = nix::sys::termios::tcsetattr(
@@ -94,6 +109,16 @@ pub(crate) fn restore_termios(saved: &Option<nix::sys::termios::Termios>) {
     }
 }
 
+/// Restore the termios saved by the currently live guard, if any — the
+/// interrupt-exit path for code that never held the guard (the prompt's
+/// cancel exit under a live region). No-op when no guard is active.
+#[cfg(unix)]
+pub(crate) fn restore_active_termios() {
+    if let Ok(active) = ACTIVE_ORIGINAL.lock() {
+        restore_termios(&active);
+    }
+}
+
 #[cfg(not(unix))]
 pub(crate) struct EchoCtlGuard;
 
@@ -110,3 +135,6 @@ impl EchoCtlGuard {
 
 #[cfg(not(unix))]
 pub(crate) fn restore_termios(_saved: &Option<()>) {}
+
+#[cfg(not(unix))]
+pub(crate) fn restore_active_termios() {}

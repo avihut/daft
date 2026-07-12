@@ -500,7 +500,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         let mut plan_rows = vec![
             Row::Step(
                 StepSpec::new(StepKey::new(StageId::CloneBare))
-                    .with_annotation(format!("\u{2190} {}", bare_params.repository_url))
+                    .with_annotation(format!(
+                        "\u{2190} {}",
+                        crate::core::repo::display_url(&bare_params.repository_url)
+                    ))
                     .pre_completed(bare_elapsed),
             ),
             Row::Step(
@@ -522,7 +525,6 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         }
         timeline.commit_plan(PlanCommit::new(plan_rows));
     }
-    let interactive = timeline.is_interactive();
 
     // Phase 4: Set up repo in the correct layout. The rail region owns the
     // terminal now — the legacy spinners only run when it does not.
@@ -669,9 +671,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     };
 
     // On the rail the header + footer are the record; the result line stays
-    // for Plain/Hidden and for the satellite-table path (whose rail closed
-    // before the table).
-    if !interactive || used_tui {
+    // for Plain/Hidden, for the satellite-table path (whose rail closed
+    // before the table), and for a redirected stdout, which never saw the
+    // rail.
+    if !timeline.replaces_stdout_record() || used_tui {
         render_clone_result(&result, &layout, output);
     }
 

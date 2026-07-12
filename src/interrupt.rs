@@ -78,6 +78,20 @@ pub fn restore_behavior(saved: SavedBehavior) {
     }
 }
 
+/// Take the installed behavior out of the slot, exactly as the dispatcher
+/// would — the caller becomes responsible for running it.
+///
+/// For code that learns of the interrupt in-band: `console`'s `read_key`
+/// re-raises SIGINT and *then* returns `ErrorKind::Interrupted`, so the
+/// main thread and the dispatcher thread both know. Racing the dispatcher
+/// with [`restore_behavior`] would hand the outer behavior (or the bare
+/// default) the exit that belongs to the current phase; taking the slot
+/// makes exactly one of the two run it — `None` means the dispatcher won
+/// and the caller should simply wait for the process to die.
+pub fn take_behavior() -> Option<Box<dyn FnOnce() + Send + 'static>> {
+    SLOT.lock().ok().and_then(|mut slot| slot.take())
+}
+
 /// Remove the installed behavior (Ctrl-C reverts to the default hard exit).
 pub fn clear_behavior() {
     if let Ok(mut slot) = SLOT.lock() {

@@ -483,20 +483,22 @@ impl HookRunner for TimelineBridge<'_> {
 impl ConsolidationPrompter for TimelineBridge<'_> {
     // The consolidation prompts fire during validation, which since #651
     // runs under the rail's live planning face — so the whole interaction
-    // (summary lines, question, key read) runs inside `suspend`, which
-    // clears the region for the duration and redraws it after. With no
-    // region live, `suspend` runs the prompt directly (Plain mode
+    // (summary lines, question, key read) runs inside `suspend_for_prompt`,
+    // which clears the region for the duration, redraws it after, and keeps
+    // Ctrl-C on the prompt-cancel exit for the whole window (the region's
+    // collapse behavior would deadblock on the draw lock this suspend
+    // holds). With no region live, the prompt runs directly (Plain mode
     // unchanged).
     fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
         let handle = self.timeline.handle();
         let output = &mut *self.output;
-        handle.suspend(|| prompt_refined(output, req))
+        handle.suspend_for_prompt(|| prompt_refined(output, req))
     }
 
     fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
         let handle = self.timeline.handle();
         let output = &mut *self.output;
-        handle.suspend(|| prompt_conflict_side(output, filename, keys))
+        handle.suspend_for_prompt(|| prompt_conflict_side(output, filename, keys))
     }
 }
 
