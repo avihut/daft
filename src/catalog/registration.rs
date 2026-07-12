@@ -161,28 +161,32 @@ fn tombstone_repo_at(bare_git_dir: &Path, project_root: &Path) -> anyhow::Result
         .map(|s| s.trim().to_string())
         .filter(|s| uuid::Uuid::parse_str(s).is_ok());
 
-    let identity = if daft_id.is_some() {
+    if daft_id.is_some() {
         // Repo has an identity: make sure the catalog knows its final facts
-        // (registers it if daft never cataloged it) before the tombstone.
+        // (registers it if daft never cataloged it) before the tombstone. One
+        // writer handle covers both writes — a single logical removal
+        // shouldn't build two pools and run the migration check twice.
         let facts = gather_facts(bare_git_dir, project_root, None, None)?;
-        let outcome = Catalog::open_rw()?.register(&facts)?;
-        Some((facts.uuid, outcome.assigned_name))
+        let catalog = Catalog::open_rw()?;
+        let outcome = catalog.register(&facts)?;
+        catalog.mark_removed(&facts.uuid)?;
+        Ok(Some(outcome.assigned_name))
     } else {
         // No identity file — nothing to preserve unless a stale row points
-        // here; look it up while the path still canonicalizes.
+        // here; look it up read-only (an uncataloged repo never creates the
+        // catalog) while the path still canonicalizes.
         let canonical = bare_git_dir
             .canonicalize()
             .unwrap_or_else(|_| bare_git_dir.to_path_buf());
-        Catalog::open_ro()?
+        let Some((uuid, name)) = Catalog::open_ro()?
             .and_then(|catalog| catalog.resolve(&canonical.to_string_lossy()).ok().flatten())
             .map(|row| (row.uuid, row.name))
-    };
-
-    let Some((uuid, name)) = identity else {
-        return Ok(None);
-    };
-    Catalog::open_rw()?.mark_removed(&uuid)?;
-    Ok(Some(name))
+        else {
+            return Ok(None);
+        };
+        Catalog::open_rw()?.mark_removed(&uuid)?;
+        Ok(Some(name))
+    }
 }
 
 fn touch_current_repo_impl() -> anyhow::Result<()> {
