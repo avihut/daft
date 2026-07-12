@@ -180,6 +180,46 @@ pub fn tighten_perms(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Test-only RAII guard that redirects the daft *state* dir to a fresh temp
+/// dir for the duration of a test, restoring the previous `DAFT_STATE_DIR` on
+/// drop. Tests that exercise hook / visitor-seed code paths open the
+/// coordinator store via [`for_repo`], which resolves `daft_state_dir()`;
+/// without this guard they write the developer's real `~/.local/state/daft/`
+/// (#697 — the same isolation-leak class as #478/#669).
+///
+/// Callers MUST be `#[serial]`: the `DAFT_STATE_DIR` mutation is process-global,
+/// so it is only safe when no other test runs concurrently.
+#[cfg(test)]
+pub(crate) struct IsolatedStateDir {
+    _tmp: tempfile::TempDir,
+    prev: Option<std::ffi::OsString>,
+}
+
+#[cfg(test)]
+impl IsolatedStateDir {
+    pub(crate) fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("create temp state dir");
+        let prev = std::env::var_os(crate::STATE_DIR_ENV);
+        // SAFETY: `set_var` is `unsafe fn` in edition 2024 (process-global, not
+        // thread-safe). Callers are `#[serial]`, serializing the mutation.
+        unsafe { std::env::set_var(crate::STATE_DIR_ENV, tmp.path()) };
+        Self { _tmp: tmp, prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for IsolatedStateDir {
+    fn drop(&mut self) {
+        // SAFETY: as in `new` — serialized by `#[serial]`.
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var(crate::STATE_DIR_ENV, v),
+                None => std::env::remove_var(crate::STATE_DIR_ENV),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +276,50 @@ mod tests {
 
         let err = catalog_db_under(base.path()).unwrap_err();
         assert!(matches!(err, StoreError::PathOutsideStateDir(_)));
+    }
+
+    /// #697 regression: both the read-write catalog path and the read-only
+    /// completion probe must resolve under the sandboxed `DAFT_DATA_DIR`, never
+    /// the real data dir. This locks the `catalog_db()` / `catalog_db_probe()`
+    /// → `daft_data_dir()` composition to the override so a future refactor
+    /// can't silently retarget the developer's real `catalog.db` (the leak this
+    /// ticket cleaned up). `#[serial]` serializes it against the other
+    /// `DAFT_*_DIR` override tests, which mutate the same process-global env.
+    #[test]
+    #[serial_test::serial]
+    fn catalog_paths_resolve_under_data_dir_override() {
+        let sandbox = tempfile::tempdir().unwrap();
+        // SAFETY: `set_var`/`remove_var` are `unsafe fn` in edition 2024
+        // (process-global, not thread-safe). `#[serial]` serializes this test
+        // against every other env-mutating test; CLAUDE.md permits unsafe in
+        // tests. Restore the env *before* asserting so a panic can't leak it.
+        unsafe {
+            std::env::set_var(crate::DATA_DIR_ENV, sandbox.path());
+        }
+        let db = catalog_db();
+        let probe = catalog_db_probe();
+        unsafe {
+            std::env::remove_var(crate::DATA_DIR_ENV);
+        }
+
+        // Read-write path: canonicalized, so compare against the canonical
+        // sandbox (macOS resolves `/var` → `/private/var`).
+        let db = db.expect("catalog_db() under DAFT_DATA_DIR override");
+        let canonical_sandbox = sandbox.path().canonicalize().unwrap();
+        assert!(
+            db.starts_with(&canonical_sandbox),
+            "catalog_db() {db:?} escaped the DAFT_DATA_DIR sandbox {canonical_sandbox:?}"
+        );
+        assert!(db.ends_with(format!("{CATALOG_SUBDIR}/{CATALOG_DB}")));
+
+        // Read-only probe: non-creating and non-canonicalizing, so it starts
+        // with the raw override path.
+        let probe = probe.expect("catalog_db_probe() under DAFT_DATA_DIR override");
+        assert!(
+            probe.starts_with(sandbox.path()),
+            "catalog_db_probe() {probe:?} escaped the DAFT_DATA_DIR sandbox {:?}",
+            sandbox.path()
+        );
     }
 
     #[test]

@@ -1823,6 +1823,7 @@ mod tests {
 
     // ── keep_local_branch integration tests ────────────────────────────────
 
+    use crate::store::paths::IsolatedStateDir;
     use serial_test::serial;
     use std::process::Command as ShellCommand;
     use std::process::Stdio;
@@ -1910,6 +1911,7 @@ mod tests {
         use crate::output::TestOutput;
 
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -1963,6 +1965,7 @@ mod tests {
         use crate::output::TestOutput;
 
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2019,6 +2022,7 @@ mod tests {
         use crate::core::stage::{Row, StageEvent, StageId};
 
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2207,6 +2211,7 @@ mod tests {
         }
 
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2271,6 +2276,7 @@ mod tests {
         use crate::output::TestOutput;
 
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2408,6 +2414,7 @@ mod tests {
     #[serial]
     fn divergence_guard_refuses_delete_when_local_yml_differs() {
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2503,6 +2510,7 @@ mod tests {
     #[serial]
     fn divergence_guard_bypassed_with_force() {
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
@@ -2606,6 +2614,7 @@ mod tests {
     #[serial]
     fn consolidation_choice_writes_target_then_removes() {
         let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let feat_wt = tmp.path().join("feat");
