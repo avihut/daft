@@ -105,6 +105,10 @@ pub fn run() -> Result<()> {
         Some(input) => RepoColumnSelection::parse(input).map_err(|e| anyhow::anyhow!("{e}"))?,
         None => ResolvedColumns::defaults(RepoListColumn::repo_list_defaults()),
     };
+    // Field set for structured output: the full default set unless the user
+    // gave a replace-mode selection. A modifier like `+size` keeps the
+    // defaults (explicit == false), so it must NOT narrow the JSON fields.
+    let is_default_fields = !resolved.explicit;
     let columns = resolved.columns;
     let has_size = columns.contains(&RepoListColumn::Size);
 
@@ -124,10 +128,15 @@ pub fn run() -> Result<()> {
         // synchronously when requested.
         let sizes = has_size.then(|| compute_sizes(&rows));
         let payload = match &children {
-            Some(children) => {
-                build_document_payload(&rows, &cells, children, sizes.as_deref(), &columns)
-            }
-            None => build_payload(&rows, &cells, sizes.as_deref(), &columns),
+            Some(children) => build_document_payload(
+                &rows,
+                &cells,
+                children,
+                sizes.as_deref(),
+                &columns,
+                is_default_fields,
+            ),
+            None => build_payload(&rows, &cells, sizes.as_deref(), &columns, is_default_fields),
         };
         return emit::emit_and_handle("repo list", payload, &args.emit, &mut std::io::stdout())
             .map_err(|e| anyhow::anyhow!("{e}"));
@@ -349,19 +358,31 @@ fn compute_sizes(rows: &[CatalogRepoRow]) -> Vec<Option<u64>> {
         .collect()
 }
 
+/// Whether a structured field is emitted: the full default set unless the user
+/// gave a replace-mode column selection, in which case only the selected
+/// columns appear. Shared by the tabular and document payload builders so the
+/// two structured shapes can't drift on which fields they carry. A modifier
+/// selection (e.g. `+size`) keeps `is_default` true, so it adds a column
+/// without dropping any default field.
+fn field_present(
+    columns: &[RepoListColumn],
+    is_default: bool,
+) -> impl Fn(RepoListColumn) -> bool + '_ {
+    move |col| is_default || columns.contains(&col)
+}
+
 fn build_payload(
     rows: &[CatalogRepoRow],
     cells: &[CatalogRepoCells],
     sizes: Option<&[Option<u64>]>,
     columns: &[RepoListColumn],
+    is_default: bool,
 ) -> EmitPayload {
-    // Mirrors `daft list`'s emit semantics: the default column set emits the
-    // full cheap field set — including default_branch, which has no default
-    // table column — while a customized selection narrows the fields to
-    // match. size_bytes appears only when the size column was selected;
-    // removed_at is row status, not a column, and is always present.
-    let is_default = columns == RepoListColumn::repo_list_defaults();
-    let has = |col: RepoListColumn| is_default || columns.contains(&col);
+    // Mirrors `daft list`'s emit semantics: the default field set includes
+    // default_branch (which has no default table column); a replace-mode
+    // selection narrows to match. size_bytes appears only when the size column
+    // was selected; removed_at is row status, not a column, always present.
+    let has = field_present(columns, is_default);
 
     let mut headers = Vec::new();
     if has(RepoListColumn::Name) {
@@ -455,11 +476,11 @@ fn build_document_payload(
     children: &[Option<Vec<WorktreeChild>>],
     sizes: Option<&[Option<u64>]>,
     columns: &[RepoListColumn],
+    is_default: bool,
 ) -> EmitPayload {
     use serde_json::{Map, Value, json};
 
-    let is_default = columns == RepoListColumn::repo_list_defaults();
-    let has = |col: RepoListColumn| is_default || columns.contains(&col);
+    let has = field_present(columns, is_default);
 
     let repos: Vec<Value> = rows
         .iter()
@@ -1128,6 +1149,7 @@ mod tests {
             &children,
             None,
             &defaults(),
+            true,
         );
         let EmitPayload::Document(value) = payload else {
             panic!("expected a document payload");
@@ -1147,6 +1169,7 @@ mod tests {
             &children,
             None,
             &[RepoListColumn::Name],
+            false,
         );
         let EmitPayload::Document(value) = payload else {
             panic!("expected a document payload");
@@ -1162,6 +1185,7 @@ mod tests {
             &[None],
             None,
             &defaults(),
+            true,
         );
         let EmitPayload::Document(value) = payload else {
             panic!("expected a document payload");
@@ -1207,6 +1231,7 @@ mod tests {
             std::slice::from_ref(&cell),
             None,
             &defaults(),
+            true,
         ));
         assert_eq!(
             headers,
@@ -1226,8 +1251,42 @@ mod tests {
             std::slice::from_ref(&cell),
             Some(&[Some(42)]),
             &defaults_plus_size(),
+            true,
         ));
         assert_eq!(headers.last().map(String::as_str), Some("size_bytes"));
+    }
+
+    /// #357 C4: a modifier `--columns +size` is not a replace selection
+    /// (`explicit == false`), so structured output must keep the full default
+    /// field set — layout and default_branch included — and merely add size,
+    /// not silently drop them. Ties the parse → explicit → is_default wiring
+    /// to the emitted field set.
+    #[test]
+    fn modifier_columns_keep_default_structured_fields() {
+        let resolved = RepoColumnSelection::parse("+size").unwrap();
+        assert!(!resolved.explicit, "a modifier is not a replace selection");
+        let row = sample_row();
+        let cell = cells("alpha", false, false);
+        let headers = payload_headers(build_payload(
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&cell),
+            Some(&[Some(42)]),
+            &resolved.columns,
+            !resolved.explicit,
+        ));
+        assert_eq!(
+            headers,
+            [
+                "name",
+                "worktrees",
+                "layout",
+                "default_branch",
+                "path",
+                "remote_url",
+                "removed_at",
+                "size_bytes"
+            ]
+        );
     }
 
     /// Mirrors `daft list`'s EmitColumns: a customized selection narrows the
@@ -1242,6 +1301,7 @@ mod tests {
             std::slice::from_ref(&cell),
             None,
             &[RepoListColumn::Name, RepoListColumn::Path],
+            false,
         ));
         assert_eq!(headers, ["name", "path", "removed_at"]);
     }
