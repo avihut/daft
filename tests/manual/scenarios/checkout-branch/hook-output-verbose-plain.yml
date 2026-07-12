@@ -34,8 +34,15 @@ steps:
 
   # env -u DAFT_TESTING: unsets the harness flag so HookRenderer::auto picks
   # PlainHookRenderer (non-TTY stderr); 2>&1 captures its stderr lines.
+  # DAFT_TESTING is also the runner's only daemon-suppression gate, so the
+  # per-feature opt-outs ride along — without them each step spawns real
+  # detached __check-update (network lookup) / __prune-trust / __clean-logs
+  # daemons, and a populated update cache can leak the update banner into
+  # the captured output.
   - name: Default keeps the command preview out of plain output
-    run: env -u DAFT_TESTING git-worktree-checkout -b feat-default 2>&1
+    run: >-
+      env -u DAFT_TESTING DAFT_NO_UPDATE_CHECK=1 DAFT_NO_TRUST_PRUNE=1
+      DAFT_NO_LOG_CLEAN=1 git-worktree-checkout -b feat-default 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -54,7 +61,9 @@ steps:
       exit_code: 0
 
   - name: Verbose config surfaces each job's command line
-    run: env -u DAFT_TESTING git-worktree-checkout -b feat-verbose 2>&1
+    run: >-
+      env -u DAFT_TESTING DAFT_NO_UPDATE_CHECK=1 DAFT_NO_TRUST_PRUNE=1
+      DAFT_NO_LOG_CLEAN=1 git-worktree-checkout -b feat-verbose 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0

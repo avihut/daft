@@ -78,6 +78,21 @@ pub struct CheckoutParams {
     /// Explicit path override for worktree placement (`--at` flag).
     /// When `Some`, takes priority over both `layout` and the default path computation.
     pub at_path: Option<PathBuf>,
+    /// The caller morphs a missing branch into branch creation (`daft go
+    /// --start` / `daft.go.autoStart`), and the morph must leave no rail
+    /// behind — so with the fetch on, the fetch runs under the planning
+    /// face and the plan commits only once the branch is known to exist,
+    /// leading with the already-done fetch row. Without this, the morph
+    /// rendered go's `Failed` receipt and then start's rail — two rails on
+    /// an exit-0 invocation.
+    pub defer_plan_until_branch_known: bool,
+}
+
+/// Outcome of a fetch that ran before the plan committed (the morph-armed
+/// `defer_plan_until_branch_known` path).
+struct Prefetch {
+    elapsed: std::time::Duration,
+    failed: bool,
 }
 
 /// Result of a checkout operation.
@@ -229,9 +244,34 @@ pub fn execute(
     // branch errors before any plan commits (no rail renders for resolve
     // errors). With `daft.checkout.fetch` on the probe must follow the
     // network — it moves below the plan commit, and the fetch becomes
-    // planned work instead of hiding behind the planning face.
-    let pre_fetch_probe = if params.checkout_fetch {
-        None
+    // planned work instead of hiding behind the planning face. The
+    // exception is a morph-armed caller (`defer_plan_until_branch_known`):
+    // the fetch runs under the face — its stage events land on no row —
+    // and joins the committed plan as a pre-completed row, so a missing
+    // branch still errors before any plan commits and the morph's own rail
+    // is the only rail.
+    let mut prefetch: Option<Prefetch> = None;
+    let pre_plan_probe = if params.checkout_fetch {
+        if params.defer_plan_until_branch_known {
+            let fetch_started = std::time::Instant::now();
+            let failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            prefetch = Some(Prefetch {
+                elapsed: fetch_started.elapsed(),
+                failed,
+            });
+            let (local_exists, remote_exists) =
+                check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+            if !local_exists && !remote_exists {
+                return Err(CheckoutError::BranchNotFound {
+                    branch: params.branch_name.clone(),
+                    remote: params.remote_name.clone(),
+                    fetch_failed: failed,
+                });
+            }
+            Some((local_exists, remote_exists))
+        } else {
+            None
+        }
     } else {
         let (local_exists, remote_exists) =
             check_branch_existence(git, &params.branch_name, &params.remote_name)?;
@@ -252,12 +292,21 @@ pub fn execute(
     let should_carry = params.carry || (!params.no_carry && params.checkout_carry);
     let mut plan_rows = Vec::new();
     if params.checkout_fetch {
-        plan_rows.push(Row::Step(
-            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone()),
-        ));
+        let mut fetch_spec =
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone());
+        // A deferred fetch that succeeded leads the plan as a receipt row,
+        // like clone's bare phase; a failed one keeps the normal row and
+        // resolves yellow right after the commit (below).
+        if let Some(pf) = &prefetch
+            && !pf.failed
+        {
+            fetch_spec = fetch_spec.pre_completed(pf.elapsed);
+        }
+        plan_rows.push(Row::Step(fetch_spec));
     }
-    let checkout_spec = match pre_fetch_probe {
-        // Fetch off: the provenance is already resolved.
+    let checkout_spec = match pre_plan_probe {
+        // Probe already ran (fetch off, or a deferred fetch): the
+        // provenance is resolved.
         Some((local, remote)) => StepSpec::new(StepKey::new(StageId::CheckOut))
             .with_annotation(annotation_for(local, remote)),
         // Fetch on: resolved post-fetch, noted onto the pending row.
@@ -286,8 +335,20 @@ pub fn execute(
 
     // Fetch (planned above; a failure warns, turns the row yellow, and the
     // checkout continues on local refs), then the post-fetch probe.
-    let local_exists = match pre_fetch_probe {
-        Some((local_exists, _)) => local_exists,
+    let local_exists = match pre_plan_probe {
+        Some((local_exists, _)) => {
+            // A deferred fetch that failed planned the normal row — resolve
+            // it yellow now, exactly like the planned-fetch path below.
+            if prefetch.as_ref().is_some_and(|pf| pf.failed) {
+                sink.on_stage(
+                    &StepKey::new(StageId::Fetch),
+                    StageEvent::SkippedAttention {
+                        reason: "failed \u{2014} continuing with local refs".to_string(),
+                    },
+                );
+            }
+            local_exists
+        }
         None => {
             let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
             let (local_exists, remote_exists) =
@@ -790,6 +851,7 @@ mod timeline_tests {
             checkout_fetch: fetch,
             layout: None,
             at_path: Some(at),
+            defer_plan_until_branch_known: false,
         }
     }
 
@@ -981,6 +1043,91 @@ mod timeline_tests {
         assert!(
             sink.plan.is_some(),
             "fetch on commits the plan before the probe can fail"
+        );
+    }
+
+    /// Morph-armed (`go --start` / autoStart) + fetch on + unknown branch:
+    /// the fetch runs under the planning face and no plan ever commits —
+    /// the face dissolves tracelessly and the morph's own rail is the only
+    /// rail (two rails + a Failed receipt on an exit-0 run otherwise).
+    #[test]
+    #[serial]
+    fn deferred_unknown_branch_commits_no_plan() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let mut p = params("no-such-branch", tmp.path().join("wt"), true);
+        p.defer_plan_until_branch_known = true;
+        let Err(err) = execute(&p, &git_cmd, &work, &mut sink) else {
+            panic!("unknown branch must fail");
+        };
+        assert!(matches!(err, CheckoutError::BranchNotFound { .. }));
+        assert!(
+            sink.plan.is_none(),
+            "a morph-armed miss must leave no plan behind"
+        );
+    }
+
+    /// Morph-armed + fetch on + branch exists: the plan commits with the
+    /// already-done fetch leading it as a pre-completed row, and the
+    /// CheckOut row carries its provenance from the moment the plan
+    /// commits (no post-fetch `Note` needed).
+    #[test]
+    #[serial]
+    fn deferred_fetch_leads_the_plan_pre_completed() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&origin, &["branch", "feat-z"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("feat-z-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let mut p = params("feat-z", worktree_path.clone(), true);
+        p.defer_plan_until_branch_known = true;
+        execute(&p, &git_cmd, &work, &mut sink).expect("checkout succeeds");
+        assert!(worktree_path.exists());
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        let fetch_spec = plan
+            .steps()
+            .find(|s| s.key.id == StageId::Fetch)
+            .expect("the fetch row still leads the plan");
+        assert!(
+            fetch_spec.pre_completed.is_some(),
+            "the deferred fetch joins the plan as a receipt row"
+        );
+        let checkout_annotation = plan
+            .steps()
+            .find(|s| s.key.id == StageId::CheckOut)
+            .and_then(|s| s.annotation.as_deref());
+        assert_eq!(
+            checkout_annotation,
+            Some("tracking origin/feat-z"),
+            "provenance is resolved at plan time"
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|(k, e)| k.id == StageId::CheckOut && matches!(e, StageEvent::Note(_))),
+            "no post-fetch Note — the plan already carried the provenance: {:?}",
+            sink.events
         );
     }
 }

@@ -101,6 +101,10 @@ pub struct RailHookRenderer {
     /// `timerDelay` before a silent job's spinner gains an elapsed suffix.
     timer_delay: Duration,
     section_label: Option<String>,
+    /// The consumed row sat inside a `├─` group span: every line the block
+    /// prints — anchor, job rows, threads, section close — renders one
+    /// gutter tier deeper so the branch anchor keeps owning its span.
+    in_group: bool,
     job_style: ProgressStyle,
     /// Static thread-bar template: `│  │    {wide_msg}` (inner `│` a tier
     /// below the rail).
@@ -128,14 +132,23 @@ impl RailHookRenderer {
         } else {
             "{spinner}  {wide_msg}"
         };
-        let job_style = ProgressStyle::with_template(&render::gutter(base, embed.use_color))
+        // In-group blocks live a tier deeper: their templates wear the
+        // group's own gutter under the block's.
+        let tier = |line: String| {
+            if embed.in_group {
+                render::gutter(&line, embed.use_color)
+            } else {
+                line
+            }
+        };
+        let job_style = ProgressStyle::with_template(&tier(render::gutter(base, embed.use_color)))
             .expect("job template is valid")
             .tick_chars(super::region::TICK_CHARS);
         let inner = render::paint(DARK_GREY, "\u{2502}", embed.use_color);
-        let thread_style = ProgressStyle::with_template(&render::gutter(
+        let thread_style = ProgressStyle::with_template(&tier(render::gutter(
             &format!("{inner}    {{wide_msg}}"),
             embed.use_color,
-        ))
+        )))
         .expect("thread template is valid");
         // The live trailer renders the thread's empty closing line. `{msg}`
         // + a set_message at creation (the `add_line_bar` pattern): a bar
@@ -152,6 +165,7 @@ impl RailHookRenderer {
             tail_lines: config.tail_lines as usize,
             timer_delay: Duration::from_secs(u64::from(config.timer_delay_secs)),
             section_label: embed.section_label,
+            in_group: embed.in_group,
             job_style,
             thread_style,
             trailer_style,
@@ -177,8 +191,18 @@ impl RailHookRenderer {
             .verbose
             .then(|| format!("{hook_name} \u{b7} daft v{}", crate::VERSION));
         self.mp
-            .println(render::group(&label, annotation.as_deref(), self.use_color))
+            .println(self.tucked(render::group(&label, annotation.as_deref(), self.use_color)))
             .ok();
+    }
+
+    /// One extra `│  ` tier for in-group blocks — every persisted line
+    /// renders at the group span's depth.
+    fn tucked(&self, line: String) -> String {
+        if self.in_group {
+            render::gutter(&line, self.use_color)
+        } else {
+            line
+        }
     }
 
     pub fn start_job(&mut self, name: &str, command_preview: Option<&str>) {
@@ -482,7 +506,9 @@ impl RailHookRenderer {
             &format!("all jobs in {}", format_duration(total_duration)),
             self.use_color,
         );
-        self.mp.println(render::gutter(&note, self.use_color)).ok();
+        self.mp
+            .println(self.tucked(render::gutter(&note, self.use_color)))
+            .ok();
     }
 
     pub fn take_finished_jobs(&mut self) -> Vec<JobResultEntry> {
@@ -520,14 +546,18 @@ impl RailHookRenderer {
             // Notice tier: recessed like notes, not competing with the
             // section's own receipt rows.
             let line = render::paint(GREY, line, self.use_color);
-            self.mp.println(render::gutter(&line, self.use_color)).ok();
+            self.mp
+                .println(self.tucked(render::gutter(&line, self.use_color)))
+                .ok();
         }
     }
 
     /// Persist a receipt row inside the rail gutter — every job row is
     /// section content under the `├─` anchor.
     fn persist_receipt(&self, row: String) {
-        self.mp.println(render::gutter(&row, self.use_color)).ok();
+        self.mp
+            .println(self.tucked(render::gutter(&row, self.use_color)))
+            .ok();
     }
 
     /// Verbose receipt log: the job's full thread, persisted under its row,
@@ -551,7 +581,7 @@ impl RailHookRenderer {
     /// section-boundary glyph on intra-section spacing.
     fn thread_air(&self) -> String {
         let inner = render::paint(DARK_GREY, "\u{2502}", self.use_color);
-        render::gutter(&inner, self.use_color)
+        self.tucked(render::gutter(&inner, self.use_color))
     }
 
     /// The receipt log's lines. `❯ <command>` provenance and the
@@ -586,7 +616,10 @@ impl RailHookRenderer {
     /// row's glyph column, a tier below the rail.
     fn thread_line(&self, text: String) -> String {
         let inner = render::paint(DARK_GREY, "\u{2502}", self.use_color);
-        render::gutter(&format!("{inner}    {text}"), self.use_color)
+        self.tucked(render::gutter(
+            &format!("{inner}    {text}"),
+            self.use_color,
+        ))
     }
 
     /// Test-only: whether the job's elapsed suffix is currently promoted.
@@ -596,6 +629,14 @@ impl RailHookRenderer {
             .get(name)
             .map(|s| s.promoted.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// Seed the name column from the phase's full planned job list
+    /// (`on_jobs_planned`) — receipts persist immediately and cannot
+    /// re-pad, so a wave-ordered phase must size the column before its
+    /// first receipt lands.
+    pub fn seed_name_width(&mut self, width: usize) {
+        self.grow_width_to(width);
     }
 
     /// Bump the alignment column and re-pad every live bar when it grows.
@@ -687,6 +728,7 @@ mod tests {
             anchor,
             use_color,
             section_label: section_label.map(String::from),
+            in_group: false,
         };
         (
             RailHookRenderer::new(embed, handle.clone(), &config),
@@ -734,6 +776,32 @@ mod tests {
         let jobs = r.take_finished_jobs();
         assert_eq!(jobs.len(), 1);
         assert!(matches!(jobs[0].outcome, JobOutcome::Success));
+    }
+
+    #[test]
+    fn seeded_name_width_aligns_receipts_across_waves() {
+        // `needs:`-ordered waves persist early receipts before later
+        // (wider) job names start; the executor announces the full job
+        // list up front (`on_jobs_planned` → seed) so every receipt shares
+        // one column — persisted rows cannot re-pad after the fact.
+        let (mut r, term, _h) = harness(Some("post-create hooks"), false);
+        r.seed_name_width("long-job-name".chars().count());
+        r.start_job("build", None);
+        r.finish_job_success("build", Duration::from_millis(2100));
+        r.start_job("long-job-name", None);
+        r.finish_job_success("long-job-name", Duration::from_millis(1500));
+        let contents = term.contents();
+        let col = |needle: &str| {
+            contents
+                .lines()
+                .find_map(|l| l.find(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing from {contents}"))
+        };
+        assert_eq!(
+            col("(2.1s)"),
+            col("(1.5s)"),
+            "receipt durations must share one column: {contents}"
+        );
     }
 
     #[test]

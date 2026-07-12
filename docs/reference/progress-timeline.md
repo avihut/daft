@@ -91,8 +91,13 @@ never keeps an identity ink.
   proceeds on local refs. A branch the fetch fails to reveal closes `daft go`'s
   rail as a `Failed` receipt with the error below it; with the fetch off, the
   branch probe precedes the plan and an unknown branch keeps the plain error.
-  For `daft start` the header names the requested base; when the fetch reveals a
-  fresher remote ref, the `Created branch` row carries the resolved provenance
+  When the morph into branch creation is armed (`daft go --start`, or
+  `daft.go.autoStart`), the fetch runs under the planning face instead and the
+  plan commits only for a branch that exists — leading with the already-done
+  `✓ Fetched remote` row; a missing branch dissolves the face tracelessly and
+  `daft start`'s rail is the only rail the run leaves behind. For `daft start`
+  the header names the requested base; when the fetch reveals a fresher remote
+  ref, the `Created branch` row carries the resolved provenance
   (`← origin/main`).
 - The rail lists only work that happens. A step known to be off at planning time
   (push with `daft.checkout.push` off or `--local`) plans no row, and a step

@@ -51,6 +51,12 @@ synthetic rail + a real embedded hook block for quick visual iteration.
 - [ ] `daft go -`: previous-worktree navigation unchanged, no rail
 - [ ] `daft go <missing> --start`: morphs into the start rail (exactly one rail
       for the whole invocation)
+- [ ] `daft go <missing> --start` with fetch on: the fetch runs under the
+      planning face (no committed rows), the face dissolves tracelessly, and
+      start's rail is the only rail — no `Failed` receipt on the exit-0 run
+- [ ] `daft go <existing> --start` with fetch on: one rail led by the
+      pre-completed `✓ Fetched remote  origin  (<t>)` row, `Check out branch`
+      carrying its provenance from the committed plan
 - [ ] Carry: with uncommitted changes `✓ Carried changes`; with a clean tree the
       carry row vanishes once execution reaches it
 - [ ] Shared files (`shared:` in daft.yml + collected storage): a `│` spacer

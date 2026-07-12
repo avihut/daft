@@ -55,6 +55,13 @@ pub trait JobPresenter: Send + Sync {
     /// A general informational message (not tied to a specific job).
     fn on_message(&self, msg: &str);
 
+    /// Every job name this phase will render a row for, announced after
+    /// `on_phase_start` and before any job runs. Width-aligned renderers
+    /// size their name column from it once — receipt rows persist
+    /// immediately and cannot re-pad when a wider-named job starts in a
+    /// later `needs:` wave. Default: ignore.
+    fn on_jobs_planned(&self, _names: &[String]) {}
+
     /// A phase has completed. Display the summary.
     fn on_phase_complete(&self, total_duration: Duration);
 

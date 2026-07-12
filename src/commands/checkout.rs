@@ -790,6 +790,12 @@ fn run_checkout(
         },
         layout: Some(layout),
         at_path: args.at.clone(),
+        // The morph (branch missing → run_create_branch) must leave no rail
+        // behind: hold the plan until the branch is known to exist, so the
+        // fetch runs under the planning face and a not-found dissolves the
+        // face tracelessly instead of closing a Failed receipt before
+        // start's rail opens.
+        defer_plan_until_branch_known: args.start || settings.go_auto_start,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;

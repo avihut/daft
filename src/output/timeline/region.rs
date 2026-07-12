@@ -41,6 +41,11 @@ pub struct HookEmbed {
     /// gate embeds (pre-push under an active Push/DeleteRemote row), whose
     /// section label derives from the phase name instead.
     pub section_label: Option<String>,
+    /// The consumed row sat inside a `├─` group span (multi-branch remove's
+    /// per-branch hook rows): the block renders one gutter tier deeper —
+    /// `│  ├─ <section>` with `│  │  <job>` rows — so the branch anchor
+    /// keeps owning the span's remaining rows.
+    pub in_group: bool,
 }
 
 enum Slot {
@@ -129,6 +134,9 @@ pub(super) struct TimelineCore {
     last_persisted_was_spacer: bool,
     /// A hook block is currently rendering in place of one of our rows.
     hook_block_open: bool,
+    /// Whether the open block's consumed row sat inside a group span — its
+    /// close path prints no rail-level spacer (span content stays compact).
+    open_hook_in_group: bool,
     /// The open section's planned below-`│`, taken from its slot at
     /// `begin_hook_embed` so the close path persists it exactly once (and
     /// job bars can anchor above it). `None` for gate embeds.
@@ -303,6 +311,7 @@ impl TimelineCore {
             _echo_guard: echo_guard,
             last_persisted_was_spacer: true,
             hook_block_open: false,
+            open_hook_in_group: false,
             open_hook_below: None,
         }
     }
@@ -330,9 +339,22 @@ impl TimelineCore {
 
         let header = plan.header.clone().unwrap_or_else(|| self.header.clone());
         let use_color = self.use_color;
+        // The shared annotation column must fit every tense a row can render
+        // with — "Check out branch" is 16 chars pending but "Checked out
+        // branch" is 18 done, and a done-tense label wider than the column
+        // cannot be padded, shearing its annotation out of alignment.
         let label_width = plan
             .steps()
-            .map(|s| display_label(s, StepPhase::Pending).chars().count())
+            .flat_map(|s| {
+                [
+                    StepPhase::Pending,
+                    StepPhase::Active,
+                    StepPhase::Done,
+                    StepPhase::Skipped,
+                ]
+                .into_iter()
+                .map(|phase| display_label(s, phase).chars().count())
+            })
             .max()
             .unwrap_or(0);
         self.label_width = label_width;
@@ -517,6 +539,11 @@ impl TimelineCore {
     fn reconnect_after_block(&mut self) {
         if self.hook_block_open {
             self.hook_block_open = false;
+            // In-group blocks close compactly — the span's own gutter is
+            // the boundary (see `close_hook_embed`).
+            if std::mem::take(&mut self.open_hook_in_group) {
+                return;
+            }
             // A section's planned below-`│` hands its line to the reconnect
             // (net zero); gate embeds, which planned none, insert one.
             if let Some(bar) = self.open_hook_below.take() {
@@ -761,15 +788,17 @@ impl TimelineCore {
         self.flush_above(idx);
         self.clear_detail();
         let mut section_label = None;
+        let mut in_group = false;
         if let Slot::Step {
             spec,
             bar,
             state,
+            in_group: step_in_group,
             spacer_above,
             spacer_below,
-            ..
         } = &mut self.slots[idx]
         {
+            in_group = *step_in_group;
             if let Some(taken) = bar.take() {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
@@ -795,11 +824,15 @@ impl TimelineCore {
                 *state = StepState::Resolved;
             }
         }
-        if !self.last_persisted_was_spacer {
+        // An in-group section is span content — its row was planned without
+        // air (the `!in_group` gate in install_plan), so no rail-level
+        // spacer may interrupt the group.
+        if !in_group && !self.last_persisted_was_spacer {
             self.mp.println(render::spacer(self.use_color)).ok();
             self.last_persisted_was_spacer = true;
         }
         self.hook_block_open = true;
+        self.open_hook_in_group = in_group;
         // Job bars land above the section's own below-`│` when the plan
         // laid one down; gate embeds fall back to the next live rail bar.
         let anchor = self
@@ -811,6 +844,7 @@ impl TimelineCore {
             anchor,
             use_color: self.use_color,
             section_label,
+            in_group,
         })
     }
 
@@ -822,6 +856,12 @@ impl TimelineCore {
             return;
         }
         self.hook_block_open = false;
+        // An in-group section closes compactly: the span's next rows attach
+        // directly under the block (their gutter is the section boundary),
+        // exactly as the airless in-group plan promised.
+        if std::mem::take(&mut self.open_hook_in_group) {
+            return;
+        }
         // The section's planned below-`│` persists as the reconnect (net
         // zero — the plan already showed it, and its presence encodes that
         // visible content follows, notes included).

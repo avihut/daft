@@ -495,6 +495,9 @@ pub fn execute_yaml_hook_with_rc(
         if !requested_skips.is_empty() {
             let header_target = super::executor::header_target_for_ctx(ctx);
             presenter.on_phase_start(hook_name, header_target);
+            let skip_names: Vec<String> =
+                requested_skips.iter().map(|sj| sj.name.clone()).collect();
+            presenter.on_jobs_planned(&skip_names);
             for sj in &requested_skips {
                 presenter.on_job_skipped(
                     &sj.name,
@@ -540,6 +543,17 @@ pub fn execute_yaml_hook_with_rc(
     // Use presenter for header and execution
     let header_target = super::executor::header_target_for_ctx(ctx);
     presenter.on_phase_start(hook_name, header_target);
+
+    // Announce every row this phase renders (survivors + attributed skips)
+    // so width-aligned renderers size their name column before the first
+    // receipt persists — a wider name starting in a later `needs:` wave
+    // cannot re-pad rows already in scrollback.
+    let planned_names: Vec<String> = specs
+        .iter()
+        .map(|s| s.name.clone())
+        .chain(requested_skips.iter().map(|sj| sj.name.clone()))
+        .collect();
+    presenter.on_jobs_planned(&planned_names);
 
     // Render `--skip-hooks` exclusions as attributed skip lines under the hook
     // header, before the surviving jobs run. (The empty-survivor case is

@@ -1210,6 +1210,52 @@ mod tests {
     }
 
     #[test]
+    fn in_group_hook_embed_keeps_the_branch_gutter() {
+        // Multi-branch remove: a per-branch hook section renders inside the
+        // branch's span — `│  ├─ pre-remove hooks` with double-tucked job
+        // rows and no rail-level spacers — so the branch anchor keeps owning
+        // the span's remaining rows (a rail-level `├─` anchor used to
+        // re-attach them to the hooks section instead).
+        let (mut tl, term) = captured("Removing 2 branches");
+        let hook_key = StepKey::scoped(StageId::PreRemoveHooks, "feat/a");
+        let remove_key = StepKey::scoped(StageId::RemoveWorktree, "feat/a");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Group {
+                label: "feat/a".into(),
+            },
+            Row::Step(StepSpec::new(hook_key.clone())),
+            Row::Step(StepSpec::new(remove_key.clone())),
+            Row::EndGroup,
+        ]));
+        let embed = tl
+            .handle()
+            .begin_hook_embed(&hook_key)
+            .expect("region live, key known");
+        let mut renderer = RailHookRenderer::new(
+            embed,
+            tl.handle(),
+            &crate::settings::HookOutputConfig::default(),
+        );
+        renderer.print_header("worktree-pre-remove", Some("feat/a"));
+        renderer.start_job("direnv-revoke", None);
+        renderer.finish_job_success("direnv-revoke", Duration::from_millis(2100));
+        tl.close_hook_embed();
+        complete(&mut tl, &remove_key);
+        tl.finish("Removed in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Removing 2 branches\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} feat/a\n\
+             \u{2502}  \u{251c}\u{2500} pre-remove hooks\n\
+             \u{2502}  \u{2502}  \u{2713}  direnv-revoke  (2.1s)\n\
+             \u{2502}  \u{2713}  Removed worktree\n\
+             \u{2502}\n\
+             \u{2514}  Removed in 0.1s"
+        );
+    }
+
+    #[test]
     fn hook_level_condition_skip_vanishes_from_the_receipt() {
         let (mut tl, term) = captured("Opening feat/x");
         tl.commit_plan(plan());
@@ -1227,6 +1273,37 @@ mod tests {
             !term.contents().contains("post-create hooks"),
             "condition-skipped hook must leave no receipt: {}",
             term.contents()
+        );
+    }
+
+    #[test]
+    fn done_tense_labels_stay_in_the_annotation_column() {
+        // The column is sized over every tense: "Checked out branch" (18)
+        // outgrows its pending form (16), and an over-width done label
+        // cannot be padded — its annotation would shear out of the shared
+        // column (#688 review).
+        let (mut tl, term) = captured("Opening feat/x");
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(StepKey::new(StageId::CheckOut)).with_annotation("tracking")),
+            Row::Step(
+                StepSpec::new(StepKey::new(StageId::CreateWorktree)).with_annotation("../feat/x"),
+            ),
+        ]));
+        for id in [StageId::CheckOut, StageId::CreateWorktree] {
+            complete(&mut tl, &StepKey::new(id));
+        }
+        tl.finish("Ready in 0.1s");
+        let contents = term.contents();
+        let column = |needle: &str| {
+            contents
+                .lines()
+                .find_map(|l| l.find(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing from {contents}"))
+        };
+        assert_eq!(
+            column("tracking"),
+            column("../feat/x"),
+            "annotations must share one column: {contents}"
         );
     }
 
@@ -1271,7 +1348,7 @@ mod tests {
         tl.finish("Ready in 0.1s");
         assert!(
             term.contents()
-                .contains("post-create hooks  skipped \u{2014} Repository not trusted"),
+                .contains("post-create hooks     skipped \u{2014} Repository not trusted"),
             "trust refusal must stay visible: {}",
             term.contents()
         );
@@ -1400,7 +1477,7 @@ mod tests {
             term.contents(),
             "\u{250c}  Removing feat/x\n\
              \u{2502}\n\
-             \u{2193}  pre-remove hooks  skipped \u{2014} Repository not trusted\n\
+             \u{2193}  pre-remove hooks   skipped \u{2014} Repository not trusted\n\
              \u{2502}\n\
              \u{2713}  Removed worktree\n\
              \u{2502}\n\
@@ -1607,8 +1684,8 @@ mod tests {
              \u{2502}\n\
              \u{251c}\u{2500} feat/a\n\
              \u{2502}  \u{25cb}  no remote branch\n\
-             \u{2502}  \u{2717}  Remove worktree  dirty\n\
-             \u{2502}  \u{25cb}  Delete branch    (not run)\n\
+             \u{2502}  \u{2717}  Remove worktree    dirty\n\
+             \u{2502}  \u{25cb}  Delete branch      (not run)\n\
              \u{2502}\n\
              \u{2514}  Failed after 0.1s"
         );

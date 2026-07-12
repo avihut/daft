@@ -138,6 +138,17 @@ impl EmbedRenderer {
             Self::Rail(_) => {}
         }
     }
+
+    /// Seed the rail's name column from the phase's planned job list — its
+    /// receipts persist immediately and cannot re-pad when a wider name
+    /// starts in a later wave. The block renderer re-pads live bars on its
+    /// own and needs no seed.
+    fn seed_name_width(&mut self, width: usize) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.seed_name_width(width),
+        }
+    }
 }
 
 /// Which plan row an embedded presenter renders into.
@@ -321,6 +332,16 @@ impl JobPresenter for CliPresenter {
         }
         if let Some(r) = ready(&mut guard) {
             r.print_header(phase_name, target);
+        }
+    }
+
+    fn on_jobs_planned(&self, names: &[String]) {
+        let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+        if width == 0 {
+            return;
+        }
+        if let Some(r) = ready(&mut self.lock()) {
+            r.seed_name_width(width);
         }
     }
 
