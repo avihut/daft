@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::catalog::{Catalog, CatalogError};
+use crate::catalog::{Catalog, RegistrationFacts, RegistrationOutcome};
 use crate::core::settings::DaftSettings;
 use crate::core::worktree::remove_repo::resolve_repo;
 use crate::output::{CliOutput, Output, OutputConfig};
@@ -74,26 +74,7 @@ pub fn run() -> Result<()> {
             .context("could not gather repository facts")?;
 
     let catalog = Catalog::open_rw().context("could not open the repo catalog")?;
-    let outcome = catalog
-        .register(&facts)
-        .context("could not register the repository")?;
-
-    let mut assigned = outcome.assigned_name.clone();
-    if let Some(requested) = &args.name
-        && *requested != assigned
-    {
-        match catalog.rename(&facts.uuid, requested) {
-            Ok(()) => assigned = requested.clone(),
-            Err(err @ CatalogError::NameTaken { .. }) => {
-                anyhow::bail!(
-                    "{err}\n  tip: pick a different name, or rename the other repo first \
-                     with `{}` from inside it",
-                    crate::daft_cmd("repo add --name <name>")
-                );
-            }
-            Err(err) => return Err(err.into()),
-        }
-    }
+    let (assigned, outcome) = register_with_name(&catalog, &facts, args.name.as_deref())?;
 
     let verb = if outcome.created {
         "Registered"
@@ -110,4 +91,127 @@ pub fn run() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Register `facts`, applying an optional explicit `--name`. All-or-nothing: an
+/// invalid name, or one already claimed by a *different* repo, is refused
+/// before `register()` writes anything — so a rejected `--name` never strands
+/// the repo in the catalog under an auto-suffixed name. Returns the finally
+/// assigned name and the registration outcome (for the created/restored verb).
+fn register_with_name(
+    catalog: &Catalog,
+    facts: &RegistrationFacts,
+    requested_name: Option<&str>,
+) -> Result<(String, RegistrationOutcome)> {
+    if let Some(requested) = requested_name {
+        crate::catalog::normalize::validate_catalog_name(requested)
+            .map_err(|reason| anyhow::anyhow!("invalid --name '{requested}': {reason}"))?;
+        if let Some(existing) = catalog
+            .resolve_live_name(requested)
+            .context("could not check the requested name")?
+            && existing.uuid != facts.uuid
+        {
+            anyhow::bail!(
+                "the name '{requested}' is already used by the repo at {}\n  \
+                 tip: pick a different name, or rename that repo first with `{}` from inside it",
+                existing.path,
+                crate::daft_cmd("repo add --name <name>")
+            );
+        }
+    }
+
+    let outcome = catalog
+        .register(facts)
+        .context("could not register the repository")?;
+    let mut assigned = outcome.assigned_name.clone();
+    if let Some(requested) = requested_name
+        && requested != assigned
+    {
+        // Pre-checked free above; a concurrent grab is the only NameTaken race.
+        catalog
+            .rename(&facts.uuid, requested)
+            .context("could not apply --name")?;
+        assigned = requested.to_string();
+    }
+    Ok((assigned, outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::paths;
+    use tempfile::TempDir;
+
+    fn catalog(tmp: &TempDir) -> Catalog {
+        Catalog::open_rw_at(&paths::catalog_db_under(tmp.path()).unwrap()).unwrap()
+    }
+
+    fn facts(uuid: &str, name: &str, path: &str) -> RegistrationFacts {
+        RegistrationFacts {
+            uuid: uuid.into(),
+            default_name: name.into(),
+            path: path.into(),
+            git_common_dir: format!("{path}/.git"),
+            remote_url: Some(format!("git@example.com:org/{name}.git")),
+            default_branch: Some("main".into()),
+        }
+    }
+
+    #[test]
+    fn registers_a_new_repo_under_its_derived_name() {
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        let (assigned, outcome) =
+            register_with_name(&cat, &facts("u1", "api", "/w/api"), None).unwrap();
+        assert_eq!(assigned, "api");
+        assert!(outcome.created);
+    }
+
+    #[test]
+    fn applies_a_free_explicit_name() {
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        let (assigned, _) =
+            register_with_name(&cat, &facts("u1", "api", "/w/api"), Some("backend")).unwrap();
+        assert_eq!(assigned, "backend");
+        assert!(cat.resolve_live_name("backend").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_taken_name_is_refused_before_registering() {
+        // #357 C7: a --name collision must be all-or-nothing — the rejected
+        // repo must NOT be left cataloged under an auto-suffixed name.
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        register_with_name(&cat, &facts("u1", "api", "/w/api"), None).unwrap();
+
+        let err = register_with_name(&cat, &facts("u2", "web", "/w/web"), Some("api")).unwrap_err();
+        assert!(err.to_string().contains("already used"), "{err}");
+        assert!(cat.resolve_live_name("web").unwrap().is_none());
+        assert!(cat.resolve_live_name("web-2").unwrap().is_none());
+        assert!(cat.get_by_uuid("u2").unwrap().is_none());
+    }
+
+    #[test]
+    fn an_invalid_name_is_refused_before_registering() {
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        let err =
+            register_with_name(&cat, &facts("u1", "api", "/w/api"), Some("-bad")).unwrap_err();
+        assert!(err.to_string().contains("invalid --name"), "{err}");
+        assert!(cat.get_by_uuid("u1").unwrap().is_none());
+    }
+
+    #[test]
+    fn renames_an_existing_repo_to_a_free_name() {
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        register_with_name(&cat, &facts("u1", "api", "/w/api"), None).unwrap();
+        let (assigned, outcome) =
+            register_with_name(&cat, &facts("u1", "api", "/w/api"), Some("backend")).unwrap();
+        assert_eq!(assigned, "backend");
+        assert!(!outcome.created);
+        assert!(cat.resolve_live_name("api").unwrap().is_none());
+        assert!(cat.resolve_live_name("backend").unwrap().is_some());
+    }
 }
