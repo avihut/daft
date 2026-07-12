@@ -39,6 +39,17 @@ pub enum PromptResult {
 /// For piped stdin (non-interactive, e.g. tests), reads a full line
 /// and matches the first character.
 pub fn single_key_select(config: &PromptConfig) -> PromptResult {
+    // Test seam (compiled out of shipped builds): unit tests share the
+    // process's real stdin, which is a TTY under `cargo test` run in a
+    // terminal — a raw single-key read there blocks the whole suite forever.
+    // Under `cfg(test)` this resolves to a response the test armed, or the
+    // safe non-interactive default (`Cancelled`), so a test never touches the
+    // terminal. In non-test builds `injected_test_response` is a `None`
+    // no-op and the interactive path below runs unchanged.
+    if let Some(response) = injected_test_response() {
+        return response;
+    }
+
     if std::env::var("DAFT_TESTING").is_ok() {
         return read_from_pipe(config);
     }
@@ -51,6 +62,43 @@ pub fn single_key_select(config: &PromptConfig) -> PromptResult {
 }
 
 use std::io::IsTerminal;
+
+/// No test seam in shipped builds — the interactive path always runs.
+#[cfg(not(test))]
+fn injected_test_response() -> Option<PromptResult> {
+    None
+}
+
+/// Under `cfg(test)`, `single_key_select` must never block on a terminal read
+/// (the suite shares the process stdin, a TTY under `cargo test` in a
+/// terminal). Resolve to the response a test armed via
+/// [`set_next_prompt_response`], or the safe non-interactive default
+/// (`Cancelled`). One-shot: `take` clears the arm so it cannot leak to a
+/// later test on a reused libtest worker thread.
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)] // always Some: tests must not fall through to the terminal read
+fn injected_test_response() -> Option<PromptResult> {
+    Some(
+        NEXT_PROMPT_RESPONSE
+            .with(|cell| cell.take())
+            .unwrap_or(PromptResult::Cancelled),
+    )
+}
+
+/// Arm the response the next [`single_key_select`] call returns (test-only).
+/// Lets a unit test drive real prompt-bearing code — bridge consolidation
+/// prompts, merge conflict prompts — with a deterministic choice instead of
+/// an interactive keypress.
+#[cfg(test)]
+pub(crate) fn set_next_prompt_response(response: PromptResult) {
+    NEXT_PROMPT_RESPONSE.with(|cell| cell.set(Some(response)));
+}
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_PROMPT_RESPONSE: std::cell::Cell<Option<PromptResult>> =
+        const { std::cell::Cell::new(None) };
+}
 
 /// Pipe/test fallback: read a line and match first char.
 fn read_from_pipe(config: &PromptConfig) -> PromptResult {
@@ -268,5 +316,46 @@ mod tests {
         assert!(PROMPT_CANCEL_MSG.lock().unwrap().is_none());
         // With no prompt active this must return instead of exiting.
         exit_if_prompt_active();
+    }
+
+    /// The `cfg(test)` seam makes `single_key_select` non-blocking: with no
+    /// response armed it returns the safe `Cancelled` default without ever
+    /// touching stdin — the invariant that stops the suite hanging when run
+    /// in a real terminal.
+    #[test]
+    fn single_key_select_defaults_to_cancelled_without_blocking() {
+        let config = PromptConfig {
+            options: vec![PromptOption {
+                key: 'a',
+                label: "abort",
+                is_default: true,
+            }],
+            cancel_message: None,
+        };
+        assert!(matches!(
+            single_key_select(&config),
+            PromptResult::Cancelled
+        ));
+    }
+
+    /// An armed response flows through `single_key_select` verbatim, so a test
+    /// can drive real prompt-bearing code with a deterministic choice. This
+    /// fails without the seam: a non-TTY run resolves the prompt to
+    /// `Cancelled`, never `Selected('c')`.
+    #[test]
+    fn single_key_select_returns_the_armed_response() {
+        set_next_prompt_response(PromptResult::Selected('c'));
+        let config = PromptConfig {
+            options: vec![PromptOption {
+                key: 'c',
+                label: "consolidate",
+                is_default: false,
+            }],
+            cancel_message: None,
+        };
+        assert!(matches!(
+            single_key_select(&config),
+            PromptResult::Selected('c')
+        ));
     }
 }
