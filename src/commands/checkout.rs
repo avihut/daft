@@ -1456,10 +1456,11 @@ fn run_start_with_related(start_args: StartArgs) -> Result<()> {
     Ok(())
 }
 
-/// Create `args.branch_name` in a related repo: enter its default-branch
-/// worktree (so the base is that repo's own default branch), never carry,
-/// never run `-x`, and run hooks only when the repo is explicitly trusted
-/// (`Allow`) — a fan-out must not block on interactive trust prompts.
+/// Create `args.branch_name` in a related repo, based on that repo's own
+/// default branch (recorded in the catalog, else origin/HEAD) regardless of
+/// which worktree happens to be checked out there. Never carry, never run
+/// `-x`, and run hooks only when the repo is explicitly trusted (`Allow`) — a
+/// fan-out must not block on interactive trust prompts.
 fn create_branch_in_related_repo(
     row: &crate::store::CatalogRepoRow,
     args: &Args,
@@ -1478,9 +1479,13 @@ fn create_branch_in_related_repo(
         let git = git.with_gitoxide(settings.use_gitoxide);
 
         let mut repo_args = args.clone();
-        // Base = the related repo's own default branch (the worktree we
-        // just entered); an explicit base only applies to the current repo.
-        repo_args.base_branch_name = None;
+        // Base the new branch on the related repo's own default branch (its
+        // recorded catalog default, else origin/HEAD) — NOT whatever branch
+        // find_representative_worktree happened to enter, which is wrong when
+        // the default branch has no checkout. An explicit base only applies to
+        // the current repo; fall back to the entered worktree's branch (None)
+        // only when the default is unknown.
+        repo_args.base_branch_name = crate::catalog::effective_default_branch(row);
         // Carry and -x never cross repos.
         repo_args.carry = false;
         repo_args.no_carry = true;
