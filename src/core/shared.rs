@@ -292,7 +292,9 @@ pub fn read_shared_paths(worktree_root: &Path) -> Result<Vec<String>> {
 /// clone, when the config is only reachable through the object store. Any
 /// miss (no such ref, no config, parse error) yields an empty list.
 pub fn read_shared_paths_from_ref(repo_dir: &Path, reference: &str) -> Vec<String> {
-    for name in &["daft.yml", "daft.yaml", ".daft.yml", ".daft.yaml"] {
+    // The loader's candidate list is canonical — the ref-blob probe must
+    // recognize every filename the runtime config loader would.
+    for (name, _) in crate::hooks::yaml_config_loader::CONFIG_CANDIDATES {
         let output = crate::utils::git_command_at(repo_dir)
             .args(["show", &format!("{reference}:{name}")])
             .output();
@@ -1005,7 +1007,12 @@ fn conflict_reason(path: &str) -> String {
 
 /// The `warning:` body for a declared path with nothing in shared storage.
 fn missing_reason(path: &str) -> String {
-    format!("'{path}' missing from shared storage — `daft shared sync` collects it")
+    // `daft_cmd`, not a literal: a git-style invocation (`git daft …`,
+    // `git worktree-checkout …`) must suggest `git daft shared sync`.
+    format!(
+        "'{path}' missing from shared storage — `{}` collects it",
+        crate::daft_cmd("shared sync")
+    )
 }
 
 /// The `warning:` body for a failed link.

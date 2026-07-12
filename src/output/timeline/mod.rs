@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TimelineMode {
     /// Live region on a TTY. `color: false` renders the same structure with
-    /// zero ANSI (NO_COLOR).
+    /// zero ANSI — reachable only from tests and the example spike:
+    /// production (`auto`) maps NO_COLOR to [`Self::Plain`], because
+    /// indicatif hides its whole draw target without color support.
     Interactive { color: bool },
     /// stderr is not a terminal: no timeline; commands keep legacy output.
     Plain,

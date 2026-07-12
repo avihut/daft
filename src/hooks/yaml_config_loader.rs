@@ -20,8 +20,10 @@ pub enum ConfigLocation {
     DotConfig,
 }
 
-/// Config file candidates in priority order (first match wins).
-const CONFIG_CANDIDATES: &[(&str, ConfigLocation)] = &[
+/// Config file candidates in priority order (first match wins). Canonical —
+/// other probes for a daft config by filename (the shared-paths ref-blob
+/// probe) iterate this list rather than keeping their own copy.
+pub(crate) const CONFIG_CANDIDATES: &[(&str, ConfigLocation)] = &[
     ("daft.yml", ConfigLocation::Root),
     ("daft.yaml", ConfigLocation::Root),
     (".daft.yml", ConfigLocation::Root),

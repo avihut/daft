@@ -278,37 +278,89 @@ impl<'a> TimelineSink<'a> {
     }
 }
 
+// ── Shared #651 sink routing ──────────────────────────────────────────────
+// One copy of the timeline-vs-legacy decision, spoken by both
+// `TimelineSink` and `TimelineBridge`: free text becomes detail under the
+// active row once the region is live, warnings print above the bars, the
+// plan ends the resolve-phase spinner, and stage events drive rows (with
+// the shared-file legacy fallback when no region owns the terminal).
+
+fn route_step(
+    output: &mut dyn Output,
+    timeline: &mut crate::output::timeline::Timeline,
+    msg: &str,
+) {
+    if timeline.region_live() {
+        timeline.detail(msg);
+    } else {
+        output.step(msg);
+    }
+}
+
+fn route_warning(
+    output: &mut dyn Output,
+    timeline: &mut crate::output::timeline::Timeline,
+    msg: &str,
+) {
+    if timeline.region_live() {
+        timeline.println_above(&crate::output::timeline::warning_line(msg));
+    } else {
+        output.warning(msg);
+    }
+}
+
+fn route_debug(
+    output: &mut dyn Output,
+    timeline: &mut crate::output::timeline::Timeline,
+    msg: &str,
+) {
+    if timeline.region_live() {
+        if output.is_verbose() {
+            timeline.detail(msg);
+        }
+    } else {
+        output.debug(msg);
+    }
+}
+
+fn route_plan(
+    output: &mut dyn Output,
+    timeline: &mut crate::output::timeline::Timeline,
+    plan: crate::core::stage::PlanCommit,
+) {
+    // The resolve-phase spinner ends where the plan begins.
+    output.finish_spinner();
+    timeline.commit_plan(plan);
+}
+
+fn route_stage(
+    timeline: &mut crate::output::timeline::Timeline,
+    key: &crate::core::stage::StepKey,
+    event: crate::core::stage::StageEvent,
+) {
+    // No live region (Plain mode, quiet, tests): shared-file events
+    // fall back to their legacy stderr lines, as pre-#651.
+    if !timeline.region_live() {
+        crate::core::shared::render_shared_stage_fallback(key, &event);
+    }
+    timeline.on_stage(key, event);
+}
+
 impl ProgressSink for TimelineSink<'_> {
     fn on_step(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            self.timeline.detail(msg);
-        } else {
-            self.output.step(msg);
-        }
+        route_step(self.output, self.timeline, msg);
     }
 
     fn on_warning(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            self.timeline
-                .println_above(&crate::output::timeline::warning_line(msg));
-        } else {
-            self.output.warning(msg);
-        }
+        route_warning(self.output, self.timeline, msg);
     }
 
     fn on_debug(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            if self.output.is_verbose() {
-                self.timeline.detail(msg);
-            }
-        } else {
-            self.output.debug(msg);
-        }
+        route_debug(self.output, self.timeline, msg);
     }
 
     fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
-        self.output.finish_spinner();
-        self.timeline.commit_plan(plan);
+        route_plan(self.output, self.timeline, plan);
     }
 
     fn on_stage(
@@ -316,12 +368,7 @@ impl ProgressSink for TimelineSink<'_> {
         key: &crate::core::stage::StepKey,
         event: crate::core::stage::StageEvent,
     ) {
-        // No live region (Plain mode, quiet, tests): shared-file events
-        // fall back to their legacy stderr lines, as pre-#651.
-        if !self.timeline.region_live() {
-            crate::core::shared::render_shared_stage_fallback(key, &event);
-        }
-        self.timeline.on_stage(key, event);
+        route_stage(self.timeline, key, event);
     }
 }
 
@@ -357,36 +404,19 @@ impl<'a> TimelineBridge<'a> {
 
 impl ProgressSink for TimelineBridge<'_> {
     fn on_step(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            self.timeline.detail(msg);
-        } else {
-            self.output.step(msg);
-        }
+        route_step(self.output, self.timeline, msg);
     }
 
     fn on_warning(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            self.timeline
-                .println_above(&crate::output::timeline::warning_line(msg));
-        } else {
-            self.output.warning(msg);
-        }
+        route_warning(self.output, self.timeline, msg);
     }
 
     fn on_debug(&mut self, msg: &str) {
-        if self.timeline.region_live() {
-            if self.output.is_verbose() {
-                self.timeline.detail(msg);
-            }
-        } else {
-            self.output.debug(msg);
-        }
+        route_debug(self.output, self.timeline, msg);
     }
 
     fn on_plan(&mut self, plan: crate::core::stage::PlanCommit) {
-        // The resolve-phase spinner ends where the plan begins.
-        self.output.finish_spinner();
-        self.timeline.commit_plan(plan);
+        route_plan(self.output, self.timeline, plan);
     }
 
     fn on_stage(
@@ -394,12 +424,7 @@ impl ProgressSink for TimelineBridge<'_> {
         key: &crate::core::stage::StepKey,
         event: crate::core::stage::StageEvent,
     ) {
-        // No live region (Plain mode, quiet, tests): shared-file events
-        // fall back to their legacy stderr lines, as pre-#651.
-        if !self.timeline.region_live() {
-            crate::core::shared::render_shared_stage_fallback(key, &event);
-        }
-        self.timeline.on_stage(key, event);
+        route_stage(self.timeline, key, event);
     }
 }
 

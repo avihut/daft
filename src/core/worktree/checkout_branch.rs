@@ -284,21 +284,7 @@ pub fn execute(
         sink.on_stage(&StepKey::new(StageId::Carry), StageEvent::Started);
     }
     let (stash_applied, stash_conflict) = apply_stash(stash_created, git, sink);
-    if should_carry {
-        let carry_key = StepKey::new(StageId::Carry);
-        if !stash_created {
-            sink.on_stage(&carry_key, StageEvent::SkippedSilent);
-        } else if stash_applied {
-            sink.on_stage(&carry_key, StageEvent::Completed { annotation: None });
-        } else {
-            sink.on_stage(
-                &carry_key,
-                StageEvent::Failed {
-                    detail: "stash conflicts \u{2014} run git stash pop".to_string(),
-                },
-            );
-        }
-    }
+    super::resolve_carry_row(should_carry, stash_created, stash_applied, sink);
 
     // Push and set upstream. A pre-push gate refusal is deferred, not an
     // immediate bail: the worktree must still be fully initialized
@@ -487,7 +473,7 @@ pub(crate) fn resolve_source_worktree(
 /// failed fetch resolves its row as a yellow attention skip and the full
 /// error lands above the rail as a warning.
 fn fetch_remote(git: &GitCommand, remote_name: &str, sink: &mut impl ProgressSink) {
-    const FETCH_FAILED: &str = "failed \u{2014} continuing with local refs";
+    const FETCH_FAILED: &str = super::FETCH_FAILED_REASON;
 
     sink.on_stage(&StepKey::new(StageId::Fetch), StageEvent::Started);
     sink.on_step(&format!(
@@ -1276,14 +1262,15 @@ mod timeline_tests {
     use crate::core::RecordingStageSink;
     use crate::core::stage::{Row, StageEvent, StageId};
     use serial_test::serial;
-    use std::process::{Command as ShellCommand, Stdio};
+    use std::process::Stdio;
 
+    /// Run git through `utils::git_command_at`, which scrubs the full set
+    /// of `GIT_*` discovery vars (a hand-rolled remove of GIT_DIR /
+    /// GIT_WORK_TREE misses the rest — the Test Hygiene rule exists for
+    /// exactly this). Local test identity only, never global config.
     fn git(dir: &Path, args: &[&str]) {
-        ShellCommand::new("git")
+        crate::utils::git_command_at(dir)
             .args(args)
-            .current_dir(dir)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")

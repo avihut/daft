@@ -1665,8 +1665,7 @@ fn run_post_clone_hook(
     // The loaded output settings reach the presenter (previously a default
     // that ignored the user's hooks.output config here); `-v` opts into the
     // full hook block on the rail (#651).
-    let mut hook_output_config = hooks_config.output.clone();
-    hook_output_config.verbose |= output.is_verbose();
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -1732,8 +1731,7 @@ fn run_post_create_hook(
     // `_global` for the same cwd-tolerance reason as `run_post_clone_hook` —
     // see the comment there.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
-    let mut hook_output_config = hooks_config.output.clone();
-    hook_output_config.verbose |= output.is_verbose();
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );

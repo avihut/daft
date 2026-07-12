@@ -505,9 +505,7 @@ fn run_branch_delete(
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
-    let mut hook_output_config = hooks_config.output.clone();
-    // `-v` opts into the full hook block on the rail (#651).
-    hook_output_config.verbose |= output.is_verbose();
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?;
 
     if should_show_gitoxide_notice(settings.use_gitoxide) {
@@ -600,12 +598,7 @@ fn run_branch_delete(
     // Render deletion results. On the rail, the footer + rows are the
     // record; the per-branch result lines stay for Plain/Hidden so the
     // non-TTY and DAFT_TESTING output is byte-identical to before.
-    let mut had_errors = false;
-    for deletion in &result.deletions {
-        if deletion.has_errors() {
-            had_errors = true;
-        }
-    }
+    let had_errors = result.deletions.iter().any(|d| d.has_errors());
     if interactive {
         let footer = if had_errors {
             format!("Finished with failures in {}", timeline.elapsed_display())

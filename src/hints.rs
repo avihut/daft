@@ -182,10 +182,15 @@ pub enum LayoutPromptResult {
 /// (hint already answered, hints disabled, quiet, non-TTY stdin) never
 /// disturb what they own on screen.
 pub fn layout_prompt_applicable(output: &dyn Output) -> bool {
+    layout_prompt_gate(&HintsState::load().unwrap_or_default(), output)
+}
+
+/// The gate proper, on an already-loaded state — so the prompt itself loads
+/// the hints file once, not once per check.
+fn layout_prompt_gate(state: &HintsState, output: &dyn Output) -> bool {
     if hints_disabled() || output.is_quiet() {
         return false;
     }
-    let state = HintsState::load().unwrap_or_default();
     if state.has_shown(LAYOUT_HINT) {
         return false;
     }
@@ -209,11 +214,10 @@ pub fn maybe_prompt_layout_choice(
     output: &mut dyn Output,
     cancel_message: &str,
 ) -> LayoutPromptResult {
-    if !layout_prompt_applicable(output) {
+    let mut state = HintsState::load().unwrap_or_default();
+    if !layout_prompt_gate(&state, output) {
         return LayoutPromptResult::Default;
     }
-
-    let mut state = HintsState::load().unwrap_or_default();
 
     use crate::styles;
     use std::io::Write;
