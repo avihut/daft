@@ -160,10 +160,14 @@ pub fn run() -> Result<()> {
 
     // --repo: everything below runs against the target repo, so enter it
     // before any cwd-derived work (settings, snapshot).
-    if let Some(needle) = &args.repo {
-        let row = crate::catalog::resolve_repo_arg(needle)?;
-        change_directory(std::path::Path::new(&row.path))?;
-    }
+    let repo_row = match &args.repo {
+        Some(needle) => {
+            let row = crate::catalog::resolve_repo_arg(needle)?;
+            change_directory(std::path::Path::new(&row.path))?;
+            Some(row)
+        }
+        None => None,
+    };
 
     let targets: Vec<core::ResolvedTarget> = if args.all_repos {
         collect_all_repos_targets(&mut output)?
@@ -178,8 +182,10 @@ pub fn run() -> Result<()> {
         let snaps = core::collect_snapshot(&git)?;
 
         if args.repo.is_some() && args.targets.is_empty() && !args.all {
-            // Bare `--repo X`: the repo's default-branch worktree.
-            vec![default_branch_target(&snaps)?]
+            // Bare `--repo X`: the repo's default-branch worktree, resolved
+            // through the catalog like --all-repos/--related (not origin/HEAD
+            // only), so a recorded default branch without origin/HEAD resolves.
+            vec![default_branch_target(&snaps, repo_row.as_ref())?]
         } else {
             let (targets, orphans) =
                 core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
@@ -277,26 +283,44 @@ pub fn run() -> Result<()> {
     std::process::exit(report.aggregate_exit_code());
 }
 
-/// Bare `--repo X` target: X's default-branch worktree. cwd is already X.
-fn default_branch_target(
+/// The live worktree checked out on `branch`, as an exec target.
+fn find_worktree_for_branch(
     snaps: &[crate::core::worktree::exec::WorktreeSnapshot],
-) -> Result<crate::core::worktree::exec::ResolvedTarget> {
-    let root = get_project_root()?;
-    let branch = crate::core::remote::local_default_branch(&root, "origin").ok_or_else(|| {
-        anyhow::anyhow!("could not determine the default branch; pass a target or --all")
-    })?;
+    branch: &str,
+    display: Option<String>,
+) -> Option<crate::core::worktree::exec::ResolvedTarget> {
     snaps
         .iter()
         .filter(|w| w.has_worktree())
-        .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+        .find(|w| w.branch.as_deref() == Some(branch))
         .map(|w| crate::core::worktree::exec::ResolvedTarget {
             worktree_path: w.path.clone(),
-            branch_name: branch.clone(),
-            display: None,
+            branch_name: branch.to_string(),
+            display,
+        })
+}
+
+/// Bare `--repo X` target: X's default-branch worktree. cwd is already X. The
+/// branch comes from the catalog row (recorded default branch, else
+/// origin/HEAD) — the same resolution --all-repos/--related use — so bare
+/// `--repo` can't diverge from them on a repo with no origin/HEAD.
+fn default_branch_target(
+    snaps: &[crate::core::worktree::exec::WorktreeSnapshot],
+    row: Option<&crate::store::CatalogRepoRow>,
+) -> Result<crate::core::worktree::exec::ResolvedTarget> {
+    let branch = row
+        .and_then(crate::catalog::effective_default_branch)
+        .or_else(|| {
+            get_project_root()
+                .ok()
+                .and_then(|root| crate::core::remote::local_default_branch(&root, "origin"))
         })
         .ok_or_else(|| {
-            anyhow::anyhow!("no worktree for default branch '{branch}'; pass a target or --all")
-        })
+            anyhow::anyhow!("could not determine the default branch; pass a target or --all")
+        })?;
+    find_worktree_for_branch(snaps, &branch, None).ok_or_else(|| {
+        anyhow::anyhow!("no worktree for default branch '{branch}'; pass a target or --all")
+    })
 }
 
 /// `--all-repos`: one target per live catalog repo — its default-branch
@@ -422,15 +446,11 @@ fn repo_branch_target(
             None => return Ok(None),
         },
     };
-    Ok(snaps
-        .iter()
-        .filter(|w| w.has_worktree())
-        .find(|w| w.branch.as_deref() == Some(branch.as_str()))
-        .map(|w| core::ResolvedTarget {
-            worktree_path: w.path.clone(),
-            branch_name: branch.clone(),
-            display: Some(format!("{}:{}", row.name, branch)),
-        }))
+    Ok(find_worktree_for_branch(
+        &snaps,
+        &branch,
+        Some(format!("{}:{}", row.name, branch)),
+    ))
 }
 
 /// The current repo's catalog name, for `repo:branch` labels; falls back
@@ -458,6 +478,42 @@ mod tests {
         let mut full = vec!["git-worktree-exec"];
         full.extend_from_slice(argv);
         Args::try_parse_from(full)
+    }
+
+    #[test]
+    fn default_branch_target_prefers_the_catalog_row() {
+        // #357 C5: bare `--repo X` resolves the default branch from the catalog
+        // row (like --all-repos/--related), not origin/HEAD — so it can't
+        // diverge from them on a repo lacking origin/HEAD. A row with a
+        // recorded default_branch short-circuits the origin/HEAD fallback.
+        use crate::core::worktree::exec::WorktreeSnapshot;
+        use std::path::PathBuf;
+
+        let row = crate::store::CatalogRepoRow {
+            uuid: "u1".into(),
+            name: "api".into(),
+            path: "/w/api".into(),
+            git_common_dir: "/w/api/.git".into(),
+            remote_url: None,
+            remote_url_normalized: None,
+            default_branch: Some("trunk".into()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            removed_at: None,
+        };
+        let snaps = vec![
+            WorktreeSnapshot {
+                path: PathBuf::from("/w/api/other"),
+                branch: Some("other".into()),
+            },
+            WorktreeSnapshot {
+                path: PathBuf::from("/w/api/trunk"),
+                branch: Some("trunk".into()),
+            },
+        ];
+        let target = default_branch_target(&snaps, Some(&row)).unwrap();
+        assert_eq!(target.branch_name, "trunk");
+        assert_eq!(target.worktree_path, PathBuf::from("/w/api/trunk"));
     }
 
     #[test]
