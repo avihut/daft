@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.19.0](https://github.com/avihut/daft/compare/v1.18.1...v1.19.0) - 2026-07-12
+
+
+### Features
+
+- Repo catalog and the Graph pillar (#696)
+- **output**: Plan-then-execute rail timeline for worktree lifecycle commands (#688)
 ## [1.18.1](https://github.com/avihut/daft/compare/v1.18.0...v1.18.1) - 2026-07-10
 
 
