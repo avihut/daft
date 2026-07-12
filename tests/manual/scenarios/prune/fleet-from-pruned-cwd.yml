@@ -18,25 +18,25 @@ steps:
     expect:
       exit_code: 0
 
-  - name: "In repo A, check out a feature worktree"
-    run: git-worktree-checkout feature/gone
+  - name: "In repo A, check out the fixture's feature worktree"
+    run: git-worktree-checkout feature/test-feature
     cwd: "$WORK_DIR/fleet-cwd-a/main"
     expect:
       exit_code: 0
       dirs_exist:
-        - "$WORK_DIR/fleet-cwd-a/feature/gone"
+        - "$WORK_DIR/fleet-cwd-a/feature/test-feature"
 
-  - name: "Delete the feature branch from the remote"
+  - name: "Delete the feature branch from A's remote"
     run: |
       temp=$(mktemp -d)
       git clone $REMOTE_FLEET_CWD_A "$temp" 2>/dev/null
-      cd "$temp" && git push origin --delete feature/gone 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
       rm -rf "$temp"
     expect:
       exit_code: 0
 
   - name: "Reset the feature branch onto main so prune may delete it"
-    run: git -C $WORK_DIR/fleet-cwd-a/feature/gone reset --hard main
+    run: git -C $WORK_DIR/fleet-cwd-a/feature/test-feature reset --hard main
     expect:
       exit_code: 0
 
@@ -44,7 +44,7 @@ steps:
       "Fleet-prune from inside the worktree prune removes: the sweep succeeds,
       so the exit code is 0 despite the vanished cwd"
     run: |
-      cd $WORK_DIR/fleet-cwd-a/feature/gone
+      cd $WORK_DIR/fleet-cwd-a/feature/test-feature
       cd_file=$(mktemp)
       DAFT_CD_FILE="$cd_file" daft prune --all-repos 2>&1
       echo "PRUNE_EXIT=$?"
