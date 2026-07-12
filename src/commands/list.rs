@@ -213,6 +213,20 @@ pub fn run() -> Result<()> {
     // The positional and --repo are clap-exclusive, so `or` never merges.
     let repo_needle = args.repo.as_ref().or(args.repo_arg.as_ref());
     if repo_needle.is_some() || args.all_repos {
+        // --all-repos runs the blocking renderer once per repo. Under
+        // structured emit that would write one document per repo, interleaved
+        // with the `── name ──` fleet dividers — not a single parseable
+        // document. Reject it instead of emitting corruption; single-repo
+        // `--repo <name>` is fine (one repo → one document). Aggregated fleet
+        // structured output would be a separate feature. (#357 C2)
+        if args.all_repos && args.emit.is_structured() {
+            anyhow::bail!(
+                "daft list --all-repos does not support structured output \
+                 (--format/--template): it would emit one document per repo. Run \
+                 it per repo (`daft list --repo <name> --format …`) or drop \
+                 --all-repos."
+            );
+        }
         if is_git_repository()? {
             crate::catalog::touch_current_repo();
         }

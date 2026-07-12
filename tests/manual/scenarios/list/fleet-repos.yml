@@ -54,6 +54,25 @@ steps:
         - "── test-repo-a ──"
         - "── test-repo-b ──"
 
+  # C2: --all-repos + structured emit would interleave one document per repo
+  # (plus the dividers), so it is rejected rather than emitting corruption.
+  - name: --all-repos rejects structured output
+    run: daft list --all-repos --format json 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "does not support structured output"
+
+  # Single-repo --repo + structured stays valid — one repo, one document.
+  - name: --repo supports structured output
+    run: daft list --repo test-repo-b --format json
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"
+
   - name: Unknown --repo fails with suggestions
     run: daft list --repo test-rep 2>&1
     cwd: "$WORK_DIR"
