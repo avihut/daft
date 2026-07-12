@@ -191,8 +191,8 @@ impl Catalog {
             }
 
             let name = normalize::suffixed_name(&facts.default_name, |candidate| {
-                CatalogReposRepo::live_name_exists(tx, candidate).unwrap_or(true)
-            });
+                CatalogReposRepo::live_name_exists(tx, candidate)
+            })?;
             let suffixed = name != facts.default_name;
             CatalogReposRepo::insert(
                 tx,
@@ -336,7 +336,10 @@ pub fn resolve_repo_arg_missing_ok(needle: &str) -> anyhow::Result<CatalogRepoRo
 }
 
 fn resolve_repo_arg_impl(needle: &str, require_path: bool) -> anyhow::Result<CatalogRepoRow> {
-    let Some(catalog) = Catalog::open_ro()? else {
+    // open_ro's contract: treat every open error as "no catalog" (a transient
+    // reader BUSY must not turn `daft go <repo>` / `list <repo>` into a hard
+    // failure), matching the hot-path callers rather than propagating with `?`.
+    let Some(catalog) = Catalog::open_ro().ok().flatten() else {
         anyhow::bail!(
             "the repo catalog is empty — clone a repo or run `{}` first",
             crate::daft_cmd("repo add")

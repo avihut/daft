@@ -109,7 +109,8 @@ fn resolve_repo_hash(repo: Option<&str>) -> Result<String> {
     let Some(needle) = repo else {
         return crate::core::repo_identity::compute_repo_id();
     };
-    let Some(catalog) = crate::catalog::Catalog::open_ro()? else {
+    // open_ro contract: degrade a transient open error to "no catalog".
+    let Some(catalog) = crate::catalog::Catalog::open_ro().ok().flatten() else {
         anyhow::bail!("the repo catalog is empty — nothing matches '{needle}'");
     };
     match catalog.resolve(needle)? {

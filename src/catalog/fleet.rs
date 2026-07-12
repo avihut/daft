@@ -55,7 +55,9 @@ pub fn for_each_repo(
     let mut rows = match &scope {
         FleetScope::Single(needle) => vec![crate::catalog::resolve_repo_arg(needle)?],
         FleetScope::AllRepos => {
-            let rows = match crate::catalog::Catalog::open_ro()? {
+            // open_ro contract: a transient open error degrades to "no
+            // catalog" (the empty-catalog bail below), never a hard failure.
+            let rows = match crate::catalog::Catalog::open_ro().ok().flatten() {
                 Some(catalog) => catalog.list(false)?,
                 None => Vec::new(),
             };

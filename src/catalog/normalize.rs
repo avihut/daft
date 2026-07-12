@@ -107,16 +107,22 @@ fn strip_git_suffix(s: &str) -> &str {
 }
 
 /// Find a free name by suffixing `-2`, `-3`, … to `base`. `taken` reports
-/// whether a candidate is already claimed by a live catalog entry.
-pub fn suffixed_name(base: &str, mut taken: impl FnMut(&str) -> bool) -> String {
-    if !taken(base) {
-        return base.to_string();
+/// whether a candidate is already claimed by a live catalog entry; its error
+/// propagates so a failed catalog read aborts the search — and, at the call
+/// site, rolls back the enclosing write transaction — instead of treating
+/// every candidate as taken and looping forever.
+pub fn suffixed_name<E>(
+    base: &str,
+    mut taken: impl FnMut(&str) -> Result<bool, E>,
+) -> Result<String, E> {
+    if !taken(base)? {
+        return Ok(base.to_string());
     }
     let mut n: u32 = 2;
     loop {
         let candidate = format!("{base}-{n}");
-        if !taken(&candidate) {
-            return candidate;
+        if !taken(&candidate)? {
+            return Ok(candidate);
         }
         n += 1;
     }
@@ -237,9 +243,20 @@ mod tests {
     #[test]
     fn suffixed_name_walks_until_free() {
         let taken = ["api", "api-2"];
-        let got = suffixed_name("api", |n| taken.contains(&n));
+        let got = suffixed_name("api", |n| Ok::<_, ()>(taken.contains(&n))).unwrap();
         assert_eq!(got, "api-3");
-        assert_eq!(suffixed_name("solo", |_| false), "solo");
+        assert_eq!(
+            suffixed_name("solo", |_| Ok::<_, ()>(false)).unwrap(),
+            "solo"
+        );
+    }
+
+    #[test]
+    fn suffixed_name_propagates_a_predicate_error_instead_of_looping() {
+        // A failed catalog read must abort the search, not read as "taken"
+        // and spin forever holding the writer transaction (the #357 hang).
+        let result = suffixed_name("api", |_| Err("catalog read failed"));
+        assert_eq!(result, Err("catalog read failed"));
     }
 
     #[test]

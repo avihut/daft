@@ -105,7 +105,9 @@ pub fn current_repo_resolved_relations() -> anyhow::Result<Vec<ResolvedRelation>
     if entries.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = match crate::catalog::Catalog::open_ro()? {
+    // Degrade on any open error (open_ro contract): a transient reader failure
+    // leaves relations unresolved rather than aborting the command.
+    let rows = match crate::catalog::Catalog::open_ro().ok().flatten() {
         Some(catalog) => catalog.list(false)?,
         None => Vec::new(),
     };

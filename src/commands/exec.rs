@@ -304,7 +304,9 @@ fn default_branch_target(
 fn collect_all_repos_targets(
     output: &mut dyn Output,
 ) -> Result<Vec<crate::core::worktree::exec::ResolvedTarget>> {
-    let rows = match crate::catalog::Catalog::open_ro()? {
+    // open_ro contract: a transient open error degrades to "no catalog" (the
+    // empty-catalog bail below), never a hard failure.
+    let rows = match crate::catalog::Catalog::open_ro().ok().flatten() {
         Some(catalog) => catalog.list(false)?,
         None => Vec::new(),
     };
