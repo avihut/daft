@@ -5687,6 +5687,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "daft",
+ "dirs 6.0.0",
  "indicatif",
  "nix",
  "rayon",

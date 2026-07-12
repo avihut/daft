@@ -135,6 +135,30 @@ fn main() -> Result<()> {
                         }
                         return Ok(());
                     }
+                    "__dirs" => {
+                        // Internal, read-only: print the config/data/state dirs
+                        // as THIS binary resolves them — honoring DAFT_*_DIR
+                        // only in dev builds, exactly like every real command.
+                        // The test harnesses' real-state tripwire preflight
+                        // parses this to fail fast when the binary under test
+                        // ignores the overrides (a non-dev-build, or a system
+                        // `daft` shadowing the local one on PATH), before it can
+                        // leak into the real config/state/data dirs. See #697.
+                        for (key, dir) in [
+                            ("config", daft::daft_config_dir()),
+                            ("data", daft::daft_data_dir()),
+                            ("state", daft::daft_state_dir()),
+                        ] {
+                            match dir {
+                                Ok(p) => println!("{key}\t{}", p.display()),
+                                Err(e) => {
+                                    eprintln!("daft __dirs: {key}: {e:#}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     #[cfg(unix)]
                     "__capture-aliases" => {
                         // Internal: session-detach trampoline for the

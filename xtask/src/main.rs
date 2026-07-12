@@ -5,6 +5,7 @@
 
 mod bench;
 mod manual_test;
+mod real_state_guard;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -429,6 +430,19 @@ enum Commands {
         #[arg(long, short = 'j', value_name = "N")]
         jobs: Option<usize>,
     },
+
+    /// Snapshot / verify the real daft state dirs — the test-isolation
+    /// tripwire (#697). Fails if a suite run wrote the real config/state/data
+    /// dirs (i.e. DAFT_*_DIR isolation was silently off, e.g. a non-dev-build
+    /// binary under test).
+    RealStateGuard {
+        /// `snapshot` to record the fingerprint, `verify` to check it.
+        #[arg(value_enum)]
+        mode: real_state_guard::Mode,
+
+        /// Fingerprint file to write (snapshot) or read (verify).
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -477,6 +491,7 @@ fn main() -> Result<()> {
                 jobs_explicit,
             )
         }
+        Commands::RealStateGuard { mode, file } => real_state_guard::run(mode, &file),
     }
 }
 

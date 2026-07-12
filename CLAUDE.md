@@ -101,6 +101,20 @@ a substitute. Production two-stage probes that expect
 `fatal: not a git repository` as a negative signal must suppress the stderr at
 the call site.
 
+**Never let a test write daft's real config/state/data dirs.** A tripwire —
+`xtask real-state-guard`, wired into `test:{unit,integration,manual}` and `ci`
+through `mise-tasks/test/_state_guard_lib.sh` — fingerprints the real
+`~/Library/Application Support/daft` (catalog DB + `repos.json`) and
+`~/.local/state/daft` (`jobs/` entry set) before each suite and fails the run if
+they change, locally and in CI. Tests that exercise hook / visitor-seed code
+paths open the coordinator store via `paths::for_repo`, which resolves
+`daft_state_dir()`; wrap them in `#[serial]` +
+`store::paths::IsolatedStateDir::new()` so they write a tempdir, not the
+developer's real state. Suites that exec a built binary also run a read-only
+`daft __dirs` preflight that fails fast if the binary ignores `DAFT_*_DIR` (a
+release/tagged build, or a system `daft` on `PATH`). See #697; prior art
+#478/#669.
+
 ## XDG Conventions
 
 This project follows the XDG Base Directory Specification. Use the `dirs` crate

@@ -2,6 +2,8 @@
 #MISE description="Run Rust unit tests"
 set -euo pipefail
 
+source "$(dirname "$0")/_state_guard_lib.sh"
+
 echo "Running Rust unit tests..."
 # Cap test parallelism. At the harness's default (= num_cpus), the suite's
 # fd pressure from gitoxide + sqlite + spawn-heavy tests can push individual
@@ -9,4 +11,9 @@ echo "Running Rust unit tests..."
 # git::oxide, store::{migrate,pool}, and hooks::yaml_executor cases — and
 # flaking the pre-push hook. --test-threads=4 keeps wall-clock close to the
 # uncapped run (~+2s on ~1800 tests) and eliminates the flake.
-cargo test --lib --tests --locked -- --test-threads=4
+#
+# Wrapped in the real-state tripwire (#697): even unit tests must never write
+# the developer's real config/state/data dirs (see #478 for the state-dir leak
+# this class covers). No binary preflight here — unit tests honor DAFT_*_DIR by
+# construction under cfg(test).
+with_state_guard cargo test --lib --tests --locked -- --test-threads=4
