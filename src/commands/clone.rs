@@ -475,20 +475,21 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Every prompt has fired and the resolve span has its facts; commit the
     // plan onto the planning face (it spans several core phases, so the
-    // command owns it). When the satellite OperationTable will run
-    // (multi-branch on a TTY), the rail closes before the table and the
-    // post-clone/post-create hooks render standalone after it, exactly as
-    // today — so their rows are only planned for the single-target journeys.
-    let will_use_satellite_tui = is_multi_branch
+    // command owns it). When satellites will render on the TTY after the
+    // base — the OperationTable, or the sequential legacy path under `-vv`
+    // — the rail closes at the base milestone first and the post-clone/
+    // post-create hooks render standalone after, exactly as today — so
+    // their rows are only planned for the single-target journeys.
+    let satellites_on_tty = is_multi_branch
         && !filtered_satellites.is_empty()
-        && std::io::IsTerminal::is_terminal(&std::io::stderr())
-        && args.verbose < 2;
+        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let will_use_satellite_tui = satellites_on_tty && args.verbose < 2;
     // Shared files the cloned config declares get a section between the hook
     // stages (post-clone hooks may seed shared storage, the links land before
     // post-create hooks). No worktree exists yet, so the probe reads the
     // config blob from the bare object store; on a clone into fresh storage
     // every row typically vanishes silently — planned, removed if unnecessary.
-    let planned_shared = if will_use_satellite_tui {
+    let planned_shared = if satellites_on_tty {
         Vec::new()
     } else {
         crate::core::shared::read_shared_paths_from_ref(
@@ -511,7 +512,7 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                     .with_annotation(bare_result.target_branch.clone()),
             ),
         ];
-        if !will_use_satellite_tui {
+        if !satellites_on_tty {
             plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
                 StageId::PostCloneHooks,
             ))));
@@ -604,8 +605,10 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     let (tui_columns, columns_explicit) = match args.columns {
         Some(ref input) => {
-            let resolved = ColumnSelection::parse(input, CommandKind::Clone)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let resolved = match ColumnSelection::parse(input, CommandKind::Clone) {
+                Ok(resolved) => resolved,
+                Err(e) => return Err(fail_rail(&mut timeline, anyhow::anyhow!("{e}"))),
+            };
             let tui_cols: Vec<Column> = resolved
                 .columns
                 .iter()
@@ -654,6 +657,16 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
                 columns_explicit,
             )?
         } else {
+            // The sequential satellite path (`-vv`, or a table-less TTY)
+            // renders legacy spinners and hook blocks on the raw output —
+            // the same terminal the live rail owns. Close the rail at the
+            // base milestone first, exactly like the TUI arm above.
+            if timeline.region_live() {
+                timeline.finish(&format!(
+                    "Base worktree ready in {}",
+                    timeline.elapsed_display()
+                ));
+            }
             create_satellite_worktrees(
                 &result,
                 &branch_plan,
@@ -710,19 +723,49 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         // aggregated multi-worktree copy wins, and a post-clone Deny hit
         // then dedups against it instead of replacing it.
         crate::hooks::trust_skip::flush_pending_notice(&result.git_dir, tail_output);
-        run_post_clone_hook(args, &result, tail_output, &mut timeline)?;
+        // Errors past this point happen with the plan committed and the
+        // region live — close the rail as a failure (`fail_rail`), exactly
+        // like go/start/remove, instead of leaving Drop to stamp the
+        // receipt "interrupted".
+        if let Err(e) = run_post_clone_hook(args, &result, tail_output, &mut timeline) {
+            return Err(fail_rail(&mut timeline, e));
+        }
         // For multi-branch TUI: hooks already ran inside TUI for all worktrees
         // (including the base). For everything else: run post-create hook for
         // the base worktree here.
-        if !(is_multi_branch && used_tui) {
-            run_post_create_hook(args, &result, &planned_shared, tail_output, &mut timeline)?;
+        if !(is_multi_branch && used_tui)
+            && let Err(e) =
+                run_post_create_hook(args, &result, &planned_shared, tail_output, &mut timeline)
+        {
+            return Err(fail_rail(&mut timeline, e));
         }
 
         if args.install {
             let install_key = StepKey::new(StageId::Install);
             timeline.on_stage(&install_key, StageEvent::Started);
-            run_clone_install(args, &result, tail_output)?;
-            timeline.on_stage(&install_key, StageEvent::Completed { annotation: None });
+            // The install step prompts (the git-exclude offer) and prints
+            // legacy lines — yield the terminal for the whole step via
+            // `suspend_for_prompt`, on the raw output. Routing it through
+            // the RegionOutput would deadlock: `suspend` holds the Inner
+            // lock those writes need, and dialoguer's prompt would fight
+            // the region's steady tick for the cursor.
+            let handle = timeline.handle();
+            match handle.suspend_for_prompt(|| run_clone_install(args, &result, output)) {
+                Ok(None) => {
+                    timeline.on_stage(&install_key, StageEvent::Completed { annotation: None });
+                }
+                Ok(Some(skip_reason)) => {
+                    // The receipt must not claim "Installed daft" when the
+                    // step skipped (daft.yml already present).
+                    timeline.on_stage(
+                        &install_key,
+                        StageEvent::SkippedExpected {
+                            reason: skip_reason.to_string(),
+                        },
+                    );
+                }
+                Err(e) => return Err(fail_rail(&mut timeline, e)),
+            }
         }
 
         if timeline.region_live() {
@@ -757,6 +800,15 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     Ok(())
+}
+
+/// Close the live rail as a failure before propagating `e`: an ordinary
+/// error exit must read `Failed after <t>` — the wording go/start/remove
+/// use — not the Drop safety net's "interrupted", which is Ctrl-C
+/// vocabulary. No-op when no region is live.
+fn fail_rail(timeline: &mut Timeline, e: anyhow::Error) -> anyhow::Error {
+    timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+    e
 }
 
 /// Create satellite worktrees for a multi-branch clone.
@@ -1756,7 +1808,7 @@ fn run_clone_install(
     args: &Args,
     result: &clone::CloneResult,
     output: &mut dyn Output,
-) -> Result<()> {
+) -> Result<Option<&'static str>> {
     // The worktree the shell lands in; falls back to the created worktree.
     let Some(primary) = result
         .cd_target
@@ -1765,12 +1817,12 @@ fn run_clone_install(
     else {
         // No worktree was created (e.g. requested branch not found) — nothing
         // to install into. --no-checkout is rejected up front.
-        return Ok(());
+        return Ok(Some("no worktree to install into"));
     };
 
     if primary.join("daft.yml").exists() {
         output.info("daft.yml already present in the repository — skipping --install.");
-        return Ok(());
+        return Ok(Some("daft.yml already present"));
     }
 
     // Decide interactivity here (TTY + not under DAFT_TESTING) and pass it in,
@@ -1789,7 +1841,7 @@ fn run_clone_install(
     // container root, which performs the same multi-worktree bootstrap.
     crate::core::install::propagate_starter_to_worktrees(primary, output);
 
-    Ok(())
+    Ok(None)
 }
 
 /// Spawn a streaming-collector run that re-emits `LAST_COMMIT | BRANCH_AGE`

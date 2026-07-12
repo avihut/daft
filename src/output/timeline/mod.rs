@@ -421,14 +421,23 @@ impl Timeline {
             Some("No hook files found")
             | Some("Hooks are globally disabled")
             | Some("All jobs skipped")
+            | Some("No jobs defined")
+            | Some("No jobs match changed attributes")
             | None => self.resolve_silently(key),
+            // A per-hook `enabled: false` (`daft.hooks.<type>.enabled`) is
+            // deliberate configuration, exactly like the global kill-switch
+            // above — pre-#651 it printed nothing, and a config the user
+            // chose must not nag in the attention color on every run. The
+            // executor's reason is "<hook-type> hook is disabled".
+            Some(reason) if reason.ends_with(" hook is disabled") => self.resolve_silently(key),
             // A hook-level `skip:`/`only:` condition is the config working
             // as designed — the section vanishes like a per-job condition
             // skip (custom condition messages don't match the prefix and
             // stay visible below).
             Some(reason) if rail_hook::is_condition_skip(reason) => self.resolve_silently(key),
-            // Attention-worthy skips (trust refusal, --skip-hooks,
-            // declined prompt): yellow row with the reason.
+            // Attention-worthy skips (trust refusal, --skip-hooks — tag
+            // exclusion included, declined prompt): yellow row with the
+            // reason.
             Some(reason) => self.on_stage(
                 key,
                 StageEvent::SkippedAttention {
@@ -1219,6 +1228,32 @@ mod tests {
             "condition-skipped hook must leave no receipt: {}",
             term.contents()
         );
+    }
+
+    #[test]
+    fn configured_off_hook_skips_vanish_from_the_receipt() {
+        // Deliberate configuration is not an attention event: a per-hook
+        // `enabled: false` ("<hook-type> hook is disabled") and an empty
+        // jobs list ("No jobs defined") printed nothing pre-#651 and must
+        // not nag in yellow on every run.
+        for reason in [
+            "worktree-post-create hook is disabled",
+            "No jobs defined",
+            "No jobs match changed attributes",
+        ] {
+            let (mut tl, term) = captured("Opening feat/x");
+            tl.commit_plan(plan());
+            for id in [StageId::CheckOut, StageId::CreateWorktree] {
+                complete(&mut tl, &StepKey::new(id));
+            }
+            tl.resolve_hook_step(&StepKey::new(StageId::PostCreateHooks), true, Some(reason));
+            tl.finish("Ready in 0.1s");
+            assert!(
+                !term.contents().contains("post-create hooks"),
+                "a configured-off hook ({reason:?}) must leave no receipt: {}",
+                term.contents()
+            );
+        }
     }
 
     #[test]

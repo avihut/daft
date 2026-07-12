@@ -297,22 +297,27 @@ impl JobPresenter for CliPresenter {
                 EmbedTarget::Exact(key) => Some(key.clone()),
                 EmbedTarget::Stage(id) => handle.resolve_key(*id, target),
             };
-            let fresh = match key.and_then(|k| handle.begin_hook_embed(&k)) {
+            *renderer = match key.and_then(|k| handle.begin_hook_embed(&k)) {
                 // Embedded phases always render rail-native (#651) — the
                 // rail renderer reads `config.verbose` itself and threads
                 // each job's log under its row.
-                Some(embed) => EmbedRenderer::Rail(Box::new(RailHookRenderer::new(
+                Some(embed) => Some(EmbedRenderer::Rail(Box::new(RailHookRenderer::new(
                     embed,
                     handle.clone(),
                     config,
-                ))),
-                // Region gone or step unknown (error paths, unplanned
-                // phase) — degrade to the standalone renderer rather than
-                // losing the block. Rail rows make no sense without a
-                // region.
-                None => EmbedRenderer::Block(HookRenderer::auto(config)),
+                )))),
+                // Step unknown while the region still owns the terminal —
+                // render nothing rather than tear the rail: the standalone
+                // renderer's own `MultiProgress` would fight the region for
+                // the cursor. (A `None` renderer no-ops every callback;
+                // executor failures still surface through the routed
+                // output.)
+                None if handle.region_live() => None,
+                // Region gone (error paths, post-rail phases) — degrade to
+                // the standalone renderer rather than losing the block.
+                // Rail rows make no sense without a region.
+                None => Some(EmbedRenderer::Block(HookRenderer::auto(config))),
             };
-            *renderer = Some(fresh);
         }
         if let Some(r) = ready(&mut guard) {
             r.print_header(phase_name, target);

@@ -229,6 +229,11 @@ impl HookExecutor {
         if !self.config.enabled {
             return false;
         }
+        // A per-hook `enabled: false` skips at run time (`execute`'s second
+        // gate) — mirror it here so no row is planned for it either.
+        if !self.config.get_hook_config(hook_type).enabled {
+            return false;
+        }
         // A `Err` from the loader mirrors `execute`: fall through to the
         // legacy discovery (the runtime path warns and does the same).
         if let Ok(Some(yaml)) = yaml_config_loader::load_merged_config(hook_source_worktree)
@@ -879,6 +884,16 @@ mod tests {
         .unwrap();
         assert!(executor.hook_phase_has_work(HookType::PreRemove, &worktree));
         assert!(!executor.hook_phase_has_work(HookType::PostRemove, &worktree));
+
+        // A per-hook `enabled: false` mirrors `execute`'s second gate: the
+        // phase skips at run time, so it must plan no row either.
+        let mut disabled_config = HooksConfig {
+            user_directory: temp_dir.path().join("user-hooks"),
+            ..Default::default()
+        };
+        disabled_config.worktree_pre_remove.enabled = false;
+        let disabled = HookExecutor::with_trust_db(disabled_config, TrustDatabase::default());
+        assert!(!disabled.hook_phase_has_work(HookType::PreRemove, &worktree));
 
         // Legacy scripts count too (the executor's fallback path).
         create_test_hook(&worktree, "worktree-post-remove", "#!/bin/bash\ntrue");

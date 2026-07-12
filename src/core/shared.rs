@@ -1130,10 +1130,15 @@ pub fn render_shared_stage_fallback(
 }
 
 /// Render shared file linking results to stderr with colors — the legacy
-/// line-based reporter, used where no rail region exists (clone's satellite
-/// worktrees after the rail closed). A declared path with nothing in shared
-/// storage warns (`missing from shared storage`) — a declaration the link
-/// step cannot honor is never ignored, in any mode.
+/// line-based reporter for clone's satellite worktrees (after the rail
+/// closed, or from the TUI's worker threads).
+///
+/// `NoSource` stays quiet here: the satellite paths run once per created
+/// worktree, and on a fresh clone shared storage is legitimately empty —
+/// the base worktree's shared section (or its legacy fallback line) already
+/// carries the `daft shared sync` remedy once per declared path. Repeating
+/// it N-paths × M-worktrees through a live operation table is noise, not
+/// honesty. Real problems (conflicts, IO errors) still warn per worktree.
 ///
 /// Clears the current line first to avoid leaving spinner artifacts,
 /// since this may be called while a spinner is active.
@@ -1161,9 +1166,12 @@ pub fn render_link_results(result: &LinkSharedResult) {
                 }
                 continue;
             }
-            // Quiet no-ops: the linked state already holds / was chosen.
-            LinkFileOutcome::AlreadyLinked(_) | LinkFileOutcome::Materialized(_) => continue,
-            LinkFileOutcome::NoSource(path) => missing_reason(path),
+            // Quiet no-ops: the linked state already holds / was chosen —
+            // and `NoSource`, which the base worktree already warned about
+            // once (see the fn doc).
+            LinkFileOutcome::AlreadyLinked(_)
+            | LinkFileOutcome::Materialized(_)
+            | LinkFileOutcome::NoSource(_) => continue,
             LinkFileOutcome::Conflict(path) => conflict_reason(path),
             LinkFileOutcome::Error(path, err) => link_error_reason(path, err),
         };

@@ -449,9 +449,12 @@ impl HookRunner for TimelineBridge<'_> {
         // line mid-region moves the cursor underneath indicatif and strands
         // ghost rows in scrollback (#651 field test: the post-remove
         // `debug: No … hooks found` line under `-v` froze the `│` + `└ …`
-        // footer placeholder above the real footer).
+        // footer placeholder above the real footer). The presenter is null
+        // for the same reason: `CliPresenter::auto` on a TTY spins up a
+        // second `MultiProgress` that fights the live region for the
+        // cursor. Failures still surface through the routed output.
         if self.timeline.region_live() {
-            let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&self.output_config);
+            let presenter: Arc<dyn JobPresenter> = crate::executor::presenter::NullPresenter::arc();
             let mut region_output = crate::output::timeline::RegionOutput::new(
                 self.timeline.handle(),
                 self.output.is_quiet(),
