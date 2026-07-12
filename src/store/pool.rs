@@ -37,11 +37,17 @@ struct PoolInner {
 }
 
 impl Pool {
-    /// Open or create the DB at `path`, apply pending migrations on a
-    /// throwaway connection, then build the writer/reader pools. The
-    /// migration runs once at open time so subsequent pool checkouts skip
-    /// the version check.
+    /// Open or create the per-repo coordinator DB at `path`. See
+    /// [`Pool::open_with`]; this applies the coordinator migration lineage.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, &migrate::coordinator_set())
+    }
+
+    /// Open or create the DB at `path`, apply the lineage's pending
+    /// migrations on a throwaway connection, then build the writer/reader
+    /// pools. The migration runs once at open time so subsequent pool
+    /// checkouts skip the version check.
+    pub fn open_with(path: &Path, set: &migrate::MigrationSet) -> Result<Self> {
         let is_fresh_db = !path.exists();
         // Migration must run on a writable connection before the read-only
         // pool ever hands one out (read-only can't bootstrap the schema).
@@ -53,7 +59,7 @@ impl Pool {
             is_fresh_db,
             /* read_only */ false,
         )?;
-        migrate::run(&mut bootstrap, path)?;
+        migrate::run_set(set, &mut bootstrap, path)?;
         drop(bootstrap);
 
         // Verify file/parent permissions are at most 0o600/0o700 before any

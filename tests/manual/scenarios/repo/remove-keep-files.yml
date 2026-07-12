@@ -1,0 +1,136 @@
+name: Repo remove keep-files and --repo
+description:
+  daft repo remove --keep-files drops the catalog entry without touching the
+  files, --repo addresses cataloged repos by name for both flavors, and a stale
+  entry (directory already gone) can be dropped by name
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: keep-files dry-run announces the entry and changes nothing
+    run: daft repo remove --keep-files --dry-run
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Would remove 'test-repo-a' from the catalog"
+
+  # Non-interactive without --force is fine here: dropping a catalog entry
+  # is reversible, so the destructive-removal gate does not apply.
+  - name: keep-files removes the entry but not the files
+    run: daft repo remove --keep-files
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed 'test-repo-a' from the catalog"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: the repository on disk is still a working clone
+    run:
+      git -C "$WORK_DIR/test-repo-a/main" rev-parse --git-common-dir >/dev/null
+      && echo STILL_A_REPO
+    expect:
+      exit_code: 0
+      output_contains:
+        - "STILL_A_REPO"
+
+  - name: the entry is tombstoned like any other removal
+    run: daft repo list --all
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a (removed)"
+        - "test-repo-b"
+
+  # Ambient registration is the restore story for kept files: any daft
+  # command run inside the repo re-registers it.
+  - name: running daft inside the kept repo resurrects the entry
+    run: daft list >/dev/null 2>&1 && daft repo list
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a"
+
+  # Exec-shape addressing: --repo resolves through the catalog, then runs
+  # the normal full removal.
+  - name: full removal by catalog name
+    run: daft repo remove --repo test-repo-b -y 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+
+  - name: the named repo is gone from disk
+    run: test ! -d "$WORK_DIR/test-repo-b" && echo REPO_B_GONE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "REPO_B_GONE"
+
+  - name: full removal by name refuses a stale entry and points at keep-files
+    run:
+      rm -rf "$WORK_DIR/test-repo-a" && daft repo remove --repo test-repo-a -y
+      2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no longer exists"
+        - "--keep-files"
+
+  # The headline stale-entry case; the directory is gone, so only
+  # --keep-files can address the row.
+  - name: keep-files drops a stale entry by name
+    run: daft repo remove --keep-files --repo test-repo-a
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed stale entry 'test-repo-a' from the catalog"
+
+  - name: the stale entry is tombstoned
+    run: daft repo list --all
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo-a (removed)"
+
+  - name: a removed name is not addressable again
+    run: daft repo remove --keep-files --repo test-repo-b 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "was removed from the catalog"
+
+  - name: an unknown name fails with a catalog error
+    run: daft repo remove --repo no-such-repo 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+
+  # The two spellings are exclusive — clap rejects the contradiction.
+  - name: mixing --repo with a path is rejected
+    run: daft repo remove --repo test-repo-a some/path 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

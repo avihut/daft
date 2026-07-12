@@ -26,8 +26,12 @@ pub fn emit<W: Write>(
             ctx.insert("data", &other);
         }
     }
-    // Tabular emits as an array at the top level; lift to `items` for template use.
-    if matches!(payload, EmitPayload::Tabular(_)) {
+    // Tabular emits as an array at the top level, and so does an array-shaped
+    // Document (`repo list --worktrees`); lift both to `items` so
+    // `{% for r in items %}` works uniformly across shapes.
+    if matches!(payload, EmitPayload::Tabular(_))
+        || matches!(payload, EmitPayload::Document(serde_json::Value::Array(_)))
+    {
         ctx.insert("items", &to_json_value(payload));
     }
 
@@ -82,6 +86,18 @@ mod tests {
     fn document_template_reads_top_level_keys() {
         let out = render(&fixture_document(), "{{ title }} ({{ date }})");
         assert_eq!(out, "Release 1.2 (2026-04-22)\n");
+    }
+
+    /// An array-shaped Document (`repo list --worktrees`) gets the same
+    /// `items` lift as Tabular, so `{% for %}` templates work on both.
+    #[test]
+    fn document_array_template_iterates_items() {
+        let payload = EmitPayload::Document(serde_json::json!([
+            {"name": "alpha", "worktrees": [{"branch": "main"}]},
+            {"name": "beta", "worktrees": []},
+        ]));
+        let out = render(&payload, "{% for r in items %}{{ r.name }}\n{% endfor %}");
+        assert_eq!(out, "alpha\nbeta\n");
     }
 
     #[test]

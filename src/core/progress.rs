@@ -667,8 +667,9 @@ mod tests {
     /// The consolidation prompts fire during validation, under the live
     /// planning face (#651). They must run inside the region suspension —
     /// not assert the region away — and leave the face live for the plan
-    /// that follows. (Under `cargo test` stdin is not a terminal, so the
-    /// prompt resolves to its non-interactive default without blocking.)
+    /// that follows. (The `cfg(test)` prompt seam resolves the unarmed prompt
+    /// to its non-interactive default, so this never blocks on a terminal
+    /// read — see `prompt::single_key_select`.)
     #[test]
     fn consolidation_prompt_survives_a_live_planning_face() {
         use crate::core::{ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest};
@@ -701,9 +702,51 @@ mod tests {
             );
             bridge.on_refined(&req)
         };
-        // Non-interactive stdin resolves to the safe default.
+        // The unarmed prompt seam resolves to the safe default.
         assert_eq!(choice, ConsolidationChoice::Abort);
         // The suspension must restore the face, not tear it down.
+        assert!(timeline.region_live());
+        timeline.abandon_planning();
+    }
+
+    /// The armed prompt seam propagates a real keypress through the live
+    /// bridge: arm `c` (consolidate) and `on_refined` returns `Consolidate`,
+    /// not the `Abort` default. This is the regression guard for the TTY hang
+    /// fix — it fails with the seam reverted, because a non-TTY test run
+    /// resolves every prompt to `Cancelled`/`Abort` regardless.
+    #[test]
+    fn consolidation_prompt_propagates_an_armed_choice() {
+        use crate::core::{ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest};
+        use crate::output::OutputConfig;
+        use crate::output::timeline::{Timeline, TimelineMode};
+        use crate::prompt::{PromptResult, set_next_prompt_response};
+
+        let executor = HookExecutor::new(HooksConfig::default()).expect("create executor");
+        let mut output = TestOutput::with_config(OutputConfig::new(false, false));
+        let mut timeline = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            false,
+            "Removing feature",
+        );
+        timeline.open_planning("Validating branches");
+
+        let req = ConsolidationRequest {
+            branch: "feature".into(),
+            worktree_display: "../feature".into(),
+            target_display: "master".into(),
+            files: Vec::new(),
+        };
+        set_next_prompt_response(PromptResult::Selected('c'));
+        let choice = {
+            let mut bridge = TimelineBridge::new(
+                &mut output,
+                &mut timeline,
+                executor,
+                HookOutputConfig::default(),
+            );
+            bridge.on_refined(&req)
+        };
+        assert_eq!(choice, ConsolidationChoice::Consolidate);
         assert!(timeline.region_live());
         timeline.abandon_planning();
     }

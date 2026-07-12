@@ -32,3 +32,16 @@ steps:
       exit_code: 0
       output_contains:
         - ">"
+
+  # Piped output takes the blocking renderer; forcing colors must paint the
+  # current worktree's row with the same dark-gray background (48;5;235) the
+  # live table applies, and only that row.
+  - name: Colored blocking output highlights the current row
+    run:
+      CLICOLOR_FORCE=1 git-worktree-list 2>/dev/null | grep -c "48;5;235" |
+      xargs test 1 -eq && echo ONE_ROW_HIGHLIGHTED
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW_HIGHLIGHTED"

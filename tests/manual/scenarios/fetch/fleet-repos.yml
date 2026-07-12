@@ -1,0 +1,33 @@
+name: Fetch across repos
+description: daft fetch --all-repos updates every cataloged repository
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Update the fleet from outside any repository
+    run: daft update --all-repos 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "── test-repo-a ──"
+        - "── test-repo-b ──"
+
+  - name: Bare --repo updates the default-branch worktree
+    run: daft update --repo test-repo-b 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "main"

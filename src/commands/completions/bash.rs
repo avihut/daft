@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
-    uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
+    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -63,6 +63,20 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         output.push('\n');
     }
 
+    // Value completion for --repo flag (catalog repo names)
+    if command_has_repo_flag(command_name) {
+        output.push_str("    # Catalog repo-name completion for --repo\n");
+        output.push_str("    if [[ \"$prev\" == \"--repo\" ]]; then\n");
+        output.push_str("        local repos\n");
+        output.push_str(
+            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
+        output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     // Value completion for --skip-hooks flag (selector vocabulary from daft.yml)
     let has_skip_hooks = matches!(
         command_name,
@@ -120,6 +134,27 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
             "        COMPREPLY=( $(compgen -W \"{format_list}\" -- \"$cur\") )\n"
         ));
         output.push_str("        return 0\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
+    // Positional repo-name completion (daft list [<repo>]). Placed after
+    // every value-flag prev block (each returns on match) so flag values
+    // never receive repo names; --template and --stat have no prev block,
+    // so they are excluded explicitly.
+    if command_has_repo_positional(command_name) {
+        output.push_str("    # Positional cataloged-repo completion\n");
+        output.push_str(
+            "    if [[ \"$cur\" != -* && \"$prev\" != \"--template\" && \"$prev\" != \"--stat\" ]]; then\n",
+        );
+        output.push_str("        local repos\n");
+        output.push_str(
+            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+        );
+        output.push_str("        if [[ -n \"$repos\" ]]; then\n");
+        output.push_str("            COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
+        output.push_str("            return 0\n");
+        output.push_str("        fi\n");
         output.push_str("    fi\n");
         output.push('\n');
     }
@@ -219,6 +254,29 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --repo flag (catalog repo names)
+    let repo_flag_pre = if command_has_repo_flag(command_name) {
+        r#"    if [[ "$prev" == "--repo" ]]; then
+        local repos
+        repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+        COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+        return 0
+    fi
+
+"#
+    } else {
+        ""
+    };
+
+    // daft-go's position-2 completion (branches of the repo at position 1)
+    // needs the first positional; pass it via env — the __complete protocol
+    // only carries the current word.
+    let env_prefix = if command_name == "daft-go" {
+        r#"DAFT_COMPLETE_GO_FIRST="${words[1]}" "#
+    } else {
+        ""
+    };
+
     // Rich commands that also carry --skip-hooks (checkout, go) complete its
     // selector vocabulary when the previous word is the flag.
     let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
@@ -239,14 +297,14 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     local cur prev words cword
     _init_completion || return
 
-{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
+{repo_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return 0
     fi
 
 {path_pre}    local raw
-    raw=$(daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
+    raw=$({env_prefix}daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true
@@ -548,19 +606,56 @@ _daft() {
     # repo: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "install remove" -- "$cur") )
+            COMPREPLY=( $(compgen -W "add info install list remove" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
+            add)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--name -q --quiet -v --verbose -h --help" -- "$cur") )
+                    return 0
+                fi
+                COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            info)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--format --template --no-headers -h --help" -- "$cur") )
+                    return 0
+                fi
+                local repos
+                repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+                return 0
+                ;;
             install)
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "-q --quiet -v --verbose --git-exclude -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;
-            remove)
+            list)
+                if [[ "$prev" == "--columns" ]]; then
+                    local columns="annotation name worktrees layout branch path size remote"
+                    local prefixed=""
+                    for c in $columns; do prefixed="$prefixed $c +$c -$c"; done
+                    COMPREPLY=( $(compgen -W "$prefixed" -- "$cur") )
+                    return 0
+                fi
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-y --force --dry-run -v --verbose -h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "-a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+            remove)
+                if [[ "$prev" == "--repo" ]]; then
+                    local repos
+                    repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                    COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--repo --keep-files -y --force --dry-run -v --verbose -h --help" -- "$cur") )
                     return 0
                 fi
                 COMPREPLY=( $(compgen -d -- "$cur") )

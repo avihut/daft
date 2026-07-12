@@ -1,11 +1,139 @@
-//! Column definitions for the `--columns` flag on list/sync/prune commands.
+//! Column definitions for the `--columns` flag on list/sync/prune/repo-list
+//! commands.
 //!
 //! Defines the user-facing column names, canonical ordering, and per-command
 //! default sets. Separate from the TUI `Column` enum which includes TUI-only
 //! variants like `Status`.
 
 use std::fmt;
+use std::hash::Hash;
 use std::str::FromStr;
+
+/// Shared contract for column enums selectable through the `--columns`
+/// replace/modifier grammar. Implementors plug into [`parse_selection`],
+/// which owns the grammar; families only supply names, ordering, defaults,
+/// and any bespoke token validation.
+trait SelectableColumn: Copy + Eq + Hash + FromStr<Err = String> {
+    /// Canonical display position (orders modifier-mode results).
+    fn canonical_position(self) -> u8;
+    /// CLI-facing name, used in error messages.
+    fn cli_name(self) -> &'static str;
+}
+
+/// Family-specific wording for the mixed-mode error — flags say
+/// `--columns branch,path`, config values say `age,path`.
+struct ModeExamples {
+    replace: &'static str,
+    modifier: &'static str,
+}
+
+/// Parse a comma-separated column spec: replace mode (`a,b,c` — exact set
+/// and order) or modifier mode (`+a,-b` applied to `defaults`, result in
+/// canonical order). Returns the resolved columns and whether the user chose
+/// an explicit set (replace mode). `validate_token` runs before each name
+/// parse so families can inject bespoke errors (the status-column check on
+/// sync/prune/clone).
+fn parse_selection<C: SelectableColumn>(
+    input: &str,
+    defaults: &[C],
+    examples: ModeExamples,
+    validate_token: impl Fn(&str) -> Result<(), String>,
+) -> Result<(Vec<C>, bool), String> {
+    let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
+    if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
+        return Err("no columns specified".to_string());
+    }
+
+    let has_modifier = tokens
+        .iter()
+        .any(|t| t.starts_with('+') || t.starts_with('-'));
+    let has_plain = tokens
+        .iter()
+        .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
+
+    if has_modifier && has_plain {
+        return Err(format!(
+            "cannot mix column names with +/- modifiers\n  \
+             use either replace mode:   {}\n  \
+             or modifier mode:          {}",
+            examples.replace, examples.modifier
+        ));
+    }
+
+    if has_modifier {
+        let columns = parse_modifier_tokens(&tokens, defaults, &validate_token)?;
+        Ok((columns, false))
+    } else {
+        let columns = parse_replace_tokens(&tokens, &validate_token)?;
+        Ok((columns, true))
+    }
+}
+
+fn parse_replace_tokens<C: SelectableColumn>(
+    tokens: &[&str],
+    validate_token: &impl Fn(&str) -> Result<(), String>,
+) -> Result<Vec<C>, String> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        validate_token(token)?;
+        let col: C = token.parse()?;
+        if !seen.insert(col) {
+            return Err(format!("duplicate column '{}'", col.cli_name()));
+        }
+        result.push(col);
+    }
+
+    if result.is_empty() {
+        return Err("no columns specified".to_string());
+    }
+
+    Ok(result)
+}
+
+fn parse_modifier_tokens<C: SelectableColumn>(
+    tokens: &[&str],
+    defaults: &[C],
+    validate_token: &impl Fn(&str) -> Result<(), String>,
+) -> Result<Vec<C>, String> {
+    let mut active: std::collections::HashSet<C> = defaults.iter().copied().collect();
+
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        let (add, name) = if let Some(rest) = token.strip_prefix('+') {
+            (true, rest)
+        } else if let Some(rest) = token.strip_prefix('-') {
+            (false, rest)
+        } else {
+            return Err(format!("expected +/- prefix on '{token}'"));
+        };
+
+        validate_token(name)?;
+        let col: C = name.parse()?;
+        if add {
+            active.insert(col);
+        } else {
+            active.remove(&col);
+        }
+    }
+
+    if active.is_empty() {
+        let modifiers = tokens.join(",");
+        return Err(format!(
+            "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
+        ));
+    }
+
+    let mut result: Vec<C> = active.into_iter().collect();
+    result.sort_by_key(|c| c.canonical_position());
+    Ok(result)
+}
 
 /// A column that can be selected via `--columns` on list, sync, and prune.
 ///
@@ -173,19 +301,29 @@ pub enum CommandKind {
 
 /// The resolved column list with mode information.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedColumns {
-    pub columns: Vec<ListColumn>,
+pub struct ResolvedColumns<C = ListColumn> {
+    pub columns: Vec<C>,
     /// True if the user explicitly chose columns (replace mode).
     /// False if they used modifier mode or if defaults are used.
     pub explicit: bool,
 }
 
-impl ResolvedColumns {
-    pub fn defaults(defaults: &[ListColumn]) -> Self {
+impl<C: Copy> ResolvedColumns<C> {
+    pub fn defaults(defaults: &[C]) -> Self {
         Self {
             columns: defaults.to_vec(),
             explicit: false,
         }
+    }
+}
+
+impl SelectableColumn for ListColumn {
+    fn canonical_position(self) -> u8 {
+        ListColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        ListColumn::cli_name(self)
     }
 }
 
@@ -195,107 +333,21 @@ pub struct ColumnSelection;
 impl ColumnSelection {
     /// Parse a comma-separated column spec into a resolved column list.
     pub fn parse(input: &str, command: CommandKind) -> Result<ResolvedColumns, String> {
-        let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
-        if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
-            return Err("no columns specified".to_string());
-        }
-
-        let has_modifier = tokens
-            .iter()
-            .any(|t| t.starts_with('+') || t.starts_with('-'));
-        let has_plain = tokens
-            .iter()
-            .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
-
-        if has_modifier && has_plain {
-            return Err("cannot mix column names with +/- modifiers\n  \
-                 use either replace mode:   --columns branch,path,age\n  \
-                 or modifier mode:          --columns -annotation,-remote"
-                .to_string());
-        }
-
-        if has_modifier {
-            let columns = Self::parse_modifier(&tokens, command)?;
-            Ok(ResolvedColumns {
-                columns,
-                explicit: false,
-            })
-        } else {
-            let columns = Self::parse_replace(&tokens, command)?;
-            Ok(ResolvedColumns {
-                columns,
-                explicit: true,
-            })
-        }
-    }
-
-    fn parse_replace(tokens: &[&str], command: CommandKind) -> Result<Vec<ListColumn>, String> {
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            Self::check_status_token(token, command)?;
-            let col: ListColumn = token.parse()?;
-            if !seen.insert(col) {
-                return Err(format!("duplicate column '{}'", col.cli_name()));
-            }
-            result.push(col);
-        }
-
-        if result.is_empty() {
-            return Err("no columns specified".to_string());
-        }
-
-        Ok(result)
-    }
-
-    fn parse_modifier(tokens: &[&str], command: CommandKind) -> Result<Vec<ListColumn>, String> {
         let defaults = match command {
             CommandKind::List => ListColumn::list_defaults(),
             CommandKind::Sync | CommandKind::Prune => ListColumn::tui_defaults(),
             CommandKind::Clone => ListColumn::clone_defaults(),
         };
-        let mut active: std::collections::HashSet<ListColumn> = defaults.iter().copied().collect();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let (prefix, name) = if let Some(rest) = token.strip_prefix('+') {
-                ('+', rest)
-            } else if let Some(rest) = token.strip_prefix('-') {
-                ('-', rest)
-            } else {
-                return Err(format!("expected +/- prefix on '{token}'"));
-            };
-
-            Self::check_status_token(name, command)?;
-            let col: ListColumn = name.parse()?;
-
-            match prefix {
-                '+' => {
-                    active.insert(col);
-                }
-                '-' => {
-                    active.remove(&col);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        if active.is_empty() {
-            let modifiers = tokens.join(",");
-            return Err(format!(
-                "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
-            ));
-        }
-
-        let mut result: Vec<ListColumn> = active.into_iter().collect();
-        result.sort_by_key(|c| c.canonical_position());
-        Ok(result)
+        let (columns, explicit) = parse_selection(
+            input,
+            defaults,
+            ModeExamples {
+                replace: "--columns branch,path,age",
+                modifier: "--columns -annotation,-remote",
+            },
+            |name| Self::check_status_token(name, command),
+        )?;
+        Ok(ResolvedColumns { columns, explicit })
     }
 
     fn check_status_token(name: &str, command: CommandKind) -> Result<(), String> {
@@ -411,6 +463,185 @@ impl FromStr for CompletionColumn {
     }
 }
 
+/// A column that can be selected via `--columns` on `repo list`.
+///
+/// The repo catalog table is a different entity set from the worktree table,
+/// so it gets its own column family rather than widening [`ListColumn`] with
+/// repo-only variants — `remote` even means different things (remote URL
+/// here, ahead/behind counts there).
+///
+/// Variants are ordered by canonical display position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoListColumn {
+    /// Current-repo annotation marker (`>`).
+    Annotation,
+    /// Catalog name.
+    Name,
+    /// Worktree count (main working tree plus linked worktrees).
+    Worktrees,
+    /// Recorded worktree layout (from the repo store).
+    Layout,
+    /// Recorded default branch.
+    Branch,
+    /// Repository path.
+    Path,
+    /// Disk size of the repository folder.
+    Size,
+    /// Remote URL.
+    Remote,
+}
+
+impl RepoListColumn {
+    /// All columns in canonical display order.
+    pub fn all() -> &'static [RepoListColumn] {
+        &[
+            RepoListColumn::Annotation,
+            RepoListColumn::Name,
+            RepoListColumn::Worktrees,
+            RepoListColumn::Layout,
+            RepoListColumn::Branch,
+            RepoListColumn::Path,
+            RepoListColumn::Size,
+            RepoListColumn::Remote,
+        ]
+    }
+
+    /// The default column set for `repo list`. Size is excluded (it walks
+    /// every repository — add it with `--columns +size`, like the worktree
+    /// commands); Layout and Branch are excluded as structured-output-first
+    /// details (add them with `--columns +layout,+branch`).
+    pub fn repo_list_defaults() -> &'static [RepoListColumn] {
+        &[
+            RepoListColumn::Annotation,
+            RepoListColumn::Name,
+            RepoListColumn::Worktrees,
+            RepoListColumn::Path,
+            RepoListColumn::Remote,
+        ]
+    }
+
+    /// Canonical display position (used to order columns in modifier mode).
+    /// Layout sits beside Worktrees (both describe the worktree structure);
+    /// Size sits right after Path, mirroring the worktree commands.
+    pub fn canonical_position(self) -> u8 {
+        match self {
+            Self::Annotation => 1,
+            Self::Name => 2,
+            Self::Worktrees => 3,
+            Self::Layout => 4,
+            Self::Branch => 5,
+            Self::Path => 6,
+            Self::Size => 7,
+            Self::Remote => 8,
+        }
+    }
+
+    /// CLI-facing name for this column.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Annotation => "annotation",
+            Self::Name => "name",
+            Self::Worktrees => "worktrees",
+            Self::Layout => "layout",
+            Self::Branch => "branch",
+            Self::Path => "path",
+            Self::Size => "size",
+            Self::Remote => "remote",
+        }
+    }
+
+    /// Title-case table header label, shared by the blocking and live
+    /// renderers. Annotation renders as an unlabeled marker column.
+    pub fn header_label(self) -> &'static str {
+        match self {
+            Self::Annotation => "",
+            Self::Name => "Name",
+            Self::Worktrees => "Worktrees",
+            Self::Layout => "Layout",
+            Self::Branch => "Branch",
+            Self::Path => "Path",
+            Self::Size => "Size",
+            Self::Remote => "Remote",
+        }
+    }
+
+    /// All valid CLI column names, for use in error messages.
+    pub fn valid_names() -> String {
+        Self::all()
+            .iter()
+            .map(|c| c.cli_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl fmt::Display for RepoListColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.cli_name())
+    }
+}
+
+impl FromStr for RepoListColumn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "annotation" => Ok(Self::Annotation),
+            "name" => Ok(Self::Name),
+            "worktrees" => Ok(Self::Worktrees),
+            "layout" => Ok(Self::Layout),
+            "branch" => Ok(Self::Branch),
+            "path" => Ok(Self::Path),
+            "size" => Ok(Self::Size),
+            "remote" => Ok(Self::Remote),
+            _ => Err(format!(
+                "unknown column '{}'\n  valid columns: {}",
+                s.trim(),
+                Self::valid_names()
+            )),
+        }
+    }
+}
+
+impl SelectableColumn for RepoListColumn {
+    fn canonical_position(self) -> u8 {
+        RepoListColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        RepoListColumn::cli_name(self)
+    }
+}
+
+/// Parser for `repo list --columns` values.
+pub struct RepoColumnSelection;
+
+impl RepoColumnSelection {
+    /// Parse a comma-separated column spec into a resolved column list.
+    pub fn parse(input: &str) -> Result<ResolvedColumns<RepoListColumn>, String> {
+        let (columns, explicit) = parse_selection(
+            input,
+            RepoListColumn::repo_list_defaults(),
+            ModeExamples {
+                replace: "--columns name,path,remote",
+                modifier: "--columns -remote,+size",
+            },
+            |_| Ok(()),
+        )?;
+        Ok(ResolvedColumns { columns, explicit })
+    }
+}
+
+impl SelectableColumn for CompletionColumn {
+    fn canonical_position(self) -> u8 {
+        CompletionColumn::canonical_position(self)
+    }
+
+    fn cli_name(self) -> &'static str {
+        CompletionColumn::cli_name(self)
+    }
+}
+
 /// Parser for `daft.completions.branches.columns` config values.
 pub struct CompletionColumnSelection;
 
@@ -418,94 +649,16 @@ impl CompletionColumnSelection {
     /// Parse a comma-separated column spec into a resolved column list.
     /// Supports replace mode (`age,path`) and modifier mode (`+tracked-changes,-author`).
     pub fn parse(input: &str) -> Result<Vec<CompletionColumn>, String> {
-        let tokens: Vec<&str> = input.split(',').map(|s| s.trim()).collect();
-        if tokens.is_empty() || tokens.iter().all(|t| t.is_empty()) {
-            return Err("no columns specified".to_string());
-        }
-
-        let has_modifier = tokens
-            .iter()
-            .any(|t| t.starts_with('+') || t.starts_with('-'));
-        let has_plain = tokens
-            .iter()
-            .any(|t| !t.starts_with('+') && !t.starts_with('-') && !t.is_empty());
-
-        if has_modifier && has_plain {
-            return Err("cannot mix column names with +/- modifiers\n  \
-                 use either replace mode:   age,path,tracked-changes\n  \
-                 or modifier mode:          +tracked-changes,-author"
-                .to_string());
-        }
-
-        if has_modifier {
-            Self::parse_modifier(&tokens)
-        } else {
-            Self::parse_replace(&tokens)
-        }
-    }
-
-    fn parse_replace(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let col: CompletionColumn = token.parse()?;
-            if !seen.insert(col) {
-                return Err(format!("duplicate column '{}'", col.cli_name()));
-            }
-            result.push(col);
-        }
-
-        if result.is_empty() {
-            return Err("no columns specified".to_string());
-        }
-
-        Ok(result)
-    }
-
-    fn parse_modifier(tokens: &[&str]) -> Result<Vec<CompletionColumn>, String> {
-        let defaults = CompletionColumn::completion_defaults();
-        let mut active: std::collections::HashSet<CompletionColumn> =
-            defaults.iter().copied().collect();
-
-        for token in tokens {
-            if token.is_empty() {
-                continue;
-            }
-            let (prefix, name) = if let Some(rest) = token.strip_prefix('+') {
-                ('+', rest)
-            } else if let Some(rest) = token.strip_prefix('-') {
-                ('-', rest)
-            } else {
-                return Err(format!("expected +/- prefix on '{token}'"));
-            };
-
-            let col: CompletionColumn = name.parse()?;
-
-            match prefix {
-                '+' => {
-                    active.insert(col);
-                }
-                '-' => {
-                    active.remove(&col);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        if active.is_empty() {
-            let modifiers = tokens.join(",");
-            return Err(format!(
-                "no columns remaining after applying modifiers\n  modifiers: {modifiers}"
-            ));
-        }
-
-        let mut result: Vec<CompletionColumn> = active.into_iter().collect();
-        result.sort_by_key(|c| c.canonical_position());
-        Ok(result)
+        let (columns, _explicit) = parse_selection(
+            input,
+            CompletionColumn::completion_defaults(),
+            ModeExamples {
+                replace: "age,path,tracked-changes",
+                modifier: "+tracked-changes,-author",
+            },
+            |_| Ok(()),
+        )?;
+        Ok(columns)
     }
 }
 
@@ -817,5 +970,77 @@ mod tests {
     fn completion_column_parse_duplicate_error() {
         let err = CompletionColumnSelection::parse("age,age").unwrap_err();
         assert!(err.contains("duplicate"));
+    }
+
+    // RepoListColumn tests
+
+    #[test]
+    fn repo_list_defaults_exclude_size_layout_and_branch() {
+        for optional in [
+            RepoListColumn::Size,
+            RepoListColumn::Layout,
+            RepoListColumn::Branch,
+        ] {
+            assert!(!RepoListColumn::repo_list_defaults().contains(&optional));
+            assert!(RepoListColumn::all().contains(&optional));
+        }
+    }
+
+    #[test]
+    fn repo_list_column_display_roundtrip() {
+        for col in RepoListColumn::all() {
+            assert_eq!(col.cli_name().parse::<RepoListColumn>().unwrap(), *col);
+        }
+    }
+
+    #[test]
+    fn repo_list_all_is_in_canonical_order() {
+        let all = RepoListColumn::all();
+        for (i, col) in all.iter().enumerate() {
+            assert!(
+                i == 0 || col.canonical_position() > all[i - 1].canonical_position(),
+                "Columns must be in ascending canonical position order"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_modifier_add_size_lands_after_path_before_remote() {
+        let resolved = RepoColumnSelection::parse("+size").unwrap();
+        assert!(!resolved.explicit);
+        let pos = |c: RepoListColumn| resolved.columns.iter().position(|x| *x == c).unwrap();
+        assert!(pos(RepoListColumn::Size) > pos(RepoListColumn::Path));
+        assert!(pos(RepoListColumn::Size) < pos(RepoListColumn::Remote));
+    }
+
+    #[test]
+    fn repo_replace_mode_keeps_given_order() {
+        let resolved = RepoColumnSelection::parse("remote,name").unwrap();
+        assert!(resolved.explicit);
+        assert_eq!(
+            resolved.columns,
+            vec![RepoListColumn::Remote, RepoListColumn::Name]
+        );
+    }
+
+    #[test]
+    fn repo_modifier_remove_remote() {
+        let resolved = RepoColumnSelection::parse("-remote").unwrap();
+        assert!(!resolved.columns.contains(&RepoListColumn::Remote));
+        assert!(resolved.columns.contains(&RepoListColumn::Name));
+    }
+
+    #[test]
+    fn repo_unknown_column_error_names_the_repo_family() {
+        let err = RepoColumnSelection::parse("age").unwrap_err();
+        assert!(err.contains("unknown column 'age'"), "Got: {err}");
+        assert!(err.contains("worktrees"), "Got: {err}");
+    }
+
+    #[test]
+    fn repo_mixed_mode_error_uses_repo_examples() {
+        let err = RepoColumnSelection::parse("name,+size").unwrap_err();
+        assert!(err.contains("cannot mix"), "Got: {err}");
+        assert!(err.contains("--columns name,path,remote"), "Got: {err}");
     }
 }

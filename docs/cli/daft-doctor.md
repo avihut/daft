@@ -42,6 +42,7 @@ daft doctor [OPTIONS]
 | `--fix` | Auto-fix issues that can be resolved automatically |  |
 | `--dry-run` | Preview fixes without applying them (use with --fix) |  |
 | `-q, --quiet` | Only show warnings and errors |  |
+| `--all-repos` | Check every cataloged repository, not just the current one |  |
 
 ## Global Options
 

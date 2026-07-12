@@ -1,0 +1,55 @@
+name: "Fleet prune from a pruned worktree still succeeds"
+description:
+  "daft prune --all-repos run from inside a worktree that prune itself removes
+  must exit 0 — the cwd-restore failing (the original worktree is gone) must not
+  turn a fully successful sweep into a failure (#357 C6)"
+
+repos:
+  - name: fleet-cwd-a
+    use_fixture: standard-remote
+  - name: fleet-cwd-b
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone both repos"
+    run:
+      git-worktree-clone --layout contained $REMOTE_FLEET_CWD_A &&
+      git-worktree-clone --layout contained $REMOTE_FLEET_CWD_B
+    expect:
+      exit_code: 0
+
+  - name: "In repo A, check out the fixture's feature worktree"
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/fleet-cwd-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/fleet-cwd-a/feature/test-feature"
+
+  - name: "Delete the feature branch from A's remote"
+    run: |
+      temp=$(mktemp -d)
+      git clone $REMOTE_FLEET_CWD_A "$temp" 2>/dev/null
+      cd "$temp" && git push origin --delete feature/test-feature 2>/dev/null
+      rm -rf "$temp"
+    expect:
+      exit_code: 0
+
+  - name: "Reset the feature branch onto main so prune may delete it"
+    run: git -C $WORK_DIR/fleet-cwd-a/feature/test-feature reset --hard main
+    expect:
+      exit_code: 0
+
+  - name:
+      "Fleet-prune from inside the worktree prune removes: the sweep succeeds,
+      so the exit code is 0 despite the vanished cwd"
+    run: |
+      cd $WORK_DIR/fleet-cwd-a/feature/test-feature
+      cd_file=$(mktemp)
+      DAFT_CD_FILE="$cd_file" daft prune --all-repos 2>&1
+      echo "PRUNE_EXIT=$?"
+      rm -f "$cd_file"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PRUNE_EXIT=0"

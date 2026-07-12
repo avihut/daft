@@ -1,0 +1,56 @@
+name: Repo catalog add and rename
+description:
+  daft repo add --name renames the current repo's catalog entry; an explicit
+  name already taken by another live repo is refused
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Rename repo A to svc
+    run: daft repo add --name svc
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'svc'"
+
+  - name: List shows the new name
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "svc"
+        - "test-repo-b"
+
+  - name: The old name no longer resolves
+    run: daft repo info test-repo-a 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+
+  - name: Renaming repo B to a taken name is refused
+    run: daft repo add --name svc 2>&1
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "already used"
+
+  - name: repo add on an unregistered path registers it explicitly
+    run: daft repo add $WORK_DIR/test-repo-b
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'test-repo-b'"

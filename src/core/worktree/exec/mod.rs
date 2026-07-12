@@ -45,6 +45,17 @@ fn terminate_child(_child: &std::process::Child) {
 pub struct ResolvedTarget {
     pub worktree_path: PathBuf,
     pub branch_name: String,
+    /// Renderer label override for multi-repo runs (`repo:branch` — `:` is
+    /// illegal in refnames, so the form is unambiguous). `None` renders the
+    /// plain branch name; `DAFT_BRANCH_NAME` always stays the raw branch.
+    pub display: Option<String>,
+}
+
+impl ResolvedTarget {
+    /// What the renderers print for this target.
+    pub fn label(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.branch_name)
+    }
 }
 
 /// One command in a per-worktree pipeline.
@@ -246,6 +257,7 @@ pub fn resolve_targets(
                 w.branch.as_ref().map(|b| ResolvedTarget {
                     worktree_path: w.path.clone(),
                     branch_name: b.clone(),
+                    display: None,
                 })
             })
             .collect();
@@ -271,6 +283,7 @@ pub fn resolve_targets(
                     out.push(ResolvedTarget {
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
+                        display: None,
                     });
                 }
                 break;
@@ -291,6 +304,7 @@ pub fn resolve_targets(
                     out.push(ResolvedTarget {
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
+                        display: None,
                     });
                 }
                 break;
@@ -334,6 +348,7 @@ pub fn resolve_targets_with_orphans(
                 w.branch.as_ref().map(|b| ResolvedTarget {
                     worktree_path: w.path.clone(),
                     branch_name: b.clone(),
+                    display: None,
                 })
             })
             .collect();
@@ -384,6 +399,7 @@ pub fn resolve_targets_with_orphans(
                     out.push(ResolvedTarget {
                         worktree_path: wt.path.clone(),
                         branch_name: branch.clone(),
+                        display: None,
                     });
                     actionable_this_glob += 1;
                 } else {
@@ -1002,6 +1018,7 @@ mod tests {
         ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
             branch_name: branch.to_string(),
+            display: None,
         }
     }
 
@@ -1103,10 +1120,12 @@ mod tests {
             ResolvedTarget {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
+                display: None,
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["echo".into(), "ok".into()])];
@@ -1125,10 +1144,12 @@ mod tests {
             ResolvedTarget {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
+                display: None,
             },
         ];
         let pipeline = vec![CommandSpec::Argv(vec!["false".into()])];
@@ -1242,14 +1263,17 @@ mod tests {
             ResolvedTarget {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir3.path().into(),
                 branch_name: "c".into(),
+                display: None,
             },
         ];
 
@@ -1279,14 +1303,17 @@ mod tests {
             ResolvedTarget {
                 worktree_path: dir1.path().into(),
                 branch_name: "a".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir2.path().into(),
                 branch_name: "b".into(),
+                display: None,
             },
             ResolvedTarget {
                 worktree_path: dir3.path().into(),
                 branch_name: "c".into(),
+                display: None,
             },
         ];
         let pipeline = vec![CommandSpec::Shell(
@@ -1308,6 +1335,7 @@ mod tests {
                 target: ResolvedTarget {
                     worktree_path: "/r/master".into(),
                     branch_name: "master".into(),
+                    display: None,
                 },
                 last_command_index: 0,
                 exit_code: 0,
@@ -1319,6 +1347,7 @@ mod tests {
                 target: ResolvedTarget {
                     worktree_path: "/r/feat-dirty".into(),
                     branch_name: "feat/dirty".into(),
+                    display: None,
                 },
                 last_command_index: 0,
                 exit_code: 101,
@@ -1422,6 +1451,7 @@ mod streaming_skip_emission_tests {
         let target = ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-a".into(),
+            display: None,
         };
         let pipeline = vec![
             CommandSpec::Argv(vec!["false".into()]),
@@ -1456,6 +1486,7 @@ mod streaming_skip_emission_tests {
         let target = ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-b".into(),
+            display: None,
         };
         let pipeline = vec![
             CommandSpec::Argv(vec!["echo".into(), "one".into()]),
@@ -1504,6 +1535,7 @@ mod streaming_skip_emission_tests {
         let target = ResolvedTarget {
             worktree_path: dir.path().to_path_buf(),
             branch_name: "branch-mid".into(),
+            display: None,
         };
         let pipeline = vec![
             CommandSpec::Shell("sleep 5".into()),

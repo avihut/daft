@@ -4,12 +4,16 @@
 .SH NAME
 git\-worktree\-list \- List all worktrees with status information
 .SH SYNOPSIS
-\fBgit\-worktree\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-merging\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-list\fR [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-b\fR|\fB\-\-branches\fR] [\fB\-r\fR|\fB\-\-remotes\fR] [\fB\-a\fR|\fB\-\-all\fR] [\fB\-\-merging\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIREPO\fR] 
 .SH DESCRIPTION
 .PP
 Lists all worktrees in the current project with enriched status information
 including uncommitted changes, ahead/behind counts vs. both the base branch
 and the remote tracking branch, branch age, and last commit details.
+.PP
+Give a cataloged repository as the positional argument to list that
+repository\*(Aqs worktrees from anywhere (sugar for `\-\-repo`; the name must be
+in the repo catalog). Use \-\-all\-repos to sweep every cataloged repository.
 .PP
 Each worktree is shown with:
   \- A `>` marker for the current worktree
@@ -124,10 +128,19 @@ Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults
 \fB\-\-sort\fR \fI<SORT>\fR
 Sort order (comma\-separated). +col ascending, \-col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit
 .TP
+\fB\-\-repo\fR \fI<REPO>\fR
+List another cataloged repository\*(Aqs worktrees
+.TP
+\fB\-\-all\-repos\fR
+List every cataloged repository\*(Aqs worktrees
+.TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
+.TP
+[\fIREPO\fR]
+Cataloged repository to list (same as \-\-repo)
 .SH VERSION
 v1.18.1

@@ -1,0 +1,60 @@
+name: "Start with related bases on the default branch, not a stray worktree"
+description:
+  "daft start --with-related bases the related repo's new branch on that repo's
+  recorded default branch even when the default branch has no checkout — not on
+  whatever worktree find_representative_worktree happens to enter (#357 C3)"
+
+repos:
+  - name: rel-base-a
+    use_fixture: standard-remote
+  - name: rel-base-b
+    use_fixture: standard-remote
+
+steps:
+  - name: "Clone both repos"
+    run:
+      git-worktree-clone --layout contained $REMOTE_REL_BASE_A &&
+      git-worktree-clone --layout contained $REMOTE_REL_BASE_B
+    expect:
+      exit_code: 0
+
+  - name: "In B, put a distinctive commit on an `other` branch worktree"
+    run: |
+      cd "$WORK_DIR/rel-base-b/main" && git-worktree-checkout -b other
+      cd "$WORK_DIR/rel-base-b/other"
+      echo only-on-other > other-marker.txt
+      git add other-marker.txt && git commit -q -m "commit only on other"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rel-base-b/other"
+
+  - name: "Remove B's main worktree so its default branch has no checkout"
+    run: |
+      cd "$WORK_DIR/rel-base-b/other"
+      git worktree remove "$WORK_DIR/rel-base-b/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/rel-base-b/main"
+
+  - name: "From A, declare the relation and start a coordinated branch"
+    run: |
+      printf 'relations:\n  - url: %s\n' "$REMOTE_REL_BASE_B" > daft.yml
+      daft start feat-sync --with-related 2>&1
+    cwd: "$WORK_DIR/rel-base-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rel-base-b/feat-sync"
+
+  - name:
+      "B's feat-sync is based on main (default), so it lacks the commit that
+      only exists on `other`"
+    run:
+      test ! -f "$WORK_DIR/rel-base-b/feat-sync/other-marker.txt" && echo
+      BASED_ON_MAIN
+    expect:
+      exit_code: 0
+      output_contains:
+        - "BASED_ON_MAIN"

@@ -5,11 +5,13 @@
 //! Models intentionally avoid any business-logic methods so the store layer
 //! stays a pure data-access layer.
 
+pub mod catalog_repo;
 pub mod invocation;
 pub mod job;
 pub mod repo_policy;
 pub mod visitor_seed;
 
+pub use catalog_repo::CatalogRepoRow;
 pub use invocation::InvocationRow;
 pub use job::JobRow;
 pub use repo_policy::RepoPolicyRow;

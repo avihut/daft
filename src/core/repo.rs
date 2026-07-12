@@ -187,7 +187,7 @@ fn rev_parse_path(cwd: &Path, arg: &str) -> Option<PathBuf> {
 /// Local-only by design: `daft doctor`/`install` must stay fast and work
 /// offline, so this never reaches for the network the way
 /// [`crate::core::remote::get_default_branch_local`]'s ls-remote fallback can.
-fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
     let porcelain = crate::utils::git_command_at(cwd)
         .args(["worktree", "list", "--porcelain"])
         .stderr(Stdio::null())

@@ -1,12 +1,15 @@
 //! `daft repo` subcommand category.
 //!
-//! Verbs: `repo install` (canonical name for the daft.yml bootstrap, also
-//! reachable via the top-level `daft install` alias) and `repo remove`. Future
-//! verbs (`list`, `info`) will dispatch alongside them from `run()`.
+//! Verbs: the catalog surface (`add`, `list`, `info`), `repo install`
+//! (canonical name for the daft.yml bootstrap, also reachable via the
+//! top-level `daft install` alias), and `repo remove`.
 
 use anyhow::Result;
 
+pub mod add;
+pub mod info;
 pub mod install;
+pub mod list;
 pub mod remove;
 
 /// Dispatch entry from the top-level main.
@@ -14,7 +17,10 @@ pub fn run() -> Result<()> {
     let args: Vec<String> = crate::cli::argv().to_vec();
     let sub = args.get(2).map(String::as_str).unwrap_or("");
     match sub {
+        "add" => add::run(),
+        "info" => info::run(),
         "install" => install::run(),
+        "list" => list::run(),
         "remove" => remove::run(),
         "" | "--help" | "-h" => {
             print_help();
@@ -36,6 +42,9 @@ fn print_help() {
     println!("daft repo — repository-level operations");
     println!();
     println!("Subcommands:");
+    println!("  add       Register a repository in the repo catalog");
+    println!("  info      Show a repository's catalog entry");
     println!("  install   Install a starter daft.yml in the current worktree");
+    println!("  list      List repositories in the repo catalog");
     println!("  remove    Remove a repository, including all worktrees");
 }

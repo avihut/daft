@@ -241,6 +241,40 @@ pub fn relative_display_path(abs_path: &Path, project_root: &Path, cwd: &Path) -
         .to_string()
 }
 
+/// Display form of a machine-wide path (catalog repos, their worktrees):
+/// relative to the cwd (same `relative_display_path` as `daft list`) when
+/// that form is no longer than the `~`-abbreviated absolute one, which stays
+/// the fallback — a global catalog can list repos far from the cwd, where
+/// pure relativization degenerates into `../../..` chains. Structured output
+/// keeps raw paths. Callers pass a canonicalized cwd: catalog rows store
+/// canonical paths, so a symlinked cwd (macOS `/tmp`) would never relativize.
+pub fn display_path(path: &str, cwd: Option<&Path>) -> String {
+    let tilde = tilde_path(path);
+    let Some(cwd) = cwd else {
+        return tilde;
+    };
+    let relative = relative_display_path(Path::new(path), cwd, cwd);
+    if relative.chars().count() <= tilde.chars().count() {
+        relative
+    } else {
+        tilde
+    }
+}
+
+/// Abbreviate `$HOME` to `~` for display. Structured output keeps raw paths.
+pub fn tilde_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = Path::new(path).strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
+    }
+    path.to_string()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unified column value computation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +419,52 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: repo list showed absolute paths where `daft list`
+    /// relativizes. Display paths prefer the cwd-relative form (same helper
+    /// as `daft list`) unless the tilde-absolute form is shorter — a global
+    /// catalog lists repos far from the cwd, where relativization
+    /// degenerates into ../-chains.
+    #[test]
+    fn display_path_prefers_the_shorter_of_relative_and_tilde() {
+        let cwd = Path::new("/tmp/sandbox/test");
+        assert_eq!(display_path("/tmp/sandbox/test/api", Some(cwd)), "api");
+        assert_eq!(
+            display_path("/tmp/sandbox/test/api/main", Some(cwd)),
+            "api/main"
+        );
+        assert_eq!(display_path("/tmp/sandbox/test", Some(cwd)), ".");
+        assert_eq!(
+            display_path(
+                "/tmp/sandbox/test",
+                Some(Path::new("/tmp/sandbox/test/api"))
+            ),
+            ".."
+        );
+        assert_eq!(
+            display_path("/opt/elsewhere", None),
+            "/opt/elsewhere",
+            "no cwd falls back to the tilde/absolute form"
+        );
+        if let Some(home) = dirs::home_dir() {
+            let repo = format!("{}/src/api", home.display());
+            assert_eq!(
+                display_path(&repo, Some(Path::new("/tmp/sandbox/deeply/nested/dir"))),
+                "~/src/api",
+                "far from the cwd the tilde form is shorter than a ../-chain"
+            );
+        }
+    }
+
+    #[test]
+    fn tilde_path_abbreviates_home_and_passes_others_through() {
+        if let Some(home) = dirs::home_dir() {
+            let inside = format!("{}/src/thing", home.display());
+            assert_eq!(tilde_path(&inside), "~/src/thing");
+            assert_eq!(tilde_path(&home.display().to_string()), "~");
+        }
+        assert_eq!(tilde_path("/opt/elsewhere"), "/opt/elsewhere");
+    }
 
     #[test]
     fn test_shorthand_from_seconds_sub_minute() {

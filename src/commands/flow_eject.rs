@@ -160,6 +160,11 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         .save()
         .context("Failed to save layout to repos.json")?;
 
+    // Refresh the catalog entry — the project root just changed shape.
+    if let Ok(facts) = crate::catalog::gather_facts(&git_dir, &result.project_root, None, None) {
+        crate::catalog::register_repo(&facts, output);
+    }
+
     output.info(
         "hint: `daft eject` will be replaced by `daft layout transform sibling` in a future release.",
     );

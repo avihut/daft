@@ -1,0 +1,40 @@
+name: Repo catalog remove marks entries
+description:
+  daft repo remove keeps the catalog entry as removed — hidden from the default
+  list, visible with --all, still resolvable by repo info
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Remove the repo
+    run: daft repo remove -y test-repo 2>&1
+    expect:
+      exit_code: 0
+
+  - name: Default list hides removed entries
+    run: daft repo list 2>&1
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "test-repo"
+
+  - name: --all shows the removed entry
+    run: daft repo list --all
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo (removed)"
+
+  - name: repo info still resolves the removed repo
+    run: daft repo info test-repo
+    expect:
+      exit_code: 0
+      output_contains:
+        - "removed"

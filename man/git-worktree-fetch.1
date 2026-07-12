@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-fetch \- Update worktree branches from their remote tracking branches
 .SH SYNOPSIS
-\fBgit\-worktree\-fetch\fR [\fB\-\-all\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fIPULL_ARGS\fR] 
+\fBgit\-worktree\-fetch\fR [\fB\-\-all\fR] [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-dry\-run\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fIPULL_ARGS\fR] 
 .SH DESCRIPTION
 .PP
 Updates worktree branches from their remote tracking branches.
@@ -51,6 +51,12 @@ Be verbose; show detailed progress
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Suppress non\-error output
+.TP
+\fB\-\-repo\fR \fI<REPO>\fR
+Update another cataloged repository
+.TP
+\fB\-\-all\-repos\fR
+Update every cataloged repository (implies \-\-all within each)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

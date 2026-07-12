@@ -254,6 +254,11 @@ pub fn remove_worktree_filesystem(
 /// Trust DB cleanup is best-effort — failures to load or save the database
 /// are swallowed because the repo is already gone at that point.
 pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
+    // Tombstone the catalog entry while daft-id and the paths still exist —
+    // removed repos stay addressable (`daft hooks jobs --repo`, re-clone by
+    // name). Best-effort; if deletion fails below, the next in-repo command
+    // resurrects the entry via lazy registration.
+    crate::catalog::note_repo_removed(&target.bare_git_dir, &target.project_root);
     if target.bare_git_dir.exists() {
         std::fs::remove_dir_all(&target.bare_git_dir)
             .with_context(|| format!("rm -rf {} failed", target.bare_git_dir.display()))?;

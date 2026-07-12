@@ -108,6 +108,27 @@ pub(super) fn uses_fetch_on_miss(command_name: &str) -> bool {
     matches!(command_name, "daft-go")
 }
 
+/// Whether a command carries a `--repo <REPO>` flag whose value completes
+/// to catalog repo names (via `daft __complete repo-name`).
+pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
+    matches!(
+        command_name,
+        "daft-go"
+            | "git-worktree-list"
+            | "git-worktree-fetch"
+            | "git-worktree-exec"
+            | "git-worktree-prune"
+    )
+}
+
+/// Whether a command's first positional is an optional cataloged-repo name
+/// (`daft list [<repo>]`, positional sugar for `--repo`), completed via
+/// `daft __complete repo-name`. Per the repo-aware command grammar
+/// (CLAUDE.md), only read-only commands with a free positional slot qualify.
+pub(super) fn command_has_repo_positional(command_name: &str) -> bool {
+    command_name == "git-worktree-list"
+}
+
 /// Whether a command accepts worktree paths as positional arguments and should
 /// fall back to filesystem directory completion when the dynamic source has
 /// nothing to offer (or as an additional candidate set). This keeps the
@@ -617,6 +638,112 @@ mod tests {
         assert!(
             !script.contains("\n    _describe"),
             "daft-go must NOT call _describe (triggers tag-retry 3x repetition)"
+        );
+    }
+
+    /// `daft list [<repo>]` — the positional is sugar for --repo, so every
+    /// shell must offer catalog repo names at the first positional (fig has
+    /// its own test beside its generator).
+    #[test]
+    fn list_repo_positional_completes_catalog_names_in_all_shells() {
+        let zsh = zsh::generate_zsh_completion_string("git-worktree-list").expect("zsh gen");
+        assert!(
+            zsh.contains("daft __complete repo-name")
+                && zsh.contains("\"$curword\" != -* && \"$prev_word\" != \"--template\""),
+            "zsh list completion must complete the positional repo outside flag values"
+        );
+        let bash = bash::generate_bash_completion_string("git-worktree-list").expect("bash gen");
+        assert!(
+            bash.contains("\"$cur\" != -* && \"$prev\" != \"--template\""),
+            "bash list completion must complete the positional repo outside flag values"
+        );
+        let fish = fish::generate_fish_completion_string("git-worktree-list").expect("fish gen");
+        assert!(
+            fish.contains(
+                "complete -c git-worktree-list -n 'test (count (commandline -opc)) -eq 1'"
+            ),
+            "fish list completion must complete the positional repo at the first token"
+        );
+        let umbrella = fish::generate_daft_fish_completions();
+        assert!(
+            umbrella.contains(
+                "__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2"
+            ),
+            "fish umbrella must complete daft list's positional repo"
+        );
+    }
+
+    /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
+    /// sections of the umbrella completions are hardcoded per shell, so a
+    /// new flag must land in all three (fig has its own spec test).
+    #[test]
+    fn repo_remove_completes_repo_flag_and_keep_files_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        assert!(
+            zsh.contains("compadd -- --repo --keep-files -y --force"),
+            "zsh repo-remove flag list must include --repo and --keep-files"
+        );
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            bash.contains("--repo --keep-files -y --force --dry-run"),
+            "bash repo-remove flag list must include --repo and --keep-files"
+        );
+        // Both umbrellas complete the --repo VALUE with catalog names inside
+        // the repo section's remove arm (the same `daft __complete repo-name`
+        // helper the other repo-aware commands use). Bound the probe to that
+        // arm: the umbrella also has a top-level worktree `remove` verb.
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            let repo_section = script
+                .split("# repo: complete subcommands")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must have a repo section"));
+            let remove_arm = repo_section
+                .split("remove)")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} repo section must have a remove arm"));
+            let arm = &remove_arm[..remove_arm.find(";;").unwrap_or(remove_arm.len())];
+            assert!(
+                arm.contains("daft __complete repo-name"),
+                "{shell} repo-remove arm must complete --repo values with catalog names"
+            );
+        }
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains(
+                "__fish_seen_subcommand_from remove' -l repo -x -a \"(daft __complete repo-name"
+            ) && fish.contains("__fish_seen_subcommand_from remove' -l keep-files"),
+            "fish repo-remove must complete --repo values and offer --keep-files"
+        );
+    }
+
+    /// Regression: the `daft go` position-1 helper appends a catalog `repo`
+    /// group (`name\trepo\tpath`), but the zsh renderer's per-group parser
+    /// only knew worktree/local/remote — catalog repos silently vanished
+    /// from the menu, and outside a repo (where they are the ONLY entries)
+    /// `daft go <TAB>` completed nothing. Fish's shared awk had no 3-field
+    /// branch and rendered a dangling `path · ` description.
+    #[test]
+    fn go_first_arg_renders_the_catalog_repo_group_in_zsh_and_fish() {
+        let zsh = zsh::generate_zsh_completion_string("daft-go").expect("zsh gen");
+        assert!(
+            zsh.contains("repo)") && zsh.contains("repo_paths"),
+            "zsh parser must collect repo-group lines"
+        );
+        assert!(
+            zsh.contains("compadd -V repo "),
+            "zsh must render the catalog repo group"
+        );
+
+        // 3-field repo lines display as name\tpath — no age/author columns.
+        let repo_branch = "else printf \\\"%s\\t%s\\n\\\",c,$3";
+        let fish = fish::generate_fish_completion_string("daft-go").expect("fish gen");
+        assert!(
+            fish.contains(repo_branch),
+            "fish per-command awk must handle 3-field repo lines"
+        );
+        assert!(
+            fish::generate_daft_fish_completions().contains(repo_branch),
+            "fish umbrella awk for `daft go` must handle 3-field repo lines"
         );
     }
 

@@ -126,6 +126,16 @@ setup() {
     export DAFT_STATE_DIR="$TEMP_BASE_DIR/dstate"
     mkdir -p "$DAFT_STATE_DIR"
 
+    # Isolate the daft data dir (SQLite repo catalog at <data>/catalog/
+    # catalog.db) so integration runs never read or pollute the developer's
+    # real ~/.local/share/daft. Without this, init/clone register their temp
+    # repos into the real catalog and accumulate across runs — e.g. a second
+    # `quiet-repo` gets a `-N` suffix notice, which under the gitoxide backend
+    # tips init_quiet past its output budget. The YAML runner already isolates
+    # this per sandbox (xtask/src/manual_test/daft_executor.rs); mirror it here.
+    export DAFT_DATA_DIR="$TEMP_BASE_DIR/ddata"
+    mkdir -p "$DAFT_DATA_DIR"
+
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do

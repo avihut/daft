@@ -1,0 +1,222 @@
+name: Repo catalog basic
+description:
+  Cloning registers the repo in the catalog; repo list and repo info surface it
+  (including from inside the repo with no argument)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Catalog starts empty
+    run: daft repo list 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "No repositories in the catalog yet."
+
+  - name: Clone registers the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: repo list shows the clone
+    run: daft repo list
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Name"
+        - "Worktrees"
+        - "Remote"
+        - "test-repo"
+
+  # Display paths relativize against the cwd when that form is shorter
+  # (mirroring daft list); from the workspace root the repo renders as
+  # `test-repo`, never the absolute sandbox path.
+  # Exact-match the cell: an absolute path would still CONTAIN "test-repo",
+  # so a substring assertion can't catch a regression here.
+  - name: paths render relative to the cwd
+    run:
+      test "$(daft repo list --columns path 2>/dev/null | tail -1 | awk '{print
+      $1}')" = "test-repo" && echo PATHS_RELATIVE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PATHS_RELATIVE"
+
+  # Regression guard for the render path: the first shipped renderer fused
+  # header and rows onto a single line (output.raw is `print!`, no newline).
+  # Substring assertions can't see line boundaries, so count them.
+  - name: repo list emits a header line plus one line per repo
+    run:
+      test "$(daft repo list 2>/dev/null | wc -l)" -eq 2 && echo
+      LINE_STRUCTURE_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "LINE_STRUCTURE_OK"
+
+  # Piped stdio forces the blocking renderer; header + 1 repo row + blank
+  # separator + TOTAL row = 4 lines. The size column rides the house
+  # --columns grammar shared with list/sync/prune, not a bespoke flag.
+  - name: repo list --columns +size adds a size column with a total row
+    run:
+      daft repo list --columns +size && test "$(daft repo list --columns +size
+      2>/dev/null | wc -l)" -eq 4 && echo SIZES_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Size"
+        - "SIZES_OK"
+
+  - name: replace mode narrows the table to the named columns
+    run: daft repo list --columns name,path
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Name"
+        - "test-repo"
+      output_not_contains:
+        - "Worktrees"
+        - "Remote"
+
+  # The clone above used --layout contained; the opt-in layout column
+  # surfaces what store_layout recorded in the repo store.
+  - name: the layout column shows the recorded layout
+    run: daft repo list --columns +layout
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Layout"
+        - "contained"
+
+  - name: an unknown column fails fast listing the valid names
+    run: daft repo list --columns bogus 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown column 'bogus'"
+        - "valid columns:"
+
+  - name: structured output carries worktrees and size_bytes
+    run: daft repo list --columns +size --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"worktrees": 1'
+        - '"size_bytes":'
+
+  - name: default structured output keeps the branch and layout fields
+    run: daft repo list --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"default_branch": "main"'
+        - '"layout": "contained"'
+
+  # Full parity with daft list: colored output paints the current repo's row
+  # with the shared dark-gray background (48;5;235) — exactly one line from
+  # inside the repo, none from outside it.
+  - name: colored output highlights the current repo row
+    run:
+      CLICOLOR_FORCE=1 daft repo list 2>/dev/null | grep -c "48;5;235" | xargs
+      test 1 -eq && echo ONE_ROW_HIGHLIGHTED
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW_HIGHLIGHTED"
+
+  - name: no row highlight outside any repo
+    run: CLICOLOR_FORCE=1 daft repo list 2>/dev/null
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "48;5;235"
+
+  # `daft go` position-1 completions offer catalog repos as a `repo` group
+  # (the shell renderers key on that group tag) with the display-path rule
+  # for the description. Exact-match all three fields: the name alone would
+  # still appear if the group tag or the path prettification regressed.
+  - name: go completions offer catalog repos with display paths
+    run:
+      test "$(daft __complete daft-go '' --position 1 2>/dev/null | awk -F'\t'
+      '$1=="test-repo" && $2=="repo" {print $3}')" = "test-repo" && echo
+      GO_REPO_COMPLETION_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GO_REPO_COMPLETION_OK"
+
+  # The human card: display paths, recorded layout, and the worktrees as a
+  # tree. Identity plumbing (uuid, git dir, registration time) is
+  # structured-output-only.
+  - name: repo info resolves by name
+    run: daft repo info test-repo
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "live"
+        - "main"
+        - "contained"
+        - "└ main"
+      output_not_contains:
+        - "UUID"
+        - "Git dir"
+        - "Registered"
+
+  # Same display rule as repo list: cwd-relative when shorter. Exact-match
+  # the field — an absolute path would still CONTAIN the relative form.
+  - name: repo info paths render relative to the cwd
+    run:
+      test "$(daft repo info test-repo 2>/dev/null | awk '$1=="Path"{print
+      $2}')" = "test-repo" && echo INFO_PATHS_RELATIVE
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INFO_PATHS_RELATIVE"
+
+  - name: repo info structured output keeps the identity plumbing
+    run: daft repo info test-repo --format json
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"uuid":'
+        - '"git_common_dir":'
+        - '"layout": "contained"'
+        - '"worktrees": ['
+        - '"branch": "main"'
+
+  - name: repo info with no argument shows the current repo
+    run: daft repo info
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+        - "live"
+
+  # Regression: the first shipped renderer emitted every field through
+  # output.raw (print!, no newline), fusing the card into ONE line. The
+  # substring assertions above can't see line boundaries, so count them:
+  # Name/Status/Path/Remote/Default branch/Layout/Worktrees = 7 fields,
+  # plus one tree line for the single worktree = 8.
+  - name: repo info renders one line per field
+    run:
+      test "$(daft repo info test-repo 2>/dev/null | wc -l)" -eq 8 && echo
+      INFO_LINE_STRUCTURE_OK
+    expect:
+      exit_code: 0
+      output_contains:
+        - "INFO_LINE_STRUCTURE_OK"
+
+  - name: repo info on an unknown name fails with a suggestion
+    run: daft repo info test-rep 2>&1
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found in the catalog"
+        - "did you mean: test-repo"

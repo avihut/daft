@@ -31,7 +31,9 @@ steps:
     expect:
       exit_code: 0
       output_not_contains:
-        - "daft __complete"
+        - "--position"
+      output_contains:
+        - "repo-name"
 
   - name: Carry command has dynamic branch completion
     run: daft completions bash --command=git-worktree-carry 2>&1

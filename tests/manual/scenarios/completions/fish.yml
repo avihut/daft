@@ -72,3 +72,12 @@ steps:
     run: daft completions fish --command=git-worktree-flow-eject 2>&1
     expect:
       exit_code: 0
+
+  # Regression: the shared awk had no branch for 3-field catalog repo lines
+  # (name\trepo\tpath) and rendered them with a dangling "path · " tail.
+  - name: Fish go completion handles catalog repo lines in its awk
+    run: daft completions fish --command=daft-go 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - 'else printf \"%s\t%s\n\",c,$3'

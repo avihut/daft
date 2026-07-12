@@ -95,6 +95,29 @@ fn verify_application_id(conn: &Connection, db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Open an existing store file read-only, without a pool.
+///
+/// The single-connection sibling of the reader pool, for hot paths that
+/// open at most once per invocation (tab completion, catalog lookups).
+/// Never creates the file — SQLITE_OPEN_READ_ONLY fails on a missing path
+/// — and passes through [`bring_up`] so the application-id check still
+/// gates foreign files. Callers own the fail-fast contract: treat any
+/// error as "no data", never block or print.
+pub(crate) fn open_read_only(path: &Path, busy_timeout_ms: u32) -> Result<Connection> {
+    let mut conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    bring_up(
+        &mut conn,
+        path,
+        busy_timeout_ms,
+        /* is_fresh_db */ false,
+        /* read_only */ true,
+    )?;
+    Ok(conn)
+}
+
 /// Single-connection helper for tests that need to inspect or mutate a
 /// store file without spinning up the connection pool. Applies the same
 /// PRAGMAs the pool would.

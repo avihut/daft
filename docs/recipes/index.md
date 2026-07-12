@@ -81,10 +81,11 @@ checkout" to "ready to run a command."
 ### Steady state
 
 Patterns that span the worktree's full life — declarative env activation on
-`cd`, running the same hooks in CI for parity.
+`cd`, running the same hooks in CI for parity, coordinating work across the repo
+graph.
 
 <ul>
-  <li v-for="r in patterns.filter(p => ['/recipes/declarative-envs', '/recipes/ci-parity'].includes(p.link))" :key="r.link">
+  <li v-for="r in patterns.filter(p => ['/recipes/declarative-envs', '/recipes/ci-parity', '/recipes/coordinating-service-and-client', '/recipes/polyrepo-monorepo'].includes(p.link))" :key="r.link">
     <a :href="r.link">{{ r.title }}</a> — {{ r.description }}
   </li>
 </ul>

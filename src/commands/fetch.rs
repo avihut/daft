@@ -20,7 +20,7 @@ use crate::{
 use anyhow::Result;
 use clap::Parser;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "git-worktree-fetch")]
 #[command(version = crate::VERSION)]
 #[command(about = "Update worktree branches from their remote tracking branches")]
@@ -86,6 +86,23 @@ pub struct Args {
     /// Additional arguments to pass to git pull
     #[arg(last = true, value_name = "PULL_ARGS")]
     pull_args: Vec<String>,
+
+    /// Update another cataloged repository
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        conflicts_with = "all_repos",
+        help = "Update another cataloged repository"
+    )]
+    repo: Option<String>,
+
+    /// Update every cataloged repository
+    #[arg(
+        long = "all-repos",
+        conflicts_with = "targets",
+        help = "Update every cataloged repository (implies --all within each)"
+    )]
+    all_repos: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -93,10 +110,49 @@ pub fn run() -> Result<()> {
 
     init_logging(args.verbose);
 
+    // Fleet scopes work from anywhere; the single-repo form needs a repo.
+    if args.repo.is_some() || args.all_repos {
+        if is_git_repository()? {
+            crate::catalog::touch_current_repo();
+        }
+        let scope = match &args.repo {
+            Some(needle) => crate::catalog::fleet::FleetScope::Single(needle.clone()),
+            None => crate::catalog::fleet::FleetScope::AllRepos,
+        };
+        let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
+        let outcome = crate::catalog::fleet::for_each_repo(
+            scope,
+            /* current_repo_last */ false,
+            &mut output,
+            |row| {
+                let mut repo_args = args.clone();
+                repo_args.repo = None;
+                repo_args.all_repos = false;
+                if args.all_repos {
+                    repo_args.all = true;
+                } else if repo_args.targets.is_empty() && !repo_args.all {
+                    // Bare `--repo X`: X's default-branch worktree ("the
+                    // current worktree" is meaningless from outside).
+                    match crate::catalog::effective_default_branch(row) {
+                        Some(branch) => repo_args.targets = vec![branch],
+                        None => repo_args.all = true,
+                    }
+                }
+                run_in_current_repo(repo_args)
+            },
+        )?;
+        return outcome.into_result();
+    }
+
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
+    crate::catalog::touch_current_repo();
 
+    run_in_current_repo(args)
+}
+
+fn run_in_current_repo(args: Args) -> Result<()> {
     let settings = DaftSettings::load()?;
     let config = OutputConfig::new(args.quiet, args.verbose);
     let mut output = CliOutput::new(config);

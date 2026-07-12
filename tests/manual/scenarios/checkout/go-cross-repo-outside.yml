@@ -1,0 +1,36 @@
+name: Go from outside any repository
+description:
+  Outside a git repository daft go resolves purely against the catalog; a miss
+  keeps the historical "Not inside a Git repository" error
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Bare repo name works from outside any repo
+    run: daft go test-repo
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+
+  - name: Repo plus branch works from outside any repo
+    run: daft go test-repo develop
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: A miss keeps the historical error
+    run: daft go nosuch 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "Not inside a Git repository"

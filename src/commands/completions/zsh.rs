@@ -1,6 +1,6 @@
 use super::{
-    allows_path_completion, emit_formats_for, extract_flags, get_command_for_name,
-    uses_fetch_on_miss, uses_rich_completions,
+    allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
+    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -56,9 +56,25 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
             | "daft-start"
     );
 
+    // Value completion for --repo flag (catalog repo names)
+    let has_repo_flag = command_has_repo_flag(command_name);
+
     // Emit the prev_word variable once if any prev-based completion is needed
-    if has_branch_completions || has_layout || has_skip_hooks {
+    if has_branch_completions || has_layout || has_skip_hooks || has_repo_flag {
         output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+    }
+
+    if has_repo_flag {
+        output.push_str("    # Catalog repo-name completion for --repo\n");
+        output.push_str("    if [[ \"$prev_word\" == \"--repo\" ]]; then\n");
+        output.push_str("        local -a repos\n");
+        output.push_str(
+            "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
+        );
+        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
+        output.push_str("        return\n");
+        output.push_str("    fi\n");
+        output.push('\n');
     }
 
     if has_branch_completions {
@@ -204,6 +220,25 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push('\n');
     }
 
+    // Positional repo-name completion (daft list [<repo>]). Placed after
+    // every value-flag prev block (each returns on match) so flag values
+    // never receive repo names; --template and --stat have no prev block,
+    // so they are excluded explicitly.
+    if command_has_repo_positional(command_name) {
+        output.push_str("    # Positional cataloged-repo completion\n");
+        output.push_str("    local prev_word=\"${words[$((CURRENT-1))]}\"\n");
+        output.push_str(
+            "    if [[ \"$curword\" != -* && \"$prev_word\" != \"--template\" && \"$prev_word\" != \"--stat\" ]]; then\n",
+        );
+        output.push_str("        local -a repos\n");
+        output.push_str(
+            "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
+        );
+        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
+        output.push_str("    fi\n");
+        output.push('\n');
+    }
+
     output.push_str("    # Flag completions (extracted from clap)\n");
     output.push_str("    if [[ \"$curword\" == -* ]]; then\n");
     output.push_str("        local -a flags\n");
@@ -299,6 +334,22 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
+    // Value completion for --repo flag (catalog repo names)
+    let repo_flag_pre = if command_has_repo_flag(command_name) {
+        "    if [[ \"${words[$((CURRENT-1))]}\" == \"--repo\" ]]; then\n        local -a repos\n        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n        return\n    fi\n\n"
+    } else {
+        ""
+    };
+
+    // daft-go position 2 completes branches of the repo named at position 1;
+    // the __complete protocol only carries the current word, so pass the
+    // first positional via env.
+    let env_prefix = if command_name == "daft-go" {
+        r#"DAFT_COMPLETE_GO_FIRST="$words[2]" "#
+    } else {
+        ""
+    };
+
     let mut output = format!(
         r#"#compdef {command_name}
 
@@ -306,7 +357,7 @@ __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
     local cword=$((CURRENT - 1))
 
-{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
+{repo_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
         flags=(
 {flags_block}        )
@@ -318,11 +369,13 @@ __{func_name}_impl() {{
     local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
-    raw=(${{(f)"$(daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
+    local -a repo_names repo_paths
+    raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
+    # Catalog repo lines have 3 fields: name\trepo\tpath
     # Worktree names may have *? dirty indicators — strip for completion
     # value, keep for display. (* and ? are invalid in git branch names.)
     local line name rest group desc max_len=0 len clean_name
@@ -370,13 +423,19 @@ __{func_name}_impl() {{
                 auth_len=${{#${{desc#*$'\t'}}}}
                 (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 ;;
+            repo)
+                repo_names+=("$name")
+                # desc is the repo's display path
+                repo_paths+=("$desc")
+                ;;
         esac
     done
 
     # Second pass: build padded display strings.
     # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
-    local -a wt_display local_display remote_display
+    # Catalog repos: two columns (name, path).
+    local -a wt_display local_display remote_display repo_display
     local i pad apad authpad
     (( max_len += 2 ))
     (( max_age_len += 2 ))
@@ -399,11 +458,17 @@ __{func_name}_impl() {{
         authpad=$(( max_auth_len - ${{#remote_authors[$i]}} ))
         remote_display+=("${{remote_names[$i]}}${{(l:$pad:: :)}}  ${{remote_ages[$i]}}${{(l:$apad:: :)}}  ${{remote_authors[$i]}}")
     done
+    for (( i=1; i<=${{#repo_names}}; i++ )); do
+        pad=$(( max_len - ${{#repo_names[$i]}} ))
+        repo_display+=("${{repo_names[$i]}}${{(l:$pad:: :)}}  ${{repo_paths[$i]}}")
+    done
 
-    # -V preserves group insertion order: worktrees first, then local, then remote.
+    # -V preserves group insertion order: worktrees first, then local, then
+    # remote, then catalog repos (cross-repo navigation).
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
+    (( ${{#repo_names}} ))   && compadd -V repo -l -d repo_display -a repo_names
 {path_post}}}
 
 _{func_name}() {{
@@ -711,19 +776,82 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd install remove
+            compadd add info install list remove
             return
         fi
         case "$words[3]" in
+            add)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --name -q --quiet -v --verbose -h --help
+                    return
+                fi
+                _files -/
+                return
+                ;;
+            info)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --format --template --no-headers -h --help
+                    return
+                fi
+                local -a repos
+                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                (( ${#repos} )) && compadd -- "${repos[@]}"
+                return
+                ;;
             install)
                 if [[ "$curword" == -* ]]; then
                     compadd -- -q --quiet -v --verbose --git-exclude -h --help
                 fi
                 return
                 ;;
-            remove)
+            list)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--columns" ]]; then
+                    local -a column_values
+                    column_values=(
+                        'annotation:Current repo marker'
+                        'name:Catalog name'
+                        'worktrees:Worktree count'
+                        'layout:Worktree layout'
+                        'branch:Default branch'
+                        'path:Repository path'
+                        'size:Disk size of repository'
+                        'remote:Remote URL'
+                        '+annotation:Add current repo marker'
+                        '+name:Add catalog name'
+                        '+worktrees:Add worktree count'
+                        '+layout:Add worktree layout'
+                        '+branch:Add default branch'
+                        '+path:Add repository path'
+                        '+size:Add disk size of repository'
+                        '+remote:Add remote URL'
+                        '-annotation:Remove current repo marker'
+                        '-name:Remove catalog name'
+                        '-worktrees:Remove worktree count'
+                        '-layout:Remove worktree layout'
+                        '-branch:Remove default branch'
+                        '-path:Remove repository path'
+                        '-size:Remove disk size of repository'
+                        '-remote:Remove remote URL'
+                    )
+                    _describe 'column' column_values
+                    return
+                fi
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -y --force --dry-run -v --verbose -h --help
+                    compadd -- -a --all -w --worktrees --columns --format --template --no-headers -q --quiet -h --help
+                fi
+                return
+                ;;
+            remove)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--repo" ]]; then
+                    local -a repos
+                    repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                    (( ${#repos} )) && compadd -- "${repos[@]}"
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --repo --keep-files -y --force --dry-run -v --verbose -h --help
                     return
                 fi
                 _files -/

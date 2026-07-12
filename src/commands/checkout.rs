@@ -28,7 +28,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "git-worktree-checkout")]
 #[command(version = crate::VERSION)]
 #[command(about = "Create a worktree for an existing branch, or a new branch with -b")]
@@ -169,6 +169,15 @@ created; the working directory is changed to the existing worktree instead.
 Use '-' as the branch name to switch to the previous worktree, similar to
 'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
 
+`daft go` also jumps across repositories through the repo catalog. A name
+that matches no branch in the current repository falls back to the catalog
+and opens that repository's default-branch worktree. Two arguments —
+`daft go <repo> <branch>` — open a specific branch there, creating its
+worktree if needed. `--repo <name>` addresses a repository explicitly (for
+names shadowed by local branches), and outside any git repository `daft go`
+resolves purely against the catalog. Anything resolvable in the current
+repository always wins over a catalog match.
+
 With -b, creates a new branch and worktree in a single operation. The new
 branch is based on the current branch, or on `<base-branch>` if specified. It
 is pushed to the remote and upstream tracking is configured; the pre-push hook
@@ -185,16 +194,21 @@ See daft-hooks(1) for hook management.
 "#)]
 pub struct GoArgs {
     #[arg(
-        help = "Branch to open; use '-' for previous worktree",
-        allow_hyphen_values = true
+        help = "Branch (or catalog repo) to open; use '-' for previous worktree",
+        allow_hyphen_values = true,
+        required_unless_present = "repo"
     )]
-    branch_name: String,
+    branch_name: Option<String>,
+
+    #[arg(help = "Branch inside <repo> when two arguments are given; base branch with -b")]
+    second: Option<String>,
 
     #[arg(
-        help = "Base branch for -b (defaults to current branch)",
-        requires = "create_branch"
+        long = "repo",
+        value_name = "REPO",
+        help = "Open a repository from the catalog (jump across repos)"
     )]
-    base_branch_name: Option<String>,
+    repo: Option<String>,
 
     #[arg(
         short = 'b',
@@ -286,6 +300,14 @@ repo's pre-push hook runs only when that push introduces new commits; a
 ref-only push of already-pushed commits skips it (configurable via
 daft.checkout.pushVerify: auto, always, or never).
 
+With --with-related, the same branch is also created in every repo this
+repo's daft.yml `relations:` manifest points at — the entry point for a
+coordinated cross-repo change (pair with `daft exec --related`). Each
+related repo bases the branch on its own default branch; carry and -x stay
+in the current repo; hooks run in a related repo only when it is explicitly
+trusted. All related repos must be cloned locally first, and the final
+working directory is the current repo's new worktree.
+
 This command can be run from anywhere within the repository.
 
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
@@ -297,6 +319,12 @@ pub struct StartArgs {
 
     #[arg(help = "Branch to use as the base; defaults to the current branch")]
     base_branch_name: Option<String>,
+
+    #[arg(
+        long = "with-related",
+        help = "Also create the branch in every related repo (relations manifest), each based on its own default branch"
+    )]
+    with_related: bool,
 
     #[arg(
         short = 'c',
@@ -359,7 +387,7 @@ pub struct StartArgs {
 /// Entry point for `git-worktree-checkout`.
 pub fn run() -> Result<()> {
     let args = Args::parse_from(crate::get_clap_args("git-worktree-checkout"));
-    run_with_args(args)
+    run_with_args(args, GoRouting::local_only())
 }
 
 /// Entry point for `daft go`.
@@ -368,9 +396,15 @@ pub fn run_go() -> Result<()> {
     raw[0] = "daft go".to_string();
     let go_args = GoArgs::parse_from(raw);
 
+    let (branch_name, base_branch_name, routing) = decode_go_grammar(
+        go_args.branch_name,
+        go_args.second,
+        go_args.repo,
+        go_args.create_branch,
+    )?;
     let args = Args {
-        branch_name: go_args.branch_name,
-        base_branch_name: go_args.base_branch_name,
+        branch_name,
+        base_branch_name,
         create_branch: go_args.create_branch,
         start: go_args.start,
         carry: go_args.carry,
@@ -385,7 +419,120 @@ pub fn run_go() -> Result<()> {
         no_verify: go_args.no_verify,
         skip_hooks: go_args.skip_hooks,
     };
-    run_with_args(args)
+    run_with_args(args, routing)
+}
+
+/// Cross-repo target decoded from `daft go`'s grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CrossTarget {
+    /// Catalog needle (name, path, or uuid).
+    repo: String,
+    /// Branch to open there; `None` = the repo's default branch.
+    branch: Option<String>,
+    /// True for the bare `daft go <repo> <branch>` form (drives error copy).
+    positional: bool,
+}
+
+/// How a checkout-family invocation may interact with the repo catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GoRouting {
+    /// Explicit cross-repo target (`--repo` or the two-positional form).
+    cross: Option<CrossTarget>,
+    /// Whether a `BranchNotFound` may fall back to a catalog repo name
+    /// (`daft go <name>` only — never `git-worktree-checkout` or `-b`).
+    catalog_fallback: bool,
+}
+
+impl GoRouting {
+    /// Plain repo-local behavior (`git-worktree-checkout`, `daft start`).
+    fn local_only() -> Self {
+        Self {
+            cross: None,
+            catalog_fallback: false,
+        }
+    }
+}
+
+/// Decode `daft go`'s argument grammar into the local `Args` fields
+/// (`branch_name`, `base_branch_name`) plus the catalog routing.
+///
+/// The grammar, in precedence order:
+///   * `--repo R [<branch>]`, `--repo R -b <branch> [base]` — explicit
+///     cross-repo forms (disambiguates repos shadowed by branch names).
+///   * `go -b <branch> [base]` — positional 2 keeps its base-branch
+///     meaning; creation is always repo-local.
+///   * `go <repo> <branch>` — bare two positionals had no legal meaning
+///     before the catalog existed, so this form is cross-repo by
+///     definition.
+///   * `go <name>` — current-repo resolution first; the catalog is only a
+///     `BranchNotFound` fallback.
+fn decode_go_grammar(
+    first: Option<String>,
+    second: Option<String>,
+    repo: Option<String>,
+    create_branch: bool,
+) -> Result<(String, Option<String>, GoRouting)> {
+    if let Some(repo) = repo {
+        if first.as_deref() == Some("-") {
+            anyhow::bail!("Cannot use '-' with --repo");
+        }
+        if !create_branch && second.is_some() {
+            anyhow::bail!(
+                "--repo takes a single <branch>: got '{}' and '{}'",
+                first.as_deref().unwrap_or(""),
+                second.as_deref().unwrap_or("")
+            );
+        }
+        if create_branch && first.is_none() {
+            anyhow::bail!("-b/--create-branch with --repo requires a branch name");
+        }
+        let branch = first.clone();
+        return Ok((
+            first.unwrap_or_default(),
+            if create_branch { second } else { None },
+            GoRouting {
+                cross: Some(CrossTarget {
+                    repo,
+                    branch,
+                    positional: false,
+                }),
+                catalog_fallback: false,
+            },
+        ));
+    }
+
+    let first = first.expect("clap enforces the first positional unless --repo is present");
+
+    if let Some(second) = second {
+        if create_branch {
+            // `daft go -b <branch> [base]` — unchanged local meaning.
+            return Ok((first, Some(second), GoRouting::local_only()));
+        }
+        if first == "-" {
+            anyhow::bail!("Cannot use '-' with a second argument");
+        }
+        return Ok((
+            second.clone(),
+            None,
+            GoRouting {
+                cross: Some(CrossTarget {
+                    repo: first,
+                    branch: Some(second),
+                    positional: true,
+                }),
+                catalog_fallback: false,
+            },
+        ));
+    }
+
+    Ok((
+        first,
+        None,
+        GoRouting {
+            cross: None,
+            catalog_fallback: !create_branch,
+        },
+    ))
 }
 
 /// Entry point for `daft start`.
@@ -393,6 +540,10 @@ pub fn run_start() -> Result<()> {
     let mut raw = crate::get_clap_args("daft-start");
     raw[0] = "daft start".to_string();
     let start_args = StartArgs::parse_from(raw);
+
+    if start_args.with_related {
+        return run_start_with_related(start_args);
+    }
 
     let args = Args {
         branch_name: start_args.new_branch_name,
@@ -411,18 +562,23 @@ pub fn run_start() -> Result<()> {
         no_verify: start_args.no_verify,
         skip_hooks: start_args.skip_hooks,
     };
-    run_with_args(args)
+    run_with_args(args, GoRouting::local_only())
 }
 
-fn run_with_args(args: Args) -> Result<()> {
+fn run_with_args(args: Args, routing: GoRouting) -> Result<()> {
     init_logging(args.verbose);
 
-    if !is_git_repository()? {
-        anyhow::bail!("Not inside a Git repository");
+    let inside_repo = is_git_repository()?;
+    if inside_repo {
+        crate::catalog::touch_current_repo();
     }
 
-    // Handle `daft go -` (previous worktree navigation)
-    if args.branch_name == "-" {
+    // Handle `daft go -` (previous worktree navigation) — repo-local by
+    // definition (decode already rejected `-` in the cross-repo forms).
+    if routing.cross.is_none() && args.branch_name == "-" {
+        if !inside_repo {
+            anyhow::bail!("Not inside a Git repository");
+        }
         if args.create_branch {
             anyhow::bail!("Cannot use '-' with -b/--create-branch");
         }
@@ -439,6 +595,166 @@ fn run_with_args(args: Args) -> Result<()> {
         anyhow::bail!("<BASE_BRANCH_NAME> can only be used with -b/--create-branch");
     }
 
+    let original_dir = get_current_directory()?;
+
+    // Capture the source worktree BEFORE any cross-repo chdir, so the
+    // target repo's `daft go -` can hop back across repos (best-effort).
+    let source_worktree = if inside_repo {
+        get_current_worktree_path().ok()
+    } else {
+        None
+    };
+
+    // Explicit cross-repo target (`--repo` or the two-positional form):
+    // loud resolution, then run inside the target repo.
+    if let Some(cross) = &routing.cross {
+        let row = resolve_cross_target(&cross.repo, cross.positional)?;
+        return go_to_repo(
+            &row,
+            cross.branch.clone(),
+            args,
+            original_dir,
+            source_worktree,
+        );
+    }
+
+    // Bare `daft go <name>` outside any git repo: the catalog is the only
+    // possible meaning. On a miss, keep the exact historical error.
+    if !inside_repo {
+        if routing.catalog_fallback
+            && !args.start
+            && let Some(row) = lookup_live_repo(&args.branch_name)
+        {
+            return go_to_repo(&row, None, args, original_dir, source_worktree);
+        }
+        anyhow::bail!("Not inside a Git repository");
+    }
+
+    run_in_repo(
+        args,
+        routing.catalog_fallback,
+        original_dir,
+        source_worktree,
+    )
+}
+
+/// Resolve an explicit cross-repo needle against the catalog, loudly.
+fn resolve_cross_target(
+    needle: &str,
+    positional_form: bool,
+) -> Result<crate::store::CatalogRepoRow> {
+    let Some(catalog) = crate::catalog::Catalog::open_ro()? else {
+        anyhow::bail!(
+            "the repo catalog is empty — clone a repo or run `{}` first",
+            crate::daft_cmd("repo add")
+        );
+    };
+    match catalog.resolve(needle)? {
+        Some(row) if row.removed_at.is_none() => Ok(row),
+        Some(row) => anyhow::bail!(
+            "repository '{}' was removed from the catalog; restore it with `{}`",
+            row.name,
+            crate::daft_cmd(&format!("clone {}", row.name))
+        ),
+        None => {
+            let err = catalog.not_found(needle);
+            let mut msg = err.to_string();
+            if let crate::catalog::CatalogError::NotFound { suggestions, .. } = &err
+                && !suggestions.is_empty()
+            {
+                msg.push_str(&format!("\n  did you mean: {}", suggestions.join(", ")));
+            }
+            if positional_form {
+                anyhow::bail!(
+                    "{msg}\n  note: two arguments mean `daft go <repo> <branch>`; to create \
+                     a branch use `daft go -b <branch> [base]` or `daft start`"
+                );
+            }
+            anyhow::bail!(
+                "{msg}\n  tip: `{}` shows known repos; `{}` registers the current one",
+                crate::daft_cmd("repo list"),
+                crate::daft_cmd("repo add")
+            );
+        }
+    }
+}
+
+/// Silent live-name lookup for the `BranchNotFound` fallback path.
+fn lookup_live_repo(name: &str) -> Option<crate::store::CatalogRepoRow> {
+    let catalog = crate::catalog::Catalog::open_ro().ok().flatten()?;
+    catalog.resolve_live_name(name).ok().flatten()
+}
+
+/// The branch `daft go <repo>` lands on: the catalog's recorded default
+/// branch, refreshed from the repo's local `origin/HEAD` when unknown
+/// (write-back is best-effort). Assumes cwd is already the target repo.
+fn resolve_repo_default_branch(row: &crate::store::CatalogRepoRow) -> Result<String> {
+    if let Some(branch) = &row.default_branch {
+        return Ok(branch.clone());
+    }
+    if let Some(branch) =
+        crate::core::remote::local_default_branch(std::path::Path::new(&row.path), "origin")
+    {
+        if let Ok(catalog) = crate::catalog::Catalog::open_rw() {
+            let _ = catalog.refresh_default_branch(&row.uuid, &branch);
+        }
+        return Ok(branch);
+    }
+    anyhow::bail!(
+        "could not determine the default branch of '{}'; pass a branch: `{}`",
+        row.name,
+        crate::daft_cmd(&format!("go {} <branch>", row.name))
+    )
+}
+
+/// Enter `row`'s repository and open `branch` there (the repo's default
+/// branch when `None`). Everything downstream — git discovery, settings,
+/// layout, trust, hooks, `DAFT_CD_FILE` — is cwd-derived, so a chdir is
+/// the entire cross-repo mechanism.
+fn go_to_repo(
+    row: &crate::store::CatalogRepoRow,
+    explicit_branch: Option<String>,
+    mut args: Args,
+    original_dir: PathBuf,
+    source_worktree: Option<PathBuf>,
+) -> Result<()> {
+    let path = std::path::Path::new(&row.path);
+    if !path.is_dir() {
+        anyhow::bail!(
+            "catalog entry '{}' points at '{}', which no longer exists\n  \
+             tip: if the repo moved, run `{}` from its new location; \
+             if it's gone, `{}` re-clones it",
+            row.name,
+            row.path,
+            crate::daft_cmd("repo add"),
+            crate::daft_cmd(&format!("clone {}", row.name))
+        );
+    }
+    change_directory(path)?;
+
+    let result = (|| {
+        if !args.create_branch {
+            args.branch_name = match explicit_branch {
+                Some(branch) => branch,
+                None => resolve_repo_default_branch(row)?,
+            };
+        }
+        // Catalog fallback stays off inside the target repo — one hop only.
+        run_in_repo(args, false, original_dir.clone(), source_worktree)
+    })();
+    if result.is_err() {
+        change_directory(&original_dir).ok();
+    }
+    result
+}
+
+/// Dispatch a checkout/create inside the repo the cwd currently sits in.
+fn run_in_repo(
+    args: Args,
+    catalog_fallback: bool,
+    original_dir: PathBuf,
+    source_worktree: Option<PathBuf>,
+) -> Result<()> {
     // Construct one `GitCommand` and load settings (and, in the run_checkout /
     // run_create_branch bodies, the hooks config) through it so a checkout
     // discovers the repo exactly once instead of per throwaway instance (#584).
@@ -449,11 +765,6 @@ fn run_with_args(args: Args) -> Result<()> {
     let autocd = settings.autocd && !args.no_cd;
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
     let mut output = CliOutput::new(config);
-
-    let original_dir = get_current_directory()?;
-
-    // Capture source worktree before the operation (best-effort)
-    let source_worktree = get_current_worktree_path().ok();
 
     let result = if args.create_branch {
         run_create_branch(&args, &settings, &git, &mut output)
@@ -478,6 +789,22 @@ fn run_with_args(args: Args) -> Result<()> {
                 ref remote,
                 fetch_failed,
             }) => {
+                // A live catalog repo beats creating a branch: `daft go api`
+                // means "open the api repo" when no branch `api` exists.
+                // `--start` forces branch creation instead.
+                if catalog_fallback
+                    && !args.start
+                    && let Some(row) = lookup_live_repo(branch)
+                    && std::path::Path::new(&row.path).is_dir()
+                {
+                    change_directory(&original_dir).ok();
+                    output.result(&format!(
+                        "Opening repository '{}' (use --start to create a branch named '{}')",
+                        row.name, branch
+                    ));
+                    return go_to_repo(&row, None, args.clone(), original_dir, source_worktree);
+                }
+
                 let auto_start = args.start || settings.go_auto_start;
                 if auto_start {
                     change_directory(&original_dir).ok();
@@ -507,7 +834,10 @@ fn run_with_args(args: Args) -> Result<()> {
         return Err(e);
     }
 
-    // Save the source worktree as previous (best-effort, after success)
+    // Save the source worktree as previous (best-effort, after success).
+    // After a cross-repo hop the cwd — and therefore the git dir — is the
+    // target repo's, so its previous-worktree file records the source
+    // worktree from the other repo and `daft go -` hops back.
     if let Some(src) = source_worktree
         && let Ok(git_dir) = get_git_common_dir()
     {
@@ -864,6 +1194,28 @@ fn run_create_branch(
     git: &GitCommand,
     output: &mut dyn Output,
 ) -> Result<()> {
+    let result = run_create_branch_core(args, settings, git, output)?;
+
+    // Run exec commands (after hooks, before cd_path)
+    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
+    output.cd_path(&result.cd_target);
+    maybe_show_shell_hint(output)?;
+
+    // Propagate exec error after cd_path is written
+    exec_result?;
+
+    Ok(())
+}
+
+/// The create-branch machinery without the terminal tail (exec commands,
+/// cd redirect, shell hint) — reusable per-repo by `--with-related`.
+fn run_create_branch_core(
+    args: &Args,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<checkout_branch::CheckoutBranchResult> {
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
@@ -984,16 +1336,179 @@ fn run_create_branch(
         render_create_result(&result, output);
     }
 
-    // Run exec commands (after hooks, before cd_path)
-    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+    Ok(result)
+}
 
-    output.cd_path(&result.cd_target);
-    maybe_show_shell_hint(output)?;
+/// `daft start <branch> --with-related`: create the branch here, then in
+/// every repo the relations manifest points at. Resolution is all-upfront
+/// (a missing clone aborts before anything is created); per-repo creation
+/// failures are collected and reported, not cascaded. The final cd target
+/// is the current repo's new worktree.
+fn run_start_with_related(start_args: StartArgs) -> Result<()> {
+    init_logging(start_args.verbose);
 
-    // Propagate exec error after cd_path is written
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository");
+    }
+    crate::catalog::touch_current_repo();
+
+    // Resolve every relation before creating anything.
+    let resolved = crate::catalog::relations::current_repo_resolved_relations()?;
+    if resolved.is_empty() {
+        anyhow::bail!(
+            "this repo declares no relations — add a `relations:` section to daft.yml \
+             (each entry: `- url: <remote-url>`)"
+        );
+    }
+    for relation in &resolved {
+        let Some(row) = &relation.repo else {
+            anyhow::bail!(
+                "related repo '{}' is not cloned locally\n  tip: `{}`, then re-run — \
+                 --with-related creates the branch everywhere, so every related repo \
+                 must exist first",
+                relation.entry.label(),
+                crate::daft_cmd(&format!("clone {}", relation.entry.url))
+            );
+        };
+        if !std::path::Path::new(&row.path).is_dir() {
+            anyhow::bail!(
+                "related repo '{}' points at '{}', which no longer exists\n  tip: `{}`",
+                row.name,
+                row.path,
+                crate::daft_cmd(&format!("clone {}", row.name))
+            );
+        }
+    }
+
+    let args = Args {
+        branch_name: start_args.new_branch_name,
+        base_branch_name: start_args.base_branch_name,
+        create_branch: true,
+        start: false,
+        carry: start_args.carry,
+        no_carry: start_args.no_carry,
+        remote: start_args.remote,
+        no_cd: start_args.no_cd,
+        exec: start_args.exec,
+        quiet: start_args.quiet,
+        verbose: start_args.verbose,
+        at: start_args.at,
+        local: start_args.local,
+        no_verify: start_args.no_verify,
+        skip_hooks: start_args.skip_hooks,
+    };
+
+    let original_dir = get_current_directory()?;
+    let source_worktree = get_current_worktree_path().ok();
+
+    // 1) Current repo first — its failure aborts the whole fan-out.
+    let git = GitCommand::new(args.quiet);
+    let settings = DaftSettings::load_with(&git)?;
+    let git = git.with_gitoxide(settings.use_gitoxide);
+    let autocd = settings.autocd && !args.no_cd;
+    let mut output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
+
+    let current_result = match run_create_branch_core(&args, &settings, &git, &mut output) {
+        Ok(result) => result,
+        Err(e) => {
+            change_directory(&original_dir).ok();
+            return Err(e);
+        }
+    };
+
+    // 2) Every related repo, collecting failures instead of cascading.
+    let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
+    for relation in &resolved {
+        let row = relation.repo.as_ref().expect("verified upfront");
+        output.result(&format!(
+            "Creating '{}' in '{}'…",
+            args.branch_name, row.name
+        ));
+        if let Err(e) = create_branch_in_related_repo(row, &args, &mut output) {
+            failures.push((row.name.clone(), e));
+        }
+    }
+
+    // 3) Settle in the current repo's new worktree.
+    change_directory(&current_result.cd_target)?;
+    if let Some(src) = source_worktree
+        && let Ok(git_dir) = get_git_common_dir()
+    {
+        let _ = previous::save(&git_dir, &src);
+    }
+
+    // -x runs only in the current repo (documented).
+    let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
+    output.cd_path(&current_result.cd_target);
+    maybe_show_shell_hint(&mut output)?;
     exec_result?;
 
+    if !failures.is_empty() {
+        for (name, e) in &failures {
+            output.warning(&format!("'{name}': {e}"));
+        }
+        anyhow::bail!(
+            "branch '{}' created here, but creation failed in {} related repo(s)",
+            args.branch_name,
+            failures.len()
+        );
+    }
     Ok(())
+}
+
+/// Create `args.branch_name` in a related repo, based on that repo's own
+/// default branch (recorded in the catalog, else origin/HEAD) regardless of
+/// which worktree happens to be checked out there. Never carry, never run
+/// `-x`, and run hooks only when the repo is explicitly trusted (`Allow`) — a
+/// fan-out must not block on interactive trust prompts.
+fn create_branch_in_related_repo(
+    row: &crate::store::CatalogRepoRow,
+    args: &Args,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let repo_root = std::path::Path::new(&row.path);
+    let Some(worktree) = crate::core::repo::find_representative_worktree(repo_root) else {
+        anyhow::bail!("'{}' has no worktrees to base the new branch on", row.name);
+    };
+    let restore = get_current_directory()?;
+    change_directory(&worktree)?;
+
+    let result = (|| {
+        let git = GitCommand::new(args.quiet);
+        let settings = DaftSettings::load_with(&git)?;
+        let git = git.with_gitoxide(settings.use_gitoxide);
+
+        let mut repo_args = args.clone();
+        // Base the new branch on the related repo's own default branch (its
+        // recorded catalog default, else origin/HEAD) — NOT whatever branch
+        // find_representative_worktree happened to enter, which is wrong when
+        // the default branch has no checkout. An explicit base only applies to
+        // the current repo; fall back to the entered worktree's branch (None)
+        // only when the default is unknown.
+        repo_args.base_branch_name = crate::catalog::effective_default_branch(row);
+        // Carry and -x never cross repos.
+        repo_args.carry = false;
+        repo_args.no_carry = true;
+        repo_args.exec = Vec::new();
+
+        let git_dir = get_git_common_dir()?;
+        let trusted = TrustDatabase::load()
+            .map(|db| db.get_trust_level(&git_dir) == crate::hooks::TrustLevel::Allow)
+            .unwrap_or(false);
+        if !trusted && !repo_args.skip_hooks.iter().any(|s| s == "all") {
+            repo_args.skip_hooks.push("all".to_string());
+            output.notice(&format!(
+                "hooks skipped in '{}' (repo not trusted; run `{}` there)",
+                row.name,
+                crate::daft_cmd("hooks trust")
+            ));
+        }
+
+        run_create_branch_core(&repo_args, &settings, &git, output).map(|_| ())
+    })();
+
+    change_directory(&restore).ok();
+    result
 }
 
 fn render_branch_not_found_error(
@@ -1084,5 +1599,130 @@ mod skip_hooks_parse_tests {
             a.skip_hooks,
             vec!["all".to_string(), "tag:heavy".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod go_grammar_tests {
+    use super::*;
+
+    /// Parse a `daft go` argv and decode it.
+    fn decode(argv: &[&str]) -> Result<(String, Option<String>, GoRouting)> {
+        let mut full = vec!["daft go"];
+        full.extend_from_slice(argv);
+        let go = GoArgs::parse_from(full);
+        decode_go_grammar(go.branch_name, go.second, go.repo, go.create_branch)
+    }
+
+    fn cross(routing: &GoRouting) -> &CrossTarget {
+        routing
+            .cross
+            .as_ref()
+            .expect("expected a cross-repo target")
+    }
+
+    #[test]
+    fn single_positional_is_local_with_fallback() {
+        let (branch, base, routing) = decode(&["feat/x"]).unwrap();
+        assert_eq!(branch, "feat/x");
+        assert_eq!(base, None);
+        assert!(routing.cross.is_none());
+        assert!(routing.catalog_fallback);
+    }
+
+    #[test]
+    fn dash_stays_local() {
+        let (branch, _, routing) = decode(&["-"]).unwrap();
+        assert_eq!(branch, "-");
+        assert!(routing.cross.is_none());
+    }
+
+    #[test]
+    fn two_positionals_mean_repo_and_branch() {
+        let (branch, base, routing) = decode(&["api", "feat/x"]).unwrap();
+        assert_eq!(branch, "feat/x", "args carry the target branch");
+        assert_eq!(base, None);
+        let c = cross(&routing);
+        assert_eq!(c.repo, "api");
+        assert_eq!(c.branch.as_deref(), Some("feat/x"));
+        assert!(c.positional);
+        assert!(!routing.catalog_fallback);
+    }
+
+    #[test]
+    fn create_branch_keeps_base_meaning_for_second_positional() {
+        let (branch, base, routing) = decode(&["-b", "feat/x", "main"]).unwrap();
+        assert_eq!(branch, "feat/x");
+        assert_eq!(base.as_deref(), Some("main"));
+        assert!(routing.cross.is_none());
+        assert!(!routing.catalog_fallback, "-b never consults the catalog");
+    }
+
+    #[test]
+    fn repo_flag_alone_targets_default_branch() {
+        let (_, base, routing) = decode(&["--repo", "api"]).unwrap();
+        assert_eq!(base, None);
+        let c = cross(&routing);
+        assert_eq!(c.repo, "api");
+        assert_eq!(c.branch, None);
+        assert!(!c.positional);
+    }
+
+    #[test]
+    fn repo_flag_with_branch() {
+        let (branch, _, routing) = decode(&["--repo", "api", "feat/x"]).unwrap();
+        assert_eq!(branch, "feat/x");
+        assert_eq!(cross(&routing).branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn repo_flag_with_create_and_base() {
+        let (branch, base, routing) = decode(&["--repo", "api", "-b", "feat/x", "main"]).unwrap();
+        assert_eq!(branch, "feat/x");
+        assert_eq!(base.as_deref(), Some("main"));
+        assert_eq!(cross(&routing).repo, "api");
+    }
+
+    #[test]
+    fn repo_flag_rejects_two_positionals() {
+        let err = decode(&["--repo", "api", "a", "b"]).unwrap_err();
+        assert!(err.to_string().contains("--repo takes a single <branch>"));
+    }
+
+    #[test]
+    fn repo_flag_rejects_dash() {
+        let err = decode(&["--repo", "api", "-"]).unwrap_err();
+        assert!(err.to_string().contains("Cannot use '-' with --repo"));
+    }
+
+    #[test]
+    fn repo_flag_with_create_requires_branch_name() {
+        let err = decode(&["--repo", "api", "-b"]).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a branch name"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn dash_with_second_positional_is_rejected() {
+        let err = decode(&["-", "feat/x"]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Cannot use '-' with a second argument")
+        );
+    }
+
+    #[test]
+    fn checkout_binary_grammar_is_untouched() {
+        // git-worktree-checkout still gates positional 2 on -b.
+        let parse = Args::try_parse_from(["git-worktree-checkout", "a", "b"]);
+        assert!(
+            parse.is_ok(),
+            "clap-level parse of two positionals stays OK (validated later)"
+        );
+        let a = parse.unwrap();
+        assert_eq!(a.branch_name, "a");
+        assert_eq!(a.base_branch_name.as_deref(), Some("b"));
     }
 }

@@ -267,6 +267,7 @@ fn should_skip_background_tasks_impl(
     skip_startup_tasks || is_coordinator || is_test_mode
 }
 
+pub mod catalog;
 pub mod cli;
 pub mod commands;
 pub mod completion_spinner;

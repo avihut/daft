@@ -4,7 +4,7 @@
 .SH NAME
 daft go \- Open a worktree for an existing branch, or create one with \-b
 .SH SYNOPSIS
-\fBdaft go\fR [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft go\fR [\fB\-\-repo\fR] [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH_NAME\fR] [\fISECOND\fR] 
 .SH DESCRIPTION
 .PP
 Opens a worktree for an existing local or remote branch. The worktree is
@@ -21,6 +21,15 @@ created; the working directory is changed to the existing worktree instead.
 Use \*(Aq\-\*(Aq as the branch name to switch to the previous worktree, similar to
 \*(Aqcd \-\*(Aq. Repeated \*(Aqdaft go \-\*(Aq toggles between the two most recent worktrees.
 .PP
+`daft go` also jumps across repositories through the repo catalog. A name
+that matches no branch in the current repository falls back to the catalog
+and opens that repository\*(Aqs default\-branch worktree. Two arguments —
+`daft go <repo> <branch>` — open a specific branch there, creating its
+worktree if needed. `\-\-repo <name>` addresses a repository explicitly (for
+names shadowed by local branches), and outside any git repository `daft go`
+resolves purely against the catalog. Anything resolvable in the current
+repository always wins over a catalog match.
+.PP
 With \-b, creates a new branch and worktree in a single operation. The new
 branch is based on the current branch, or on `<base\-branch>` if specified. It
 is pushed to the remote and upstream tracking is configured; the pre\-push hook
@@ -35,6 +44,9 @@ be enabled permanently with the daft.go.autoStart git config option.
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See daft\-hooks(1) for hook management.
 .SH OPTIONS
+.TP
+\fB\-\-repo\fR \fI<REPO>\fR
+Open a repository from the catalog (jump across repos)
 .TP
 \fB\-b\fR, \fB\-\-create\-branch\fR
 Create a new branch (prefer \*(Aqdaft start\*(Aq instead)
@@ -81,10 +93,10 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-<\fIBRANCH_NAME\fR>
-Branch to open; use \*(Aq\-\*(Aq for previous worktree
+[\fIBRANCH_NAME\fR]
+Branch (or catalog repo) to open; use \*(Aq\-\*(Aq for previous worktree
 .TP
-[\fIBASE_BRANCH_NAME\fR]
-Base branch for \-b (defaults to current branch)
+[\fISECOND\fR]
+Branch inside <repo> when two arguments are given; base branch with \-b
 .SH VERSION
 v1.18.1

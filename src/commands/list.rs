@@ -35,7 +35,7 @@ use tabled::{
 };
 use terminal_size::{Width as TermWidth, terminal_size};
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "git-worktree-list")]
 #[command(version = crate::VERSION)]
 #[command(about = "List all worktrees with status information")]
@@ -43,6 +43,10 @@ use terminal_size::{Width as TermWidth, terminal_size};
 Lists all worktrees in the current project with enriched status information
 including uncommitted changes, ahead/behind counts vs. both the base branch
 and the remote tracking branch, branch age, and last commit details.
+
+Give a cataloged repository as the positional argument to list that
+repository's worktrees from anywhere (sugar for `--repo`; the name must be
+in the repo catalog). Use --all-repos to sweep every cataloged repository.
 
 Each worktree is shown with:
   - A `>` marker for the current worktree
@@ -94,6 +98,19 @@ the output (e.g. --sort -size without --columns +size). Defaults can be set
 with daft.list.sort.
 "#)]
 pub struct Args {
+    /// Positional sugar for `--repo` — `daft list api`. Repo-only
+    /// resolution (hard error with suggestions on a miss): the slot was
+    /// previously an error, so no local meaning is shadowed, and `list`
+    /// is read-only so a wrong guess costs nothing. Mutating fleet
+    /// commands (update/exec/prune) deliberately do NOT get this sugar —
+    /// see the repo-aware command grammar section in CLAUDE.md.
+    #[arg(
+        value_name = "REPO",
+        conflicts_with_all = ["repo", "all_repos"],
+        help = "Cataloged repository to list (same as --repo)"
+    )]
+    pub(crate) repo_arg: Option<String>,
+
     #[command(flatten)]
     pub(crate) emit: EmitArgs,
 
@@ -145,6 +162,20 @@ pub struct Args {
         help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     pub(crate) sort: Option<String>,
+
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        conflicts_with = "all_repos",
+        help = "List another cataloged repository's worktrees"
+    )]
+    pub(crate) repo: Option<String>,
+
+    #[arg(
+        long = "all-repos",
+        help = "List every cataloged repository's worktrees"
+    )]
+    pub(crate) all_repos: bool,
 }
 
 /// A row in the worktree list table.
@@ -178,9 +209,46 @@ pub fn run() -> Result<()> {
 
     init_logging(args.verbose);
 
+    // Fleet scopes work from anywhere; the single-repo form needs a repo.
+    // The positional and --repo are clap-exclusive, so `or` never merges.
+    let repo_needle = args.repo.as_ref().or(args.repo_arg.as_ref());
+    if repo_needle.is_some() || args.all_repos {
+        // --all-repos runs the blocking renderer once per repo. Under
+        // structured emit that would write one document per repo, interleaved
+        // with the `── name ──` fleet dividers — not a single parseable
+        // document. Reject it instead of emitting corruption; single-repo
+        // `--repo <name>` is fine (one repo → one document). Aggregated fleet
+        // structured output would be a separate feature. (#357 C2)
+        if args.all_repos && args.emit.is_structured() {
+            anyhow::bail!(
+                "daft list --all-repos does not support structured output \
+                 (--format/--template): it would emit one document per repo. Run \
+                 it per repo (`daft list --repo <name> --format …`) or drop \
+                 --all-repos."
+            );
+        }
+        if is_git_repository()? {
+            crate::catalog::touch_current_repo();
+        }
+        let scope = match repo_needle {
+            Some(needle) => crate::catalog::fleet::FleetScope::Single(needle.clone()),
+            None => crate::catalog::fleet::FleetScope::AllRepos,
+        };
+        let mut output = crate::output::CliOutput::new(crate::output::OutputConfig::default());
+        // Always the blocking renderer — one live TUI per repo would churn.
+        let outcome = crate::catalog::fleet::for_each_repo(
+            scope,
+            /* current_repo_last */ false,
+            &mut output,
+            |_row| run_blocking(args.clone()),
+        )?;
+        return outcome.into_result();
+    }
+
     if !is_git_repository()? {
         anyhow::bail!("Not inside a Git repository");
     }
+    crate::catalog::touch_current_repo();
 
     // Settings are loaded inside `run_live`/`run_blocking`, co-located with each
     // path's `GitCommand` so they share a single repo discovery (#584).
@@ -670,8 +738,8 @@ fn build_emit_table(
 /// in very narrow terminals — the TUI's `fit_widths_to_available` only
 /// shrinks `{Branch, Path, LastCommit}`. Excluding more columns here would
 /// be a separate scope.
-struct PriorityMaxExcept {
-    excluded: Vec<usize>,
+pub(crate) struct PriorityMaxExcept {
+    pub(crate) excluded: Vec<usize>,
 }
 
 impl Peaker for PriorityMaxExcept {
@@ -1098,7 +1166,40 @@ fn print_table(
         };
     }
 
-    println!("{table}");
+    println!(
+        "{}",
+        paint_current_rows(&table.to_string(), infos, use_color)
+    );
+}
+
+/// Background-highlight the current worktree's row in the rendered blocking
+/// table, matching the live table's `CURRENT_ROW_BG_INDEX` row style. Line 0
+/// is the header, data row i renders on line 1 + i, and the TOTAL footer
+/// lines fall past `infos`, so they never match.
+fn paint_current_rows(
+    rendered: &str,
+    infos: &[crate::core::worktree::list::WorktreeInfo],
+    use_color: bool,
+) -> String {
+    if !use_color {
+        return rendered.to_string();
+    }
+    rendered
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let current = i
+                .checked_sub(1)
+                .and_then(|idx| infos.get(idx))
+                .is_some_and(|info| info.is_current);
+            if current {
+                styles::paint_current_row(line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The visible column index of `Size` in the rendered blocking table, or `None`
@@ -1188,6 +1289,67 @@ mod tests {
         assert!(!table.headers.contains(&"hash".to_string()));
         // Empty infos means no rows.
         assert_eq!(table.rows.len(), 0);
+    }
+
+    /// Full parity with the live table: the blocking renderer paints the
+    /// current worktree's line with the shared row background; header,
+    /// other rows, and the no-color path stay untouched.
+    #[test]
+    fn paint_current_rows_highlights_only_the_current_worktree_line() {
+        use crate::core::worktree::list::{EntryKind, WorktreeInfo};
+        let info = |name: &str, is_current: bool| WorktreeInfo {
+            kind: EntryKind::Worktree,
+            name: name.to_string(),
+            path: Some(std::path::PathBuf::from("/tmp/proj")),
+            is_current,
+            is_default_branch: false,
+            ahead: None,
+            behind: None,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            remote_ahead: None,
+            remote_behind: None,
+            last_commit_timestamp: None,
+            last_commit_hash: None,
+            last_commit_subject: String::new(),
+            branch_creation_timestamp: None,
+            base_lines_inserted: None,
+            base_lines_deleted: None,
+            staged_lines_inserted: None,
+            staged_lines_deleted: None,
+            unstaged_lines_inserted: None,
+            unstaged_lines_deleted: None,
+            remote_lines_inserted: None,
+            remote_lines_deleted: None,
+            owner: None,
+            size_bytes: None,
+            working_tree_mtime: None,
+            is_sandbox: false,
+        };
+        let infos = [info("main", true), info("feat", false)];
+        let rendered = "  Branch  Path\n  main    /tmp/proj\n  feat    /tmp/proj";
+
+        let painted = paint_current_rows(rendered, &infos, true);
+        let lines: Vec<&str> = painted.lines().collect();
+        assert!(
+            !lines[0].contains(styles::CURRENT_ROW_BG),
+            "header: {lines:?}"
+        );
+        assert!(
+            lines[1].starts_with(styles::CURRENT_ROW_BG),
+            "current row: {lines:?}"
+        );
+        assert!(
+            !lines[2].contains(styles::CURRENT_ROW_BG),
+            "other row: {lines:?}"
+        );
+
+        assert_eq!(
+            paint_current_rows(rendered, &infos, false),
+            rendered,
+            "no-color output is untouched"
+        );
     }
 
     #[test]
@@ -1358,6 +1520,23 @@ mod dispatch_tests {
         // Even if other conditions are favorable, structured output forces
         // blocking. Whatever the TTY/env give us, the result must be false.
         assert!(!should_use_live(&args));
+    }
+
+    /// `daft list api` is positional sugar for `--repo api` (go-shape grammar
+    /// for a read-only command). The two spellings are clap-exclusive with
+    /// each other and with --all-repos — a contradiction, never a merge.
+    #[test]
+    fn repo_positional_is_exclusive_sugar_for_the_repo_flag() {
+        let args = Args::parse_from(["git-worktree-list", "api"]);
+        assert_eq!(args.repo_arg.as_deref(), Some("api"));
+        assert!(args.repo.is_none());
+
+        let flag = Args::parse_from(["git-worktree-list", "--repo", "api"]);
+        assert_eq!(flag.repo.as_deref(), Some("api"));
+        assert!(flag.repo_arg.is_none());
+
+        assert!(Args::try_parse_from(["git-worktree-list", "api", "--repo", "webapp"]).is_err());
+        assert!(Args::try_parse_from(["git-worktree-list", "api", "--all-repos"]).is_err());
     }
 
     #[test]

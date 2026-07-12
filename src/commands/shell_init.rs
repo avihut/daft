@@ -238,6 +238,10 @@ daft() {
             # `cd` to a safe parent before the cwd's inode is gone. Both are
             # subcommands of `daft` (not separate binaries) so we can't use
             # `exec -a`; mirror the per-subcommand pattern used for layout.
+            # The case keys on the first arg, so read-only `repo list`/`info`/
+            # `add` route here too — harmlessly: they leave DAFT_CD_FILE
+            # unwritten, so the temp file is created and discarded. Splitting by
+            # sub-verb in the shell isn't worth it for that.
             local __cd_file
             __cd_file=$(mktemp "${TMPDIR:-/tmp}/daft-cd.XXXXXX" 2>/dev/null)
             if [ -n "$__cd_file" ]; then

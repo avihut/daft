@@ -15,6 +15,15 @@ pub const JOBS_SUBDIR: &str = "jobs";
 /// Filename of the SQLite database inside a per-repo state dir.
 pub const COORDINATOR_DB: &str = "coordinator.db";
 
+/// Subdirectory under `daft_data_dir()` that holds the global repo catalog.
+/// A dedicated parent (rather than the bare data dir) keeps `tighten_perms`
+/// / `verify_perms`'s 0700-parent invariant away from the shared data dir,
+/// which also hosts centralized-layout worktrees.
+pub const CATALOG_SUBDIR: &str = "catalog";
+
+/// Filename of the global repo-catalog SQLite database.
+pub const CATALOG_DB: &str = "catalog.db";
+
 /// Resolve the per-repo coordinator DB path under the daft state dir.
 pub fn for_repo(repo_hash: &str) -> Result<PathBuf> {
     let state_dir = crate::daft_state_dir().map_err(|e| StoreError::Io {
@@ -59,6 +68,49 @@ pub fn parent_for_repo_under(base: &Path, repo_hash: &str) -> Result<PathBuf> {
         .parent()
         .expect("for_repo_under always returns a path with a parent")
         .to_path_buf())
+}
+
+/// Resolve the global repo-catalog DB path under the daft data dir,
+/// creating `catalog/` if missing. Use for read-write opens.
+pub fn catalog_db() -> Result<PathBuf> {
+    let data_dir = crate::daft_data_dir().map_err(|e| StoreError::Io {
+        path: PathBuf::from("daft_data_dir"),
+        source: std::io::Error::other(e.to_string()),
+    })?;
+    catalog_db_under(&data_dir)
+}
+
+/// Resolve the catalog DB path under an explicit base (tests). Creates the
+/// parent dir so canonicalization succeeds, then asserts containment like
+/// [`for_repo_under`].
+pub fn catalog_db_under(base: &Path) -> Result<PathBuf> {
+    let parent = base.join(CATALOG_SUBDIR);
+    std::fs::create_dir_all(&parent).map_err(|source| StoreError::Io {
+        path: parent.clone(),
+        source,
+    })?;
+
+    let canonical_parent = parent.canonicalize().map_err(|source| StoreError::Io {
+        path: parent.clone(),
+        source,
+    })?;
+    let canonical_base = base.canonicalize().map_err(|source| StoreError::Io {
+        path: base.to_path_buf(),
+        source,
+    })?;
+    if !canonical_parent.starts_with(&canonical_base) {
+        return Err(StoreError::PathOutsideStateDir(canonical_parent));
+    }
+
+    Ok(canonical_parent.join(CATALOG_DB))
+}
+
+/// Non-creating catalog DB path for read-only probes (completion hot
+/// path). Returns `None` when the data dir cannot be resolved; performs no
+/// filesystem writes — callers stat the result themselves.
+pub fn catalog_db_probe() -> Option<PathBuf> {
+    let data_dir = crate::daft_data_dir().ok()?;
+    Some(data_dir.join(CATALOG_SUBDIR).join(CATALOG_DB))
 }
 
 /// Verify a file is at most user-read-write (mode 0o600) and its parent is
@@ -158,6 +210,31 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), &evil_link).unwrap();
 
         let err = for_repo_under(base.path(), "evil").unwrap_err();
+        assert!(matches!(err, StoreError::PathOutsideStateDir(_)));
+    }
+
+    #[test]
+    fn catalog_db_under_returns_path_in_catalog_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = catalog_db_under(dir.path()).unwrap();
+        let canonical_base = dir.path().canonicalize().unwrap();
+        assert!(
+            p.starts_with(&canonical_base),
+            "{p:?} not under {canonical_base:?}"
+        );
+        assert!(p.ends_with(format!("{CATALOG_SUBDIR}/{CATALOG_DB}")));
+        assert!(p.parent().unwrap().is_dir(), "catalog/ dir was created");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn catalog_db_under_rejects_symlink_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        let evil_link = base.path().join(CATALOG_SUBDIR);
+        std::os::unix::fs::symlink(outside.path(), &evil_link).unwrap();
+
+        let err = catalog_db_under(base.path()).unwrap_err();
         assert!(matches!(err, StoreError::PathOutsideStateDir(_)));
     }
 

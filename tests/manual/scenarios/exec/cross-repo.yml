@@ -1,0 +1,81 @@
+name: Exec across repos
+description:
+  daft exec --repo runs in another cataloged repo, --all-repos fans out over
+  every repo's default-branch worktree, and --related follows the current branch
+  across the relations manifest (skipping repos without it)
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: --repo runs in the other repo's default-branch worktree
+    run: daft exec --repo test-repo-b -- touch repo-marker
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-b/main/repo-marker"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-a/main/repo-marker"
+
+  - name: --all-repos touches every default-branch worktree
+    run: daft exec --all-repos -- touch fleet-marker
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-a/main/fleet-marker"
+        - "$WORK_DIR/test-repo-b/main/fleet-marker"
+
+  - name: Declare a relation from A to B
+    run: |
+      printf 'relations:\n  - url: %s\n' "$REMOTE_TEST_REPO_B" > daft.yml
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+
+  - name: --related runs here and in the related repo's same-branch worktree
+    run: daft exec --related -- touch related-marker
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-repo-a/main/related-marker"
+        - "$WORK_DIR/test-repo-b/main/related-marker"
+
+  - name: Open a branch that only exists in A
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/develop"
+
+  - name: --related skips related repos lacking the current branch's worktree
+    run:
+      cp ../main/daft.yml . && daft exec --related -- touch develop-marker 2>&1
+    cwd: "$WORK_DIR/test-repo-a/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "skipped 'test-repo-b'"
+      files_exist:
+        - "$WORK_DIR/test-repo-a/develop/develop-marker"
+
+  - name: --related without a relations manifest is an actionable error
+    run: daft exec --related -- echo hi 2>&1
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "declares no relations"

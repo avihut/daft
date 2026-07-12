@@ -52,6 +52,18 @@ fn format_duration(d: chrono::Duration) -> String {
     format!("{days}d{h}h")
 }
 
+/// The `>` current-worktree marker: shown only for the worktree the user is
+/// standing in, and only when there IS a current context. `current_worktree`
+/// is blanked when `--repo <other>` addresses a repo the user isn't in, so a
+/// same-named worktree there is never mismarked "you are here" (#357 C8).
+fn current_marker(worktree: &str, current_worktree: &str) -> &'static str {
+    if !current_worktree.is_empty() && worktree == current_worktree {
+        CURRENT_WORKTREE_SYMBOL
+    } else {
+        " "
+    }
+}
+
 /// One-line worktree header. The marker is `CURRENT_WORKTREE_SYMBOL` (`">"`)
 /// for the current worktree; non-current worktrees pass a single space so
 /// the worktree-name column lines up across both.
@@ -93,8 +105,38 @@ pub struct JobsArgs {
     #[arg(long = "hook")]
     hook_filter: Option<String>,
 
+    /// Target repo by catalog name, path, or uuid (default: the current
+    /// repo). Removed repos resolve too — their logs are retained.
+    #[arg(long = "repo", value_name = "REPO")]
+    repo: Option<String>,
+
     #[command(flatten)]
     emit: EmitArgs,
+}
+
+/// Repo identity for this invocation: `--repo` resolves through the
+/// catalog (live or removed — a removed repo's logs stay addressable);
+/// the default is the cwd repo's `daft-id`.
+fn resolve_repo_hash(repo: Option<&str>) -> Result<String> {
+    let Some(needle) = repo else {
+        return crate::core::repo_identity::compute_repo_id();
+    };
+    // open_ro contract: degrade a transient open error to "no catalog".
+    let Some(catalog) = crate::catalog::Catalog::open_ro().ok().flatten() else {
+        anyhow::bail!("the repo catalog is empty — nothing matches '{needle}'");
+    };
+    match catalog.resolve(needle)? {
+        Some(row) => Ok(row.uuid),
+        None => {
+            let err = catalog.not_found(needle);
+            if let crate::catalog::CatalogError::NotFound { suggestions, .. } = &err
+                && !suggestions.is_empty()
+            {
+                anyhow::bail!("{err}\n  did you mean: {}", suggestions.join(", "));
+            }
+            Err(err.into())
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -489,6 +531,19 @@ fn build_retry_set(
 }
 
 pub fn run(args: JobsArgs, path: &Path, output: &mut dyn Output) -> Result<()> {
+    // --repo addresses another (possibly removed) repo's history: listing
+    // and one-shot logs only. Cancel/retry/prune act on live jobs and
+    // --follow needs that repo's coordinator — all inherently cwd-repo.
+    if args.repo.is_some() {
+        let supported = match &args.command {
+            None => true,
+            Some(JobsCommand::Logs { follow, .. }) => !follow,
+            _ => false,
+        };
+        if !supported {
+            anyhow::bail!("--repo applies to listing and one-shot `logs` only");
+        }
+    }
     match args.command {
         None => list_jobs(&args, path, output),
         Some(JobsCommand::Logs {
@@ -877,13 +932,25 @@ fn build_invocation_node(
 
 /// Default subcommand: list jobs grouped by worktree and invocation.
 fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<()> {
-    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
-    let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
+    let repo_hash = resolve_repo_hash(args.repo.as_deref())?;
+    // The `>` "current worktree" marker only applies to the repo the user is
+    // standing in. Under `--repo <other>` none of the listed worktrees is
+    // current, so blank the marker branch unless the addressed repo IS the cwd
+    // repo (compute_repo_id errors harmlessly outside any repo).
+    let addresses_current_repo = args.repo.is_none()
+        || crate::core::repo_identity::compute_repo_id().is_ok_and(|id| id == repo_hash);
+    let current_worktree = if addresses_current_repo {
+        crate::core::repo::get_current_branch().unwrap_or_default()
+    } else {
+        String::new()
+    };
     let coordinator_alive = is_coordinator_running(&repo_hash);
 
     let store = LogStore::for_repo(&repo_hash)?;
     let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
-    let invocations = if args.all {
+    let invocations = if args.all || (args.repo.is_some() && args.worktree.is_none()) {
+        // --repo implies all worktrees: "the current worktree" belongs to
+        // the cwd repo, not the addressed one (which may not even exist).
         store.list_invocations()?
     } else if let Some(ref wt) = args.worktree {
         store.list_invocations_for_worktree(wt)?
@@ -1042,11 +1109,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         sections: sections_by_worktree
             .into_iter()
             .map(|(worktree, secs)| {
-                let marker = if worktree == current_worktree {
-                    CURRENT_WORKTREE_SYMBOL
-                } else {
-                    " "
-                };
+                let marker = current_marker(&worktree, &current_worktree);
                 Section {
                     header: worktree_header(marker, &worktree),
                     nodes: secs
@@ -1248,7 +1311,7 @@ fn show_logs(
     _path: &Path,
     _output: &mut dyn Output,
 ) -> Result<()> {
-    let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    let repo_hash = resolve_repo_hash(_args.repo.as_deref())?;
     let store = LogStore::for_repo(&repo_hash)?;
     let sqlite_index = load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
     let current_worktree = crate::core::repo::get_current_branch().unwrap_or_default();
@@ -2041,6 +2104,16 @@ fn format_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_marker_only_marks_the_current_worktree() {
+        // #357 C8: the `>` marker shows only for the worktree the user is in.
+        // Under `--repo <other>`, list_jobs blanks current_worktree, so no row
+        // is marked — not even a same-named worktree in the addressed repo.
+        assert_eq!(current_marker("main", "main"), CURRENT_WORKTREE_SYMBOL);
+        assert_eq!(current_marker("feature", "main"), " ");
+        assert_eq!(current_marker("main", ""), " ");
+    }
 
     #[test]
     fn cancel_inv_alone_counts_as_filter() {

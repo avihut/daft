@@ -85,6 +85,14 @@ pub const BRIGHT_PURPLE: &str = "\x1b[95m";
 /// ANSI escape code for dark gray text (bright black).
 pub const DARK_GRAY: &str = "\x1b[90m";
 
+/// 256-color palette index for the current-row background highlight.
+/// Use with ratatui: `Color::Indexed(CURRENT_ROW_BG_INDEX)`.
+pub const CURRENT_ROW_BG_INDEX: u8 = 235;
+
+/// ANSI escape code for the current-row background (256-color, matches
+/// [`CURRENT_ROW_BG_INDEX`]).
+pub const CURRENT_ROW_BG: &str = "\x1b[48;5;235m";
+
 /// Symbol for the current worktree indicator.
 pub const CURRENT_WORKTREE_SYMBOL: &str = ">";
 
@@ -110,6 +118,19 @@ pub fn dim(text: &str) -> String {
 /// Wraps text in dim + underlined styling.
 pub fn dim_underline(text: &str) -> String {
     format!("{DIM}{UNDERLINE}{text}{RESET}")
+}
+
+/// Paints one fully-rendered table line with the current-row background —
+/// the blocking-table counterpart of a ratatui row styled with
+/// `Color::Indexed(CURRENT_ROW_BG_INDEX)`.
+///
+/// Styled spans produced by this crate end in [`RESET`], which clears
+/// backgrounds along with everything else, so the background is re-asserted
+/// after every reset. That keeps the highlight continuous across styled
+/// cells and the padding between them.
+pub fn paint_current_row(line: &str) -> String {
+    let reassert = format!("{RESET}{CURRENT_ROW_BG}");
+    format!("{CURRENT_ROW_BG}{}{RESET}", line.replace(RESET, &reassert))
 }
 
 /// Wraps text in bold + red styling. Used for primary failure markers
@@ -234,3 +255,39 @@ pub const SYNTAX: SyntaxPalette = SyntaxPalette {
     punctuation: DIM,
     heading: BOLD,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_current_row_wraps_a_plain_line() {
+        let painted = paint_current_row("  alpha  1  ~/src/alpha");
+        assert!(painted.starts_with(CURRENT_ROW_BG));
+        assert!(painted.ends_with(RESET));
+        assert!(painted.contains("alpha"));
+    }
+
+    #[test]
+    fn paint_current_row_reasserts_background_after_each_reset() {
+        // A line with dim and cyan spans, as blocking tables emit them.
+        let line = format!("{} {} {}", cyan(">"), "alpha", dim("~/src/alpha"));
+        let painted = paint_current_row(&line);
+        // Every RESET inside the line is followed by a background re-assert,
+        // so the highlight never drops mid-line...
+        let reassert = format!("{RESET}{CURRENT_ROW_BG}");
+        assert_eq!(
+            painted.matches(&reassert).count(),
+            2,
+            "one re-assert per styled span: {painted:?}"
+        );
+        // ...and the line still terminates with a bare reset.
+        assert!(painted.ends_with(RESET));
+        assert!(!painted.ends_with(&reassert));
+    }
+
+    #[test]
+    fn current_row_bg_escape_matches_the_palette_index() {
+        assert!(CURRENT_ROW_BG.contains(&format!("48;5;{CURRENT_ROW_BG_INDEX}")));
+    }
+}

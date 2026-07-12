@@ -1,5 +1,6 @@
 use super::{
-    COMMANDS, emit_formats_for, get_command_for_name, get_flag_descriptions, uses_rich_completions,
+    COMMANDS, command_has_repo_positional, emit_formats_for, get_command_for_name,
+    get_flag_descriptions, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 use clap::Command;
@@ -120,6 +121,19 @@ fn build_fig_generator(command_name: &str, position: usize) -> FigGenerator {
     }
 }
 
+/// Generator for a positional cataloged-repo name (`daft list [<repo>]`).
+fn repo_name_generator() -> FigGenerator {
+    FigGenerator {
+        script: vec![
+            "daft".into(),
+            "__complete".into(),
+            "repo-name".into(),
+            String::new(),
+        ],
+        split_on: "\n".to_string(),
+    }
+}
+
 /// Get positional arguments from a clap Command
 /// Returns (name, help_text, position_index) for each positional arg
 fn get_positional_args(cmd: &Command) -> Vec<(String, String, usize)> {
@@ -172,6 +186,8 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 },
                 generators: if has_branches {
                     Some(build_fig_generator(command_name, *index))
+                } else if command_has_repo_positional(command_name) && *index == 1 {
+                    Some(repo_name_generator())
                 } else {
                     None
                 },
@@ -484,6 +500,107 @@ fn build_fig_hooks_subcommand() -> FigSubcommand {
 
 /// Build the repo subcommand with nested subcommands
 fn build_fig_repo_subcommand() -> FigSubcommand {
+    let add = FigSubcommand {
+        name: "add".to_string(),
+        description: Some("Register a repository in the repo catalog".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "path".to_string(),
+            description: Some("Repository to register (default: current directory)".to_string()),
+            generators: None,
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--name".into()),
+                description: "Catalog name for the repo; renames it when already registered".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress progress reporting".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    let info = FigSubcommand {
+        name: "info".to_string(),
+        description: Some("Show a repository's catalog entry".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "repo".to_string(),
+            description: Some("Catalog name, path, or uuid (default: current repo)".to_string()),
+            generators: None,
+        })),
+        options: None,
+    };
+
+    // Column name suggestions for repo list --columns, mirroring the
+    // worktree commands' +/- triples.
+    let repo_column_defs = [
+        ("annotation", "Current repo marker"),
+        ("name", "Catalog name"),
+        ("worktrees", "Worktree count"),
+        ("layout", "Worktree layout"),
+        ("branch", "Default branch"),
+        ("path", "Repository path"),
+        ("size", "Disk size of repository"),
+        ("remote", "Remote URL"),
+    ];
+    let mut repo_column_suggestions: Vec<FigSuggestion> = Vec::new();
+    for (name, description) in &repo_column_defs {
+        repo_column_suggestions.push(FigSuggestion {
+            name: name.to_string(),
+            description: description.to_string(),
+        });
+        repo_column_suggestions.push(FigSuggestion {
+            name: format!("+{name}"),
+            description: format!("Add {description}"),
+        });
+        repo_column_suggestions.push(FigSuggestion {
+            name: format!("-{name}"),
+            description: format!("Remove {description}"),
+        });
+    }
+
+    let list = FigSubcommand {
+        name: "list".to_string(),
+        description: Some("List repositories in the repo catalog".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Multiple(vec!["--all".into(), "-a".into()]),
+                description: "Include removed repositories".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--worktrees".into(), "-w".into()]),
+                description: "Expand each repository with its worktrees".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--columns".into()),
+                description: "Columns to display (comma-separated)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: Some(repo_column_suggestions),
+                    template: None,
+                }),
+            },
+        ]),
+    };
+
     let install = FigSubcommand {
         name: "install".to_string(),
         description: Some("Install a starter daft.yml in the current worktree".to_string()),
@@ -521,6 +638,20 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         })),
         options: Some(vec![
             FigOption {
+                name: FigName::Single("--repo".into()),
+                description: "Cataloged repository to remove (instead of a path)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Single("--keep-files".into()),
+                description: "Only remove the repo from the catalog; leave all files on disk"
+                    .into(),
+                args: None,
+            },
+            FigOption {
                 name: FigName::Multiple(vec!["--force".into(), "-y".into()]),
                 description: "Skip the confirmation prompt".into(),
                 args: None,
@@ -542,7 +673,7 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         name: "repo".to_string(),
         description: Some("Repository-level operations".to_string()),
         load_spec: None,
-        subcommands: Some(vec![install, remove]),
+        subcommands: Some(vec![add, info, install, list, remove]),
         args: None,
         options: None,
     }
@@ -1119,6 +1250,25 @@ mod tests {
         assert!(
             !spec.contains("generators"),
             "prune spec should not have generators"
+        );
+    }
+
+    /// `daft list [<repo>]` — the positional completes catalog repo names.
+    #[test]
+    fn fig_list_spec_completes_the_repo_positional() {
+        let spec = generate_fig_completion_string("git-worktree-list").unwrap();
+        assert!(
+            spec.contains("repo-name"),
+            "list spec must generate catalog repo names for its positional"
+        );
+    }
+
+    #[test]
+    fn fig_repo_remove_spec_offers_repo_and_keep_files() {
+        let spec = serde_json::to_string(&build_fig_repo_subcommand()).unwrap();
+        assert!(
+            spec.contains("--repo") && spec.contains("--keep-files"),
+            "repo remove spec must offer --repo and --keep-files"
         );
     }
 

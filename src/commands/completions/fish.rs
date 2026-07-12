@@ -1,6 +1,6 @@
 use super::{
-    VERB_ALIAS_GROUPS, allows_path_completion, emit_formats_for, get_command_for_name,
-    get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
+    VERB_ALIAS_GROUPS, allows_path_completion, command_has_repo_positional, emit_formats_for,
+    get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
 };
 use anyhow::{Context, Result};
 
@@ -32,6 +32,22 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             output.push_str(&format!(
                 "complete -c git -n '__fish_seen_subcommand_from {}' -f -a \"(daft __complete {} '')\"\n",
                 git_subcommand, command_name
+            ));
+        }
+        output.push('\n');
+    }
+
+    // Positional repo-name completion (daft list [<repo>]). The token-count
+    // gate limits it to the first argument, which also keeps repo names out
+    // of value-flag positions.
+    if command_has_repo_positional(command_name) {
+        output.push_str("# Positional cataloged-repo completion\n");
+        output.push_str(&format!(
+            "complete -c {command_name} -n 'test (count (commandline -opc)) -eq 1' -f -a \"(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)\"\n",
+        ));
+        if is_git_command {
+            output.push_str(&format!(
+                "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}; and test (count (commandline -opc)) -eq 2' -f -a \"(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)\"\n",
             ));
         }
         output.push('\n');
@@ -275,9 +291,11 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
     output.push_str("# Dynamic branch name completion\n");
     // Worktree lines: name[*?]\tworktree\tage\tauthor\tpath (5 fields)
     // Local/remote: name\tgroup\tage\tauthor (4 fields)
-    // Fish display: clean_name\t[*?] age · author · path (worktree) or name\tage · author
+    // Catalog repos (daft-go only): name\trepo\tpath (3 fields)
+    // Fish display: clean_name\t[*?] age · author · path (worktree),
+    // name\tage · author (local/remote), or name\tpath (repo).
     // Strip *? from name for completion value — these are invalid in git branch names.
-    let awk_body = "{{c=$1; sub(/[*?]+$/,\\\"\\\",c); s=substr($1,length(c)+1); if (NF>=5) printf \\\"%s\\t%s %s · %s · %s\\n\\\",c,s,$3,$4,$5; else printf \\\"%s\\t%s %s · %s\\n\\\",c,s,$3,$4}}";
+    let awk_body = "{{c=$1; sub(/[*?]+$/,\\\"\\\",c); s=substr($1,length(c)+1); if (NF>=5) printf \\\"%s\\t%s %s · %s · %s\\n\\\",c,s,$3,$4,$5; else if (NF>=4) printf \\\"%s\\t%s %s · %s\\n\\\",c,s,$3,$4; else printf \\\"%s\\t%s\\n\\\",c,$3}}";
     output.push_str(&format!(
         "complete -c {command_name} -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
     ));
@@ -387,14 +405,20 @@ complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft setti
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
 complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config files'
-complete -c daft -n '__fish_seen_subcommand_from go' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 3' -f -a "(env DAFT_COMPLETE_GO_FIRST=(commandline -opc)[3] daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
+# --repo flag values complete to catalog repo names
+complete -c daft -n '__fish_seen_subcommand_from go list update exec prune' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+# list's optional positional is a cataloged repo (sugar for --repo); the
+# token-count gate keeps this off `daft repo list` and off flag values
+complete -c daft -n '__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
-complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
-complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
-complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
-complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"
-complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else printf \"%s\t%s %s · %s\n\",c,s,$3,$4}')"
+complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from rename' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from layout; and not __fish_seen_subcommand_from default list show transform' -f -a 'default list show transform'
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from show' -F
@@ -407,14 +431,42 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 # repo: subcommands
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from install remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'add' -d 'Register a repository in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'info' -d "Show a repository's catalog entry"
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'list' -d 'List repositories in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+# repo add: path completion + flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -a "(__fish_complete_directories (commandline -ct))"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -l name -r -d 'Catalog name for the repo'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s q -l quiet -d 'Suppress progress reporting'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s v -l verbose -d 'Show detailed progress'
+# repo info: repo-name completion + flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l format -r -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l template -r -d 'Tera template string'
+# repo list: flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -s a -l all -d 'Include removed repositories'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -s w -l worktrees -d 'Expand each repository with its worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'annotation +annotation -annotation' -d 'Current repo marker'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'name +name -name' -d 'Catalog name'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'worktrees +worktrees -worktrees' -d 'Worktree count'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'layout +layout -layout' -d 'Worktree layout'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'branch +branch -branch' -d 'Default branch'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'path +path -path' -d 'Repository path'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'size +size -size' -d 'Disk size of repository'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l columns -x -a 'remote +remote -remote' -d 'Remote URL'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l format -r -d 'Output format'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l template -r -d 'Tera template string'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from list' -l no-headers -d 'Omit header row (tsv/csv only)'
 # repo install: flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' -l git-exclude -d 'Add /daft.yml to .git/info/exclude without prompting'
 # repo remove: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -F
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)" -d 'Cataloged repository to remove'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l keep-files -d 'Only remove the repo from the catalog; leave all files on disk'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
