@@ -155,17 +155,23 @@ test_fish_dynamic_wiring() {
     fi
 }
 
-# Test: Completions without dynamic branches don't include __complete
+# Test: Prune completes repo names (exec-shape --repo) but never branches.
+# Prune takes --repo, so it wires `daft __complete repo-name`; grepping the
+# generic `daft __complete` marker would trip on that. Branch completion is
+# what prune must not have, and that always emits the positional `--position`
+# form — so key on its absence. Mirrors the completions/bash.yml twin.
 test_prune_no_dynamic() {
-    run_test "Prune completion has no dynamic logic (as expected)"
+    run_test "Prune completion has repo-name completion but no dynamic branch logic"
 
     local output
     output=$("$DAFT_BIN" completions bash --command=git-worktree-prune 2>&1)
 
-    if [[ "$output" != *'daft __complete'* ]]; then
-        pass_test
+    if [[ "$output" == *'--position'* ]]; then
+        fail_test "Prune completion incorrectly includes dynamic branch (positional) logic"
+    elif [[ "$output" != *'repo-name'* ]]; then
+        fail_test "Prune completion is missing expected --repo repo-name completion"
     else
-        fail_test "Prune completion incorrectly includes dynamic branch logic"
+        pass_test
     fi
 }
 
