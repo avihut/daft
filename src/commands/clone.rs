@@ -740,8 +740,8 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         Some(result.repository_url.clone()),
         Some(result.default_branch.clone()),
     ) {
-        Ok(facts) => crate::catalog::register_repo(&facts, output),
-        Err(e) => output.warning(&format!("Could not update the repo catalog: {e}")),
+        Ok(facts) => crate::catalog::register_repo(&facts, tail_output),
+        Err(e) => tail_output.warning(&format!("Could not update the repo catalog: {e}")),
     }
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
