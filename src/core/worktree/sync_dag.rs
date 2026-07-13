@@ -1102,11 +1102,30 @@ impl DagExecutor {
                                     }
                                 }
                             } else if result_status == TaskStatus::Failed {
-                                // Cascade DepFailed to all transitive dependents.
+                                // Cascade DepFailed to all transitive dependents —
+                                // EXCEPT the batched push barrier (#678). That node
+                                // fans over every owned branch, so one branch's
+                                // failed update/rebase must not sink the push of all
+                                // the others. Treat the failed dep as resolved
+                                // (decrement its in-degree like a success) and let
+                                // execute_push_batch_task skip that branch via
+                                // shared_push_skip while pushing the healthy ones.
+                                // Per-branch Push nodes keep the normal cascade, so
+                                // only that one branch's push is dropped.
                                 let mut stack = vec![task_idx];
                                 while let Some(idx) = stack.pop() {
                                     for &dep_idx in &dag.dependents[idx] {
-                                        if s.status[dep_idx] == TaskStatus::Pending {
+                                        if s.status[dep_idx] != TaskStatus::Pending {
+                                            continue;
+                                        }
+                                        if matches!(dag.tasks[dep_idx].id, TaskId::PushBatch) {
+                                            s.in_degree[dep_idx] -= 1;
+                                            if s.in_degree[dep_idx] == 0 {
+                                                s.ready.push(dep_idx);
+                                            }
+                                            // The barrier has no further dependents;
+                                            // don't cascade past it.
+                                        } else {
                                             s.status[dep_idx] = TaskStatus::DepFailed;
                                             s.done += 1;
                                             stack.push(dep_idx);
@@ -1718,6 +1737,73 @@ mod tests {
             })
             .count();
         assert_eq!(push_starts, 2);
+    }
+
+    #[test]
+    fn batched_push_barrier_survives_one_failed_dependency() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Batched mode: three branches, one whose update hard-fails. The single
+        // PushBatch barrier must still run (carrying the two healthy branches)
+        // instead of cascade-DepFailing — otherwise one failed update silently
+        // drops every other branch's push (the #678 batched regression).
+        let worktrees = vec![
+            ("feat/a".into(), Some(PathBuf::from("/p/a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/b"))),
+            ("feat/c".into(), Some(PathBuf::from("/p/c"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(worktrees, vec![], vec![], None, true, true);
+        let (tx, rx) = mpsc::channel();
+
+        let batch_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&batch_ran);
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| match &task.id {
+            TaskId::Update(b) if b == "feat/a" => (
+                TaskStatus::Failed,
+                TaskMessage::Failed("pull failed".into()),
+                outcomes.clone(),
+            ),
+            TaskId::PushBatch => {
+                ran.store(true, Ordering::SeqCst);
+                (TaskStatus::Succeeded, TaskMessage::Pushed, outcomes.clone())
+            }
+            _ => (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            ),
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        assert!(
+            batch_ran.load(Ordering::SeqCst),
+            "PushBatch must run despite feat/a's failed update"
+        );
+        // The barrier completed as Succeeded (empty branch_name), never DepFailed.
+        let batch_completions: Vec<TaskStatus> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskCompleted {
+                    phase: OperationPhase::Push,
+                    status,
+                    branch_name,
+                    ..
+                } if branch_name.is_empty() => Some(*status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(batch_completions, vec![TaskStatus::Succeeded]);
+        // feat/a's failed update is still reported (row shows the failure).
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DagEvent::TaskCompleted {
+                phase: OperationPhase::Update,
+                status: TaskStatus::Failed,
+                branch_name,
+                ..
+            } if branch_name == "feat/a"
+        )));
     }
 
     #[test]

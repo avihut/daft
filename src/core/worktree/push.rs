@@ -642,21 +642,58 @@ pub fn push_batched(
     params: &PushParams,
     branches: &[String],
     hook_present: bool,
+    presenter: Option<&Arc<dyn JobPresenter>>,
+    hook_branch: &str,
 ) -> Vec<WorktreePushResult> {
     if branches.is_empty() {
         return Vec::new();
     }
-    let opts = crate::git::PushOptions {
-        verify: !params.no_verify,
-        on_output: None,
+    // With a pre-push hook and a presenter, report the one batched `git push`
+    // as a single synthetic pre-push phase carrying the teed hook output —
+    // attributed to the representative worktree (`hook_branch`, where the hook
+    // runs once for every ref). Mirrors push_with_hooks' Path A; without a
+    // presenter or hook it is a plain, silent push.
+    let io = match presenter.filter(|_| hook_present && !params.no_verify) {
+        Some(p) => {
+            p.on_phase_start("pre-push", Some(hook_branch));
+            let preview = format!("git push {} {}", params.remote_name, branches.join(" "));
+            p.on_job_start("pre-push", None, Some(&preview));
+            let started = Instant::now();
+            let tee = |_stream: PushStream, line: &str| p.on_job_output("pre-push", line);
+            let opts = crate::git::PushOptions {
+                verify: true,
+                on_output: Some(&tee),
+            };
+            let r = git.push_branches(
+                &params.remote_name,
+                branches,
+                params.force_with_lease,
+                cwd,
+                &opts,
+            );
+            let elapsed = started.elapsed();
+            match &r {
+                Ok(io) if io.success => p.on_job_success("pre-push", elapsed),
+                _ => p.on_job_failure("pre-push", elapsed),
+            }
+            p.on_phase_complete(elapsed);
+            r
+        }
+        None => {
+            let opts = crate::git::PushOptions {
+                verify: !params.no_verify,
+                on_output: None,
+            };
+            git.push_branches(
+                &params.remote_name,
+                branches,
+                params.force_with_lease,
+                cwd,
+                &opts,
+            )
+        }
     };
-    match git.push_branches(
-        &params.remote_name,
-        branches,
-        params.force_with_lease,
-        cwd,
-        &opts,
-    ) {
+    match io {
         Ok(io) => attribute_batch(
             branches,
             io.success,
@@ -694,6 +731,7 @@ pub fn execute_batched(
     project_root: &Path,
     progress: &mut dyn ProgressSink,
     exclude_branches: &HashSet<String>,
+    presenter: Option<&Arc<dyn JobPresenter>>,
 ) -> Result<PushResult> {
     let worktrees = fetch::get_all_worktrees_with_branches(git)?;
     let hook_present = git.pre_push_hook_exists(project_root);
@@ -729,7 +767,22 @@ pub fn execute_batched(
                     ..Default::default()
                 });
             }
-            _ => {
+            Err(e) => {
+                // A tracking-remote lookup error is a hard failure, not a push
+                // candidate — mirror push_single_worktree (push.rs) so the batch
+                // never pushes the branch to an unintended ref and the error is
+                // surfaced instead of swallowed.
+                progress.on_warning(&format!(
+                    "Skipping '{worktree_name}': failed to check tracking remote: {e}"
+                ));
+                results.push(WorktreePushResult {
+                    worktree_name,
+                    branch_name: branch.clone(),
+                    message: format!("Failed to check tracking remote: {e}"),
+                    ..Default::default()
+                });
+            }
+            Ok(Some(_)) => {
                 candidates.push(branch.clone());
                 if batch_cwd.is_none() {
                     batch_cwd = Some(path.clone());
@@ -744,7 +797,16 @@ pub fn execute_batched(
             candidates.len()
         ));
         let cwd = batch_cwd.unwrap_or_else(|| project_root.to_path_buf());
-        let batch = push_batched(git, &cwd, params, &candidates, hook_present);
+        let hook_branch = candidates.first().map(String::as_str).unwrap_or("");
+        let batch = push_batched(
+            git,
+            &cwd,
+            params,
+            &candidates,
+            hook_present,
+            presenter,
+            hook_branch,
+        );
         for result in &batch {
             if !result.success {
                 progress.on_warning(&format!(

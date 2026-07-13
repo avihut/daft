@@ -828,9 +828,12 @@ fn run_tui(
     let shared_jobserver_mode = settings.governor_jobserver;
     let cores_for_jobserver = cores;
     let shared_push_strategy = settings.sync_push_hook_strategy;
-    // Branches whose rebase conflicted — the batched push excludes them at
-    // execution time (per-branch mode handles this via task preconditions).
-    let shared_conflicts: Arc<std::sync::Mutex<HashSet<String>>> =
+    // Branches the batched push must NOT carry — a rebase conflict OR a
+    // hard-failed update/rebase. The batch node is a single barrier over every
+    // branch, so (unlike per-branch mode, where each Push depends only on its
+    // own update/rebase) it must exclude these at execution time; otherwise one
+    // branch's failed dep would sink the push of every healthy branch.
+    let shared_push_skip: Arc<std::sync::Mutex<HashSet<String>>> =
         Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
@@ -1019,11 +1022,17 @@ fn run_tui(
         };
         // Shared jobserver (#678 stage 4): one machine-wide token pool for
         // cooperating toolchains inside concurrent hooks. Lives while the
-        // executor runs; None when the push phase is ungoverned or the
-        // export is configured off.
+        // executor runs. Gated on its OWN control (governor.jobserver) plus the
+        // conditions that make it meaningful — a pre-push hook that actually
+        // runs, in parallel — NOT on the admission governor's plan. Coupling it
+        // to the plan disabled the jobserver under `governor.mode off` (an
+        // uncapped fan-out — exactly where units×cores thread explosion is
+        // worst and the token pool matters most); the wall-clock timeout is
+        // likewise plan-independent. Still zero-overhead with no hook or
+        // `--no-verify`.
         #[cfg(unix)]
-        let jobserver = if (sync_governor.is_some()
-            || !matches!(shared_governor_plan, PushGovernorPlan::Ungoverned))
+        let jobserver = if shared_hook_present
+            && !shared_no_verify
             && push_task_count >= 2
             && shared_jobserver_mode == GovernorMode::Auto
         {
@@ -1114,12 +1123,18 @@ fn run_tui(
                                 &shared_git_dir,
                                 &tx_for_tasks,
                             );
+                        } else if status == TaskStatus::Failed {
+                            // A hard-failed update excludes this branch from the
+                            // batched push (per-branch mode DepFails only its own
+                            // Push node) so the batch still carries the branches
+                            // that updated cleanly.
+                            shared_push_skip.lock().unwrap().insert(branch_name.clone());
                         }
                         (status, message, outcomes.clone())
                     }
                     TaskId::Rebase(branch_name) => {
-                        let conflicts = Arc::clone(&shared_conflicts);
-                        let branch_for_conflicts = branch_name.clone();
+                        let push_skip = Arc::clone(&shared_push_skip);
+                        let branch_for_skip = branch_name.clone();
                         let base = shared_rebase_branch.as_deref().unwrap_or("master");
                         let (status, message, new_outcomes) = execute_rebase_task(
                             branch_name,
@@ -1132,8 +1147,10 @@ fn run_tui(
                             outcomes,
                             &task_cancel,
                         );
-                        if new_outcomes.contains(&TaskOutcome::Conflict) {
-                            conflicts.lock().unwrap().insert(branch_for_conflicts);
+                        if new_outcomes.contains(&TaskOutcome::Conflict)
+                            || status == TaskStatus::Failed
+                        {
+                            push_skip.lock().unwrap().insert(branch_for_skip);
                         }
                         if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
@@ -1186,21 +1203,47 @@ fn run_tui(
                         }
                         (status, message, new_outcomes)
                     }
-                    TaskId::PushBatch => execute_push_batch_task(
-                        &batch_branches,
-                        &shared_worktree_map,
-                        &shared_project_root,
-                        &shared_settings,
-                        shared_force_with_lease,
-                        shared_no_verify,
-                        shared_hook_present,
-                        &tx_for_tasks,
-                        outcomes,
-                        &task_cancel,
-                        push_governor.as_ref(),
-                        push_jobserver_env.as_deref(),
-                        &shared_conflicts,
-                    ),
+                    TaskId::PushBatch => {
+                        let (status, message, new_outcomes) = execute_push_batch_task(
+                            &batch_branches,
+                            &shared_worktree_map,
+                            &shared_project_root,
+                            &shared_settings,
+                            shared_force_with_lease,
+                            shared_no_verify,
+                            shared_hook_present,
+                            &tx_for_tasks,
+                            outcomes,
+                            &task_cancel,
+                            push_governor.as_ref(),
+                            push_jobserver_env.as_deref(),
+                            &shared_push_skip,
+                        );
+                        if status == TaskStatus::Succeeded {
+                            // Re-collect REMOTE_AHEAD_BEHIND for the batched
+                            // branches (mirrors the per-branch Push arm above):
+                            // the pre-push streaming collector left every row
+                            // showing its PRE-push ahead count, so without this
+                            // just-pushed branches read as still unpushed. A
+                            // re-read is harmless for the few non-pushed rows
+                            // (up-to-date / no-upstream / excluded).
+                            for branch in batch_branches.iter() {
+                                spawn_post_task_refresh(
+                                    branch,
+                                    OperationPhase::Push,
+                                    FieldSet::REMOTE_AHEAD_BEHIND,
+                                    &shared_worktree_map,
+                                    &orch_settings,
+                                    &orch_base_branch,
+                                    orch_user_email.as_deref(),
+                                    orch_stat,
+                                    &shared_git_dir,
+                                    &tx_for_tasks,
+                                );
+                            }
+                        }
+                        (status, message, new_outcomes)
+                    }
                     TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
                     TaskId::RemoveWorktree(_) | TaskId::RemoveBare => {
                         unreachable!("RemoveWorktree/RemoveBare are only used by repo remove")
@@ -1646,6 +1689,68 @@ fn execute_rebase_task(
     }
 }
 
+/// Map one branch's push result to its DAG `(status, message)`, shared by the
+/// per-branch and batched push paths so both honor the #599 rule identically: a
+/// failed push with the pre-push gate in effect is a hard failure, while a
+/// hook-less failure (an ordinary non-fast-forward divergence) stays a benign
+/// warning (`Succeeded` + `Diverged`) that `check_tui_failures` does not count.
+/// The unit-level ladder (cancel / needs-terminal / timeout / governor-kill)
+/// stays at each call site; this is only the per-ref outcome mapping.
+fn classify_branch_push(result: &push::WorktreePushResult) -> (TaskStatus, TaskMessage) {
+    if result.no_upstream {
+        (TaskStatus::Succeeded, TaskMessage::NoPushUpstream)
+    } else if result.success && result.up_to_date {
+        (TaskStatus::Succeeded, TaskMessage::UpToDate)
+    } else if result.success {
+        (TaskStatus::Succeeded, TaskMessage::Pushed)
+    } else if matches!(
+        result.hook,
+        push::HookVerdict::Rejected | push::HookVerdict::Passed
+    ) {
+        let first_line = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or(result.hook.failure_cause())
+            .to_string();
+        (TaskStatus::Failed, TaskMessage::Failed(first_line))
+    } else {
+        (TaskStatus::Succeeded, TaskMessage::Diverged)
+    }
+}
+
+/// Attach governor / wall-clock-timeout / jobserver observers to a push
+/// `GitCommand`, shared by the per-branch and batched push tasks (the wiring
+/// was byte-for-byte identical bar the `begin_unit` label). Returns `git`
+/// untouched when nothing needs observing, preserving the zero-overhead path.
+fn attach_push_supervision(
+    git: GitCommand,
+    governor_unit: Option<&Arc<crate::governor::UnitGuard>>,
+    timeout: Option<std::time::Duration>,
+    jobserver_env: Option<&(String, String)>,
+) -> GitCommand {
+    if governor_unit.is_none() && timeout.is_none() && jobserver_env.is_none() {
+        return git;
+    }
+    let on_spawn = governor_unit.map(|unit| {
+        let unit = Arc::clone(unit);
+        Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
+    });
+    let on_clock = governor_unit.map(|unit| {
+        let unit = Arc::clone(unit);
+        Arc::new(move |clock: Arc<crate::git::cancel::UnitClock>| unit.attach_clock(clock))
+            as Arc<dyn Fn(Arc<crate::git::cancel::UnitClock>) + Send + Sync>
+    });
+    git.with_push_supervision(crate::git::PushSupervision {
+        on_spawn,
+        timeout,
+        on_clock,
+        env: jobserver_env
+            .map(|pair| vec![pair.clone()])
+            .unwrap_or_default(),
+    })
+}
+
 /// Execute the batched push task (#678, `daft.sync.pushHookStrategy =
 /// batched`): one `git push` carries every eligible branch, so the
 /// pre-push hook fires once with all refs. The barrier node's own
@@ -1665,7 +1770,7 @@ fn execute_push_batch_task(
     cancel: &Arc<CancelFlag>,
     governor: Option<&Arc<crate::governor::SyncGovernor>>,
     jobserver_env: Option<&(String, String)>,
-    conflicts: &Arc<std::sync::Mutex<HashSet<String>>>,
+    push_skip: &Arc<std::sync::Mutex<HashSet<String>>>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     if cancel.is_cancelled() {
         return (
@@ -1684,39 +1789,29 @@ fn execute_push_batch_task(
         });
     };
 
-    // Eligibility: conflicted branches keep their rebase-conflict row
-    // untouched; branches without an upstream report the per-branch skip.
-    let conflicted = conflicts.lock().unwrap().clone();
-    let mut git = GitCommand::new(false)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
-
+    // Eligibility: excluded branches (a rebase conflict or a hard-failed
+    // update/rebase, recorded in shared_push_skip) keep their existing row and
+    // are never carried by the batch — one branch's failed dep must not sink
+    // the push of every healthy branch. Branches without an upstream report the
+    // per-branch skip; a tracking-remote lookup error is a real failure.
+    let excluded = push_skip.lock().unwrap().clone();
     let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit("(batched push)")));
-    if governor_unit.is_some() || settings.sync_push_timeout.is_some() || jobserver_env.is_some() {
-        let on_spawn = governor_unit.as_ref().map(|unit| {
-            let unit = Arc::clone(unit);
-            Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
-        });
-        let on_clock = governor_unit.as_ref().map(|unit| {
-            let unit = Arc::clone(unit);
-            Arc::new(move |clock: Arc<crate::git::cancel::UnitClock>| unit.attach_clock(clock))
-                as Arc<dyn Fn(Arc<crate::git::cancel::UnitClock>) + Send + Sync>
-        });
-        git = git.with_push_supervision(crate::git::PushSupervision {
-            on_spawn,
-            timeout: settings.sync_push_timeout,
-            on_clock,
-            env: jobserver_env
-                .map(|pair| vec![pair.clone()])
-                .unwrap_or_default(),
-        });
-    }
+    let git = attach_push_supervision(
+        GitCommand::new(false)
+            .with_gitoxide(settings.use_gitoxide)
+            .with_cancel(Arc::clone(cancel)),
+        governor_unit.as_ref(),
+        settings.sync_push_timeout,
+        jobserver_env,
+    );
 
     let mut eligible: Vec<String> = Vec::new();
     let mut batch_cwd: Option<PathBuf> = None;
+    // The worktree the single hook runs in — its row carries the pre-push phase.
+    let mut hook_branch: Option<String> = None;
     for branch in branches {
-        if conflicted.contains(branch) {
-            // Row already shows the conflict outcome; the push never ran.
+        if excluded.contains(branch) {
+            // Row already shows the conflict / update failure; never pushed.
             continue;
         }
         let path = worktree_map
@@ -1727,11 +1822,20 @@ fn execute_push_batch_task(
             Ok(None) => {
                 send_branch(branch, TaskStatus::Succeeded, TaskMessage::NoPushUpstream);
             }
-            _ => {
+            Err(e) => {
+                // A tracking-remote lookup that errors is a real failure, not a
+                // push candidate — mirror push_single_worktree rather than
+                // pushing the branch to an unintended ref.
+                let msg = format!("failed to check tracking remote: {e}");
+                let hint = msg.lines().next().unwrap_or(&msg).to_string();
+                send_branch(branch, TaskStatus::Failed, TaskMessage::Failed(hint));
+            }
+            Ok(Some(_)) => {
                 // Prefer the default-branch worktree as the batch cwd —
                 // the hook runs there once for every ref.
                 if batch_cwd.is_none() || worktree_map.get(branch).is_some_and(|(_, main)| *main) {
                     batch_cwd = Some(path.clone());
+                    hook_branch = Some(branch.clone());
                 }
                 eligible.push(branch.clone());
                 let _ = tx.send(sync_dag::DagEvent::TaskStarted {
@@ -1755,12 +1859,37 @@ fn execute_push_batch_task(
         no_verify,
     };
     let cwd = batch_cwd.unwrap_or_else(|| project_root.to_path_buf());
-    let results = push::push_batched(&git, &cwd, &params, &eligible, hook_present);
+    let hook_branch = hook_branch.unwrap_or_else(|| eligible[0].clone());
+    // Report the single batched pre-push hook on the representative worktree's
+    // row (where it fires) so its output reaches the TUI sub-phase and the
+    // post-run hook summary — the per-branch path does the same per push.
+    let presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
+        if hook_present && !no_verify {
+            let p: Arc<dyn crate::executor::presenter::JobPresenter> =
+                crate::output::tui::TuiPresenter::new(
+                    tx.clone(),
+                    hook_branch.clone(),
+                    sync_dag::DagHookPhase::PrePush,
+                );
+            Some(p)
+        } else {
+            None
+        };
+    let results = push::push_batched(
+        &git,
+        &cwd,
+        &params,
+        &eligible,
+        hook_present,
+        presenter.as_ref(),
+        &hook_branch,
+    );
 
-    // Whole-batch classification mirrors execute_push_task's ladder; the
-    // per-branch synthetic completions carry the row-level story.
-    let batch_failed = results.iter().any(|r| !r.success);
-    if cancel.is_cancelled() && batch_failed {
+    // Any ref git did not advance (raw `!success`) — a real failure OR a benign
+    // hook-less divergence. Used only for the unit-level cancel/evict checks;
+    // per-branch classification below separates the two.
+    let any_unpushed = results.iter().any(|r| !r.success);
+    if cancel.is_cancelled() && any_unpushed {
         for branch in &eligible {
             send_branch(branch, TaskStatus::Cancelled, TaskMessage::Cancelled);
         }
@@ -1770,38 +1899,37 @@ fn execute_push_batch_task(
             branch_outcomes.clone(),
         );
     }
-    if batch_failed
-        && let Some(unit) = &governor_unit
-        && unit.was_killed()
-    {
-        // Evicted: the executor requeues the whole batch; rows stay
-        // "pushing" until the retry's own events land.
-        return (
-            TaskStatus::Evicted,
-            TaskMessage::Failed("batched push killed under memory pressure".into()),
-            branch_outcomes.clone(),
-        );
-    }
-    for result in &results {
-        let (status, message) = if result.success && result.up_to_date {
-            (TaskStatus::Succeeded, TaskMessage::UpToDate)
-        } else if result.success {
-            (TaskStatus::Succeeded, TaskMessage::Pushed)
-        } else {
-            let hint = result
-                .message
-                .lines()
-                .next()
-                .unwrap_or("push failed")
-                .to_string();
-            (TaskStatus::Failed, TaskMessage::Failed(hint))
-        };
-        send_branch(&result.branch_name, status, message);
+    // No governor-kill / Evicted arm here (unlike the per-branch
+    // execute_push_task): the batch is the sync's ONLY governed push unit, and
+    // contain() never freezes the last unfrozen runner — and a kill only ever
+    // follows an expired freeze, so a lone unit is never frozen and never
+    // killed. A single batched push is contained by the shared jobserver
+    // (inner-toolchain parallelism) plus the wall-clock timeout; freeze/kill/
+    // requeue exist to shed EXCESS units from a per-branch fan-out, of which a
+    // batch has none. A batch that outruns its budget is `timed_out` (surfaced
+    // per-branch below via push_batched's supervised teardown), not evicted.
+
+    // Per-branch classification honors the #599 hook-gate rule exactly like the
+    // per-branch strategy (classify_branch_push): a hook-less divergence stays a
+    // benign warning (Succeeded + Diverged), only a gated failure is hard-Failed.
+    // The barrier node itself fails only on a *real* failure, so an ordinary
+    // remote divergence does not flip the sync's exit code — the pre-fix
+    // all-`!success` barrier did, diverging from per-branch mode.
+    let classified: Vec<(String, TaskStatus, TaskMessage)> = results
+        .iter()
+        .map(|r| {
+            let (status, message) = classify_branch_push(r);
+            (r.branch_name.clone(), status, message)
+        })
+        .collect();
+    let batch_real_failure = classified
+        .iter()
+        .any(|(_, status, _)| *status == TaskStatus::Failed);
+    for (branch, status, message) in classified {
+        send_branch(&branch, status, message);
     }
 
-    // The barrier node itself: failed when anything failed so the run's
-    // exit code logic sees it, but with an empty row it stays invisible.
-    if batch_failed {
+    if batch_real_failure {
         (
             TaskStatus::Failed,
             TaskMessage::Failed("batched push failed".into()),
@@ -1853,34 +1981,19 @@ fn execute_push_task(
         );
     }
 
-    let mut git = GitCommand::new(false)
-        .with_gitoxide(settings.use_gitoxide)
-        .with_cancel(Arc::clone(cancel));
-
-    // Register the unit with the resource governor (#678). The guard
-    // tracks the unit's lifetime (drop = gone); the spawn callback hands
-    // the governor the git-push root pid for the sampler and containment
-    // tiers. The timeout arms a per-unit wall clock inside run_push.
+    // Register the unit with the resource governor (#678). The guard tracks the
+    // unit's lifetime (drop = gone); attach_push_supervision hands the governor
+    // the git-push root pid for the sampler + containment tiers, arms the
+    // per-unit wall clock, and exports the jobserver env.
     let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit(branch_name)));
-    if governor_unit.is_some() || settings.sync_push_timeout.is_some() || jobserver_env.is_some() {
-        let on_spawn = governor_unit.as_ref().map(|unit| {
-            let unit = Arc::clone(unit);
-            Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
-        });
-        let on_clock = governor_unit.as_ref().map(|unit| {
-            let unit = Arc::clone(unit);
-            Arc::new(move |clock: Arc<crate::git::cancel::UnitClock>| unit.attach_clock(clock))
-                as Arc<dyn Fn(Arc<crate::git::cancel::UnitClock>) + Send + Sync>
-        });
-        git = git.with_push_supervision(crate::git::PushSupervision {
-            on_spawn,
-            timeout: settings.sync_push_timeout,
-            on_clock,
-            env: jobserver_env
-                .map(|pair| vec![pair.clone()])
-                .unwrap_or_default(),
-        });
-    }
+    let git = attach_push_supervision(
+        GitCommand::new(false)
+            .with_gitoxide(settings.use_gitoxide)
+            .with_cancel(Arc::clone(cancel)),
+        governor_unit.as_ref(),
+        settings.sync_push_timeout,
+        jobserver_env,
+    );
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -1991,50 +2104,8 @@ fn execute_push_task(
         );
     }
 
-    if result.no_upstream {
-        (
-            TaskStatus::Succeeded,
-            TaskMessage::NoPushUpstream,
-            branch_outcomes.clone(),
-        )
-    } else if result.success && result.up_to_date {
-        (
-            TaskStatus::Succeeded,
-            TaskMessage::UpToDate,
-            branch_outcomes.clone(),
-        )
-    } else if result.success {
-        (
-            TaskStatus::Succeeded,
-            TaskMessage::Pushed,
-            branch_outcomes.clone(),
-        )
-    } else if matches!(
-        result.hook,
-        push::HookVerdict::Rejected | push::HookVerdict::Passed
-    ) {
-        // A failed push with the pre-push gate in effect is a real failure
-        // (#599), not a divergence warning.
-        let first_line = result
-            .message
-            .lines()
-            .next()
-            .unwrap_or(result.hook.failure_cause())
-            .to_string();
-        (
-            TaskStatus::Failed,
-            TaskMessage::Failed(first_line),
-            branch_outcomes.clone(),
-        )
-    } else {
-        // Hook-less push failures stay warnings, not hard failures — use
-        // Succeeded + Diverged so check_tui_failures does not count them.
-        (
-            TaskStatus::Succeeded,
-            TaskMessage::Diverged,
-            branch_outcomes.clone(),
-        )
-    }
+    let (status, message) = classify_branch_push(&result);
+    (status, message, branch_outcomes.clone())
 }
 
 /// Fast-forward a local-only branch from its upstream (no worktree needed).
@@ -2554,7 +2625,14 @@ fn run_push_phase(
     let exec_result = {
         let mut sink = OutputSink(output);
         if settings.sync_push_hook_strategy == crate::settings::PushHookStrategy::Batched {
-            push::execute_batched(&params, &git, &project_root, &mut sink, skip_branches)
+            push::execute_batched(
+                &params,
+                &git,
+                &project_root,
+                &mut sink,
+                skip_branches,
+                presenter.as_ref(),
+            )
         } else {
             push::execute(
                 &params,
@@ -2797,6 +2875,58 @@ mod tests {
             email: email.to_string(),
             is_current_user,
         }
+    }
+
+    #[test]
+    fn classify_branch_push_honors_the_hook_gate() {
+        use crate::core::worktree::push::{HookVerdict, WorktreePushResult};
+
+        // Hook-less push failure (an ordinary non-fast-forward divergence) stays
+        // a benign warning — Succeeded + Diverged — so the batched barrier and
+        // exit code match the per-branch strategy (the pre-fix batched path
+        // hard-failed this and flipped the exit code).
+        let diverged = WorktreePushResult {
+            branch_name: "feat/a".into(),
+            success: false,
+            hook: HookVerdict::NoHook,
+            message: "non-fast-forward".into(),
+            ..Default::default()
+        };
+        assert_eq!(classify_branch_push(&diverged).0, TaskStatus::Succeeded);
+        assert!(matches!(
+            classify_branch_push(&diverged).1,
+            TaskMessage::Diverged
+        ));
+
+        // A failed push behind an ACTIVE pre-push gate is a real failure (#599).
+        let gated = WorktreePushResult {
+            branch_name: "feat/b".into(),
+            success: false,
+            hook: HookVerdict::Rejected,
+            message: "gate said no".into(),
+            ..Default::default()
+        };
+        assert_eq!(classify_branch_push(&gated).0, TaskStatus::Failed);
+
+        // A clean push and a no-upstream skip both succeed.
+        let pushed = WorktreePushResult {
+            success: true,
+            message: "pushed".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            classify_branch_push(&pushed).1,
+            TaskMessage::Pushed
+        ));
+        let no_upstream = WorktreePushResult {
+            success: true,
+            no_upstream: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            classify_branch_push(&no_upstream).1,
+            TaskMessage::NoPushUpstream
+        ));
     }
 
     #[test]
