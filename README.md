@@ -199,14 +199,18 @@ Hooks require explicit trust for security. See the
 daft ships an [Agent Skill](https://github.com/anthropics/agent-skills) that
 teaches AI coding agents (Claude Code, Cursor, Windsurf, and others) the
 worktree workflow -- commands, hooks, environment tooling, and worktree-aware
-Git operations.
+Git operations. The skill is embedded in the binary, version-matched by
+construction:
 
 ```bash
-npx skills add avihut/daft
+git daft skill install
 ```
 
-See the [Agent Skill reference](https://daft.avihu.dev/reference/agent-skill)
-for manual installation options.
+Re-run it after upgrading daft to refresh the installed copy --
+`git daft doctor` flags a stale one. For agents other than Claude Code, use
+`npx skills add avihut/daft` or `--dir <path>`; see the
+[Agent Skill reference](https://daft.avihu.dev/reference/agent-skill) for all
+installation options.
 
 ## Requirements
 
