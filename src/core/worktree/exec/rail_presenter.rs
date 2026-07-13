@@ -242,6 +242,71 @@ mod tests {
     }
 
     #[test]
+    fn fan_out_to_one_worktree_rails_orphans_then_the_live_row() {
+        // #533 [3]: a glob matching several branches where only one has a
+        // worktree renders the rail (not single-target passthrough) — leading
+        // `↓ … no worktree` orphan rows in plan order, then the one live
+        // worktree's row, under a singular "in 1 worktree" header. This
+        // one-real-row-after-orphans shape only became reachable once the
+        // command layer stopped collapsing a fan-out-of-one to passthrough.
+        use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepSpec};
+        let term = InMemoryTerm::new(40, 120);
+        let mut tl = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            false,
+            // Exactly what run_rail's rail_header() builds for this shape.
+            "Running echo hi in 1 worktree",
+        );
+        tl.set_test_draw_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(RowOutputConfig {
+            verbose: false,
+            tail_lines: 6,
+            buffer_cap: None,
+        });
+
+        // Orphan rows lead the plan (as run_rail builds them), then the live
+        // worktree's row.
+        let orphan_b = StepKey::scoped(StageId::ExecCommand, "orphan\u{1f}feat/b".to_string());
+        let orphan_c = StepKey::scoped(StageId::ExecCommand, "orphan\u{1f}feat/c".to_string());
+        let live = command_key("feat/a", 0, 1);
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Step(StepSpec::new(orphan_b.clone()).with_label("feat/b")),
+            Row::Step(StepSpec::new(orphan_c.clone()).with_label("feat/c")),
+            Row::Step(StepSpec::new(live.clone()).with_label("feat/a")),
+        ]));
+
+        // Orphans never run — resolved to the yellow `↓ … no worktree`.
+        for key in [&orphan_b, &orphan_c] {
+            tl.on_stage(
+                key,
+                StageEvent::SkippedAttention {
+                    reason: "no worktree".to_string(),
+                },
+            );
+        }
+
+        // The one live worktree runs and succeeds.
+        let mut rows = HashMap::new();
+        rows.insert("feat/a".to_string(), vec![live]);
+        let p = RailExecPresenter::new(tl.handle(), rows);
+        p.on_job_start("feat/a", None, Some("echo hi"));
+        p.on_job_success("feat/a", Duration::from_millis(10));
+        tl.finish("Done in 0.1s");
+
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running echo hi in 1 worktree\n\
+             \u{2502}\n\
+             \u{2193}  feat/b  no worktree\n\
+             \u{2193}  feat/c  no worktree\n\
+             \u{2713}  feat/a\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
     fn pipeline_commands_key_by_index_and_fail_fast_marks_not_run() {
         // One worktree, two commands: the first fails, the second is skipped
         // and renders `(not run)` — keyed by command index, not name.

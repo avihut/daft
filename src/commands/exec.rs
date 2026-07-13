@@ -26,15 +26,17 @@ more -x shell strings. The two forms are mutually exclusive. Multiple -x
 values run sequentially per worktree; a failure stops that worktree but
 does not stop other worktrees.
 
-When a single worktree is targeted, stdio is fully inherited, making
-interactive programs (claude, vim, fzf) work the same as if you had cd'd
-into the worktree first.
+When you name a single explicit target — one positional branch/worktree name,
+or a bare --repo — stdio is fully inherited, making interactive programs
+(claude, vim, fzf) work the same as if you had cd'd into the worktree first.
 
-On an interactive terminal, multi-worktree runs render a live rail: one row
-per worktree, filled in place, persisted as a receipt. Failed worktrees thread
-their captured output under their row; pass -v to thread every worktree's
-output (and, when stdout is redirected, dump successful worktrees' output too).
-The flag has no effect on single-target runs (stdio is already inherited).
+On an interactive terminal, fan-out runs (--all, a glob, --all-repos,
+--related, or several positionals) render a live rail: one row per worktree,
+filled in place, persisted as a receipt — even when the selection resolves to a
+single worktree. Failed worktrees thread their captured output under their row;
+pass -v to thread every worktree's output (and, when stdout is redirected, dump
+successful worktrees' output too). The flag has no effect on single-target
+pass-through runs (stdio is already inherited).
 "#)]
 #[command(after_help = r#"EXAMPLES:
     Run a single command across all worktrees:
@@ -118,7 +120,7 @@ pub struct Args {
     #[arg(
         short = 'v',
         long = "verbose",
-        help = "Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target runs)"
+        help = "Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target pass-through runs)"
     )]
     pub verbose: bool,
 
@@ -141,6 +143,33 @@ pub(crate) fn validate_args(args: &Args) -> anyhow::Result<()> {
         anyhow::bail!("`-x` and `-- CMD` cannot be combined in one invocation");
     }
     Ok(())
+}
+
+/// Whether the selection is a *fan-out* — a request that is multi-valued by
+/// construction: `--all`, a fleet scope (`--all-repos`/`--related`), a glob
+/// positional, or several positionals. A single explicit positional (or bare
+/// `--repo X`, resolving to that repo's default-branch worktree) is not.
+fn is_fan_out_request(args: &Args) -> bool {
+    args.all
+        || args.all_repos
+        || args.related
+        || args.targets.len() >= 2
+        || args
+            .targets
+            .iter()
+            .any(|t| crate::core::worktree::exec::is_glob(t))
+}
+
+/// Whether a resolved run renders on the multi-target rail rather than Mode A
+/// stdio passthrough (or, non-interactively, the plain list). True when the run
+/// is interactive and the selection is a fan-out — or simply resolved to two or
+/// more worktrees. A fan-out that happens to resolve to a single live worktree
+/// still rails (with any orphan branches as rows), so `daft exec 'feat/*' -- cmd`
+/// doesn't silently collapse to single-target passthrough when only one matched
+/// branch has a worktree (#533). Non-interactive runs never rail, so every
+/// captured/redirected path keeps today's behavior.
+fn should_use_rail(args: &Args, target_count: usize, interactive: bool) -> bool {
+    interactive && (target_count >= 2 || is_fan_out_request(args))
 }
 
 pub fn run() -> Result<()> {
@@ -227,7 +256,7 @@ pub fn run() -> Result<()> {
         crate::output::timeline::TimelineMode::auto(false),
         crate::output::timeline::TimelineMode::Interactive { .. }
     );
-    let will_rail = interactive && targets.len() >= 2;
+    let will_rail = should_use_rail(&args, targets.len(), interactive);
     if !orphans.is_empty() && !will_rail {
         output.warning(&format!(
             "Skipped {} orphan branch(es) (no worktree): {}",
@@ -238,8 +267,10 @@ pub fn run() -> Result<()> {
 
     // Mode A: single-target pass-through. Inherit stdio; propagate exit
     // code verbatim; never render a UI. Handles `daft exec <single> -- claude`
-    // and similar interactive cases without any flag ceremony.
-    if targets.len() == 1 {
+    // and similar interactive cases without any flag ceremony. A fan-out that
+    // resolved to one worktree (`will_rail`) renders the rail instead — only a
+    // deliberately single, explicit target collapses to passthrough here.
+    if targets.len() == 1 && !will_rail {
         let target = &targets[0];
         for spec in &pipeline {
             let mut cmd = core::build_command(spec, alias_cache.as_ref());
@@ -353,6 +384,37 @@ fn truncate_cmd(s: &str) -> String {
     }
 }
 
+/// The rail header: `Running <cmd | M commands> in <N> <scope-noun>`. The rail
+/// renders for two-or-more targets and for a fan-out that resolved to a single
+/// live worktree, so `n` can be 1 — match the scope noun's number to it.
+fn rail_header(
+    all_repos: bool,
+    related: bool,
+    n: usize,
+    pipeline: &[crate::core::worktree::exec::CommandSpec],
+) -> String {
+    let scope_noun = if all_repos {
+        if n == 1 { "repo" } else { "repos" }
+    } else if related {
+        if n == 1 {
+            "related worktree"
+        } else {
+            "related worktrees"
+        }
+    } else if n == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
+    let m = pipeline.len();
+    let cmd_phrase = if m == 1 {
+        format!("Running {}", truncate_cmd(&pipeline[0].display()))
+    } else {
+        format!("Running {m} commands")
+    };
+    format!("{cmd_phrase} in {n} {scope_noun}")
+}
+
 /// Render a multi-target run on the plan-then-execute rail: build the plan and
 /// the matching presenter, override the region's Ctrl-C collapse with exec's
 /// two-stage escalation, run the scheduler, and close the rail with the
@@ -377,21 +439,7 @@ fn run_rail(
     use std::sync::Arc;
 
     let m = pipeline.len();
-    let scope_noun = if args.all_repos {
-        "repos"
-    } else if args.related {
-        "related worktrees"
-    } else {
-        "worktrees"
-    };
-    let cmd_phrase = if m == 1 {
-        format!("Running {}", truncate_cmd(&pipeline[0].display()))
-    } else {
-        format!("Running {m} commands")
-    };
-    // The rail only renders for >= 2 targets (single-target is passthrough),
-    // so the count is always plural.
-    let header = format!("{cmd_phrase} in {} {scope_noun}", targets.len());
+    let header = rail_header(args.all_repos, args.related, targets.len(), pipeline);
 
     let mut timeline = Timeline::new(TimelineMode::auto(false), hook_output.verbose, header);
     timeline.set_ordered_receipts(true);
@@ -826,5 +874,110 @@ mod tests {
         assert!(short.verbose);
         let off = parse(&["--all", "--", "echo"]).unwrap();
         assert!(!off.verbose);
+    }
+
+    #[test]
+    fn single_explicit_target_is_not_a_fan_out() {
+        // A lone literal positional, or bare `--repo X` (its default-branch
+        // worktree), is a deliberate single target — passthrough, not fan-out.
+        assert!(!super::is_fan_out_request(
+            &parse(&["feat/auth", "--", "claude"]).unwrap()
+        ));
+        assert!(!super::is_fan_out_request(
+            &parse(&["--repo", "api", "--", "cargo", "build"]).unwrap()
+        ));
+        assert!(!super::is_fan_out_request(
+            &parse(&["--repo", "api", "feat/auth", "--", "claude"]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn all_glob_fleet_and_multiple_positionals_are_fan_outs() {
+        assert!(super::is_fan_out_request(
+            &parse(&["--all", "--", "echo"]).unwrap()
+        ));
+        assert!(super::is_fan_out_request(
+            &parse(&["feat/*", "--", "echo"]).unwrap()
+        ));
+        assert!(super::is_fan_out_request(
+            &parse(&["--all-repos", "--", "echo"]).unwrap()
+        ));
+        assert!(super::is_fan_out_request(
+            &parse(&["--related", "--", "echo"]).unwrap()
+        ));
+        assert!(super::is_fan_out_request(
+            &parse(&["feat/a", "fix/b", "--", "echo"]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn fan_out_resolving_to_one_target_still_rails() {
+        // #533 [3]: `daft exec 'feat/*' -- cmd` where the glob matches several
+        // branches but only one has a live worktree must render the rail (the
+        // orphans become rows), NOT collapse to single-target passthrough. The
+        // pre-fix gate was `target_count >= 2`, which this case fails.
+        let glob = parse(&["feat/*", "--", "echo"]).unwrap();
+        assert!(super::should_use_rail(&glob, 1, true));
+        let all = parse(&["--all", "--", "echo"]).unwrap();
+        assert!(super::should_use_rail(&all, 1, true));
+    }
+
+    #[test]
+    fn single_explicit_target_does_not_rail() {
+        // A lone explicit target stays passthrough even on an interactive TTY,
+        // so interactive programs keep inherited stdio.
+        let one = parse(&["feat/auth", "--", "claude"]).unwrap();
+        assert!(!super::should_use_rail(&one, 1, true));
+    }
+
+    #[test]
+    fn non_interactive_never_rails() {
+        // Every captured / redirected path (integration tests, `2>&1` to a
+        // file, DAFT_TESTING) keeps today's behavior regardless of selection.
+        let glob = parse(&["feat/*", "--", "echo"]).unwrap();
+        assert!(!super::should_use_rail(&glob, 3, false));
+        let all = parse(&["--all", "--", "echo"]).unwrap();
+        assert!(!super::should_use_rail(&all, 5, false));
+    }
+
+    #[test]
+    fn two_plus_targets_rail_even_without_a_fan_out_flag() {
+        // Several literal positionals resolving to two worktrees rail on their
+        // count alone.
+        let two = parse(&["feat/a", "fix/b", "--", "echo"]).unwrap();
+        assert!(super::should_use_rail(&two, 2, true));
+    }
+
+    #[test]
+    fn rail_header_matches_scope_noun_number_to_target_count() {
+        use crate::core::worktree::exec::CommandSpec;
+        let one = vec![CommandSpec::Argv(vec!["echo".into(), "hi".into()])];
+        // A fan-out that resolved to a single worktree renders "1 worktree" —
+        // singular, not the pre-fix "1 worktrees" (the count was always >= 2).
+        assert_eq!(
+            super::rail_header(false, false, 1, &one),
+            "Running echo hi in 1 worktree"
+        );
+        assert_eq!(
+            super::rail_header(false, false, 3, &one),
+            "Running echo hi in 3 worktrees"
+        );
+        assert_eq!(
+            super::rail_header(true, false, 1, &one),
+            "Running echo hi in 1 repo"
+        );
+        assert_eq!(
+            super::rail_header(false, true, 1, &one),
+            "Running echo hi in 1 related worktree"
+        );
+        // m > 1: the phrase counts commands, the noun still tracks targets.
+        let two = vec![
+            CommandSpec::Shell("a".into()),
+            CommandSpec::Shell("b".into()),
+        ];
+        assert_eq!(
+            super::rail_header(false, false, 2, &two),
+            "Running 2 commands in 2 worktrees"
+        );
     }
 }

@@ -205,7 +205,11 @@ impl WorktreeSnapshot {
     }
 }
 
-fn is_glob(tok: &str) -> bool {
+/// Whether a positional token is a glob (vs. an exact branch/dir name). The
+/// command layer reuses this to tell a fan-out request (`daft exec 'feat/*'`)
+/// from a single explicit target, so a glob that resolves to one live worktree
+/// still renders the rail rather than collapsing to stdio passthrough.
+pub(crate) fn is_glob(tok: &str) -> bool {
     tok.contains('*') || tok.contains('?') || tok.contains('[')
 }
 

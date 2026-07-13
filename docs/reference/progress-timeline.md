@@ -208,10 +208,14 @@ with one row per command):
   `daft.hooks.output.tailLines` window the hook rail uses. A worker's full
   output reaches scrollback only once the rows ahead of it in the plan drain;
   its `✓`/`✗`/`⊘` outcome is never delayed. Nothing prints below the footer.
-- A **single-target** run (`daft exec feat/auth -- claude`) inherits stdio
-  directly and renders no rail, so interactive programs work unchanged. When
-  stdout is redirected, `daft exec` still writes its captured-output dump there
-  (failures only, or every worker with `-v`) while the rail narrates on stderr.
+- A **single explicit-target** run (`daft exec feat/auth -- claude`, or a bare
+  `--repo`) inherits stdio directly and renders no rail, so interactive programs
+  work unchanged. A fan-out — `--all`, a glob, `--all-repos`, `--related`, or
+  several positionals — renders the rail even when it resolves to a single live
+  worktree (any orphan branches ride along as `↓` rows), rather than collapsing
+  to pass-through. When stdout is redirected, `daft exec` still writes its
+  captured-output dump there (failures only, or every worker with `-v`) while
+  the rail narrates on stderr.
 
 ## When the timeline does not render
 
@@ -225,9 +229,9 @@ prints exactly the output it printed before the timeline existed:
 - **Navigation early-exits** — `daft go` to an existing worktree and `daft go -`
   remain single-line responses; there is no plan to show (the just-opened
   planning face collapses without leaving a trace).
-- **Single-target `daft exec`** — inherits stdio directly (so interactive
-  programs work), and a multi-target run on a non-interactive stderr prints the
-  same summary rows and output dump it always did.
+- **Single explicit-target `daft exec`** — inherits stdio directly (so
+  interactive programs work); a fan-out or multi-target run on a non-interactive
+  stderr prints the same summary rows and output dump it always did.
 
 `daft prune`, `daft repo remove`, and multi-branch `daft clone`'s satellite
 phase keep their inline operation table, which already shows all rows up front

@@ -68,8 +68,17 @@ live rail that only renders on a TTY.
 
 - [ ] `daft exec <one-worktree> -- claude` (or `vim`, `fzf`): stdio inherited,
       interactive program works, no rail, exit code propagated verbatim
+- [ ] Bare `daft exec --repo <name> -- claude` (default-branch worktree, no
+      positional): same passthrough — stdio inherited, no rail
 - [ ] `Ctrl-C` in a single-target passthrough behaves like the child's own
       SIGINT (no rail collapse)
+- [ ] **#533 [3] regression:** a fan-out that resolves to exactly **one** live
+      worktree still rails, it does **not** collapse to passthrough —
+      `daft exec 'feat/*' -- <cmd>` where only one matched branch has a worktree
+      (the rest are orphans) renders `┌ Running <cmd> in 1 worktree` with the
+      one `✓`/`✗` row plus `↓ <branch> no worktree` rows, not an inherited-stdio
+      run. Likewise `daft exec --all -- <cmd>` in a single-worktree repo renders
+      a one-row rail, not passthrough
 
 ## Fleet scopes
 
