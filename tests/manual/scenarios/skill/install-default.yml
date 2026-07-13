@@ -1,0 +1,54 @@
+name: Skill install default path and doctor freshness
+description:
+  With no flags, daft skill install targets ~/.claude/skills; daft doctor
+  reports the copy's freshness and --fix rewrites a stale one. HOME is isolated
+  to the sandbox on every step — the real ~/.claude must never be touched by
+  tests.
+
+steps:
+  - name: Install into an isolated HOME
+    run: HOME="$WORK_DIR/home" daft skill install 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Installed agent skill"
+      files_exist:
+        - "$WORK_DIR/home/.claude/skills/daft-worktree-workflow/SKILL.md"
+
+  - name: Doctor passes on the fresh copy
+    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Agent skill (installed"
+
+  - name: Age the stamp
+    run: >
+      sed -i.bak 's/^daft_version:.*/daft_version: "0.1.0"/'
+      "$WORK_DIR/home/.claude/skills/daft-worktree-workflow/SKILL.md" && rm
+      "$WORK_DIR/home/.claude/skills/daft-worktree-workflow/SKILL.md.bak"
+    expect:
+      exit_code: 0
+
+  - name: Doctor flags the stale copy
+    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "installed copy is stale (v0.1.0"
+        - "skill install"
+
+  - name: Doctor --fix rewrites it
+    run: HOME="$WORK_DIR/home" daft doctor --fix 2>&1
+    expect:
+      exit_code: 0
+      file_not_contains:
+        - path: "$WORK_DIR/home/.claude/skills/daft-worktree-workflow/SKILL.md"
+          content: 'daft_version: "0.1.0"'
+
+  - name: Doctor passes again
+    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Agent skill (installed"

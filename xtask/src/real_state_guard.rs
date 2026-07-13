@@ -28,6 +28,12 @@
 //!     a digest, not every name, and never hash child *contents* (job
 //!     DBs/sockets churn at runtime; a leaked repo always lands under a
 //!     brand-new UUID name, which the digest catches).
+//!   * `~/.claude/skills/daft-worktree-workflow/SKILL.md` — content-hash of
+//!     the real user-global agent skill. Unlike the other surfaces this one
+//!     has no `DAFT_*_DIR` override at all: `daft skill install` and
+//!     `daft doctor --fix` resolve it from HOME, so any test exercising them
+//!     must pass `--dir` or an inline `HOME=` override — this hash catches
+//!     the one that forgets (#664).
 
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
@@ -81,6 +87,12 @@ struct Snapshot {
     state_top: DirDigest,
     /// Entry-set digest of `<state>/daft/jobs/`.
     state_jobs: DirDigest,
+    /// Content hash of the real user-global agent skill
+    /// (`~/.claude/skills/daft-worktree-workflow/SKILL.md`), or `None` when
+    /// not installed. `serde(default)` keeps older fingerprint files
+    /// readable.
+    #[serde(default)]
+    claude_skill: Option<String>,
 }
 
 /// Compact digest of a directory's immediate entry set: whether it exists, how
@@ -120,6 +132,11 @@ impl Snapshot {
                 self.state_jobs.count, now.state_jobs.count
             ));
         }
+        if self.claude_skill != now.claude_skill {
+            out.push(
+                "home:   ~/.claude/skills/daft-worktree-workflow/SKILL.md changed".to_string(),
+            );
+        }
         out
     }
 }
@@ -131,6 +148,7 @@ fn capture() -> Result<Snapshot> {
         repos_json: hash_file_opt(&real_config_dir()?.join("repos.json"))?,
         state_top: dir_digest(&real_state_dir())?,
         state_jobs: dir_digest(&real_state_dir().join("jobs"))?,
+        claude_skill: hash_file_opt(&real_claude_skill_file()?)?,
     })
 }
 
@@ -147,10 +165,13 @@ fn tripwire_message(diffs: &[String]) -> String {
         msg.push('\n');
     }
     msg.push_str(
-        "\nThis almost always means the binary under test is not a daft_dev_build — a \
-         release/tagged build, or a system `daft` on PATH — so DAFT_*_DIR was ignored and \
-         writes hit the real dirs. Rebuild the dev binary and re-run. See #697.\n\n\
-         Real dirs on this machine:\n",
+        "\nFor the config/data/state surfaces this almost always means the binary under \
+         test is not a daft_dev_build — a release/tagged build, or a system `daft` on PATH \
+         — so DAFT_*_DIR was ignored and writes hit the real dirs; rebuild the dev binary \
+         and re-run (#697). A changed agent-skill file instead means a test ran \
+         `daft skill install` or `daft doctor --fix` without `--dir` or an inline `HOME=` \
+         override (#664).\n\n\
+         Real paths on this machine:\n",
     );
     let show = |label: &str, p: Result<PathBuf>| match p {
         Ok(p) => format!("  {label}: {}\n", p.display()),
@@ -159,6 +180,7 @@ fn tripwire_message(diffs: &[String]) -> String {
     msg.push_str(&show("config", real_config_dir()));
     msg.push_str(&show("data  ", real_data_dir()));
     msg.push_str(&show("state ", Ok(real_state_dir())));
+    msg.push_str(&show("skill ", real_claude_skill_file()));
     msg
 }
 
@@ -177,6 +199,18 @@ fn real_data_dir() -> Result<PathBuf> {
     Ok(dirs::data_dir()
         .context("resolving OS data dir")?
         .join("daft"))
+}
+
+/// The real user-global agent-skill file. Mirrors
+/// `daft::skill::user_skills_root()` + `skill_file_path()`; there is no env
+/// override to ignore — the skill path is always HOME-derived.
+fn real_claude_skill_file() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("resolving home dir")?
+        .join(".claude")
+        .join("skills")
+        .join("daft-worktree-workflow")
+        .join("SKILL.md"))
 }
 
 /// `<state>/daft` — the real state dir, ignoring `DAFT_STATE_DIR`. Mirrors
@@ -290,6 +324,11 @@ mod tests {
         if std::env::var_os("DAFT_STATE_DIR").is_none() {
             assert_eq!(real_state_dir(), daft::daft_state_dir().unwrap());
         }
+        // The skill path has no env override, so this pin is unconditional.
+        assert_eq!(
+            real_claude_skill_file().unwrap(),
+            daft::skill::skill_file_path(&daft::skill::user_skills_root().unwrap())
+        );
     }
 
     #[test]
@@ -344,6 +383,12 @@ mod tests {
             ..Snapshot::default()
         };
         assert!(base.diff(&jobs_changed)[0].contains("jobs"));
+
+        let skill_changed = Snapshot {
+            claude_skill: Some("abc".to_string()),
+            ..Snapshot::default()
+        };
+        assert!(base.diff(&skill_changed)[0].contains(".claude/skills"));
 
         // Identical snapshots ⇒ clean.
         assert!(base.diff(&Snapshot::default()).is_empty());

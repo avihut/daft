@@ -1,0 +1,65 @@
+name: Skill install project-level
+description:
+  daft skill install --project targets the current worktree's .claude/skills
+  (resolved from any subdirectory), conflicts with --dir, and errors outside a
+  repository; a stale project copy is flagged and fixed by daft doctor
+
+steps:
+  - name: Initialize a repo
+    run: git-worktree-init --layout contained test-repo
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/master"
+
+  - name: Install project-level from a worktree subdirectory
+    run: mkdir -p src && cd src && daft skill install --project 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Installed agent skill"
+        - "project-local"
+      files_exist:
+        - "$WORK_DIR/test-repo/master/.claude/skills/daft-worktree-workflow/SKILL.md"
+
+  - name: --project and --dir conflict
+    run: daft skill install --project --dir "$WORK_DIR/skills" 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 2
+
+  - name: --project outside a repository fails
+    run: daft skill install --project 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "--project requires a Git repository"
+
+  - name: Age the project copy's stamp
+    run: >
+      sed -i.bak 's/^daft_version:.*/daft_version: "0.1.0"/'
+      .claude/skills/daft-worktree-workflow/SKILL.md && rm
+      .claude/skills/daft-worktree-workflow/SKILL.md.bak
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+
+  - name: Doctor flags the stale project copy
+    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Agent skill (project)"
+        - "installed copy is stale (v0.1.0"
+
+  - name: Doctor --fix rewrites the project copy
+    run: HOME="$WORK_DIR/home" daft doctor --fix 2>&1
+    cwd: "$WORK_DIR/test-repo/master"
+    expect:
+      exit_code: 0
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/master/.claude/skills/daft-worktree-workflow/SKILL.md"
+          content: 'daft_version: "0.1.0"'
