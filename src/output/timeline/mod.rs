@@ -245,6 +245,13 @@ impl TimelineHandle {
                     annotation: Some(detail),
                 },
             ),
+            StageEvent::Cancelled => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Cancelled,
+                    annotation: Some("cancelled".to_string()),
+                },
+            ),
             StageEvent::SkippedExpected { reason } => core.resolve(
                 key,
                 Resolution::Final {
@@ -254,12 +261,14 @@ impl TimelineHandle {
             ),
             StageEvent::SkippedAttention { reason } => {
                 // Shared-file and fetch reasons are self-contained phrases
-                // (missing, conflict, "failed — …") — the generic prefix
-                // would stutter.
+                // (missing, conflict, "failed — …"); exec's orphan-target
+                // reason ("no worktree") likewise. The generic "skipped — "
+                // prefix would stutter on them.
                 let annotation = match key.id {
                     crate::core::stage::StageId::SharedFile
                     | crate::core::stage::StageId::Fetch
-                    | crate::core::stage::StageId::Tracking => reason,
+                    | crate::core::stage::StageId::Tracking
+                    | crate::core::stage::StageId::ExecCommand => reason,
                     _ => format!("skipped \u{2014} {reason}"),
                 };
                 core.resolve(
@@ -943,6 +952,29 @@ mod tests {
              \u{2502}  \u{2713}  Removed worktree\n\
              \u{2502}\n\
              \u{2514}  Removed 2 worktrees in 0.1s"
+        );
+    }
+
+    #[test]
+    fn exec_command_row_cancels_to_the_ban_face() {
+        // An exec worker interrupted mid-run resolves to the yellow `⊘` face
+        // with a plain `cancelled` reason (the sub-second test duration is
+        // below the display threshold, so none shows). The fixed label wins.
+        let (mut tl, term) = captured("Running mise test in 1 worktree");
+        tl.commit_plan(PlanCommit::new(vec![Row::Step(
+            StepSpec::new(StepKey::new(StageId::ExecCommand)).with_label("master"),
+        )]));
+        let key = StepKey::new(StageId::ExecCommand);
+        tl.on_stage(&key, StageEvent::Started);
+        tl.on_stage(&key, StageEvent::Cancelled);
+        tl.finish("Cancelled after 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise test in 1 worktree\n\
+             \u{2502}\n\
+             \u{2298}  master  cancelled\n\
+             \u{2502}\n\
+             \u{2514}  Cancelled after 0.1s"
         );
     }
 

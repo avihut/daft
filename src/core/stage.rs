@@ -72,6 +72,13 @@ pub enum StageId {
     PostCloneHooks,
     /// `daft install` requested via `--install`.
     Install,
+
+    // ── Exec (multi-worktree command runner) ─────────────────────────────
+    /// One command run against one worktree in a `daft exec` fleet. The row's
+    /// identity is its subject (the worktree label, or the command text in a
+    /// multi-command pipeline), so it always carries a fixed label override
+    /// and the tense table is a fallback only.
+    ExecCommand,
 }
 
 impl StageId {
@@ -140,6 +147,10 @@ pub enum StageEvent {
     /// The step failed. The label stays imperative (the fact never
     /// happened); `detail` is appended as the annotation.
     Failed { detail: String },
+    /// The step was cancelled mid-run (SIGINT). Renders the yellow `⊘` face
+    /// with a `cancelled` annotation and the elapsed duration — `daft exec`'s
+    /// interrupted workers. The label stays imperative like a failure.
+    Cancelled,
     /// The step resolved without running, and that is the expected quiet
     /// case (config off, nothing to do). Renders dim.
     SkippedExpected { reason: String },

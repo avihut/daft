@@ -139,6 +139,14 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Installed daft",
             skipped: "not installed",
         },
+        // Fallback only: exec rows always carry a fixed label override (the
+        // worktree, or the command) — the face glyph alone carries state.
+        StageId::ExecCommand => StepLabels {
+            pending: "Run command",
+            active: "Running command",
+            done: "Ran command",
+            skipped: "not run",
+        },
     }
 }
 
@@ -185,10 +193,13 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         }
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
-        // Everything else speaks daft's own vocabulary.
+        // Everything else speaks daft's own vocabulary. Exec rows carry a
+        // fixed label (worktree or command) and a plain annotation
+        // (`exit N`, `cancelled`, latest output line) — no identity ink.
         StageId::Carry
         | StageId::DeleteLocalBranch
         | StageId::Install
+        | StageId::ExecCommand
         | StageId::PreCreateHooks
         | StageId::PostCreateHooks
         | StageId::PreRemoveHooks

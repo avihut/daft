@@ -666,13 +666,18 @@ impl TimelineCore {
                         duration: started.map(|s| s.elapsed()),
                     },
                     FinalFace::Failed => RowFace::Failed,
+                    FinalFace::Cancelled => RowFace::Cancelled {
+                        duration: started.map(|s| s.elapsed()),
+                    },
                     FinalFace::SkippedExpected => RowFace::SkippedExpected,
                     FinalFace::SkippedAttention => RowFace::SkippedAttention,
                 };
                 let phase = match face {
                     // The fact never happened — the label stays imperative
                     // (`↓ Fetch remote  failed — …`, never `↓ Fetched …`).
-                    RowFace::Failed | RowFace::SkippedAttention => StepPhase::Pending,
+                    RowFace::Failed | RowFace::SkippedAttention | RowFace::Cancelled { .. } => {
+                        StepPhase::Pending
+                    }
                     RowFace::SkippedExpected => StepPhase::Skipped,
                     _ => StepPhase::Done,
                 };
@@ -1195,6 +1200,7 @@ pub(super) enum UnresolvedPolicy {
 pub(super) enum FinalFace {
     Done,
     Failed,
+    Cancelled,
     SkippedExpected,
     SkippedAttention,
 }
