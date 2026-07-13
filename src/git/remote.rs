@@ -215,26 +215,25 @@ impl GitCommand {
         }
     }
 
-    /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
-    /// hook installed — native or via `core.hooksPath` (lefthook, husky,
+    /// Absolute path of the repo's executable `pre-push` hook (as seen
+    /// from `cwd`) — native or via `core.hooksPath` (lefthook, husky,
     /// pre-commit all register through one of those two mechanisms).
+    /// `None` when no executable hook is installed.
     ///
-    /// Used to existence-gate the synthetic `pre-push` reporting phase so a
-    /// hook-less repo never renders a hollow phase header.
-    pub fn pre_push_hook_exists(&self, cwd: &Path) -> bool {
+    /// The resolved path is also the resource governor's profile identity
+    /// (#678): its content hash keys the learned `hook_profiles` row.
+    pub fn pre_push_hook_path(&self, cwd: &Path) -> Option<PathBuf> {
         let mut cmd = git_command_at(cwd);
         cmd.args(["rev-parse", "--git-path", "hooks"]);
         cmd.stdin(Stdio::null()).stderr(Stdio::null());
-        let Ok(output) = cmd.output() else {
-            return false;
-        };
+        let output = cmd.output().ok()?;
         if !output.status.success() {
-            return false;
+            return None;
         }
         let raw = String::from_utf8_lossy(&output.stdout);
         let rel = raw.trim();
         if rel.is_empty() {
-            return false;
+            return None;
         }
         // `--git-path` prints relative to git's cwd (our `-C <cwd>`).
         let hooks_dir = if Path::new(rel).is_absolute() {
@@ -242,7 +241,16 @@ impl GitCommand {
         } else {
             cwd.join(rel)
         };
-        is_executable_file(&hooks_dir.join("pre-push"))
+        let hook = hooks_dir.join("pre-push");
+        is_executable_file(&hook).then_some(hook)
+    }
+
+    /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
+    /// hook installed. Used to existence-gate the synthetic `pre-push`
+    /// reporting phase so a hook-less repo never renders a hollow phase
+    /// header.
+    pub fn pre_push_hook_exists(&self, cwd: &Path) -> bool {
+        self.pre_push_hook_path(cwd).is_some()
     }
 
     /// Push a branch and set upstream, running from a specific directory.

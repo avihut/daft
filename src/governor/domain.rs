@@ -49,6 +49,13 @@ pub enum HoldReason {
 /// Fallback predicted peak tree-RSS for a hook with no learned profile.
 pub const DEFAULT_PEAK: u64 = 512 << 20;
 
+/// A hook profiling at most this peak tree-RSS…
+pub const LIGHT_PEAK_MAX: u64 = 256 << 20;
+
+/// …and at most this wall time per run is "light": it gets full
+/// parallelism immediately (no slow-start stagger, target = cap).
+pub const LIGHT_WALL_MS_MAX: u64 = 5_000;
+
 /// Minimum gap between cold-start launches. An allocation storm shows in
 /// the memory-availability derivative within a launch or two; the stagger
 /// keeps the storm's blast radius to one unit instead of N.
@@ -82,6 +89,9 @@ pub struct GovernorParams {
     pub default_peak: u64,
     /// Minimum gap between cold-start launches, in milliseconds.
     pub stagger_ms: u64,
+    /// The hook profiled light (#678 stage 2): skip the slow-start
+    /// conservatism — full target immediately, no stagger.
+    pub light: bool,
 }
 
 impl GovernorParams {
@@ -92,6 +102,54 @@ impl GovernorParams {
             reserve,
             default_peak: DEFAULT_PEAK,
             stagger_ms: STAGGER_MS,
+            light: false,
+        }
+    }
+
+    /// Apply a learned profile: light hooks lose the cold-start brakes.
+    pub fn with_profile(mut self, profile: Option<HookProfile>) -> Self {
+        if profile.is_some_and(|p| p.is_light()) {
+            self.light = true;
+            self.stagger_ms = 0;
+        }
+        self
+    }
+}
+
+/// The learned resource profile of one hook script — the domain-value twin
+/// of the store's `HookProfileRow` (converted at the adapter boundary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookProfile {
+    /// Decayed maximum of the hook's process-tree RSS across runs.
+    pub peak_rss: u64,
+    /// Exponentially weighted average wall time of one run, milliseconds.
+    pub wall_ms: u64,
+    /// Runs folded into this profile.
+    pub runs: u32,
+}
+
+impl HookProfile {
+    /// Light hooks finish fast in little memory — the cap barely matters
+    /// and the stagger only adds latency.
+    pub fn is_light(&self) -> bool {
+        self.peak_rss < LIGHT_PEAK_MAX && self.wall_ms < LIGHT_WALL_MS_MAX
+    }
+
+    /// Fold one observed run into the profile. The peak decays 10% before
+    /// taking the max so a one-off spike doesn't cap the hook forever;
+    /// wall time is an EWMA (α = 0.3).
+    pub fn fold(prev: Option<HookProfile>, run_peak_rss: u64, run_wall_ms: u64) -> HookProfile {
+        match prev {
+            None => HookProfile {
+                peak_rss: run_peak_rss,
+                wall_ms: run_wall_ms,
+                runs: 1,
+            },
+            Some(p) => HookProfile {
+                peak_rss: run_peak_rss.max(p.peak_rss - p.peak_rss / 10),
+                wall_ms: (p.wall_ms * 7 + run_wall_ms * 3) / 10,
+                runs: p.runs.saturating_add(1),
+            },
         }
     }
 }
@@ -116,11 +174,16 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// A fresh controller in slow-start.
+    /// A fresh controller in slow-start (or at full target for a hook
+    /// profiled light — nothing to probe for).
     pub fn new(params: GovernorParams) -> Self {
         Self {
-            target: INITIAL_TARGET.min(params.cap),
-            slow_start: true,
+            target: if params.light {
+                params.cap
+            } else {
+                INITIAL_TARGET.min(params.cap)
+            },
+            slow_start: !params.light,
             green_streak: 0,
             pressure: Pressure::Green,
             last_admit_ms: None,
@@ -445,5 +508,79 @@ mod tests {
             c.tick(&sample(20), 3);
         }
         assert_eq!(c.target(), 3);
+    }
+
+    #[test]
+    fn hook_profile_classification_and_fold() {
+        let light = HookProfile {
+            peak_rss: 40 << 20,
+            wall_ms: 300,
+            runs: 3,
+        };
+        assert!(light.is_light());
+        let heavy_mem = HookProfile {
+            peak_rss: 6 * GIB,
+            wall_ms: 300,
+            runs: 1,
+        };
+        assert!(!heavy_mem.is_light());
+        let heavy_wall = HookProfile {
+            peak_rss: 40 << 20,
+            wall_ms: 240_000,
+            runs: 1,
+        };
+        assert!(!heavy_wall.is_light());
+
+        // First run seeds the profile verbatim.
+        let first = HookProfile::fold(None, 2 * GIB, 60_000);
+        assert_eq!(first.peak_rss, 2 * GIB);
+        assert_eq!(first.wall_ms, 60_000);
+        assert_eq!(first.runs, 1);
+
+        // A smaller later run decays the peak by 10%, not to the new value.
+        let second = HookProfile::fold(Some(first), GIB, 30_000);
+        assert_eq!(second.peak_rss, 2 * GIB - 2 * GIB / 10);
+        assert_eq!(second.wall_ms, (60_000 * 7 + 30_000 * 3) / 10);
+        assert_eq!(second.runs, 2);
+
+        // A bigger later run takes the max immediately.
+        let third = HookProfile::fold(Some(second), 4 * GIB, 30_000);
+        assert_eq!(third.peak_rss, 4 * GIB);
+    }
+
+    #[test]
+    fn light_profile_removes_cold_start_brakes() {
+        let params = GovernorParams::new(8, 2 * GIB).with_profile(Some(HookProfile {
+            peak_rss: 40 << 20,
+            wall_ms: 300,
+            runs: 2,
+        }));
+        assert!(params.light);
+        let mut c = Controller::new(params);
+        // Full target immediately, back-to-back admissions (no stagger).
+        assert_eq!(c.target(), 8);
+        c.tick(&sample(20), 0);
+        for running in 0..8 {
+            assert!(
+                c.try_admit(0, running, &sample(20), Some(40 << 20)).is_ok(),
+                "launch {running} must admit with no stagger"
+            );
+        }
+        assert_eq!(
+            c.try_admit(0, 8, &sample(20), Some(40 << 20)),
+            Err(HoldReason::AtCap)
+        );
+    }
+
+    #[test]
+    fn heavy_profile_keeps_slow_start() {
+        let params = GovernorParams::new(8, 2 * GIB).with_profile(Some(HookProfile {
+            peak_rss: 6 * GIB,
+            wall_ms: 240_000,
+            runs: 2,
+        }));
+        assert!(!params.light);
+        let c = Controller::new(params);
+        assert_eq!(c.target(), 2);
     }
 }

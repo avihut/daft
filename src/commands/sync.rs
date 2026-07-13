@@ -790,10 +790,15 @@ fn run_tui(
     let shared_no_verify = args.no_verify;
     // One probe for the whole run — every worktree shares the repo's hooks
     // dir, and DAG workers shouldn't each pay a subprocess for it (#599).
-    let shared_hook_present = shared_push
-        && GitCommand::new(true)
+    // The resolved path doubles as the governor's profile identity (#678).
+    let shared_hook_path = if shared_push {
+        GitCommand::new(true)
             .with_gitoxide(settings.use_gitoxide)
-            .pre_push_hook_exists(&project_root);
+            .pre_push_hook_path(&project_root)
+    } else {
+        None
+    };
+    let shared_hook_present = shared_hook_path.is_some();
 
     // Resource governor plan (#678): resolved from flags + config here,
     // constructed inside the orchestrator once the DAG's push-task count
@@ -940,8 +945,31 @@ fn run_tui(
                     None
                 }
                 PushGovernorPlan::Dynamic { cap } => {
+                    // Profile persistence (#678 stage 2): identity is the
+                    // resolved hook file's content hash under this repo's
+                    // coordinator DB. Any piece missing → run unprofiled.
+                    let profiles = shared_hook_path.as_deref().and_then(|hook_path| {
+                        let repo_hash =
+                            crate::core::repo_identity::compute_repo_id_from_common_dir(
+                                &shared_git_dir,
+                            )
+                            .ok()?;
+                        let hook_hash = crate::governor::hook_script_hash(hook_path)?;
+                        let store = crate::governor::adapters::SqliteProfileStore::open_for_repo(
+                            &repo_hash,
+                        )?;
+                        Some((
+                            Box::new(store) as Box<dyn crate::governor::ports::ProfileStore>,
+                            crate::governor::ports::ProfileKey {
+                                repo_hash,
+                                stage: "pre-push".into(),
+                                hook_hash,
+                            },
+                        ))
+                    });
                     let governor = crate::governor::SyncGovernor::spawn(
                         crate::governor::adapters::build_probe(),
+                        profiles,
                         Arc::clone(&orch_cancel),
                         |first| {
                             crate::governor::domain::GovernorParams::new(

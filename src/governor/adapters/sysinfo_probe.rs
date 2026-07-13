@@ -44,6 +44,55 @@ impl ResourceProbe for SysinfoProbe {
             psi_some_avg10: read_psi_some_avg10(),
         }
     }
+
+    fn tree_rss(&self, roots: &[u32]) -> Vec<Option<u64>> {
+        if roots.is_empty() {
+            return Vec::new();
+        }
+        let mut system = self.system.lock().unwrap();
+        // One full process refresh serves every root this tick. Memory-only
+        // refresh kind: no cwd/env/cmdline reads.
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_memory(),
+        );
+
+        // parent → children adjacency for the BFS below.
+        let mut children: std::collections::HashMap<u32, Vec<u32>> =
+            std::collections::HashMap::new();
+        for (pid, process) in system.processes() {
+            if let Some(parent) = process.parent() {
+                children
+                    .entry(parent.as_u32())
+                    .or_default()
+                    .push(pid.as_u32());
+            }
+        }
+
+        roots
+            .iter()
+            .map(|&root| {
+                let root_pid = sysinfo::Pid::from_u32(root);
+                system.process(root_pid)?;
+                let mut total = 0u64;
+                let mut queue = vec![root];
+                let mut seen = std::collections::HashSet::new();
+                while let Some(pid) = queue.pop() {
+                    if !seen.insert(pid) {
+                        continue;
+                    }
+                    if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
+                        total = total.saturating_add(process.memory());
+                    }
+                    if let Some(kids) = children.get(&pid) {
+                        queue.extend_from_slice(kids);
+                    }
+                }
+                Some(total)
+            })
+            .collect()
+    }
 }
 
 /// Linux memory PSI, `some avg10`. The file simply does not exist on
@@ -138,6 +187,23 @@ impl ResourceProbe for ForcedProbe {
             *last = sample;
         }
         *last
+    }
+
+    fn tree_rss(&self, roots: &[u32]) -> Vec<Option<u64>> {
+        // `tree_rss=<bytes>` in the state file forces every tree's reading;
+        // otherwise forced runs report no per-tree data.
+        let forced = self
+            .state_file
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| {
+                text.lines().find_map(|line| {
+                    line.trim()
+                        .strip_prefix("tree_rss=")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                })
+            });
+        roots.iter().map(|_| forced).collect()
     }
 }
 

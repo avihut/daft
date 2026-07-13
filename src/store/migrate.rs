@@ -49,11 +49,12 @@ pub fn coordinator_set() -> MigrationSet {
             M::up(include_str!("migrations/001_initial.sql")),
             M::up(include_str!("migrations/002_visitor_seeds.sql")),
             M::up(include_str!("migrations/003_invocation_status.sql")),
+            M::up(include_str!("migrations/004_hook_profiles.sql")),
         ]),
         // rusqlite_migration's version counter is `migrations.len() as u32`
         // after every migration is applied. Kept as i64 for consistency with
         // the on-disk `user_version` PRAGMA type.
-        current_version: 3,
+        current_version: 4,
     }
 }
 
@@ -220,6 +221,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, "visitor_seeds");
+    }
+
+    #[test]
+    fn hook_profiles_tables_exist_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        for table in ["hook_profiles", "governor_events"] {
+            let name: String = conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(name, table);
+        }
     }
 
     #[test]
