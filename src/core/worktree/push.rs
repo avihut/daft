@@ -44,6 +44,10 @@ pub struct WorktreePushResult {
     /// not happen and needs terminal action, so it must not be reported as
     /// a benign divergence (#663).
     pub needs_terminal: bool,
+    /// The push unit (git + pre-push hook) outran `daft.sync.pushTimeout`
+    /// and was torn down (#678). A terminal failure — retrying would burn
+    /// another full budget.
+    pub timed_out: bool,
     /// Verdict on the repo's pre-push gate for this push.
     pub hook: HookVerdict,
     pub message: String,
@@ -99,6 +103,10 @@ impl PushResult {
     /// not the benign "diverged" warn-and-continue case (#663).
     pub fn needs_terminal_count(&self) -> usize {
         self.results.iter().filter(|r| r.needs_terminal).count()
+    }
+
+    pub fn timed_out_count(&self) -> usize {
+        self.results.iter().filter(|r| r.timed_out).count()
     }
 }
 
@@ -524,6 +532,14 @@ fn error_needs_terminal(e: &anyhow::Error) -> bool {
         .any(|c| c.is::<crate::git::cancel::NeedsTerminal>())
 }
 
+/// Whether an error is the typed [`OperationTimedOut`](crate::git::cancel::OperationTimedOut)
+/// marker — a supervised push unit that outran its wall-clock budget (#678).
+/// Walks the anyhow chain in case a layer added context.
+fn error_timed_out(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.is::<crate::git::cancel::OperationTimedOut>())
+}
+
 /// Push a single worktree branch to its remote tracking branch.
 ///
 /// Checks for an upstream tracking remote first; skips if none is set.
@@ -628,6 +644,7 @@ pub fn push_single_worktree(
             // must be preserved so the caller reports it as a real failure
             // with the auth hint, not a benign "diverged" (#663).
             let needs_terminal = error_needs_terminal(&e);
+            let timed_out = error_timed_out(&e);
             let cancelled = e
                 .chain()
                 .any(|c| c.is::<crate::git::cancel::OperationCancelled>());
@@ -643,6 +660,7 @@ pub fn push_single_worktree(
                 worktree_name: worktree_name.to_string(),
                 branch_name: branch_name.to_string(),
                 needs_terminal,
+                timed_out,
                 message: msg,
                 ..Default::default()
             }

@@ -63,6 +63,13 @@ pub(crate) struct PushSupervision {
     /// Receives the `git push` root pid right after spawn (the resource
     /// governor's unit registry).
     pub(crate) on_spawn: Option<std::sync::Arc<dyn Fn(u32) + Send + Sync>>,
+    /// Wall-clock budget per push unit (`daft.sync.pushTimeout`). A fresh
+    /// [`cancel::UnitClock`] is armed for every `git push` this command
+    /// runs — the sequential engine reuses one `GitCommand` across
+    /// branches, so the budget must be per-invocation, not per-command.
+    /// Expiry tears the unit's tree down; the push fails with a timeout
+    /// hint.
+    pub(crate) timeout: Option<std::time::Duration>,
 }
 
 pub struct GitCommand {

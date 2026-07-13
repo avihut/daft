@@ -1616,12 +1616,16 @@ fn execute_push_task(
     // Register the unit with the resource governor (#678). The guard
     // tracks the unit's lifetime (drop = gone); the spawn callback hands
     // the governor the git-push root pid for the sampler and containment
-    // tiers.
+    // tiers. The timeout arms a per-unit wall clock inside run_push.
     let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit(branch_name)));
-    if let Some(unit) = &governor_unit {
-        let unit = Arc::clone(unit);
+    if governor_unit.is_some() || settings.sync_push_timeout.is_some() {
+        let on_spawn = governor_unit.as_ref().map(|unit| {
+            let unit = Arc::clone(unit);
+            Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
+        });
         git = git.with_push_supervision(crate::git::PushSupervision {
-            on_spawn: Some(Arc::new(move |pid: u32| unit.attach_pid(pid))),
+            on_spawn,
+            timeout: settings.sync_push_timeout,
         });
     }
 
@@ -1687,6 +1691,23 @@ fn execute_push_task(
             .lines()
             .next()
             .unwrap_or("push needs terminal input for interactive auth")
+            .to_string();
+        return (
+            TaskStatus::Failed,
+            TaskMessage::Failed(hint),
+            branch_outcomes.clone(),
+        );
+    }
+
+    // A push that outran daft.sync.pushTimeout fails terminally (#678):
+    // a retry would burn another full budget, and the governor's
+    // kill-requeue path must never pick it up either.
+    if result.timed_out {
+        let hint = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or("push timed out")
             .to_string();
         return (
             TaskStatus::Failed,
@@ -2216,9 +2237,17 @@ fn run_push_phase(
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),
     };
-    let git = GitCommand::new(wt_config.quiet)
+    let mut git = GitCommand::new(wt_config.quiet)
         .with_gitoxide(settings.use_gitoxide)
         .with_cancel(Arc::clone(cancel));
+    // Per-unit wall-clock budget (#678): run_push arms a fresh clock for
+    // every branch this sequential engine pushes.
+    if settings.sync_push_timeout.is_some() {
+        git = git.with_push_supervision(crate::git::PushSupervision {
+            on_spawn: None,
+            timeout: settings.sync_push_timeout,
+        });
+    }
     let project_root = get_project_root()?;
 
     let params = push::PushParams {
@@ -2289,6 +2318,17 @@ fn run_push_phase(
         );
     }
 
+    // A push unit that outran its wall-clock budget was torn down — the
+    // push did not happen. Exit non-zero with the budget hint rather than
+    // leaving it a benign "diverged" warning (#678).
+    let timed_out = result.timed_out_count();
+    if timed_out > 0 {
+        anyhow::bail!(
+            "{timed_out} push(es) timed out; raise or disable daft.sync.pushTimeout \
+             if they legitimately need longer"
+        );
+    }
+
     // A pre-push gate saying no must surface as a failure, not a warning.
     let gated = result.gated_failure_count();
     if gated > 0 {
@@ -2337,6 +2377,10 @@ fn render_push_worktree_status(
         // Job-control-stopped on interactive auth: not a benign divergence
         // — the push did not happen and needs terminal action (#663).
         output.error(&format!(" * {} {name} — needs terminal auth", tag_failed()));
+    } else if r.timed_out {
+        // Outran daft.sync.pushTimeout and was torn down: the push did not
+        // happen — never a benign divergence (#678).
+        output.error(&format!(" * {} {name} — timed out", tag_failed()));
     } else {
         output.warning(&format!(" * {} {name}", tag_diverged()));
     }

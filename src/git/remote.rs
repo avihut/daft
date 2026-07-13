@@ -188,12 +188,19 @@ impl GitCommand {
         // stopped/TERM-immune holder would wedge a join with nobody watching
         // the flag (the #663 wedge). All of that lives in `supervise_command`
         // — the one skeleton shared with the fetch/pull/rebase seams.
+        // A fresh budget per push unit (see `PushSupervision::timeout`).
+        let clock = self
+            .push_supervision
+            .as_ref()
+            .and_then(|s| s.timeout)
+            .map(|limit| std::sync::Arc::new(cancel::UnitClock::new(limit)));
         let supervise_opts = cancel::SuperviseOpts {
             mode: cancel::SupervisionMode::Isolated,
             on_spawn: self
                 .push_supervision
                 .as_ref()
                 .and_then(|s| s.on_spawn.as_deref()),
+            clock: clock.clone(),
         };
         let (verdict, stdout, stderr) = cancel::supervise_command(
             &mut cmd,
@@ -212,6 +219,10 @@ impl GitCommand {
             }),
             cancel::Verdict::Cancelled => Err(cancel::OperationCancelled.into()),
             cancel::Verdict::StoppedOnTty => Err(cancel::NeedsTerminal.into()),
+            cancel::Verdict::TimedOut => Err(cancel::OperationTimedOut {
+                limit: clock.map(|c| c.limit()).unwrap_or_default(),
+            }
+            .into()),
         }
     }
 

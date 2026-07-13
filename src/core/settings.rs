@@ -25,6 +25,7 @@
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
 //! | `daft.ownership.strategy` | `recency-plurality` | Branch ownership detection strategy (`tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`) |
+//! | `daft.sync.pushTimeout` | `30m` | Wall-clock budget per push (git + pre-push hook); `off` disables |
 //! | `daft.governor.mode` | `auto` | Sync push resource governor (`auto` or `off`) |
 //! | `daft.governor.jobs` | `auto` | Cap on concurrent hook-bearing pushes (`auto` = max(2, cores/4), or a number) |
 //! | `daft.governor.memoryReserve` | `auto` | Memory headroom the governor keeps free (`auto` = max(10% RAM, 2G), a size like `2G`, or `NN%`) |
@@ -215,10 +216,36 @@ impl MemoryReserve {
     }
 }
 
+/// Parse `daft.sync.pushTimeout`: `off`/`0` disables (outer `Some(None)`);
+/// otherwise a positive duration with an optional case-insensitive
+/// `s`/`m`/`h` suffix (bare numbers are seconds). Outer `None` = unparseable
+/// (caller warns and keeps the default).
+pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
+    let value = value.trim().to_ascii_lowercase();
+    if value == "off" || value == "0" {
+        return Some(None);
+    }
+    let (digits, unit_secs) = if let Some(d) = value.strip_suffix('h') {
+        (d, 3_600)
+    } else if let Some(d) = value.strip_suffix('m') {
+        (d, 60)
+    } else if let Some(d) = value.strip_suffix('s') {
+        (d, 1)
+    } else {
+        (value.as_str(), 1)
+    };
+    let n: u64 = digits.trim().parse().ok()?;
+    (n > 0).then(|| Some(std::time::Duration::from_secs(n * unit_secs)))
+}
+
 /// Default values for settings.
 pub mod defaults {
     use super::{GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushVerify};
     use crate::core::worktree::list::Stat;
+
+    /// Default value for sync.pushTimeout setting (30 minutes).
+    pub const SYNC_PUSH_TIMEOUT: Option<std::time::Duration> =
+        Some(std::time::Duration::from_secs(30 * 60));
 
     /// Default value for governor.mode setting.
     pub const GOVERNOR_MODE: GovernorMode = GovernorMode::Auto;
@@ -404,6 +431,9 @@ pub mod keys {
     /// Config key for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
 
+    /// Config key for sync.pushTimeout setting.
+    pub const SYNC_PUSH_TIMEOUT: &str = "daft.sync.pushTimeout";
+
     /// Config key for governor.mode setting.
     pub const GOVERNOR_MODE: &str = "daft.governor.mode";
 
@@ -585,6 +615,10 @@ pub struct DaftSettings {
     /// `base..branch`. Set via `daft.ownership.strategy`.
     pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
 
+    /// Wall-clock budget for one sync push unit (git + pre-push hook);
+    /// `None` = no timeout. Set via `daft.sync.pushTimeout` (#678).
+    pub sync_push_timeout: Option<std::time::Duration>,
+
     /// Whether the sync push resource governor is active (#678). Set via
     /// `daft.governor.mode`.
     pub governor_mode: GovernorMode,
@@ -671,6 +705,7 @@ impl Default for DaftSettings {
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
+            sync_push_timeout: defaults::SYNC_PUSH_TIMEOUT,
             governor_mode: defaults::GOVERNOR_MODE,
             governor_jobs: defaults::GOVERNOR_JOBS,
             governor_memory_reserve: defaults::GOVERNOR_MEMORY_RESERVE,
@@ -854,6 +889,19 @@ impl DaftSettings {
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
                     keys::OWNERSHIP_STRATEGY,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_PUSH_TIMEOUT)?
+            && !value.is_empty()
+        {
+            match parse_push_timeout(&value) {
+                Some(timeout) => settings.sync_push_timeout = timeout,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::SYNC_PUSH_TIMEOUT,
                     value
                 ),
             }
@@ -1544,6 +1592,30 @@ mod tests {
         assert_eq!(MemoryReserve::parse("lots"), None);
         // Multi-byte junk must not panic the suffix split.
         assert_eq!(MemoryReserve::parse("2é"), None);
+    }
+
+    #[test]
+    fn push_timeout_parse() {
+        use std::time::Duration;
+        assert_eq!(parse_push_timeout("off"), Some(None));
+        assert_eq!(parse_push_timeout("OFF"), Some(None));
+        assert_eq!(parse_push_timeout("0"), Some(None));
+        assert_eq!(
+            parse_push_timeout("30m"),
+            Some(Some(Duration::from_secs(1_800)))
+        );
+        assert_eq!(parse_push_timeout("2s"), Some(Some(Duration::from_secs(2))));
+        assert_eq!(
+            parse_push_timeout("1h"),
+            Some(Some(Duration::from_secs(3_600)))
+        );
+        assert_eq!(
+            parse_push_timeout("90"),
+            Some(Some(Duration::from_secs(90)))
+        );
+        assert_eq!(parse_push_timeout("forever"), None);
+        assert_eq!(parse_push_timeout("-5m"), None);
+        assert_eq!(parse_push_timeout(""), None);
     }
 
     #[test]
