@@ -8,10 +8,11 @@ description:
 # Progress Timeline
 
 On an interactive terminal, the worktree lifecycle commands — `daft go`,
-`daft start`, `daft remove` (and their `git-worktree-*` forms), and `daft clone`
-— narrate their work as a plan-then-execute timeline: the full ordered list of
-steps renders up front, each step fills in place as daft works, and the finished
-rail persists in your scrollback as a receipt.
+`daft start`, `daft remove` (and their `git-worktree-*` forms), `daft clone`,
+and multi-worktree `daft exec` — narrate their work as a plan-then-execute
+timeline: the full ordered list of steps renders up front, each step fills in
+place as daft works, and the finished rail persists in your scrollback as a
+receipt.
 
 ```
 ┌  Starting daft-652/cool-feature ← main
@@ -171,6 +172,47 @@ never keeps an identity ink.
   reports `Failed after <t>` — the receipt shows exactly how far the command
   got.
 
+## Running commands across worktrees
+
+Multi-worktree `daft exec` renders on the same rail, with one row per targeted
+worktree (or, for a `-x` pipeline of several commands, a `├─` group per worktree
+with one row per command):
+
+```
+┌  Running mise clean in 4 worktrees
+│
+✓  master                                         (3.2s)
+✓  daft-335/feat/visitor-config                   (4.5s)
+✗  daft-518/feat/test-runner-output-improvements  exit 1
+│    [clean:tests] rm -rf target/tmp
+│    error: Permission denied (os error 13)
+│
+✓  daft-529/exec-show-output                      (12.1s)
+│
+└  Finished with failures in 12.4s
+```
+
+- Workers run concurrently, but the receipt persists in **plan order**: a row
+  that finishes early shows its outcome in place immediately and waits, in the
+  scrollback, for the rows ahead of it. The header names the resolved scope
+  (`in N worktrees`, `in N repos` for `--all-repos`, `in N related worktrees`
+  for `--related`); the footer reports `Done in t`,
+  `Finished with failures in t` (all ran, some failed), `Failed after t` (a
+  `--sequential` run stopped early), or `Cancelled after t`.
+- While a worker runs, its latest output line rides its row, dim. A **failed or
+  cancelled** worker always threads its full captured output under its row; a
+  successful worker stays a compact row. A row cancelled by `Ctrl-C` shows the
+  yellow `⊘` face; the `↓` face marks a matched branch with no worktree.
+- Pass `-v` (`--verbose`) to thread **every** worker's output — grey under a
+  success, a rolling window while it runs — using the same
+  `daft.hooks.output.tailLines` window the hook rail uses. A worker's full
+  output reaches scrollback only once the rows ahead of it in the plan drain;
+  its `✓`/`✗`/`⊘` outcome is never delayed. Nothing prints below the footer.
+- A **single-target** run (`daft exec feat/auth -- claude`) inherits stdio
+  directly and renders no rail, so interactive programs work unchanged. When
+  stdout is redirected, `daft exec` still writes its captured-output dump there
+  (failures only, or every worker with `-v`) while the rail narrates on stderr.
+
 ## When the timeline does not render
 
 The timeline is an interactive-terminal presentation. In every other mode daft
@@ -183,10 +225,16 @@ prints exactly the output it printed before the timeline existed:
 - **Navigation early-exits** — `daft go` to an existing worktree and `daft go -`
   remain single-line responses; there is no plan to show (the just-opened
   planning face collapses without leaving a trace).
+- **Single-target `daft exec`** — inherits stdio directly (so interactive
+  programs work), and a multi-target run on a non-interactive stderr prints the
+  same summary rows and output dump it always did.
 
 `daft prune`, `daft repo remove`, and multi-branch `daft clone`'s satellite
 phase keep their inline operation table, which already shows all rows up front
 and fills them in as work completes.
 
 Pressing `Ctrl-C` mid-run collapses the live remainder of the rail and exits
-with status 130; everything already completed stays in your scrollback.
+with status 130; everything already completed stays in your scrollback. A
+`daft exec` run interrupts cooperatively instead: the first `Ctrl-C` stops the
+running commands (SIGTERM), a second forces them (SIGKILL), and the rail closes
+as a `Cancelled` receipt.

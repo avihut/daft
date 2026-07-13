@@ -29,9 +29,11 @@ When a single worktree is targeted, stdio is fully inherited, making
 interactive programs (claude, vim, fzf) work the same as if you had cd'd
 into the worktree first.
 
-By default, captured stdout/stderr is dumped only for failed or cancelled
-worktrees. Pass --show-output to dump it for successful worktrees too. The
-flag has no effect on single-target runs (stdio is already inherited).
+On an interactive terminal, multi-worktree runs render a live rail: one row
+per worktree, filled in place, persisted as a receipt. Failed worktrees thread
+their captured output under their row; pass -v to thread every worktree's
+output (and, when stdout is redirected, dump successful worktrees' output too).
+The flag has no effect on single-target runs (stdio is already inherited).
 
 ## Usage
 
@@ -58,7 +60,7 @@ git worktree-exec [OPTIONS] [TARGETS] [CMD]
 | `--sequential` | Run worktrees one at a time and stop on first failure |  |
 | `--keep-going` | Run worktrees one at a time and continue through failures |  |
 | `--refresh-aliases` | Re-capture user shell aliases instead of using the cached snapshot |  |
-| `--show-output` | Dump captured stdout/stderr for successful worktrees too (no-op for single-target runs) |  |
+| `-v, --verbose` | Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target runs) |  |
 
 ## Global Options
 

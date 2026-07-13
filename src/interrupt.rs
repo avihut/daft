@@ -17,11 +17,15 @@
 //! - With no behavior installed, Ctrl-C exits with the conventional
 //!   `130` (128 + SIGINT).
 //!
-//! `daft exec` and `daft list --live` keep their own pre-existing
-//! `ctrlc::set_handler` registrations (cooperative cancellation flags).
-//! Within one process the registrations race exactly as they always have;
-//! neither command renders a timeline, so the dispatcher and those handlers
-//! never manage the same invocation.
+//! `daft exec` renders the plan-execute timeline (which arms the region's own
+//! collapse behavior here), so it routes its two-stage Ctrl-C through this
+//! slot too: after the plan commits it overrides the collapse with a
+//! self-re-arming escalation of its cancel flag (a behavior may deliberately
+//! return instead of exiting, and re-arm via [`set_behavior`] — the dispatcher
+//! releases the slot lock before running it). `daft list --live` and
+//! `daft sync` keep their own pre-existing `ctrlc::set_handler` registrations
+//! (cooperative cancellation flags) and never render a timeline, so the
+//! dispatcher and those handlers never manage the same invocation.
 
 use std::sync::{Mutex, OnceLock};
 

@@ -7,6 +7,7 @@
 pub mod alias_cache;
 pub mod list_renderer;
 pub mod progress_renderer;
+pub mod rail_presenter;
 
 pub use alias_cache::AliasCache;
 

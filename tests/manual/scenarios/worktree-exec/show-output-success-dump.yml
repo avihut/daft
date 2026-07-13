@@ -1,8 +1,8 @@
-name: "Exec --show-output dumps successful captured output"
+name: "Exec -v dumps successful captured output"
 description:
-  "With --show-output, every worktree (including those that succeeded) gets a
-  ✓-headed block with its captured stdout reproduced in the gutter. Without the
-  flag the same run prints only the summary rows."
+  "With -v, every worktree (including those that succeeded) gets a ✓-headed
+  block with its captured stdout reproduced in the gutter. Without the flag the
+  same run prints only the summary rows."
 
 repos:
   - name: exec-show
@@ -24,7 +24,7 @@ steps:
       dirs_exist:
         - "$WORK_DIR/exec-show/feat-a"
 
-  - name: "Without --show-output: no per-branch capture is dumped"
+  - name: "Without -v: no per-branch capture is dumped"
     run: "git-worktree-exec --all -- sh -c 'echo marker-success' 2>&1"
     cwd: "$WORK_DIR/exec-show/main"
     expect:
@@ -33,11 +33,8 @@ steps:
         - "│ marker-success"
         - "succeeded,"
 
-  - name:
-      "With --show-output: every successful worktree gets a ✓ block with its
-      output"
-    run:
-      "git-worktree-exec --all --show-output -- sh -c 'echo marker-success' 2>&1"
+  - name: "With -v: every successful worktree gets a ✓ block with its output"
+    run: "git-worktree-exec --all -v -- sh -c 'echo marker-success' 2>&1"
     cwd: "$WORK_DIR/exec-show/main"
     expect:
       exit_code: 0

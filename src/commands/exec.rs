@@ -30,9 +30,11 @@ When a single worktree is targeted, stdio is fully inherited, making
 interactive programs (claude, vim, fzf) work the same as if you had cd'd
 into the worktree first.
 
-By default, captured stdout/stderr is dumped only for failed or cancelled
-worktrees. Pass --show-output to dump it for successful worktrees too. The
-flag has no effect on single-target runs (stdio is already inherited).
+On an interactive terminal, multi-worktree runs render a live rail: one row
+per worktree, filled in place, persisted as a receipt. Failed worktrees thread
+their captured output under their row; pass -v to thread every worktree's
+output (and, when stdout is redirected, dump successful worktrees' output too).
+The flag has no effect on single-target runs (stdio is already inherited).
 "#)]
 #[command(after_help = r#"EXAMPLES:
     Run a single command across all worktrees:
@@ -50,8 +52,8 @@ flag has no effect on single-target runs (stdio is already inherited).
     Pass-through to an interactive program (single target):
         daft exec feat/auth -- claude
 
-    Dump captured output for successful worktrees too:
-        daft exec --all --show-output -- cargo build --timings
+    Thread every worktree's output (and dump successes when redirected):
+        daft exec --all -v -- cargo build --timings
 "#)]
 pub struct Args {
     #[arg(help = "Target worktree(s) by branch name, directory name, or glob")]
@@ -114,10 +116,11 @@ pub struct Args {
     pub refresh_aliases: bool,
 
     #[arg(
-        long = "show-output",
-        help = "Dump captured stdout/stderr for successful worktrees too (no-op for single-target runs)"
+        short = 'v',
+        long = "verbose",
+        help = "Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target runs)"
     )]
-    pub show_output: bool,
+    pub verbose: bool,
 
     /// Trailing command vector after `--`. Mutually exclusive with `-x`.
     #[arg(last = true, value_name = "CMD")]
@@ -169,10 +172,10 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
-    let targets: Vec<core::ResolvedTarget> = if args.all_repos {
-        collect_all_repos_targets(&mut output)?
+    let (targets, orphans): (Vec<core::ResolvedTarget>, Vec<String>) = if args.all_repos {
+        (collect_all_repos_targets(&mut output)?, Vec::new())
     } else if args.related {
-        collect_related_targets(&mut output)?
+        (collect_related_targets(&mut output)?, Vec::new())
     } else {
         let settings = DaftSettings::load()?;
         let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
@@ -185,19 +188,16 @@ pub fn run() -> Result<()> {
             // Bare `--repo X`: the repo's default-branch worktree, resolved
             // through the catalog like --all-repos/--related (not origin/HEAD
             // only), so a recorded default branch without origin/HEAD resolves.
-            vec![default_branch_target(&snaps, repo_row.as_ref())?]
+            (
+                vec![default_branch_target(&snaps, repo_row.as_ref())?],
+                Vec::new(),
+            )
         } else {
-            let (targets, orphans) =
-                core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-            if !orphans.is_empty() {
-                output.warning(&format!(
-                    "Skipped {} orphan branch(es) (no worktree): {}",
-                    orphans.len(),
-                    orphans.join(", ")
-                ));
-            }
-            targets
+            // Orphans (matched branches with no worktree) become rail rows on
+            // the interactive multi-target path, or a warning otherwise —
+            // decided below, once the render path is known.
+            core::resolve_targets_with_orphans(&args.targets, args.all, &snaps)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
         }
     };
 
@@ -219,6 +219,22 @@ pub fn run() -> Result<()> {
     // the TTL window read from disk and run at native speed.
     let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     let alias_cache = core::AliasCache::ensure(&shell_path, args.refresh_aliases);
+
+    // The interactive multi-target run renders the rail (and shows orphans as
+    // rows); the single-target passthrough and the non-interactive path warn
+    // about orphans instead.
+    let interactive = matches!(
+        crate::output::timeline::TimelineMode::auto(false),
+        crate::output::timeline::TimelineMode::Interactive { .. }
+    );
+    let will_rail = interactive && targets.len() >= 2;
+    if !orphans.is_empty() && !will_rail {
+        output.warning(&format!(
+            "Skipped {} orphan branch(es) (no worktree): {}",
+            orphans.len(),
+            orphans.join(", ")
+        ));
+    }
 
     // Mode A: single-target pass-through. Inherit stdio; propagate exit
     // code verbatim; never render a UI. Handles `daft exec <single> -- claude`
@@ -251,36 +267,222 @@ pub fn run() -> Result<()> {
         core::ExecMode::Parallel
     };
 
-    // Install a SIGINT handler that escalates the shared cancel flag:
-    // first Ctrl-C soft-cancels (SIGTERM to children), second Ctrl-C
-    // hard-cancels (SIGKILL). `ctrlc::set_handler` is process-global and
-    // can only be installed once; swallow the error if something already
-    // installed one so tests and nested invocations don't panic.
+    // Two-stage Ctrl-C: first ^C SIGTERMs children, second SIGKILLs. It rides
+    // the interrupt dispatcher's slot (a live rail scaffolds its own
+    // collapse-and-exit behavior; exec's escalation overrides it — see
+    // `run_rail` — so the first ^C never tears the rail down) and re-arms
+    // itself so the second ^C escalates again.
     let cancel = std::sync::Arc::new(core::CancelFlag::new());
-    let handler_flag = std::sync::Arc::clone(&cancel);
-    let _ = ctrlc::set_handler(move || {
-        handler_flag.escalate();
-    });
 
-    let report = core::progress_renderer::run_with_progress(
-        &targets,
-        &pipeline,
-        mode,
-        &cancel,
-        alias_cache.as_ref(),
-    )?;
+    // The rail's output threads and the `-v` fold-in share the hook output
+    // knobs. `--all-repos` runs from outside any repo, so tolerate a missing
+    // config with the defaults.
+    let hook_output = crate::core::settings::load_hooks_config()
+        .map(|c| c.output)
+        .unwrap_or_default()
+        .with_cli_verbose(args.verbose);
 
-    let dump_mode = if args.show_output {
+    let report = if will_rail {
+        run_rail(
+            &targets,
+            &orphans,
+            &pipeline,
+            mode,
+            &cancel,
+            alias_cache.as_ref(),
+            &args,
+            &hook_output,
+        )?
+    } else {
+        arm_exec_interrupt(std::sync::Arc::clone(&cancel));
+        core::progress_renderer::run_with_progress(
+            &targets,
+            &pipeline,
+            mode,
+            &cancel,
+            alias_cache.as_ref(),
+        )?
+    };
+
+    // The rail already showed every worktree's output on the terminal, so only
+    // dump to stdout when it is redirected (or when no rail rendered). Non-rail
+    // modes always dump, exactly as before.
+    let dump_mode = if args.verbose {
         core::list_renderer::DumpMode::All
     } else {
         core::list_renderer::DumpMode::FailuresOnly
     };
-    let stdout = std::io::stdout();
-    let mut sink = stdout.lock();
-    core::list_renderer::render_output_dump(&mut sink, &report, &pipeline, dump_mode)?;
-    drop(sink);
+    if !will_rail || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let stdout = std::io::stdout();
+        let mut sink = stdout.lock();
+        core::list_renderer::render_output_dump(&mut sink, &report, &pipeline, dump_mode)?;
+        drop(sink);
+    }
 
     std::process::exit(report.aggregate_exit_code());
+}
+
+/// Arm the two-stage Ctrl-C escalation on the interrupt dispatcher's slot,
+/// re-arming after each fire so the next ^C escalates again (the slot is
+/// one-shot). The behavior never exits the process — it only escalates the
+/// shared cancel flag, which the scheduler's wait loop observes to SIGTERM
+/// then SIGKILL the children. The rail's teardown (`finish`/`abort`) clears
+/// the slot.
+fn arm_exec_interrupt(cancel: std::sync::Arc<crate::core::worktree::exec::CancelFlag>) {
+    crate::interrupt::set_behavior(move || {
+        cancel.escalate();
+        arm_exec_interrupt(std::sync::Arc::clone(&cancel));
+    });
+}
+
+/// A command label for a plan row / header, capped so a long command line
+/// can't blow out the rail's width.
+fn truncate_cmd(s: &str) -> String {
+    const MAX: usize = 64;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(MAX - 1).collect();
+        format!("{head}\u{2026}")
+    }
+}
+
+/// Render a multi-target run on the plan-then-execute rail: build the plan and
+/// the matching presenter, override the region's Ctrl-C collapse with exec's
+/// two-stage escalation, run the scheduler, and close the rail with the
+/// outcome footer. Returns the aggregated report for the caller's stdout dump.
+#[allow(clippy::too_many_arguments)]
+fn run_rail(
+    targets: &[crate::core::worktree::exec::ResolvedTarget],
+    orphans: &[String],
+    pipeline: &[crate::core::worktree::exec::CommandSpec],
+    mode: crate::core::worktree::exec::ExecMode,
+    cancel: &std::sync::Arc<crate::core::worktree::exec::CancelFlag>,
+    alias_cache: Option<&crate::core::worktree::exec::AliasCache>,
+    args: &Args,
+    hook_output: &crate::settings::HookOutputConfig,
+) -> Result<crate::core::worktree::exec::ExecReport> {
+    use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
+    use crate::core::worktree::exec::rail_presenter::{RailExecPresenter, command_key};
+    use crate::core::worktree::exec::{self as core, ExecReport};
+    use crate::executor::presenter::JobPresenter;
+    use crate::output::timeline::{RowOutputConfig, Timeline, TimelineMode};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let m = pipeline.len();
+    let scope_noun = if args.all_repos {
+        "repos"
+    } else if args.related {
+        "related worktrees"
+    } else {
+        "worktrees"
+    };
+    let cmd_phrase = if m == 1 {
+        format!("Running {}", truncate_cmd(&pipeline[0].display()))
+    } else {
+        format!("Running {m} commands")
+    };
+    // The rail only renders for >= 2 targets (single-target is passthrough),
+    // so the count is always plural.
+    let header = format!("{cmd_phrase} in {} {scope_noun}", targets.len());
+
+    let mut timeline = Timeline::new(TimelineMode::auto(false), hook_output.verbose, header);
+    timeline.set_ordered_receipts(true);
+    timeline.set_row_output(RowOutputConfig {
+        verbose: hook_output.verbose,
+        tail_lines: hook_output.tail_lines as usize,
+        buffer_cap: Some(core::OUTPUT_CAP_BYTES),
+    });
+
+    // Build the plan and the presenter's row keys together — both index by the
+    // same `command_key`. Orphan rows lead the plan and resolve immediately.
+    let mut plan_rows: Vec<Row> = Vec::new();
+    let orphan_keys: Vec<StepKey> = orphans
+        .iter()
+        .map(|branch| {
+            let key = StepKey::scoped(StageId::ExecCommand, format!("orphan\u{1f}{branch}"));
+            plan_rows.push(Row::Step(
+                StepSpec::new(key.clone()).with_label(branch.clone()),
+            ));
+            key
+        })
+        .collect();
+
+    let mut rows: HashMap<String, Vec<StepKey>> = HashMap::new();
+    for target in targets {
+        let label = target.label().to_string();
+        let keys: Vec<StepKey> = (0..m).map(|i| command_key(&label, i, m)).collect();
+        if m == 1 {
+            plan_rows.push(Row::Step(
+                StepSpec::new(keys[0].clone()).with_label(label.clone()),
+            ));
+        } else {
+            plan_rows.push(Row::Group {
+                label: label.clone(),
+            });
+            for (i, key) in keys.iter().enumerate() {
+                plan_rows.push(Row::Step(
+                    StepSpec::new(key.clone()).with_label(truncate_cmd(&pipeline[i].display())),
+                ));
+            }
+        }
+        rows.insert(label, keys);
+    }
+
+    timeline.commit_plan(PlanCommit::new(plan_rows));
+
+    // Orphans never run — resolve their rows to the yellow `↓ … no worktree`.
+    for key in &orphan_keys {
+        timeline.on_stage(
+            key,
+            StageEvent::SkippedAttention {
+                reason: "no worktree".to_string(),
+            },
+        );
+    }
+
+    // Override the region's collapse behavior with exec's escalation, now that
+    // the plan (and thus the region's own Ctrl-C handler) has committed.
+    arm_exec_interrupt(Arc::clone(cancel));
+
+    let presenter: Arc<dyn JobPresenter> =
+        Arc::new(RailExecPresenter::new(timeline.handle(), rows));
+    let scheduler_result = core::progress_renderer::run_fleet(
+        targets,
+        pipeline,
+        mode,
+        &presenter,
+        cancel,
+        alias_cache,
+        core::progress_renderer::NameStyle::Label,
+    );
+
+    // Close the rail with the outcome footer before returning (finish/abort
+    // clear the interrupt slot and restore the terminal).
+    let elapsed = timeline.elapsed_display();
+    match &scheduler_result {
+        Ok(outcomes) => {
+            let cancelled = cancel.is_cancelled() || outcomes.iter().any(|o| o.cancelled);
+            let stopped = outcomes.len() < targets.len();
+            let any_failed = outcomes.iter().any(|o| !o.succeeded());
+            if cancelled {
+                timeline.abort(&format!("Cancelled after {elapsed}"));
+            } else if stopped {
+                timeline.abort(&format!("Failed after {elapsed}"));
+            } else if any_failed {
+                timeline.finish(&format!("Finished with failures in {elapsed}"));
+            } else {
+                timeline.finish(&format!("Done in {elapsed}"));
+            }
+        }
+        Err(_) => timeline.abort(&format!("Failed after {elapsed}")),
+    }
+
+    Ok(ExecReport {
+        outcomes: scheduler_result?,
+        orphan_branches_skipped: orphans.to_vec(),
+    })
 }
 
 /// The live worktree checked out on `branch`, as an exec target.
@@ -593,13 +795,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_verbose_flag() {
-        let err = parse(&["--all", "--verbose", "--", "echo"]).unwrap_err();
-        assert_eq!(
-            err.kind(),
-            clap::error::ErrorKind::UnknownArgument,
-            "expected UnknownArgument for --verbose, got: kind={:?}, msg={err}",
-            err.kind()
-        );
+    fn accepts_verbose_flag() {
+        // -v / --verbose replaced --show-output: it threads output onto the
+        // rail and dumps successes when stdout is redirected.
+        let long = parse(&["--all", "--verbose", "--", "echo"]).unwrap();
+        assert!(long.verbose);
+        let short = parse(&["--all", "-v", "--", "echo"]).unwrap();
+        assert!(short.verbose);
+        let off = parse(&["--all", "--", "echo"]).unwrap();
+        assert!(!off.verbose);
     }
 }

@@ -4,7 +4,7 @@
 .SH NAME
 daft\-exec \- Run a command across one or more worktrees
 .SH SYNOPSIS
-\fBdaft\-exec\fR [\fB\-\-all\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-\-related\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-sequential\fR] [\fB\-\-keep\-going\fR] [\fB\-\-refresh\-aliases\fR] [\fB\-\-show\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fICMD\fR] 
+\fBdaft\-exec\fR [\fB\-\-all\fR] [\fB\-\-repo\fR] [\fB\-\-all\-repos\fR] [\fB\-\-related\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-\-sequential\fR] [\fB\-\-keep\-going\fR] [\fB\-\-refresh\-aliases\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITARGETS\fR] [\fICMD\fR] 
 .SH DESCRIPTION
 .PP
 Runs one or more commands against one or more selected worktrees without
@@ -23,9 +23,11 @@ When a single worktree is targeted, stdio is fully inherited, making
 interactive programs (claude, vim, fzf) work the same as if you had cd\*(Aqd
 into the worktree first.
 .PP
-By default, captured stdout/stderr is dumped only for failed or cancelled
-worktrees. Pass \-\-show\-output to dump it for successful worktrees too. The
-flag has no effect on single\-target runs (stdio is already inherited).
+On an interactive terminal, multi\-worktree runs render a live rail: one row
+per worktree, filled in place, persisted as a receipt. Failed worktrees thread
+their captured output under their row; pass \-v to thread every worktree\*(Aqs
+output (and, when stdout is redirected, dump successful worktrees\*(Aq output too).
+The flag has no effect on single\-target runs (stdio is already inherited).
 .SH OPTIONS
 .TP
 \fB\-\-all\fR
@@ -52,8 +54,8 @@ Run worktrees one at a time and continue through failures
 \fB\-\-refresh\-aliases\fR
 Re\-capture user shell aliases instead of using the cached snapshot
 .TP
-\fB\-\-show\-output\fR
-Dump captured stdout/stderr for successful worktrees too (no\-op for single\-target runs)
+\fB\-v\fR, \fB\-\-verbose\fR
+Thread each worktree\*(Aqs full output into the rail and dump captured output for successful worktrees too (no\-op for single\-target runs)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
@@ -83,7 +85,7 @@ EXAMPLES:
     Pass\-through to an interactive program (single target):
         daft exec feat/auth \-\- claude
 
-    Dump captured output for successful worktrees too:
-        daft exec \-\-all \-\-show\-output \-\- cargo build \-\-timings
+    Thread every worktree\*(Aqs output (and dump successes when redirected):
+        daft exec \-\-all \-v \-\- cargo build \-\-timings
 .SH VERSION
 v1.19.0

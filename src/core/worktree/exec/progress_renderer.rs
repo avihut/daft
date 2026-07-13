@@ -30,10 +30,9 @@ pub(crate) enum NameStyle {
     /// `name_prefix = ""` → `run_pipeline_streaming` falls back to the branch
     /// name (today's plain path).
     Branch,
-    /// `name_prefix = target.label()` → distinct rows per cataloged target.
-    // Constructed by the interactive rail path once exec is wired onto the
-    // timeline; until then only the plain `Branch` path calls `run_fleet`.
-    #[allow(dead_code)]
+    /// `name_prefix = target.label()` → distinct rows per cataloged target
+    /// (the interactive rail path, so fleet runs with duplicate branch names
+    /// don't collapse to one row).
     Label,
 }
 
