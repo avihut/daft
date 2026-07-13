@@ -1119,7 +1119,7 @@ fn resolve_forge_target(
         git,
         project_root,
         &settings.remote,
-        &crate::forge::ForgeConfig::default(),
+        &crate::forge::ForgeConfig::load(git),
     )?;
     crate::forge::preflight_fork_collision(git, &resolved.info)?;
     let elapsed = started.elapsed();

@@ -42,6 +42,22 @@ pub struct ForgeConfig {
     pub hostname: Option<String>,
 }
 
+impl ForgeConfig {
+    /// Load daft's forge config from git config (`daft.forge.*`). Auth is never
+    /// read here — it stays in `gh`/`glab`. Cheap enough to read on the (rare)
+    /// PR-checkout path rather than bloating `DaftSettings`.
+    pub fn load(git: &GitCommand) -> Self {
+        use crate::core::settings::keys;
+        let get = |key: &str| git.config_get(key).ok().flatten().filter(|v| !v.is_empty());
+        Self {
+            platform: get(keys::FORGE_PLATFORM),
+            github_cli: get(keys::FORGE_GITHUB_CLI),
+            gitlab_cli: get(keys::FORGE_GITLAB_CLI),
+            hostname: get(keys::FORGE_HOSTNAME),
+        }
+    }
+}
+
 /// A resolved PR/MR: its metadata plus the local remote its head ref lives on.
 #[derive(Debug, Clone)]
 pub struct ResolvedRef {
@@ -325,5 +341,30 @@ mod tests {
 
         // A branch that doesn't exist locally → passes.
         assert!(preflight_fork_collision(&git, &fork_info("brand-new-feature", 51)).is_ok());
+    }
+
+    /// `ForgeConfig::load` maps the `daft.forge.*` git-config keys.
+    #[test]
+    #[serial_test::serial]
+    fn forge_config_reads_git_config_keys() {
+        let _cwd = CwdGuard(std::env::current_dir().ok());
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            crate::utils::git_command_at(tmp.path())
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-q"]);
+        run(&["config", "daft.forge.platform", "gitlab"]);
+        run(&["config", "daft.forge.githubCli", "gh-enterprise"]);
+        run(&["config", "daft.forge.hostname", "git.corp.example"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let cfg = ForgeConfig::load(&GitCommand::new(true));
+        assert_eq!(cfg.platform.as_deref(), Some("gitlab"));
+        assert_eq!(cfg.github_cli.as_deref(), Some("gh-enterprise"));
+        assert_eq!(cfg.gitlab_cli, None); // unset
+        assert_eq!(cfg.hostname.as_deref(), Some("git.corp.example"));
     }
 }

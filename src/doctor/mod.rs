@@ -4,6 +4,7 @@
 //! daft installation, repository configuration, and hooks setup.
 
 pub mod catalog_checks;
+pub mod forge_checks;
 pub mod hooks_checks;
 pub mod installation;
 pub mod repository;
