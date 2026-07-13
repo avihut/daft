@@ -353,6 +353,7 @@ pub fn spawn_post_fetch_refresh(
             stat,
             source: PatchSource::PostFetch,
             ctx,
+            size_jobs: crate::core::size_walk::resolve_jobs(None),
         },
         tx.clone(),
     );

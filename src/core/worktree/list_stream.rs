@@ -57,6 +57,10 @@ pub struct CollectorRequest {
     pub stat: Stat,
     pub source: PatchSource,
     pub ctx: Arc<CollectorContext>,
+    /// Concurrency budget for the decoupled size coordinator, resolved by the
+    /// caller from `DAFT_SIZE_WALK_JOBS` / `daft.list.sizeConcurrency` /
+    /// `available_parallelism` via [`crate::core::size_walk::resolve_jobs`].
+    pub size_jobs: usize,
 }
 
 pub struct CollectorHandle {
@@ -107,6 +111,7 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
         stat,
         source,
         ctx,
+        size_jobs,
     } = req;
 
     // Size is decoupled from the per-worktree git-cluster workers into a single
@@ -150,7 +155,7 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
             crate::core::size_walk::walk_streaming(
                 &paths,
                 Some(&cancel),
-                crate::core::size_walk::resolve_jobs(None),
+                size_jobs,
                 |idx, size| {
                     let _ = tx.send(DagEvent::WorktreeInfoUpdated {
                         branch_name: branch_names[idx].clone(),
@@ -397,6 +402,7 @@ mod tests {
                 stat: Stat::Summary,
                 source: PatchSource::Collector,
                 ctx,
+                size_jobs: 2,
             },
             tx,
         );
@@ -425,6 +431,7 @@ mod tests {
                 stat: Stat::Summary,
                 source: PatchSource::PostFetch,
                 ctx,
+                size_jobs: 2,
             },
             tx,
         );
@@ -518,6 +525,7 @@ mod fixture_tests {
                 stat: Stat::Summary,
                 source: PatchSource::Collector,
                 ctx,
+                size_jobs: 2,
             },
             tx,
         );

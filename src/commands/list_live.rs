@@ -180,6 +180,7 @@ pub fn run_live(args: Args) -> Result<()> {
             stat,
             source: PatchSource::Collector,
             ctx: collector_ctx,
+            size_jobs: crate::core::size_walk::resolve_jobs(settings.list_size_concurrency),
         },
         tx,
     );

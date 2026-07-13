@@ -20,6 +20,7 @@
 //! | `daft.prune.cdTarget` | `root` | Where to cd after pruning current worktree (`root` or `default-branch`) |
 //! | `daft.list.stat` | `summary` | Default statistics mode for list command (`summary` or `lines`) |
 //! | `daft.list.sort` | `branch` | Default sort order for list command |
+//! | `daft.list.sizeConcurrency` | _auto_ | Max concurrent size walks for `--columns +size` (env `DAFT_SIZE_WALK_JOBS` overrides) |
 //! | `daft.sync.sort` | `branch` | Default sort order for sync command |
 //! | `daft.prune.sort` | `branch` | Default sort order for prune command |
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
@@ -457,6 +458,9 @@ pub mod keys {
     /// Config key for list.sort setting.
     pub const LIST_SORT: &str = "daft.list.sort";
 
+    /// Config key for list.sizeConcurrency setting (size-walk job budget).
+    pub const LIST_SIZE_CONCURRENCY: &str = "daft.list.sizeConcurrency";
+
     /// Config key for sync.sort setting.
     pub const SYNC_SORT: &str = "daft.sync.sort";
 
@@ -646,6 +650,11 @@ pub struct DaftSettings {
     /// Sort specification for list command (None = default branch ascending).
     pub list_sort: Option<String>,
 
+    /// Max concurrent directory-size walks for `daft list` / `daft repo list`
+    /// `--columns +size` (None = auto = `available_parallelism`). The
+    /// `DAFT_SIZE_WALK_JOBS` env var overrides this.
+    pub list_size_concurrency: Option<usize>,
+
     /// Sort specification for sync command (None = default branch ascending).
     pub sync_sort: Option<String>,
 
@@ -754,6 +763,7 @@ impl Default for DaftSettings {
             sync_columns: None,
             prune_columns: None,
             list_sort: None,
+            list_size_concurrency: None,
             sync_sort: None,
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
@@ -918,6 +928,18 @@ impl DaftSettings {
             && !value.is_empty()
         {
             settings.list_sort = Some(value);
+        }
+
+        if let Some(value) = git.config_get(keys::LIST_SIZE_CONCURRENCY)?
+            && !value.is_empty()
+        {
+            match value.parse::<usize>() {
+                Ok(n) if n >= 1 => settings.list_size_concurrency = Some(n),
+                _ => eprintln!(
+                    "daft: invalid value for {}: {value:?} — using default",
+                    keys::LIST_SIZE_CONCURRENCY
+                ),
+            }
         }
 
         if let Some(value) = git.config_get(keys::SYNC_SORT)?
@@ -1162,6 +1184,18 @@ impl DaftSettings {
             && !value.is_empty()
         {
             settings.list_sort = Some(value);
+        }
+
+        if let Some(value) = git.config_get_global(keys::LIST_SIZE_CONCURRENCY)?
+            && !value.is_empty()
+        {
+            match value.parse::<usize>() {
+                Ok(n) if n >= 1 => settings.list_size_concurrency = Some(n),
+                _ => eprintln!(
+                    "daft: invalid value for {}: {value:?} — using default",
+                    keys::LIST_SIZE_CONCURRENCY
+                ),
+            }
         }
 
         if let Some(value) = git.config_get_global(keys::SYNC_SORT)?
@@ -1749,6 +1783,13 @@ mod tests {
         // Unknown and empty values are rejected (caller keeps the default).
         assert_eq!(PushVerify::parse("verify"), None);
         assert_eq!(PushVerify::parse(""), None);
+    }
+
+    #[test]
+    fn test_list_size_concurrency_defaults_to_auto() {
+        // None = "auto" = resolved to available_parallelism at the walk site;
+        // env/config precedence is covered by size_walk::resolve_jobs tests.
+        assert!(DaftSettings::default().list_size_concurrency.is_none());
     }
 
     #[test]

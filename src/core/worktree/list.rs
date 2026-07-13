@@ -733,6 +733,7 @@ pub fn collect_worktree_info(
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
     remote_name: &str,
+    size_jobs: usize,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -903,8 +904,8 @@ pub fn collect_worktree_info(
 
     // Size walk: batched across all worktrees so their trees walk concurrently
     // under one shared job budget (see core::size_walk), instead of the old
-    // one-worktree-at-a-time sequential walk. Config-aware jobs are threaded in
-    // by the caller in a later step; for now env + available_parallelism.
+    // one-worktree-at-a-time sequential walk. `size_jobs` is resolved by the
+    // caller (DAFT_SIZE_WALK_JOBS / daft.list.sizeConcurrency / auto).
     if compute_size {
         let indexed: Vec<(usize, PathBuf)> = infos
             .iter()
@@ -912,11 +913,7 @@ pub fn collect_worktree_info(
             .filter_map(|(i, info)| info.path.clone().map(|p| (i, p)))
             .collect();
         let paths: Vec<PathBuf> = indexed.iter().map(|(_, p)| p.clone()).collect();
-        let sizes = crate::core::size_walk::walk_all(
-            &paths,
-            None,
-            crate::core::size_walk::resolve_jobs(None),
-        );
+        let sizes = crate::core::size_walk::walk_all(&paths, None, size_jobs);
         for ((i, _), size) in indexed.into_iter().zip(sizes) {
             infos[i].size_bytes = size;
         }

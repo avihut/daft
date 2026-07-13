@@ -336,6 +336,7 @@ fn run_blocking(args: Args) -> Result<()> {
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
+            crate::core::size_walk::resolve_jobs(settings.list_size_concurrency),
         )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
@@ -383,6 +384,7 @@ fn run_blocking(args: Args) -> Result<()> {
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
+            crate::core::size_walk::resolve_jobs(settings.list_size_concurrency),
         )?;
         sort_spec.sort(&mut result);
         result

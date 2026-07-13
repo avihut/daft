@@ -1928,6 +1928,7 @@ fn spawn_post_clone_refresh(
             stat: Stat::Summary,
             source: PatchSource::PostTask(OperationPhase::Setup),
             ctx,
+            size_jobs: crate::core::size_walk::resolve_jobs(None),
         },
         tx.clone(),
     );
