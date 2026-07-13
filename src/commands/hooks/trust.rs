@@ -291,13 +291,17 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
 
 /// Prune stale entries from the trust database.
 pub(super) fn cmd_prune(output: &mut dyn Output) -> Result<()> {
-    // Prune + backfill under the registry lock, persisting only when something
-    // changed. `removed`/`backfilled` are captured for the report below.
+    // Gather fingerprints lock-free (git subprocesses) so the registry lock
+    // isn't held across git calls; prune + apply under the lock.
+    // `removed`/`backfilled` are captured for the report below.
+    let fingerprints = TrustDatabase::load()
+        .unwrap_or_default()
+        .gather_missing_fingerprints();
     let mut removed = Vec::new();
     let mut backfilled = 0usize;
     TrustDatabase::update_if(|db| {
         removed = db.prune();
-        backfilled = db.backfill_fingerprints();
+        backfilled = db.apply_fingerprints(&fingerprints);
         Ok(!removed.is_empty() || backfilled > 0)
     })
     .context("Failed to save trust database")?;

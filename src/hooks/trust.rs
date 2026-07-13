@@ -169,26 +169,18 @@ impl Default for TrustDatabase {
 impl TrustDatabase {
     /// Load the trust database from the default location.
     ///
-    /// If the registry file exists but is unreadable or corrupt, this fails
-    /// **closed** — it returns an empty (deny-all) database — but **loudly**,
-    /// warning on stderr. A broken registry silently disabled every repo's
-    /// hooks for a month in #666; surfacing it beats hard-erroring (which would
-    /// break every daft command) or silently defaulting (which hid the incident).
+    /// Returns `Err` when the registry exists but is unreadable/corrupt, so
+    /// diagnostic callers (`daft doctor`, `daft hooks status`) surface the
+    /// problem instead of silently reporting "untrusted". Callers on the
+    /// hook-execution hot path use `.unwrap_or_default()` to fail **closed**
+    /// (empty ⇒ Deny) — the resulting skipped-hook notice already tells the user
+    /// hooks aren't running, and the next write (`update`) backs the corrupt
+    /// file up and heals it loudly. Deliberately NOT warning here: `load()` runs
+    /// on every hooked git operation, so a warning would spam the terminal on
+    /// every push/checkout while the file is broken (#666 review).
     pub fn load() -> Result<Self> {
         let path = Self::default_path()?;
-        match Self::load_from(&path) {
-            Ok(db) => Ok(db),
-            Err(e) if path.exists() => {
-                eprintln!(
-                    "warning: daft trust registry at {} is unreadable ({e:#}); \
-                     treating all repositories as untrusted and skipping hooks. \
-                     Repair the file or re-run `daft hooks trust`.",
-                    path.display()
-                );
-                Ok(Self::default())
-            }
-            Err(e) => Err(e),
-        }
+        Self::load_from(&path)
     }
 
     /// Load the trust database from a specific path.
@@ -329,6 +321,11 @@ impl TrustDatabase {
             .with_context(|| format!("Failed to create temp file in {}", tmp_dir.display()))?;
         tmp.write_all(contents.as_bytes())
             .with_context(|| format!("Failed to write trust database to {}", path.display()))?;
+        // Flush data to disk before the rename so a crash can't leave the
+        // renamed-into-place file pointing at unwritten (zero/garbage) blocks.
+        tmp.as_file()
+            .sync_all()
+            .with_context(|| format!("Failed to flush trust database to {}", path.display()))?;
         tmp.persist(path)
             .map_err(|e| e.error)
             .with_context(|| format!("Failed to write trust database to {}", path.display()))?;
@@ -416,12 +413,23 @@ impl TrustDatabase {
                 repos.clone()
             };
 
-            let mut db = match Self::load_from(&src) {
-                Ok(db) => db,
-                Err(e) => {
-                    // The existing registry is corrupt. Preserve it for manual
-                    // recovery instead of silently overwriting it, then start
-                    // from an empty (deny-all) database (#666).
+            // Load the current registry. If it's corrupt, DON'T touch the file
+            // yet — defer to the `changed` branch below. Backing a corrupt file
+            // up on a no-op (background prune, worktree-remove of an unknown
+            // repo) would rename the live registry aside and write nothing,
+            // leaving it absent — the #666 incident all over again.
+            let (mut db, corrupt) = match Self::load_from(&src) {
+                Ok(db) => (db, None),
+                Err(e) => (Self::default(), Some(e)),
+            };
+
+            let (changed, out) = f(&mut db)?;
+            if changed {
+                if let Some(e) = corrupt {
+                    // We're about to REPLACE a corrupt file — preserve it first
+                    // so a recoverable-but-corrupt registry is never lost, and
+                    // warn. This is the foreground heal path, so the warning is
+                    // seen (unlike the background pruner, which no-ops above).
                     let backup = back_up_corrupt(&src)?;
                     eprintln!(
                         "warning: daft trust registry at {} was unreadable ({e:#}); \
@@ -430,12 +438,7 @@ impl TrustDatabase {
                         src.display(),
                         backup.display()
                     );
-                    Self::default()
                 }
-            };
-
-            let (changed, out) = f(&mut db)?;
-            if changed {
                 db.save_to(&repos)?;
                 // Retire a legacy trust.json now that V3 repos.json is written.
                 if src == legacy && legacy.exists() {
@@ -623,9 +626,8 @@ impl TrustDatabase {
 
     /// Remove entries whose paths no longer exist on disk.
     ///
-    /// Returns the list of paths that were removed (from both repositories
-    /// and layouts). The caller is responsible for calling `save()` to
-    /// persist the changes.
+    /// Returns the list of paths that were removed (from both repositories and
+    /// layouts). Persisted by the enclosing `update`/`update_if`.
     pub fn prune(&mut self) -> Vec<String> {
         let stale: Vec<String> = self
             .repositories
@@ -645,27 +647,40 @@ impl TrustDatabase {
         stale
     }
 
-    /// Backfill fingerprints for entries that exist on disk but have no
-    /// fingerprint stored. Returns the number of entries updated. The caller
-    /// is responsible for calling `save()` to persist the changes.
-    pub fn backfill_fingerprints(&mut self) -> usize {
-        let to_backfill: Vec<(String, String)> = self
-            .repositories
+    /// Collect `(path, remote_url)` for entries that exist on disk but have no
+    /// fingerprint. This runs a `git` subprocess per repo, so call it **outside**
+    /// the registry lock and feed the result to [`apply_fingerprints`].
+    pub fn gather_missing_fingerprints(&self) -> Vec<(String, String)> {
+        self.repositories
             .iter()
             .filter(|(_, entry)| entry.fingerprint.is_none())
             .filter_map(|(path, _)| {
-                let git_dir = Path::new(path.as_str());
-                get_remote_url_for_git_dir(git_dir).map(|url| (path.clone(), url))
+                get_remote_url_for_git_dir(Path::new(path.as_str())).map(|url| (path.clone(), url))
             })
-            .collect();
+            .collect()
+    }
 
-        let count = to_backfill.len();
-        for (path, url) in to_backfill {
-            if let Some(entry) = self.repositories.get_mut(&path) {
-                entry.fingerprint = Some(url);
+    /// Apply fingerprints from [`gather_missing_fingerprints`] to entries that
+    /// still exist and still lack one. Pure in-memory (no git, no IO), so it is
+    /// safe under the registry lock. Returns the number applied.
+    pub fn apply_fingerprints(&mut self, fingerprints: &[(String, String)]) -> usize {
+        let mut count = 0;
+        for (path, url) in fingerprints {
+            if let Some(entry) = self.repositories.get_mut(path)
+                && entry.fingerprint.is_none()
+            {
+                entry.fingerprint = Some(url.clone());
+                count += 1;
             }
         }
         count
+    }
+
+    /// Backfill fingerprints in one shot (gather + apply). The pruner splits the
+    /// two so the git subprocesses run lock-free; direct callers can use this.
+    pub fn backfill_fingerprints(&mut self) -> usize {
+        let gathered = self.gather_missing_fingerprints();
+        self.apply_fingerprints(&gathered)
     }
 }
 
@@ -1552,13 +1567,14 @@ mod tests {
         assert_eq!(backups.len(), 1, "corrupt registry should be backed up");
     }
 
-    /// The incident's core failure: a corrupt registry silently disabled hooks
-    /// for a month. `load()` must fail **closed** — resolve everything to Deny —
-    /// without hard-erroring or silently succeeding. Uses `DAFT_CONFIG_DIR`
-    /// (honored under `cfg(test)`) so it never touches the real config dir.
+    /// A corrupt registry surfaces as an `Err` from `load()` so diagnostic
+    /// commands (`doctor`, `hooks status`) can flag it, while the hook-execution
+    /// path's `unwrap_or_default()` fails **closed** to an empty deny-all
+    /// database. Uses `DAFT_CONFIG_DIR` (honored under `cfg(test)`) so it never
+    /// touches the real config dir.
     #[test]
     #[serial_test::serial]
-    fn corrupt_registry_load_fails_closed_to_deny() {
+    fn corrupt_registry_surfaces_error_and_reads_fail_closed() {
         let temp = tempdir().unwrap();
         // SAFETY: serialized by `#[serial]`; env mutation is process-global.
         unsafe {
@@ -1567,17 +1583,50 @@ mod tests {
         std::fs::write(temp.path().join("repos.json"), "{ not json").unwrap();
 
         let loaded = TrustDatabase::load();
+        let denied = TrustDatabase::load().unwrap_or_default();
         // SAFETY: as above; restore before asserting so a failure can't leak it.
         unsafe {
             std::env::remove_var(crate::CONFIG_DIR_ENV);
         }
 
-        let db = loaded.expect("load() must not hard-error on a corrupt registry");
-        assert!(db.repositories.is_empty());
-        assert_eq!(
-            db.get_trust_level(Path::new("/anything/.git")),
-            TrustLevel::Deny,
-            "a corrupt registry must fail closed to Deny"
+        assert!(
+            loaded.is_err(),
+            "a corrupt registry must surface as Err so diagnostics can flag it"
         );
+        assert!(denied.repositories.is_empty());
+        assert_eq!(
+            denied.get_trust_level(Path::new("/anything/.git")),
+            TrustLevel::Deny,
+            "hot-path reads must fail closed to Deny on a corrupt registry"
+        );
+    }
+
+    /// #666 review regression: a no-op `update_if` against a corrupt registry
+    /// must leave it byte-for-byte intact — no `.corrupt-*.bak`, no delete.
+    /// Backing it up on a no-op (background prune, worktree-remove of an unknown
+    /// repo) would rename the live file aside and write nothing, re-creating the
+    /// silent deny-all incident.
+    #[test]
+    fn no_op_update_if_leaves_corrupt_registry_intact() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("repos.json");
+        let corrupt = "{ this is not valid json";
+        std::fs::write(&path, corrupt).unwrap();
+
+        // A no-op change (changed=false), as the pruner produces when there is
+        // nothing to prune.
+        TrustDatabase::with_lock(temp.path(), |_db| Ok((false, ()))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            corrupt,
+            "a no-op must leave the corrupt registry byte-for-byte intact"
+        );
+        let backups = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("corrupt-"))
+            .count();
+        assert_eq!(backups, 0, "a no-op must not create a backup");
     }
 }
