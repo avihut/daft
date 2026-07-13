@@ -560,6 +560,14 @@ pub enum DagEvent {
         /// Typed result message.
         message: TaskMessage,
     },
+    /// A ready task was deferred by the resource governor (#678). Emitted
+    /// on the not-throttled → throttled transition only; the matching
+    /// `TaskStarted` announces the eventual admission.
+    TaskThrottled {
+        phase: OperationPhase,
+        branch_name: String,
+        reason: DeferReason,
+    },
     /// All tasks are done.
     AllDone,
     /// A hook started running for a branch.
@@ -723,6 +731,9 @@ struct DagState {
     done: usize,
     total: usize,
     branch_outcomes: HashMap<String, HashSet<TaskOutcome>>,
+    /// Per-task "currently deferred by the governor" flag, so
+    /// `TaskThrottled` fires once per transition instead of once per scan.
+    throttled: Vec<bool>,
 }
 
 /// Executes a DAG of sync tasks in parallel.
@@ -802,6 +813,7 @@ impl DagExecutor {
                 done: 0,
                 total: n,
                 branch_outcomes: HashMap::new(),
+                throttled: vec![false; n],
             }),
             Condvar::new(),
         ));
@@ -867,12 +879,25 @@ impl DagExecutor {
                                     Some(gov) => {
                                         let mut admitted = None;
                                         for pos in (0..s.ready.len()).rev() {
-                                            match gov.try_admit(&dag.tasks[s.ready[pos]]) {
+                                            let idx = s.ready[pos];
+                                            match gov.try_admit(&dag.tasks[idx]) {
                                                 AdmitDecision::Admit => {
                                                     admitted = Some(pos);
                                                     break;
                                                 }
-                                                AdmitDecision::Defer(_) => {}
+                                                AdmitDecision::Defer(reason) => {
+                                                    if !s.throttled[idx] {
+                                                        s.throttled[idx] = true;
+                                                        let _ =
+                                                            sender.send(DagEvent::TaskThrottled {
+                                                                phase: dag.tasks[idx].phase.clone(),
+                                                                branch_name: dag.tasks[idx]
+                                                                    .branch_name
+                                                                    .clone(),
+                                                                reason,
+                                                            });
+                                                    }
+                                                }
                                             }
                                         }
                                         admitted.map(|pos| s.ready.remove(pos))
@@ -880,6 +905,7 @@ impl DagExecutor {
                                 };
                                 if let Some(idx) = popped {
                                     task_idx = idx;
+                                    s.throttled[task_idx] = false;
                                     s.status[task_idx] = TaskStatus::Running;
                                     s.active += 1;
                                     break;
@@ -1506,6 +1532,13 @@ mod tests {
             start.elapsed() >= hold,
             "push admitted before the governor allowed it"
         );
+        // Workers re-scan the deferred push many times while it waits, but
+        // the throttle event fires only on the state transition.
+        let throttled = events
+            .iter()
+            .filter(|e| matches!(e, DagEvent::TaskThrottled { .. }))
+            .count();
+        assert_eq!(throttled, 1, "TaskThrottled must be transition-edge only");
     }
 
     #[test]

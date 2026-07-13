@@ -124,6 +124,9 @@ pub(super) fn status_display_width(status: &WorktreeStatus) -> u16 {
     use super::state::FinalStatus;
     match status {
         WorktreeStatus::Idle => 7, // "waiting"
+        // "held: memory" / "held: capped" — sized to stay ≤ STATUS_MAX_WIDTH
+        // so a mid-run throttle never jumps the column layout.
+        WorktreeStatus::Throttled(label) => label.chars().count() as u16,
         WorktreeStatus::Active(label) => (2 + label.len()) as u16,
         WorktreeStatus::Done(fs) => match fs {
             FinalStatus::Updated => 9,         // "✓ updated"

@@ -424,9 +424,28 @@ pub fn surviving_groups() -> Vec<u32> {
     Vec::new()
 }
 
+/// Per-invocation options for [`supervise_command`] beyond the cancel
+/// flag itself.
+pub(crate) struct SuperviseOpts<'a> {
+    /// Process-group placement and teardown strategy.
+    pub mode: SupervisionMode,
+    /// Invoked with the child's pid immediately after spawn.
+    pub on_spawn: Option<&'a (dyn Fn(u32) + Send + Sync)>,
+}
+
+impl SuperviseOpts<'_> {
+    /// Plain supervision in `mode`, no spawn observer.
+    pub(crate) fn new(mode: SupervisionMode) -> Self {
+        Self {
+            mode,
+            on_spawn: None,
+        }
+    }
+}
+
 /// The single spawn → supervise → verdict skeleton shared by every
 /// cancellable git seam. Sets up piped stdio, isolates the child into its
-/// own process group when `mode` is [`SupervisionMode::Isolated`] and a
+/// own process group when the mode is [`SupervisionMode::Isolated`] and a
 /// flag is attached, then drains both pipes on scoped threads with the
 /// caller's closures while [`ChildSupervisor`] polls the flag and the
 /// child's job-control state. Returns the [`Verdict`] alongside whatever
@@ -440,7 +459,7 @@ pub fn surviving_groups() -> Vec<u32> {
 pub(crate) fn supervise_command<O, E, FO, FE>(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
-    mode: SupervisionMode,
+    opts: SuperviseOpts<'_>,
     drain_out: FO,
     drain_err: FE,
 ) -> anyhow::Result<(Verdict, O, E)>
@@ -456,13 +475,18 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
-    if cancel.is_some() && mode == SupervisionMode::Isolated {
+    if cancel.is_some() && opts.mode == SupervisionMode::Isolated {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 
     let mut child = cmd.spawn()?;
-    let mut supervisor = ChildSupervisor::new(&child, cancel, mode);
+    // Surface the pid before the first supervisor tick so an observer (the
+    // resource governor, #678) knows the unit's root from its first instant.
+    if let Some(on_spawn) = opts.on_spawn {
+        on_spawn(child.id());
+    }
+    let mut supervisor = ChildSupervisor::new(&child, cancel, opts.mode);
     let stdout_pipe = child
         .stdout
         .take()
@@ -520,7 +544,7 @@ pub fn output_with_cancel(
     let (verdict, stdout, stderr) = supervise_command(
         cmd,
         cancel,
-        SupervisionMode::Direct,
+        SuperviseOpts::new(SupervisionMode::Direct),
         read_to_end,
         read_to_end_err,
     )?;
@@ -565,7 +589,13 @@ mod supervisor_tests {
         cmd: &mut Command,
         flag: Option<&CancelFlag>,
     ) -> anyhow::Result<(Verdict, Vec<u8>, Vec<u8>)> {
-        supervise_command(cmd, flag, SupervisionMode::Isolated, read_out, read_err)
+        supervise_command(
+            cmd,
+            flag,
+            SuperviseOpts::new(SupervisionMode::Isolated),
+            read_out,
+            read_err,
+        )
     }
 
     #[test]

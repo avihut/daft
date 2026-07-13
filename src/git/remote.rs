@@ -188,10 +188,17 @@ impl GitCommand {
         // stopped/TERM-immune holder would wedge a join with nobody watching
         // the flag (the #663 wedge). All of that lives in `supervise_command`
         // — the one skeleton shared with the fetch/pull/rebase seams.
+        let supervise_opts = cancel::SuperviseOpts {
+            mode: cancel::SupervisionMode::Isolated,
+            on_spawn: self
+                .push_supervision
+                .as_ref()
+                .and_then(|s| s.on_spawn.as_deref()),
+        };
         let (verdict, stdout, stderr) = cancel::supervise_command(
             &mut cmd,
             self.cancel_flag(),
-            cancel::SupervisionMode::Isolated,
+            supervise_opts,
             |pipe| drain_push_pipe(pipe, PushStream::Stdout, opts.on_output),
             |pipe| drain_push_pipe(pipe, PushStream::Stderr, opts.on_output),
         )

@@ -36,7 +36,7 @@ use crate::{
         tui::operation_table::{OperationTable, TableConfig},
     },
     remote::get_default_branch_local,
-    settings::{DaftSettings, GovernorMode},
+    settings::{DaftSettings, GovernorJobs, GovernorMode},
     styles,
 };
 use anyhow::Result;
@@ -217,6 +217,43 @@ pub struct Args {
 impl Args {
     fn force(&self) -> bool {
         self.prune_dirty || self.force_deprecated
+    }
+}
+
+/// How the push phase is governed (#678). Resolved once per run from
+/// flags + config; pure so the gate is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushGovernorPlan {
+    /// No governor at all — byte-identical pre-#678 behavior.
+    Ungoverned,
+    /// Fixed concurrency cap only (`daft.governor.mode=off` with an
+    /// explicit `--jobs`).
+    StaticCap(usize),
+    /// Full dynamic governor (memory-aware admission) with a hard cap.
+    Dynamic { cap: usize },
+}
+
+fn resolve_push_governor(
+    hook_present: bool,
+    no_verify: bool,
+    no_throttle: bool,
+    jobs: Option<usize>,
+    mode: GovernorMode,
+    config_jobs: GovernorJobs,
+    cores: usize,
+) -> PushGovernorPlan {
+    // Without a pre-push hook there is nothing that multiplies memory use;
+    // with hooks bypassed or throttling refused, the user has spoken.
+    if !hook_present || no_verify || no_throttle {
+        return PushGovernorPlan::Ungoverned;
+    }
+    match (mode, jobs) {
+        // Mode off: only an explicit --jobs still caps.
+        (GovernorMode::Off, Some(cap)) => PushGovernorPlan::StaticCap(cap),
+        (GovernorMode::Off, None) => PushGovernorPlan::Ungoverned,
+        (GovernorMode::Auto, jobs) => PushGovernorPlan::Dynamic {
+            cap: jobs.unwrap_or_else(|| config_jobs.effective(cores)),
+        },
     }
 }
 
@@ -758,23 +795,22 @@ fn run_tui(
             .with_gitoxide(settings.use_gitoxide)
             .pre_push_hook_exists(&project_root);
 
-    // Resource governor (#678): the effective cap on hook-bearing push
-    // concurrency. `None` = ungoverned — no hook to multiply memory use,
-    // hooks bypassed, --no-throttle, or daft.governor.mode=off (an explicit
-    // --jobs still caps even with the mode off).
-    let shared_push_cap: Option<usize> =
-        if !shared_hook_present || shared_no_verify || args.no_throttle {
-            None
-        } else if let Some(jobs) = args.jobs {
-            Some(jobs.get())
-        } else if settings.governor_mode == GovernorMode::Off {
-            None
-        } else {
-            let cores = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(4);
-            Some(settings.governor_jobs.effective(cores))
-        };
+    // Resource governor plan (#678): resolved from flags + config here,
+    // constructed inside the orchestrator once the DAG's push-task count
+    // is known.
+    let cores = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    let shared_governor_plan = resolve_push_governor(
+        shared_hook_present,
+        shared_no_verify,
+        args.no_throttle,
+        args.jobs.map(std::num::NonZeroUsize::get),
+        settings.governor_mode,
+        settings.governor_jobs,
+        cores,
+    );
+    let shared_memory_reserve = settings.governor_memory_reserve;
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -894,12 +930,34 @@ fn run_tui(
         let tx_for_tasks = tx.clone();
         let task_cancel = Arc::clone(&orch_cancel);
         let mut executor = DagExecutor::new(dag, tx).with_cancel(Arc::clone(&orch_cancel));
-        // A single push can never exceed the cap — skip the admission scan.
-        if let Some(cap) = shared_push_cap
-            && push_task_count >= 2
-        {
-            executor = executor.with_governor(Arc::new(StaticCapGovernor::new(cap)));
-        }
+        // A single push can never exceed a cap — skip the admission scan
+        // (and never pay for a probe or sampler thread).
+        let sync_governor: Option<Arc<crate::governor::SyncGovernor>> = if push_task_count >= 2 {
+            match shared_governor_plan {
+                PushGovernorPlan::Ungoverned => None,
+                PushGovernorPlan::StaticCap(cap) => {
+                    executor = executor.with_governor(Arc::new(StaticCapGovernor::new(cap)));
+                    None
+                }
+                PushGovernorPlan::Dynamic { cap } => {
+                    let governor = crate::governor::SyncGovernor::spawn(
+                        crate::governor::adapters::build_probe(),
+                        Arc::clone(&orch_cancel),
+                        |first| {
+                            crate::governor::domain::GovernorParams::new(
+                                cap,
+                                shared_memory_reserve.resolve(first.mem_total),
+                            )
+                        },
+                    );
+                    executor = executor.with_governor(Arc::clone(&governor) as Arc<_>);
+                    Some(governor)
+                }
+            }
+        } else {
+            None
+        };
+        let push_governor = sync_governor.clone();
         executor.run(
             move |task: &SyncTask,
                   outcomes: &std::collections::HashSet<
@@ -1024,6 +1082,7 @@ fn run_tui(
                             &tx_for_tasks,
                             outcomes,
                             &task_cancel,
+                            push_governor.as_ref(),
                         );
                         if status == TaskStatus::Succeeded {
                             spawn_post_task_refresh(
@@ -1048,6 +1107,10 @@ fn run_tui(
                 }
             },
         );
+        // Stop the governor's sampler thread with the run it belongs to.
+        if let Some(governor) = sync_governor {
+            governor.shutdown();
+        }
     });
 
     // Spawn the streaming collector for heavy cells (concurrent with
@@ -1206,6 +1269,26 @@ fn run_tui(
                 eprintln!("    Prune was aborted for this branch.");
             }
         }
+    }
+
+    // ── Post-TUI: governor throttle summary (#678) ─────────────────────
+    if let Some(governor) = &completed.governor {
+        let noun = if governor.throttled_pushes == 1 {
+            "push"
+        } else {
+            "pushes"
+        };
+        let total = governor.throttled_total;
+        let held = if total.as_secs() >= 1 {
+            format!("{}s", total.as_secs())
+        } else {
+            format!("{}ms", total.as_millis())
+        };
+        eprintln!();
+        eprintln!(
+            "{} {noun} throttled {held} to preserve memory headroom",
+            governor.throttled_pushes,
+        );
     }
 
     // ── Surface branches prune deliberately kept ──────────────────────────
@@ -1475,6 +1558,7 @@ fn execute_push_task(
     tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
     branch_outcomes: &HashSet<TaskOutcome>,
     cancel: &Arc<CancelFlag>,
+    governor: Option<&Arc<crate::governor::SyncGovernor>>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     if cancel.is_cancelled() {
         return (
@@ -1497,9 +1581,21 @@ fn execute_push_task(
         );
     }
 
-    let git = GitCommand::new(false)
+    let mut git = GitCommand::new(false)
         .with_gitoxide(settings.use_gitoxide)
         .with_cancel(Arc::clone(cancel));
+
+    // Register the unit with the resource governor (#678). The guard
+    // tracks the unit's lifetime (drop = gone); the spawn callback hands
+    // the governor the git-push root pid for the sampler and containment
+    // tiers.
+    let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit(branch_name)));
+    if let Some(unit) = &governor_unit {
+        let unit = Arc::clone(unit);
+        git = git.with_push_supervision(crate::git::PushSupervision {
+            on_spawn: Some(Arc::new(move |pid: u32| unit.attach_pid(pid))),
+        });
+    }
 
     let worktree_name = target_path
         .strip_prefix(project_root)
@@ -2348,6 +2444,51 @@ mod tests {
             email: email.to_string(),
             is_current_user,
         }
+    }
+
+    #[test]
+    fn governor_plan_resolution() {
+        use PushGovernorPlan::{Dynamic, StaticCap, Ungoverned};
+        let auto = GovernorMode::Auto;
+        let off = GovernorMode::Off;
+        let config_auto = GovernorJobs::Auto;
+
+        // No hook / hooks bypassed / throttling refused → ungoverned.
+        assert_eq!(
+            resolve_push_governor(false, false, false, None, auto, config_auto, 16),
+            Ungoverned
+        );
+        assert_eq!(
+            resolve_push_governor(true, true, false, None, auto, config_auto, 16),
+            Ungoverned
+        );
+        assert_eq!(
+            resolve_push_governor(true, false, true, Some(4), auto, config_auto, 16),
+            Ungoverned
+        );
+        // Auto mode: dynamic governor; cap from --jobs, config, or
+        // max(2, cores/4).
+        assert_eq!(
+            resolve_push_governor(true, false, false, None, auto, config_auto, 16),
+            Dynamic { cap: 4 }
+        );
+        assert_eq!(
+            resolve_push_governor(true, false, false, Some(6), auto, config_auto, 16),
+            Dynamic { cap: 6 }
+        );
+        assert_eq!(
+            resolve_push_governor(true, false, false, None, auto, GovernorJobs::Fixed(3), 16),
+            Dynamic { cap: 3 }
+        );
+        // Off mode: only an explicit --jobs still caps, statically.
+        assert_eq!(
+            resolve_push_governor(true, false, false, None, off, config_auto, 16),
+            Ungoverned
+        );
+        assert_eq!(
+            resolve_push_governor(true, false, false, Some(2), off, config_auto, 16),
+            StaticCap(2)
+        );
     }
 
     #[test]

@@ -278,6 +278,7 @@ pub mod doctor;
 pub mod exec;
 pub mod executor;
 pub mod git;
+pub mod governor;
 pub mod hints;
 pub mod homebrew;
 pub mod hooks;

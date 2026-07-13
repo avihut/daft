@@ -52,6 +52,19 @@ pub(crate) fn discover_count() -> usize {
     DISCOVER_COUNT.with(|c| c.get())
 }
 
+/// Sync-push supervision extras carried on [`GitCommand`] (#678), the same
+/// way the cancel flag rides it: `execute_push_task` constructs one
+/// `GitCommand` per push unit, so per-unit observers attach here without
+/// widening the whole push call chain (`PushOptions`, `push_with_hooks`,
+/// `push_single_worktree` stay untouched, and every non-sync push site is
+/// byte-identical).
+#[derive(Default)]
+pub(crate) struct PushSupervision {
+    /// Receives the `git push` root pid right after spawn (the resource
+    /// governor's unit registry).
+    pub(crate) on_spawn: Option<std::sync::Arc<dyn Fn(u32) + Send + Sync>>,
+}
+
 pub struct GitCommand {
     pub(crate) quiet: bool,
     pub(crate) use_gitoxide: bool,
@@ -61,6 +74,9 @@ pub struct GitCommand {
     /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
     /// their flag here so every worker-thread git call inherits it.
     pub(crate) cancel: Option<std::sync::Arc<cancel::CancelFlag>>,
+    /// Sync-push supervision extras (governor observers). `None` for every
+    /// non-sync caller.
+    pub(crate) push_supervision: Option<PushSupervision>,
 }
 
 impl GitCommand {
@@ -70,7 +86,15 @@ impl GitCommand {
             use_gitoxide: false,
             gix_repo: OnceLock::new(),
             cancel: None,
+            push_supervision: None,
         }
+    }
+
+    /// Attach sync-push supervision extras (#678). Only `run_push` reads
+    /// them; other subprocess seams ignore the field entirely.
+    pub(crate) fn with_push_supervision(mut self, supervision: PushSupervision) -> Self {
+        self.push_supervision = Some(supervision);
+        self
     }
 
     pub fn with_gitoxide(mut self, enabled: bool) -> Self {
