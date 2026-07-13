@@ -606,7 +606,7 @@ _daft() {
     # repo: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "repo" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "add info install list remove" -- "$cur") )
+            COMPREPLY=( $(compgen -W "add info install link list remove unlink" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
@@ -634,6 +634,19 @@ _daft() {
                 fi
                 return 0
                 ;;
+            link)
+                if [[ "$prev" == "--name" || "$prev" == "--kind" ]]; then
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--name --kind -h --help" -- "$cur") )
+                    return 0
+                fi
+                local repos
+                repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( $(compgen -W "$repos" -- "$cur") $(compgen -d -- "$cur") )
+                return 0
+                ;;
             list)
                 if [[ "$prev" == "--columns" ]]; then
                     local columns="annotation name worktrees layout branch path size remote"
@@ -659,6 +672,16 @@ _daft() {
                     return 0
                 fi
                 COMPREPLY=( $(compgen -d -- "$cur") )
+                return 0
+                ;;
+            unlink)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
+                    return 0
+                fi
+                local labels
+                labels=$(daft __complete relation-label "$cur" 2>/dev/null)
+                COMPREPLY=( $(compgen -W "$labels" -- "$cur") )
                 return 0
                 ;;
         esac

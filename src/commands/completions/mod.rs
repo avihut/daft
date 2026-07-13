@@ -673,6 +673,59 @@ mod tests {
         );
     }
 
+    /// `daft repo link`/`unlink`: the hardcoded repo-verb sections must offer
+    /// both new verbs, and complete their arguments — link with catalog repo
+    /// names, unlink with relation labels — in every shell.
+    #[test]
+    fn repo_link_unlink_complete_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            zsh.contains("compadd add info install link list remove unlink"),
+            "zsh repo verb list must include link and unlink in order"
+        );
+        assert!(
+            bash.contains("add info install link list remove unlink"),
+            "bash repo verb list must include link and unlink in order"
+        );
+
+        // link completes catalog names; unlink completes relation labels —
+        // bound each probe to its own arm inside the repo section.
+        for (shell, script) in [("zsh", zsh), ("bash", bash)] {
+            let repo_section = script
+                .split("# repo: complete subcommands")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must have a repo section"));
+            let arm = |verb: &str| {
+                let after = repo_section
+                    .split(&format!("{verb})"))
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("{shell} repo section must have a {verb} arm"));
+                after[..after.find(";;").unwrap_or(after.len())].to_string()
+            };
+            assert!(
+                arm("link").contains("daft __complete repo-name"),
+                "{shell} repo-link arm must complete catalog names"
+            );
+            assert!(
+                arm("unlink").contains("daft __complete relation-label"),
+                "{shell} repo-unlink arm must complete relation labels"
+            );
+        }
+
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains("__fish_seen_subcommand_from link' -f -a \"(daft __complete repo-name"),
+            "fish repo-link must complete catalog names"
+        );
+        assert!(
+            fish.contains(
+                "__fish_seen_subcommand_from unlink' -f -a \"(daft __complete relation-label"
+            ),
+            "fish repo-unlink must complete relation labels"
+        );
+    }
+
     /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
     /// sections of the umbrella completions are hardcoded per shell, so a
     /// new flag must land in all three (fig has its own spec test).

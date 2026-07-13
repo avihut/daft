@@ -176,6 +176,11 @@ fn complete(
         // shared-files: complete declared shared file paths from daft.yml
         ("shared-files", _) => complete_shared_files(word),
 
+        // relation-label: labels of relations declared in the current
+        // worktree's daft.yml (for `daft repo unlink`). Manifest read only —
+        // no catalog open on the Tab path.
+        ("relation-label", _) => complete_relation_labels(word),
+
         // shared-worktrees: complete worktree directory names
         ("shared-worktrees", _) => complete_worktree_names(word),
 
@@ -955,6 +960,21 @@ fn complete_shared_files(prefix: &str) -> Result<Vec<String>> {
         .collect();
     entries.sort();
     Ok(entries)
+}
+
+/// Complete relation labels declared in the current worktree's daft.yml, for
+/// `daft repo unlink <TAB>`. Reads the manifest only (no catalog), matching
+/// the label rendering used by `repo info`.
+fn complete_relation_labels(prefix: &str) -> Result<Vec<String>> {
+    let mut labels: Vec<String> = crate::catalog::relations::current_repo_relations()
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| entry.label().to_string())
+        .filter(|label| label.starts_with(prefix))
+        .collect();
+    labels.sort();
+    labels.dedup();
+    Ok(labels)
 }
 
 /// Complete worktree directory names.

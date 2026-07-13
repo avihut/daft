@@ -134,6 +134,20 @@ fn repo_name_generator() -> FigGenerator {
     }
 }
 
+/// Generator for a relation label declared in the current worktree's daft.yml
+/// (`daft repo unlink <label>`).
+fn relation_label_generator() -> FigGenerator {
+    FigGenerator {
+        script: vec![
+            "daft".into(),
+            "__complete".into(),
+            "relation-label".into(),
+            String::new(),
+        ],
+        split_on: "\n".to_string(),
+    }
+}
+
 /// Get positional arguments from a clap Command
 /// Returns (name, help_text, position_index) for each positional arg
 fn get_positional_args(cmd: &Command) -> Vec<(String, String, usize)> {
@@ -669,11 +683,54 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
         ]),
     };
 
+    let link = FigSubcommand {
+        name: "link".to_string(),
+        description: Some("Declare a relation from this repo to another".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "target".to_string(),
+            description: Some("Catalog repo name, a repo path, or a remote URL".to_string()),
+            generators: Some(repo_name_generator()),
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--name".into()),
+                description: "Friendly label for the edge".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Single("--kind".into()),
+                description: "Free-form relationship kind (e.g. consumer, library)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+        ]),
+    };
+
+    let unlink = FigSubcommand {
+        name: "unlink".to_string(),
+        description: Some("Remove a relation from this repo".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "target".to_string(),
+            description: Some("Relation label, catalog name, repo path, or remote URL".to_string()),
+            generators: Some(relation_label_generator()),
+        })),
+        options: None,
+    };
+
     FigSubcommand {
         name: "repo".to_string(),
         description: Some("Repository-level operations".to_string()),
         load_spec: None,
-        subcommands: Some(vec![add, info, install, list, remove]),
+        subcommands: Some(vec![add, info, install, link, list, remove, unlink]),
         args: None,
         options: None,
     }

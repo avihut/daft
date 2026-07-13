@@ -776,7 +776,7 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd add info install list remove
+            compadd add info install link list remove unlink
             return
         fi
         case "$words[3]" in
@@ -802,6 +802,21 @@ _daft() {
                 if [[ "$curword" == -* ]]; then
                     compadd -- -q --quiet -v --verbose --git-exclude -h --help
                 fi
+                return
+                ;;
+            link)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--name" || "$prev_word" == "--kind" ]]; then
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --name --kind -h --help
+                    return
+                fi
+                local -a repos
+                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                (( ${#repos} )) && compadd -- "${repos[@]}"
+                _files -/
                 return
                 ;;
             list)
@@ -855,6 +870,16 @@ _daft() {
                     return
                 fi
                 _files -/
+                return
+                ;;
+            unlink)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -h --help
+                    return
+                fi
+                local -a labels
+                labels=( ${(f)"$(daft __complete relation-label "$curword" 2>/dev/null)"} )
+                (( ${#labels} )) && compadd -- "${labels[@]}"
                 return
                 ;;
         esac
