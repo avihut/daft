@@ -94,4 +94,19 @@ impl GitCommand {
             Ok(None)
         }
     }
+
+    /// Configure a branch to track an explicit remote merge ref.
+    ///
+    /// Used for forge PR/MR checkout: the fork head lives at a stable ref on
+    /// the base repo (`refs/pull/123/head` / `refs/merge-requests/45/head`)
+    /// rather than a normal `refs/heads/*` branch, so the standard
+    /// `--set-upstream-to` (which needs a `refs/remotes/<remote>/<branch>`
+    /// tracking ref) can't express it. Writing `branch.<name>.remote` +
+    /// `branch.<name>.merge` directly makes `git pull` on the branch update
+    /// from the PR/MR head.
+    pub fn set_branch_tracking(&self, branch: &str, remote: &str, merge_ref: &str) -> Result<()> {
+        self.config_set(&format!("branch.{branch}.remote"), remote)?;
+        self.config_set(&format!("branch.{branch}.merge"), merge_ref)?;
+        Ok(())
+    }
 }

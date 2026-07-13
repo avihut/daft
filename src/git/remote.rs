@@ -130,15 +130,20 @@ impl GitCommand {
     }
 
     pub fn fetch_refspec(&self, remote: &str, refspec: &str) -> Result<()> {
-        let mut cmd = Command::new("git");
+        // git_command_at (not a raw `git`) scrubs any inherited GIT_DIR so the
+        // fetch targets the cwd's repo — not the hook-calling repo when daft
+        // runs inside a git hook (e.g. post-checkout) — mirroring `fetch`/
+        // `run_push`. Load-bearing for forge PR checkout, whose fork fetch is
+        // the whole mechanism.
+        let cwd = std::env::current_dir().context("Failed to resolve current directory")?;
+        let mut cmd = git_command_at(&cwd);
         cmd.args(["fetch", remote, refspec]);
 
         if self.quiet {
             cmd.arg("--quiet");
         }
 
-        let output = cmd
-            .output()
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git fetch command")?;
 
         if !output.status.success() {
