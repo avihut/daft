@@ -45,7 +45,10 @@ push = true
 push-remote = "origin"
 
 # Pre-release-hook runs after version bump, before commit, in the workspace
-# root. We regenerate CHANGELOG.md (via the existing cliff.toml) and the man
-# pages + CLI docs (what the old release-plz workflow's man-page step did)
-# so they all land in the same release commit.
-pre-release-hook = ["bash", "-c", "git-cliff --tag v{{version}} --output CHANGELOG.md && cargo run --package xtask -- gen-man --output-dir=man && cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli"]
+# root. We regenerate CHANGELOG.md (via the existing cliff.toml), the man
+# pages + CLI docs (what the old release-plz workflow's man-page step did),
+# and the SKILL.md daft_version stamp (the agent-skill freshness contract:
+# the stamp must always equal the released version; a daft unit test pins
+# the embedded copy to CARGO_PKG_VERSION) so they all land in the same
+# release commit.
+pre-release-hook = ["bash", "-c", "git-cliff --tag v{{version}} --output CHANGELOG.md && cargo run --package xtask -- gen-man --output-dir=man && cargo run --package xtask -- gen-cli-docs --output-dir=docs/cli && cargo run --package xtask -- stamp-skill --version {{version}}"]
