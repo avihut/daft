@@ -146,12 +146,20 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: repo::install::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "repo link",
+                    command: repo::link::Args::command(),
+                },
+                CommandEntry {
                     display_name: "repo list",
                     command: repo::list::Args::command(),
                 },
                 CommandEntry {
                     display_name: "repo remove",
                     command: repo::remove::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "repo unlink",
+                    command: repo::unlink::Args::command(),
                 },
             ],
         },
@@ -329,12 +337,20 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                     command: repo::install::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "daft repo link",
+                    command: repo::link::Args::command(),
+                },
+                CommandEntry {
                     display_name: "daft repo list",
                     command: repo::list::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft repo remove",
                     command: repo::remove::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft repo unlink",
+                    command: repo::unlink::Args::command(),
                 },
             ],
         },
