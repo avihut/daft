@@ -34,4 +34,8 @@ sandbox_use_isolated_daft_env() {
     export DAFT_CONFIG_DIR="${sb}/config"
     export DAFT_DATA_DIR="${sb}/data"
     export DAFT_STATE_DIR="${sb}/state"
+    # Agent skill lands under $HOME/.claude by default; redirect it into the
+    # sandbox so `daft skill install`/`daft doctor --fix` from a sandbox task
+    # never touches the real ~/.claude (dev-build gated).
+    export DAFT_SKILLS_DIR="${sb}/claude-skills"
 }

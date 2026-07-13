@@ -94,11 +94,43 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// Environment variable that overrides the user-global skills root.
+///
+/// Only honored in dev builds (`daft_dev_build`, per build.rs) and this
+/// crate's unit tests — release builds ignore it, exactly like
+/// [`crate::CONFIG_DIR_ENV`] and friends, so a real `daft skill install` can
+/// never be env-redirected away from `~/.claude`. It exists so the dev
+/// sandbox and the test harnesses can keep the skill's on-disk footprint
+/// inside their sandbox instead of the developer's real `~/.claude` — the
+/// skill path is the one daft path keyed off `$HOME` rather than a
+/// `DAFT_*_DIR`, so without this it would escape an otherwise-isolated sandbox.
+pub const SKILLS_DIR_ENV: &str = "DAFT_SKILLS_DIR";
+
 /// Claude Code's user-global skills root (`~/.claude/skills`). Not a daft
 /// state directory — it is a foreign tool's convention, hence plain
 /// `home_dir` rather than the XDG resolvers.
+///
+/// In dev/test builds a non-empty absolute [`SKILLS_DIR_ENV`] overrides the
+/// resolution (see the const's docs); an empty or relative value is ignored.
 pub fn user_skills_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".claude").join("skills"))
+    skills_root_from(
+        std::env::var(SKILLS_DIR_ENV).ok().as_deref(),
+        dirs::home_dir(),
+    )
+}
+
+/// Pure core of [`user_skills_root`], split out so the override precedence is
+/// unit-testable without touching process env. `override_dir` is the raw
+/// [`SKILLS_DIR_ENV`] value (if set); `home` is `dirs::home_dir()`.
+fn skills_root_from(override_dir: Option<&str>, home: Option<PathBuf>) -> Option<PathBuf> {
+    if cfg!(any(daft_dev_build, test))
+        && let Some(dir) = override_dir
+        && !dir.is_empty()
+        && Path::new(dir).is_absolute()
+    {
+        return Some(PathBuf::from(dir));
+    }
+    home.map(|home| home.join(".claude").join("skills"))
 }
 
 /// Where the skill file lands under a given skills root.
@@ -462,5 +494,31 @@ mod tests {
                 dir_removed: true,
             }
         );
+    }
+
+    // --- user_skills_root override (pure core) ---
+
+    #[test]
+    fn skills_root_honors_absolute_override() {
+        // cfg!(test) is true in this build, so the override branch is active.
+        let root = skills_root_from(
+            Some("/sandbox/claude-skills"),
+            Some(PathBuf::from("/home/u")),
+        );
+        assert_eq!(root, Some(PathBuf::from("/sandbox/claude-skills")));
+    }
+
+    #[test]
+    fn skills_root_falls_back_to_home_without_override() {
+        let root = skills_root_from(None, Some(PathBuf::from("/home/u")));
+        assert_eq!(root, Some(PathBuf::from("/home/u/.claude/skills")));
+    }
+
+    #[test]
+    fn skills_root_ignores_empty_or_relative_override() {
+        let home = Some(PathBuf::from("/home/u"));
+        let expected = Some(PathBuf::from("/home/u/.claude/skills"));
+        assert_eq!(skills_root_from(Some(""), home.clone()), expected);
+        assert_eq!(skills_root_from(Some("rel/skills"), home), expected);
     }
 }

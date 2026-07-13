@@ -4,17 +4,23 @@ branch: daft-664/feat/skill-install-and-freshness
 
 # Agent Skill Distribution & Freshness
 
-All steps that touch the user-global path must run with an isolated HOME
-(`HOME=$(mktemp -d) daft ...`) unless you deliberately want to manage the real
-`~/.claude` on this machine.
+Inside the daft sandbox (`mise run sandbox`, a dev shell that sourced
+`shared-env.sh`, or the YAML/bash test harnesses) the agent-skill root is
+redirected to a sandbox dir via `DAFT_SKILLS_DIR`, so `daft skill install`,
+`daft skill uninstall`, and `daft doctor --fix` stay off the real `~/.claude`
+automatically — the default target below resolves to `$DAFT_SKILLS_DIR`, not
+`~/.claude/skills`. Only when exercising a binary with no sandbox env (a release
+build, or a system `daft` on `PATH` that ignores `DAFT_SKILLS_DIR`) do you need
+to isolate `HOME` yourself (`HOME=$(mktemp -d) daft ...`).
 
 ## Install
 
 - [ ] `daft skill` (bare) prints the group help with the embedded version in the
       header; `daft skill bogus` suggests the real verbs and exits 1
-- [ ] `daft skill install` (isolated HOME) creates
-      `~/.claude/skills/daft-worktree-workflow/SKILL.md` and reports
-      `Installed agent skill (vX.Y.Z) → ~/...` with a tilde-shortened path
+- [ ] `daft skill install` in the sandbox creates
+      `$DAFT_SKILLS_DIR/daft-worktree-workflow/SKILL.md` (the default target,
+      redirected off `~/.claude`) and reports
+      `Installed agent skill (vX.Y.Z) → ...`
 - [ ] Re-running reports `Agent skill already up to date (vX.Y.Z) at ...` and
       leaves the file byte-identical
 - [ ] After editing the stamp to an older version, re-running reports
@@ -53,8 +59,8 @@ All steps that touch the user-global path must run with an isolated HOME
 - [ ] Re-running reports `No agent skill installed at ... (nothing to remove)`
       and exits 0
 - [ ] With a user file left beside the skill, uninstall removes SKILL.md but
-      keeps the directory and that file, printing the
-      `still contains other     files` notice on stderr
+      keeps the directory and that file, and prints a stderr notice that it kept
+      the directory because other files remain
 - [ ] A foreign SKILL.md (frontmatter name is not daft-worktree-workflow) is
       refused with an error and left in place
 - [ ] `daft skill uninstall --project` removes the current worktree's copy;
@@ -65,8 +71,8 @@ All steps that touch the user-global path must run with an isolated HOME
 
 ## Doctor freshness
 
-- [ ] Fresh isolated HOME: `daft doctor` shows no Agent skill row;
-      `daft doctor -v` shows `[−] Agent skill — not installed`
+- [ ] Fresh sandbox (empty `$DAFT_SKILLS_DIR`): `daft doctor` shows no Agent
+      skill row; `daft doctor -v` shows `[−] Agent skill — not installed`
 - [ ] After install: `[✓] Agent skill (installed, vX.Y.Z)`
 - [ ] Stamp aged: warning that the installed copy is stale (vOLD vs the binary's
       vNEW), with the `daft skill install` suggestion

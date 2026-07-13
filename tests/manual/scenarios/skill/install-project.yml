@@ -47,7 +47,7 @@ steps:
       exit_code: 0
 
   - name: Doctor flags the stale project copy
-    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    run: daft doctor 2>&1
     cwd: "$WORK_DIR/test-repo/master"
     expect:
       exit_code: 0
@@ -56,7 +56,7 @@ steps:
         - "installed copy is stale (v0.1.0"
 
   - name: Doctor --fix rewrites the project copy
-    run: HOME="$WORK_DIR/home" daft doctor --fix 2>&1
+    run: daft doctor --fix 2>&1
     cwd: "$WORK_DIR/test-repo/master"
     expect:
       exit_code: 0

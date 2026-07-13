@@ -15,4 +15,9 @@ if [ -n "$git_common_dir" ] && [ -z "${DAFT_CONFIG_DIR:-}" ]; then
   sandbox="$git_common_dir/.daft-sandbox"
   mkdir -p "$sandbox"
   export DAFT_CONFIG_DIR="$sandbox"
+  # The agent skill installs under $HOME/.claude by default (a foreign tool's
+  # path, not a DAFT_*_DIR), so `daft skill install`/`daft doctor --fix` from a
+  # dev shell would otherwise touch the developer's real ~/.claude. Redirect it
+  # into the sandbox too (dev-build gated; release ignores DAFT_SKILLS_DIR).
+  export DAFT_SKILLS_DIR="${DAFT_SKILLS_DIR:-$sandbox/claude-skills}"
 fi

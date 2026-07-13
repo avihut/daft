@@ -87,6 +87,7 @@ pub(super) fn resolve_skills_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn dir_flag_wins_verbatim() {
@@ -96,7 +97,15 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn default_targets_user_skills_root() {
+        // The dev/test shell (shared-env.sh) exports DAFT_SKILLS_DIR, which
+        // cfg!(test) would honor — clear it so this exercises the real
+        // ~/.claude fallback. #[serial] keeps it from racing the other env
+        // tests (same reason lib.rs's DAFT_*_DIR default tests are serial).
+        unsafe {
+            std::env::remove_var(crate::skill::SKILLS_DIR_ENV);
+        }
         let root = resolve_skills_root(false, None, "skill install").unwrap();
         assert!(root.ends_with(".claude/skills"), "{root:?}");
     }

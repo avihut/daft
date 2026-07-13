@@ -13,11 +13,12 @@ steps:
     expect:
       exit_code: 0
 
-  # Doctor steps isolate HOME: doctor's agent-skill check reads (and --fix
-  # rewrites) ~/.claude/skills, and the real-state tripwire fails the suite
-  # if a test touches the real file.
+  # DAFT_SKILLS_DIR (set per-sandbox by the runner) points doctor's agent-skill
+  # check at the sandbox rather than the real ~/.claude, so `daft doctor --fix`
+  # here cannot rewrite the developer's real skill file — which the real-state
+  # tripwire would otherwise catch and fail the suite over.
   - name: Healthy catalog passes
-    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    run: daft doctor 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -30,7 +31,7 @@ steps:
       exit_code: 0
 
   - name: Doctor flags the stale entry
-    run: HOME="$WORK_DIR/home" daft doctor 2>&1
+    run: daft doctor 2>&1
     cwd: "$WORK_DIR"
     expect:
       exit_code: 0
@@ -38,7 +39,7 @@ steps:
         - "point at missing paths"
 
   - name: --fix tombstones it
-    run: HOME="$WORK_DIR/home" daft doctor --fix 2>&1
+    run: daft doctor --fix 2>&1
     cwd: "$WORK_DIR"
     expect:
       exit_code: 0
