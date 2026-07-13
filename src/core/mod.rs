@@ -18,6 +18,7 @@ pub mod repo;
 pub mod repo_identity;
 pub mod settings;
 pub mod shared;
+pub mod size_walk;
 pub mod sort;
 pub mod stage;
 mod tui_bridge;
