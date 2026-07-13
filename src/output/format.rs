@@ -288,6 +288,7 @@ pub struct ColumnValues {
     pub base: String,
     pub changes: String,
     pub remote: String,
+    pub pr: String,
     pub branch_age: String,
     pub last_commit_age: String,
     pub last_commit_subject: String,
@@ -399,6 +400,8 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let hash = info.last_commit_hash.clone().unwrap_or_default();
 
+    let pr = info.forge_ref.map(|r| r.short()).unwrap_or_default();
+
     ColumnValues {
         branch,
         path,
@@ -406,6 +409,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         base,
         changes,
         remote,
+        pr,
         branch_age,
         last_commit_age,
         last_commit_subject,
@@ -419,6 +423,28 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_column_value_reflects_the_tracked_ref() {
+        use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::WorktreeInfo;
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+        };
+        let mut info = WorktreeInfo::empty("feat");
+
+        info.forge_ref = Some(ForgeBranchRef::new(ForgeRefKind::GithubPr, 123));
+        assert_eq!(compute_column_values(&info, &ctx).pr, "#123");
+
+        info.forge_ref = Some(ForgeBranchRef::new(ForgeRefKind::GitlabMr, 45));
+        assert_eq!(compute_column_values(&info, &ctx).pr, "!45");
+
+        info.forge_ref = None;
+        assert_eq!(compute_column_values(&info, &ctx).pr, "");
+    }
 
     /// Regression: repo list showed absolute paths where `daft list`
     /// relativizes. Display paths prefer the cwd-relative form (same helper

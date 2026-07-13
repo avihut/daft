@@ -23,6 +23,7 @@ impl FieldSet {
     pub const REMOTE_LINES: Self = Self(1 << 8);
     pub const SIZE: Self = Self(1 << 9);
     pub const MTIME: Self = Self(1 << 10);
+    pub const FORGE_REF: Self = Self(1 << 11);
 
     /// Fields whose values can change after a `git fetch`.
     pub const REMOTE_DERIVED: Self = Self(Self::REMOTE_AHEAD_BEHIND.0 | Self::REMOTE_LINES.0);
@@ -161,6 +162,7 @@ mod tests {
             FieldSet::REMOTE_LINES,
             FieldSet::SIZE,
             FieldSet::MTIME,
+            FieldSet::FORGE_REF,
         ] {
             assert!(FieldSet::ALL.contains(member));
         }

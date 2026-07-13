@@ -154,6 +154,8 @@ pub enum ListColumn {
     Changes,
     /// Ahead/behind remote tracking branch.
     Remote,
+    /// PR/MR number this branch tracks (`#123` / `!45`).
+    Pr,
     /// Branch age since creation.
     Age,
     /// Branch owner (from git author email).
@@ -175,6 +177,7 @@ impl ListColumn {
             ListColumn::Base,
             ListColumn::Changes,
             ListColumn::Remote,
+            ListColumn::Pr,
             ListColumn::Age,
             ListColumn::Owner,
             ListColumn::Hash,
@@ -225,10 +228,11 @@ impl ListColumn {
             Self::Base => 5,
             Self::Changes => 6,
             Self::Remote => 7,
-            Self::Age => 8,
-            Self::Owner => 9,
-            Self::Hash => 10,
-            Self::LastCommit => 11,
+            Self::Pr => 8,
+            Self::Age => 9,
+            Self::Owner => 10,
+            Self::Hash => 11,
+            Self::LastCommit => 12,
         }
     }
 
@@ -242,6 +246,7 @@ impl ListColumn {
             Self::Base => "base",
             Self::Remote => "remote",
             Self::Changes => "changes",
+            Self::Pr => "pr",
             Self::Age => "age",
             Self::Owner => "owner",
             Self::Hash => "hash",
@@ -277,6 +282,7 @@ impl FromStr for ListColumn {
             "base" => Ok(Self::Base),
             "remote" => Ok(Self::Remote),
             "changes" => Ok(Self::Changes),
+            "pr" => Ok(Self::Pr),
             "age" => Ok(Self::Age),
             "owner" => Ok(Self::Owner),
             "hash" => Ok(Self::Hash),

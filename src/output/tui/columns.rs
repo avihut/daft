@@ -23,6 +23,9 @@ pub enum Column {
     Remote,
     /// Local changes (staged/unstaged/untracked).
     Changes,
+    /// PR/MR number this branch tracks (`#123` / `!45`). Opt-in via
+    /// `--columns +pr`; not in `ALL_COLUMNS`.
+    Pr,
     /// Branch age.
     Age,
     /// Branch owner (from git author email).
@@ -45,6 +48,7 @@ impl Column {
             Self::Base => "Base",
             Self::Changes => "Changes",
             Self::Remote => "Remote",
+            Self::Pr => "PR",
             Self::Age => "Age",
             Self::Owner => "Owner",
             Self::Hash => "Hash",
@@ -62,6 +66,7 @@ impl Column {
             ListColumn::Base => Column::Base,
             ListColumn::Changes => Column::Changes,
             ListColumn::Remote => Column::Remote,
+            ListColumn::Pr => Column::Pr,
             ListColumn::Age => Column::Age,
             ListColumn::Owner => Column::Owner,
             ListColumn::Hash => Column::Hash,
@@ -82,6 +87,7 @@ impl Column {
             Self::Base => Some(ListColumn::Base),
             Self::Changes => Some(ListColumn::Changes),
             Self::Remote => Some(ListColumn::Remote),
+            Self::Pr => Some(ListColumn::Pr),
             Self::Age => Some(ListColumn::Age),
             Self::Owner => Some(ListColumn::Owner),
             Self::Hash => Some(ListColumn::Hash),
@@ -182,6 +188,7 @@ pub(super) fn column_content_width(
             Column::Base => v.base.len() as u16,
             Column::Changes => v.changes.len() as u16,
             Column::Remote => v.remote.len() as u16,
+            Column::Pr => v.pr.len() as u16,
             Column::Age => v.branch_age.len() as u16,
             Column::Owner => v.owner.len() as u16,
             Column::Hash => 7,

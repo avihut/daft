@@ -314,6 +314,7 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
             ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             ListColumn::Age => FieldSet::BRANCH_AGE,
             ListColumn::Owner => FieldSet::OWNER,
+            ListColumn::Pr => FieldSet::FORGE_REF,
             ListColumn::Hash | ListColumn::LastCommit => FieldSet::LAST_COMMIT,
         };
     }

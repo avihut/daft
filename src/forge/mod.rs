@@ -276,12 +276,24 @@ mod tests {
         }
     }
 
+    /// Restores the process cwd on drop, even if an assertion panics — so a
+    /// failing cwd-dependent test can't leave the cwd pointing at a since-
+    /// deleted tempdir and poison parallel tests (the documented cwd-race flake).
+    struct CwdGuard(Option<std::path::PathBuf>);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.take() {
+                let _ = std::env::set_current_dir(dir);
+            }
+        }
+    }
+
     /// Real-git guard: a fork PR opened from the fork's `main` must not hijack
     /// the user's own local `main`.
     #[test]
     #[serial_test::serial]
     fn preflight_bails_on_conflicting_local_branch() {
-        let original = std::env::current_dir().ok();
+        let _cwd = CwdGuard(std::env::current_dir().ok());
         let tmp = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
             crate::utils::git_command_at(tmp.path())
@@ -313,9 +325,5 @@ mod tests {
 
         // A branch that doesn't exist locally → passes.
         assert!(preflight_fork_collision(&git, &fork_info("brand-new-feature", 51)).is_ok());
-
-        if let Some(dir) = original {
-            let _ = std::env::set_current_dir(dir);
-        }
     }
 }

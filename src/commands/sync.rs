@@ -607,6 +607,7 @@ fn run_tui(
         Stat::Summary, // Force Summary for the seed; line stats stream below.
         false,         // has_size = false: stream the size cluster instead
         false,         // compute_mtime = false: stream the mtime cluster
+        false,         // compute_forge_ref = false: no PR column in sync
         settings.ownership_strategy,
         user_email.as_deref(),
         &settings.remote,

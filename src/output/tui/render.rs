@@ -797,6 +797,19 @@ fn render_cell(
                 }
             }
         }
+        Column::Pr => {
+            if vals.pr.is_empty() {
+                if is_cell_unloaded(FieldSet::FORGE_REF) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::FORGE_REF) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.pr.clone())
+                }
+            } else {
+                Cell::from(vals.pr.clone())
+            }
+        }
         Column::Owner => {
             if vals.owner.is_empty() {
                 if is_cell_unloaded(FieldSet::OWNER) {

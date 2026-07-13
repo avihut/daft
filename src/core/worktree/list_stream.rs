@@ -186,8 +186,8 @@ fn run_worker(
     use crate::core::ownership;
     use crate::core::worktree::list::{
         count_changed_files, count_changed_lines, get_ahead_behind, get_base_line_counts,
-        get_branch_creation_timestamp, get_commit_metadata, get_remote_line_counts,
-        get_upstream_ahead_behind, max_mtime_of_files,
+        get_branch_creation_timestamp, get_commit_metadata, get_forge_branch_ref,
+        get_remote_line_counts, get_upstream_ahead_behind, max_mtime_of_files,
     };
     use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
     use crate::git::GitCommand;
@@ -288,6 +288,14 @@ fn run_worker(
             Some(&ctx.remote_name),
         );
         emit!(P::Owner(owner));
+    }
+
+    // 5b. FORGE_REF (skip detached) — a cheap local `branch.<name>.merge` read.
+    if fields.contains(FieldSet::FORGE_REF)
+        && !target.is_detached
+        && let Some(p) = path
+    {
+        emit!(P::ForgeRef(get_forge_branch_ref(&target.branch_name, p)));
     }
 
     // 6. REMOTE_AHEAD_BEHIND (skip detached) — content-addressed cache by

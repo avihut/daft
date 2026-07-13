@@ -194,6 +194,8 @@ struct TableRow {
     head: String,
     /// Ahead/behind remote tracking branch (e.g. "⇡1 ⇣2").
     remote: String,
+    /// PR/MR number this branch tracks (e.g. "#123" / "!45").
+    pr: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
     /// Branch owner (git author email).
@@ -303,6 +305,7 @@ fn run_blocking(args: Args) -> Result<()> {
         None => SortSpec::default_sort().with_stat(stat),
     };
     let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
+    let has_pr = selected_columns.contains(&ListColumn::Pr);
     let compute_mtime = sort_spec.needs_mtime();
     let git = git.with_gitoxide(settings.use_gitoxide);
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
@@ -333,6 +336,7 @@ fn run_blocking(args: Args) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            has_pr,
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
@@ -381,6 +385,7 @@ fn run_blocking(args: Args) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            has_pr,
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
@@ -456,6 +461,7 @@ struct EmitColumns {
     changes_lines: bool,
     remote: bool,
     remote_lines: bool,
+    pr: bool,
     age: bool,
     owner: bool,
     hash: bool,
@@ -477,6 +483,8 @@ impl EmitColumns {
             changes_lines: has(ListColumn::Changes) && has_lines,
             remote: has(ListColumn::Remote),
             remote_lines: has(ListColumn::Remote) && has_lines,
+            // Opt-in like size/hash (explicit selection only, never in defaults).
+            pr: selected.contains(&ListColumn::Pr),
             age: has(ListColumn::Age),
             owner: has(ListColumn::Owner),
             hash: selected.contains(&ListColumn::Hash),
@@ -528,6 +536,10 @@ impl EmitColumns {
         if self.remote_lines {
             h.push("remote_lines_inserted".into());
             h.push("remote_lines_deleted".into());
+        }
+        if self.pr {
+            h.push("pr_kind".into());
+            h.push("pr_number".into());
         }
         if self.age {
             h.push("branch_age".into());
@@ -673,6 +685,23 @@ fn build_emit_table(
                     .map(|v| Cell::Int(v as i64))
                     .unwrap_or(Cell::null()),
             );
+        }
+        if cols.pr {
+            use crate::core::worktree::forge_ref::ForgeRefKind;
+            match info.forge_ref {
+                Some(r) => {
+                    let kind = match r.kind {
+                        ForgeRefKind::GithubPr => "pr",
+                        ForgeRefKind::GitlabMr => "mr",
+                    };
+                    row.push(Cell::str(kind));
+                    row.push(Cell::Int(r.number as i64));
+                }
+                None => {
+                    row.push(Cell::null());
+                    row.push(Cell::null());
+                }
+            }
         }
         if cols.age {
             let branch_age = info
@@ -992,6 +1021,11 @@ fn print_table(
                     } else {
                         styles::dim(&strip_ansi(&remote))
                     },
+                    pr: if vals.pr.is_empty() {
+                        vals.pr.clone()
+                    } else {
+                        styles::dim(&vals.pr)
+                    },
                     branch_age: if branch_age.is_empty() {
                         branch_age
                     } else {
@@ -1022,6 +1056,7 @@ fn print_table(
                     base,
                     head,
                     remote,
+                    pr: vals.pr.clone(),
                     branch_age,
                     owner: vals.owner.clone(),
                     hash: vals.hash.clone(),
@@ -1045,6 +1080,7 @@ fn print_table(
                 ListColumn::Base => "Base",
                 ListColumn::Changes => "Changes",
                 ListColumn::Remote => "Remote",
+                ListColumn::Pr => "PR",
                 ListColumn::Age => "Age",
                 ListColumn::Owner => "Owner",
                 ListColumn::Hash => "Hash",
@@ -1107,6 +1143,7 @@ fn print_table(
                 ListColumn::Base => row.base.as_str(),
                 ListColumn::Changes => row.head.as_str(),
                 ListColumn::Remote => row.remote.as_str(),
+                ListColumn::Pr => row.pr.as_str(),
                 ListColumn::Age => row.branch_age.as_str(),
                 ListColumn::Owner => row.owner.as_str(),
                 ListColumn::Hash => row.hash.as_str(),
@@ -1347,6 +1384,7 @@ mod tests {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         };
         let infos = [info("main", true), info("feat", false)];
         let rendered = "  Branch  Path\n  main    /tmp/proj\n  feat    /tmp/proj";
@@ -1405,6 +1443,7 @@ mod tests {
             size_bytes: Some(1024),
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         };
         let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];
         let table = build_emit_table(

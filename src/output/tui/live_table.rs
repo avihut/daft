@@ -287,6 +287,7 @@ fn patch_field_claim(patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch)
         P::RemoteLines(_) => FieldSet::REMOTE_LINES,
         P::Size(_) => FieldSet::SIZE,
         P::Mtime(_) => FieldSet::MTIME,
+        P::ForgeRef(_) => FieldSet::FORGE_REF,
     }
 }
 

@@ -531,6 +531,7 @@ pub enum WorktreeInfoPatch {
     RemoteLines(Option<(usize, usize)>),
     Size(Option<u64>),
     Mtime(Option<i64>),
+    ForgeRef(Option<super::forge_ref::ForgeBranchRef>),
 }
 
 /// Why a patch was emitted. `LiveTable` uses this to suppress stale
