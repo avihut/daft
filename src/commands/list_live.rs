@@ -154,6 +154,33 @@ pub fn run_live(args: Args) -> Result<()> {
         return Ok(());
     }
 
+    // Size cache: seed each worktree row with its last-known size so the Size
+    // column shows a value instantly (rendered dim/stale) while the bounded
+    // walk refreshes it in the background. Keyed by branch slug in the repo's
+    // coordinator store; only worktree rows (those with a path) are seeded,
+    // since only they are walked and can supersede the stale value. Held for
+    // the post-run persist. Best-effort — a cold/missing cache just yields
+    // today's shimmer.
+    let size_repo_hash: Option<String> = if fields.contains(FieldSet::SIZE) {
+        let hash =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir).ok();
+        if let Some(ref h) = hash {
+            let cached = crate::commands::size_cache::read_worktree_sizes(h);
+            if !cached.is_empty() {
+                for info in &mut worktree_infos {
+                    if info.path.is_some()
+                        && let Some(&bytes) = cached.get(&info.name)
+                    {
+                        info.size_bytes = Some(bytes);
+                    }
+                }
+            }
+        }
+        hash
+    } else {
+        None
+    };
+
     // Build TUI state — pin_default_branch=false, partition_by_owner=false
     // for `daft list` (per spec).
     let tui_columns: Vec<Column> = selected_columns
@@ -236,6 +263,32 @@ pub fn run_live(args: Args) -> Result<()> {
 
     let renderer = TuiRenderer::new(state, rx).with_cancel_signal(cancel);
     let final_state = renderer.run()?;
+
+    // Persist freshly-walked sizes so the next run seeds from them. Only rows
+    // that actually received a SIZE patch this run are written — a
+    // stale-seeded value that never refreshed (e.g. after Ctrl-C) is left
+    // untouched so its `measured_at` stays honest. The store helper applies
+    // the stat-guard (a vanished path is skipped, so a removed worktree can't
+    // clobber a good cached size with the walk's `Some(0)`).
+    if let Some(repo_hash) = size_repo_hash {
+        let fresh = final_state
+            .live
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(idx, row)| {
+                final_state.live.received_patches[*idx].contains(FieldSet::SIZE)
+                    && row.info.size_bytes.is_some()
+            })
+            .filter_map(|(_, row)| {
+                Some((
+                    row.info.name.clone(),
+                    row.info.path.clone()?,
+                    row.info.size_bytes?,
+                ))
+            });
+        crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
+    }
 
     // On normal completion, workers have already finished and `join()` returns
     // immediately. On cancellation, workers may still be mid-`git` invocation
