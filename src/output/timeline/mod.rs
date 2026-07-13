@@ -74,6 +74,10 @@ struct Inner {
     header: String,
     verbose: bool,
     use_color: bool,
+    /// Ordered receipts (`daft exec`): out-of-order completion still leaves a
+    /// plan-ordered scrollback receipt. Set via
+    /// [`Timeline::set_ordered_receipts`] before the region materializes.
+    ordered: bool,
     core: Option<TimelineCore>,
     /// Lines held back until the rail closes — a failed hook job's captured
     /// output belongs after the footer (the rail's errors-after pattern),
@@ -303,6 +307,7 @@ impl Timeline {
                     header: header.into(),
                     verbose,
                     use_color,
+                    ordered: false,
                     core: None,
                     deferred_after_footer: Vec::new(),
                     #[cfg(test)]
@@ -331,14 +336,25 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
+        let ordered = inner.ordered;
         inner.core = Some(TimelineCore::open_planning(
             mp,
             header,
             planning_label,
             inner.verbose,
             inner.use_color,
+            ordered,
             self.started,
         ));
+    }
+
+    /// Opt into plan-ordered receipts: rows may resolve out of completion
+    /// order (parallel `daft exec` workers), but the scrollback receipt stays
+    /// in plan order. Must be called before the region materializes
+    /// (`open_planning` or `commit_plan`); a no-op afterward. Lifecycle
+    /// commands never call this — their eager persistence is byte-identical.
+    pub fn set_ordered_receipts(&self, ordered: bool) {
+        self.handle.lock().ordered = ordered;
     }
 
     /// Update the planning face's label in place ("Cloning repository" →
@@ -378,12 +394,14 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
+        let ordered = inner.ordered;
         inner.core = Some(TimelineCore::new(
             mp,
             header,
             plan,
             inner.verbose,
             inner.use_color,
+            ordered,
             self.started,
         ));
     }
@@ -975,6 +993,115 @@ mod tests {
              \u{2298}  master  cancelled\n\
              \u{2502}\n\
              \u{2514}  Cancelled after 0.1s"
+        );
+    }
+
+    fn exec_key(scope: &str) -> StepKey {
+        StepKey::scoped(StageId::ExecCommand, scope)
+    }
+
+    fn exec_row(scope: &str) -> Row {
+        Row::Step(StepSpec::new(exec_key(scope)).with_label(scope))
+    }
+
+    #[test]
+    fn ordered_receipts_persist_in_plan_order_despite_out_of_order_completion() {
+        // The exec case: workers finish in completion order (c, a, b) but the
+        // scrollback receipt must stay in plan order (a, b, c). Nothing
+        // persists until the prefix is resolved — c waits behind a and b.
+        let (mut tl, term) = captured("Running mise clean in 3 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            exec_row("a"),
+            exec_row("b"),
+            exec_row("c"),
+        ]));
+        for s in ["c", "a", "b"] {
+            tl.on_stage(&exec_key(s), StageEvent::Started);
+            tl.on_stage(&exec_key(s), StageEvent::Completed { annotation: None });
+        }
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 3 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{2713}  b\n\
+             \u{2713}  c\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn ordered_grouped_receipts_stay_in_plan_order() {
+        // Pipelines (m>1): a ├─ group per worktree. Worktree B's rows resolve
+        // first, but the receipt keeps A's group ahead of B's.
+        let (mut tl, term) = captured("Running 2 commands in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Group {
+                label: "wtA".into(),
+            },
+            Row::Step(StepSpec::new(exec_key("wtA#0")).with_label("mise clean")),
+            Row::Step(StepSpec::new(exec_key("wtA#1")).with_label("mise dev")),
+            Row::Group {
+                label: "wtB".into(),
+            },
+            Row::Step(StepSpec::new(exec_key("wtB#0")).with_label("mise clean")),
+            Row::Step(StepSpec::new(exec_key("wtB#1")).with_label("mise dev")),
+        ]));
+        for s in ["wtB#0", "wtB#1", "wtA#0", "wtA#1"] {
+            tl.on_stage(&exec_key(s), StageEvent::Started);
+            tl.on_stage(&exec_key(s), StageEvent::Completed { annotation: None });
+        }
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running 2 commands in 2 worktrees\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} wtA\n\
+             \u{2502}  \u{2713}  mise clean\n\
+             \u{2502}  \u{2713}  mise dev\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} wtB\n\
+             \u{2502}  \u{2713}  mise clean\n\
+             \u{2502}  \u{2713}  mise dev\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn ordered_fail_fast_persists_recorded_prefix_then_not_run_suffix() {
+        // Sequential fail-fast: the first worker fails, the rest never launch.
+        // The failed row shows `✗`, the never-launched rows persist as dim
+        // `(not run)` under abort — all in plan order.
+        let (mut tl, term) = captured("Running cargo test in 3 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            exec_row("a"),
+            exec_row("b"),
+            exec_row("c"),
+        ]));
+        tl.on_stage(&exec_key("a"), StageEvent::Started);
+        tl.on_stage(
+            &exec_key("a"),
+            StageEvent::Failed {
+                detail: "exit 101".into(),
+            },
+        );
+        // b and c never start; abort persists them as (not run).
+        tl.abort("Failed after 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 3 worktrees\n\
+             \u{2502}\n\
+             \u{2717}  a  exit 101\n\
+             \u{25cb}  b  (not run)\n\
+             \u{25cb}  c  (not run)\n\
+             \u{2502}\n\
+             \u{2514}  Failed after 0.1s"
         );
     }
 
