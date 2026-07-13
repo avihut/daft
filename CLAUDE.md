@@ -202,10 +202,12 @@ commands must render the executable the way the user invoked it —
 …). Use `daft::cli_label()` / `daft::daft_cmd(...)` (src/lib.rs); never hardcode
 `git daft` into a runtime string. Static text keeps the canonical `git daft`
 form: clap `about`/`long_about` (man pages are pre-generated from them) and
-`docs/` pages; SKILL.md uses the direct `daft` form (agents invoke the binary
-directly). Under `cfg!(test)` `cli_label()` always returns the canonical
-`git daft` — unit tests share one process, so argv-derived labels would flip
-assertions order-dependently; test the classification itself through
+`docs/` pages; SKILL.md teaches only the short daft verbs (`daft go`,
+`daft start`, …) — agents invoke the binary directly and must never emit the
+`git worktree-*` / `daft worktree-*` / shortcut spellings, which the skill keeps
+solely in a recognition table. Under `cfg!(test)` `cli_label()` always returns
+the canonical `git daft` — unit tests share one process, so argv-derived labels
+would flip assertions order-dependently; test the classification itself through
 `label_for_argv0`.
 
 **Shell integration**: `daft shell-init` generates shell wrappers that create a
