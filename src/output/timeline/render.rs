@@ -243,7 +243,7 @@ pub(super) fn final_row(
         RowFace::NotReached => {
             let body = row_body(
                 label,
-                Some("(not run)"),
+                Some(super::NOT_RUN),
                 label_width,
                 PLAIN_INKS,
                 None,

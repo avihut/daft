@@ -28,6 +28,12 @@ pub use bridge::{error_line, warning_line};
 pub use rail_hook::RailHookRenderer;
 pub use region::HookEmbed;
 
+/// The annotation a row that never ran wears: the `○ … (not run)` receipt. Two
+/// paths produce it and must read identically — the region's `NotReached`
+/// teardown face ([`render::final_row`]) and `daft exec`'s presenter resolving
+/// a fail-fast / never-dispatched command as an expected skip.
+pub(crate) const NOT_RUN: &str = "(not run)";
+
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};
 use region::{FinalFace, RegionSetup, Resolution, TimelineCore, UnresolvedPolicy};
 use std::io::IsTerminal;

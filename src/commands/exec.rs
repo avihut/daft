@@ -274,15 +274,15 @@ pub fn run() -> Result<()> {
     // itself so the second ^C escalates again.
     let cancel = std::sync::Arc::new(core::CancelFlag::new());
 
-    // The rail's output threads and the `-v` fold-in share the hook output
-    // knobs. `--all-repos` runs from outside any repo, so tolerate a missing
-    // config with the defaults.
-    let hook_output = crate::core::settings::load_hooks_config()
-        .map(|c| c.output)
-        .unwrap_or_default()
-        .with_cli_verbose(args.verbose);
-
     let report = if will_rail {
+        // The rail's output threads and the `-v` fold-in share the hook output
+        // knobs. `--all-repos` runs from outside any repo, so tolerate a
+        // missing config with the defaults. Only the rail reads it — the plain
+        // path must not pay this config read.
+        let hook_output = crate::core::settings::load_hooks_config()
+            .map(|c| c.output)
+            .unwrap_or_default()
+            .with_cli_verbose(args.verbose);
         run_rail(
             &targets,
             &orphans,
@@ -335,14 +335,20 @@ fn arm_exec_interrupt(cancel: std::sync::Arc<crate::core::worktree::exec::Cancel
     });
 }
 
-/// A command label for a plan row / header, capped so a long command line
+/// A command label for a plan row / header: flattened to a single line (a
+/// multi-line `-x` command must not inject a newline into an indicatif bar, or
+/// it desyncs the region's line accounting) and capped so a long command line
 /// can't blow out the rail's width.
 fn truncate_cmd(s: &str) -> String {
     const MAX: usize = 64;
-    if s.chars().count() <= MAX {
-        s.to_string()
+    let flat: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if flat.chars().count() <= MAX {
+        flat
     } else {
-        let head: String = s.chars().take(MAX - 1).collect();
+        let head: String = flat.chars().take(MAX - 1).collect();
         format!("{head}\u{2026}")
     }
 }
@@ -792,6 +798,22 @@ mod tests {
     fn accepts_minimal_valid_x_form() {
         let args = parse(&["--all", "-x", "echo"]).unwrap();
         validate(&args).unwrap();
+    }
+
+    #[test]
+    fn truncate_cmd_flattens_newlines_and_caps_length() {
+        // A multi-line command must collapse to one line (no `\n` reaching a
+        // single-line rail bar) and cap at 64 chars with an ellipsis.
+        assert_eq!(super::truncate_cmd("echo a"), "echo a");
+        assert_eq!(
+            super::truncate_cmd("for f in *\ndo echo $f\ndone"),
+            "for f in * do echo $f done"
+        );
+        assert!(!super::truncate_cmd("a\nb").contains('\n'));
+        let long = "x".repeat(100);
+        let out = super::truncate_cmd(&long);
+        assert_eq!(out.chars().count(), 64);
+        assert!(out.ends_with('\u{2026}'));
     }
 
     #[test]
