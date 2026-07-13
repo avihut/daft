@@ -204,6 +204,76 @@ impl TimelineHandle {
     pub fn defer_after_footer(&self, lines: Vec<String>) {
         self.lock().deferred_after_footer.extend(lines);
     }
+
+    /// Route a stage event onto the region. Lives on the handle (not just
+    /// [`Timeline`]) so a `JobPresenter` driving from worker threads — `daft
+    /// exec`'s rail rows — can reach it through the cloneable handle without a
+    /// `&mut Timeline`. No-op without a live region.
+    pub fn on_stage(&self, key: &StepKey, event: StageEvent) {
+        let mut inner = self.lock();
+        let use_color = inner.use_color;
+        let Some(core) = inner.core.as_mut() else {
+            return;
+        };
+        // A shared-file outcome the plan never saw (clone without a probed
+        // config, or a target branch declaring more than the source did):
+        // persist its legacy line above the live bars — tear-free, and the
+        // fact is not lost — instead of dropping the unknown key.
+        if key.id == crate::core::stage::StageId::SharedFile
+            && core.resolve_key(key.id, key.scope.as_deref()).is_none()
+        {
+            if let Some(line) =
+                crate::core::shared::legacy_shared_stage_line(key, &event, use_color)
+            {
+                core.println_above(&line);
+            }
+            return;
+        }
+        match event {
+            StageEvent::Started => core.activate(key),
+            StageEvent::Completed { annotation } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Done,
+                    annotation,
+                },
+            ),
+            StageEvent::Failed { detail } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Failed,
+                    annotation: Some(detail),
+                },
+            ),
+            StageEvent::SkippedExpected { reason } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::SkippedExpected,
+                    annotation: Some(reason),
+                },
+            ),
+            StageEvent::SkippedAttention { reason } => {
+                // Shared-file and fetch reasons are self-contained phrases
+                // (missing, conflict, "failed — …") — the generic prefix
+                // would stutter.
+                let annotation = match key.id {
+                    crate::core::stage::StageId::SharedFile
+                    | crate::core::stage::StageId::Fetch
+                    | crate::core::stage::StageId::Tracking => reason,
+                    _ => format!("skipped \u{2014} {reason}"),
+                };
+                core.resolve(
+                    key,
+                    Resolution::Final {
+                        face: FinalFace::SkippedAttention,
+                        annotation: Some(annotation),
+                    },
+                )
+            }
+            StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
+            StageEvent::Note(text) => core.set_annotation(key, text),
+        }
+    }
 }
 
 /// The timeline a command owns for one invocation.
@@ -328,71 +398,11 @@ impl Timeline {
         }
     }
 
-    /// Route a stage event onto the region.
+    /// Route a stage event onto the region. Delegates to
+    /// [`TimelineHandle::on_stage`] so the command thread and a rail presenter
+    /// running on worker threads speak one routing path.
     pub fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
-        let mut inner = self.handle.lock();
-        let use_color = inner.use_color;
-        let Some(core) = inner.core.as_mut() else {
-            return;
-        };
-        // A shared-file outcome the plan never saw (clone without a probed
-        // config, or a target branch declaring more than the source did):
-        // persist its legacy line above the live bars — tear-free, and the
-        // fact is not lost — instead of dropping the unknown key.
-        if key.id == crate::core::stage::StageId::SharedFile
-            && core.resolve_key(key.id, key.scope.as_deref()).is_none()
-        {
-            if let Some(line) =
-                crate::core::shared::legacy_shared_stage_line(key, &event, use_color)
-            {
-                core.println_above(&line);
-            }
-            return;
-        }
-        match event {
-            StageEvent::Started => core.activate(key),
-            StageEvent::Completed { annotation } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::Done,
-                    annotation,
-                },
-            ),
-            StageEvent::Failed { detail } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::Failed,
-                    annotation: Some(detail),
-                },
-            ),
-            StageEvent::SkippedExpected { reason } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::SkippedExpected,
-                    annotation: Some(reason),
-                },
-            ),
-            StageEvent::SkippedAttention { reason } => {
-                // Shared-file and fetch reasons are self-contained phrases
-                // (missing, conflict, "failed — …") — the generic prefix
-                // would stutter.
-                let annotation = match key.id {
-                    crate::core::stage::StageId::SharedFile
-                    | crate::core::stage::StageId::Fetch
-                    | crate::core::stage::StageId::Tracking => reason,
-                    _ => format!("skipped \u{2014} {reason}"),
-                };
-                core.resolve(
-                    key,
-                    Resolution::Final {
-                        face: FinalFace::SkippedAttention,
-                        annotation: Some(annotation),
-                    },
-                )
-            }
-            StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
-            StageEvent::Note(text) => core.set_annotation(key, text),
-        }
+        self.handle.on_stage(key, event);
     }
 
     /// The hook block for an embedded step finished rendering; reconnect

@@ -20,10 +20,37 @@ use std::thread;
 
 use crate::output::term_guard::EchoCtlGuard;
 
-/// Run the pipeline across all targets, rendering a live per-worktree
-/// progress UI (spinner + rolling tail, finalized to a compact one-line row
-/// per worktree). Returns the aggregated [`ExecReport`] so the command layer
-/// can still render a scrollback-friendly failure dump.
+/// How the presenter's per-target row is named — the seam the rail renderer
+/// needs the plain path does not. The plain list renderer keys rows by the
+/// bare branch name (its output is pinned by integration tests); the rail
+/// keys by the full `repo:branch` label so fleet runs (`--related`,
+/// `--all-repos`) whose targets share a branch name don't collapse to one row.
+#[derive(Clone, Copy)]
+pub(crate) enum NameStyle {
+    /// `name_prefix = ""` → `run_pipeline_streaming` falls back to the branch
+    /// name (today's plain path).
+    Branch,
+    /// `name_prefix = target.label()` → distinct rows per cataloged target.
+    // Constructed by the interactive rail path once exec is wired onto the
+    // timeline; until then only the plain `Branch` path calls `run_fleet`.
+    #[allow(dead_code)]
+    Label,
+}
+
+impl NameStyle {
+    fn prefix(self, target: &ResolvedTarget) -> &str {
+        match self {
+            NameStyle::Branch => "",
+            NameStyle::Label => target.label(),
+        }
+    }
+}
+
+/// Run the pipeline across all targets, rendering the plain compact-row list
+/// UI (spinner + rolling tail, finalized to a one-line row per worktree).
+/// Returns the aggregated [`ExecReport`] so the command layer can still render
+/// a scrollback-friendly failure dump. The interactive rail path drives
+/// [`run_fleet`] directly with its own presenter.
 pub fn run_with_progress(
     targets: &[ResolvedTarget],
     pipeline: &[CommandSpec],
@@ -62,25 +89,75 @@ pub fn run_with_progress(
     presenter_concrete.set_name_column_width(max_name);
     let presenter: Arc<dyn JobPresenter> = presenter_concrete;
 
-    // Deliberately skip presenter.on_phase_start — it prints the hook
-    // header. The list-mode header above replaces it.
+    // Deliberately skip presenter.on_phase_start / on_phase_complete — they
+    // print the hook header / summary block. The list-mode header above
+    // replaces the former; compact per-row finalization + the caller's
+    // failed-output dump cover the latter.
+    let outcomes = run_fleet(
+        targets,
+        pipeline,
+        mode,
+        &presenter,
+        cancel,
+        alias_cache,
+        NameStyle::Branch,
+    )?;
 
+    Ok(ExecReport {
+        outcomes,
+        orphan_branches_skipped: Vec::new(),
+    })
+}
+
+/// The scheduling core shared by the plain list renderer and the rail
+/// renderer: dispatch the pipeline across every target in `mode`, then emit
+/// skip rows for any target that never launched (pre-cancel) so each gets a
+/// visible finalization. The presenter and the surrounding UI (header,
+/// name-column width, echo guard, cancellation handler) belong to the caller.
+/// Outcomes come back in target order.
+pub(crate) fn run_fleet(
+    targets: &[ResolvedTarget],
+    pipeline: &[CommandSpec],
+    mode: ExecMode,
+    presenter: &Arc<dyn JobPresenter>,
+    cancel: &CancelFlag,
+    alias_cache: Option<&AliasCache>,
+    name_style: NameStyle,
+) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     let outcomes = match mode {
-        ExecMode::Parallel => run_parallel(targets, pipeline, &presenter, cancel, alias_cache)?,
-        ExecMode::Sequential => {
-            run_sequential(targets, pipeline, false, &presenter, cancel, alias_cache)?
-        }
-        ExecMode::KeepGoing => {
-            run_sequential(targets, pipeline, true, &presenter, cancel, alias_cache)?
-        }
+        ExecMode::Parallel => run_parallel(
+            targets,
+            pipeline,
+            presenter,
+            cancel,
+            alias_cache,
+            name_style,
+        )?,
+        ExecMode::Sequential => run_sequential(
+            targets,
+            pipeline,
+            false,
+            presenter,
+            cancel,
+            alias_cache,
+            name_style,
+        )?,
+        ExecMode::KeepGoing => run_sequential(
+            targets,
+            pipeline,
+            true,
+            presenter,
+            cancel,
+            alias_cache,
+            name_style,
+        )?,
     };
 
-    // Deliberately skip presenter.on_phase_complete — it prints the hook
-    // summary block. Compact per-row finalization + the caller's failed-
-    // output dump already cover the user's needs.
-
     // Emit skip rows for targets that never launched (e.g. cancelled before
-    // dispatch). This ensures every target gets a visible finalization row.
+    // dispatch). The undispatched row is keyed by `target.label()` (the plain
+    // path has always named these by label — a minor pre-rail divergence from
+    // its dispatched rows' bare branch names), which is also exactly what the
+    // rail's plan rows use.
     let dispatched: std::collections::HashSet<_> = outcomes
         .iter()
         .map(|o| o.target.worktree_path.clone())
@@ -100,10 +177,7 @@ pub fn run_with_progress(
         }
     }
 
-    Ok(ExecReport {
-        outcomes,
-        orphan_branches_skipped: Vec::new(),
-    })
+    Ok(outcomes)
 }
 
 fn run_parallel(
@@ -112,6 +186,7 @@ fn run_parallel(
     presenter: &Arc<dyn JobPresenter>,
     cancel: &CancelFlag,
     alias_cache: Option<&AliasCache>,
+    name_style: NameStyle,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     // `thread::scope` lets worker threads borrow `cancel`, `pipeline`, and
     // `presenter` for their entire lifetime without `'static`, which keeps
@@ -122,7 +197,14 @@ fn run_parallel(
             .map(|t| {
                 let pres = Arc::clone(presenter);
                 scope.spawn(move || {
-                    run_pipeline_streaming(t, pipeline, "", &pres, cancel, alias_cache)
+                    run_pipeline_streaming(
+                        t,
+                        pipeline,
+                        name_style.prefix(t),
+                        &pres,
+                        cancel,
+                        alias_cache,
+                    )
                 })
             })
             .collect();
@@ -153,13 +235,21 @@ fn run_sequential(
     presenter: &Arc<dyn JobPresenter>,
     cancel: &CancelFlag,
     alias_cache: Option<&AliasCache>,
+    name_style: NameStyle,
 ) -> anyhow::Result<Vec<super::WorktreeOutcome>> {
     let mut outcomes = Vec::with_capacity(targets.len());
     for t in targets {
         if cancel.is_cancelled() {
             break;
         }
-        let outcome = run_pipeline_streaming(t, pipeline, "", presenter, cancel, alias_cache)?;
+        let outcome = run_pipeline_streaming(
+            t,
+            pipeline,
+            name_style.prefix(t),
+            presenter,
+            cancel,
+            alias_cache,
+        )?;
         let succeeded = outcome.succeeded();
         outcomes.push(outcome);
         if !succeeded && !keep_going {
@@ -172,7 +262,36 @@ fn run_sequential(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::presenter::NullPresenter;
     use tempfile::TempDir;
+
+    #[test]
+    fn run_fleet_label_style_runs_every_target() {
+        // NameStyle::Label names presenter rows by target.label() (so fleet
+        // runs with duplicate branch names don't collapse to one row); the
+        // scheduling + outcome contract is identical to the branch style.
+        // Row-identity itself is asserted in the rail presenter tests.
+        let dir = TempDir::new().unwrap();
+        let targets = vec![ResolvedTarget {
+            worktree_path: dir.path().to_path_buf(),
+            branch_name: "master".into(),
+            display: Some("repo:master".into()),
+        }];
+        let pipeline = vec![CommandSpec::Argv(vec!["true".into()])];
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let outcomes = run_fleet(
+            &targets,
+            &pipeline,
+            ExecMode::Parallel,
+            &presenter,
+            &CancelFlag::new(),
+            None,
+            NameStyle::Label,
+        )
+        .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].succeeded());
+    }
 
     #[test]
     fn run_with_progress_single_target_success() {

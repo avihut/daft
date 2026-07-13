@@ -613,7 +613,7 @@ pub fn run_pipeline_streaming(
         if exit_code == 0 {
             presenter.on_job_success(&job_name, cmd_elapsed);
         } else {
-            presenter.on_job_failure(&job_name, cmd_elapsed);
+            presenter.on_job_failure_with_exit(&job_name, cmd_elapsed, status.code());
             emit_skips(idx + 1);
             break;
         }
