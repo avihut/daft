@@ -1,0 +1,54 @@
+name: Repo link preserves daft.yml comments
+description:
+  link/unlink edit only the relations block — the commented starter daft.yml
+  written by repo install survives an add and a full removal
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Install the commented starter daft.yml
+    run: daft repo install 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+
+  - name: Link a URL — comments stay, the relation is appended
+    run: daft repo link git@github.com:acme/api-client.git --name client 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Linked: client"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "url: git@github.com:acme/api-client.git"
+
+  - name: Unlink the last edge — the relations block goes, comments remain
+    run: daft repo unlink client 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Unlinked: client"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "# daft.yml — per-repo daft configuration."
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "relations:"
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "api-client"

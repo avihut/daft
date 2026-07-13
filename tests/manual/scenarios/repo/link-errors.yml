@@ -1,0 +1,37 @@
+name: Repo link error cases
+description:
+  a bare name that isn't a catalog repo, path, or URL is a hard error with
+  suggestions; linking a repo to itself is refused
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: A bare unknown name errors with a did-you-mean suggestion
+    run: daft repo link test-rep 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no repo 'test-rep'"
+        - "did you mean: test-repo"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+
+  - name: Linking the current repo to itself is refused
+    run: daft repo link test-repo 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "can't be linked to itself"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
