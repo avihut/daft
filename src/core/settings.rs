@@ -243,14 +243,18 @@ impl MemoryReserve {
 
 /// Parse `daft.sync.pushTimeout`: `off`/`0` disables (outer `Some(None)`);
 /// otherwise a positive duration with an optional case-insensitive
-/// `s`/`m`/`h` suffix (bare numbers are seconds). Outer `None` = unparseable
-/// (caller warns and keeps the default).
+/// `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer `None` =
+/// unparseable (caller warns and keeps the default) — including an
+/// overflowing product, which `checked_mul` rejects rather than wrapping to a
+/// nonsensical budget (mirrors `MemoryReserve::parse` above).
 pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
     let value = value.trim().to_ascii_lowercase();
     if value == "off" || value == "0" {
         return Some(None);
     }
-    let (digits, unit_secs) = if let Some(d) = value.strip_suffix('h') {
+    let (digits, unit_secs) = if let Some(d) = value.strip_suffix('d') {
+        (d, 86_400)
+    } else if let Some(d) = value.strip_suffix('h') {
         (d, 3_600)
     } else if let Some(d) = value.strip_suffix('m') {
         (d, 60)
@@ -260,7 +264,8 @@ pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
         (value.as_str(), 1)
     };
     let n: u64 = digits.trim().parse().ok()?;
-    (n > 0).then(|| Some(std::time::Duration::from_secs(n * unit_secs)))
+    let secs = n.checked_mul(unit_secs)?;
+    (secs > 0).then(|| Some(std::time::Duration::from_secs(secs)))
 }
 
 /// Default values for settings.
@@ -1692,6 +1697,16 @@ mod tests {
         assert_eq!(parse_push_timeout("forever"), None);
         assert_eq!(parse_push_timeout("-5m"), None);
         assert_eq!(parse_push_timeout(""), None);
+        // Day suffix (consistent with clean_policy's duration parser).
+        assert_eq!(
+            parse_push_timeout("2d"),
+            Some(Some(Duration::from_secs(172_800)))
+        );
+        // An overflowing product (n × unit_secs > u64::MAX) is rejected (outer
+        // None → default kept), not wrapped to a nonsensical budget nor a
+        // debug-build panic. 6e15 h × 3600 s/h overflows u64.
+        assert_eq!(parse_push_timeout("6000000000000000h"), None);
+        assert_eq!(parse_push_timeout("999999999999999999d"), None);
     }
 
     #[test]

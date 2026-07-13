@@ -329,22 +329,35 @@ impl TuiState {
                     self.governor.throttled_pushes += 1;
                 }
                 if let Some(row) = self.find_row_mut(branch_name) {
-                    // Save the prior terminal status (normally the branch's
-                    // update/rebase outcome) exactly like TaskStarted does —
-                    // by the time the admitted task starts, `row.status` is
-                    // Throttled, so TaskStarted's own save can't.
-                    if matches!(row.status, WorktreeStatus::Done(_)) {
-                        row.prev_terminal_status = Some(row.status.clone());
-                    }
-                    row.status = WorktreeStatus::Throttled(label.into());
-                    // A freeze pauses mid-run work; only queue-waits count
-                    // toward the throttle summary clock.
-                    if matches!(
-                        reason,
-                        ThrottleReason::Deferred(_) | ThrottleReason::Evicted { .. }
-                    ) && row.throttled_since.is_none()
-                    {
-                        row.throttled_since = Some(std::time::Instant::now());
+                    // A freeze only makes sense for a push that is actively
+                    // running: a `Frozen` event that races past the push's own
+                    // `TaskCompleted` (the governor sampler thread and the
+                    // worker are independent mpsc producers, so std::sync::mpsc
+                    // gives no cross-producer ordering) must not resurrect a
+                    // finished `Done` row into a permanent "held: frozen".
+                    // Deferred/Evicted throttles legitimately follow the
+                    // update/rebase outcome (`Done`) while the push waits to be
+                    // admitted, so only the freeze case is gated.
+                    let stale_freeze = matches!(reason, ThrottleReason::Frozen)
+                        && !matches!(row.status, WorktreeStatus::Active(_));
+                    if !stale_freeze {
+                        // Save the prior terminal status (normally the branch's
+                        // update/rebase outcome) exactly like TaskStarted does —
+                        // by the time the admitted task starts, `row.status` is
+                        // Throttled, so TaskStarted's own save can't.
+                        if matches!(row.status, WorktreeStatus::Done(_)) {
+                            row.prev_terminal_status = Some(row.status.clone());
+                        }
+                        row.status = WorktreeStatus::Throttled(label.into());
+                        // A freeze pauses mid-run work; only queue-waits count
+                        // toward the throttle summary clock.
+                        if matches!(
+                            reason,
+                            ThrottleReason::Deferred(_) | ThrottleReason::Evicted { .. }
+                        ) && row.throttled_since.is_none()
+                        {
+                            row.throttled_since = Some(std::time::Instant::now());
+                        }
                     }
                 }
             }
@@ -518,9 +531,15 @@ impl TuiState {
             OperationPhase::Setup => "setting up",
             OperationPhase::RemoveRepo => "removing",
         };
-        let any_active = self.live.rows.iter().any(
-            |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
-        );
+        let any_active = self.live.rows.iter().any(|w| {
+            matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label)
+                // A governor-held push (Throttled) is still in the Push phase —
+                // it is queued or frozen, about to run, not done — so it must
+                // keep the phase in progress. Throttled only ever labels pushes,
+                // so this can only extend the Push phase, never the others.
+                || (matches!(phase, OperationPhase::Push)
+                    && matches!(&w.status, WorktreeStatus::Throttled(_)))
+        });
         if !any_active
             && let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase)
             && ps.status == PhaseStatus::Active
@@ -737,6 +756,46 @@ mod tests {
             state.find_row_mut("feat/a").unwrap().status,
             WorktreeStatus::Done(FinalStatus::Updated)
         );
+    }
+
+    #[test]
+    fn freeze_applies_to_active_push_but_never_resurrects_a_finished_row() {
+        let mut state = make_test_state();
+        // A freeze DOES apply to an actively-pushing unit.
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Frozen,
+        });
+        assert!(matches!(
+            &state.find_row_mut("feat/a").unwrap().status,
+            WorktreeStatus::Throttled(label) if label == "held: frozen"
+        ));
+        // Thaw back to pushing, then the push completes.
+        state.apply_event(&DagEvent::TaskResumed {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Pushed,
+        });
+        let done = state.find_row_mut("feat/a").unwrap().status.clone();
+        assert!(matches!(done, WorktreeStatus::Done(_)));
+        // A late (mpsc-reordered) freeze for the already-finished push must NOT
+        // flip the row back into a permanent "held: frozen".
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Frozen,
+        });
+        assert_eq!(state.find_row_mut("feat/a").unwrap().status, done);
     }
 
     /// Build a TuiState with a caller-specified phase list. Thin wrapper
