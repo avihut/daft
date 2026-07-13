@@ -270,6 +270,28 @@ impl GitCommand {
         is_executable_file(&hook).then_some(hook)
     }
 
+    /// One `git push` for many branches (#678 batched strategy): the
+    /// pre-push hook fires once with every ref on stdin. Callers attribute
+    /// per-branch outcomes from the porcelain report on stdout.
+    pub(crate) fn push_branches(
+        &self,
+        remote: &str,
+        branches: &[String],
+        force_with_lease: bool,
+        cwd: &Path,
+        opts: &PushOptions,
+    ) -> Result<PushIo> {
+        let mut args: Vec<&str> = Vec::with_capacity(branches.len() + 2);
+        if force_with_lease {
+            args.push("--force-with-lease");
+        }
+        args.push(remote);
+        for branch in branches {
+            args.push(branch);
+        }
+        self.run_push(&args, cwd, opts)
+    }
+
     /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
     /// hook installed. Used to existence-gate the synthetic `pre-push`
     /// reporting phase so a hook-less repo never renders a hollow phase

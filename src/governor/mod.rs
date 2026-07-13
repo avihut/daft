@@ -636,8 +636,12 @@ fn kill_unit(shared: &Shared, branch: &str) {
 
 impl DagGovernor for SyncGovernor {
     fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
-        let TaskId::Push(branch) = &task.id else {
-            return AdmitDecision::Admit;
+        let branch: &str = match &task.id {
+            TaskId::Push(branch) => branch,
+            // The batch is one unit; its throttle log keys on a synthetic
+            // name (its branch_name is deliberately empty for the TUI).
+            TaskId::PushBatch => "(batched push)",
+            _ => return AdmitDecision::Admit,
         };
         let running = self.shared.admitted.load(Ordering::Relaxed);
         let sample = *self.shared.latest.lock().unwrap();
@@ -661,7 +665,7 @@ impl DagGovernor for SyncGovernor {
                 // Close the branch's throttle window for the event log.
                 let mut log = self.shared.throttle.lock().unwrap();
                 if let Some(since) = log.since.remove(branch) {
-                    log.held.push((branch.clone(), since.elapsed()));
+                    log.held.push((branch.to_string(), since.elapsed()));
                 }
                 AdmitDecision::Admit
             }
@@ -671,7 +675,7 @@ impl DagGovernor for SyncGovernor {
                     .lock()
                     .unwrap()
                     .since
-                    .entry(branch.clone())
+                    .entry(branch.to_string())
                     .or_insert_with(Instant::now);
                 AdmitDecision::Defer(match reason {
                     HoldReason::AtCap => DeferReason::ClassCap,
@@ -685,7 +689,7 @@ impl DagGovernor for SyncGovernor {
     }
 
     fn release(&self, task: &SyncTask) {
-        if matches!(task.id, TaskId::Push(_)) {
+        if matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
             self.shared.admitted.fetch_sub(1, Ordering::Relaxed);
         }
     }

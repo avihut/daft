@@ -14,7 +14,7 @@ use crate::git::{GitCommand, PushIo, PushOptions, PushStream};
 use crate::utils::*;
 use anyhow::Result;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -540,6 +540,228 @@ fn error_timed_out(e: &anyhow::Error) -> bool {
         .any(|c| c.is::<crate::git::cancel::OperationTimedOut>())
 }
 
+/// Whether a porcelain ref line refers to `branch` (its `<to>` side).
+fn ref_line_is_branch(line: &crate::git::push_porcelain::RefStatus, branch: &str) -> bool {
+    let Some((_, to)) = line.refspec.split_once(':') else {
+        return false;
+    };
+    to.strip_prefix("refs/heads/").unwrap_or(to) == branch
+}
+
+/// Attribute per-branch outcomes from one batched `git push` (#678,
+/// `daft.sync.pushHookStrategy = batched`). Pure over the captured IO so
+/// the mapping is unit-testable:
+/// - a porcelain line per branch classifies it (`=` up to date, `!`
+///   rejected, anything else pushed);
+/// - no ref lines at all means the batch never reached ref negotiation —
+///   the pre-push gate (or transport) refused, and every branch fails
+///   with that message (the batched strategy's documented coarseness).
+fn attribute_batch(
+    branches: &[String],
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    hook_present: bool,
+    verify: bool,
+) -> Vec<WorktreePushResult> {
+    use crate::git::push_porcelain::{RefStatusFlag, parse_push_report};
+
+    let report = parse_push_report(stdout);
+    let gate_message = || {
+        let hint = stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("pre-push hook declined the batched push");
+        hint.to_string()
+    };
+    // The verdict drives the sequential path's exit-code policy exactly
+    // like single pushes: a gate saying no must not collapse to a warning.
+    let verdict_for = |got_ref_line: bool| -> HookVerdict {
+        if !hook_present {
+            HookVerdict::NoHook
+        } else if !verify {
+            HookVerdict::Bypassed
+        } else if got_ref_line || report.has_ref_lines() {
+            HookVerdict::Passed
+        } else {
+            HookVerdict::Rejected
+        }
+    };
+    branches
+        .iter()
+        .map(|branch| {
+            let base = WorktreePushResult {
+                worktree_name: branch.clone(),
+                branch_name: branch.clone(),
+                ..Default::default()
+            };
+            match report.refs.iter().find(|r| ref_line_is_branch(r, branch)) {
+                Some(line) if line.flag == RefStatusFlag::UpToDate => WorktreePushResult {
+                    success: true,
+                    up_to_date: true,
+                    hook: verdict_for(true),
+                    message: "Already up to date".to_string(),
+                    ..base
+                },
+                Some(line) if line.flag == RefStatusFlag::Rejected => WorktreePushResult {
+                    hook: verdict_for(true),
+                    message: format!("push rejected: {}", line.summary),
+                    ..base
+                },
+                Some(_) => WorktreePushResult {
+                    success: true,
+                    hook: verdict_for(true),
+                    message: "Pushed successfully".to_string(),
+                    ..base
+                },
+                None if success => WorktreePushResult {
+                    // Defensive: a successful push should have reported
+                    // every ref; trust the exit status.
+                    success: true,
+                    hook: verdict_for(false),
+                    message: "Pushed successfully".to_string(),
+                    ..base
+                },
+                None => WorktreePushResult {
+                    hook: verdict_for(false),
+                    message: gate_message(),
+                    ..base
+                },
+            }
+        })
+        .collect()
+}
+
+/// Push `branches` in one `git push` so the pre-push hook fires once with
+/// every ref on stdin (#678). Callers pre-filter to pushable candidates
+/// (upstream present, no rebase conflict); a supervised teardown
+/// (cancel / needs-terminal / timeout) classifies every branch alike.
+pub fn push_batched(
+    git: &GitCommand,
+    cwd: &Path,
+    params: &PushParams,
+    branches: &[String],
+    hook_present: bool,
+) -> Vec<WorktreePushResult> {
+    if branches.is_empty() {
+        return Vec::new();
+    }
+    let opts = crate::git::PushOptions {
+        verify: !params.no_verify,
+        on_output: None,
+    };
+    match git.push_branches(
+        &params.remote_name,
+        branches,
+        params.force_with_lease,
+        cwd,
+        &opts,
+    ) {
+        Ok(io) => attribute_batch(
+            branches,
+            io.success,
+            &io.stdout,
+            &io.stderr,
+            hook_present,
+            !params.no_verify,
+        ),
+        Err(e) => {
+            let needs_terminal = error_needs_terminal(&e);
+            let timed_out = error_timed_out(&e);
+            let message = format!("{e}");
+            branches
+                .iter()
+                .map(|branch| WorktreePushResult {
+                    worktree_name: branch.clone(),
+                    branch_name: branch.clone(),
+                    needs_terminal,
+                    timed_out,
+                    message: message.clone(),
+                    ..Default::default()
+                })
+                .collect()
+        }
+    }
+}
+
+/// Batched-strategy twin of [`execute`]: enumerate pushable worktrees the
+/// same way, then push them all in one `git push`. Skips (no upstream,
+/// excluded branches) keep their per-branch reporting shape so the
+/// sequential renderer and exit-code logic are strategy-agnostic.
+pub fn execute_batched(
+    params: &PushParams,
+    git: &GitCommand,
+    project_root: &Path,
+    progress: &mut dyn ProgressSink,
+    exclude_branches: &HashSet<String>,
+) -> Result<PushResult> {
+    let worktrees = fetch::get_all_worktrees_with_branches(git)?;
+    let hook_present = git.pre_push_hook_exists(project_root);
+
+    let mut results: Vec<WorktreePushResult> = Vec::new();
+    let mut candidates: Vec<String> = Vec::new();
+    let mut batch_cwd: Option<PathBuf> = None;
+
+    for (path, branch) in &worktrees {
+        if git.is_cancelled() {
+            break;
+        }
+        if exclude_branches.contains(branch) {
+            continue;
+        }
+        let worktree_name = path
+            .strip_prefix(project_root)
+            .ok()
+            .and_then(|p| p.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        match git.get_branch_tracking_remote_from(branch, path) {
+            Ok(None) => {
+                progress.on_warning(&format!(
+                    "Skipping '{worktree_name}': no upstream tracking branch"
+                ));
+                results.push(WorktreePushResult {
+                    worktree_name,
+                    branch_name: branch.clone(),
+                    success: true,
+                    no_upstream: true,
+                    message: "No upstream tracking branch".to_string(),
+                    ..Default::default()
+                });
+            }
+            _ => {
+                candidates.push(branch.clone());
+                if batch_cwd.is_none() {
+                    batch_cwd = Some(path.clone());
+                }
+            }
+        }
+    }
+
+    if !candidates.is_empty() {
+        progress.on_step(&format!(
+            "Pushing {} branches in one batch",
+            candidates.len()
+        ));
+        let cwd = batch_cwd.unwrap_or_else(|| project_root.to_path_buf());
+        let batch = push_batched(git, &cwd, params, &candidates, hook_present);
+        for result in &batch {
+            if !result.success {
+                progress.on_warning(&format!(
+                    "Failed to push '{}': {}",
+                    result.worktree_name, result.message
+                ));
+            }
+        }
+        results.extend(batch);
+    }
+
+    Ok(PushResult {
+        results,
+        remote_name: params.remote_name.clone(),
+    })
+}
+
 /// Push a single worktree branch to its remote tracking branch.
 ///
 /// Checks for an upstream tracking remote first; skips if none is set.
@@ -675,6 +897,63 @@ mod tests {
     use std::process::Stdio;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    // ── Batched-push attribution (#678) ─────────────────────────────────
+
+    fn batch_branches(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn batch_attribution_classifies_per_ref() {
+        let stdout = concat!(
+            "To /remote.git\n",
+            " \trefs/heads/a:refs/heads/a\t1111111..2222222\n",
+            "=\trefs/heads/b:refs/heads/b\t[up to date]\n",
+            "!\trefs/heads/c:refs/heads/c\t[rejected] (non-fast-forward)\n",
+            "Done\n"
+        );
+        let results = attribute_batch(
+            &batch_branches(&["a", "b", "c"]),
+            false,
+            stdout,
+            "",
+            true,
+            true,
+        );
+        assert!(results[0].success && !results[0].up_to_date);
+        assert!(results[1].success && results[1].up_to_date);
+        assert!(!results[2].success);
+        assert!(
+            results[2].message.contains("rejected"),
+            "{}",
+            results[2].message
+        );
+    }
+
+    #[test]
+    fn batch_attribution_gate_refusal_fails_every_branch() {
+        // No ref lines at all: the pre-push hook (or transport) refused the
+        // whole batch before ref negotiation.
+        let results = attribute_batch(
+            &batch_branches(&["a", "b"]),
+            false,
+            "hook stdout only\n",
+            "GATE SAYS NO\nerror: failed to push some refs\n",
+            true,
+            true,
+        );
+        assert!(results.iter().all(|r| !r.success));
+        assert!(results.iter().all(|r| r.message.contains("GATE SAYS NO")));
+        // The gate verdict drives the sequential exit-code policy.
+        assert!(results.iter().all(|r| r.hook == HookVerdict::Rejected));
+    }
+
+    #[test]
+    fn batch_attribution_trusts_exit_status_without_ref_lines() {
+        let results = attribute_batch(&batch_branches(&["a"]), true, "", "", false, true);
+        assert!(results[0].success);
+    }
 
     // ── Pure collapse() classification ──────────────────────────────────
 

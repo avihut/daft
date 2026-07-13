@@ -33,6 +33,9 @@ pub enum TaskId {
     Rebase(String),
     /// Push a worktree branch to its remote.
     Push(String),
+    /// Push every pushable owned branch in one `git push` — the pre-push
+    /// hook fires once with all refs (#678, `pushHookStrategy: batched`).
+    PushBatch,
     /// Set up a worktree during clone.
     Setup(String),
     /// Remove a single worktree (path is the unique key).
@@ -188,6 +191,28 @@ impl SyncDag {
         rebase_branch: Option<String>,
         push: bool,
     ) -> Self {
+        Self::build_sync_with_strategy(
+            owned_worktrees,
+            unowned_worktrees,
+            gone_branches,
+            rebase_branch,
+            push,
+            false,
+        )
+    }
+
+    /// [`Self::build_sync`] with an explicit push strategy: `batched_push`
+    /// replaces the per-branch Push tasks with one `PushBatch` barrier task
+    /// depending on every pushable branch's last task (#678). The barrier
+    /// cost is documented: the batch waits for the slowest rebase.
+    pub fn build_sync_with_strategy(
+        owned_worktrees: Vec<(String, Option<PathBuf>)>,
+        unowned_worktrees: Vec<(String, Option<PathBuf>)>,
+        gone_branches: Vec<String>,
+        rebase_branch: Option<String>,
+        push: bool,
+        batched_push: bool,
+    ) -> Self {
         let stored_rebase_branch = rebase_branch.clone();
         let mut tasks = Vec::new();
         let mut dependencies: Vec<Vec<usize>> = Vec::new();
@@ -326,19 +351,41 @@ impl SyncDag {
         // tip as a rebase target, so pushing it could overwrite commits other
         // contributors landed between fetch and sync completion.
         if push {
-            for (branch, path, last_idx) in &last_task_indices {
-                if rebase_branch.as_ref() == Some(branch) {
-                    continue;
+            if batched_push {
+                let deps: Vec<usize> = last_task_indices
+                    .iter()
+                    .filter(|(branch, _, _)| rebase_branch.as_ref() != Some(branch))
+                    .map(|(_, _, idx)| *idx)
+                    .collect();
+                // Empty branch_name keeps the TUI's auto-create guard from
+                // inventing a row for the barrier node; per-branch rows are
+                // driven by the batch executor's synthetic events.
+                if !deps.is_empty() {
+                    push_task(
+                        SyncTask {
+                            id: TaskId::PushBatch,
+                            phase: OperationPhase::Push,
+                            worktree_path: None,
+                            branch_name: String::new(),
+                        },
+                        deps,
+                    );
                 }
-                push_task(
-                    SyncTask {
-                        id: TaskId::Push(branch.clone()),
-                        phase: OperationPhase::Push,
-                        worktree_path: path.clone(),
-                        branch_name: branch.clone(),
-                    },
-                    vec![*last_idx],
-                );
+            } else {
+                for (branch, path, last_idx) in &last_task_indices {
+                    if rebase_branch.as_ref() == Some(branch) {
+                        continue;
+                    }
+                    push_task(
+                        SyncTask {
+                            id: TaskId::Push(branch.clone()),
+                            phase: OperationPhase::Push,
+                            worktree_path: path.clone(),
+                            branch_name: branch.clone(),
+                        },
+                        vec![*last_idx],
+                    );
+                }
             }
         }
 
@@ -716,7 +763,7 @@ impl StaticCapGovernor {
 impl DagGovernor for StaticCapGovernor {
     fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
         use std::sync::atomic::Ordering;
-        if !matches!(task.id, TaskId::Push(_)) {
+        if !matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
             return AdmitDecision::Admit;
         }
         let reserved = self
@@ -733,7 +780,7 @@ impl DagGovernor for StaticCapGovernor {
     }
 
     fn release(&self, task: &SyncTask) {
-        if matches!(task.id, TaskId::Push(_)) {
+        if matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
             self.push_active
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1538,6 +1585,67 @@ mod tests {
             "deferred pushes must not pin workers: overall peak stayed at {}",
             overall_peak.load(Ordering::SeqCst)
         );
+    }
+
+    #[test]
+    fn build_sync_batched_emits_one_barrier_push_node() {
+        let worktrees = vec![
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/feat-b"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(worktrees, vec![], vec![], None, true, true);
+        // 1 fetch + 3 updates + 1 batch = 5 tasks (no per-branch pushes).
+        assert_eq!(dag.tasks.len(), 5);
+        let batch_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::PushBatch)
+            .expect("one PushBatch node");
+        assert!(
+            !dag.tasks.iter().any(|t| matches!(t.id, TaskId::Push(_))),
+            "batched mode must not emit per-branch push tasks"
+        );
+        assert_eq!(
+            dag.tasks[batch_idx].branch_name, "",
+            "empty branch_name keeps the TUI auto-create guard off"
+        );
+        // The barrier depends on every branch's last task (3 updates).
+        assert_eq!(dag.dependencies_of(batch_idx).len(), 3);
+    }
+
+    #[test]
+    fn build_sync_batched_excludes_rebase_base_and_skips_empty() {
+        let worktrees = vec![
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(
+            worktrees,
+            vec![],
+            vec![],
+            Some("master".into()),
+            true,
+            true,
+        );
+        let batch_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::PushBatch)
+            .expect("PushBatch node");
+        // Only feat/a's rebase feeds the barrier — the base is excluded.
+        assert_eq!(dag.dependencies_of(batch_idx).len(), 1);
+
+        // No pushable branches → no barrier node at all.
+        let empty = SyncDag::build_sync_with_strategy(
+            vec![("master".into(), Some(PathBuf::from("/p/master")))],
+            vec![],
+            vec![],
+            Some("master".into()),
+            true,
+            true,
+        );
+        assert!(!empty.tasks.iter().any(|t| t.id == TaskId::PushBatch));
     }
 
     #[test]

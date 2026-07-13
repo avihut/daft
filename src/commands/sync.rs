@@ -818,6 +818,11 @@ fn run_tui(
     let shared_memory_reserve = settings.governor_memory_reserve;
     let shared_jobserver_mode = settings.governor_jobserver;
     let cores_for_jobserver = cores;
+    let shared_push_strategy = settings.sync_push_hook_strategy;
+    // Branches whose rebase conflicted — the batched push excludes them at
+    // execution time (per-branch mode handles this via task preconditions).
+    let shared_conflicts: Arc<std::sync::Mutex<HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -920,12 +925,22 @@ fn run_tui(
                 )
             });
 
-        let dag = SyncDag::build_sync(
+        // Branch list the batched push covers (owned minus the rebase
+        // base), captured before `owned` moves into the DAG builder.
+        let batch_branches: Arc<Vec<String>> = Arc::new(
+            owned
+                .iter()
+                .map(|(branch, _)| branch.clone())
+                .filter(|branch| shared_rebase_branch.as_deref() != Some(branch.as_str()))
+                .collect(),
+        );
+        let dag = SyncDag::build_sync_with_strategy(
             owned,
             unowned,
             gone_branches,
             shared_rebase_branch.as_ref().clone(),
             shared_push,
+            shared_push_strategy == crate::settings::PushHookStrategy::Batched,
         );
 
         // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
@@ -933,7 +948,12 @@ fn run_tui(
             .tasks
             .iter()
             .filter(|t| matches!(t.id, TaskId::Push(_)))
-            .count();
+            .count()
+            .max(if dag.tasks.iter().any(|t| t.id == TaskId::PushBatch) {
+                batch_branches.len()
+            } else {
+                0
+            });
         let tx_for_tasks = tx.clone();
         let task_cancel = Arc::clone(&orch_cancel);
         let mut executor = DagExecutor::new(dag, tx).with_cancel(Arc::clone(&orch_cancel));
@@ -1089,6 +1109,8 @@ fn run_tui(
                         (status, message, outcomes.clone())
                     }
                     TaskId::Rebase(branch_name) => {
+                        let conflicts = Arc::clone(&shared_conflicts);
+                        let branch_for_conflicts = branch_name.clone();
                         let base = shared_rebase_branch.as_deref().unwrap_or("master");
                         let (status, message, new_outcomes) = execute_rebase_task(
                             branch_name,
@@ -1101,6 +1123,9 @@ fn run_tui(
                             outcomes,
                             &task_cancel,
                         );
+                        if new_outcomes.contains(&TaskOutcome::Conflict) {
+                            conflicts.lock().unwrap().insert(branch_for_conflicts);
+                        }
                         if status == TaskStatus::Succeeded
                             && !matches!(message, TaskMessage::Conflict)
                         {
@@ -1152,6 +1177,21 @@ fn run_tui(
                         }
                         (status, message, new_outcomes)
                     }
+                    TaskId::PushBatch => execute_push_batch_task(
+                        &batch_branches,
+                        &shared_worktree_map,
+                        &shared_project_root,
+                        &shared_settings,
+                        shared_force_with_lease,
+                        shared_no_verify,
+                        shared_hook_present,
+                        &tx_for_tasks,
+                        outcomes,
+                        &task_cancel,
+                        push_governor.as_ref(),
+                        push_jobserver_env.as_deref(),
+                        &shared_conflicts,
+                    ),
                     TaskId::Setup(_) => unreachable!("Setup is only used by clone"),
                     TaskId::RemoveWorktree(_) | TaskId::RemoveBare => {
                         unreachable!("RemoveWorktree/RemoveBare are only used by repo remove")
@@ -1592,6 +1632,176 @@ fn execute_rebase_task(
         (
             TaskStatus::Failed,
             TaskMessage::Failed(result.message),
+            branch_outcomes.clone(),
+        )
+    }
+}
+
+/// Execute the batched push task (#678, `daft.sync.pushHookStrategy =
+/// batched`): one `git push` carries every eligible branch, so the
+/// pre-push hook fires once with all refs. The barrier node's own
+/// `branch_name` is empty (no TUI row); per-branch rows are driven by
+/// synthetic `TaskStarted`/`TaskCompleted` events sent from here.
+#[allow(clippy::too_many_arguments)]
+fn execute_push_batch_task(
+    branches: &[String],
+    worktree_map: &HashMap<String, (PathBuf, bool)>,
+    project_root: &std::path::Path,
+    settings: &DaftSettings,
+    force_with_lease: bool,
+    no_verify: bool,
+    hook_present: bool,
+    tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
+    branch_outcomes: &HashSet<TaskOutcome>,
+    cancel: &Arc<CancelFlag>,
+    governor: Option<&Arc<crate::governor::SyncGovernor>>,
+    jobserver_env: Option<&(String, String)>,
+    conflicts: &Arc<std::sync::Mutex<HashSet<String>>>,
+) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
+    if cancel.is_cancelled() {
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
+
+    let send_branch = |branch: &str, status: TaskStatus, message: TaskMessage| {
+        let _ = tx.send(sync_dag::DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: branch.to_string(),
+            status,
+            message,
+        });
+    };
+
+    // Eligibility: conflicted branches keep their rebase-conflict row
+    // untouched; branches without an upstream report the per-branch skip.
+    let conflicted = conflicts.lock().unwrap().clone();
+    let mut git = GitCommand::new(false)
+        .with_gitoxide(settings.use_gitoxide)
+        .with_cancel(Arc::clone(cancel));
+
+    let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit("(batched push)")));
+    if governor_unit.is_some() || settings.sync_push_timeout.is_some() || jobserver_env.is_some() {
+        let on_spawn = governor_unit.as_ref().map(|unit| {
+            let unit = Arc::clone(unit);
+            Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
+        });
+        let on_clock = governor_unit.as_ref().map(|unit| {
+            let unit = Arc::clone(unit);
+            Arc::new(move |clock: Arc<crate::git::cancel::UnitClock>| unit.attach_clock(clock))
+                as Arc<dyn Fn(Arc<crate::git::cancel::UnitClock>) + Send + Sync>
+        });
+        git = git.with_push_supervision(crate::git::PushSupervision {
+            on_spawn,
+            timeout: settings.sync_push_timeout,
+            on_clock,
+            env: jobserver_env
+                .map(|pair| vec![pair.clone()])
+                .unwrap_or_default(),
+        });
+    }
+
+    let mut eligible: Vec<String> = Vec::new();
+    let mut batch_cwd: Option<PathBuf> = None;
+    for branch in branches {
+        if conflicted.contains(branch) {
+            // Row already shows the conflict outcome; the push never ran.
+            continue;
+        }
+        let path = worktree_map
+            .get(branch)
+            .map(|(path, _)| path.clone())
+            .unwrap_or_else(|| project_root.to_path_buf());
+        match git.get_branch_tracking_remote_from(branch, &path) {
+            Ok(None) => {
+                send_branch(branch, TaskStatus::Succeeded, TaskMessage::NoPushUpstream);
+            }
+            _ => {
+                // Prefer the default-branch worktree as the batch cwd —
+                // the hook runs there once for every ref.
+                if batch_cwd.is_none() || worktree_map.get(branch).is_some_and(|(_, main)| *main) {
+                    batch_cwd = Some(path.clone());
+                }
+                eligible.push(branch.clone());
+                let _ = tx.send(sync_dag::DagEvent::TaskStarted {
+                    phase: OperationPhase::Push,
+                    branch_name: branch.clone(),
+                });
+            }
+        }
+    }
+    if eligible.is_empty() {
+        return (
+            TaskStatus::Succeeded,
+            TaskMessage::Ok("nothing to push".into()),
+            branch_outcomes.clone(),
+        );
+    }
+
+    let params = push::PushParams {
+        force_with_lease,
+        remote_name: settings.remote.clone(),
+        no_verify,
+    };
+    let cwd = batch_cwd.unwrap_or_else(|| project_root.to_path_buf());
+    let results = push::push_batched(&git, &cwd, &params, &eligible, hook_present);
+
+    // Whole-batch classification mirrors execute_push_task's ladder; the
+    // per-branch synthetic completions carry the row-level story.
+    let batch_failed = results.iter().any(|r| !r.success);
+    if cancel.is_cancelled() && batch_failed {
+        for branch in &eligible {
+            send_branch(branch, TaskStatus::Cancelled, TaskMessage::Cancelled);
+        }
+        return (
+            TaskStatus::Cancelled,
+            TaskMessage::Cancelled,
+            branch_outcomes.clone(),
+        );
+    }
+    if batch_failed
+        && let Some(unit) = &governor_unit
+        && unit.was_killed()
+    {
+        // Evicted: the executor requeues the whole batch; rows stay
+        // "pushing" until the retry's own events land.
+        return (
+            TaskStatus::Evicted,
+            TaskMessage::Failed("batched push killed under memory pressure".into()),
+            branch_outcomes.clone(),
+        );
+    }
+    for result in &results {
+        let (status, message) = if result.success && result.up_to_date {
+            (TaskStatus::Succeeded, TaskMessage::UpToDate)
+        } else if result.success {
+            (TaskStatus::Succeeded, TaskMessage::Pushed)
+        } else {
+            let hint = result
+                .message
+                .lines()
+                .next()
+                .unwrap_or("push failed")
+                .to_string();
+            (TaskStatus::Failed, TaskMessage::Failed(hint))
+        };
+        send_branch(&result.branch_name, status, message);
+    }
+
+    // The barrier node itself: failed when anything failed so the run's
+    // exit code logic sees it, but with an empty row it stays invisible.
+    if batch_failed {
+        (
+            TaskStatus::Failed,
+            TaskMessage::Failed("batched push failed".into()),
+            branch_outcomes.clone(),
+        )
+    } else {
+        (
+            TaskStatus::Succeeded,
+            TaskMessage::Pushed,
             branch_outcomes.clone(),
         )
     }
@@ -2334,15 +2544,19 @@ fn run_push_phase(
     }
     let exec_result = {
         let mut sink = OutputSink(output);
-        push::execute(
-            &params,
-            &git,
-            &project_root,
-            &mut sink,
-            skip_branches,
-            &crate::core::worktree::ports::NoopStageRunner,
-            presenter.as_ref(),
-        )
+        if settings.sync_push_hook_strategy == crate::settings::PushHookStrategy::Batched {
+            push::execute_batched(&params, &git, &project_root, &mut sink, skip_branches)
+        } else {
+            push::execute(
+                &params,
+                &git,
+                &project_root,
+                &mut sink,
+                skip_branches,
+                &crate::core::worktree::ports::NoopStageRunner,
+                presenter.as_ref(),
+            )
+        }
     };
     if presenter.is_none() {
         output.finish_spinner();

@@ -26,6 +26,7 @@
 //! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
 //! | `daft.ownership.strategy` | `recency-plurality` | Branch ownership detection strategy (`tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`) |
 //! | `daft.sync.pushTimeout` | `30m` | Wall-clock budget per push (git + pre-push hook); `off` disables |
+//! | `daft.sync.pushHookStrategy` | `per-branch` | Pre-push hook cadence for sync pushes (`per-branch` or `batched`) |
 //! | `daft.governor.mode` | `auto` | Sync push resource governor (`auto` or `off`) |
 //! | `daft.governor.jobs` | `auto` | Cap on concurrent hook-bearing pushes (`auto` = max(2, cores/4), or a number) |
 //! | `daft.governor.memoryReserve` | `auto` | Memory headroom the governor keeps free (`auto` = max(10% RAM, 2G), a size like `2G`, or `NN%`) |
@@ -106,6 +107,29 @@ impl PushVerify {
             "auto" => Some(Self::Auto),
             "always" => Some(Self::Always),
             "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+/// How `daft sync --push` runs the repo's pre-push hook across branches
+/// (#678). Batched trades per-branch hook semantics for an N→1 resource
+/// cost: one `git push` carries every branch, so the hook runs once with
+/// all refs on stdin — and one refusal fails the whole batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushHookStrategy {
+    /// One push (and one hook run) per branch — full per-branch semantics.
+    PerBranch,
+    /// One push for all branches; the hook fires once.
+    Batched,
+}
+
+impl PushHookStrategy {
+    /// Parse a string value into a PushHookStrategy.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "per-branch" => Some(Self::PerBranch),
+            "batched" => Some(Self::Batched),
             _ => None,
         }
     }
@@ -241,12 +265,17 @@ pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
 
 /// Default values for settings.
 pub mod defaults {
-    use super::{GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushVerify};
+    use super::{
+        GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushHookStrategy, PushVerify,
+    };
     use crate::core::worktree::list::Stat;
 
     /// Default value for sync.pushTimeout setting (30 minutes).
     pub const SYNC_PUSH_TIMEOUT: Option<std::time::Duration> =
         Some(std::time::Duration::from_secs(30 * 60));
+
+    /// Default value for sync.pushHookStrategy setting.
+    pub const SYNC_PUSH_HOOK_STRATEGY: PushHookStrategy = PushHookStrategy::PerBranch;
 
     /// Default value for governor.mode setting.
     pub const GOVERNOR_MODE: GovernorMode = GovernorMode::Auto;
@@ -438,6 +467,9 @@ pub mod keys {
     /// Config key for sync.pushTimeout setting.
     pub const SYNC_PUSH_TIMEOUT: &str = "daft.sync.pushTimeout";
 
+    /// Config key for sync.pushHookStrategy setting.
+    pub const SYNC_PUSH_HOOK_STRATEGY: &str = "daft.sync.pushHookStrategy";
+
     /// Config key for governor.mode setting.
     pub const GOVERNOR_MODE: &str = "daft.governor.mode";
 
@@ -626,6 +658,10 @@ pub struct DaftSettings {
     /// `None` = no timeout. Set via `daft.sync.pushTimeout` (#678).
     pub sync_push_timeout: Option<std::time::Duration>,
 
+    /// Pre-push hook cadence for sync pushes. Set via
+    /// `daft.sync.pushHookStrategy` (#678).
+    pub sync_push_hook_strategy: PushHookStrategy,
+
     /// Whether the sync push resource governor is active (#678). Set via
     /// `daft.governor.mode`.
     pub governor_mode: GovernorMode,
@@ -718,6 +754,7 @@ impl Default for DaftSettings {
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
             sync_push_timeout: defaults::SYNC_PUSH_TIMEOUT,
+            sync_push_hook_strategy: defaults::SYNC_PUSH_HOOK_STRATEGY,
             governor_mode: defaults::GOVERNOR_MODE,
             governor_jobs: defaults::GOVERNOR_JOBS,
             governor_memory_reserve: defaults::GOVERNOR_MEMORY_RESERVE,
@@ -915,6 +952,19 @@ impl DaftSettings {
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
                     keys::SYNC_PUSH_TIMEOUT,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_PUSH_HOOK_STRATEGY)?
+            && !value.is_empty()
+        {
+            match PushHookStrategy::parse(&value) {
+                Some(strategy) => settings.sync_push_hook_strategy = strategy,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::SYNC_PUSH_HOOK_STRATEGY,
                     value
                 ),
             }
