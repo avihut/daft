@@ -64,6 +64,8 @@ git worktree-sync [OPTIONS]
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.sync.stat, or summary) |  |
 | `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
 | `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
+| `--jobs <N>` | Cap concurrent pushes when a pre-push hook is present (requires --push; default: from daft.governor.jobs, or max(2, cores/4)) |  |
+| `--no-throttle` | Disable the push resource governor for this run (requires --push) |  |
 
 ## Global Options
 

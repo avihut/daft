@@ -617,6 +617,103 @@ pub enum JobCompletionStatus {
     Skipped,
 }
 
+/// Admission decision returned by [`DagGovernor::try_admit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmitDecision {
+    /// Run the task now. The governor reserved a slot; the executor pairs
+    /// this with exactly one [`DagGovernor::release`] when the task leaves
+    /// the running set.
+    Admit,
+    /// Keep the task in the ready queue and re-check admission later.
+    Defer(DeferReason),
+}
+
+/// Why the governor deferred a ready task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferReason {
+    /// The concurrency cap for the task's class is reached.
+    ClassCap,
+    /// Not enough memory headroom to admit another hook-bearing push.
+    MemoryPressure,
+    /// A governor kill just happened; waiting out the post-kill cooldown.
+    KillCooldown,
+}
+
+/// Admission gate consulted by [`DagExecutor`] before it runs a ready task.
+///
+/// Contract (the executor relies on every point):
+/// - `try_admit` returning [`AdmitDecision::Admit`] reserves one slot and is
+///   paired with exactly one [`DagGovernor::release`]; returning
+///   [`AdmitDecision::Defer`] must be side-effect-free.
+/// - Task classes the governor does not manage are always admitted.
+/// - A governor that currently tracks zero admitted units must admit — this
+///   is the executor's liveness guarantee (workers re-check admission on a
+///   timeout, so an all-deferred ready queue with nothing running would
+///   otherwise never make progress).
+/// - Both methods are called with the executor's internal lock held: they
+///   must return promptly and never call back into the executor.
+pub trait DagGovernor: Send + Sync {
+    /// Decide whether `task` may start now.
+    fn try_admit(&self, task: &SyncTask) -> AdmitDecision;
+    /// Return the slot reserved by a successful `try_admit`.
+    fn release(&self, task: &SyncTask);
+}
+
+/// Stage-0 resource governor: a fixed cap on concurrent push tasks.
+///
+/// Sync constructs this only when the repo has an executable pre-push hook
+/// and hooks are honored — pushes are the one task class whose subprocess
+/// (git + hook) multiplies memory use with parallelism (#678). All other
+/// task classes are always admitted.
+#[derive(Debug)]
+pub struct StaticCapGovernor {
+    cap: usize,
+    push_active: std::sync::atomic::AtomicUsize,
+}
+
+impl StaticCapGovernor {
+    /// Cap concurrent push tasks at `cap` (clamped to at least 1).
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            push_active: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl DagGovernor for StaticCapGovernor {
+    fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
+        use std::sync::atomic::Ordering;
+        if !matches!(task.id, TaskId::Push(_)) {
+            return AdmitDecision::Admit;
+        }
+        let reserved = self
+            .push_active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                (active < self.cap).then_some(active + 1)
+            })
+            .is_ok();
+        if reserved {
+            AdmitDecision::Admit
+        } else {
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        }
+    }
+
+    fn release(&self, task: &SyncTask) {
+        if matches!(task.id, TaskId::Push(_)) {
+            self.push_active
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// How often a worker re-checks admission when every ready task is deferred
+/// by the governor. Pressure can clear without any task completing, so a
+/// plain `Condvar::wait` could sleep long past the moment a deferred push
+/// becomes admissible.
+const ADMISSION_RECHECK: Duration = Duration::from_millis(200);
+
 /// Shared mutable state for the worker pool.
 struct DagState {
     ready: Vec<usize>,
@@ -633,6 +730,7 @@ pub struct DagExecutor {
     dag: SyncDag,
     sender: mpsc::Sender<DagEvent>,
     cancel: Option<std::sync::Arc<crate::git::cancel::CancelFlag>>,
+    governor: Option<Arc<dyn DagGovernor>>,
 }
 
 impl DagExecutor {
@@ -642,7 +740,16 @@ impl DagExecutor {
             dag,
             sender,
             cancel: None,
+            governor: None,
         }
+    }
+
+    /// Gate task admission through a resource governor (#678). Deferred
+    /// tasks stay in the ready queue — workers skip over them to whatever
+    /// else is runnable and re-check on completions or a short timeout.
+    pub fn with_governor(mut self, governor: Arc<dyn DagGovernor>) -> Self {
+        self.governor = Some(governor);
+        self
     }
 
     /// Observe a shared cancel flag: once it goes active, workers stop
@@ -707,6 +814,7 @@ impl DagExecutor {
         let dag = &self.dag;
         let sender = &self.sender;
         let cancel = self.cancel.as_deref();
+        let governor = self.governor.as_deref();
 
         std::thread::scope(|scope| {
             for _ in 0..max_workers {
@@ -749,8 +857,28 @@ impl DagExecutor {
                                     }
                                 }
 
-                                // Try to pop a ready task.
-                                if let Some(idx) = s.ready.pop() {
+                                // Try to pop a ready task the governor admits.
+                                // Scanning from the end preserves `pop()`'s
+                                // LIFO bias; deferred tasks stay in `ready` so
+                                // this worker can pick up anything else
+                                // runnable instead of blocking on them.
+                                let popped = match governor {
+                                    None => s.ready.pop(),
+                                    Some(gov) => {
+                                        let mut admitted = None;
+                                        for pos in (0..s.ready.len()).rev() {
+                                            match gov.try_admit(&dag.tasks[s.ready[pos]]) {
+                                                AdmitDecision::Admit => {
+                                                    admitted = Some(pos);
+                                                    break;
+                                                }
+                                                AdmitDecision::Defer(_) => {}
+                                            }
+                                        }
+                                        admitted.map(|pos| s.ready.remove(pos))
+                                    }
+                                };
+                                if let Some(idx) = popped {
                                     task_idx = idx;
                                     s.status[task_idx] = TaskStatus::Running;
                                     s.active += 1;
@@ -768,7 +896,15 @@ impl DagExecutor {
                                     return;
                                 }
 
-                                s = cvar.wait(s).unwrap();
+                                s = if governor.is_some() && !s.ready.is_empty() {
+                                    // Every ready task is currently deferred by
+                                    // the governor — re-check admission on a
+                                    // short timeout; no completion may arrive
+                                    // to wake us.
+                                    cvar.wait_timeout(s, ADMISSION_RECHECK).unwrap().0
+                                } else {
+                                    cvar.wait(s).unwrap()
+                                };
                             }
                         }
 
@@ -797,6 +933,11 @@ impl DagExecutor {
                         {
                             let (lock, cvar) = &*state;
                             let mut s = lock.lock().unwrap();
+                            // Return the governor slot before anything else so
+                            // admission accounting never lags the running set.
+                            if let Some(gov) = governor {
+                                gov.release(&dag.tasks[task_idx]);
+                            }
                             s.status[task_idx] = result_status;
                             s.active -= 1;
                             s.done += 1;
@@ -1131,6 +1272,240 @@ mod tests {
             .position(|t| *t == TaskId::Rebase("feat/a".into()))
             .unwrap();
         assert!(master_pos < rebase_pos);
+    }
+
+    fn push_task(branch: &str) -> SyncTask {
+        SyncTask {
+            id: TaskId::Push(branch.into()),
+            phase: OperationPhase::Push,
+            worktree_path: None,
+            branch_name: branch.into(),
+        }
+    }
+
+    #[test]
+    fn static_cap_governor_only_governs_pushes() {
+        let gov = StaticCapGovernor::new(1);
+        let push = push_task("feat/a");
+        let fetch = SyncTask {
+            id: TaskId::Fetch,
+            phase: OperationPhase::Fetch,
+            worktree_path: None,
+            branch_name: String::new(),
+        };
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+        // Non-push classes are never deferred, even at cap.
+        assert_eq!(gov.try_admit(&fetch), AdmitDecision::Admit);
+        // Releasing a non-push task must not free a push slot.
+        gov.release(&fetch);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+        gov.release(&push);
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+    }
+
+    #[test]
+    fn static_cap_governor_clamps_cap_to_one() {
+        // A zero cap would violate the min-one-runner contract.
+        let gov = StaticCapGovernor::new(0);
+        let push = push_task("feat/a");
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+    }
+
+    #[test]
+    fn static_cap_bounds_concurrent_pushes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let worktrees: Vec<(String, Option<PathBuf>)> = (0..6)
+            .map(|i| {
+                (
+                    format!("feat/b{i}"),
+                    Some(PathBuf::from(format!("/p/b{i}"))),
+                )
+            })
+            .collect();
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let push_running = Arc::new(AtomicUsize::new(0));
+        let push_peak = Arc::new(AtomicUsize::new(0));
+        let running = Arc::clone(&push_running);
+        let peak = Arc::clone(&push_peak);
+
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(StaticCapGovernor::new(2)));
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let pushed = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskCompleted {
+                        phase: OperationPhase::Push,
+                        status: TaskStatus::Succeeded,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(pushed, 6, "every push must still complete under the cap");
+        assert!(
+            push_peak.load(Ordering::SeqCst) <= 2,
+            "cap of 2 exceeded: peak {}",
+            push_peak.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn deferred_pushes_do_not_block_other_tasks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Needs a second worker to observe overlap; single-core runners
+        // serialize everything and prove nothing.
+        if std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            < 2
+        {
+            return;
+        }
+
+        let worktrees: Vec<(String, Option<PathBuf>)> = (0..6)
+            .map(|i| {
+                (
+                    format!("feat/b{i}"),
+                    Some(PathBuf::from(format!("/p/b{i}"))),
+                )
+            })
+            .collect();
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let overall_running = Arc::new(AtomicUsize::new(0));
+        let overall_peak = Arc::new(AtomicUsize::new(0));
+        let push_running = Arc::new(AtomicUsize::new(0));
+        let push_peak = Arc::new(AtomicUsize::new(0));
+        let o_run = Arc::clone(&overall_running);
+        let o_peak = Arc::clone(&overall_peak);
+        let p_run = Arc::clone(&push_running);
+        let p_peak = Arc::clone(&push_peak);
+
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(StaticCapGovernor::new(1)));
+        executor.run(move |task, outcomes| {
+            let now = o_run.fetch_add(1, Ordering::SeqCst) + 1;
+            o_peak.fetch_max(now, Ordering::SeqCst);
+            if matches!(task.id, TaskId::Push(_)) {
+                let now = p_run.fetch_add(1, Ordering::SeqCst) + 1;
+                p_peak.fetch_max(now, Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            if matches!(task.id, TaskId::Push(_)) {
+                p_run.fetch_sub(1, Ordering::SeqCst);
+            }
+            o_run.fetch_sub(1, Ordering::SeqCst);
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        assert!(
+            push_peak.load(Ordering::SeqCst) <= 1,
+            "cap of 1 exceeded: peak {}",
+            push_peak.load(Ordering::SeqCst)
+        );
+        assert!(
+            overall_peak.load(Ordering::SeqCst) >= 2,
+            "deferred pushes must not pin workers: overall peak stayed at {}",
+            overall_peak.load(Ordering::SeqCst)
+        );
+    }
+
+    /// Defers pushes until a wall-clock instant. After the last non-push
+    /// task completes nothing else wakes the workers, so only the periodic
+    /// admission re-check can admit the push — the run completing at all
+    /// proves the `wait_timeout` path works.
+    struct NotBeforeGovernor {
+        admit_after: std::time::Instant,
+    }
+
+    impl DagGovernor for NotBeforeGovernor {
+        fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
+            if !matches!(task.id, TaskId::Push(_)) {
+                return AdmitDecision::Admit;
+            }
+            if std::time::Instant::now() >= self.admit_after {
+                AdmitDecision::Admit
+            } else {
+                AdmitDecision::Defer(DeferReason::MemoryPressure)
+            }
+        }
+        fn release(&self, _task: &SyncTask) {}
+    }
+
+    #[test]
+    fn all_deferred_ready_queue_recovers_via_recheck() {
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let hold = Duration::from_millis(250);
+        let start = std::time::Instant::now();
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(NotBeforeGovernor {
+            admit_after: start + hold,
+        }));
+        executor.run(|_task, outcomes| {
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let pushed = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskCompleted {
+                        phase: OperationPhase::Push,
+                        status: TaskStatus::Succeeded,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(pushed, 1, "deferred push must eventually run");
+        assert!(
+            start.elapsed() >= hold,
+            "push admitted before the governor allowed it"
+        );
     }
 
     #[test]

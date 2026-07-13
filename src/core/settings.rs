@@ -25,6 +25,9 @@
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
 //! | `daft.ownership.strategy` | `recency-plurality` | Branch ownership detection strategy (`tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`) |
+//! | `daft.governor.mode` | `auto` | Sync push resource governor (`auto` or `off`) |
+//! | `daft.governor.jobs` | `auto` | Cap on concurrent hook-bearing pushes (`auto` = max(2, cores/4), or a number) |
+//! | `daft.governor.memoryReserve` | `auto` | Memory headroom the governor keeps free (`auto` = max(10% RAM, 2G), a size like `2G`, or `NN%`) |
 //!
 //! # Hooks Config Keys
 //!
@@ -106,10 +109,125 @@ impl PushVerify {
     }
 }
 
+/// Whether the sync push resource governor is active (#678).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernorMode {
+    /// Govern hook-bearing pushes: cap their concurrency (and throttle on
+    /// memory pressure once the dynamic stages are active).
+    Auto,
+    /// Never construct the governor; pushes run uncapped.
+    Off,
+}
+
+impl GovernorMode {
+    /// Parse a string value into a GovernorMode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Concurrency cap for hook-bearing push tasks during `daft sync --push`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernorJobs {
+    /// `max(2, cores/4)` — heavy pre-push hooks are internally parallel,
+    /// so a few concurrent runs already saturate the machine while
+    /// multiplying peak memory use (#678).
+    Auto,
+    /// A fixed cap (at least 1).
+    Fixed(usize),
+}
+
+impl GovernorJobs {
+    /// Parse a string value: `auto` or a positive integer.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("auto") {
+            return Some(Self::Auto);
+        }
+        value
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .map(Self::Fixed)
+    }
+
+    /// The effective cap on a machine with `cores` logical cores.
+    pub fn effective(self, cores: usize) -> usize {
+        match self {
+            Self::Auto => (cores / 4).max(2),
+            Self::Fixed(n) => n.max(1),
+        }
+    }
+}
+
+/// Memory headroom the governor keeps free before admitting another
+/// hook-bearing push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryReserve {
+    /// `max(10% of RAM, 2 GiB)`.
+    Auto,
+    /// A fixed number of bytes.
+    Bytes(u64),
+    /// A percentage of total RAM (1–99).
+    Percent(u8),
+}
+
+impl MemoryReserve {
+    /// Parse `auto`, `NN%`, or a size in bytes with an optional
+    /// case-insensitive `K`/`M`/`G` suffix (binary units).
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("auto") {
+            return Some(Self::Auto);
+        }
+        if let Some(percent) = value.strip_suffix('%') {
+            let p: u8 = percent.trim().parse().ok()?;
+            return (1..=99).contains(&p).then_some(Self::Percent(p));
+        }
+        let lower = value.to_ascii_lowercase();
+        let (digits, multiplier) = if let Some(d) = lower.strip_suffix('g') {
+            (d, 1u64 << 30)
+        } else if let Some(d) = lower.strip_suffix('m') {
+            (d, 1u64 << 20)
+        } else if let Some(d) = lower.strip_suffix('k') {
+            (d, 1u64 << 10)
+        } else {
+            (lower.as_str(), 1)
+        };
+        let n: u64 = digits.trim().parse().ok()?;
+        n.checked_mul(multiplier)
+            .filter(|b| *b > 0)
+            .map(Self::Bytes)
+    }
+
+    /// Resolve to bytes on a machine with `total_ram` bytes of memory.
+    pub fn resolve(self, total_ram: u64) -> u64 {
+        const TWO_GIB: u64 = 2 << 30;
+        match self {
+            Self::Auto => (total_ram / 10).max(TWO_GIB),
+            Self::Bytes(bytes) => bytes,
+            Self::Percent(percent) => total_ram * u64::from(percent) / 100,
+        }
+    }
+}
+
 /// Default values for settings.
 pub mod defaults {
-    use super::{PruneCdTarget, PushVerify};
+    use super::{GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushVerify};
     use crate::core::worktree::list::Stat;
+
+    /// Default value for governor.mode setting.
+    pub const GOVERNOR_MODE: GovernorMode = GovernorMode::Auto;
+
+    /// Default value for governor.jobs setting.
+    pub const GOVERNOR_JOBS: GovernorJobs = GovernorJobs::Auto;
+
+    /// Default value for governor.memoryReserve setting.
+    pub const GOVERNOR_MEMORY_RESERVE: MemoryReserve = MemoryReserve::Auto;
 
     /// Default value for autocd setting.
     pub const AUTOCD: bool = true;
@@ -286,6 +404,15 @@ pub mod keys {
     /// Config key for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
 
+    /// Config key for governor.mode setting.
+    pub const GOVERNOR_MODE: &str = "daft.governor.mode";
+
+    /// Config key for governor.jobs setting.
+    pub const GOVERNOR_JOBS: &str = "daft.governor.jobs";
+
+    /// Config key for governor.memoryReserve setting.
+    pub const GOVERNOR_MEMORY_RESERVE: &str = "daft.governor.memoryReserve";
+
     /// Config key for merge.style setting.
     pub const MERGE_STYLE: &str = "daft.merge.style";
 
@@ -458,6 +585,18 @@ pub struct DaftSettings {
     /// `base..branch`. Set via `daft.ownership.strategy`.
     pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
 
+    /// Whether the sync push resource governor is active (#678). Set via
+    /// `daft.governor.mode`.
+    pub governor_mode: GovernorMode,
+
+    /// Concurrency cap for hook-bearing push tasks. Set via
+    /// `daft.governor.jobs`.
+    pub governor_jobs: GovernorJobs,
+
+    /// Memory headroom the governor keeps free. Set via
+    /// `daft.governor.memoryReserve`.
+    pub governor_memory_reserve: MemoryReserve,
+
     /// Selected merge style — replaces the legacy `merge_ff` + `merge_squash`
     /// combination. See [`MergeStyle`] for variants.
     pub merge_style: crate::core::worktree::merge::MergeStyle,
@@ -532,6 +671,9 @@ impl Default for DaftSettings {
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
+            governor_mode: defaults::GOVERNOR_MODE,
+            governor_jobs: defaults::GOVERNOR_JOBS,
+            governor_memory_reserve: defaults::GOVERNOR_MEMORY_RESERVE,
             merge_style: defaults::MERGE_STYLE,
             merge_cleanup: defaults::MERGE_CLEANUP,
             merge_commit: defaults::MERGE_COMMIT,
@@ -712,6 +854,45 @@ impl DaftSettings {
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
                     keys::OWNERSHIP_STRATEGY,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_MODE)?
+            && !value.is_empty()
+        {
+            match GovernorMode::parse(&value) {
+                Some(mode) => settings.governor_mode = mode,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_MODE,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_JOBS)?
+            && !value.is_empty()
+        {
+            match GovernorJobs::parse(&value) {
+                Some(jobs) => settings.governor_jobs = jobs,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_JOBS,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_MEMORY_RESERVE)?
+            && !value.is_empty()
+        {
+            match MemoryReserve::parse(&value) {
+                Some(reserve) => settings.governor_memory_reserve = reserve,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_MEMORY_RESERVE,
                     value
                 ),
             }
@@ -1295,6 +1476,85 @@ mod tests {
             settings.ownership_strategy,
             crate::core::ownership::OwnershipStrategy::RecencyPlurality
         );
+        assert_eq!(settings.governor_mode, GovernorMode::Auto);
+        assert_eq!(settings.governor_jobs, GovernorJobs::Auto);
+        assert_eq!(settings.governor_memory_reserve, MemoryReserve::Auto);
+    }
+
+    #[test]
+    fn governor_mode_parse() {
+        assert_eq!(GovernorMode::parse("auto"), Some(GovernorMode::Auto));
+        assert_eq!(GovernorMode::parse("AUTO"), Some(GovernorMode::Auto));
+        assert_eq!(GovernorMode::parse("off"), Some(GovernorMode::Off));
+        assert_eq!(GovernorMode::parse("Off"), Some(GovernorMode::Off));
+        assert_eq!(GovernorMode::parse("on"), None);
+        assert_eq!(GovernorMode::parse(""), None);
+    }
+
+    #[test]
+    fn governor_jobs_parse() {
+        assert_eq!(GovernorJobs::parse("auto"), Some(GovernorJobs::Auto));
+        assert_eq!(GovernorJobs::parse(" Auto "), Some(GovernorJobs::Auto));
+        assert_eq!(GovernorJobs::parse("1"), Some(GovernorJobs::Fixed(1)));
+        assert_eq!(GovernorJobs::parse("16"), Some(GovernorJobs::Fixed(16)));
+        assert_eq!(GovernorJobs::parse("0"), None);
+        assert_eq!(GovernorJobs::parse("-2"), None);
+        assert_eq!(GovernorJobs::parse("many"), None);
+    }
+
+    #[test]
+    fn governor_jobs_effective_cap() {
+        // Auto = max(2, cores/4).
+        assert_eq!(GovernorJobs::Auto.effective(4), 2);
+        assert_eq!(GovernorJobs::Auto.effective(10), 2);
+        assert_eq!(GovernorJobs::Auto.effective(16), 4);
+        assert_eq!(GovernorJobs::Auto.effective(32), 8);
+        assert_eq!(GovernorJobs::Auto.effective(1), 2);
+        assert_eq!(GovernorJobs::Fixed(6).effective(32), 6);
+        assert_eq!(GovernorJobs::Fixed(0).effective(32), 1);
+    }
+
+    #[test]
+    fn memory_reserve_parse() {
+        assert_eq!(MemoryReserve::parse("auto"), Some(MemoryReserve::Auto));
+        assert_eq!(
+            MemoryReserve::parse("2G"),
+            Some(MemoryReserve::Bytes(2 << 30))
+        );
+        assert_eq!(
+            MemoryReserve::parse("512m"),
+            Some(MemoryReserve::Bytes(512 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("1024K"),
+            Some(MemoryReserve::Bytes(1 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("1048576"),
+            Some(MemoryReserve::Bytes(1 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("15%"),
+            Some(MemoryReserve::Percent(15))
+        );
+        assert_eq!(MemoryReserve::parse("0%"), None);
+        assert_eq!(MemoryReserve::parse("100%"), None);
+        assert_eq!(MemoryReserve::parse("0"), None);
+        assert_eq!(MemoryReserve::parse("2T"), None);
+        assert_eq!(MemoryReserve::parse("lots"), None);
+        // Multi-byte junk must not panic the suffix split.
+        assert_eq!(MemoryReserve::parse("2é"), None);
+    }
+
+    #[test]
+    fn memory_reserve_resolve() {
+        const GIB: u64 = 1 << 30;
+        // Auto = max(10% RAM, 2 GiB): floor on small machines…
+        assert_eq!(MemoryReserve::Auto.resolve(8 * GIB), 2 * GIB);
+        // …and 10% on big ones.
+        assert_eq!(MemoryReserve::Auto.resolve(64 * GIB), 64 * GIB / 10);
+        assert_eq!(MemoryReserve::Bytes(GIB).resolve(64 * GIB), GIB);
+        assert_eq!(MemoryReserve::Percent(25).resolve(64 * GIB), 16 * GIB);
     }
 
     #[test]

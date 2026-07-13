@@ -4,7 +4,7 @@
 .SH NAME
 daft\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-no\-verify\fR] [\fB\-\-include\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBdaft\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-no\-verify\fR] [\fB\-\-include\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-\-jobs\fR] [\fB\-\-no\-throttle\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -79,6 +79,12 @@ Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults
 .TP
 \fB\-\-sort\fR \fI<SORT>\fR
 Sort order (comma\-separated). +col ascending, \-col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit
+.TP
+\fB\-\-jobs\fR \fI<N>\fR
+Cap concurrent pushes when a pre\-push hook is present (requires \-\-push; default: from daft.governor.jobs, or max(2, cores/4))
+.TP
+\fB\-\-no\-throttle\fR
+Disable the push resource governor for this run (requires \-\-push)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

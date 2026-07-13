@@ -20,8 +20,8 @@ use crate::{
             list::{EntryKind, Stat},
             list_stream, prune, push, rebase,
             sync_dag::{
-                self, DagExecutor, OperationPhase, PatchSource, SyncDag, SyncTask, TaskId,
-                TaskMessage, TaskOutcome, TaskStatus,
+                self, DagExecutor, OperationPhase, PatchSource, StaticCapGovernor, SyncDag,
+                SyncTask, TaskId, TaskMessage, TaskOutcome, TaskStatus,
             },
             temp_worktree,
         },
@@ -36,7 +36,7 @@ use crate::{
         tui::operation_table::{OperationTable, TableConfig},
     },
     remote::get_default_branch_local,
-    settings::DaftSettings,
+    settings::{DaftSettings, GovernorMode},
     styles,
 };
 use anyhow::Result;
@@ -196,6 +196,22 @@ pub struct Args {
         help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     sort: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "push",
+        conflicts_with = "no_throttle",
+        help = "Cap concurrent pushes when a pre-push hook is present (requires --push; default: from daft.governor.jobs, or max(2, cores/4))"
+    )]
+    jobs: Option<std::num::NonZeroUsize>,
+
+    #[arg(
+        long,
+        requires = "push",
+        help = "Disable the push resource governor for this run (requires --push)"
+    )]
+    no_throttle: bool,
 }
 
 impl Args {
@@ -742,6 +758,24 @@ fn run_tui(
             .with_gitoxide(settings.use_gitoxide)
             .pre_push_hook_exists(&project_root);
 
+    // Resource governor (#678): the effective cap on hook-bearing push
+    // concurrency. `None` = ungoverned — no hook to multiply memory use,
+    // hooks bypassed, --no-throttle, or daft.governor.mode=off (an explicit
+    // --jobs still caps even with the mode off).
+    let shared_push_cap: Option<usize> =
+        if !shared_hook_present || shared_no_verify || args.no_throttle {
+            None
+        } else if let Some(jobs) = args.jobs {
+            Some(jobs.get())
+        } else if settings.governor_mode == GovernorMode::Off {
+            None
+        } else {
+            let cores = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(4);
+            Some(settings.governor_jobs.effective(cores))
+        };
+
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
     let deferred_branch_writer = Arc::clone(&deferred_branch);
@@ -852,9 +886,20 @@ fn run_tui(
         );
 
         // ── Phase 3: Run the DAG executor (skips the Fetch task) ───────
+        let push_task_count = dag
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.id, TaskId::Push(_)))
+            .count();
         let tx_for_tasks = tx.clone();
         let task_cancel = Arc::clone(&orch_cancel);
-        let executor = DagExecutor::new(dag, tx).with_cancel(Arc::clone(&orch_cancel));
+        let mut executor = DagExecutor::new(dag, tx).with_cancel(Arc::clone(&orch_cancel));
+        // A single push can never exceed the cap — skip the admission scan.
+        if let Some(cap) = shared_push_cap
+            && push_task_count >= 2
+        {
+            executor = executor.with_governor(Arc::new(StaticCapGovernor::new(cap)));
+        }
         executor.run(
             move |task: &SyncTask,
                   outcomes: &std::collections::HashSet<
