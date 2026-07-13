@@ -109,7 +109,23 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
         ctx,
     } = req;
 
-    let mut handles = Vec::with_capacity(targets.len());
+    // Size is decoupled from the per-worktree git-cluster workers into a single
+    // coordinator (below): the walk runs through the shared bounded budget in
+    // `core::size_walk` so one deep worktree parallelises internally while N
+    // worktrees can't each spin up a full pool and oversubscribe the disk.
+    // Capture (branch_name, path) now, before `targets` is consumed by the
+    // git-cluster loop. Path-less targets (detached / branch-only) never got a
+    // Size patch before and still don't.
+    let size_targets: Vec<(String, PathBuf)> = if fields.contains(FieldSet::SIZE) {
+        targets
+            .iter()
+            .filter_map(|t| t.path.clone().map(|p| (t.branch_name.clone(), p)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut handles = Vec::with_capacity(targets.len() + 1);
     for target in targets {
         let tx = tx.clone();
         let ctx = Arc::clone(&ctx);
@@ -117,6 +133,32 @@ pub fn spawn(req: CollectorRequest, tx: mpsc::Sender<DagEvent>) -> CollectorHand
         let source = source.clone();
         handles.push(thread::spawn(move || {
             run_worker(target, fields, stat, source, ctx, cancel, tx);
+        }));
+    }
+
+    // Size coordinator: one extra worker in `handles`, so `CollectorHandle::join`
+    // waits for it and fires the completion sentinel only after sizes finish —
+    // no change to join()/cancel accounting. Streams per-target `Size` patches
+    // routed by `branch_name`, exactly like the old inline SIZE cluster did.
+    if !size_targets.is_empty() {
+        let tx = tx.clone();
+        let cancel = Arc::clone(&cancel);
+        let source = source.clone();
+        handles.push(thread::spawn(move || {
+            let (branch_names, paths): (Vec<String>, Vec<PathBuf>) =
+                size_targets.into_iter().unzip();
+            crate::core::size_walk::walk_streaming(
+                &paths,
+                Some(&cancel),
+                crate::core::size_walk::resolve_jobs(None),
+                |idx, size| {
+                    let _ = tx.send(DagEvent::WorktreeInfoUpdated {
+                        branch_name: branch_names[idx].clone(),
+                        patch: crate::core::worktree::sync_dag::WorktreeInfoPatch::Size(size),
+                        source: source.clone(),
+                    });
+                },
+            );
         }));
     }
 
@@ -138,9 +180,9 @@ fn run_worker(
 ) {
     use crate::core::ownership;
     use crate::core::worktree::list::{
-        compute_directory_size, count_changed_files, count_changed_lines, get_ahead_behind,
-        get_base_line_counts, get_branch_creation_timestamp, get_commit_metadata,
-        get_remote_line_counts, get_upstream_ahead_behind, max_mtime_of_files,
+        count_changed_files, count_changed_lines, get_ahead_behind, get_base_line_counts,
+        get_branch_creation_timestamp, get_commit_metadata, get_remote_line_counts,
+        get_upstream_ahead_behind, max_mtime_of_files,
     };
     use crate::core::worktree::sync_dag::WorktreeInfoPatch as P;
     use crate::git::GitCommand;
@@ -319,14 +361,7 @@ fn run_worker(
         }
     }
 
-    // 8. SIZE (slowest cluster)
-    if fields.contains(FieldSet::SIZE)
-        && let Some(p) = path
-    {
-        emit!(P::Size(compute_directory_size(p)));
-    }
-
-    // 9. MTIME
+    // MTIME (SIZE is decoupled into its own bounded coordinator — see `spawn`)
     if fields.contains(FieldSet::MTIME)
         && let Some(p) = path
     {

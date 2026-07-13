@@ -23,7 +23,6 @@ use crate::catalog::Catalog;
 use crate::catalog::worktrees::{WorktreeChild, worktree_children};
 use crate::commands::list::PriorityMaxExcept;
 use crate::core::columns::{RepoColumnSelection, RepoListColumn, ResolvedColumns};
-use crate::core::worktree::list::compute_directory_size;
 use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Table};
 use crate::output::format::{display_path, format_human_size};
 use crate::output::tui::{
@@ -192,29 +191,25 @@ fn run_live(
     let (tx, rx) = mpsc::channel::<CatalogEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let mut workers = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let tx = tx.clone();
-        let cancel = Arc::clone(&cancel);
-        let path = PathBuf::from(&row.path);
-        workers.push(std::thread::spawn(move || {
-            // The walk itself is not interruptible; the flag is checked
-            // before starting so queued walks stop promptly on Ctrl-C.
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            let bytes = compute_directory_size(&path);
-            let _ = tx.send(CatalogEvent::Size { index, bytes });
-        }));
-    }
+    let paths: Vec<PathBuf> = rows.iter().map(|row| PathBuf::from(&row.path)).collect();
 
-    // The Done sentinel must fire while the renderer is listening, so the
-    // worker join happens on its own thread (mirroring list_live's
-    // collector-join dance).
+    // One coordinator thread runs the shared bounded walker over every repo,
+    // streaming each repo's size the moment its walk finishes, then the Done
+    // sentinel. Replaces the old unbounded thread-per-repo spawn: total
+    // disk-metadata concurrency is now capped at the shared job budget, and a
+    // single deep repo also parallelises internally. The walker checks `cancel`
+    // cooperatively between directories. The Done sentinel must fire while the
+    // renderer is listening, so this all runs on its own thread.
+    let walk_cancel = Arc::clone(&cancel);
     let join_thread = std::thread::spawn(move || {
-        for worker in workers {
-            let _ = worker.join();
-        }
+        crate::core::size_walk::walk_streaming(
+            &paths,
+            Some(&walk_cancel),
+            crate::core::size_walk::resolve_jobs(None),
+            |index, bytes| {
+                let _ = tx.send(CatalogEvent::Size { index, bytes });
+            },
+        );
         let _ = tx.send(CatalogEvent::Done);
     });
 
@@ -353,9 +348,8 @@ fn build_display_cells(
 }
 
 fn compute_sizes(rows: &[CatalogRepoRow]) -> Vec<Option<u64>> {
-    rows.iter()
-        .map(|row| compute_directory_size(Path::new(&row.path)))
-        .collect()
+    let paths: Vec<PathBuf> = rows.iter().map(|row| PathBuf::from(&row.path)).collect();
+    crate::core::size_walk::walk_all(&paths, None, crate::core::size_walk::resolve_jobs(None))
 }
 
 /// Whether a structured field is emitted: the full default set unless the user

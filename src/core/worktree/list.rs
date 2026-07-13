@@ -863,12 +863,6 @@ pub fn collect_worktree_info(
                 (None, None)
             };
 
-        let size_bytes = if compute_size {
-            compute_directory_size(&entry.path)
-        } else {
-            None
-        };
-
         let working_tree_mtime = if compute_mtime && !changed.paths.is_empty() {
             max_mtime_of_files(&entry.path, &changed.paths)
         } else {
@@ -901,10 +895,31 @@ pub fn collect_worktree_info(
             remote_lines_inserted,
             remote_lines_deleted,
             owner,
-            size_bytes,
+            size_bytes: None,
             working_tree_mtime,
             is_sandbox: entry.is_detached,
         });
+    }
+
+    // Size walk: batched across all worktrees so their trees walk concurrently
+    // under one shared job budget (see core::size_walk), instead of the old
+    // one-worktree-at-a-time sequential walk. Config-aware jobs are threaded in
+    // by the caller in a later step; for now env + available_parallelism.
+    if compute_size {
+        let indexed: Vec<(usize, PathBuf)> = infos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, info)| info.path.clone().map(|p| (i, p)))
+            .collect();
+        let paths: Vec<PathBuf> = indexed.iter().map(|(_, p)| p.clone()).collect();
+        let sizes = crate::core::size_walk::walk_all(
+            &paths,
+            None,
+            crate::core::size_walk::resolve_jobs(None),
+        );
+        for ((i, _), size) in indexed.into_iter().zip(sizes) {
+            infos[i].size_bytes = size;
+        }
     }
 
     Ok(infos)
