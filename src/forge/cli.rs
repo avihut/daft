@@ -1,0 +1,125 @@
+//! Small shared runner for shelling out to `gh` / `glab`.
+//!
+//! Pure CLI passthrough (#127): daft never speaks HTTP or stores tokens — every
+//! forge call shells out to a CLI that inherits the user's existing auth. This
+//! module is the ~one place that spawns them, so the prompt-disable env, the
+//! not-installed-vs-failed distinction, and error-detail extraction live in one
+//! spot rather than scattered across providers.
+
+use std::io::ErrorKind;
+use std::path::Path;
+use std::process::{Command, Output};
+
+use anyhow::{Context, Result, bail};
+
+/// One `gh`/`glab` invocation.
+pub struct CliApiRequest<'a> {
+    /// Binary to run (`gh` / `glab`, or a config override).
+    pub tool: &'a str,
+    /// Arguments (e.g. `["api", "repos/o/r/pulls/1"]`).
+    pub args: &'a [&'a str],
+    /// Working directory — the CLI reads repo/auth context from here.
+    pub repo_root: &'a Path,
+    /// `(NAME, VALUE)` to disable interactive prompts
+    /// (`GH_PROMPT_DISABLED=1` / `GLAB_NO_PROMPT=1`) so a missing/expired auth
+    /// surfaces as an error instead of hanging on a prompt.
+    pub prompt_env: (&'a str, &'a str),
+    /// Shown (as the whole error) when the tool isn't installed.
+    pub install_hint: &'a str,
+    /// Context wrapped around a spawn failure that isn't "not found".
+    pub run_context: &'a str,
+}
+
+/// Run a CLI API request. Distinguishes "tool not installed" (→ the install
+/// hint) from "tool ran" (→ `Ok(Output)`, even on a non-zero exit — the caller
+/// inspects `output.status` and the body).
+pub fn run_cli_api(request: CliApiRequest<'_>) -> Result<Output> {
+    match Command::new(request.tool)
+        .args(request.args.iter().copied())
+        .current_dir(request.repo_root)
+        .env(request.prompt_env.0, request.prompt_env.1)
+        .output()
+    {
+        Ok(output) => Ok(output),
+        Err(error) if error.kind() == ErrorKind::NotFound => bail!("{}", request.install_hint),
+        Err(error) => Err(anyhow::Error::from(error).context(request.run_context.to_string())),
+    }
+}
+
+/// Best error detail from a failed invocation: stderr, falling back to stdout
+/// (some CLIs print the API error body to stdout).
+pub fn error_details(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        stderr.trim().to_string()
+    }
+}
+
+/// Read a `<tool> config get <key>` value (e.g. `git_protocol`). `None` if the
+/// tool is missing, the key is unset, or the value is empty.
+pub fn config_value(tool: &str, key: &str) -> Option<String> {
+    Command::new(tool)
+        .args(["config", "get", key])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Wrap a "tool ran but the request failed" output as an error, with the run
+/// context and the extracted detail. Used as the fallback after providers have
+/// tried to recognise specific status codes.
+pub fn generic_api_error(run_context: &str, output: &Output) -> anyhow::Error {
+    anyhow::anyhow!("{run_context}: {}", error_details(output))
+}
+
+/// Extract the host from a PR/MR `html_url` (`https://host/...`).
+pub fn host_from_url(url: &str) -> Result<String> {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .filter(|h| !h.is_empty())
+        .map(String::from)
+        .with_context(|| format!("could not parse host from URL: {url}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Output;
+
+    fn output(stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: std::process::ExitStatus::from_raw(1 << 8), // exit code 1
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn error_details_prefers_stderr() {
+        assert_eq!(error_details(&output("out", "the error")), "the error");
+    }
+
+    #[test]
+    fn error_details_falls_back_to_stdout() {
+        assert_eq!(error_details(&output("body error", "   ")), "body error");
+    }
+
+    #[test]
+    fn host_from_url_parses_scheme_host() {
+        assert_eq!(
+            host_from_url("https://github.com/o/r/pull/1").unwrap(),
+            "github.com"
+        );
+        assert_eq!(
+            host_from_url("http://gitlab.example.com/g/r/-/merge_requests/2").unwrap(),
+            "gitlab.example.com"
+        );
+        assert!(host_from_url("not a url").is_err());
+    }
+}

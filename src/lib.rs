@@ -277,6 +277,7 @@ pub mod cow_copy;
 pub mod doctor;
 pub mod exec;
 pub mod executor;
+pub mod forge;
 pub mod git;
 pub mod governor;
 pub mod hints;
