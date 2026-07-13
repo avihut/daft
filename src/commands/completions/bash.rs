@@ -668,11 +668,11 @@ _daft() {
     # skill: complete subcommands and arguments
     if [[ $cword -ge 2 && "${words[1]}" == "skill" ]]; then
         if [[ $cword -eq 2 ]]; then
-            COMPREPLY=( $(compgen -W "install show" -- "$cur") )
+            COMPREPLY=( $(compgen -W "install uninstall show" -- "$cur") )
             return 0
         fi
         case "${words[2]}" in
-            install)
+            install|uninstall)
                 if [[ "$prev" == "--dir" ]]; then
                     COMPREPLY=( $(compgen -d -- "$cur") )
                     return 0
@@ -684,7 +684,7 @@ _daft() {
                 ;;
             show)
                 if [[ "$cur" == -* ]]; then
-                    COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "--no-pager -h --help" -- "$cur") )
                 fi
                 return 0
                 ;;

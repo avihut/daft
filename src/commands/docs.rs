@@ -164,6 +164,10 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                     command: skill::install::Args::command(),
                 },
                 CommandEntry {
+                    display_name: "skill uninstall",
+                    command: skill::uninstall::Args::command(),
+                },
+                CommandEntry {
                     display_name: "skill show",
                     command: skill::show::Args::command(),
                 },
@@ -341,6 +345,10 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "daft skill install",
                     command: skill::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft skill uninstall",
+                    command: skill::uninstall::Args::command(),
                 },
                 CommandEntry {
                     display_name: "daft skill show",

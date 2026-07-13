@@ -864,11 +864,11 @@ _daft() {
     # skill: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "skill" ]]; then
         if (( CURRENT == 3 )); then
-            compadd install show
+            compadd install uninstall show
             return
         fi
         case "$words[3]" in
-            install)
+            install|uninstall)
                 local prev_word="${words[$((CURRENT-1))]}"
                 if [[ "$prev_word" == "--dir" ]]; then
                     _files -/
@@ -881,7 +881,7 @@ _daft() {
                 ;;
             show)
                 if [[ "$curword" == -* ]]; then
-                    compadd -- -h --help
+                    compadd -- --no-pager -h --help
                 fi
                 return
                 ;;

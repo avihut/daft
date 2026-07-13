@@ -1,0 +1,48 @@
+name: Skill uninstall
+description:
+  daft skill uninstall removes an installed skill, is a no-op when nothing is
+  installed, and preserves a user's own files left beside the skill
+
+steps:
+  - name: Install so there is something to remove
+    run: daft skill install --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+
+  - name: Uninstall removes the skill and its empty directory
+    run: daft skill uninstall --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed agent skill"
+      files_not_exist:
+        - "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+        - "$WORK_DIR/skills/daft-worktree-workflow"
+
+  - name: Re-running is a no-op, not an error
+    run: daft skill uninstall --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "nothing to remove"
+
+  - name: Reinstall, then leave a user file beside the skill
+    run: >
+      daft skill install --dir "$WORK_DIR/skills" && echo 'my notes' >
+      "$WORK_DIR/skills/daft-worktree-workflow/notes.md"
+    expect:
+      exit_code: 0
+
+  - name: Uninstall keeps the non-empty directory and the user's file
+    run: daft skill uninstall --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removed agent skill"
+        - "still contains other files"
+      files_not_exist:
+        - "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+      files_exist:
+        - "$WORK_DIR/skills/daft-worktree-workflow/notes.md"

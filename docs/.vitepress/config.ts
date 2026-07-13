@@ -478,6 +478,10 @@ export default defineConfig({
                     link: "/reference/cli/daft-skill-install",
                   },
                   {
+                    text: "skill uninstall",
+                    link: "/reference/cli/daft-skill-uninstall",
+                  },
+                  {
                     text: "skill show",
                     link: "/reference/cli/daft-skill-show",
                   },

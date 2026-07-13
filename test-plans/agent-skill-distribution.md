@@ -45,6 +45,24 @@ All steps that touch the user-global path must run with an isolated HOME
       bytes; a following `daft skill install --dir <root>` reports already up to
       date (redirect is byte-identical to the embedded skill)
 
+## Uninstall
+
+- [ ] `daft skill uninstall --dir <root>` after an install removes SKILL.md and
+      the now-empty daft-worktree-workflow directory, reporting
+      `Removed agent skill (vX.Y.Z) → ...`
+- [ ] Re-running reports `No agent skill installed at ... (nothing to remove)`
+      and exits 0
+- [ ] With a user file left beside the skill, uninstall removes SKILL.md but
+      keeps the directory and that file, printing the
+      `still contains other     files` notice on stderr
+- [ ] A foreign SKILL.md (frontmatter name is not daft-worktree-workflow) is
+      refused with an error and left in place
+- [ ] `daft skill uninstall --project` removes the current worktree's copy;
+      `--project --dir` together is a clap error (exit 2)
+- [ ] Bare `daft skill` help lists `uninstall`; completions offer it
+      (bash/zsh/fish); `daft skill install`'s `show` completion offers
+      `--no-pager`
+
 ## Doctor freshness
 
 - [ ] Fresh isolated HOME: `daft doctor` shows no Agent skill row;

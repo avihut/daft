@@ -9,7 +9,6 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::core::repo::{WorktreePosition, resolve_worktree_position};
 use crate::output::{CliOutput, Output, OutputConfig};
 use crate::skill::{self, InstallOutcome};
 
@@ -75,7 +74,8 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(argv);
     let mut output = CliOutput::new(OutputConfig::new(args.quiet, args.verbose));
 
-    let skills_root = resolve_skills_root(&args)?;
+    let skills_root =
+        super::resolve_skills_root(args.project, args.dir.as_deref(), "skill install")?;
     let (target, outcome) = skill::install_to(&skills_root)?;
 
     let cwd = crate::utils::get_current_directory().ok();
@@ -108,58 +108,13 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Resolve which skills root to install under. Exactly one of the three
-/// targets applies: `--dir` verbatim, `--project` (the current worktree's
-/// `.claude/skills/`), or the user-global default.
-fn resolve_skills_root(args: &Args) -> Result<PathBuf> {
-    if let Some(dir) = &args.dir {
-        return Ok(dir.clone());
-    }
-    if args.project {
-        let cwd = crate::utils::get_current_directory()?;
-        return match resolve_worktree_position(&cwd) {
-            WorktreePosition::InWorktree { root } => Ok(root.join(".claude").join("skills")),
-            WorktreePosition::ContainerRoot { .. } => anyhow::bail!(
-                "--project requires a worktree, and the bare container root has no work tree of its own\n  \
-                 tip: cd into a worktree first, or use `{}`",
-                crate::daft_cmd("skill install --dir <path>")
-            ),
-            WorktreePosition::NotInRepo => anyhow::bail!(
-                "--project requires a Git repository\n  \
-                 tip: run it from inside a worktree, or use `{}`",
-                crate::daft_cmd("skill install --dir <path>")
-            ),
-        };
-    }
-    crate::skill::user_skills_root()
-        .ok_or_else(|| anyhow::anyhow!("could not resolve the home directory for ~/.claude/skills"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn args(argv: &[&str]) -> Args {
-        Args::parse_from(std::iter::once("git-daft-skill-install").chain(argv.iter().copied()))
-    }
-
-    #[test]
-    fn dir_flag_wins_verbatim() {
-        let a = args(&["--dir", "/tmp/some/skills"]);
-        let root = resolve_skills_root(&a).unwrap();
-        assert_eq!(root, PathBuf::from("/tmp/some/skills"));
-    }
 
     #[test]
     fn project_conflicts_with_dir() {
         let err = Args::try_parse_from(["git-daft-skill-install", "--project", "--dir", "/x"]);
         assert!(err.is_err());
-    }
-
-    #[test]
-    fn default_targets_user_skills_root() {
-        let a = args(&[]);
-        let root = resolve_skills_root(&a).unwrap();
-        assert!(root.ends_with(".claude/skills"), "{root:?}");
     }
 }

@@ -82,6 +82,19 @@ daft skill show > <skills-root>/daft-worktree-workflow/SKILL.md
 Unlike downloading `SKILL.md` from the repository, the printed copy always
 matches the daft version you are running.
 
+### Removing
+
+```bash
+daft skill uninstall                 # user-global copy
+daft skill uninstall --project       # this worktree's .claude/skills/
+daft skill uninstall --dir <path>    # another agent's skills root
+```
+
+Removal is safe by construction: only a `SKILL.md` whose frontmatter marks it as
+the daft skill is deleted, and the `daft-worktree-workflow` directory is kept if
+you left other files beside the skill. A missing skill is a no-op. See
+[`daft skill uninstall`](/reference/cli/daft-skill-uninstall) for details.
+
 ## Freshness
 
 Installed skill copies are point-in-time snapshots, and the CLI surface evolves.
@@ -166,6 +179,7 @@ relevant sections from there.
 ## See Also
 
 - [`daft skill install`](/reference/cli/daft-skill-install) /
+  [`daft skill uninstall`](/reference/cli/daft-skill-uninstall) /
   [`daft skill show`](/reference/cli/daft-skill-show) -- the CLI reference
 - [`daft doctor`](/reference/cli/daft-doctor) -- the freshness check
 - [Worktrees](/worktrees/) -- understanding the worktree development approach

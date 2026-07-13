@@ -40,14 +40,34 @@ pub fn parse_frontmatter_version(content: &str) -> Option<String> {
     struct Frontmatter {
         daft_version: Option<String>,
     }
+    serde_yaml::from_str::<Frontmatter>(frontmatter_block(content)?)
+        .ok()?
+        .daft_version
+}
+
+/// Extract the `name` key from a SKILL.md's frontmatter — the identity an
+/// agent resolves the skill by. `None` for the same reasons as
+/// [`parse_frontmatter_version`]. Used to confirm a file really is the daft
+/// skill before [`remove_from`] deletes it.
+fn parse_frontmatter_name(content: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Frontmatter {
+        name: Option<String>,
+    }
+    serde_yaml::from_str::<Frontmatter>(frontmatter_block(content)?)
+        .ok()?
+        .name
+}
+
+/// The raw YAML between a SKILL.md's leading `---` fences, or `None` when the
+/// content carries no well-formed frontmatter block.
+fn frontmatter_block(content: &str) -> Option<&str> {
     let rest = content.strip_prefix("---\n")?;
     let end = match rest.find("\n---\n") {
         Some(i) => i,
         None => rest.strip_suffix("\n---").map(str::len)?,
     };
-    serde_yaml::from_str::<Frontmatter>(&rest[..end])
-        .ok()?
-        .daft_version
+    Some(&rest[..end])
 }
 
 /// Three-way semver-ish comparison. Tolerates a leading `v` and ignores
@@ -100,6 +120,21 @@ pub enum InstallOutcome {
     UpToDate,
 }
 
+/// What [`remove_from`] found on disk and did about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    /// The skill file was deleted. `version` is the removed copy's stamp
+    /// (`None` if it was unstamped); `dir_removed` is false when the
+    /// `daft-worktree-workflow` directory was kept because it still held
+    /// other files.
+    Removed {
+        version: Option<String>,
+        dir_removed: bool,
+    },
+    /// No skill file at the target — nothing to remove.
+    NotInstalled,
+}
+
 /// Write the embedded skill under `skills_root` (creating
 /// `<root>/daft-worktree-workflow/`), classifying what happened. Install
 /// doubles as update: an existing copy is always overwritten unless it is
@@ -138,6 +173,52 @@ fn classify(existing: Option<&str>) -> InstallOutcome {
         Some(stamp) if stamp == embedded_version() => InstallOutcome::Refreshed,
         other => InstallOutcome::Updated { from: other },
     }
+}
+
+/// Remove the daft skill under `skills_root` (the inverse of [`install_to`]),
+/// safely. Only a `<root>/daft-worktree-workflow/SKILL.md` whose frontmatter
+/// `name:` marks it as the daft skill is deleted — a foreign file in that
+/// path is an error, never a silent `rm`. The `daft-worktree-workflow`
+/// directory is removed only when deleting the skill leaves it empty, so a
+/// user's own files beside the skill are preserved. A missing skill is
+/// [`RemoveOutcome::NotInstalled`], not an error, so callers can remove
+/// idempotently. Returns the skill directory alongside the outcome.
+pub fn remove_from(skills_root: &Path) -> Result<(PathBuf, RemoveOutcome)> {
+    let dir = skills_root.join(SKILL_DIR_NAME);
+    let target = skill_file_path(skills_root);
+    let existing = match std::fs::read_to_string(&target) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((dir, RemoveOutcome::NotInstalled));
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("could not read {}", target.display()));
+        }
+    };
+
+    if parse_frontmatter_name(&existing).as_deref() != Some(SKILL_DIR_NAME) {
+        anyhow::bail!(
+            "refusing to remove {}: its frontmatter name is not `{SKILL_DIR_NAME}`, \
+             so it does not look like the daft agent skill\n  \
+             tip: delete it by hand if you are sure",
+            target.display(),
+        );
+    }
+
+    let version = parse_frontmatter_version(&existing);
+    std::fs::remove_file(&target)
+        .with_context(|| format!("could not remove {}", target.display()))?;
+    // Best-effort: `remove_dir` only succeeds on a now-empty directory, so a
+    // user's own files alongside the skill keep the directory and are left
+    // untouched.
+    let dir_removed = std::fs::remove_dir(&dir).is_ok();
+    Ok((
+        dir,
+        RemoveOutcome::Removed {
+            version,
+            dir_removed,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -281,5 +362,105 @@ mod tests {
         let (_, outcome) = install_to(tmp.path()).unwrap();
         assert_eq!(outcome, InstallOutcome::Refreshed);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), SKILL_MD);
+    }
+
+    // --- parse_frontmatter_name ---
+
+    #[test]
+    fn parses_name_from_frontmatter() {
+        let content =
+            "---\nname: daft-worktree-workflow\ndaft_version: \"1.19.0\"\n---\n\n# Body\n";
+        assert_eq!(
+            parse_frontmatter_name(content).as_deref(),
+            Some("daft-worktree-workflow")
+        );
+        assert_eq!(parse_frontmatter_name("# no frontmatter\n"), None);
+    }
+
+    // --- remove_from ---
+
+    #[test]
+    fn remove_when_absent_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, outcome) = remove_from(tmp.path()).unwrap();
+        assert_eq!(outcome, RemoveOutcome::NotInstalled);
+        assert!(dir.ends_with("daft-worktree-workflow"));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn remove_deletes_installed_skill_and_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let (file, _) = install_to(tmp.path()).unwrap();
+        let (dir, outcome) = remove_from(tmp.path()).unwrap();
+        assert_eq!(
+            outcome,
+            RemoveOutcome::Removed {
+                version: Some(embedded_version().to_string()),
+                dir_removed: true,
+            }
+        );
+        assert!(!file.exists());
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn remove_refuses_a_foreign_file() {
+        let tmp = TempDir::new().unwrap();
+        let target = skill_file_path(tmp.path());
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(
+            &target,
+            "---\nname: someone-elses-skill\n---\n\n# Not ours\n",
+        )
+        .unwrap();
+
+        let err = remove_from(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not look like the daft agent skill")
+        );
+        assert!(target.exists(), "the foreign file must be left in place");
+    }
+
+    #[test]
+    fn remove_keeps_a_nonempty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let (file, _) = install_to(tmp.path()).unwrap();
+        let sibling = file.parent().unwrap().join("notes.md");
+        std::fs::write(&sibling, "user notes").unwrap();
+
+        let (dir, outcome) = remove_from(tmp.path()).unwrap();
+        assert_eq!(
+            outcome,
+            RemoveOutcome::Removed {
+                version: Some(embedded_version().to_string()),
+                dir_removed: false,
+            }
+        );
+        assert!(!file.exists(), "the skill file is still removed");
+        assert!(sibling.exists(), "the user's own file is preserved");
+        assert!(dir.exists());
+    }
+
+    #[test]
+    fn remove_reports_no_version_for_unstamped_copy() {
+        let tmp = TempDir::new().unwrap();
+        let target = skill_file_path(tmp.path());
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(
+            &target,
+            "---\nname: daft-worktree-workflow\n---\n\n# Ancient\n",
+        )
+        .unwrap();
+
+        let (_, outcome) = remove_from(tmp.path()).unwrap();
+        assert_eq!(
+            outcome,
+            RemoveOutcome::Removed {
+                version: None,
+                dir_removed: true,
+            }
+        );
     }
 }

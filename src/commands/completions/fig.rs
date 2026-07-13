@@ -714,20 +714,57 @@ fn build_fig_skill_subcommand() -> FigSubcommand {
         ]),
     };
 
+    let uninstall = FigSubcommand {
+        name: "uninstall".to_string(),
+        description: Some("Remove the installed agent skill".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--project".into()),
+                description: "Remove the current worktree's .claude/skills/ copy".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--dir".into()),
+                description: "Remove from this skills root (for other agents)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress the result line".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+        ]),
+    };
+
     let show = FigSubcommand {
         name: "show".to_string(),
         description: Some("Print the embedded SKILL.md to stdout".to_string()),
         load_spec: None,
         subcommands: None,
         args: None,
-        options: None,
+        options: Some(vec![FigOption {
+            name: FigName::Single("--no-pager".into()),
+            description: "Print rendered output directly instead of through a pager".into(),
+            args: None,
+        }]),
     };
 
     FigSubcommand {
         name: "skill".to_string(),
         description: Some("Manage the daft agent skill".to_string()),
         load_spec: None,
-        subcommands: Some(vec![install, show]),
+        subcommands: Some(vec![install, uninstall, show]),
         args: None,
         options: None,
     }

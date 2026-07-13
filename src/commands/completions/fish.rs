@@ -472,13 +472,21 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
 # skill: subcommands
-complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install show' -f -a 'install' -d 'Install or update the agent skill for Claude Code'
-complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install show' -f -a 'show' -d 'Print the embedded SKILL.md to stdout'
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'install' -d 'Install or update the agent skill for Claude Code'
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'uninstall' -d 'Remove the installed agent skill'
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'show' -d 'Print the embedded SKILL.md to stdout'
 # skill install: flags
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -l project -d "Install into the current worktree's .claude/skills/"
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -l dir -x -a "(__fish_complete_directories (commandline -ct))" -d 'Install under this skills root'
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress the result line'
 complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
+# skill uninstall: flags
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -l project -d "Remove the current worktree's .claude/skills/ copy"
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -l dir -x -a "(__fish_complete_directories (commandline -ct))" -d 'Remove from this skills root'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -s q -l quiet -d 'Suppress the result line'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -s v -l verbose -d 'Show detailed progress'
+# skill show: flags
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from show' -l no-pager -d 'Print rendered output directly instead of through a pager'
 complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from remote-sync' -f -a 'remote-sync'
 # file: subcommands
 complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subcommand_from merge' -f -a 'merge' -d 'Merge a source daft.yml into a target daft.yml'
