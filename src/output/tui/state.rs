@@ -3,7 +3,7 @@ use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
     DagEvent, DagHookPhase, DeferReason, JobCompletionStatus, OperationPhase, TaskMessage,
-    TaskStatus,
+    TaskStatus, ThrottleReason,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -318,8 +318,12 @@ impl TuiState {
                 // deliberately held, not merely pending.
                 self.activate_phase(phase);
                 let label = match reason {
-                    DeferReason::ClassCap => "held: capped",
-                    DeferReason::MemoryPressure | DeferReason::KillCooldown => "held: memory",
+                    ThrottleReason::Deferred(DeferReason::ClassCap) => "held: capped",
+                    ThrottleReason::Deferred(
+                        DeferReason::MemoryPressure | DeferReason::KillCooldown,
+                    ) => "held: memory",
+                    ThrottleReason::Frozen => "held: frozen",
+                    ThrottleReason::Evicted { .. } => "held: retry",
                 };
                 if self.governor_throttled_seen.insert(branch_name.clone()) {
                     self.governor.throttled_pushes += 1;
@@ -333,9 +337,25 @@ impl TuiState {
                         row.prev_terminal_status = Some(row.status.clone());
                     }
                     row.status = WorktreeStatus::Throttled(label.into());
-                    if row.throttled_since.is_none() {
+                    // A freeze pauses mid-run work; only queue-waits count
+                    // toward the throttle summary clock.
+                    if matches!(
+                        reason,
+                        ThrottleReason::Deferred(_) | ThrottleReason::Evicted { .. }
+                    ) && row.throttled_since.is_none()
+                    {
                         row.throttled_since = Some(std::time::Instant::now());
                     }
+                }
+            }
+            DagEvent::TaskResumed { phase, branch_name } => {
+                // A thawed unit is running again — restore the active label
+                // its TaskStarted originally set.
+                let _ = phase;
+                if let Some(row) = self.find_row_mut(branch_name)
+                    && matches!(row.status, WorktreeStatus::Throttled(_))
+                {
+                    row.status = WorktreeStatus::Active("pushing".into());
                 }
             }
             DagEvent::AllDone => {
@@ -573,7 +593,9 @@ impl TuiState {
             // "cancelled" state comes from the live region, and the exit
             // code (130) from the sync command itself.
             TaskStatus::Cancelled => FinalStatus::Skipped,
-            TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
+            // Evicted is transient (the executor requeues it and never puts
+            // it in a TaskCompleted event) — defensive arm only.
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Evicted => FinalStatus::Failed,
         }
     }
 }
@@ -650,7 +672,7 @@ mod tests {
         state.apply_event(&DagEvent::TaskThrottled {
             phase: OperationPhase::Push,
             branch_name: "feat/a".into(),
-            reason: DeferReason::MemoryPressure,
+            reason: ThrottleReason::Deferred(DeferReason::MemoryPressure),
         });
         assert!(matches!(
             &state.find_row_mut("feat/a").unwrap().status,
@@ -662,7 +684,7 @@ mod tests {
         state.apply_event(&DagEvent::TaskThrottled {
             phase: OperationPhase::Push,
             branch_name: "feat/a".into(),
-            reason: DeferReason::ClassCap,
+            reason: ThrottleReason::Deferred(DeferReason::ClassCap),
         });
         assert!(matches!(
             &state.find_row_mut("feat/a").unwrap().status,
@@ -698,7 +720,7 @@ mod tests {
         state.apply_event(&DagEvent::TaskThrottled {
             phase: OperationPhase::Push,
             branch_name: "feat/a".into(),
-            reason: DeferReason::MemoryPressure,
+            reason: ThrottleReason::Deferred(DeferReason::MemoryPressure),
         });
         state.apply_event(&DagEvent::TaskStarted {
             phase: OperationPhase::Push,

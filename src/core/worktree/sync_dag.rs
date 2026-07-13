@@ -57,6 +57,10 @@ pub enum TaskStatus {
     /// task. Distinct from `Failed` so cancellation never trips the
     /// failure exit path.
     Cancelled,
+    /// Killed by the resource governor under memory pressure (#678); the
+    /// executor resets it to Pending and requeues it (bounded retries).
+    /// Transient — never carried by a `TaskCompleted` event.
+    Evicted,
 }
 
 impl TaskStatus {
@@ -560,13 +564,20 @@ pub enum DagEvent {
         /// Typed result message.
         message: TaskMessage,
     },
-    /// A ready task was deferred by the resource governor (#678). Emitted
-    /// on the not-throttled → throttled transition only; the matching
-    /// `TaskStarted` announces the eventual admission.
+    /// A task was held back by the resource governor (#678): deferred
+    /// before launch (emitted on the not-throttled → throttled transition
+    /// only; the matching `TaskStarted` announces admission), frozen
+    /// mid-run (`TaskResumed` announces the thaw), or evicted and
+    /// requeued.
     TaskThrottled {
         phase: OperationPhase,
         branch_name: String,
-        reason: DeferReason,
+        reason: ThrottleReason,
+    },
+    /// A frozen task's processes were thawed and it is running again.
+    TaskResumed {
+        phase: OperationPhase,
+        branch_name: String,
     },
     /// All tasks are done.
     AllDone,
@@ -647,6 +658,19 @@ pub enum DeferReason {
     KillCooldown,
 }
 
+/// How the governor is holding a task back (payload of
+/// [`DagEvent::TaskThrottled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThrottleReason {
+    /// Held in the ready queue before launch.
+    Deferred(DeferReason),
+    /// Launched, then SIGSTOP'd mid-run to relieve memory pressure.
+    Frozen,
+    /// Killed under memory pressure and requeued; `attempt` counts the
+    /// retries consumed so far.
+    Evicted { attempt: u8 },
+}
+
 /// Admission gate consulted by [`DagExecutor`] before it runs a ready task.
 ///
 /// Contract (the executor relies on every point):
@@ -722,6 +746,11 @@ impl DagGovernor for StaticCapGovernor {
 /// becomes admissible.
 const ADMISSION_RECHECK: Duration = Duration::from_millis(200);
 
+/// Retries a governor-evicted push gets before it fails terminally
+/// (so 3 attempts total). Pre-push hooks are re-runnable checks by
+/// convention, and a killed `git push` is atomic server-side.
+const MAX_PUSH_RETRIES: u8 = 2;
+
 /// Shared mutable state for the worker pool.
 struct DagState {
     ready: Vec<usize>,
@@ -734,6 +763,8 @@ struct DagState {
     /// Per-task "currently deferred by the governor" flag, so
     /// `TaskThrottled` fires once per transition instead of once per scan.
     throttled: Vec<bool>,
+    /// Per-task governor-eviction retry counter (#678 stage 3).
+    attempts: Vec<u8>,
 }
 
 /// Executes a DAG of sync tasks in parallel.
@@ -814,6 +845,7 @@ impl DagExecutor {
                 total: n,
                 branch_outcomes: HashMap::new(),
                 throttled: vec![false; n],
+                attempts: vec![0; n],
             }),
             Condvar::new(),
         ));
@@ -894,7 +926,9 @@ impl DagExecutor {
                                                                 branch_name: dag.tasks[idx]
                                                                     .branch_name
                                                                     .clone(),
-                                                                reason,
+                                                                reason: ThrottleReason::Deferred(
+                                                                    reason,
+                                                                ),
                                                             });
                                                     }
                                                 }
@@ -960,12 +994,46 @@ impl DagExecutor {
                             let (lock, cvar) = &*state;
                             let mut s = lock.lock().unwrap();
                             // Return the governor slot before anything else so
-                            // admission accounting never lags the running set.
+                            // admission accounting never lags the running set —
+                            // and strictly before a requeue re-enters `ready`.
                             if let Some(gov) = governor {
                                 gov.release(&dag.tasks[task_idx]);
                             }
-                            s.status[task_idx] = result_status;
                             s.active -= 1;
+
+                            // Governor eviction (#678): not a completion.
+                            // Reset to Pending and requeue — no `done`
+                            // increment, no outcome write, no dependent
+                            // bookkeeping, no TaskCompleted. Admission holds
+                            // the retry until pressure clears (post-kill
+                            // cooldown). Retries exhausted → terminal Failed
+                            // through the normal path below.
+                            let mut result_status = result_status;
+                            let mut message = message;
+                            if result_status == TaskStatus::Evicted {
+                                if s.attempts[task_idx] < MAX_PUSH_RETRIES {
+                                    s.attempts[task_idx] += 1;
+                                    s.status[task_idx] = TaskStatus::Pending;
+                                    s.throttled[task_idx] = true;
+                                    s.ready.push(task_idx);
+                                    let _ = sender.send(DagEvent::TaskThrottled {
+                                        phase: dag.tasks[task_idx].phase.clone(),
+                                        branch_name: dag.tasks[task_idx].branch_name.clone(),
+                                        reason: ThrottleReason::Evicted {
+                                            attempt: s.attempts[task_idx],
+                                        },
+                                    });
+                                    cvar.notify_all();
+                                    continue;
+                                }
+                                result_status = TaskStatus::Failed;
+                                message = TaskMessage::Failed(format!(
+                                    "push killed under memory pressure ({} attempts)",
+                                    s.attempts[task_idx] + 1
+                                ));
+                            }
+
+                            s.status[task_idx] = result_status;
                             s.done += 1;
 
                             let branch = &dag.tasks[task_idx].branch_name;
@@ -1469,6 +1537,131 @@ mod tests {
             overall_peak.load(Ordering::SeqCst) >= 2,
             "deferred pushes must not pin workers: overall peak stayed at {}",
             overall_peak.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn evicted_push_requeues_then_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let push_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&push_calls);
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                // First attempt dies "under memory pressure"; the retry lands.
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return (
+                        TaskStatus::Evicted,
+                        TaskMessage::Failed("killed under memory pressure".into()),
+                        outcomes.clone(),
+                    );
+                }
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        assert_eq!(push_calls.load(Ordering::SeqCst), 2, "one retry");
+        let requeues: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskThrottled {
+                    reason: ThrottleReason::Evicted { attempt },
+                    ..
+                } => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requeues, vec![1]);
+        // The eviction itself never surfaces as a completion; the retry's
+        // success does, exactly once.
+        let push_completions: Vec<TaskStatus> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskCompleted {
+                    phase: OperationPhase::Push,
+                    status,
+                    ..
+                } => Some(*status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(push_completions, vec![TaskStatus::Succeeded]);
+        // Both attempts announced a start.
+        let push_starts = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskStarted {
+                        phase: OperationPhase::Push,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(push_starts, 2);
+    }
+
+    #[test]
+    fn eviction_retries_exhaust_into_terminal_failure() {
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                return (
+                    TaskStatus::Evicted,
+                    TaskMessage::Failed("killed under memory pressure".into()),
+                    outcomes.clone(),
+                );
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let requeues = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskThrottled {
+                        reason: ThrottleReason::Evicted { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(requeues, usize::from(MAX_PUSH_RETRIES));
+        let failure = events.iter().find_map(|e| match e {
+            DagEvent::TaskCompleted {
+                phase: OperationPhase::Push,
+                status: TaskStatus::Failed,
+                message,
+                ..
+            } => Some(message.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            failure,
+            Some(TaskMessage::Failed(
+                "push killed under memory pressure (3 attempts)".into()
+            ))
         );
     }
 

@@ -6,6 +6,8 @@ pub mod cancel;
 mod clone;
 mod config;
 pub(crate) mod oxide;
+#[cfg(unix)]
+pub(crate) mod process_tree;
 pub mod push_porcelain;
 mod refs;
 mod remote;
@@ -70,6 +72,11 @@ pub(crate) struct PushSupervision {
     /// Expiry tears the unit's tree down; the push fails with a timeout
     /// hint.
     pub(crate) timeout: Option<std::time::Duration>,
+    /// Receives each freshly armed unit clock (paired with `on_spawn`'s
+    /// pid) so the resource governor can pause it during a freeze —
+    /// frozen time must not count against the budget (#678 stage 3).
+    pub(crate) on_clock:
+        Option<std::sync::Arc<dyn Fn(std::sync::Arc<cancel::UnitClock>) + Send + Sync>>,
 }
 
 pub struct GitCommand {

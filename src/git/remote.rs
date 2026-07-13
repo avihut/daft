@@ -194,6 +194,14 @@ impl GitCommand {
             .as_ref()
             .and_then(|s| s.timeout)
             .map(|limit| std::sync::Arc::new(cancel::UnitClock::new(limit)));
+        if let Some(clock) = &clock
+            && let Some(on_clock) = self
+                .push_supervision
+                .as_ref()
+                .and_then(|s| s.on_clock.as_ref())
+        {
+            on_clock(std::sync::Arc::clone(clock));
+        }
         let supervise_opts = cancel::SuperviseOpts {
             mode: cancel::SupervisionMode::Isolated,
             on_spawn: self

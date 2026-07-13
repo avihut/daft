@@ -74,6 +74,20 @@ const PSI_RED: f32 = 10.0;
 /// against flapping on a noisy sample).
 const RAMP_GREEN_TICKS: u32 = 2;
 
+/// Consecutive red ticks before the containment tier freezes a unit.
+const FREEZE_RED_TICKS: u32 = 2;
+
+/// A unit still frozen when red has lasted this long is killed and
+/// requeued. Deliberately short: git's remote connection is open while
+/// its hook is frozen (a long freeze times the ssh session out), and a
+/// frozen hook can hold locks its siblings need.
+pub const FREEZE_GRACE_MS: u64 = 10_000;
+
+/// After a kill, hold admissions this long — memory readings lag a
+/// SIGKILL, and instantly re-admitting the requeued unit would march it
+/// straight back into the same pressure.
+pub const KILL_COOLDOWN_MS: u64 = 3_000;
+
 /// A single-tick drop in available memory larger than `reserve / this`
 /// classifies as an allocation storm (yellow) even while headroom is green.
 const STORM_DROP_DIVISOR: u64 = 4;
@@ -154,6 +168,30 @@ impl HookProfile {
     }
 }
 
+/// One admitted unit as the containment policy sees it (#678 stage 3).
+#[derive(Debug, Clone)]
+pub struct UnitView {
+    /// Opaque unit identity (the push's branch name).
+    pub branch: String,
+    /// The unit's `git push` root pid is known — freeze/kill can reach it.
+    pub has_pid: bool,
+    /// Admission timestamp (same origin as `now_ms`); larger = newer.
+    pub started_ms: u64,
+    /// How long this unit has been frozen (`None` = running).
+    pub frozen_for_ms: Option<u64>,
+}
+
+/// A containment action for the shell to apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainAction {
+    /// SIGSTOP the unit's descendants (never its git-push leader).
+    Freeze { branch: String },
+    /// SIGCONT what a freeze stopped.
+    Thaw { branch: String },
+    /// SIGKILL the unit's tree; the executor requeues its task.
+    Kill { branch: String },
+}
+
 /// Deterministic admission state machine: slow-start + AIMD over a
 /// traffic-light pressure signal.
 ///
@@ -167,8 +205,10 @@ pub struct Controller {
     /// True until the first red — the target doubles instead of +1.
     slow_start: bool,
     green_streak: u32,
+    red_streak: u32,
     pressure: Pressure,
     last_admit_ms: Option<u64>,
+    kill_cooldown_until_ms: Option<u64>,
     prev_swap: Option<u64>,
     prev_avail: Option<u64>,
 }
@@ -185,8 +225,10 @@ impl Controller {
             },
             slow_start: !params.light,
             green_streak: 0,
+            red_streak: 0,
             pressure: Pressure::Green,
             last_admit_ms: None,
+            kill_cooldown_until_ms: None,
             prev_swap: None,
             prev_avail: None,
             params,
@@ -221,6 +263,7 @@ impl Controller {
         match pressure {
             Pressure::Green => {
                 self.green_streak += 1;
+                self.red_streak = 0;
                 if self.green_streak >= RAMP_GREEN_TICKS && self.target < self.params.cap {
                     self.target = if self.slow_start {
                         (self.target * 2).min(self.params.cap)
@@ -234,9 +277,11 @@ impl Controller {
                 // Hold: no growth, no shrink. Yellow deliberately does not
                 // end slow-start — only red proves the ramp overshot.
                 self.green_streak = 0;
+                self.red_streak = 0;
             }
             Pressure::Red => {
                 self.green_streak = 0;
+                self.red_streak += 1;
                 self.slow_start = false;
                 // Halve relative to what actually runs: a target far above
                 // `running` would otherwise take several reds to bite.
@@ -244,6 +289,65 @@ impl Controller {
             }
         }
         pressure
+    }
+
+    /// Containment decision for this tick (#678 stage 3) — at most one
+    /// action, applied by the shell. Policy: after sustained red, freeze
+    /// the newest unfrozen unit that has a pid, but never the last
+    /// unfrozen runner; a unit still frozen once red has outlasted
+    /// [`FREEZE_GRACE_MS`] is killed (the executor requeues it); green
+    /// thaws the most recently frozen unit, one per tick.
+    pub fn contain(&self, units: &[UnitView]) -> Option<ContainAction> {
+        match self.pressure {
+            Pressure::Green => units
+                .iter()
+                .filter(|u| u.frozen_for_ms.is_some())
+                .min_by_key(|u| u.frozen_for_ms)
+                .map(|u| ContainAction::Thaw {
+                    branch: u.branch.clone(),
+                }),
+            Pressure::Yellow => None,
+            Pressure::Red => {
+                // A freeze that didn't relieve the pressure inside the
+                // grace becomes a kill — even for the last unit: killed
+                // work is requeued and re-admitted, while a unit left
+                // frozen under red would hold its slot (and possibly
+                // locks and an open ssh session) forever.
+                if let Some(expired) = units
+                    .iter()
+                    .filter(|u| u.has_pid)
+                    .find(|u| u.frozen_for_ms.is_some_and(|ms| ms >= FREEZE_GRACE_MS))
+                {
+                    return Some(ContainAction::Kill {
+                        branch: expired.branch.clone(),
+                    });
+                }
+                if self.red_streak < FREEZE_RED_TICKS {
+                    return None;
+                }
+                let unfrozen: Vec<&UnitView> =
+                    units.iter().filter(|u| u.frozen_for_ms.is_none()).collect();
+                // Never freeze the last unfrozen runner — something must
+                // always make progress.
+                if unfrozen.len() < 2 {
+                    return None;
+                }
+                unfrozen
+                    .into_iter()
+                    .filter(|u| u.has_pid)
+                    .max_by_key(|u| u.started_ms)
+                    .map(|u| ContainAction::Freeze {
+                        branch: u.branch.clone(),
+                    })
+            }
+        }
+    }
+
+    /// Record a governor kill: admissions hold for [`KILL_COOLDOWN_MS`]
+    /// so the requeued unit isn't re-admitted into the same pressure the
+    /// readings haven't caught up with yet.
+    pub fn note_kill(&mut self, now_ms: u64) {
+        self.kill_cooldown_until_ms = Some(now_ms + KILL_COOLDOWN_MS);
     }
 
     fn classify(&self, sample: &ResourceSample, swap_rising: bool, storm_drop: bool) -> Pressure {
@@ -272,11 +376,17 @@ impl Controller {
         sample: &ResourceSample,
         predicted_peak: Option<u64>,
     ) -> Result<(), HoldReason> {
-        // Liveness: something must always run. The containment tier never
-        // takes the last unit, so this cannot oscillate with stage 3.
+        // Liveness: something must always run. This outranks even the
+        // post-kill cooldown — a single huge push cycles through the
+        // bounded kill → requeue → retry ladder rather than hanging.
         if running == 0 {
             self.last_admit_ms = Some(now_ms);
             return Ok(());
+        }
+        if let Some(until) = self.kill_cooldown_until_ms
+            && now_ms < until
+        {
+            return Err(HoldReason::KillCooldown);
         }
         if running >= self.params.cap {
             return Err(HoldReason::AtCap);
@@ -508,6 +618,126 @@ mod tests {
             c.tick(&sample(20), 3);
         }
         assert_eq!(c.target(), 3);
+    }
+
+    fn unit(branch: &str, started_ms: u64, frozen_for_ms: Option<u64>) -> UnitView {
+        UnitView {
+            branch: branch.into(),
+            has_pid: true,
+            started_ms,
+            frozen_for_ms,
+        }
+    }
+
+    /// Drive the controller to sustained red (streak ≥ 2).
+    fn make_red(c: &mut Controller, running: usize) {
+        c.tick(&sample(1), running);
+        c.tick(&sample(1), running);
+    }
+
+    #[test]
+    fn sustained_red_freezes_newest_unfrozen_with_pid() {
+        let mut c = controller();
+        // One red tick is not sustained — no action yet.
+        c.tick(&sample(1), 3);
+        let units = [
+            unit("old", 100, None),
+            unit("mid", 200, None),
+            unit("new", 300, None),
+        ];
+        assert_eq!(c.contain(&units), None);
+        // Second red tick: freeze the newest.
+        c.tick(&sample(1), 3);
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Freeze {
+                branch: "new".into()
+            })
+        );
+        // A pid-less newest is skipped in favor of the next newest.
+        let mut no_pid_new = units.clone();
+        no_pid_new[2].has_pid = false;
+        assert_eq!(
+            c.contain(&no_pid_new),
+            Some(ContainAction::Freeze {
+                branch: "mid".into()
+            })
+        );
+    }
+
+    #[test]
+    fn never_freezes_the_last_unfrozen_runner() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        // One frozen, one running: the runner must keep making progress.
+        let units = [unit("frozen", 100, Some(2_000)), unit("runner", 200, None)];
+        assert_eq!(c.contain(&units), None);
+        // A single unit total is likewise never frozen.
+        assert_eq!(c.contain(&[unit("only", 100, None)]), None);
+    }
+
+    #[test]
+    fn red_past_grace_kills_the_frozen_unit() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        let units = [
+            unit("frozen", 100, Some(FREEZE_GRACE_MS + 500)),
+            unit("runner", 200, None),
+        ];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Kill {
+                branch: "frozen".into()
+            })
+        );
+        // Under grace: still held frozen, not killed (and "runner" alone
+        // must not be frozen — it is the last unfrozen).
+        let young = [unit("frozen", 100, Some(1_000)), unit("runner", 200, None)];
+        assert_eq!(c.contain(&young), None);
+    }
+
+    #[test]
+    fn green_thaws_most_recently_frozen_first() {
+        let mut c = controller();
+        c.tick(&sample(20), 2);
+        let units = [
+            unit("first-frozen", 100, Some(8_000)),
+            unit("second-frozen", 200, Some(1_000)),
+        ];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Thaw {
+                branch: "second-frozen".into()
+            })
+        );
+        // Yellow holds: no thaw, no freeze.
+        c.tick(
+            &ResourceSample {
+                swap_used: GIB,
+                ..sample(20)
+            },
+            2,
+        );
+        assert_eq!(c.contain(&units), None);
+    }
+
+    #[test]
+    fn kill_cooldown_defers_admissions_but_liveness_wins() {
+        let mut c = controller();
+        c.tick(&sample(20), 1);
+        c.note_kill(1_000);
+        assert_eq!(
+            c.try_admit(2_000, 1, &sample(20), None),
+            Err(HoldReason::KillCooldown)
+        );
+        // Cooldown over.
+        assert!(
+            c.try_admit(1_000 + KILL_COOLDOWN_MS, 1, &sample(20), None)
+                .is_ok()
+        );
+        // Zero running always admits, even inside a cooldown.
+        c.note_kill(10_000);
+        assert!(c.try_admit(10_500, 0, &sample(20), None).is_ok());
     }
 
     #[test]

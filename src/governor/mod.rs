@@ -33,11 +33,16 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::core::worktree::sync_dag::{AdmitDecision, DagGovernor, DeferReason, SyncTask, TaskId};
-use crate::git::cancel::CancelFlag;
+use crate::core::worktree::sync_dag::{
+    AdmitDecision, DagEvent, DagGovernor, DeferReason, OperationPhase, SyncTask, TaskId,
+    ThrottleReason,
+};
+use crate::git::cancel::{CancelFlag, UnitClock};
 use crate::store::models::{GovernorEventRow, HookProfileRow};
-use domain::{Controller, GovernorParams, HoldReason, HookProfile, ResourceSample};
+use domain::{ContainAction, Controller, GovernorParams, HoldReason, HookProfile, ResourceSample};
 use ports::{ProfileKey, ProfileStore, ResourceProbe};
+use std::collections::BTreeSet;
+use std::sync::mpsc;
 
 /// Content hash of the resolved hook file — the profile cache key. Not a
 /// security boundary: `DefaultHasher`'s algorithm may change across Rust
@@ -56,7 +61,6 @@ pub fn hook_script_hash(path: &std::path::Path) -> Option<String> {
 const TICK: Duration = Duration::from_millis(250);
 
 /// A push unit the governor tracks from admission to completion.
-#[derive(Debug)]
 struct UnitEntry {
     branch: String,
     /// Root pid of the unit's `git push` (group leader under
@@ -64,8 +68,23 @@ struct UnitEntry {
     pid: Option<u32>,
     /// Wall-clock start, for the profile's per-run duration.
     started: Instant,
+    /// Admission timestamp on the governor's monotonic origin (for the
+    /// containment policy's newest-first ordering).
+    started_ms: u64,
     /// Peak tree-RSS the sampler has observed for this unit.
     peak_rss: u64,
+    /// The unit's wall-clock budget — paused while frozen (#678 stage 3/4).
+    clock: Option<Arc<UnitClock>>,
+    /// Set (before signaling) when the governor kills this unit, so the
+    /// push worker classifies the death as an eviction, not a failure.
+    killed: Arc<std::sync::atomic::AtomicBool>,
+    /// SIGSTOP'd descendant pids + freeze start (`None` = running).
+    frozen: Option<FrozenUnit>,
+}
+
+struct FrozenUnit {
+    pids: BTreeSet<u32>,
+    since: Instant,
 }
 
 /// Profile persistence for this run (`None` = profiling disabled).
@@ -83,6 +102,8 @@ struct ThrottleLog {
     since: HashMap<String, Instant>,
     /// Resolved waits: (branch, held duration).
     held: Vec<(String, Duration)>,
+    /// Containment actions taken: (kind, branch, detail ms, rss bytes).
+    actions: Vec<(&'static str, String, Option<u64>, Option<u64>)>,
 }
 
 /// Shared state between the governor handle, its unit guards, and the
@@ -108,6 +129,9 @@ struct Shared {
     completed: Mutex<Vec<(u64, u64)>>,
     throttle: Mutex<ThrottleLog>,
     profiles: Option<ProfilePersistence>,
+    /// Renderer event channel for freeze/thaw visibility (`None` in unit
+    /// tests). Sends after the renderer exits are harmlessly dropped.
+    events: Option<mpsc::Sender<DagEvent>>,
 }
 
 impl Shared {
@@ -135,6 +159,7 @@ impl SyncGovernor {
     pub fn spawn(
         probe: Box<dyn ResourceProbe>,
         profiles: Option<(Box<dyn ProfileStore>, ProfileKey)>,
+        events: Option<mpsc::Sender<DagEvent>>,
         cancel: Arc<CancelFlag>,
         params_of: impl FnOnce(&ResourceSample) -> GovernorParams,
     ) -> Arc<Self> {
@@ -161,6 +186,7 @@ impl SyncGovernor {
             completed: Mutex::new(Vec::new()),
             throttle: Mutex::new(ThrottleLog::default()),
             profiles: persistence,
+            events,
         });
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -184,6 +210,8 @@ impl SyncGovernor {
         if let Some(handle) = self.tick_thread.lock().unwrap().take() {
             let _ = handle.join();
         }
+        // Belt-and-braces: nothing may stay SIGSTOP'd past the run.
+        thaw_all(&self.shared);
         self.persist();
     }
 
@@ -191,11 +219,16 @@ impl SyncGovernor {
     /// Dropping the guard deregisters the unit and folds its observed
     /// peak + wall time into the run's profile aggregate.
     pub fn begin_unit(&self, branch: &str) -> UnitGuard {
+        let started_ms = self.shared.now_ms();
         self.shared.units.lock().unwrap().push(UnitEntry {
             branch: branch.to_string(),
             pid: None,
             started: Instant::now(),
+            started_ms,
             peak_rss: 0,
+            clock: None,
+            killed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frozen: None,
         });
         UnitGuard {
             shared: Arc::clone(&self.shared),
@@ -234,8 +267,14 @@ impl SyncGovernor {
                 });
             }
         }
-        let held = std::mem::take(&mut self.shared.throttle.lock().unwrap().held);
-        let events: Vec<GovernorEventRow> = held
+        let (held, actions) = {
+            let mut log = self.shared.throttle.lock().unwrap();
+            (
+                std::mem::take(&mut log.held),
+                std::mem::take(&mut log.actions),
+            )
+        };
+        let mut events: Vec<GovernorEventRow> = held
             .iter()
             .map(|(branch, held_for)| GovernorEventRow {
                 id: None,
@@ -247,6 +286,19 @@ impl SyncGovernor {
                 rss_bytes: None,
             })
             .collect();
+        events.extend(
+            actions
+                .into_iter()
+                .map(|(kind, branch, detail_ms, rss_bytes)| GovernorEventRow {
+                    id: None,
+                    repo_hash: persistence.key.repo_hash.clone(),
+                    occurred_at: chrono::Utc::now(),
+                    kind: kind.into(),
+                    branch: Some(branch),
+                    detail_ms,
+                    rss_bytes,
+                }),
+        );
         persistence.store.record_events(&events);
     }
 }
@@ -272,6 +324,25 @@ impl UnitGuard {
             unit.pid = Some(pid);
         }
     }
+
+    /// Hand the governor the unit's armed wall clock so a freeze can pause
+    /// it (frozen time must not count against `daft.sync.pushTimeout`).
+    pub fn attach_clock(&self, clock: Arc<UnitClock>) {
+        let mut units = self.shared.units.lock().unwrap();
+        if let Some(unit) = units.iter_mut().find(|u| u.branch == self.branch) {
+            unit.clock = Some(clock);
+        }
+    }
+
+    /// Whether the governor killed this unit (read at classification time,
+    /// while the guard is still alive — a true here means "requeue me").
+    pub fn was_killed(&self) -> bool {
+        let units = self.shared.units.lock().unwrap();
+        units
+            .iter()
+            .find(|u| u.branch == self.branch)
+            .is_some_and(|u| u.killed.load(Ordering::SeqCst))
+    }
 }
 
 impl Drop for UnitGuard {
@@ -284,6 +355,12 @@ impl Drop for UnitGuard {
                 .map(|pos| units.remove(pos))
         };
         if let Some(unit) = removed {
+            // A governor-killed attempt teaches the profile nothing usable:
+            // its wall time is truncated and the retry re-registers fresh.
+            // (Its peak already fed `live_peak` for this run's admission.)
+            if unit.killed.load(Ordering::SeqCst) {
+                return;
+            }
             let wall_ms = u64::try_from(unit.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             self.shared
                 .completed
@@ -302,9 +379,12 @@ fn tick_loop(shared: &Shared, probe: Box<dyn ResourceProbe>, stop: &AtomicBool) 
             return;
         }
         // A cancelled run tears its pushes down through the supervisor
-        // cascade; the governor stands down immediately (stage 3 will also
-        // thaw anything frozen here).
+        // cascade. The governor stands down immediately and thaws anything
+        // it froze — a SIGSTOP'd tree won't act on the cascade's queued
+        // TERM until continued, and the governor must never race the
+        // cascade with a re-freeze (#678 thaw-before-terminate).
         if shared.cancel.is_cancelled() {
+            thaw_all(shared);
             return;
         }
         tick_count += 1;
@@ -330,15 +410,226 @@ fn tick_loop(shared: &Shared, probe: Box<dyn ResourceProbe>, stop: &AtomicBool) 
             continue;
         }
         let readings = probe.tree_rss(&pids);
-        let mut units = shared.units.lock().unwrap();
-        for (pid, reading) in pids.iter().zip(readings) {
-            let Some(bytes) = reading else { continue };
-            if let Some(unit) = units.iter_mut().find(|u| u.pid == Some(*pid)) {
-                unit.peak_rss = unit.peak_rss.max(bytes);
+        {
+            let mut units = shared.units.lock().unwrap();
+            for (pid, reading) in pids.iter().zip(readings) {
+                let Some(bytes) = reading else { continue };
+                if let Some(unit) = units.iter_mut().find(|u| u.pid == Some(*pid)) {
+                    unit.peak_rss = unit.peak_rss.max(bytes);
+                }
+                shared.live_peak.fetch_max(bytes, Ordering::Relaxed);
             }
-            shared.live_peak.fetch_max(bytes, Ordering::Relaxed);
+        }
+
+        // Stage 3: containment (freeze / thaw / kill-and-requeue).
+        #[cfg(unix)]
+        apply_containment(shared);
+    }
+}
+
+/// Send a renderer event, dropping it silently once the renderer is gone.
+fn notify(shared: &Shared, event: DagEvent) {
+    if let Some(events) = &shared.events {
+        let _ = events.send(event);
+    }
+}
+
+/// SIGCONT everything the governor froze and resume the units' clocks.
+fn thaw_all(shared: &Shared) {
+    let thawed: Vec<(String, FrozenUnit, Option<Arc<UnitClock>>)> = {
+        let mut units = shared.units.lock().unwrap();
+        units
+            .iter_mut()
+            .filter_map(|u| {
+                u.frozen
+                    .take()
+                    .map(|f| (u.branch.clone(), f, u.clock.clone()))
+            })
+            .collect()
+    };
+    for (_branch, frozen, clock) in thawed {
+        #[cfg(unix)]
+        crate::git::process_tree::thaw_pids(&frozen.pids);
+        #[cfg(not(unix))]
+        let _ = &frozen;
+        if let Some(clock) = clock {
+            clock.resume();
         }
     }
+}
+
+/// One containment decision per probe tick, applied to the live units.
+#[cfg(unix)]
+fn apply_containment(shared: &Shared) {
+    use crate::git::process_tree;
+
+    // Top up existing freezes first: children forked just before their
+    // parent stopped may have raced the previous sweep. The cumulative
+    // per-unit set makes this idempotent.
+    let frozen_roots: Vec<(String, u32)> = {
+        let units = shared.units.lock().unwrap();
+        units
+            .iter()
+            .filter(|u| u.frozen.is_some())
+            .filter_map(|u| u.pid.map(|pid| (u.branch.clone(), pid)))
+            .collect()
+    };
+    for (branch, pid) in frozen_roots {
+        let mut stragglers = BTreeSet::new();
+        if process_tree::freeze_descendants(pid, &mut stragglers) > 0 {
+            let mut units = shared.units.lock().unwrap();
+            if let Some(unit) = units.iter_mut().find(|u| u.branch == branch)
+                && let Some(frozen) = &mut unit.frozen
+            {
+                frozen.pids.append(&mut stragglers);
+            } else {
+                // The unit finished while we swept — nothing may stay
+                // stopped behind it (a frozen pipe holder would wedge the
+                // supervisor's drain gate).
+                process_tree::thaw_pids(&stragglers);
+            }
+        }
+    }
+
+    let views: Vec<domain::UnitView> = {
+        let units = shared.units.lock().unwrap();
+        units
+            .iter()
+            .map(|u| domain::UnitView {
+                branch: u.branch.clone(),
+                has_pid: u.pid.is_some(),
+                started_ms: u.started_ms,
+                frozen_for_ms: u
+                    .frozen
+                    .as_ref()
+                    .map(|f| u64::try_from(f.since.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            })
+            .collect()
+    };
+    let action = shared.controller.lock().unwrap().contain(&views);
+    match action {
+        Some(ContainAction::Freeze { branch }) => freeze_unit(shared, &branch),
+        Some(ContainAction::Thaw { branch }) => thaw_unit(shared, &branch),
+        Some(ContainAction::Kill { branch }) => kill_unit(shared, &branch),
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn freeze_unit(shared: &Shared, branch: &str) {
+    use crate::git::process_tree;
+
+    let (pid, clock) = {
+        let units = shared.units.lock().unwrap();
+        let Some(unit) = units.iter().find(|u| u.branch == branch) else {
+            return;
+        };
+        (unit.pid, unit.clock.clone())
+    };
+    let Some(pid) = pid else { return };
+
+    // Sweep outside the units lock (`ps` costs milliseconds), then attach
+    // the stopped set — or thaw it right back if the unit finished while
+    // we swept (frozen pipe holders would wedge the drain gate).
+    let mut stopped = BTreeSet::new();
+    process_tree::freeze_descendants(pid, &mut stopped);
+    {
+        let mut units = shared.units.lock().unwrap();
+        match units.iter_mut().find(|u| u.branch == branch) {
+            Some(unit) if unit.frozen.is_none() => {
+                unit.frozen = Some(FrozenUnit {
+                    pids: stopped,
+                    since: Instant::now(),
+                });
+            }
+            Some(unit) => {
+                if let Some(frozen) = &mut unit.frozen {
+                    frozen.pids.append(&mut stopped);
+                }
+            }
+            None => {
+                process_tree::thaw_pids(&stopped);
+                return;
+            }
+        }
+    }
+    if let Some(clock) = clock {
+        clock.pause();
+    }
+    shared
+        .throttle
+        .lock()
+        .unwrap()
+        .actions
+        .push(("freeze", branch.to_string(), None, None));
+    notify(
+        shared,
+        DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: branch.to_string(),
+            reason: ThrottleReason::Frozen,
+        },
+    );
+}
+
+#[cfg(unix)]
+fn thaw_unit(shared: &Shared, branch: &str) {
+    use crate::git::process_tree;
+
+    let thawed = {
+        let mut units = shared.units.lock().unwrap();
+        units
+            .iter_mut()
+            .find(|u| u.branch == branch)
+            .and_then(|u| u.frozen.take().map(|f| (f, u.clock.clone())))
+    };
+    let Some((frozen, clock)) = thawed else {
+        return;
+    };
+    process_tree::thaw_pids(&frozen.pids);
+    if let Some(clock) = clock {
+        clock.resume();
+    }
+    let frozen_ms = u64::try_from(frozen.since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    shared.throttle.lock().unwrap().actions.push((
+        "thaw",
+        branch.to_string(),
+        Some(frozen_ms),
+        None,
+    ));
+    notify(
+        shared,
+        DagEvent::TaskResumed {
+            phase: OperationPhase::Push,
+            branch_name: branch.to_string(),
+        },
+    );
+}
+
+#[cfg(unix)]
+fn kill_unit(shared: &Shared, branch: &str) {
+    let (pid, killed, peak_rss) = {
+        let units = shared.units.lock().unwrap();
+        let Some(unit) = units.iter().find(|u| u.branch == branch) else {
+            return;
+        };
+        (unit.pid, Arc::clone(&unit.killed), unit.peak_rss)
+    };
+    let Some(pid) = pid else { return };
+
+    // The marker must be visible before the tree dies: the push worker
+    // reads it the moment run_push returns.
+    killed.store(true, Ordering::SeqCst);
+    let mut cascade = crate::git::cancel::GroupCascade::new(pid);
+    cascade.hard_tick();
+    crate::git::cancel::record_survivors(&cascade.survivors());
+    shared.controller.lock().unwrap().note_kill(shared.now_ms());
+    shared.throttle.lock().unwrap().actions.push((
+        "kill_requeue",
+        branch.to_string(),
+        None,
+        Some(peak_rss),
+    ));
 }
 
 impl DagGovernor for SyncGovernor {
@@ -440,6 +731,7 @@ mod tests {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(green_sample())),
             None,
+            None,
             Arc::new(CancelFlag::new()),
             |first| {
                 assert_eq!(first.mem_total, 32 * GIB);
@@ -469,6 +761,7 @@ mod tests {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(green_sample())),
             None,
+            None,
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(1, 2 * GIB),
         );
@@ -487,6 +780,7 @@ mod tests {
     fn unit_registry_tracks_pid_until_drop() {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(green_sample())),
+            None,
             None,
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(2, 2 * GIB),
@@ -561,6 +855,7 @@ mod tests {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(sample)),
             Some((Box::new(FakeProfileStore(Arc::clone(&profiles))), key())),
+            None,
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(4, 2 * GIB),
         );
@@ -587,6 +882,7 @@ mod tests {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(sample)),
             Some((Box::new(FakeProfileStore(Arc::clone(&profiles))), key())),
+            None,
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(4, 2 * GIB),
         );
@@ -630,6 +926,7 @@ mod tests {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(green_sample())),
             Some((Box::new(FakeProfileStore(Arc::clone(&profiles))), key())),
+            None,
             Arc::clone(&cancel),
             |_| GovernorParams::new(4, 2 * GIB),
         );
@@ -641,10 +938,99 @@ mod tests {
         assert!(profiles.events.lock().unwrap().is_empty());
     }
 
+    /// A probe whose sample can be flipped mid-test.
+    struct SwitchableProbe(Arc<Mutex<ResourceSample>>);
+
+    impl ResourceProbe for SwitchableProbe {
+        fn sample(&self) -> ResourceSample {
+            *self.0.lock().unwrap()
+        }
+
+        fn tree_rss(&self, roots: &[u32]) -> Vec<Option<u64>> {
+            vec![None; roots.len()]
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sustained_red_freezes_then_green_thaws_with_clock_pause() {
+        let sample = Arc::new(Mutex::new(ResourceSample {
+            mem_total: 32 * GIB,
+            mem_available: GIB, // below the 2 GiB reserve → red
+            swap_used: 0,
+            psi_some_avg10: None,
+        }));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let governor = SyncGovernor::spawn(
+            Box::new(SwitchableProbe(Arc::clone(&sample))),
+            None,
+            Some(tx),
+            Arc::new(CancelFlag::new()),
+            |_| GovernorParams::new(4, 2 * GIB),
+        );
+        // Two admitted units with (nonexistent) pids: the freeze sweep
+        // finds no live descendants — the unit is still marked frozen and
+        // its clock pauses, which is what this test observes.
+        let unit_a = governor.begin_unit("feat/a");
+        unit_a.attach_pid(u32::MAX - 1);
+        let clock_a = Arc::new(UnitClock::new(Duration::from_secs(3600)));
+        unit_a.attach_clock(Arc::clone(&clock_a));
+        let unit_b = governor.begin_unit("feat/b");
+        unit_b.attach_pid(u32::MAX - 2);
+        let clock_b = Arc::new(UnitClock::new(Duration::from_millis(1)));
+        unit_b.attach_clock(Arc::clone(&clock_b));
+
+        // Newest unit ("feat/b") freezes after sustained red (2 probe
+        // ticks ≈ 1s at the 250ms/2 cadence).
+        let frozen = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("freeze event");
+        assert!(
+            matches!(
+                &frozen,
+                DagEvent::TaskThrottled {
+                    branch_name,
+                    reason: ThrottleReason::Frozen,
+                    ..
+                } if branch_name == "feat/b"
+            ),
+            "got {frozen:?}"
+        );
+        // The frozen unit's clock is paused: its overdue reading must not
+        // grow while frozen (an unpaused 1ms budget would gain ~300ms).
+        let overdue_at_freeze = clock_b
+            .overdue(Instant::now())
+            .expect("the 1ms budget burned before the freeze");
+        std::thread::sleep(Duration::from_millis(300));
+        let overdue_later = clock_b
+            .overdue(Instant::now())
+            .expect("still past the budget");
+        assert!(
+            overdue_later.saturating_sub(overdue_at_freeze) < Duration::from_millis(150),
+            "frozen time must not count: grew from {overdue_at_freeze:?} to {overdue_later:?}"
+        );
+
+        // Pressure clears → thaw, LIFO.
+        sample.lock().unwrap().mem_available = 20 * GIB;
+        let resumed = rx.recv_timeout(Duration::from_secs(5)).expect("thaw event");
+        assert!(
+            matches!(
+                &resumed,
+                DagEvent::TaskResumed { branch_name, .. } if branch_name == "feat/b"
+            ),
+            "got {resumed:?}"
+        );
+
+        drop(unit_a);
+        drop(unit_b);
+        governor.shutdown();
+    }
+
     #[test]
     fn shutdown_joins_the_tick_thread() {
         let governor = SyncGovernor::spawn(
             Box::new(FixedProbe(green_sample())),
+            None,
             None,
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(2, 2 * GIB),

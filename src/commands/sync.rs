@@ -970,6 +970,7 @@ fn run_tui(
                     let governor = crate::governor::SyncGovernor::spawn(
                         crate::governor::adapters::build_probe(),
                         profiles,
+                        Some(tx_for_tasks.clone()),
                         Arc::clone(&orch_cancel),
                         |first| {
                             crate::governor::domain::GovernorParams::new(
@@ -1623,9 +1624,15 @@ fn execute_push_task(
             let unit = Arc::clone(unit);
             Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
         });
+        let on_clock = governor_unit.as_ref().map(|unit| {
+            let unit = Arc::clone(unit);
+            Arc::new(move |clock: Arc<crate::git::cancel::UnitClock>| unit.attach_clock(clock))
+                as Arc<dyn Fn(Arc<crate::git::cancel::UnitClock>) + Send + Sync>
+        });
         git = git.with_push_supervision(crate::git::PushSupervision {
             on_spawn,
             timeout: settings.sync_push_timeout,
+            on_clock,
         });
     }
 
@@ -1711,6 +1718,28 @@ fn execute_push_task(
             .to_string();
         return (
             TaskStatus::Failed,
+            TaskMessage::Failed(hint),
+            branch_outcomes.clone(),
+        );
+    }
+
+    // Killed by the resource governor under memory pressure (#678): the
+    // executor requeues it — this is deliberately checked after the
+    // cancel, needs-terminal, and timeout arms, all of which outrank an
+    // eviction. A kill that landed after git already exited 0 never gets
+    // here (`result.success` stands, #7 semantics).
+    if !result.success
+        && let Some(unit) = &governor_unit
+        && unit.was_killed()
+    {
+        let hint = result
+            .message
+            .lines()
+            .next()
+            .unwrap_or("killed under memory pressure")
+            .to_string();
+        return (
+            TaskStatus::Evicted,
             TaskMessage::Failed(hint),
             branch_outcomes.clone(),
         );
@@ -2246,6 +2275,7 @@ fn run_push_phase(
         git = git.with_push_supervision(crate::git::PushSupervision {
             on_spawn: None,
             timeout: settings.sync_push_timeout,
+            on_clock: None,
         });
     }
     let project_root = get_project_root()?;

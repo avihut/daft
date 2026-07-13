@@ -550,7 +550,7 @@ static LEFTOVER_GROUPS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 #[cfg(unix)]
-fn record_survivors(pgids: &[u32]) {
+pub(crate) fn record_survivors(pgids: &[u32]) {
     if pgids.is_empty() {
         return;
     }
@@ -1024,7 +1024,7 @@ pub use unix::*;
 mod unix {
     use nix::sys::signal::{Signal, kill, killpg};
     use nix::unistd::Pid;
-    use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::collections::BTreeSet;
     use std::process::Stdio;
 
     fn pg(pgid: u32) -> Pid {
@@ -1076,82 +1076,7 @@ mod unix {
         Some(stat.starts_with('T') || stat.starts_with('t'))
     }
 
-    struct ProcessRow {
-        ppid: u32,
-        pgid: u32,
-    }
-
-    /// Point-in-time view of the system process table, sufficient to walk
-    /// parent→child links and group membership.
-    struct ProcessSnapshot {
-        rows: HashMap<u32, ProcessRow>,
-    }
-
-    impl ProcessSnapshot {
-        /// Best-effort capture via `ps`. `-axo pid=,ppid=,pgid=,stat=` is
-        /// portable across macOS and Linux procps; `=` suppresses headers.
-        fn capture() -> Option<Self> {
-            let out = std::process::Command::new("ps")
-                .args(["-axo", "pid=,ppid=,pgid=,stat="])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            Some(Self::parse(&String::from_utf8_lossy(&out.stdout)))
-        }
-
-        fn parse(text: &str) -> Self {
-            let mut rows = HashMap::new();
-            for line in text.lines() {
-                let mut it = line.split_whitespace();
-                // The stat column isn't stored, but requiring all four
-                // fields rejects truncated/garbled rows wholesale.
-                let (Some(pid), Some(ppid), Some(pgid), Some(_stat)) =
-                    (it.next(), it.next(), it.next(), it.next())
-                else {
-                    continue;
-                };
-                let (Ok(pid), Ok(ppid), Ok(pgid)) =
-                    (pid.parse::<u32>(), ppid.parse::<u32>(), pgid.parse::<u32>())
-                else {
-                    continue;
-                };
-                rows.insert(pid, ProcessRow { ppid, pgid });
-            }
-            Self { rows }
-        }
-
-        /// Distinct pgids of `root_pid` and every process transitively
-        /// parented under it. Misses processes that already reparented to
-        /// PID 1 — which is exactly why [`GroupCascade`] keeps a
-        /// cumulative record of everything it ever signaled.
-        fn descendant_pgids(&self, root_pid: u32) -> BTreeSet<u32> {
-            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-            for (&pid, row) in &self.rows {
-                children.entry(row.ppid).or_default().push(pid);
-            }
-            let mut pgids = BTreeSet::new();
-            let mut stack = vec![root_pid];
-            // Pid reuse between `ps` rows can in principle produce a
-            // parent cycle; the seen-set makes the walk immune.
-            let mut seen = HashSet::new();
-            while let Some(pid) = stack.pop() {
-                if !seen.insert(pid) {
-                    continue;
-                }
-                if let Some(row) = self.rows.get(&pid) {
-                    pgids.insert(row.pgid);
-                }
-                if let Some(kids) = children.get(&pid) {
-                    stack.extend(kids.iter().copied());
-                }
-            }
-            pgids
-        }
-    }
+    use crate::git::process_tree::ProcessSnapshot;
 
     /// Drop pgids that must never be signaled: the kernel/init groups
     /// (`killpg(0)` would hit *our own* group; `1` is init's) and the
@@ -1268,50 +1193,6 @@ mod unix {
                 assert!(Instant::now() < deadline, "timed out waiting for {what}");
                 std::thread::sleep(Duration::from_millis(20));
             }
-        }
-
-        #[test]
-        fn parse_skips_malformed_rows() {
-            let snap = ProcessSnapshot::parse(
-                "  100     1   100 Ss+\n\
-                 garbage line\n\
-                 200 100 200 T\n\
-                 201 200 200 t\n\
-                 x y z w\n\
-                 300 201\n",
-            );
-            assert_eq!(snap.rows.len(), 3);
-            assert!(snap.rows.contains_key(&100));
-            assert!(snap.rows.contains_key(&200));
-            assert!(snap.rows.contains_key(&201));
-            // Three-token row (stat missing) is rejected wholesale.
-            assert!(!snap.rows.contains_key(&300));
-        }
-
-        #[test]
-        fn descendant_walk_collects_foreign_groups_but_not_reparented_orphans() {
-            // Incident-shaped tree: git(200) → hook sh(201) share the
-            // child's group; mise(300) and cargo(301) each setpgid'd
-            // into their own; 400 already reparented to init.
-            let snap = ProcessSnapshot::parse(
-                "  100     1   100 Ss\n\
-                 200 100 200 S\n\
-                 201 200 200 S\n\
-                 300 201 300 T\n\
-                 301 300 301 T\n\
-                 400 1 400 T\n",
-            );
-            let pgids = snap.descendant_pgids(200);
-            assert_eq!(pgids, BTreeSet::from([200, 300, 301]));
-            // The walk cannot see 400 — this is why GroupCascade keeps
-            // the cumulative signaled set across ticks.
-            assert!(!pgids.contains(&400));
-        }
-
-        #[test]
-        fn walk_survives_ppid_cycles() {
-            let snap = ProcessSnapshot::parse("200 201 200 S\n201 200 200 S\n");
-            assert_eq!(snap.descendant_pgids(200), BTreeSet::from([200]));
         }
 
         #[test]
