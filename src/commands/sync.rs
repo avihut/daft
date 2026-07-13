@@ -816,6 +816,8 @@ fn run_tui(
         cores,
     );
     let shared_memory_reserve = settings.governor_memory_reserve;
+    let shared_jobserver_mode = settings.governor_jobserver;
+    let cores_for_jobserver = cores;
 
     let deferred_branch: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -986,6 +988,26 @@ fn run_tui(
         } else {
             None
         };
+        // Shared jobserver (#678 stage 4): one machine-wide token pool for
+        // cooperating toolchains inside concurrent hooks. Lives while the
+        // executor runs; None when the push phase is ungoverned or the
+        // export is configured off.
+        #[cfg(unix)]
+        let jobserver = if (sync_governor.is_some()
+            || !matches!(shared_governor_plan, PushGovernorPlan::Ungoverned))
+            && push_task_count >= 2
+            && shared_jobserver_mode == GovernorMode::Auto
+        {
+            crate::governor::jobserver::PushJobserver::create(cores_for_jobserver)
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let jobserver_env: Option<Arc<(String, String)>> =
+            jobserver.as_ref().map(|j| Arc::new(j.env()));
+        #[cfg(not(unix))]
+        let jobserver_env: Option<Arc<(String, String)>> = None;
+        let push_jobserver_env = jobserver_env.clone();
         let push_governor = sync_governor.clone();
         executor.run(
             move |task: &SyncTask,
@@ -1112,6 +1134,7 @@ fn run_tui(
                             outcomes,
                             &task_cancel,
                             push_governor.as_ref(),
+                            push_jobserver_env.as_deref(),
                         );
                         if status == TaskStatus::Succeeded {
                             spawn_post_task_refresh(
@@ -1588,6 +1611,7 @@ fn execute_push_task(
     branch_outcomes: &HashSet<TaskOutcome>,
     cancel: &Arc<CancelFlag>,
     governor: Option<&Arc<crate::governor::SyncGovernor>>,
+    jobserver_env: Option<&(String, String)>,
 ) -> (TaskStatus, TaskMessage, HashSet<TaskOutcome>) {
     if cancel.is_cancelled() {
         return (
@@ -1619,7 +1643,7 @@ fn execute_push_task(
     // the governor the git-push root pid for the sampler and containment
     // tiers. The timeout arms a per-unit wall clock inside run_push.
     let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit(branch_name)));
-    if governor_unit.is_some() || settings.sync_push_timeout.is_some() {
+    if governor_unit.is_some() || settings.sync_push_timeout.is_some() || jobserver_env.is_some() {
         let on_spawn = governor_unit.as_ref().map(|unit| {
             let unit = Arc::clone(unit);
             Arc::new(move |pid: u32| unit.attach_pid(pid)) as Arc<dyn Fn(u32) + Send + Sync>
@@ -1633,6 +1657,9 @@ fn execute_push_task(
             on_spawn,
             timeout: settings.sync_push_timeout,
             on_clock,
+            env: jobserver_env
+                .map(|pair| vec![pair.clone()])
+                .unwrap_or_default(),
         });
     }
 
@@ -2276,6 +2303,7 @@ fn run_push_phase(
             on_spawn: None,
             timeout: settings.sync_push_timeout,
             on_clock: None,
+            env: Vec::new(),
         });
     }
     let project_root = get_project_root()?;

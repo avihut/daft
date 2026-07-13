@@ -29,6 +29,7 @@
 //! | `daft.governor.mode` | `auto` | Sync push resource governor (`auto` or `off`) |
 //! | `daft.governor.jobs` | `auto` | Cap on concurrent hook-bearing pushes (`auto` = max(2, cores/4), or a number) |
 //! | `daft.governor.memoryReserve` | `auto` | Memory headroom the governor keeps free (`auto` = max(10% RAM, 2G), a size like `2G`, or `NN%`) |
+//! | `daft.governor.jobserver` | `auto` | Export a shared POSIX jobserver to pre-push hooks (`auto` or `off`) |
 //!
 //! # Hooks Config Keys
 //!
@@ -256,6 +257,9 @@ pub mod defaults {
     /// Default value for governor.memoryReserve setting.
     pub const GOVERNOR_MEMORY_RESERVE: MemoryReserve = MemoryReserve::Auto;
 
+    /// Default value for governor.jobserver setting.
+    pub const GOVERNOR_JOBSERVER: GovernorMode = GovernorMode::Auto;
+
     /// Default value for autocd setting.
     pub const AUTOCD: bool = true;
 
@@ -442,6 +446,9 @@ pub mod keys {
 
     /// Config key for governor.memoryReserve setting.
     pub const GOVERNOR_MEMORY_RESERVE: &str = "daft.governor.memoryReserve";
+
+    /// Config key for governor.jobserver setting.
+    pub const GOVERNOR_JOBSERVER: &str = "daft.governor.jobserver";
 
     /// Config key for merge.style setting.
     pub const MERGE_STYLE: &str = "daft.merge.style";
@@ -631,6 +638,11 @@ pub struct DaftSettings {
     /// `daft.governor.memoryReserve`.
     pub governor_memory_reserve: MemoryReserve,
 
+    /// Whether governed pushes export a shared POSIX jobserver so
+    /// cooperating toolchains (make/cargo/ninja) inside concurrent hooks
+    /// draw from one token pool. Set via `daft.governor.jobserver` (#678).
+    pub governor_jobserver: GovernorMode,
+
     /// Selected merge style — replaces the legacy `merge_ff` + `merge_squash`
     /// combination. See [`MergeStyle`] for variants.
     pub merge_style: crate::core::worktree::merge::MergeStyle,
@@ -709,6 +721,7 @@ impl Default for DaftSettings {
             governor_mode: defaults::GOVERNOR_MODE,
             governor_jobs: defaults::GOVERNOR_JOBS,
             governor_memory_reserve: defaults::GOVERNOR_MEMORY_RESERVE,
+            governor_jobserver: defaults::GOVERNOR_JOBSERVER,
             merge_style: defaults::MERGE_STYLE,
             merge_cleanup: defaults::MERGE_CLEANUP,
             merge_commit: defaults::MERGE_COMMIT,
@@ -941,6 +954,19 @@ impl DaftSettings {
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
                     keys::GOVERNOR_MEMORY_RESERVE,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_JOBSERVER)?
+            && !value.is_empty()
+        {
+            match GovernorMode::parse(&value) {
+                Some(mode) => settings.governor_jobserver = mode,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_JOBSERVER,
                     value
                 ),
             }

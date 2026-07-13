@@ -174,6 +174,12 @@ impl GitCommand {
             cmd.arg("--no-verify");
         }
         cmd.args(push_args);
+        // Governor jobserver export (#678): the hook inherits git's env.
+        if let Some(supervision) = self.push_supervision.as_ref() {
+            for (key, value) in &supervision.env {
+                cmd.env(key, value);
+            }
+        }
 
         // Isolated supervision: a supervised push (sync) runs in its own
         // process group so escalations tear the whole pre-push hook subtree

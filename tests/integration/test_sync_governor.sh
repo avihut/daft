@@ -142,6 +142,10 @@ test_governor_jobs_cap_bounds_concurrency() {
 #!/bin/sh
 touch "$GOV_MARKS/running/\$\$"
 ls "$GOV_MARKS/running" | wc -l >> "$GOV_MARKS/peaks"
+# The governor's shared jobserver must reach the hook via MAKEFLAGS.
+case "\$MAKEFLAGS" in
+    *--jobserver-auth=fifo:*) echo ok >> "$GOV_MARKS/jobserver-seen" ;;
+esac
 sleep 1
 rm -f "$GOV_MARKS/running/\$\$"
 exit 0
@@ -174,6 +178,10 @@ EOF
     assert_all_pushed 4 || return 1
     if ! grep -q "throttled" "$GOV_MARKS/out.log"; then
         log_error "expected a throttle summary line in the output"
+        return 1
+    fi
+    if [[ ! -s "$GOV_MARKS/jobserver-seen" ]]; then
+        log_error "hooks never saw the jobserver MAKEFLAGS export"
         return 1
     fi
     return 0

@@ -25,6 +25,8 @@
 
 pub mod adapters;
 pub mod domain;
+#[cfg(unix)]
+pub mod jobserver;
 pub mod ports;
 
 use std::collections::HashMap;

@@ -77,6 +77,9 @@ pub(crate) struct PushSupervision {
     /// frozen time must not count against the budget (#678 stage 3).
     pub(crate) on_clock:
         Option<std::sync::Arc<dyn Fn(std::sync::Arc<cancel::UnitClock>) + Send + Sync>>,
+    /// Extra environment for the `git push` subprocess — the governor's
+    /// shared jobserver export, inherited by the pre-push hook (#678).
+    pub(crate) env: Vec<(String, String)>,
 }
 
 pub struct GitCommand {
