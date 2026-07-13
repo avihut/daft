@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-skill-install 1  "git-daft-skill-install 1.19.0" 
+.SH NAME
+git\-daft\-skill\-install \- Install or update the agent skill for Claude Code
+.SH SYNOPSIS
+\fBgit\-daft\-skill\-install\fR [\fB\-\-project\fR] [\fB\-\-dir\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Writes the agent skill embedded in this daft binary (the repository\*(Aqs
+SKILL.md, skill name `daft\-worktree\-workflow`) into a skills directory,
+creating parent directories as needed.
+.PP
+The embedded skill is version\-matched to the binary by construction, so
+re\-running the command after upgrading daft is also the update path:
+install == update. An existing copy is always overwritten unless it is
+already identical. The command is non\-interactive and never touches the
+network.
+.PP
+By default the skill lands in Claude Code\*(Aqs user\-global skills directory
+(~/.claude/skills/daft\-worktree\-workflow/SKILL.md). Use \-\-project to
+install into the current worktree\*(Aqs .claude/skills/ instead (commit it to
+share the skill with everyone who clones the repo), or \-\-dir to target
+another agent\*(Aqs skills root; the daft\-worktree\-workflow folder is always
+created inside the chosen root, because the folder name is what agents
+resolve the skill by.
+.PP
+`git daft doctor` reports when an installed copy is stale relative to the
+running binary, and `git daft doctor \-\-fix` rewrites it with the same
+content this command installs.
+.SH OPTIONS
+.TP
+\fB\-\-project\fR
+Install into the current worktree\*(Aqs .claude/skills/ instead of ~/.claude/skills
+.TP
+\fB\-\-dir\fR \fI<PATH>\fR
+Install under this skills root (for agents other than Claude Code)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress the result line
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.19.0

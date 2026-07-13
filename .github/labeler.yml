@@ -35,11 +35,13 @@
       - any-glob-to-any-file:
           - "src/commands/*.rs"
           - "src/commands/repo/**"
+          - "src/commands/skill/**"
           - "src/cli/**" # argv parsing layer
           - "src/doctor/**" # doctor folded into commands (low-churn)
           - "src/main.rs"
           - "src/shortcuts.rs"
           - "src/exec.rs"
+          - "src/skill.rs" # embedded agent skill + install logic
 
 "area:completions":
   - changed-files:
@@ -89,6 +91,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - "docs/**"
+          - "SKILL.md" # the agent skill is agent-facing documentation
 
 "area:ci":
   - changed-files:

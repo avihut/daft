@@ -679,6 +679,60 @@ fn build_fig_repo_subcommand() -> FigSubcommand {
     }
 }
 
+/// Build the skill subcommand with nested subcommands
+fn build_fig_skill_subcommand() -> FigSubcommand {
+    let install = FigSubcommand {
+        name: "install".to_string(),
+        description: Some("Install or update the agent skill for Claude Code".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--project".into()),
+                description: "Install into the current worktree's .claude/skills/".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--dir".into()),
+                description: "Install under this skills root (for other agents)".into(),
+                args: Some(FigOptionArg {
+                    suggestions: None,
+                    template: None,
+                }),
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--quiet".into(), "-q".into()]),
+                description: "Suppress the result line".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Multiple(vec!["--verbose".into(), "-v".into()]),
+                description: "Show detailed progress".into(),
+                args: None,
+            },
+        ]),
+    };
+
+    let show = FigSubcommand {
+        name: "show".to_string(),
+        description: Some("Print the embedded SKILL.md to stdout".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: None,
+        options: None,
+    };
+
+    FigSubcommand {
+        name: "skill".to_string(),
+        description: Some("Manage the daft agent skill".to_string()),
+        load_spec: None,
+        subcommands: Some(vec![install, show]),
+        args: None,
+        options: None,
+    }
+}
+
 /// Build the multi-remote subcommand with nested subcommands
 fn build_fig_multi_remote_subcommand() -> FigSubcommand {
     FigSubcommand {
@@ -1046,6 +1100,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_multi_remote_subcommand(),
         build_fig_layout_subcommand(),
         build_fig_repo_subcommand(),
+        build_fig_skill_subcommand(),
         build_fig_merge_subcommand("merge"),
         build_fig_merge_subcommand("worktree-merge"),
     ];

@@ -194,6 +194,7 @@ fn main() -> Result<()> {
                     "shared" => commands::shared::run(),
                     "release-notes" => commands::release_notes::run(),
                     "repo" => commands::repo::run(),
+                    "skill" => commands::skill::run(),
                     "activate" => {
                         // Check for activate subcommands
                         if args.len() > 2 && args[2] == "shortcuts" {

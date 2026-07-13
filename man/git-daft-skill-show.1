@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-skill-show 1  "git-daft-skill-show 1.19.0" 
+.SH NAME
+git\-daft\-skill\-show \- Print the embedded agent skill to stdout
+.SH SYNOPSIS
+\fBgit\-daft\-skill\-show\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Prints the agent skill embedded in this daft binary (the repository\*(Aqs
+SKILL.md, skill name `daft\-worktree\-workflow`) to stdout, with no
+decoration and no color.
+.PP
+Use it to inspect exactly what `git daft skill install` would write, or to
+install the skill manually for an agent whose skills directory daft does
+not know:
+.PP
+    daft skill show > <skills\-root>/daft\-worktree\-workflow/SKILL.md
+.PP
+The printed copy carries the `daft_version` frontmatter stamp of this
+binary, so manual installs stay covered by the `git daft doctor` freshness
+check.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.19.0

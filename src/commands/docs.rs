@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
     install, layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init,
-    shortcuts, sync, worktree_branch,
+    shortcuts, skill, sync, worktree_branch,
 };
 use crate::styles;
 
@@ -152,6 +152,20 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "repo remove",
                     command: repo::remove::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "manage the agent skill",
+            layout: CategoryLayout::List,
+            commands: vec![
+                CommandEntry {
+                    display_name: "skill install",
+                    command: skill::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "skill show",
+                    command: skill::show::Args::command(),
                 },
             ],
         },
@@ -317,6 +331,20 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "daft repo remove",
                     command: repo::remove::Args::command(),
+                },
+            ],
+        },
+        CommandCategory {
+            title: "manage the agent skill",
+            layout: CategoryLayout::List,
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft skill install",
+                    command: skill::install::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "daft skill show",
+                    command: skill::show::Args::command(),
                 },
             ],
         },
