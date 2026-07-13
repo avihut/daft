@@ -67,7 +67,12 @@ steps:
       output_contains: ["1"]
 
   - name: The hook's process tree did not survive the teardown
-    run: pgrep -f "timeout-hooks/pre-push" || echo "no survivors"
+    # The `[p]` bracket is the classic self-exclusion trick: the regex still
+    # matches the hook's `sh .../timeout-hooks/pre-push` command line, but this
+    # step's own `bash -c "<script>"` command line contains the literal text
+    # "[p]re-push", which the regex does NOT match — so pgrep can't self-match
+    # the checker (git push already reaped the hook before this step runs).
+    run: pgrep -f "timeout-hooks/[p]re-push" || echo "no survivors"
     expect:
       exit_code: 0
       output_contains: ["no survivors"]
