@@ -402,6 +402,9 @@ fn run_blocking(args: Args) -> Result<()> {
     {
         let fresh = infos
             .iter()
+            // Sandboxes all report name "(detached)" and would collide on the
+            // (repo_hash, branch_slug) cache key — don't cache them (review).
+            .filter(|info| !info.is_sandbox)
             .filter_map(|info| Some((info.name.clone(), info.path.clone()?, info.size_bytes?)));
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }

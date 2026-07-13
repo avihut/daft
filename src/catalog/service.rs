@@ -300,7 +300,14 @@ impl Catalog {
     }
 
     pub fn mark_removed(&self, uuid: &str) -> Result<()> {
-        self.write(|tx| CatalogReposRepo::mark_removed(tx, uuid, Utc::now()))
+        self.write(|tx| {
+            CatalogReposRepo::mark_removed(tx, uuid, Utc::now())?;
+            // Evict the repo's cached display size in the same transaction —
+            // the `repo_sizes` row is keyed by uuid and would otherwise orphan
+            // (review: evict on removal).
+            RepoSizesRepo::delete_for_uuid(tx, uuid)?;
+            Ok(())
+        })
     }
 
     pub fn refresh_default_branch(&self, uuid: &str, default_branch: &str) -> Result<()> {
@@ -474,6 +481,31 @@ mod tests {
         let sizes = cat.list_repo_sizes().unwrap();
         assert_eq!(sizes.len(), 1);
         assert_eq!(sizes[0].uuid, "u2");
+    }
+
+    #[test]
+    fn mark_removed_evicts_the_cached_repo_size() {
+        use chrono::TimeZone;
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        let at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        cat.register(&facts("u1", "api", "/w/api")).unwrap();
+        cat.upsert_repo_sizes(&[RepoSizeRow {
+            uuid: "u1".into(),
+            repo_path: "/w/api".into(),
+            size_bytes: 4096,
+            measured_at: at,
+        }])
+        .unwrap();
+        assert_eq!(cat.list_repo_sizes().unwrap().len(), 1);
+
+        // Tombstoning the repo must also drop its orphaned cached size, in the
+        // same transaction (review: evict on removal).
+        cat.mark_removed("u1").unwrap();
+        assert!(
+            cat.list_repo_sizes().unwrap().is_empty(),
+            "mark_removed must evict the repo's cached size"
+        );
     }
 
     #[test]

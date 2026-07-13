@@ -64,8 +64,13 @@ impl WorktreeSizesRepo {
         Ok(rows)
     }
 
-    /// Evict a branch's cached size — called when its worktree is removed.
-    /// Returns the number of rows deleted (0 or 1).
+    /// Evict a branch's cached size. The store primitive for explicit
+    /// eviction; the seed is already path-guarded
+    /// ([`crate::commands::size_cache::seed_worktree_sizes`]) so a stale row
+    /// from a removed-then-recreated worktree never surfaces even before it is
+    /// deleted. Wiring this into the worktree-removal / prune path (the twin of
+    /// the repo side's [`crate::catalog::service::Catalog::mark_removed`]
+    /// eviction) is a deliberate follow-up. Returns rows deleted (0 or 1).
     pub fn delete_for_branch(
         conn: &Connection,
         repo_hash: &str,

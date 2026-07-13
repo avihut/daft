@@ -167,13 +167,7 @@ pub fn run_live(args: Args) -> Result<()> {
         if let Some(ref h) = hash {
             let cached = crate::commands::size_cache::read_worktree_sizes(h);
             if !cached.is_empty() {
-                for info in &mut worktree_infos {
-                    if info.path.is_some()
-                        && let Some(&bytes) = cached.get(&info.name)
-                    {
-                        info.size_bytes = Some(bytes);
-                    }
-                }
+                crate::commands::size_cache::seed_worktree_sizes(&mut worktree_infos, &cached);
             }
         }
         hash
@@ -279,6 +273,8 @@ pub fn run_live(args: Args) -> Result<()> {
             .filter(|(idx, row)| {
                 final_state.live.received_patches[*idx].contains(FieldSet::SIZE)
                     && row.info.size_bytes.is_some()
+                    // Sandboxes collide on one slug — don't cache them (review).
+                    && !row.info.is_sandbox
             })
             .filter_map(|(_, row)| {
                 Some((

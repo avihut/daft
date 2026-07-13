@@ -28,14 +28,17 @@ pub(crate) fn should_persist(path: &Path) -> bool {
     path.exists()
 }
 
-/// Last-known worktree sizes for `repo_hash`, keyed by branch slug. Empty on
-/// any error and — deliberately — when the coordinator store doesn't exist
-/// yet (first run), which it does NOT create: seeding is a pure read.
-pub fn read_worktree_sizes(repo_hash: &str) -> HashMap<String, u64> {
+/// Last-known worktree sizes for `repo_hash`, keyed by branch slug. Each value
+/// is `(stored_worktree_path, size_bytes)`: the path lets the seed reject a
+/// size recorded for a *different* worktree that has since reused the slug (a
+/// pruned-then-recreated branch), so a stale figure never surfaces. Empty on
+/// any error and — deliberately — when the coordinator store doesn't exist yet
+/// (first run), which it does NOT create: seeding is a pure read.
+pub fn read_worktree_sizes(repo_hash: &str) -> HashMap<String, (PathBuf, u64)> {
     read_inner(repo_hash).unwrap_or_default()
 }
 
-fn read_inner(repo_hash: &str) -> Option<HashMap<String, u64>> {
+fn read_inner(repo_hash: &str) -> Option<HashMap<String, (PathBuf, u64)>> {
     let state_dir = crate::daft_state_dir().ok()?;
     let db_path = state_dir
         .join(paths::JOBS_SUBDIR)
@@ -51,9 +54,39 @@ fn read_inner(repo_hash: &str) -> Option<HashMap<String, u64>> {
     let rows = WorktreeSizesRepo::list_for_repo(&conn, repo_hash).ok()?;
     Some(
         rows.into_iter()
-            .map(|r| (r.branch_slug, r.size_bytes))
+            .map(|r| {
+                (
+                    r.branch_slug,
+                    (PathBuf::from(r.worktree_path), r.size_bytes),
+                )
+            })
             .collect(),
     )
+}
+
+/// Seed each worktree's Size cell from `cached` (the caller renders it stale),
+/// but only when the cached row's stored path still matches the worktree's
+/// current path. Skips sandboxes (never cached) and any slug now checked out at
+/// a different path — so a reused branch name can't surface the previous
+/// worktree's size. Split out from the command glue so the path-guard is
+/// unit-testable.
+pub(crate) fn seed_worktree_sizes(
+    infos: &mut [crate::core::worktree::list::WorktreeInfo],
+    cached: &HashMap<String, (PathBuf, u64)>,
+) {
+    for info in infos.iter_mut() {
+        let Some(path) = info.path.as_deref() else {
+            continue; // local-branch stubs etc. have no worktree to size
+        };
+        if info.is_sandbox {
+            continue; // detached sandboxes collide on one slug — never cached
+        }
+        if let Some((cached_path, bytes)) = cached.get(&info.name)
+            && path == cached_path.as_path()
+        {
+            info.size_bytes = Some(*bytes);
+        }
+    }
 }
 
 /// Persist freshly-walked worktree sizes for `repo_hash` in a single
@@ -134,8 +167,10 @@ mod tests {
         );
 
         let cached = read_worktree_sizes(repo);
-        assert_eq!(cached.get("feat/a"), Some(&4096));
-        assert_eq!(cached.get("feat/b"), Some(&8192));
+        assert_eq!(cached.get("feat/a").map(|(_, b)| *b), Some(4096));
+        assert_eq!(cached.get("feat/b").map(|(_, b)| *b), Some(8192));
+        // The stored worktree path round-trips too (the seed's path-guard key).
+        assert_eq!(cached.get("feat/a").map(|(p, _)| p.clone()), Some(wt_a));
     }
 
     #[test]
@@ -166,7 +201,7 @@ mod tests {
         );
 
         let cached = read_worktree_sizes(repo);
-        assert_eq!(cached.get("feat/here"), Some(&4096));
+        assert_eq!(cached.get("feat/here").map(|(_, b)| *b), Some(4096));
         assert!(
             !cached.contains_key("feat/gone"),
             "a vanished path must not be persisted (would clobber with 0)"
@@ -185,6 +220,63 @@ mod tests {
         persist_worktree_sizes(repo, [("feat/x".to_string(), wt.clone(), 100)]);
         persist_worktree_sizes(repo, [("feat/x".to_string(), wt.clone(), 999)]);
 
-        assert_eq!(read_worktree_sizes(repo).get("feat/x"), Some(&999));
+        assert_eq!(
+            read_worktree_sizes(repo).get("feat/x").map(|(_, b)| *b),
+            Some(999)
+        );
+    }
+
+    /// The seed's path-guard: a cached size is applied only when its stored
+    /// path matches the worktree's current path, and sandboxes are never
+    /// seeded. Pure (no store), so no `IsolatedStateDir`/`serial` needed.
+    #[test]
+    fn seed_path_guards_reused_slug_and_skips_sandbox() {
+        use crate::core::worktree::list::WorktreeInfo;
+
+        let mut infos = vec![
+            {
+                let mut i = WorktreeInfo::empty("feat/reused");
+                i.path = Some(PathBuf::from("/repo/new-location"));
+                i
+            },
+            {
+                let mut i = WorktreeInfo::empty("feat/stable");
+                i.path = Some(PathBuf::from("/repo/stable"));
+                i
+            },
+            {
+                let mut i = WorktreeInfo::empty("(detached)");
+                i.path = Some(PathBuf::from("/repo/sandbox"));
+                i.is_sandbox = true;
+                i
+            },
+        ];
+
+        let mut cached = HashMap::new();
+        // Same slug, but recorded at a DIFFERENT (old) path — must not seed.
+        cached.insert("feat/reused".to_string(), (PathBuf::from("/repo/old"), 500));
+        // Path matches the current worktree — seeds.
+        cached.insert(
+            "feat/stable".to_string(),
+            (PathBuf::from("/repo/stable"), 42),
+        );
+        // A stale detached row — a sandbox must never be seeded.
+        cached.insert(
+            "(detached)".to_string(),
+            (PathBuf::from("/repo/sandbox"), 999),
+        );
+
+        seed_worktree_sizes(&mut infos, &cached);
+
+        assert_eq!(
+            infos[0].size_bytes, None,
+            "a slug reused at a new path must not surface the old size"
+        );
+        assert_eq!(
+            infos[1].size_bytes,
+            Some(42),
+            "a matching stored path seeds the cached size"
+        );
+        assert_eq!(infos[2].size_bytes, None, "sandboxes are never seeded");
     }
 }
