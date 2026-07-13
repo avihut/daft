@@ -114,6 +114,15 @@ If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
 daft.prune.cdTarget).
 
+Resource governing: parallel pushes with a pre-push hook are memory-governed.
+Concurrency is capped (default max(2, cores/4); `--jobs N` overrides,
+`--no-throttle` disables), admissions pause under memory pressure, each hook's
+peak memory is learned across runs, and under sustained pressure the newest
+push is frozen — then killed and retried — instead of exhausting the machine.
+Every push unit gets a wall-clock budget (`daft.sync.pushTimeout`, default
+30m). `daft.sync.pushHookStrategy batched` pushes all branches in one
+`git push` so the hook runs once with every ref.
+
 Cancellation: the first Ctrl+C (or SIGTERM) cancels gracefully — no new work
 starts and every running git subprocess is torn down. A pre-push hook and all
 of its descendants are killed by process group, reaching even stages that moved
