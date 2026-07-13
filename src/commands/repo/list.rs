@@ -126,7 +126,7 @@ pub fn run() -> Result<()> {
     if args.emit.is_structured() {
         // Structured consumers get everything in one shot — walks run
         // synchronously when requested.
-        let sizes = has_size.then(|| compute_sizes(&rows));
+        let sizes = has_size.then(|| compute_sizes(&rows, resolve_size_jobs()));
         // Warm the size cache from the synchronous walk too (write-only), so
         // structured/piped runs leave the same last-known sizes a later live
         // run seeds from.
@@ -165,7 +165,7 @@ pub fn run() -> Result<()> {
         return run_live(cells, &rows, columns);
     }
 
-    let sizes = has_size.then(|| compute_sizes(&rows));
+    let sizes = has_size.then(|| compute_sizes(&rows, resolve_size_jobs()));
     // Warm the size cache from the blocking walk too (write-only), matching
     // the live path and the structured branch above.
     if let Some(sizes) = sizes.as_deref() {
@@ -217,7 +217,7 @@ fn run_live(
         crate::core::size_walk::walk_streaming(
             &paths,
             Some(&walk_cancel),
-            crate::core::size_walk::resolve_jobs(None),
+            resolve_size_jobs(),
             |index, bytes| {
                 let _ = tx.send(CatalogEvent::Size { index, bytes });
             },
@@ -426,9 +426,28 @@ fn build_display_cells(
         .collect()
 }
 
-fn compute_sizes(rows: &[CatalogRepoRow]) -> Vec<Option<u64>> {
+/// Resolve the size-walk concurrency for `daft repo list`, honoring
+/// `daft.list.sizeConcurrency`. Read from *global* git config: repo list is a
+/// cross-repo command that can run outside any repo (like `repo remove`), so
+/// there is no single local repo whose config would apply. `DAFT_SIZE_WALK_JOBS`
+/// still overrides via `resolve_jobs`, and a missing/invalid config falls back
+/// to `available_parallelism()`.
+fn resolve_size_jobs() -> usize {
+    let settings = crate::core::settings::DaftSettings::load_global().unwrap_or_default();
+    size_jobs_for(&settings)
+}
+
+/// Pure core of [`resolve_size_jobs`]: derive the walk budget from settings so
+/// the "repo list honors `daft.list.sizeConcurrency`" wiring is testable
+/// without touching (forbidden) global git config. `DAFT_SIZE_WALK_JOBS` still
+/// wins inside `resolve_jobs`.
+fn size_jobs_for(settings: &crate::core::settings::DaftSettings) -> usize {
+    crate::core::size_walk::resolve_jobs(settings.list_size_concurrency)
+}
+
+fn compute_sizes(rows: &[CatalogRepoRow], jobs: usize) -> Vec<Option<u64>> {
     let paths: Vec<PathBuf> = rows.iter().map(|row| PathBuf::from(&row.path)).collect();
-    crate::core::size_walk::walk_all(&paths, None, crate::core::size_walk::resolve_jobs(None))
+    crate::core::size_walk::walk_all(&paths, None, jobs)
 }
 
 /// Whether a structured field is emitted: the full default set unless the user
@@ -1299,6 +1318,31 @@ mod tests {
         assert_eq!(out[0].uuid, "u-present");
         assert_eq!(out[0].size_bytes, 4096);
         assert_eq!(out[0].measured_at, now);
+    }
+
+    #[test]
+    fn repo_list_size_jobs_honor_the_config() {
+        use crate::core::settings::DaftSettings;
+
+        // `DAFT_SIZE_WALK_JOBS` wins inside `resolve_jobs`; only assert the
+        // config path when it's absent so a stray override can't flip this.
+        if std::env::var_os("DAFT_SIZE_WALK_JOBS").is_some() {
+            return;
+        }
+        // Regression: `daft repo list` used to pass `resolve_jobs(None)`,
+        // silently ignoring `daft.list.sizeConcurrency`. The configured value
+        // must now flow through to the walk budget.
+        let with_config = DaftSettings {
+            list_size_concurrency: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            size_jobs_for(&with_config),
+            3,
+            "repo list must honor daft.list.sizeConcurrency"
+        );
+        // No config → auto (available_parallelism), always >= 1.
+        assert!(size_jobs_for(&DaftSettings::default()) >= 1);
     }
 
     fn sample_row() -> CatalogRepoRow {

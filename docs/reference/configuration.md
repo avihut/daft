@@ -124,12 +124,12 @@ branch).
 
 ## List Settings
 
-| Key                         | Default     | Description                                                                                                                                                                   |
-| --------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft.list.stat`            | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                                                               |
-| `daft.list.columns`         |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                                                                    |
-| `daft.list.sort`            |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity                                        |
-| `daft.list.sizeConcurrency` |             | Max concurrent directory-size walks for `daft list --columns +size`. Default: CPU count. Lower on slow/network filesystems. The `DAFT_SIZE_WALK_JOBS` env var overrides this. |
+| Key                         | Default     | Description                                                                                                                                                                                                  |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `daft.list.stat`            | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                                                                                              |
+| `daft.list.columns`         |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                                                                                                   |
+| `daft.list.sort`            |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity                                                                       |
+| `daft.list.sizeConcurrency` |             | Max concurrent directory-size walks for `--columns +size` on both `daft list` and `daft repo list`. Default: CPU count. Lower on slow/network filesystems. The `DAFT_SIZE_WALK_JOBS` env var overrides this. |
 
 ## Prune Settings
 
