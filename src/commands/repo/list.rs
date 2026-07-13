@@ -305,7 +305,7 @@ fn size_rows_to_persist(
         .zip(loaded)
         .filter_map(|(row, size)| {
             let size_bytes = (*size)?;
-            if !Path::new(&row.path).exists() {
+            if !crate::commands::size_cache::should_persist(Path::new(&row.path)) {
                 return None;
             }
             Some(RepoSizeRow {

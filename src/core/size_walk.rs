@@ -16,10 +16,14 @@
 //! thread-per-worktree + single-threaded-walk design).
 //!
 //! Semantics match the historical single-threaded `compute_directory_size`
-//! byte-for-byte: `symlink_metadata` per entry, recurse into real dirs, sum
-//! file `len()`, dedup hard links by `(dev, ino)` when `nlink > 1`, skip
-//! unreadable entries, never follow symlinks. Traversal order differs (a work
-//! queue, not a strict DFS) but the sum does not.
+//! byte-for-byte for readable trees: `symlink_metadata` per entry, recurse into
+//! real dirs, sum file `len()`, dedup hard links by `(dev, ino)` when
+//! `nlink > 1`, skip unreadable *nested* entries, never follow symlinks.
+//! Traversal order differs (a work queue, not a strict DFS) but the sum does
+//! not. One deliberate divergence: a *root* that can't be read (vanished,
+//! replaced by a file, or permission-denied) reports `None`, not `Some(0)` — so
+//! a caller persisting the result can tell "measured 0" from "couldn't
+//! measure" and never caches a bogus 0 over a good value.
 //!
 //! Built on the same `available_parallelism()` + `std::thread::scope`
 //! bounded-worker idiom as [`crate::core::worktree::sync_dag`]; no new
@@ -65,8 +69,10 @@ fn default_jobs() -> usize {
 }
 
 /// Blocking walk: return the size of each root, indexed the same as `roots`.
-/// Each entry is `Some(bytes)` (a missing/unreadable root reports `Some(0)`,
-/// matching the historical walk). For the two blocking call sites.
+/// Each entry is `Some(bytes)` for a readable root, or `None` when the root
+/// itself couldn't be read (vanished, replaced by a file, or unreadable) —
+/// distinct from a real empty tree's `Some(0)`. For the two blocking call
+/// sites.
 pub fn walk_all(roots: &[PathBuf], cancel: Option<&AtomicBool>, jobs: usize) -> Vec<Option<u64>> {
     let mut out = vec![None; roots.len()];
     walk_streaming(roots, cancel, jobs, |idx, size| out[idx] = size);
@@ -96,10 +102,12 @@ pub fn walk_streaming(
                 .map(|(root, dir)| Job {
                     root,
                     dir: dir.clone(),
+                    is_root: true,
                 })
                 .collect(),
             active: 0,
             remaining: vec![1; n],
+            failed: vec![false; n],
         }),
         cvar: Condvar::new(),
         totals: (0..n).map(|_| AtomicU64::new(0)).collect(),
@@ -126,6 +134,12 @@ pub fn walk_streaming(
 struct Job {
     root: usize,
     dir: PathBuf,
+    /// True only for the initial job of each root (the root directory itself).
+    /// A `read_dir` failure on an `is_root` job means the root vanished, was
+    /// replaced by a file, or is unreadable → that root reports `None`. A
+    /// failure on a nested dir (`is_root == false`) is tolerated as before
+    /// (the subtree contributes 0), preserving the historical sum.
+    is_root: bool,
 }
 
 struct Queue {
@@ -135,6 +149,10 @@ struct Queue {
     /// Outstanding (queued or in-flight) directory count per root; the root's
     /// total is final when this reaches 0.
     remaining: Vec<usize>,
+    /// Per-root flag: the root's own directory could not be read. Such a root
+    /// finalises as `None` (unmeasurable), never `Some(0)`, so a vanished or
+    /// unreadable target can't clobber a good cached size with 0.
+    failed: Vec<bool>,
 }
 
 struct Shared {
@@ -167,43 +185,55 @@ fn worker(shared: &Shared, cancel: Option<&AtomicBool>, tx: mpsc::Sender<(usize,
         };
 
         // Scan the directory OUTSIDE the lock — this is the syscall storm.
-        let (bytes, subdirs) = scan_dir(&job.dir, &shared.seen[job.root]);
+        let (bytes, subdirs, readable) = scan_dir(&job.dir, &shared.seen[job.root]);
         shared.totals[job.root].fetch_add(bytes, Ordering::Relaxed);
 
         // Record this directory done, enqueue its children, detect completion.
-        let finished_total = {
+        let finished = {
             let mut q = shared.queue.lock().unwrap();
             q.active -= 1;
+            // A root whose OWN directory can't be read is unmeasurable → the
+            // root reports None. Nested-dir read failures stay tolerated.
+            if job.is_root && !readable {
+                q.failed[job.root] = true;
+            }
             let added = subdirs.len();
             for dir in subdirs {
                 q.jobs.push_back(Job {
                     root: job.root,
                     dir,
+                    is_root: false,
                 });
             }
             // This dir (−1) plus its children (+added); remaining ≥ 1 here.
             q.remaining[job.root] = q.remaining[job.root] + added - 1;
             let done = q.remaining[job.root] == 0;
+            let failed = q.failed[job.root];
             shared.cvar.notify_all();
             // Read the total while holding the lock: the mutex release/acquire
             // edges make every other worker's Relaxed `fetch_add` for this root
-            // visible once `remaining` has reached 0.
-            done.then(|| shared.totals[job.root].load(Ordering::Relaxed))
+            // visible once `remaining` has reached 0. `finished` is
+            // `Some(root result)` only when this dir finalises the root;
+            // the inner value is `None` for an unreadable root.
+            done.then(|| (!failed).then(|| shared.totals[job.root].load(Ordering::Relaxed)))
         };
 
-        if let Some(total) = finished_total {
-            let _ = tx.send((job.root, Some(total)));
+        if let Some(result) = finished {
+            let _ = tx.send((job.root, result));
         }
     }
 }
 
 /// Scan one directory level: sum the sizes of its files (deduping hard links)
 /// and return the immediate subdirectories to recurse into. Mirrors the old
-/// `compute_directory_size` inner walk exactly — unreadable dirs/entries are
-/// skipped (contributing 0), symlinks are never followed.
-fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>) {
+/// `compute_directory_size` inner walk exactly — individual unreadable entries
+/// are skipped (contributing 0), symlinks are never followed. The third return
+/// value is whether the directory itself was readable (`read_dir` succeeded);
+/// the caller uses it only for the *root* of each tree to distinguish an
+/// unreadable root (`None`) from a genuinely empty one (`Some(0)`).
+fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>, bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return (0, Vec::new());
+        return (0, Vec::new(), false);
     };
     let mut bytes = 0u64;
     let mut subdirs = Vec::new();
@@ -218,7 +248,7 @@ fn scan_dir(dir: &Path, seen: &Mutex<HashSet<(u64, u64)>>) -> (u64, Vec<PathBuf>
             bytes += meta.len();
         }
     }
-    (bytes, subdirs)
+    (bytes, subdirs, true)
 }
 
 /// Whether this file's bytes should be counted: always for `nlink <= 1`; for a
@@ -362,10 +392,57 @@ mod tests {
     }
 
     #[test]
-    fn missing_root_reports_some_zero() {
+    fn missing_root_reports_none() {
+        // A vanished root is unmeasurable, not size 0 — so a persist layer can
+        // skip it instead of clobbering a good cached size with 0.
         let tmp = tempfile::tempdir().unwrap();
         let gone = tmp.path().join("does-not-exist");
-        assert_eq!(walk_all(&[gone], None, 4), vec![Some(0)]);
+        assert_eq!(walk_all(&[gone], None, 4), vec![None]);
+    }
+
+    #[test]
+    fn root_that_is_a_file_reports_none() {
+        // A path replaced by a file (read_dir errors) is unmeasurable → None,
+        // distinct from an empty directory's Some(0).
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        fs::write(&file, b"x").unwrap();
+        assert_eq!(walk_all(&[file], None, 4), vec![None]);
+    }
+
+    #[test]
+    fn empty_readable_root_reports_some_zero() {
+        // The counterpart to the two None cases: a real, readable, empty dir
+        // still measures as Some(0) — the distinction the persist guard needs.
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(walk_all(&[empty], None, 4), vec![Some(0)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_root_reports_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("locked");
+        write(&root.join("hidden.txt"), &vec![0u8; 500]);
+        // Drop read/execute so read_dir on the root fails.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        // chmod 000 does not stop a root euid (and some filesystems ignore
+        // perms). If this process can still read the dir the premise is void —
+        // skip rather than assert falsely.
+        let premise_holds = fs::read_dir(&root).is_err();
+        let got = walk_all(std::slice::from_ref(&root), None, 4);
+        // Restore perms so the tempdir can be cleaned up regardless of outcome.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        if premise_holds {
+            assert_eq!(
+                got,
+                vec![None],
+                "an existing-but-unreadable root must be None, not Some(0)"
+            );
+        }
     }
 
     #[test]

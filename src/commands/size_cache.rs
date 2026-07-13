@@ -15,7 +15,18 @@ use crate::store::models::WorktreeSizeRow;
 use crate::store::paths;
 use crate::store::repos::{WorktreeSizesRepo, with_write_txn};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The **stat-guard**, shared by the worktree and repo persist paths so the
+/// rule can't drift: only persist a freshly-walked size for a path that still
+/// exists on disk. Two things can turn a walked size into a lie before it is
+/// written — the walk yields `Some(0)` for a path removed in the TOCTOU window
+/// between walk and write (which the walker's root-error → `None` can't catch),
+/// and a vanished target must never overwrite a good cached value with 0.
+/// Callers that hold an `Option<u64>` pair this with their own `Some` filter.
+pub(crate) fn should_persist(path: &Path) -> bool {
+    path.exists()
+}
 
 /// Last-known worktree sizes for `repo_hash`, keyed by branch slug. Empty on
 /// any error and — deliberately — when the coordinator store doesn't exist
@@ -64,7 +75,7 @@ pub fn persist_worktree_sizes(
     let measured_at = chrono::Utc::now();
     let rows: Vec<WorktreeSizeRow> = entries
         .into_iter()
-        .filter(|(_, path, _)| path.exists()) // stat-guard
+        .filter(|(_, path, _)| should_persist(path)) // stat-guard
         .map(|(branch_slug, path, size_bytes)| WorktreeSizeRow {
             repo_hash: repo_hash.to_string(),
             branch_slug,
