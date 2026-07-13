@@ -745,15 +745,18 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
     }
 
     // Remove stale trust entry if cloning to a path that was previously trusted.
+    // `update_if` only rewrites the registry when an entry was actually removed.
     if !args.trust_hooks {
-        let mut trust_db = TrustDatabase::load().unwrap_or_default();
-        if trust_db.has_explicit_trust(&result.git_dir) {
-            trust_db.remove_trust(&result.git_dir);
-            if let Err(e) = trust_db.save() {
-                tail_output.warning(&format!("Could not remove stale trust entry: {e}"));
-            } else {
+        let mut removed = false;
+        match TrustDatabase::update_if(|db| {
+            removed = db.remove_trust(&result.git_dir);
+            Ok(removed)
+        }) {
+            Ok(()) if removed => {
                 tail_output.step("Removed stale trust entry for previous repository at this path");
             }
+            Ok(()) => {}
+            Err(e) => tail_output.warning(&format!("Could not remove stale trust entry: {e}")),
         }
     }
 

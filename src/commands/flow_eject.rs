@@ -154,11 +154,11 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Store "sibling" layout in repos.json
     let git_dir = get_git_common_dir()?;
-    let mut trust_db = TrustDatabase::load().unwrap_or_default();
-    trust_db.set_layout(&git_dir, "sibling".to_string());
-    trust_db
-        .save()
-        .context("Failed to save layout to repos.json")?;
+    TrustDatabase::update(|db| {
+        db.set_layout(&git_dir, "sibling".to_string());
+        Ok(())
+    })
+    .context("Failed to save layout to repos.json")?;
 
     // Refresh the catalog entry — the project root just changed shape.
     if let Ok(facts) = crate::catalog::gather_facts(&git_dir, &result.project_root, None, None) {

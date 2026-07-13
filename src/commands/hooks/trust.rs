@@ -76,14 +76,16 @@ pub(super) fn cmd_set_trust(
             }
         }
 
-        // Update and save the trust database
-        let mut db = db;
-        if let Some(fp) = get_remote_url_for_git_dir(&git_dir) {
-            db.set_trust_level_with_fingerprint(&git_dir, new_level, fp);
-        } else {
-            db.set_trust_level(&git_dir, new_level);
-        }
-        db.save().context("Failed to save trust database")?;
+        // Update and persist the trust database under the registry lock.
+        TrustDatabase::update(|db| {
+            if let Some(fp) = get_remote_url_for_git_dir(&git_dir) {
+                db.set_trust_level_with_fingerprint(&git_dir, new_level, fp);
+            } else {
+                db.set_trust_level(&git_dir, new_level);
+            }
+            Ok(())
+        })
+        .context("Failed to save trust database")?;
 
         if force {
             output.info(&format!(
@@ -264,9 +266,11 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
             }
         }
 
-        let mut db = db;
-        db.remove_trust(&git_dir);
-        db.save().context("Failed to save trust database")?;
+        TrustDatabase::update(|db| {
+            db.remove_trust(&git_dir);
+            Ok(())
+        })
+        .context("Failed to save trust database")?;
 
         if force {
             output.info(&format!(
@@ -287,17 +291,25 @@ pub(super) fn cmd_deny(path: &Path, force: bool, output: &mut dyn Output) -> Res
 
 /// Prune stale entries from the trust database.
 pub(super) fn cmd_prune(output: &mut dyn Output) -> Result<()> {
-    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
-
-    let removed = db.prune();
-    let backfilled = db.backfill_fingerprints();
+    // Gather fingerprints lock-free (git subprocesses) so the registry lock
+    // isn't held across git calls; prune + apply under the lock.
+    // `removed`/`backfilled` are captured for the report below.
+    let fingerprints = TrustDatabase::load()
+        .unwrap_or_default()
+        .gather_missing_fingerprints();
+    let mut removed = Vec::new();
+    let mut backfilled = 0usize;
+    TrustDatabase::update_if(|db| {
+        removed = db.prune();
+        backfilled = db.apply_fingerprints(&fingerprints);
+        Ok(!removed.is_empty() || backfilled > 0)
+    })
+    .context("Failed to save trust database")?;
 
     if removed.is_empty() && backfilled == 0 {
         output.info(&dim("No stale entries found."));
         return Ok(());
     }
-
-    db.save().context("Failed to save trust database")?;
 
     if !removed.is_empty() {
         output.info(&bold("Pruned stale entries:"));
@@ -490,9 +502,11 @@ pub(super) fn cmd_reset_trust(force: bool, output: &mut dyn Output) -> Result<()
         }
     }
 
-    let mut db = db;
-    db.clear();
-    db.save().context("Failed to save trust database")?;
+    TrustDatabase::update(|db| {
+        db.clear();
+        Ok(())
+    })
+    .context("Failed to save trust database")?;
 
     if force {
         output.result("Trust database cleared.");
@@ -550,9 +564,11 @@ pub(super) fn cmd_reset_trust_path(
             }
         }
 
-        let mut db = db;
-        db.remove_trust(&git_dir);
-        db.save().context("Failed to save trust database")?;
+        TrustDatabase::update(|db| {
+            db.remove_trust(&git_dir);
+            Ok(())
+        })
+        .context("Failed to save trust database")?;
 
         if force {
             output.result(&dim("  Trust entry removed."));

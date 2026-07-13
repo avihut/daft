@@ -186,16 +186,11 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
     // Store layout in repos.json so checkout uses the correct layout.
     // After init, cwd is inside the worktree so use git to find the git dir.
     if let Ok(git_dir) = crate::get_git_common_dir() {
-        match TrustDatabase::load() {
-            Ok(mut db) => {
-                db.set_layout(&git_dir, layout.name.clone());
-                if let Err(e) = db.save() {
-                    output.warning(&format!("Could not save layout to repos.json: {e}"));
-                }
-            }
-            Err(e) => {
-                output.warning(&format!("Could not load repos.json to save layout: {e}"));
-            }
+        if let Err(e) = TrustDatabase::update(|db| {
+            db.set_layout(&git_dir, layout.name.clone());
+            Ok(())
+        }) {
+            output.warning(&format!("Could not save layout to repos.json: {e}"));
         }
 
         // Register the new repo in the catalog (no remote yet; a later

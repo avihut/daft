@@ -49,14 +49,22 @@ pub fn maybe_prune_trust() {
 /// Entry point for the `daft __prune-trust` background process.
 /// Loads the trust database, removes stale entries, and writes the cache.
 pub fn run_prune_trust() -> Result<()> {
-    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
+    // Gather fingerprints lock-free (each is a git subprocess) so the exclusive
+    // registry lock isn't held across N git calls — otherwise this background
+    // pruner would stall concurrent foreground commands, the very interference
+    // #666 removes.
+    let fingerprints = TrustDatabase::load()
+        .unwrap_or_default()
+        .gather_missing_fingerprints();
 
-    let removed = db.prune();
-    let backfilled = db.backfill_fingerprints();
-
-    if !removed.is_empty() || backfilled > 0 {
-        db.save().context("Failed to save trust database")?;
-    }
+    // Prune + apply under the lock, persisting only when something actually
+    // changed.
+    TrustDatabase::update_if(|db| {
+        let removed = db.prune();
+        let applied = db.apply_fingerprints(&fingerprints);
+        Ok(!removed.is_empty() || applied > 0)
+    })
+    .context("Failed to prune trust database")?;
 
     // Always update the cache timestamp, even if nothing was pruned
     let now = SystemTime::now()

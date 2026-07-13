@@ -527,10 +527,13 @@ fn cmd_reset(args: &ResetArgs, output: &mut dyn Output) -> Result<()> {
     }
 
     let git_dir = get_git_common_dir()?;
-    let mut trust_db = TrustDatabase::load().unwrap_or_default();
+    let mut cleared = false;
+    TrustDatabase::update_if(|db| {
+        cleared = db.remove_layout(&git_dir);
+        Ok(cleared)
+    })?;
 
-    if trust_db.remove_layout(&git_dir) {
-        trust_db.save()?;
+    if cleared {
         output.info("Layout setting cleared for this repository.");
     } else {
         output.info("No layout setting found for this repository.");
@@ -743,11 +746,11 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
 
     // Update repos.json with the new layout
     let git_dir = get_git_common_dir()?;
-    let mut trust_db = TrustDatabase::load().unwrap_or_default();
-    trust_db.set_layout(&git_dir, target_layout.name.clone());
-    trust_db
-        .save()
-        .context("Failed to save layout to repos.json")?;
+    TrustDatabase::update(|db| {
+        db.set_layout(&git_dir, target_layout.name.clone());
+        Ok(())
+    })
+    .context("Failed to save layout to repos.json")?;
 
     // CD to the worktree for the user's original branch (it may have moved)
     if let Some(ref branch) = user_branch
