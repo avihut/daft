@@ -30,8 +30,9 @@ use crate::output::tui::{
     tree_glyph,
 };
 use crate::output::{CliOutput, Output, OutputConfig};
-use crate::store::CatalogRepoRow;
+use crate::store::{CatalogRepoRow, RepoSizeRow};
 use crate::styles;
+use std::collections::HashMap;
 
 #[derive(Parser, Debug)]
 #[command(name = "git-daft-repo-list")]
@@ -222,12 +223,27 @@ fn run_live(
         signal_cancel.store(true, Ordering::Relaxed);
     });
 
+    // Size cache: seed each repo's Size cell with its last-known value
+    // (rendered dim/stale) so the column shows a figure instantly while the
+    // walk refreshes it. Keyed by catalog uuid, aligned to `rows` by index.
+    let cache = read_repo_size_cache();
+    let stale: Vec<Option<u64>> = rows.iter().map(|r| cache.get(&r.uuid).copied()).collect();
+
     // Raw mode routes Ctrl-C into the render loop as a key event; the RAII
     // guard restores cooked mode on every exit path.
     let _raw_guard = crate::output::tui::enable_raw_mode_guard();
-    let renderer =
-        TuiRenderer::new(CatalogTable::new(cells, columns), rx).with_cancel_signal(cancel);
+    let renderer = TuiRenderer::new(
+        CatalogTable::new(cells, columns).with_stale_sizes(stale),
+        rx,
+    )
+    .with_cancel_signal(cancel);
     let screen = renderer.run()?;
+
+    // Persist the freshly-walked sizes so the next run seeds from them. Only
+    // cells that actually loaded this run are written (a stale value that
+    // never refreshed keeps its `measured_at`); the helper stat-guards each
+    // path so a removed repo can't clobber a good cached size with `Some(0)`.
+    persist_repo_sizes(rows, &screen.loaded_sizes());
 
     // On normal completion the walkers are already done and the join returns
     // immediately. On cancellation, walks may still be mid-flight — skip the
@@ -237,6 +253,58 @@ fn run_live(
         let _ = join_thread.join();
     }
     Ok(())
+}
+
+/// Last-known repo sizes keyed by catalog uuid, for seeding the live table's
+/// Size cells up front. Best-effort: a missing catalog, or an old one without
+/// the `repo_sizes` table, yields an empty map (today's shimmer).
+fn read_repo_size_cache() -> HashMap<String, u64> {
+    Catalog::open_ro()
+        .ok()
+        .flatten()
+        .and_then(|cat| cat.list_repo_sizes().ok())
+        .map(|rows| rows.into_iter().map(|r| (r.uuid, r.size_bytes)).collect())
+        .unwrap_or_default()
+}
+
+/// Persist freshly-walked repo sizes (`loaded` is index-aligned with `rows`).
+/// Batched in one transaction; best-effort — a store/write failure is
+/// swallowed.
+fn persist_repo_sizes(rows: &[CatalogRepoRow], loaded: &[Option<u64>]) {
+    let to_persist = size_rows_to_persist(rows, loaded, chrono::Utc::now());
+    if to_persist.is_empty() {
+        return;
+    }
+    if let Ok(catalog) = Catalog::open_rw() {
+        let _ = catalog.upsert_repo_sizes(&to_persist);
+    }
+}
+
+/// Pure core of [`persist_repo_sizes`]: map index-aligned `(row, walked-size)`
+/// pairs to the rows worth persisting. Keeps only `Some` sizes (a cell that
+/// never walked is skipped) whose repo path still exists — the **stat-guard**,
+/// so the walk's `Some(0)` for a vanished repo can't clobber a good cached
+/// value. Split out so the filtering is testable without touching the catalog.
+fn size_rows_to_persist(
+    rows: &[CatalogRepoRow],
+    loaded: &[Option<u64>],
+    measured_at: chrono::DateTime<chrono::Utc>,
+) -> Vec<RepoSizeRow> {
+    rows.iter()
+        .zip(loaded)
+        .filter_map(|(row, size)| {
+            let size_bytes = (*size)?;
+            if !Path::new(&row.path).exists() {
+                return None;
+            }
+            Some(RepoSizeRow {
+                uuid: row.uuid.clone(),
+                repo_path: row.path.clone(),
+                size_bytes,
+                measured_at,
+            })
+        })
+        .collect()
 }
 
 /// Worktree count for a repo: the main working tree (if any) plus linked
@@ -1191,6 +1259,35 @@ mod tests {
     fn worktree_count_is_none_outside_a_repo() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(worktree_count(tmp.path()), None);
+    }
+
+    #[test]
+    fn size_rows_to_persist_applies_stat_guard_and_skips_unwalked() {
+        // present repo with a fresh size → persisted; a vanished path (the
+        // walk's Some(0) case) → skipped by the stat-guard; a never-walked
+        // None → skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().to_string_lossy().into_owned();
+        let gone = dir.path().join("removed").to_string_lossy().into_owned();
+
+        let mut present = sample_row();
+        present.uuid = "u-present".into();
+        present.path = existing.clone();
+        let mut vanished = sample_row();
+        vanished.uuid = "u-gone".into();
+        vanished.path = gone;
+        let mut unwalked = sample_row();
+        unwalked.uuid = "u-unwalked".into();
+        unwalked.path = existing;
+
+        let rows = vec![present, vanished, unwalked];
+        let now = chrono::Utc::now();
+        let out = size_rows_to_persist(&rows, &[Some(4096), Some(0), None], now);
+
+        assert_eq!(out.len(), 1, "only the present, walked repo persists");
+        assert_eq!(out[0].uuid, "u-present");
+        assert_eq!(out[0].size_bytes, 4096);
+        assert_eq!(out[0].measured_at, now);
     }
 
     fn sample_row() -> CatalogRepoRow {
