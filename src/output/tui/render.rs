@@ -843,6 +843,12 @@ fn render_status_cell(wt: &super::state::WorktreeRow, tick: usize) -> Cell<'stat
             "waiting",
             Style::default().add_modifier(Modifier::DIM),
         ))),
+        // Governor-held (#678): dim like Idle — deliberately not running,
+        // nothing is wrong.
+        WorktreeStatus::Throttled(label) => Cell::from(Line::from(Span::styled(
+            label.clone(),
+            Style::default().add_modifier(Modifier::DIM),
+        ))),
         WorktreeStatus::Active(label) => {
             let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
             Cell::from(Line::from(Span::styled(

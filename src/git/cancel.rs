@@ -22,7 +22,8 @@
 
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Cancellation level for in-flight subprocess runs.
 ///
@@ -125,6 +126,88 @@ pub struct OperationCancelled;
 )]
 pub struct NeedsTerminal;
 
+/// Typed marker error: the supervised push unit (git + pre-push hook)
+/// exceeded its wall-clock budget and its tree was torn down (#678).
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "push timed out after {}s (pre-push hook still running?); \
+     raise or disable daft.sync.pushTimeout if this push legitimately needs longer",
+    limit.as_secs()
+)]
+pub struct OperationTimedOut {
+    pub limit: Duration,
+}
+
+/// Once a unit is past its deadline: this long on the soft cascade
+/// (TERM+CONT per group) before escalating to SIGKILL.
+const TIMEOUT_HARD_GRACE: Duration = Duration::from_secs(10);
+
+/// Pausable wall-clock budget for one supervised unit (#678 stage 4).
+///
+/// The supervisor polls [`UnitClock::overdue`] every tick. The resource
+/// governor pauses the clock while it has the unit frozen — SIGSTOP'd
+/// descendants make no progress, and counting that time would time out an
+/// innocent hook. `overdue` subtracts the in-progress pause live, so a
+/// unit frozen past its nominal deadline can never fire mid-freeze.
+pub struct UnitClock {
+    limit: Duration,
+    started: Instant,
+    pause: Mutex<PauseState>,
+}
+
+#[derive(Default)]
+struct PauseState {
+    since: Option<Instant>,
+    accrued: Duration,
+}
+
+impl UnitClock {
+    /// A running clock with `limit` of countable wall time.
+    pub fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            started: Instant::now(),
+            pause: Mutex::new(PauseState::default()),
+        }
+    }
+
+    /// The configured budget.
+    pub fn limit(&self) -> Duration {
+        self.limit
+    }
+
+    /// Stop counting (idempotent). The governor calls this at freeze.
+    pub fn pause(&self) {
+        let mut pause = self.pause.lock().unwrap();
+        if pause.since.is_none() {
+            pause.since = Some(Instant::now());
+        }
+    }
+
+    /// Resume counting (idempotent). The governor calls this at thaw.
+    pub fn resume(&self) {
+        let mut pause = self.pause.lock().unwrap();
+        if let Some(since) = pause.since.take() {
+            pause.accrued += since.elapsed();
+        }
+    }
+
+    /// How far past the pause-adjusted deadline the unit is, if at all.
+    pub fn overdue(&self, now: Instant) -> Option<Duration> {
+        let paused = {
+            let pause = self.pause.lock().unwrap();
+            pause.accrued
+                + pause
+                    .since
+                    .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
+        };
+        let counted = now
+            .saturating_duration_since(self.started)
+            .saturating_sub(paused);
+        (counted > self.limit).then(|| counted - self.limit)
+    }
+}
+
 /// How a supervised child's tree is torn down on cancel — and whether a
 /// job-control stop is read as an interactive-auth signal.
 ///
@@ -164,6 +247,9 @@ pub enum Verdict {
     /// The child job-control-stopped itself (tty auth); its tree was
     /// killed and the child is reaped.
     StoppedOnTty,
+    /// The unit outran its [`UnitClock`] budget while still running; its
+    /// tree was torn down and the child is reaped (#678).
+    TimedOut,
 }
 
 /// Poll-based replacement for `Child::wait()` that keeps watching the
@@ -189,6 +275,10 @@ pub struct ChildSupervisor<'a> {
     mode: SupervisionMode,
     cancelled_in_flight: bool,
     tty_stopped: bool,
+    /// Wall-clock budget for the unit; `None` = no timeout.
+    clock: Option<Arc<UnitClock>>,
+    /// The clock expired while the child was still running.
+    timed_out: bool,
     #[cfg(unix)]
     child_pid: u32,
     #[cfg(unix)]
@@ -209,12 +299,19 @@ pub struct ChildSupervisor<'a> {
 
 impl<'a> ChildSupervisor<'a> {
     #[cfg(unix)]
-    pub fn new(child: &Child, cancel: Option<&'a CancelFlag>, mode: SupervisionMode) -> Self {
+    pub fn new(
+        child: &Child,
+        cancel: Option<&'a CancelFlag>,
+        mode: SupervisionMode,
+        clock: Option<Arc<UnitClock>>,
+    ) -> Self {
         Self {
             cancel,
             mode,
             cancelled_in_flight: false,
             tty_stopped: false,
+            clock,
+            timed_out: false,
             child_pid: child.id(),
             cascade: GroupCascade::new(child.id()),
             cascade_at: None,
@@ -227,11 +324,33 @@ impl<'a> ChildSupervisor<'a> {
     }
 
     #[cfg(not(unix))]
-    pub fn new(_child: &Child, cancel: Option<&'a CancelFlag>, _mode: SupervisionMode) -> Self {
+    pub fn new(
+        _child: &Child,
+        cancel: Option<&'a CancelFlag>,
+        _mode: SupervisionMode,
+        clock: Option<Arc<UnitClock>>,
+    ) -> Self {
         Self {
             cancel,
             cancelled_in_flight: false,
             tty_stopped: false,
+            clock,
+            timed_out: false,
+        }
+    }
+
+    /// Timeout escalation level for this tick: 0 = within budget, 1 = past
+    /// the deadline (soft cascade), 2 = past deadline + grace (SIGKILL).
+    /// Computed even when the child already exited — an expired deadline
+    /// during the drain-wait still tears down orphaned pipe holders.
+    fn timeout_level(&self, now: Instant) -> usize {
+        match &self.clock {
+            Some(clock) => match clock.overdue(now) {
+                None => 0,
+                Some(over) if over < TIMEOUT_HARD_GRACE => 1,
+                Some(_) => 2,
+            },
+            None => 0,
         }
     }
 
@@ -262,10 +381,15 @@ impl<'a> ChildSupervisor<'a> {
             if let Some(status) = exit
                 && drains_done()
             {
+                // Priority: a tty stop is the most specific diagnosis; a
+                // user cancel outranks a timeout; a timeout outranks the
+                // exit status (the teardown forged it anyway).
                 let verdict = if self.tty_stopped {
                     Verdict::StoppedOnTty
                 } else if self.cancelled_in_flight {
                     Verdict::Cancelled
+                } else if self.timed_out {
+                    Verdict::TimedOut
                 } else {
                     Verdict::Completed(status)
                 };
@@ -304,10 +428,24 @@ impl<'a> ChildSupervisor<'a> {
             self.cancelled_in_flight = true;
         }
 
-        // Stop detection runs only while nothing else is going on: once
-        // a cancel or a detected stop starts a teardown, the T state is
-        // expected (queued TERM) and must not re-trigger.
-        if flag_level == 0 && !self.tty_stopped && child_running && now >= self.stop_probe_at {
+        // Same gate for the timeout verdict (#7 shape): a deadline expiring
+        // during the drain-wait doesn't relabel a finished run — but its
+        // escalation level still folds in below, so orphaned pipe holders
+        // are torn down instead of wedging the drain.
+        let timeout_level = self.timeout_level(now);
+        if timeout_level > 0 && child_running {
+            self.timed_out = true;
+        }
+
+        // Stop detection runs only while nothing else is going on: once a
+        // cancel, a detected stop, or a timeout starts a teardown, the T
+        // state is expected (queued TERM) and must not re-trigger.
+        if flag_level == 0
+            && timeout_level == 0
+            && !self.tty_stopped
+            && child_running
+            && now >= self.stop_probe_at
+        {
             self.stop_probe_at = now + STOP_PROBE_EVERY;
             match pid_stopped(self.child_pid) {
                 Some(true) => {
@@ -323,7 +461,11 @@ impl<'a> ChildSupervisor<'a> {
 
         // A tty-stopped child can never make progress — skip straight to
         // the kill cascade regardless of the flag.
-        let level = if self.tty_stopped { 2 } else { flag_level };
+        let level = if self.tty_stopped {
+            2
+        } else {
+            flag_level.max(timeout_level)
+        };
         if level == 0 {
             return;
         }
@@ -350,13 +492,19 @@ impl<'a> ChildSupervisor<'a> {
     #[cfg(unix)]
     fn tick_direct(&mut self, child_running: bool) {
         let flag_level = self.cancel.map(CancelFlag::level).unwrap_or(0);
+        let timeout_level = self.timeout_level(std::time::Instant::now());
         // See #7 above: a cancel arriving after the child already exited
         // doesn't cancel a finished run, and there is nothing to kill.
-        if flag_level == 0 || !child_running {
+        if flag_level == 0 && timeout_level == 0 || !child_running {
             return;
         }
-        self.cancelled_in_flight = true;
-        if flag_level >= 2 {
+        if flag_level > 0 {
+            self.cancelled_in_flight = true;
+        }
+        if timeout_level > 0 {
+            self.timed_out = true;
+        }
+        if flag_level.max(timeout_level) >= 2 {
             kill_pid(self.child_pid, true);
         } else if !self.direct_termed {
             kill_pid(self.child_pid, false);
@@ -367,12 +515,16 @@ impl<'a> ChildSupervisor<'a> {
     #[cfg(not(unix))]
     fn tick(&mut self, child: &mut Child, child_running: bool) {
         // No process groups off unix: two-stage degrades to a plain kill
-        // of the direct child on any cancel level.
+        // of the direct child on any cancel level (or an expired budget).
         if self.cancel.is_some_and(CancelFlag::is_cancelled) {
             self.cancelled_in_flight = true;
             if child_running {
                 let _ = child.kill();
             }
+        }
+        if self.timeout_level(Instant::now()) > 0 && child_running {
+            self.timed_out = true;
+            let _ = child.kill();
         }
     }
 
@@ -398,7 +550,7 @@ static LEFTOVER_GROUPS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 #[cfg(unix)]
-fn record_survivors(pgids: &[u32]) {
+pub(crate) fn record_survivors(pgids: &[u32]) {
     if pgids.is_empty() {
         return;
     }
@@ -424,9 +576,32 @@ pub fn surviving_groups() -> Vec<u32> {
     Vec::new()
 }
 
+/// Per-invocation options for [`supervise_command`] beyond the cancel
+/// flag itself.
+pub(crate) struct SuperviseOpts<'a> {
+    /// Process-group placement and teardown strategy.
+    pub mode: SupervisionMode,
+    /// Invoked with the child's pid immediately after spawn.
+    pub on_spawn: Option<&'a (dyn Fn(u32) + Send + Sync)>,
+    /// Wall-clock budget for the unit (#678); expiry escalates through
+    /// the same cascade as a cancel and yields [`Verdict::TimedOut`].
+    pub clock: Option<Arc<UnitClock>>,
+}
+
+impl SuperviseOpts<'_> {
+    /// Plain supervision in `mode`: no spawn observer, no budget.
+    pub(crate) fn new(mode: SupervisionMode) -> Self {
+        Self {
+            mode,
+            on_spawn: None,
+            clock: None,
+        }
+    }
+}
+
 /// The single spawn → supervise → verdict skeleton shared by every
 /// cancellable git seam. Sets up piped stdio, isolates the child into its
-/// own process group when `mode` is [`SupervisionMode::Isolated`] and a
+/// own process group when the mode is [`SupervisionMode::Isolated`] and a
 /// flag is attached, then drains both pipes on scoped threads with the
 /// caller's closures while [`ChildSupervisor`] polls the flag and the
 /// child's job-control state. Returns the [`Verdict`] alongside whatever
@@ -440,7 +615,7 @@ pub fn surviving_groups() -> Vec<u32> {
 pub(crate) fn supervise_command<O, E, FO, FE>(
     cmd: &mut Command,
     cancel: Option<&CancelFlag>,
-    mode: SupervisionMode,
+    opts: SuperviseOpts<'_>,
     drain_out: FO,
     drain_err: FE,
 ) -> anyhow::Result<(Verdict, O, E)>
@@ -456,13 +631,18 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
-    if cancel.is_some() && mode == SupervisionMode::Isolated {
+    if cancel.is_some() && opts.mode == SupervisionMode::Isolated {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 
     let mut child = cmd.spawn()?;
-    let mut supervisor = ChildSupervisor::new(&child, cancel, mode);
+    // Surface the pid before the first supervisor tick so an observer (the
+    // resource governor, #678) knows the unit's root from its first instant.
+    if let Some(on_spawn) = opts.on_spawn {
+        on_spawn(child.id());
+    }
+    let mut supervisor = ChildSupervisor::new(&child, cancel, opts.mode, opts.clock);
     let stdout_pipe = child
         .stdout
         .take()
@@ -520,7 +700,7 @@ pub fn output_with_cancel(
     let (verdict, stdout, stderr) = supervise_command(
         cmd,
         cancel,
-        SupervisionMode::Direct,
+        SuperviseOpts::new(SupervisionMode::Direct),
         read_to_end,
         read_to_end_err,
     )?;
@@ -533,6 +713,11 @@ pub fn output_with_cancel(
         }),
         Verdict::Cancelled => Err(OperationCancelled.into()),
         Verdict::StoppedOnTty => Err(NeedsTerminal.into()),
+        // Unreachable in practice: this path never attaches a UnitClock.
+        Verdict::TimedOut => Err(OperationTimedOut {
+            limit: Duration::ZERO,
+        }
+        .into()),
     }
 }
 
@@ -565,7 +750,84 @@ mod supervisor_tests {
         cmd: &mut Command,
         flag: Option<&CancelFlag>,
     ) -> anyhow::Result<(Verdict, Vec<u8>, Vec<u8>)> {
-        supervise_command(cmd, flag, SupervisionMode::Isolated, read_out, read_err)
+        supervise_command(
+            cmd,
+            flag,
+            SuperviseOpts::new(SupervisionMode::Isolated),
+            read_out,
+            read_err,
+        )
+    }
+
+    #[test]
+    fn unit_clock_pause_excludes_frozen_time() {
+        let clock = UnitClock::new(Duration::from_millis(50));
+        clock.pause();
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            clock.overdue(Instant::now()).is_none(),
+            "paused time must not count against the budget"
+        );
+        clock.resume();
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(
+            clock.overdue(Instant::now()).is_some(),
+            "unpaused time counts"
+        );
+        // Idempotence: double resume/pause must not corrupt accounting.
+        clock.resume();
+        clock.pause();
+        clock.pause();
+    }
+
+    #[test]
+    fn timeout_tears_down_and_reports_timed_out() {
+        // The flag never escalates — only the clock expires. Soft TERM
+        // suffices for sh+sleep, well inside the hard grace.
+        let flag = CancelFlag::new();
+        let clock = Arc::new(UnitClock::new(Duration::from_millis(150)));
+        let started = Instant::now();
+        let (verdict, _, _) = supervise_command(
+            &mut sh("sleep 30"),
+            Some(&flag),
+            SuperviseOpts {
+                mode: SupervisionMode::Isolated,
+                on_spawn: None,
+                clock: Some(clock),
+            },
+            read_out,
+            read_err,
+        )
+        .unwrap();
+        assert!(matches!(verdict, Verdict::TimedOut), "got {verdict:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "soft teardown must not wait out the hard grace"
+        );
+    }
+
+    #[test]
+    fn on_spawn_reports_child_pid_before_first_tick() {
+        let seen = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        let on_spawn = move |pid: u32| {
+            *sink.lock().unwrap() = Some(pid);
+        };
+        let (verdict, out, _) = supervise_command(
+            &mut sh("echo hi"),
+            None,
+            SuperviseOpts {
+                mode: SupervisionMode::Direct,
+                on_spawn: Some(&on_spawn),
+                clock: None,
+            },
+            read_out,
+            read_err,
+        )
+        .unwrap();
+        assert!(matches!(verdict, Verdict::Completed(s) if s.success()));
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "hi");
+        assert!(seen.lock().unwrap().is_some(), "pid callback must fire");
     }
 
     #[test]
@@ -762,7 +1024,7 @@ pub use unix::*;
 mod unix {
     use nix::sys::signal::{Signal, kill, killpg};
     use nix::unistd::Pid;
-    use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::collections::BTreeSet;
     use std::process::Stdio;
 
     fn pg(pgid: u32) -> Pid {
@@ -814,82 +1076,7 @@ mod unix {
         Some(stat.starts_with('T') || stat.starts_with('t'))
     }
 
-    struct ProcessRow {
-        ppid: u32,
-        pgid: u32,
-    }
-
-    /// Point-in-time view of the system process table, sufficient to walk
-    /// parent→child links and group membership.
-    struct ProcessSnapshot {
-        rows: HashMap<u32, ProcessRow>,
-    }
-
-    impl ProcessSnapshot {
-        /// Best-effort capture via `ps`. `-axo pid=,ppid=,pgid=,stat=` is
-        /// portable across macOS and Linux procps; `=` suppresses headers.
-        fn capture() -> Option<Self> {
-            let out = std::process::Command::new("ps")
-                .args(["-axo", "pid=,ppid=,pgid=,stat="])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            Some(Self::parse(&String::from_utf8_lossy(&out.stdout)))
-        }
-
-        fn parse(text: &str) -> Self {
-            let mut rows = HashMap::new();
-            for line in text.lines() {
-                let mut it = line.split_whitespace();
-                // The stat column isn't stored, but requiring all four
-                // fields rejects truncated/garbled rows wholesale.
-                let (Some(pid), Some(ppid), Some(pgid), Some(_stat)) =
-                    (it.next(), it.next(), it.next(), it.next())
-                else {
-                    continue;
-                };
-                let (Ok(pid), Ok(ppid), Ok(pgid)) =
-                    (pid.parse::<u32>(), ppid.parse::<u32>(), pgid.parse::<u32>())
-                else {
-                    continue;
-                };
-                rows.insert(pid, ProcessRow { ppid, pgid });
-            }
-            Self { rows }
-        }
-
-        /// Distinct pgids of `root_pid` and every process transitively
-        /// parented under it. Misses processes that already reparented to
-        /// PID 1 — which is exactly why [`GroupCascade`] keeps a
-        /// cumulative record of everything it ever signaled.
-        fn descendant_pgids(&self, root_pid: u32) -> BTreeSet<u32> {
-            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-            for (&pid, row) in &self.rows {
-                children.entry(row.ppid).or_default().push(pid);
-            }
-            let mut pgids = BTreeSet::new();
-            let mut stack = vec![root_pid];
-            // Pid reuse between `ps` rows can in principle produce a
-            // parent cycle; the seen-set makes the walk immune.
-            let mut seen = HashSet::new();
-            while let Some(pid) = stack.pop() {
-                if !seen.insert(pid) {
-                    continue;
-                }
-                if let Some(row) = self.rows.get(&pid) {
-                    pgids.insert(row.pgid);
-                }
-                if let Some(kids) = children.get(&pid) {
-                    stack.extend(kids.iter().copied());
-                }
-            }
-            pgids
-        }
-    }
+    use crate::git::process_tree::ProcessSnapshot;
 
     /// Drop pgids that must never be signaled: the kernel/init groups
     /// (`killpg(0)` would hit *our own* group; `1` is init's) and the
@@ -1006,50 +1193,6 @@ mod unix {
                 assert!(Instant::now() < deadline, "timed out waiting for {what}");
                 std::thread::sleep(Duration::from_millis(20));
             }
-        }
-
-        #[test]
-        fn parse_skips_malformed_rows() {
-            let snap = ProcessSnapshot::parse(
-                "  100     1   100 Ss+\n\
-                 garbage line\n\
-                 200 100 200 T\n\
-                 201 200 200 t\n\
-                 x y z w\n\
-                 300 201\n",
-            );
-            assert_eq!(snap.rows.len(), 3);
-            assert!(snap.rows.contains_key(&100));
-            assert!(snap.rows.contains_key(&200));
-            assert!(snap.rows.contains_key(&201));
-            // Three-token row (stat missing) is rejected wholesale.
-            assert!(!snap.rows.contains_key(&300));
-        }
-
-        #[test]
-        fn descendant_walk_collects_foreign_groups_but_not_reparented_orphans() {
-            // Incident-shaped tree: git(200) → hook sh(201) share the
-            // child's group; mise(300) and cargo(301) each setpgid'd
-            // into their own; 400 already reparented to init.
-            let snap = ProcessSnapshot::parse(
-                "  100     1   100 Ss\n\
-                 200 100 200 S\n\
-                 201 200 200 S\n\
-                 300 201 300 T\n\
-                 301 300 301 T\n\
-                 400 1 400 T\n",
-            );
-            let pgids = snap.descendant_pgids(200);
-            assert_eq!(pgids, BTreeSet::from([200, 300, 301]));
-            // The walk cannot see 400 — this is why GroupCascade keeps
-            // the cumulative signaled set across ticks.
-            assert!(!pgids.contains(&400));
-        }
-
-        #[test]
-        fn walk_survives_ppid_cycles() {
-            let snap = ProcessSnapshot::parse("200 201 200 S\n201 200 200 S\n");
-            assert_eq!(snap.descendant_pgids(200), BTreeSet::from([200]));
         }
 
         #[test]

@@ -2,7 +2,8 @@ use crate::core::sort::SortSpec;
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::core::worktree::sync_dag::{
-    DagEvent, DagHookPhase, JobCompletionStatus, OperationPhase, TaskMessage, TaskStatus,
+    DagEvent, DagHookPhase, DeferReason, JobCompletionStatus, OperationPhase, TaskMessage,
+    TaskStatus, ThrottleReason,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +30,9 @@ pub struct PhaseState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeStatus {
     Idle,
+    /// Ready to run but held back by the resource governor (#678),
+    /// e.g. "held: memory". Rendered dim, like `Idle`.
+    Throttled(String),
     Active(String), // e.g. "updating", "rebasing"
     Done(FinalStatus),
 }
@@ -95,6 +99,16 @@ pub struct HookSummaryEntry {
     pub output: Option<String>,
 }
 
+/// Accumulated resource-governor visibility (#678), surfaced as a one-line
+/// post-TUI summary ("2 pushes throttled 14s to preserve memory headroom").
+#[derive(Debug, Clone, Default)]
+pub struct GovernorSummary {
+    /// Distinct pushes the governor ever held back.
+    pub throttled_pushes: usize,
+    /// Total held time, summed across pushes.
+    pub throttled_total: Duration,
+}
+
 /// Complete TUI state, rebuilt from DagEvents.
 pub struct TuiState {
     pub phases: Vec<PhaseState>,
@@ -108,6 +122,10 @@ pub struct TuiState {
     pub render_start_elapsed: std::time::Duration,
     /// Worktree-rows widget (rows, sort, partition, patch application).
     pub live: LiveTable,
+    /// Governor throttle accounting for the post-TUI summary (#678).
+    pub governor: GovernorSummary,
+    /// Branches already counted in `governor.throttled_pushes`.
+    governor_throttled_seen: std::collections::HashSet<String>,
 }
 
 /// A single row in the worktree table.
@@ -123,6 +141,9 @@ pub struct WorktreeRow {
     pub hook_sub_rows: Vec<HookSubRow>,
     /// Human-readable reason for a `FinalStatus::Failed` outcome, if available.
     pub failure_reason: Option<String>,
+    /// When the governor first deferred this row's current wait (#678);
+    /// cleared (and accumulated into the governor summary) on `TaskStarted`.
+    pub throttled_since: Option<std::time::Instant>,
 }
 
 impl WorktreeRow {
@@ -135,6 +156,7 @@ impl WorktreeRow {
             hook_failed: false,
             hook_sub_rows: Vec::new(),
             failure_reason: None,
+            throttled_since: None,
         }
     }
 
@@ -194,6 +216,8 @@ impl TuiState {
             show_hook_sub_rows: verbose >= 1,
             render_start_elapsed: Duration::ZERO,
             live,
+            governor: GovernorSummary::default(),
+            governor_throttled_seen: std::collections::HashSet::new(),
         }
     }
 
@@ -232,12 +256,19 @@ impl TuiState {
                         ..WorktreeInfo::empty(branch_name)
                     });
                 }
+                let mut throttled_for = None;
                 if let Some(row) = self.find_row_mut(branch_name) {
                     // Save terminal status so PreconditionFailed can restore it.
                     if matches!(row.status, WorktreeStatus::Done(_)) {
                         row.prev_terminal_status = Some(row.status.clone());
                     }
                     row.status = WorktreeStatus::Active(active_label.into());
+                    // A held push finally launched: fold its wait into the
+                    // governor summary (#678).
+                    throttled_for = row.throttled_since.take().map(|since| since.elapsed());
+                }
+                if let Some(waited) = throttled_for {
+                    self.governor.throttled_total += waited;
                 }
             }
             DagEvent::TaskCompleted {
@@ -276,6 +307,68 @@ impl TuiState {
                         // `PatchSource::PostTask(phase)` — see `LiveTable`.
                     }
                     self.check_phase_completion(phase);
+                }
+            }
+            DagEvent::TaskThrottled {
+                phase,
+                branch_name,
+                reason,
+            } => {
+                // The phase is genuinely in progress — work is queued and
+                // deliberately held, not merely pending.
+                self.activate_phase(phase);
+                let label = match reason {
+                    ThrottleReason::Deferred(DeferReason::ClassCap) => "held: capped",
+                    ThrottleReason::Deferred(
+                        DeferReason::MemoryPressure | DeferReason::KillCooldown,
+                    ) => "held: memory",
+                    ThrottleReason::Frozen => "held: frozen",
+                    ThrottleReason::Evicted { .. } => "held: retry",
+                };
+                if self.governor_throttled_seen.insert(branch_name.clone()) {
+                    self.governor.throttled_pushes += 1;
+                }
+                if let Some(row) = self.find_row_mut(branch_name) {
+                    // A freeze only makes sense for a push that is actively
+                    // running: a `Frozen` event that races past the push's own
+                    // `TaskCompleted` (the governor sampler thread and the
+                    // worker are independent mpsc producers, so std::sync::mpsc
+                    // gives no cross-producer ordering) must not resurrect a
+                    // finished `Done` row into a permanent "held: frozen".
+                    // Deferred/Evicted throttles legitimately follow the
+                    // update/rebase outcome (`Done`) while the push waits to be
+                    // admitted, so only the freeze case is gated.
+                    let stale_freeze = matches!(reason, ThrottleReason::Frozen)
+                        && !matches!(row.status, WorktreeStatus::Active(_));
+                    if !stale_freeze {
+                        // Save the prior terminal status (normally the branch's
+                        // update/rebase outcome) exactly like TaskStarted does —
+                        // by the time the admitted task starts, `row.status` is
+                        // Throttled, so TaskStarted's own save can't.
+                        if matches!(row.status, WorktreeStatus::Done(_)) {
+                            row.prev_terminal_status = Some(row.status.clone());
+                        }
+                        row.status = WorktreeStatus::Throttled(label.into());
+                        // A freeze pauses mid-run work; only queue-waits count
+                        // toward the throttle summary clock.
+                        if matches!(
+                            reason,
+                            ThrottleReason::Deferred(_) | ThrottleReason::Evicted { .. }
+                        ) && row.throttled_since.is_none()
+                        {
+                            row.throttled_since = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            }
+            DagEvent::TaskResumed { phase, branch_name } => {
+                // A thawed unit is running again — restore the active label
+                // its TaskStarted originally set.
+                let _ = phase;
+                if let Some(row) = self.find_row_mut(branch_name)
+                    && matches!(row.status, WorktreeStatus::Throttled(_))
+                {
+                    row.status = WorktreeStatus::Active("pushing".into());
                 }
             }
             DagEvent::AllDone => {
@@ -438,9 +531,15 @@ impl TuiState {
             OperationPhase::Setup => "setting up",
             OperationPhase::RemoveRepo => "removing",
         };
-        let any_active = self.live.rows.iter().any(
-            |w| matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label),
-        );
+        let any_active = self.live.rows.iter().any(|w| {
+            matches!(&w.status, WorktreeStatus::Active(label) if label == phase_active_label)
+                // A governor-held push (Throttled) is still in the Push phase —
+                // it is queued or frozen, about to run, not done — so it must
+                // keep the phase in progress. Throttled only ever labels pushes,
+                // so this can only extend the Push phase, never the others.
+                || (matches!(phase, OperationPhase::Push)
+                    && matches!(&w.status, WorktreeStatus::Throttled(_)))
+        });
         if !any_active
             && let Some(ps) = self.phases.iter_mut().find(|ps| &ps.phase == phase)
             && ps.status == PhaseStatus::Active
@@ -513,7 +612,9 @@ impl TuiState {
             // "cancelled" state comes from the live region, and the exit
             // code (130) from the sync command itself.
             TaskStatus::Cancelled => FinalStatus::Skipped,
-            TaskStatus::Pending | TaskStatus::Running => FinalStatus::Failed,
+            // Evicted is transient (the executor requeues it and never puts
+            // it in a TaskCompleted event) — defensive arm only.
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Evicted => FinalStatus::Failed,
         }
     }
 }
@@ -582,6 +683,119 @@ mod tests {
             false,
             FieldSet::EMPTY,
         )
+    }
+
+    #[test]
+    fn task_throttled_sets_held_status_then_start_accumulates() {
+        let mut state = make_test_state();
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Deferred(DeferReason::MemoryPressure),
+        });
+        assert!(matches!(
+            &state.find_row_mut("feat/a").unwrap().status,
+            WorktreeStatus::Throttled(label) if label == "held: memory"
+        ));
+        assert_eq!(state.governor.throttled_pushes, 1);
+
+        // Re-throttling the same branch relabels but never double-counts.
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Deferred(DeferReason::ClassCap),
+        });
+        assert!(matches!(
+            &state.find_row_mut("feat/a").unwrap().status,
+            WorktreeStatus::Throttled(label) if label == "held: capped"
+        ));
+        assert_eq!(state.governor.throttled_pushes, 1);
+
+        // Admission (TaskStarted) folds the wait into the summary and
+        // clears the row's throttle stamp.
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        let row = state.find_row_mut("feat/a").unwrap();
+        assert!(matches!(&row.status, WorktreeStatus::Active(label) if label == "pushing"));
+        assert!(row.throttled_since.is_none());
+        assert!(state.governor.throttled_total >= std::time::Duration::from_millis(10));
+    }
+
+    #[test]
+    fn throttled_row_restores_prior_terminal_status_on_precondition_failed() {
+        let mut state = make_test_state();
+        // The branch's update completed…
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Update,
+            branch_name: "feat/a".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Ok("ok".into()),
+        });
+        // …then its push is held, admitted, and declines to run
+        // (e.g. rebase-conflict precondition).
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Deferred(DeferReason::MemoryPressure),
+        });
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            status: TaskStatus::PreconditionFailed,
+            message: TaskMessage::Failed("rebase conflict".into()),
+        });
+        // The update outcome survives the throttle → start → decline arc.
+        assert_eq!(
+            state.find_row_mut("feat/a").unwrap().status,
+            WorktreeStatus::Done(FinalStatus::Updated)
+        );
+    }
+
+    #[test]
+    fn freeze_applies_to_active_push_but_never_resurrects_a_finished_row() {
+        let mut state = make_test_state();
+        // A freeze DOES apply to an actively-pushing unit.
+        state.apply_event(&DagEvent::TaskStarted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Frozen,
+        });
+        assert!(matches!(
+            &state.find_row_mut("feat/a").unwrap().status,
+            WorktreeStatus::Throttled(label) if label == "held: frozen"
+        ));
+        // Thaw back to pushing, then the push completes.
+        state.apply_event(&DagEvent::TaskResumed {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+        });
+        state.apply_event(&DagEvent::TaskCompleted {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            status: TaskStatus::Succeeded,
+            message: TaskMessage::Pushed,
+        });
+        let done = state.find_row_mut("feat/a").unwrap().status.clone();
+        assert!(matches!(done, WorktreeStatus::Done(_)));
+        // A late (mpsc-reordered) freeze for the already-finished push must NOT
+        // flip the row back into a permanent "held: frozen".
+        state.apply_event(&DagEvent::TaskThrottled {
+            phase: OperationPhase::Push,
+            branch_name: "feat/a".into(),
+            reason: ThrottleReason::Frozen,
+        });
+        assert_eq!(state.find_row_mut("feat/a").unwrap().status, done);
     }
 
     /// Build a TuiState with a caller-specified phase list. Thin wrapper

@@ -6,6 +6,8 @@ pub mod cancel;
 mod clone;
 mod config;
 pub(crate) mod oxide;
+#[cfg(unix)]
+pub(crate) mod process_tree;
 pub mod push_porcelain;
 mod refs;
 mod remote;
@@ -52,6 +54,34 @@ pub(crate) fn discover_count() -> usize {
     DISCOVER_COUNT.with(|c| c.get())
 }
 
+/// Sync-push supervision extras carried on [`GitCommand`] (#678), the same
+/// way the cancel flag rides it: `execute_push_task` constructs one
+/// `GitCommand` per push unit, so per-unit observers attach here without
+/// widening the whole push call chain (`PushOptions`, `push_with_hooks`,
+/// `push_single_worktree` stay untouched, and every non-sync push site is
+/// byte-identical).
+#[derive(Default)]
+pub(crate) struct PushSupervision {
+    /// Receives the `git push` root pid right after spawn (the resource
+    /// governor's unit registry).
+    pub(crate) on_spawn: Option<std::sync::Arc<dyn Fn(u32) + Send + Sync>>,
+    /// Wall-clock budget per push unit (`daft.sync.pushTimeout`). A fresh
+    /// [`cancel::UnitClock`] is armed for every `git push` this command
+    /// runs — the sequential engine reuses one `GitCommand` across
+    /// branches, so the budget must be per-invocation, not per-command.
+    /// Expiry tears the unit's tree down; the push fails with a timeout
+    /// hint.
+    pub(crate) timeout: Option<std::time::Duration>,
+    /// Receives each freshly armed unit clock (paired with `on_spawn`'s
+    /// pid) so the resource governor can pause it during a freeze —
+    /// frozen time must not count against the budget (#678 stage 3).
+    pub(crate) on_clock:
+        Option<std::sync::Arc<dyn Fn(std::sync::Arc<cancel::UnitClock>) + Send + Sync>>,
+    /// Extra environment for the `git push` subprocess — the governor's
+    /// shared jobserver export, inherited by the pre-push hook (#678).
+    pub(crate) env: Vec<(String, String)>,
+}
+
 pub struct GitCommand {
     pub(crate) quiet: bool,
     pub(crate) use_gitoxide: bool,
@@ -61,6 +91,9 @@ pub struct GitCommand {
     /// cancel-unaware; commands that own a Ctrl+C handler (sync) inject
     /// their flag here so every worker-thread git call inherits it.
     pub(crate) cancel: Option<std::sync::Arc<cancel::CancelFlag>>,
+    /// Sync-push supervision extras (governor observers). `None` for every
+    /// non-sync caller.
+    pub(crate) push_supervision: Option<PushSupervision>,
 }
 
 impl GitCommand {
@@ -70,7 +103,15 @@ impl GitCommand {
             use_gitoxide: false,
             gix_repo: OnceLock::new(),
             cancel: None,
+            push_supervision: None,
         }
+    }
+
+    /// Attach sync-push supervision extras (#678). Only `run_push` reads
+    /// them; other subprocess seams ignore the field entirely.
+    pub(crate) fn with_push_supervision(mut self, supervision: PushSupervision) -> Self {
+        self.push_supervision = Some(supervision);
+        self
     }
 
     pub fn with_gitoxide(mut self, enabled: bool) -> Self {

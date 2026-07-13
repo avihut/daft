@@ -14,7 +14,7 @@ use crate::{
         worktree::{list::WorktreeInfo, sync_dag::DagEvent},
     },
     output::tui::WorktreeRow,
-    output::tui::state::HookSummaryEntry,
+    output::tui::state::{GovernorSummary, HookSummaryEntry},
 };
 use std::{path::PathBuf, sync::mpsc};
 
@@ -55,6 +55,9 @@ pub struct CompletedTable {
     pub rows: Vec<WorktreeRow>,
     /// Hook entries that need a post-TUI summary (warnings / failures).
     pub hook_summaries: Vec<HookSummaryEntry>,
+    /// Resource-governor throttle accounting (#678); `None` when nothing
+    /// was ever held back.
+    pub governor: Option<GovernorSummary>,
 }
 
 /// Reusable TUI table for any command that processes worktrees in parallel.
@@ -153,6 +156,8 @@ impl OperationTable {
 
         Ok(CompletedTable {
             cancelled: final_state.live.cancelled,
+            governor: (final_state.governor.throttled_pushes > 0)
+                .then(|| final_state.governor.clone()),
             rows: final_state.live.rows,
             hook_summaries: final_state.hook_summaries,
         })
@@ -200,6 +205,7 @@ mod tests {
             cancelled: false,
             rows: Vec::new(),
             hook_summaries: Vec::new(),
+            governor: None,
         };
         assert!(!completed.cancelled);
         assert!(completed.rows.is_empty());

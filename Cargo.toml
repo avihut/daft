@@ -148,11 +148,18 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "2.5"
 r2d2 = "0.8"
 r2d2_sqlite = "0.34"
+# Memory probe for the sync push resource governor (#678). `system` is the
+# only feature daft needs (RAM/swap + process RSS); the public API is fully
+# safe, keeping `forbid(unsafe_code)` intact — same precedent as `rusqlite`.
+# Pinned to the 0.38 line: 0.39+ raises sysinfo's MSRV to 1.95, above
+# daft's 1.94 (see the MSRV Policy section in CLAUDE.md).
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 # libc is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-nix = { version = "0.31", features = ["signal", "term"] }
+# `fs` adds mkfifo/open for the governor's POSIX jobserver FIFO (#678).
+nix = { version = "0.31", features = ["signal", "term", "fs"] }
 
 [dev-dependencies]
 tempfile = "3.8"

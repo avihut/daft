@@ -1,0 +1,36 @@
+name: Sync governor flags
+description:
+  --jobs/--no-throttle parse, require --push, and conflict with each other
+
+steps:
+  - name: --help documents the governor flags
+    run: git-worktree-sync --help 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "--jobs"
+        - "--no-throttle"
+
+  - name: --jobs requires --push
+    run: git-worktree-sync --jobs 2 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--push"
+
+  - name: --no-throttle requires --push
+    run: git-worktree-sync --no-throttle 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "--push"
+
+  - name: --jobs conflicts with --no-throttle
+    run: git-worktree-sync --push --jobs 2 --no-throttle 2>&1
+    expect:
+      exit_code: 2
+
+  - name: --jobs rejects zero
+    run: git-worktree-sync --push --jobs 0 2>&1
+    expect:
+      exit_code: 2

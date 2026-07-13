@@ -69,6 +69,11 @@
       - any-glob-to-any-file:
           - "src/catalog/**"
 
+"area:governor":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/governor/**"
+
 "area:git":
   - changed-files:
       - any-glob-to-any-file:

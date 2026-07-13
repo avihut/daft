@@ -174,6 +174,12 @@ impl GitCommand {
             cmd.arg("--no-verify");
         }
         cmd.args(push_args);
+        // Governor jobserver export (#678): the hook inherits git's env.
+        if let Some(supervision) = self.push_supervision.as_ref() {
+            for (key, value) in &supervision.env {
+                cmd.env(key, value);
+            }
+        }
 
         // Isolated supervision: a supervised push (sync) runs in its own
         // process group so escalations tear the whole pre-push hook subtree
@@ -188,10 +194,32 @@ impl GitCommand {
         // stopped/TERM-immune holder would wedge a join with nobody watching
         // the flag (the #663 wedge). All of that lives in `supervise_command`
         // — the one skeleton shared with the fetch/pull/rebase seams.
+        // A fresh budget per push unit (see `PushSupervision::timeout`).
+        let clock = self
+            .push_supervision
+            .as_ref()
+            .and_then(|s| s.timeout)
+            .map(|limit| std::sync::Arc::new(cancel::UnitClock::new(limit)));
+        if let Some(clock) = &clock
+            && let Some(on_clock) = self
+                .push_supervision
+                .as_ref()
+                .and_then(|s| s.on_clock.as_ref())
+        {
+            on_clock(std::sync::Arc::clone(clock));
+        }
+        let supervise_opts = cancel::SuperviseOpts {
+            mode: cancel::SupervisionMode::Isolated,
+            on_spawn: self
+                .push_supervision
+                .as_ref()
+                .and_then(|s| s.on_spawn.as_deref()),
+            clock: clock.clone(),
+        };
         let (verdict, stdout, stderr) = cancel::supervise_command(
             &mut cmd,
             self.cancel_flag(),
-            cancel::SupervisionMode::Isolated,
+            supervise_opts,
             |pipe| drain_push_pipe(pipe, PushStream::Stdout, opts.on_output),
             |pipe| drain_push_pipe(pipe, PushStream::Stderr, opts.on_output),
         )
@@ -205,29 +233,32 @@ impl GitCommand {
             }),
             cancel::Verdict::Cancelled => Err(cancel::OperationCancelled.into()),
             cancel::Verdict::StoppedOnTty => Err(cancel::NeedsTerminal.into()),
+            cancel::Verdict::TimedOut => Err(cancel::OperationTimedOut {
+                limit: clock.map(|c| c.limit()).unwrap_or_default(),
+            }
+            .into()),
         }
     }
 
-    /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
-    /// hook installed — native or via `core.hooksPath` (lefthook, husky,
+    /// Absolute path of the repo's executable `pre-push` hook (as seen
+    /// from `cwd`) — native or via `core.hooksPath` (lefthook, husky,
     /// pre-commit all register through one of those two mechanisms).
+    /// `None` when no executable hook is installed.
     ///
-    /// Used to existence-gate the synthetic `pre-push` reporting phase so a
-    /// hook-less repo never renders a hollow phase header.
-    pub fn pre_push_hook_exists(&self, cwd: &Path) -> bool {
+    /// The resolved path is also the resource governor's profile identity
+    /// (#678): its content hash keys the learned `hook_profiles` row.
+    pub fn pre_push_hook_path(&self, cwd: &Path) -> Option<PathBuf> {
         let mut cmd = git_command_at(cwd);
         cmd.args(["rev-parse", "--git-path", "hooks"]);
         cmd.stdin(Stdio::null()).stderr(Stdio::null());
-        let Ok(output) = cmd.output() else {
-            return false;
-        };
+        let output = cmd.output().ok()?;
         if !output.status.success() {
-            return false;
+            return None;
         }
         let raw = String::from_utf8_lossy(&output.stdout);
         let rel = raw.trim();
         if rel.is_empty() {
-            return false;
+            return None;
         }
         // `--git-path` prints relative to git's cwd (our `-C <cwd>`).
         let hooks_dir = if Path::new(rel).is_absolute() {
@@ -235,7 +266,38 @@ impl GitCommand {
         } else {
             cwd.join(rel)
         };
-        is_executable_file(&hooks_dir.join("pre-push"))
+        let hook = hooks_dir.join("pre-push");
+        is_executable_file(&hook).then_some(hook)
+    }
+
+    /// One `git push` for many branches (#678 batched strategy): the
+    /// pre-push hook fires once with every ref on stdin. Callers attribute
+    /// per-branch outcomes from the porcelain report on stdout.
+    pub(crate) fn push_branches(
+        &self,
+        remote: &str,
+        branches: &[String],
+        force_with_lease: bool,
+        cwd: &Path,
+        opts: &PushOptions,
+    ) -> Result<PushIo> {
+        let mut args: Vec<&str> = Vec::with_capacity(branches.len() + 2);
+        if force_with_lease {
+            args.push("--force-with-lease");
+        }
+        args.push(remote);
+        for branch in branches {
+            args.push(branch);
+        }
+        self.run_push(&args, cwd, opts)
+    }
+
+    /// Whether the repo (as seen from `cwd`) has an executable `pre-push`
+    /// hook installed. Used to existence-gate the synthetic `pre-push`
+    /// reporting phase so a hook-less repo never renders a hollow phase
+    /// header.
+    pub fn pre_push_hook_exists(&self, cwd: &Path) -> bool {
+        self.pre_push_hook_path(cwd).is_some()
     }
 
     /// Push a branch and set upstream, running from a specific directory.

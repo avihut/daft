@@ -235,7 +235,11 @@ prints exactly the output it printed before the timeline existed:
 
 `daft prune`, `daft repo remove`, and multi-branch `daft clone`'s satellite
 phase keep their inline operation table, which already shows all rows up front
-and fills them in as work completes.
+and fills them in as work completes. In `daft sync --push`, that table also
+surfaces the push resource governor: a push held back under memory pressure
+shows a dim `held: memory` (or `held: capped` / `held: frozen` / `held: retry`)
+instead of running immediately, and a post-run summary line reports the total
+("2 pushes throttled 14s to preserve memory headroom").
 
 Pressing `Ctrl-C` mid-run collapses the live remainder of the rail and exits
 with status 130; everything already completed stays in your scrollback. A

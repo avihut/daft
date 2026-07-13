@@ -33,6 +33,9 @@ pub enum TaskId {
     Rebase(String),
     /// Push a worktree branch to its remote.
     Push(String),
+    /// Push every pushable owned branch in one `git push` — the pre-push
+    /// hook fires once with all refs (#678, `pushHookStrategy: batched`).
+    PushBatch,
     /// Set up a worktree during clone.
     Setup(String),
     /// Remove a single worktree (path is the unique key).
@@ -57,6 +60,10 @@ pub enum TaskStatus {
     /// task. Distinct from `Failed` so cancellation never trips the
     /// failure exit path.
     Cancelled,
+    /// Killed by the resource governor under memory pressure (#678); the
+    /// executor resets it to Pending and requeues it (bounded retries).
+    /// Transient — never carried by a `TaskCompleted` event.
+    Evicted,
 }
 
 impl TaskStatus {
@@ -183,6 +190,28 @@ impl SyncDag {
         gone_branches: Vec<String>,
         rebase_branch: Option<String>,
         push: bool,
+    ) -> Self {
+        Self::build_sync_with_strategy(
+            owned_worktrees,
+            unowned_worktrees,
+            gone_branches,
+            rebase_branch,
+            push,
+            false,
+        )
+    }
+
+    /// [`Self::build_sync`] with an explicit push strategy: `batched_push`
+    /// replaces the per-branch Push tasks with one `PushBatch` barrier task
+    /// depending on every pushable branch's last task (#678). The barrier
+    /// cost is documented: the batch waits for the slowest rebase.
+    pub fn build_sync_with_strategy(
+        owned_worktrees: Vec<(String, Option<PathBuf>)>,
+        unowned_worktrees: Vec<(String, Option<PathBuf>)>,
+        gone_branches: Vec<String>,
+        rebase_branch: Option<String>,
+        push: bool,
+        batched_push: bool,
     ) -> Self {
         let stored_rebase_branch = rebase_branch.clone();
         let mut tasks = Vec::new();
@@ -322,19 +351,41 @@ impl SyncDag {
         // tip as a rebase target, so pushing it could overwrite commits other
         // contributors landed between fetch and sync completion.
         if push {
-            for (branch, path, last_idx) in &last_task_indices {
-                if rebase_branch.as_ref() == Some(branch) {
-                    continue;
+            if batched_push {
+                let deps: Vec<usize> = last_task_indices
+                    .iter()
+                    .filter(|(branch, _, _)| rebase_branch.as_ref() != Some(branch))
+                    .map(|(_, _, idx)| *idx)
+                    .collect();
+                // Empty branch_name keeps the TUI's auto-create guard from
+                // inventing a row for the barrier node; per-branch rows are
+                // driven by the batch executor's synthetic events.
+                if !deps.is_empty() {
+                    push_task(
+                        SyncTask {
+                            id: TaskId::PushBatch,
+                            phase: OperationPhase::Push,
+                            worktree_path: None,
+                            branch_name: String::new(),
+                        },
+                        deps,
+                    );
                 }
-                push_task(
-                    SyncTask {
-                        id: TaskId::Push(branch.clone()),
-                        phase: OperationPhase::Push,
-                        worktree_path: path.clone(),
-                        branch_name: branch.clone(),
-                    },
-                    vec![*last_idx],
-                );
+            } else {
+                for (branch, path, last_idx) in &last_task_indices {
+                    if rebase_branch.as_ref() == Some(branch) {
+                        continue;
+                    }
+                    push_task(
+                        SyncTask {
+                            id: TaskId::Push(branch.clone()),
+                            phase: OperationPhase::Push,
+                            worktree_path: path.clone(),
+                            branch_name: branch.clone(),
+                        },
+                        vec![*last_idx],
+                    );
+                }
             }
         }
 
@@ -560,6 +611,21 @@ pub enum DagEvent {
         /// Typed result message.
         message: TaskMessage,
     },
+    /// A task was held back by the resource governor (#678): deferred
+    /// before launch (emitted on the not-throttled → throttled transition
+    /// only; the matching `TaskStarted` announces admission), frozen
+    /// mid-run (`TaskResumed` announces the thaw), or evicted and
+    /// requeued.
+    TaskThrottled {
+        phase: OperationPhase,
+        branch_name: String,
+        reason: ThrottleReason,
+    },
+    /// A frozen task's processes were thawed and it is running again.
+    TaskResumed {
+        phase: OperationPhase,
+        branch_name: String,
+    },
     /// All tasks are done.
     AllDone,
     /// A hook started running for a branch.
@@ -617,6 +683,121 @@ pub enum JobCompletionStatus {
     Skipped,
 }
 
+/// Admission decision returned by [`DagGovernor::try_admit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmitDecision {
+    /// Run the task now. The governor reserved a slot; the executor pairs
+    /// this with exactly one [`DagGovernor::release`] when the task leaves
+    /// the running set.
+    Admit,
+    /// Keep the task in the ready queue and re-check admission later.
+    Defer(DeferReason),
+}
+
+/// Why the governor deferred a ready task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferReason {
+    /// The concurrency cap for the task's class is reached.
+    ClassCap,
+    /// Not enough memory headroom to admit another hook-bearing push.
+    MemoryPressure,
+    /// A governor kill just happened; waiting out the post-kill cooldown.
+    KillCooldown,
+}
+
+/// How the governor is holding a task back (payload of
+/// [`DagEvent::TaskThrottled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThrottleReason {
+    /// Held in the ready queue before launch.
+    Deferred(DeferReason),
+    /// Launched, then SIGSTOP'd mid-run to relieve memory pressure.
+    Frozen,
+    /// Killed under memory pressure and requeued; `attempt` counts the
+    /// retries consumed so far.
+    Evicted { attempt: u8 },
+}
+
+/// Admission gate consulted by [`DagExecutor`] before it runs a ready task.
+///
+/// Contract (the executor relies on every point):
+/// - `try_admit` returning [`AdmitDecision::Admit`] reserves one slot and is
+///   paired with exactly one [`DagGovernor::release`]; returning
+///   [`AdmitDecision::Defer`] must be side-effect-free.
+/// - Task classes the governor does not manage are always admitted.
+/// - A governor that currently tracks zero admitted units must admit — this
+///   is the executor's liveness guarantee (workers re-check admission on a
+///   timeout, so an all-deferred ready queue with nothing running would
+///   otherwise never make progress).
+/// - Both methods are called with the executor's internal lock held: they
+///   must return promptly and never call back into the executor.
+pub trait DagGovernor: Send + Sync {
+    /// Decide whether `task` may start now.
+    fn try_admit(&self, task: &SyncTask) -> AdmitDecision;
+    /// Return the slot reserved by a successful `try_admit`.
+    fn release(&self, task: &SyncTask);
+}
+
+/// Stage-0 resource governor: a fixed cap on concurrent push tasks.
+///
+/// Sync constructs this only when the repo has an executable pre-push hook
+/// and hooks are honored — pushes are the one task class whose subprocess
+/// (git + hook) multiplies memory use with parallelism (#678). All other
+/// task classes are always admitted.
+#[derive(Debug)]
+pub struct StaticCapGovernor {
+    cap: usize,
+    push_active: std::sync::atomic::AtomicUsize,
+}
+
+impl StaticCapGovernor {
+    /// Cap concurrent push tasks at `cap` (clamped to at least 1).
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            push_active: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl DagGovernor for StaticCapGovernor {
+    fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
+        use std::sync::atomic::Ordering;
+        if !matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
+            return AdmitDecision::Admit;
+        }
+        let reserved = self
+            .push_active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                (active < self.cap).then_some(active + 1)
+            })
+            .is_ok();
+        if reserved {
+            AdmitDecision::Admit
+        } else {
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        }
+    }
+
+    fn release(&self, task: &SyncTask) {
+        if matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
+            self.push_active
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// How often a worker re-checks admission when every ready task is deferred
+/// by the governor. Pressure can clear without any task completing, so a
+/// plain `Condvar::wait` could sleep long past the moment a deferred push
+/// becomes admissible.
+const ADMISSION_RECHECK: Duration = Duration::from_millis(200);
+
+/// Retries a governor-evicted push gets before it fails terminally
+/// (so 3 attempts total). Pre-push hooks are re-runnable checks by
+/// convention, and a killed `git push` is atomic server-side.
+const MAX_PUSH_RETRIES: u8 = 2;
+
 /// Shared mutable state for the worker pool.
 struct DagState {
     ready: Vec<usize>,
@@ -626,6 +807,11 @@ struct DagState {
     done: usize,
     total: usize,
     branch_outcomes: HashMap<String, HashSet<TaskOutcome>>,
+    /// Per-task "currently deferred by the governor" flag, so
+    /// `TaskThrottled` fires once per transition instead of once per scan.
+    throttled: Vec<bool>,
+    /// Per-task governor-eviction retry counter (#678 stage 3).
+    attempts: Vec<u8>,
 }
 
 /// Executes a DAG of sync tasks in parallel.
@@ -633,6 +819,7 @@ pub struct DagExecutor {
     dag: SyncDag,
     sender: mpsc::Sender<DagEvent>,
     cancel: Option<std::sync::Arc<crate::git::cancel::CancelFlag>>,
+    governor: Option<Arc<dyn DagGovernor>>,
 }
 
 impl DagExecutor {
@@ -642,7 +829,16 @@ impl DagExecutor {
             dag,
             sender,
             cancel: None,
+            governor: None,
         }
+    }
+
+    /// Gate task admission through a resource governor (#678). Deferred
+    /// tasks stay in the ready queue — workers skip over them to whatever
+    /// else is runnable and re-check on completions or a short timeout.
+    pub fn with_governor(mut self, governor: Arc<dyn DagGovernor>) -> Self {
+        self.governor = Some(governor);
+        self
     }
 
     /// Observe a shared cancel flag: once it goes active, workers stop
@@ -695,6 +891,8 @@ impl DagExecutor {
                 done: 0,
                 total: n,
                 branch_outcomes: HashMap::new(),
+                throttled: vec![false; n],
+                attempts: vec![0; n],
             }),
             Condvar::new(),
         ));
@@ -707,6 +905,7 @@ impl DagExecutor {
         let dag = &self.dag;
         let sender = &self.sender;
         let cancel = self.cancel.as_deref();
+        let governor = self.governor.as_deref();
 
         std::thread::scope(|scope| {
             for _ in 0..max_workers {
@@ -749,9 +948,45 @@ impl DagExecutor {
                                     }
                                 }
 
-                                // Try to pop a ready task.
-                                if let Some(idx) = s.ready.pop() {
+                                // Try to pop a ready task the governor admits.
+                                // Scanning from the end preserves `pop()`'s
+                                // LIFO bias; deferred tasks stay in `ready` so
+                                // this worker can pick up anything else
+                                // runnable instead of blocking on them.
+                                let popped = match governor {
+                                    None => s.ready.pop(),
+                                    Some(gov) => {
+                                        let mut admitted = None;
+                                        for pos in (0..s.ready.len()).rev() {
+                                            let idx = s.ready[pos];
+                                            match gov.try_admit(&dag.tasks[idx]) {
+                                                AdmitDecision::Admit => {
+                                                    admitted = Some(pos);
+                                                    break;
+                                                }
+                                                AdmitDecision::Defer(reason) => {
+                                                    if !s.throttled[idx] {
+                                                        s.throttled[idx] = true;
+                                                        let _ =
+                                                            sender.send(DagEvent::TaskThrottled {
+                                                                phase: dag.tasks[idx].phase.clone(),
+                                                                branch_name: dag.tasks[idx]
+                                                                    .branch_name
+                                                                    .clone(),
+                                                                reason: ThrottleReason::Deferred(
+                                                                    reason,
+                                                                ),
+                                                            });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        admitted.map(|pos| s.ready.remove(pos))
+                                    }
+                                };
+                                if let Some(idx) = popped {
                                     task_idx = idx;
+                                    s.throttled[task_idx] = false;
                                     s.status[task_idx] = TaskStatus::Running;
                                     s.active += 1;
                                     break;
@@ -768,7 +1003,15 @@ impl DagExecutor {
                                     return;
                                 }
 
-                                s = cvar.wait(s).unwrap();
+                                s = if governor.is_some() && !s.ready.is_empty() {
+                                    // Every ready task is currently deferred by
+                                    // the governor — re-check admission on a
+                                    // short timeout; no completion may arrive
+                                    // to wake us.
+                                    cvar.wait_timeout(s, ADMISSION_RECHECK).unwrap().0
+                                } else {
+                                    cvar.wait(s).unwrap()
+                                };
                             }
                         }
 
@@ -797,8 +1040,47 @@ impl DagExecutor {
                         {
                             let (lock, cvar) = &*state;
                             let mut s = lock.lock().unwrap();
-                            s.status[task_idx] = result_status;
+                            // Return the governor slot before anything else so
+                            // admission accounting never lags the running set —
+                            // and strictly before a requeue re-enters `ready`.
+                            if let Some(gov) = governor {
+                                gov.release(&dag.tasks[task_idx]);
+                            }
                             s.active -= 1;
+
+                            // Governor eviction (#678): not a completion.
+                            // Reset to Pending and requeue — no `done`
+                            // increment, no outcome write, no dependent
+                            // bookkeeping, no TaskCompleted. Admission holds
+                            // the retry until pressure clears (post-kill
+                            // cooldown). Retries exhausted → terminal Failed
+                            // through the normal path below.
+                            let mut result_status = result_status;
+                            let mut message = message;
+                            if result_status == TaskStatus::Evicted {
+                                if s.attempts[task_idx] < MAX_PUSH_RETRIES {
+                                    s.attempts[task_idx] += 1;
+                                    s.status[task_idx] = TaskStatus::Pending;
+                                    s.throttled[task_idx] = true;
+                                    s.ready.push(task_idx);
+                                    let _ = sender.send(DagEvent::TaskThrottled {
+                                        phase: dag.tasks[task_idx].phase.clone(),
+                                        branch_name: dag.tasks[task_idx].branch_name.clone(),
+                                        reason: ThrottleReason::Evicted {
+                                            attempt: s.attempts[task_idx],
+                                        },
+                                    });
+                                    cvar.notify_all();
+                                    continue;
+                                }
+                                result_status = TaskStatus::Failed;
+                                message = TaskMessage::Failed(format!(
+                                    "push killed under memory pressure ({} attempts)",
+                                    s.attempts[task_idx] + 1
+                                ));
+                            }
+
+                            s.status[task_idx] = result_status;
                             s.done += 1;
 
                             let branch = &dag.tasks[task_idx].branch_name;
@@ -820,11 +1102,30 @@ impl DagExecutor {
                                     }
                                 }
                             } else if result_status == TaskStatus::Failed {
-                                // Cascade DepFailed to all transitive dependents.
+                                // Cascade DepFailed to all transitive dependents —
+                                // EXCEPT the batched push barrier (#678). That node
+                                // fans over every owned branch, so one branch's
+                                // failed update/rebase must not sink the push of all
+                                // the others. Treat the failed dep as resolved
+                                // (decrement its in-degree like a success) and let
+                                // execute_push_batch_task skip that branch via
+                                // shared_push_skip while pushing the healthy ones.
+                                // Per-branch Push nodes keep the normal cascade, so
+                                // only that one branch's push is dropped.
                                 let mut stack = vec![task_idx];
                                 while let Some(idx) = stack.pop() {
                                     for &dep_idx in &dag.dependents[idx] {
-                                        if s.status[dep_idx] == TaskStatus::Pending {
+                                        if s.status[dep_idx] != TaskStatus::Pending {
+                                            continue;
+                                        }
+                                        if matches!(dag.tasks[dep_idx].id, TaskId::PushBatch) {
+                                            s.in_degree[dep_idx] -= 1;
+                                            if s.in_degree[dep_idx] == 0 {
+                                                s.ready.push(dep_idx);
+                                            }
+                                            // The barrier has no further dependents;
+                                            // don't cascade past it.
+                                        } else {
                                             s.status[dep_idx] = TaskStatus::DepFailed;
                                             s.done += 1;
                                             stack.push(dep_idx);
@@ -1131,6 +1432,500 @@ mod tests {
             .position(|t| *t == TaskId::Rebase("feat/a".into()))
             .unwrap();
         assert!(master_pos < rebase_pos);
+    }
+
+    fn push_task(branch: &str) -> SyncTask {
+        SyncTask {
+            id: TaskId::Push(branch.into()),
+            phase: OperationPhase::Push,
+            worktree_path: None,
+            branch_name: branch.into(),
+        }
+    }
+
+    #[test]
+    fn static_cap_governor_only_governs_pushes() {
+        let gov = StaticCapGovernor::new(1);
+        let push = push_task("feat/a");
+        let fetch = SyncTask {
+            id: TaskId::Fetch,
+            phase: OperationPhase::Fetch,
+            worktree_path: None,
+            branch_name: String::new(),
+        };
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+        // Non-push classes are never deferred, even at cap.
+        assert_eq!(gov.try_admit(&fetch), AdmitDecision::Admit);
+        // Releasing a non-push task must not free a push slot.
+        gov.release(&fetch);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+        gov.release(&push);
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+    }
+
+    #[test]
+    fn static_cap_governor_clamps_cap_to_one() {
+        // A zero cap would violate the min-one-runner contract.
+        let gov = StaticCapGovernor::new(0);
+        let push = push_task("feat/a");
+        assert_eq!(gov.try_admit(&push), AdmitDecision::Admit);
+        assert_eq!(
+            gov.try_admit(&push),
+            AdmitDecision::Defer(DeferReason::ClassCap)
+        );
+    }
+
+    #[test]
+    fn static_cap_bounds_concurrent_pushes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let worktrees: Vec<(String, Option<PathBuf>)> = (0..6)
+            .map(|i| {
+                (
+                    format!("feat/b{i}"),
+                    Some(PathBuf::from(format!("/p/b{i}"))),
+                )
+            })
+            .collect();
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let push_running = Arc::new(AtomicUsize::new(0));
+        let push_peak = Arc::new(AtomicUsize::new(0));
+        let running = Arc::clone(&push_running);
+        let peak = Arc::clone(&push_peak);
+
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(StaticCapGovernor::new(2)));
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let pushed = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskCompleted {
+                        phase: OperationPhase::Push,
+                        status: TaskStatus::Succeeded,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(pushed, 6, "every push must still complete under the cap");
+        assert!(
+            push_peak.load(Ordering::SeqCst) <= 2,
+            "cap of 2 exceeded: peak {}",
+            push_peak.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn deferred_pushes_do_not_block_other_tasks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Needs a second worker to observe overlap; single-core runners
+        // serialize everything and prove nothing.
+        if std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            < 2
+        {
+            return;
+        }
+
+        let worktrees: Vec<(String, Option<PathBuf>)> = (0..6)
+            .map(|i| {
+                (
+                    format!("feat/b{i}"),
+                    Some(PathBuf::from(format!("/p/b{i}"))),
+                )
+            })
+            .collect();
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let overall_running = Arc::new(AtomicUsize::new(0));
+        let overall_peak = Arc::new(AtomicUsize::new(0));
+        let push_running = Arc::new(AtomicUsize::new(0));
+        let push_peak = Arc::new(AtomicUsize::new(0));
+        let o_run = Arc::clone(&overall_running);
+        let o_peak = Arc::clone(&overall_peak);
+        let p_run = Arc::clone(&push_running);
+        let p_peak = Arc::clone(&push_peak);
+
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(StaticCapGovernor::new(1)));
+        executor.run(move |task, outcomes| {
+            let now = o_run.fetch_add(1, Ordering::SeqCst) + 1;
+            o_peak.fetch_max(now, Ordering::SeqCst);
+            if matches!(task.id, TaskId::Push(_)) {
+                let now = p_run.fetch_add(1, Ordering::SeqCst) + 1;
+                p_peak.fetch_max(now, Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            if matches!(task.id, TaskId::Push(_)) {
+                p_run.fetch_sub(1, Ordering::SeqCst);
+            }
+            o_run.fetch_sub(1, Ordering::SeqCst);
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let _events: Vec<DagEvent> = rx.iter().collect();
+        assert!(
+            push_peak.load(Ordering::SeqCst) <= 1,
+            "cap of 1 exceeded: peak {}",
+            push_peak.load(Ordering::SeqCst)
+        );
+        assert!(
+            overall_peak.load(Ordering::SeqCst) >= 2,
+            "deferred pushes must not pin workers: overall peak stayed at {}",
+            overall_peak.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn build_sync_batched_emits_one_barrier_push_node() {
+        let worktrees = vec![
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/feat-b"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(worktrees, vec![], vec![], None, true, true);
+        // 1 fetch + 3 updates + 1 batch = 5 tasks (no per-branch pushes).
+        assert_eq!(dag.tasks.len(), 5);
+        let batch_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::PushBatch)
+            .expect("one PushBatch node");
+        assert!(
+            !dag.tasks.iter().any(|t| matches!(t.id, TaskId::Push(_))),
+            "batched mode must not emit per-branch push tasks"
+        );
+        assert_eq!(
+            dag.tasks[batch_idx].branch_name, "",
+            "empty branch_name keeps the TUI auto-create guard off"
+        );
+        // The barrier depends on every branch's last task (3 updates).
+        assert_eq!(dag.dependencies_of(batch_idx).len(), 3);
+    }
+
+    #[test]
+    fn build_sync_batched_excludes_rebase_base_and_skips_empty() {
+        let worktrees = vec![
+            ("master".into(), Some(PathBuf::from("/p/master"))),
+            ("feat/a".into(), Some(PathBuf::from("/p/feat-a"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(
+            worktrees,
+            vec![],
+            vec![],
+            Some("master".into()),
+            true,
+            true,
+        );
+        let batch_idx = dag
+            .tasks
+            .iter()
+            .position(|t| t.id == TaskId::PushBatch)
+            .expect("PushBatch node");
+        // Only feat/a's rebase feeds the barrier — the base is excluded.
+        assert_eq!(dag.dependencies_of(batch_idx).len(), 1);
+
+        // No pushable branches → no barrier node at all.
+        let empty = SyncDag::build_sync_with_strategy(
+            vec![("master".into(), Some(PathBuf::from("/p/master")))],
+            vec![],
+            vec![],
+            Some("master".into()),
+            true,
+            true,
+        );
+        assert!(!empty.tasks.iter().any(|t| t.id == TaskId::PushBatch));
+    }
+
+    #[test]
+    fn evicted_push_requeues_then_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let push_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&push_calls);
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                // First attempt dies "under memory pressure"; the retry lands.
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return (
+                        TaskStatus::Evicted,
+                        TaskMessage::Failed("killed under memory pressure".into()),
+                        outcomes.clone(),
+                    );
+                }
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        assert_eq!(push_calls.load(Ordering::SeqCst), 2, "one retry");
+        let requeues: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskThrottled {
+                    reason: ThrottleReason::Evicted { attempt },
+                    ..
+                } => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requeues, vec![1]);
+        // The eviction itself never surfaces as a completion; the retry's
+        // success does, exactly once.
+        let push_completions: Vec<TaskStatus> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskCompleted {
+                    phase: OperationPhase::Push,
+                    status,
+                    ..
+                } => Some(*status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(push_completions, vec![TaskStatus::Succeeded]);
+        // Both attempts announced a start.
+        let push_starts = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskStarted {
+                        phase: OperationPhase::Push,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(push_starts, 2);
+    }
+
+    #[test]
+    fn batched_push_barrier_survives_one_failed_dependency() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Batched mode: three branches, one whose update hard-fails. The single
+        // PushBatch barrier must still run (carrying the two healthy branches)
+        // instead of cascade-DepFailing — otherwise one failed update silently
+        // drops every other branch's push (the #678 batched regression).
+        let worktrees = vec![
+            ("feat/a".into(), Some(PathBuf::from("/p/a"))),
+            ("feat/b".into(), Some(PathBuf::from("/p/b"))),
+            ("feat/c".into(), Some(PathBuf::from("/p/c"))),
+        ];
+        let dag = SyncDag::build_sync_with_strategy(worktrees, vec![], vec![], None, true, true);
+        let (tx, rx) = mpsc::channel();
+
+        let batch_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&batch_ran);
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| match &task.id {
+            TaskId::Update(b) if b == "feat/a" => (
+                TaskStatus::Failed,
+                TaskMessage::Failed("pull failed".into()),
+                outcomes.clone(),
+            ),
+            TaskId::PushBatch => {
+                ran.store(true, Ordering::SeqCst);
+                (TaskStatus::Succeeded, TaskMessage::Pushed, outcomes.clone())
+            }
+            _ => (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            ),
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        assert!(
+            batch_ran.load(Ordering::SeqCst),
+            "PushBatch must run despite feat/a's failed update"
+        );
+        // The barrier completed as Succeeded (empty branch_name), never DepFailed.
+        let batch_completions: Vec<TaskStatus> = events
+            .iter()
+            .filter_map(|e| match e {
+                DagEvent::TaskCompleted {
+                    phase: OperationPhase::Push,
+                    status,
+                    branch_name,
+                    ..
+                } if branch_name.is_empty() => Some(*status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(batch_completions, vec![TaskStatus::Succeeded]);
+        // feat/a's failed update is still reported (row shows the failure).
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DagEvent::TaskCompleted {
+                phase: OperationPhase::Update,
+                status: TaskStatus::Failed,
+                branch_name,
+                ..
+            } if branch_name == "feat/a"
+        )));
+    }
+
+    #[test]
+    fn eviction_retries_exhaust_into_terminal_failure() {
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let executor = DagExecutor::new(dag, tx);
+        executor.run(move |task, outcomes| {
+            if matches!(task.id, TaskId::Push(_)) {
+                return (
+                    TaskStatus::Evicted,
+                    TaskMessage::Failed("killed under memory pressure".into()),
+                    outcomes.clone(),
+                );
+            }
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let requeues = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskThrottled {
+                        reason: ThrottleReason::Evicted { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(requeues, usize::from(MAX_PUSH_RETRIES));
+        let failure = events.iter().find_map(|e| match e {
+            DagEvent::TaskCompleted {
+                phase: OperationPhase::Push,
+                status: TaskStatus::Failed,
+                message,
+                ..
+            } => Some(message.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            failure,
+            Some(TaskMessage::Failed(
+                "push killed under memory pressure (3 attempts)".into()
+            ))
+        );
+    }
+
+    /// Defers pushes until a wall-clock instant. After the last non-push
+    /// task completes nothing else wakes the workers, so only the periodic
+    /// admission re-check can admit the push — the run completing at all
+    /// proves the `wait_timeout` path works.
+    struct NotBeforeGovernor {
+        admit_after: std::time::Instant,
+    }
+
+    impl DagGovernor for NotBeforeGovernor {
+        fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
+            if !matches!(task.id, TaskId::Push(_)) {
+                return AdmitDecision::Admit;
+            }
+            if std::time::Instant::now() >= self.admit_after {
+                AdmitDecision::Admit
+            } else {
+                AdmitDecision::Defer(DeferReason::MemoryPressure)
+            }
+        }
+        fn release(&self, _task: &SyncTask) {}
+    }
+
+    #[test]
+    fn all_deferred_ready_queue_recovers_via_recheck() {
+        let worktrees = vec![("feat/a".into(), Some(PathBuf::from("/p/a")))];
+        let dag = SyncDag::build_sync(worktrees, vec![], vec![], None, true);
+        let (tx, rx) = mpsc::channel();
+
+        let hold = Duration::from_millis(250);
+        let start = std::time::Instant::now();
+        let executor = DagExecutor::new(dag, tx).with_governor(Arc::new(NotBeforeGovernor {
+            admit_after: start + hold,
+        }));
+        executor.run(|_task, outcomes| {
+            (
+                TaskStatus::Succeeded,
+                TaskMessage::Ok("ok".into()),
+                outcomes.clone(),
+            )
+        });
+
+        let events: Vec<DagEvent> = rx.iter().collect();
+        let pushed = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DagEvent::TaskCompleted {
+                        phase: OperationPhase::Push,
+                        status: TaskStatus::Succeeded,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(pushed, 1, "deferred push must eventually run");
+        assert!(
+            start.elapsed() >= hold,
+            "push admitted before the governor allowed it"
+        );
+        // Workers re-scan the deferred push many times while it waits, but
+        // the throttle event fires only on the state transition.
+        let throttled = events
+            .iter()
+            .filter(|e| matches!(e, DagEvent::TaskThrottled { .. }))
+            .count();
+        assert_eq!(throttled, 1, "TaskThrottled must be transition-edge only");
     }
 
     #[test]

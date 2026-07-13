@@ -11,12 +11,16 @@ use crate::store::error::Result;
 use rusqlite::Connection;
 
 pub mod catalog_repos;
+pub mod governor_events;
+pub mod hook_profiles;
 pub mod invocations;
 pub mod jobs;
 pub mod repo_policies;
 pub mod visitor_seeds;
 
 pub use catalog_repos::CatalogReposRepo;
+pub use governor_events::GovernorEventsRepo;
+pub use hook_profiles::HookProfilesRepo;
 pub use invocations::InvocationsRepo;
 pub use jobs::JobsRepo;
 pub use repo_policies::RepoPoliciesRepo;

@@ -141,11 +141,33 @@ branch).
 
 ## Sync Settings
 
-| Key                 | Default     | Description                                                        |
-| ------------------- | ----------- | ------------------------------------------------------------------ |
-| `daft.sync.stat`    | `"summary"` | Default statistics mode for sync command (`summary` or `lines`)    |
-| `daft.sync.columns` |             | Default column selection for sync command                          |
-| `daft.sync.sort`    |             | Default sort order for sync command (e.g., `+branch`, `-activity`) |
+| Key                          | Default        | Description                                                                                                                                                                                                   |
+| ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.sync.stat`             | `"summary"`    | Default statistics mode for sync command (`summary` or `lines`)                                                                                                                                               |
+| `daft.sync.columns`          |                | Default column selection for sync command                                                                                                                                                                     |
+| `daft.sync.sort`             |                | Default sort order for sync command (e.g., `+branch`, `-activity`)                                                                                                                                            |
+| `daft.sync.pushTimeout`      | `"30m"`        | Wall-clock budget per push unit (git + pre-push hook). A hung hook is torn down and the push fails with a hint; `off` (or `0`) disables                                                                       |
+| `daft.sync.pushHookStrategy` | `"per-branch"` | Pre-push hook cadence for `sync --push`: `per-branch` runs the hook once per branch; `batched` pushes every branch in one `git push` so the hook fires once with all refs (one refusal fails the whole batch) |
+
+## Governor Settings
+
+`daft sync --push` over many branches runs the repo's pre-push hook once per
+branch, concurrently. Heavy hooks (test suites, builds) are internally parallel,
+so the aggregate footprint multiplies — enough to exhaust machine memory. The
+resource governor keeps that fan-out inside the machine's memory budget: it caps
+concurrent hook-bearing pushes, admits new ones only while memory headroom
+allows, learns each hook's peak memory and duration across runs (so light hooks
+get full parallelism and heavy ones start capped), and under sustained pressure
+freezes — then kills and retries — the newest push rather than letting the
+machine swap. It only exists while a `sync --push` with a pre-push hook runs; a
+hook-less push pays nothing.
+
+| Key                           | Default  | Description                                                                                                                                                                                                                           |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.governor.mode`          | `"auto"` | The governor (`auto`) or no governing at all (`off`). `sync --no-throttle` disables it for one run                                                                                                                                    |
+| `daft.governor.jobs`          | `"auto"` | Cap on concurrent hook-bearing pushes: `auto` = max(2, cores/4), or a number. `sync --jobs N` overrides per run                                                                                                                       |
+| `daft.governor.memoryReserve` | `"auto"` | Memory the governor keeps free: `auto` = max(10% RAM, 2G), a size (`2G`, `512M`), or a percent (`15%`)                                                                                                                                |
+| `daft.governor.jobserver`     | `"auto"` | Export a shared POSIX jobserver (`MAKEFLAGS`) so make/cargo/ninja inside concurrent hooks share one token pool. Note: a bare `make` in a hook picks up `-jN` and becomes (bounded) parallel — set `off` if a hook can't tolerate that |
 
 ## Merge Settings
 

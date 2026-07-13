@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-sync \- Synchronize worktrees with remote (prune + update all)
 .SH SYNOPSIS
-\fBgit\-worktree\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-no\-verify\fR] [\fB\-\-include\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBgit\-worktree\-sync\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-f\fR|\fB\-\-prune\-dirty\fR] [\fB\-\-rebase\fR] [\fB\-\-autostash\fR] [\fB\-\-push\fR] [\fB\-\-force\-with\-lease\fR] [\fB\-\-no\-verify\fR] [\fB\-\-include\fR] [\fB\-\-stat\fR] [\fB\-\-columns\fR] [\fB\-\-sort\fR] [\fB\-\-jobs\fR] [\fB\-\-no\-throttle\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
 .SH DESCRIPTION
 .PP
 Synchronizes all worktrees with the remote in a single command.
@@ -24,6 +24,15 @@ This is equivalent to running `daft prune` followed by `daft update \-\-all`:
 If you are currently inside a worktree that gets pruned, the shell is redirected
 to a safe location (project root by default, or as configured via
 daft.prune.cdTarget).
+.PP
+Resource governing: parallel pushes with a pre\-push hook are memory\-governed.
+Concurrency is capped (default max(2, cores/4); `\-\-jobs N` overrides,
+`\-\-no\-throttle` disables), admissions pause under memory pressure, each hook\*(Aqs
+peak memory is learned across runs, and under sustained pressure the newest
+push is frozen — then killed and retried — instead of exhausting the machine.
+Every push unit gets a wall\-clock budget (`daft.sync.pushTimeout`, default
+30m). `daft.sync.pushHookStrategy batched` pushes all branches in one
+`git push` so the hook runs once with every ref.
 .PP
 Cancellation: the first Ctrl+C (or SIGTERM) cancels gracefully — no new work
 starts and every running git subprocess is torn down. A pre\-push hook and all
@@ -79,6 +88,12 @@ Columns to display (comma\-separated). Replace: branch,path,age. Modify defaults
 .TP
 \fB\-\-sort\fR \fI<SORT>\fR
 Sort order (comma\-separated). +col ascending, \-col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit
+.TP
+\fB\-\-jobs\fR \fI<N>\fR
+Cap concurrent pushes when a pre\-push hook is present (requires \-\-push; default: from daft.governor.jobs, or max(2, cores/4))
+.TP
+\fB\-\-no\-throttle\fR
+Disable the push resource governor for this run (requires \-\-push)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

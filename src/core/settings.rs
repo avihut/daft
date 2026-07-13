@@ -25,6 +25,12 @@
 //! | `daft.updateCheck` | `true` | Enable/disable new version notifications |
 //! | `daft.branchDelete.remote` | `false` | Delete remote branch when removing |
 //! | `daft.ownership.strategy` | `recency-plurality` | Branch ownership detection strategy (`tip`, `any`, `first`, `plurality`, `majority`, `recency-plurality`) |
+//! | `daft.sync.pushTimeout` | `30m` | Wall-clock budget per push (git + pre-push hook); `off` disables |
+//! | `daft.sync.pushHookStrategy` | `per-branch` | Pre-push hook cadence for sync pushes (`per-branch` or `batched`) |
+//! | `daft.governor.mode` | `auto` | Sync push resource governor (`auto` or `off`) |
+//! | `daft.governor.jobs` | `auto` | Cap on concurrent hook-bearing pushes (`auto` = max(2, cores/4), or a number) |
+//! | `daft.governor.memoryReserve` | `auto` | Memory headroom the governor keeps free (`auto` = max(10% RAM, 2G), a size like `2G`, or `NN%`) |
+//! | `daft.governor.jobserver` | `auto` | Export a shared POSIX jobserver to pre-push hooks (`auto` or `off`) |
 //!
 //! # Hooks Config Keys
 //!
@@ -106,10 +112,187 @@ impl PushVerify {
     }
 }
 
+/// How `daft sync --push` runs the repo's pre-push hook across branches
+/// (#678). Batched trades per-branch hook semantics for an N→1 resource
+/// cost: one `git push` carries every branch, so the hook runs once with
+/// all refs on stdin — and one refusal fails the whole batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushHookStrategy {
+    /// One push (and one hook run) per branch — full per-branch semantics.
+    PerBranch,
+    /// One push for all branches; the hook fires once.
+    Batched,
+}
+
+impl PushHookStrategy {
+    /// Parse a string value into a PushHookStrategy.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "per-branch" => Some(Self::PerBranch),
+            "batched" => Some(Self::Batched),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the sync push resource governor is active (#678).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernorMode {
+    /// Govern hook-bearing pushes: cap their concurrency (and throttle on
+    /// memory pressure once the dynamic stages are active).
+    Auto,
+    /// Never construct the governor; pushes run uncapped.
+    Off,
+}
+
+impl GovernorMode {
+    /// Parse a string value into a GovernorMode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Concurrency cap for hook-bearing push tasks during `daft sync --push`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernorJobs {
+    /// `max(2, cores/4)` — heavy pre-push hooks are internally parallel,
+    /// so a few concurrent runs already saturate the machine while
+    /// multiplying peak memory use (#678).
+    Auto,
+    /// A fixed cap (at least 1).
+    Fixed(usize),
+}
+
+impl GovernorJobs {
+    /// Parse a string value: `auto` or a positive integer.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("auto") {
+            return Some(Self::Auto);
+        }
+        value
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .map(Self::Fixed)
+    }
+
+    /// The effective cap on a machine with `cores` logical cores.
+    pub fn effective(self, cores: usize) -> usize {
+        match self {
+            Self::Auto => (cores / 4).max(2),
+            Self::Fixed(n) => n.max(1),
+        }
+    }
+}
+
+/// Memory headroom the governor keeps free before admitting another
+/// hook-bearing push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryReserve {
+    /// `max(10% of RAM, 2 GiB)`.
+    Auto,
+    /// A fixed number of bytes.
+    Bytes(u64),
+    /// A percentage of total RAM (1–99).
+    Percent(u8),
+}
+
+impl MemoryReserve {
+    /// Parse `auto`, `NN%`, or a size in bytes with an optional
+    /// case-insensitive `K`/`M`/`G` suffix (binary units).
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("auto") {
+            return Some(Self::Auto);
+        }
+        if let Some(percent) = value.strip_suffix('%') {
+            let p: u8 = percent.trim().parse().ok()?;
+            return (1..=99).contains(&p).then_some(Self::Percent(p));
+        }
+        let lower = value.to_ascii_lowercase();
+        let (digits, multiplier) = if let Some(d) = lower.strip_suffix('g') {
+            (d, 1u64 << 30)
+        } else if let Some(d) = lower.strip_suffix('m') {
+            (d, 1u64 << 20)
+        } else if let Some(d) = lower.strip_suffix('k') {
+            (d, 1u64 << 10)
+        } else {
+            (lower.as_str(), 1)
+        };
+        let n: u64 = digits.trim().parse().ok()?;
+        n.checked_mul(multiplier)
+            .filter(|b| *b > 0)
+            .map(Self::Bytes)
+    }
+
+    /// Resolve to bytes on a machine with `total_ram` bytes of memory.
+    pub fn resolve(self, total_ram: u64) -> u64 {
+        const TWO_GIB: u64 = 2 << 30;
+        match self {
+            Self::Auto => (total_ram / 10).max(TWO_GIB),
+            Self::Bytes(bytes) => bytes,
+            Self::Percent(percent) => total_ram * u64::from(percent) / 100,
+        }
+    }
+}
+
+/// Parse `daft.sync.pushTimeout`: `off`/`0` disables (outer `Some(None)`);
+/// otherwise a positive duration with an optional case-insensitive
+/// `s`/`m`/`h`/`d` suffix (bare numbers are seconds). Outer `None` =
+/// unparseable (caller warns and keeps the default) — including an
+/// overflowing product, which `checked_mul` rejects rather than wrapping to a
+/// nonsensical budget (mirrors `MemoryReserve::parse` above).
+pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
+    let value = value.trim().to_ascii_lowercase();
+    if value == "off" || value == "0" {
+        return Some(None);
+    }
+    let (digits, unit_secs) = if let Some(d) = value.strip_suffix('d') {
+        (d, 86_400)
+    } else if let Some(d) = value.strip_suffix('h') {
+        (d, 3_600)
+    } else if let Some(d) = value.strip_suffix('m') {
+        (d, 60)
+    } else if let Some(d) = value.strip_suffix('s') {
+        (d, 1)
+    } else {
+        (value.as_str(), 1)
+    };
+    let n: u64 = digits.trim().parse().ok()?;
+    let secs = n.checked_mul(unit_secs)?;
+    (secs > 0).then(|| Some(std::time::Duration::from_secs(secs)))
+}
+
 /// Default values for settings.
 pub mod defaults {
-    use super::{PruneCdTarget, PushVerify};
+    use super::{
+        GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushHookStrategy, PushVerify,
+    };
     use crate::core::worktree::list::Stat;
+
+    /// Default value for sync.pushTimeout setting (30 minutes).
+    pub const SYNC_PUSH_TIMEOUT: Option<std::time::Duration> =
+        Some(std::time::Duration::from_secs(30 * 60));
+
+    /// Default value for sync.pushHookStrategy setting.
+    pub const SYNC_PUSH_HOOK_STRATEGY: PushHookStrategy = PushHookStrategy::PerBranch;
+
+    /// Default value for governor.mode setting.
+    pub const GOVERNOR_MODE: GovernorMode = GovernorMode::Auto;
+
+    /// Default value for governor.jobs setting.
+    pub const GOVERNOR_JOBS: GovernorJobs = GovernorJobs::Auto;
+
+    /// Default value for governor.memoryReserve setting.
+    pub const GOVERNOR_MEMORY_RESERVE: MemoryReserve = MemoryReserve::Auto;
+
+    /// Default value for governor.jobserver setting.
+    pub const GOVERNOR_JOBSERVER: GovernorMode = GovernorMode::Auto;
 
     /// Default value for autocd setting.
     pub const AUTOCD: bool = true;
@@ -286,6 +469,24 @@ pub mod keys {
     /// Config key for ownership.strategy setting.
     pub const OWNERSHIP_STRATEGY: &str = "daft.ownership.strategy";
 
+    /// Config key for sync.pushTimeout setting.
+    pub const SYNC_PUSH_TIMEOUT: &str = "daft.sync.pushTimeout";
+
+    /// Config key for sync.pushHookStrategy setting.
+    pub const SYNC_PUSH_HOOK_STRATEGY: &str = "daft.sync.pushHookStrategy";
+
+    /// Config key for governor.mode setting.
+    pub const GOVERNOR_MODE: &str = "daft.governor.mode";
+
+    /// Config key for governor.jobs setting.
+    pub const GOVERNOR_JOBS: &str = "daft.governor.jobs";
+
+    /// Config key for governor.memoryReserve setting.
+    pub const GOVERNOR_MEMORY_RESERVE: &str = "daft.governor.memoryReserve";
+
+    /// Config key for governor.jobserver setting.
+    pub const GOVERNOR_JOBSERVER: &str = "daft.governor.jobserver";
+
     /// Config key for merge.style setting.
     pub const MERGE_STYLE: &str = "daft.merge.style";
 
@@ -458,6 +659,31 @@ pub struct DaftSettings {
     /// `base..branch`. Set via `daft.ownership.strategy`.
     pub ownership_strategy: crate::core::ownership::OwnershipStrategy,
 
+    /// Wall-clock budget for one sync push unit (git + pre-push hook);
+    /// `None` = no timeout. Set via `daft.sync.pushTimeout` (#678).
+    pub sync_push_timeout: Option<std::time::Duration>,
+
+    /// Pre-push hook cadence for sync pushes. Set via
+    /// `daft.sync.pushHookStrategy` (#678).
+    pub sync_push_hook_strategy: PushHookStrategy,
+
+    /// Whether the sync push resource governor is active (#678). Set via
+    /// `daft.governor.mode`.
+    pub governor_mode: GovernorMode,
+
+    /// Concurrency cap for hook-bearing push tasks. Set via
+    /// `daft.governor.jobs`.
+    pub governor_jobs: GovernorJobs,
+
+    /// Memory headroom the governor keeps free. Set via
+    /// `daft.governor.memoryReserve`.
+    pub governor_memory_reserve: MemoryReserve,
+
+    /// Whether governed pushes export a shared POSIX jobserver so
+    /// cooperating toolchains (make/cargo/ninja) inside concurrent hooks
+    /// draw from one token pool. Set via `daft.governor.jobserver` (#678).
+    pub governor_jobserver: GovernorMode,
+
     /// Selected merge style — replaces the legacy `merge_ff` + `merge_squash`
     /// combination. See [`MergeStyle`] for variants.
     pub merge_style: crate::core::worktree::merge::MergeStyle,
@@ -532,6 +758,12 @@ impl Default for DaftSettings {
             prune_sort: None,
             branch_delete_remote: defaults::BRANCH_DELETE_REMOTE,
             ownership_strategy: defaults::OWNERSHIP_STRATEGY,
+            sync_push_timeout: defaults::SYNC_PUSH_TIMEOUT,
+            sync_push_hook_strategy: defaults::SYNC_PUSH_HOOK_STRATEGY,
+            governor_mode: defaults::GOVERNOR_MODE,
+            governor_jobs: defaults::GOVERNOR_JOBS,
+            governor_memory_reserve: defaults::GOVERNOR_MEMORY_RESERVE,
+            governor_jobserver: defaults::GOVERNOR_JOBSERVER,
             merge_style: defaults::MERGE_STYLE,
             merge_cleanup: defaults::MERGE_CLEANUP,
             merge_commit: defaults::MERGE_COMMIT,
@@ -712,6 +944,84 @@ impl DaftSettings {
                 None => eprintln!(
                     "daft: unknown value for {}: {:?} — using default",
                     keys::OWNERSHIP_STRATEGY,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_PUSH_TIMEOUT)?
+            && !value.is_empty()
+        {
+            match parse_push_timeout(&value) {
+                Some(timeout) => settings.sync_push_timeout = timeout,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::SYNC_PUSH_TIMEOUT,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::SYNC_PUSH_HOOK_STRATEGY)?
+            && !value.is_empty()
+        {
+            match PushHookStrategy::parse(&value) {
+                Some(strategy) => settings.sync_push_hook_strategy = strategy,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::SYNC_PUSH_HOOK_STRATEGY,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_MODE)?
+            && !value.is_empty()
+        {
+            match GovernorMode::parse(&value) {
+                Some(mode) => settings.governor_mode = mode,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_MODE,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_JOBS)?
+            && !value.is_empty()
+        {
+            match GovernorJobs::parse(&value) {
+                Some(jobs) => settings.governor_jobs = jobs,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_JOBS,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_MEMORY_RESERVE)?
+            && !value.is_empty()
+        {
+            match MemoryReserve::parse(&value) {
+                Some(reserve) => settings.governor_memory_reserve = reserve,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_MEMORY_RESERVE,
+                    value
+                ),
+            }
+        }
+
+        if let Some(value) = git.config_get(keys::GOVERNOR_JOBSERVER)?
+            && !value.is_empty()
+        {
+            match GovernorMode::parse(&value) {
+                Some(mode) => settings.governor_jobserver = mode,
+                None => eprintln!(
+                    "daft: unknown value for {}: {:?} — using default",
+                    keys::GOVERNOR_JOBSERVER,
                     value
                 ),
             }
@@ -1295,6 +1605,119 @@ mod tests {
             settings.ownership_strategy,
             crate::core::ownership::OwnershipStrategy::RecencyPlurality
         );
+        assert_eq!(settings.governor_mode, GovernorMode::Auto);
+        assert_eq!(settings.governor_jobs, GovernorJobs::Auto);
+        assert_eq!(settings.governor_memory_reserve, MemoryReserve::Auto);
+    }
+
+    #[test]
+    fn governor_mode_parse() {
+        assert_eq!(GovernorMode::parse("auto"), Some(GovernorMode::Auto));
+        assert_eq!(GovernorMode::parse("AUTO"), Some(GovernorMode::Auto));
+        assert_eq!(GovernorMode::parse("off"), Some(GovernorMode::Off));
+        assert_eq!(GovernorMode::parse("Off"), Some(GovernorMode::Off));
+        assert_eq!(GovernorMode::parse("on"), None);
+        assert_eq!(GovernorMode::parse(""), None);
+    }
+
+    #[test]
+    fn governor_jobs_parse() {
+        assert_eq!(GovernorJobs::parse("auto"), Some(GovernorJobs::Auto));
+        assert_eq!(GovernorJobs::parse(" Auto "), Some(GovernorJobs::Auto));
+        assert_eq!(GovernorJobs::parse("1"), Some(GovernorJobs::Fixed(1)));
+        assert_eq!(GovernorJobs::parse("16"), Some(GovernorJobs::Fixed(16)));
+        assert_eq!(GovernorJobs::parse("0"), None);
+        assert_eq!(GovernorJobs::parse("-2"), None);
+        assert_eq!(GovernorJobs::parse("many"), None);
+    }
+
+    #[test]
+    fn governor_jobs_effective_cap() {
+        // Auto = max(2, cores/4).
+        assert_eq!(GovernorJobs::Auto.effective(4), 2);
+        assert_eq!(GovernorJobs::Auto.effective(10), 2);
+        assert_eq!(GovernorJobs::Auto.effective(16), 4);
+        assert_eq!(GovernorJobs::Auto.effective(32), 8);
+        assert_eq!(GovernorJobs::Auto.effective(1), 2);
+        assert_eq!(GovernorJobs::Fixed(6).effective(32), 6);
+        assert_eq!(GovernorJobs::Fixed(0).effective(32), 1);
+    }
+
+    #[test]
+    fn memory_reserve_parse() {
+        assert_eq!(MemoryReserve::parse("auto"), Some(MemoryReserve::Auto));
+        assert_eq!(
+            MemoryReserve::parse("2G"),
+            Some(MemoryReserve::Bytes(2 << 30))
+        );
+        assert_eq!(
+            MemoryReserve::parse("512m"),
+            Some(MemoryReserve::Bytes(512 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("1024K"),
+            Some(MemoryReserve::Bytes(1 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("1048576"),
+            Some(MemoryReserve::Bytes(1 << 20))
+        );
+        assert_eq!(
+            MemoryReserve::parse("15%"),
+            Some(MemoryReserve::Percent(15))
+        );
+        assert_eq!(MemoryReserve::parse("0%"), None);
+        assert_eq!(MemoryReserve::parse("100%"), None);
+        assert_eq!(MemoryReserve::parse("0"), None);
+        assert_eq!(MemoryReserve::parse("2T"), None);
+        assert_eq!(MemoryReserve::parse("lots"), None);
+        // Multi-byte junk must not panic the suffix split.
+        assert_eq!(MemoryReserve::parse("2é"), None);
+    }
+
+    #[test]
+    fn push_timeout_parse() {
+        use std::time::Duration;
+        assert_eq!(parse_push_timeout("off"), Some(None));
+        assert_eq!(parse_push_timeout("OFF"), Some(None));
+        assert_eq!(parse_push_timeout("0"), Some(None));
+        assert_eq!(
+            parse_push_timeout("30m"),
+            Some(Some(Duration::from_secs(1_800)))
+        );
+        assert_eq!(parse_push_timeout("2s"), Some(Some(Duration::from_secs(2))));
+        assert_eq!(
+            parse_push_timeout("1h"),
+            Some(Some(Duration::from_secs(3_600)))
+        );
+        assert_eq!(
+            parse_push_timeout("90"),
+            Some(Some(Duration::from_secs(90)))
+        );
+        assert_eq!(parse_push_timeout("forever"), None);
+        assert_eq!(parse_push_timeout("-5m"), None);
+        assert_eq!(parse_push_timeout(""), None);
+        // Day suffix (consistent with clean_policy's duration parser).
+        assert_eq!(
+            parse_push_timeout("2d"),
+            Some(Some(Duration::from_secs(172_800)))
+        );
+        // An overflowing product (n × unit_secs > u64::MAX) is rejected (outer
+        // None → default kept), not wrapped to a nonsensical budget nor a
+        // debug-build panic. 6e15 h × 3600 s/h overflows u64.
+        assert_eq!(parse_push_timeout("6000000000000000h"), None);
+        assert_eq!(parse_push_timeout("999999999999999999d"), None);
+    }
+
+    #[test]
+    fn memory_reserve_resolve() {
+        const GIB: u64 = 1 << 30;
+        // Auto = max(10% RAM, 2 GiB): floor on small machines…
+        assert_eq!(MemoryReserve::Auto.resolve(8 * GIB), 2 * GIB);
+        // …and 10% on big ones.
+        assert_eq!(MemoryReserve::Auto.resolve(64 * GIB), 64 * GIB / 10);
+        assert_eq!(MemoryReserve::Bytes(GIB).resolve(64 * GIB), GIB);
+        assert_eq!(MemoryReserve::Percent(25).resolve(64 * GIB), 16 * GIB);
     }
 
     #[test]

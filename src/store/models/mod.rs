@@ -6,12 +6,16 @@
 //! stays a pure data-access layer.
 
 pub mod catalog_repo;
+pub mod governor_event;
+pub mod hook_profile;
 pub mod invocation;
 pub mod job;
 pub mod repo_policy;
 pub mod visitor_seed;
 
 pub use catalog_repo::CatalogRepoRow;
+pub use governor_event::GovernorEventRow;
+pub use hook_profile::HookProfileRow;
 pub use invocation::InvocationRow;
 pub use job::JobRow;
 pub use repo_policy::RepoPolicyRow;
