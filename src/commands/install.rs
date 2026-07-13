@@ -213,7 +213,9 @@ fn guide_existing_config(root: &Path, existing: &Path, output: &mut dyn Output) 
 mod tests {
     use super::*;
     use crate::output::TestOutput;
+    use crate::store::paths::IsolatedStateDir;
     use crate::utils::git_command_at;
+    use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
 
@@ -381,7 +383,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_install_in_position_container_root_installs_across_worktrees() {
+        // Isolate the state dir: a container-root install propagates visitor
+        // seeds, which open the coordinator store via `paths::for_repo` and
+        // would otherwise write the developer's real `~/.local/state/daft`
+        // (#697 — the same isolation-leak class as #478/#669).
+        let _state = IsolatedStateDir::new();
         let base = tempdir().unwrap();
         let proj = build_contained(base.path(), false, &["main", "feature"]);
 

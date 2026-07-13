@@ -6,4 +6,9 @@ set -euo pipefail
 source "$(dirname "$0")/_release_bin_lib.sh"
 ensure_release_binaries
 
-cargo run --package xtask -- test-matrix
+# Real-state tripwire (#697): the bash matrix was the source of 802 of the 822
+# leaked catalog rows. Fail fast if the release binary ignores DAFT_*_DIR, then
+# verify the matrix left the real config/state/data dirs untouched.
+source "$(dirname "$0")/../_state_guard_lib.sh"
+assert_binary_honors_overrides "target/release/daft"
+with_state_guard cargo run --package xtask -- test-matrix
