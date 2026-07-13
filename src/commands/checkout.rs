@@ -1127,6 +1127,8 @@ fn run_checkout(
         // face tracelessly instead of closing a Failed receipt before
         // start's rail opens.
         defer_plan_until_branch_known: args.start || settings.go_auto_start,
+        // Populated in Phase 4 when the target is a forge PR/MR reference.
+        forge: None,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
