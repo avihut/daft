@@ -44,8 +44,15 @@ fn read_inner(repo_hash: &str) -> Option<HashMap<String, (PathBuf, u64)>> {
         .join(paths::JOBS_SUBDIR)
         .join(repo_hash)
         .join(paths::COORDINATOR_DB);
-    // Pure read: don't open (and thereby create) the store just to find it
-    // empty. First run has no DB — that's a cache miss, not an error.
+    // Pure read. Don't open (and thereby create) the store just to find it
+    // empty — first run has no DB, a cache miss, not an error. The query runs
+    // on the reader pool (300ms busy_timeout), so it fails fast instead of
+    // blocking the shell when a coordinator holds the write lock. We
+    // deliberately do NOT use a bare read-only connection here: a checkpointed
+    // coordinator.db with no -wal/-shm sidecar (the common idle state) is
+    // SQLITE_CANTOPEN under SQLITE_OPEN_READ_ONLY, so the pool's read-write
+    // bootstrap — which recreates the sidecars without materializing a *new*
+    // db (guarded just above) — is the WAL-safe way to read it. (review 6)
     if !db_path.exists() {
         return None;
     }
@@ -129,6 +136,15 @@ fn persist_inner(repo_hash: &str, rows: &[WorktreeSizeRow]) -> anyhow::Result<()
     let db_path = paths::for_repo(repo_hash)?;
     let pool = Pool::open(&db_path)?;
     let mut conn = pool.writer()?;
+    // `daft list` is otherwise read-only. Don't let this display-cache write
+    // block the interactive prompt for the full 5s writer timeout when a
+    // coordinator/sync process holds the coordinator.db write lock: a short
+    // busy_timeout means we fail fast (SQLITE_BUSY, swallowed by the caller)
+    // and simply skip persisting this run — the walk already ran, and the next
+    // run refreshes the cache. (review 5)
+    conn.busy_timeout(std::time::Duration::from_millis(
+        crate::store::connection::READER_BUSY_TIMEOUT_MS as u64,
+    ))?;
     with_write_txn(&mut conn, |tx| {
         for row in rows {
             WorktreeSizesRepo::upsert(tx, row)?;
