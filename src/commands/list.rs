@@ -390,6 +390,22 @@ fn run_blocking(args: Args) -> Result<()> {
         result
     };
 
+    // Warm the size cache from the blocking walk too, so piped / non-TTY
+    // (`DAFT_NO_LIVE`) runs leave the same last-known sizes a later live run
+    // seeds from. Write-only — blocking prints once, so there's no stale
+    // render to seed. Every `size_bytes` here was freshly walked (no seeding
+    // on this path); the helper stat-guards each path and is best-effort.
+    // Runs before the `--merging` display filter so all walked sizes persist.
+    if has_size
+        && let Ok(repo_hash) =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
+    {
+        let fresh = infos
+            .iter()
+            .filter_map(|info| Some((info.name.clone(), info.path.clone()?, info.size_bytes?)));
+        crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
+    }
+
     if args.merging {
         infos.retain(|info| {
             info.path.as_ref().is_some_and(|p| {

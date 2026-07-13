@@ -127,6 +127,12 @@ pub fn run() -> Result<()> {
         // Structured consumers get everything in one shot — walks run
         // synchronously when requested.
         let sizes = has_size.then(|| compute_sizes(&rows));
+        // Warm the size cache from the synchronous walk too (write-only), so
+        // structured/piped runs leave the same last-known sizes a later live
+        // run seeds from.
+        if let Some(sizes) = sizes.as_deref() {
+            persist_repo_sizes(&rows, sizes);
+        }
         let payload = match &children {
             Some(children) => build_document_payload(
                 &rows,
@@ -160,6 +166,11 @@ pub fn run() -> Result<()> {
     }
 
     let sizes = has_size.then(|| compute_sizes(&rows));
+    // Warm the size cache from the blocking walk too (write-only), matching
+    // the live path and the structured branch above.
+    if let Some(sizes) = sizes.as_deref() {
+        persist_repo_sizes(&rows, sizes);
+    }
     let term_width = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
     println!(
         "{}",
