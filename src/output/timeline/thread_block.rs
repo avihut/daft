@@ -43,69 +43,65 @@ pub(super) fn command_line(cmd: &str) -> String {
 /// The sub-row (thread) styles plus the rendering context they need. The main
 /// spinner row's own style is the caller's (a hook job bar, or the region's
 /// active-step bar) — only the thread lines live here.
+///
+/// `depth` is how many `│  ` rail tiers precede the thread's own inner `│` —
+/// i.e. the gutter depth of the row the thread hangs under. A hook job row
+/// sits inside its `├─` section, so its thread is depth 1 (2 in a group span);
+/// a top-level `daft exec` row is the rail itself, so its thread is depth 0
+/// (1 inside a worktree group). Getting this right is what keeps the inner `│`
+/// under the row's glyph column in both worlds.
 pub(super) struct ThreadStyles {
-    /// `│  │    {wide_msg}` (one extra `│  ` tier deeper when in a group span).
+    /// `<depth × "│  ">│    {wide_msg}`.
     thread: ProgressStyle,
     /// The live block's bottom spacer: `{msg}` poked once at creation (a bar
     /// that never receives a state poke never draws — the `add_line_bar`
     /// pattern).
     trailer: ProgressStyle,
     use_color: bool,
-    /// The row sat inside a `├─` group span: every thread line renders one
-    /// gutter tier deeper so the branch anchor keeps owning its span.
-    in_group: bool,
+    depth: usize,
 }
 
 impl ThreadStyles {
-    pub(super) fn new(use_color: bool, in_group: bool) -> Self {
-        let tier = |line: String| {
-            if in_group {
-                render::gutter(&line, use_color)
-            } else {
-                line
-            }
-        };
+    pub(super) fn new(use_color: bool, depth: usize) -> Self {
         let inner = render::paint(DARK_GREY, "\u{2502}", use_color);
-        let thread = ProgressStyle::with_template(&tier(render::gutter(
+        let thread = ProgressStyle::with_template(&gutter_tiers(
             &format!("{inner}    {{wide_msg}}"),
+            depth,
             use_color,
-        )))
+        ))
         .expect("thread template is valid");
         let trailer = ProgressStyle::with_template("{msg}").expect("trailer template is valid");
         Self {
             thread,
             trailer,
             use_color,
-            in_group,
+            depth,
         }
     }
 
-    /// One extra `│  ` tier for in-group blocks.
-    fn tucked(&self, line: String) -> String {
-        if self.in_group {
-            render::gutter(&line, self.use_color)
-        } else {
-            line
-        }
-    }
-
-    /// The thread's empty closing line: `│  │` — the air stays inside the
-    /// section (the job's own thread), never spending the rail's lone-`│`
-    /// section-boundary glyph on intra-section spacing.
+    /// The thread's empty closing line: `<depth tiers>│` — the air stays inside
+    /// the row's own thread, never spending the rail's lone-`│` boundary glyph
+    /// on intra-thread spacing.
     pub(super) fn thread_air(&self) -> String {
         let inner = render::paint(DARK_GREY, "\u{2502}", self.use_color);
-        self.tucked(render::gutter(&inner, self.use_color))
+        gutter_tiers(&inner, self.depth, self.use_color)
     }
 
-    /// One thread line: `│  │    <text>` — the inner `│` hangs from the row's
-    /// glyph column, a tier below the rail.
+    /// One thread line: `<depth tiers>│    <text>` — the inner `│` hangs from
+    /// the row's glyph column.
     fn thread_line(&self, text: &str) -> String {
         let inner = render::paint(DARK_GREY, "\u{2502}", self.use_color);
-        self.tucked(render::gutter(
-            &format!("{inner}    {text}"),
-            self.use_color,
-        ))
+        gutter_tiers(&format!("{inner}    {text}"), self.depth, self.use_color)
     }
+}
+
+/// Prefix `line` with `depth` rail gutter tiers (`│  `).
+fn gutter_tiers(line: &str, depth: usize, use_color: bool) -> String {
+    let mut out = line.to_string();
+    for _ in 0..depth {
+        out = render::gutter(&out, use_color);
+    }
+    out
 }
 
 /// The live thread hanging under a spinner row, plus the buffered log for the

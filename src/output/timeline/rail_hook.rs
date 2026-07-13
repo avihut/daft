@@ -112,7 +112,9 @@ impl RailHookRenderer {
         let job_style = ProgressStyle::with_template(&tier(render::gutter(base, embed.use_color)))
             .expect("job template is valid")
             .tick_chars(super::region::TICK_CHARS);
-        let thread_styles = ThreadStyles::new(embed.use_color, embed.in_group);
+        // Hook job rows sit inside their `├─` section (depth 1); a section in
+        // a group span nests one tier deeper (depth 2).
+        let thread_styles = ThreadStyles::new(embed.use_color, if embed.in_group { 2 } else { 1 });
         Self {
             mp: embed.mp,
             anchor: embed.anchor,

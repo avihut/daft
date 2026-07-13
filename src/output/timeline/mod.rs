@@ -29,10 +29,28 @@ pub use rail_hook::RailHookRenderer;
 pub use region::HookEmbed;
 
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};
-use region::{FinalFace, Resolution, TimelineCore, UnresolvedPolicy};
+use region::{FinalFace, RegionSetup, Resolution, TimelineCore, UnresolvedPolicy};
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Per-row output threads (`daft exec`): each worker's live output rides its
+/// plan row, and its captured log threads into the receipt. Set via
+/// [`Timeline::set_row_output`] before the region materializes; only meaningful
+/// alongside [`Timeline::set_ordered_receipts`].
+#[derive(Clone, Copy)]
+pub struct RowOutputConfig {
+    /// Thread every row's full log into the receipt (grey under success) and
+    /// show a rolling live window while it runs. Off: only failed/cancelled
+    /// rows thread their captured output, and the live view is one latest-line
+    /// annotation per row.
+    pub verbose: bool,
+    /// Rolling live-window height (`daft.hooks.output.tailLines`).
+    pub tail_lines: usize,
+    /// Byte budget for a row's buffered log (a chatty worker keeps only the
+    /// tail); `None` keeps everything.
+    pub buffer_cap: Option<usize>,
+}
 
 /// How the timeline renders for this invocation. Decided once per command.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -78,6 +96,9 @@ struct Inner {
     /// plan-ordered scrollback receipt. Set via
     /// [`Timeline::set_ordered_receipts`] before the region materializes.
     ordered: bool,
+    /// Per-row output threads (`daft exec`). Set via
+    /// [`Timeline::set_row_output`] before the region materializes.
+    row_output: Option<RowOutputConfig>,
     core: Option<TimelineCore>,
     /// Lines held back until the rail closes — a failed hook job's captured
     /// output belongs after the footer (the rail's errors-after pattern),
@@ -95,6 +116,16 @@ struct Inner {
 }
 
 impl Inner {
+    /// Snapshot the region knobs for a constructor call.
+    fn region_setup(&self) -> RegionSetup {
+        RegionSetup {
+            verbose: self.verbose,
+            use_color: self.use_color,
+            ordered: self.ordered,
+            row_output: self.row_output,
+        }
+    }
+
     /// The region's `MultiProgress` — production stderr, or the injected
     /// test target.
     fn make_multi_progress(&mut self) -> indicatif::MultiProgress {
@@ -209,6 +240,17 @@ impl TimelineHandle {
         self.lock().deferred_after_footer.extend(lines);
     }
 
+    /// Feed one output line to a row's live thread (`daft exec` workers,
+    /// driven from the stream-reader threads through the cloneable handle).
+    /// Buffers the line for the receipt and repaints the row's live view.
+    /// No-op without a live region, an unknown key, or a resolved row.
+    pub fn push_row_output(&self, key: &StepKey, line: &str) {
+        let mut inner = self.lock();
+        if let Some(core) = inner.core.as_mut() {
+            core.push_row_output(key, line);
+        }
+    }
+
     /// Route a stage event onto the region. Lives on the handle (not just
     /// [`Timeline`]) so a `JobPresenter` driving from worker threads — `daft
     /// exec`'s rail rows — can reach it through the cloneable handle without a
@@ -308,6 +350,7 @@ impl Timeline {
                     verbose,
                     use_color,
                     ordered: false,
+                    row_output: None,
                     core: None,
                     deferred_after_footer: Vec::new(),
                     #[cfg(test)]
@@ -336,14 +379,12 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
-        let ordered = inner.ordered;
+        let setup = inner.region_setup();
         inner.core = Some(TimelineCore::open_planning(
             mp,
             header,
             planning_label,
-            inner.verbose,
-            inner.use_color,
-            ordered,
+            setup,
             self.started,
         ));
     }
@@ -355,6 +396,13 @@ impl Timeline {
     /// commands never call this — their eager persistence is byte-identical.
     pub fn set_ordered_receipts(&self, ordered: bool) {
         self.handle.lock().ordered = ordered;
+    }
+
+    /// Enable per-row output threads (`daft exec`): live output on each row,
+    /// captured logs threaded into the receipt. Must be called before the
+    /// region materializes. Pairs with [`Self::set_ordered_receipts`].
+    pub fn set_row_output(&self, config: RowOutputConfig) {
+        self.handle.lock().row_output = Some(config);
     }
 
     /// Update the planning face's label in place ("Cloning repository" →
@@ -394,16 +442,8 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
-        let ordered = inner.ordered;
-        inner.core = Some(TimelineCore::new(
-            mp,
-            header,
-            plan,
-            inner.verbose,
-            inner.use_color,
-            ordered,
-            self.started,
-        ));
+        let setup = inner.region_setup();
+        inner.core = Some(TimelineCore::new(mp, header, plan, setup, self.started));
     }
 
     /// Collapse a still-planning region without a trace (no footer, no
@@ -1102,6 +1142,128 @@ mod tests {
              \u{25cb}  c  (not run)\n\
              \u{2502}\n\
              \u{2514}  Failed after 0.1s"
+        );
+    }
+
+    fn exec_verbose() -> RowOutputConfig {
+        RowOutputConfig {
+            verbose: true,
+            tail_lines: 6,
+            buffer_cap: None,
+        }
+    }
+
+    fn exec_default() -> RowOutputConfig {
+        RowOutputConfig {
+            verbose: false,
+            tail_lines: 6,
+            buffer_cap: None,
+        }
+    }
+
+    #[test]
+    fn verbose_row_threads_its_log_grey_under_success() {
+        let (mut tl, term) = captured("Running mise clean in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_verbose());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("master")]));
+        let k = exec_key("master");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.handle().push_row_output(&k, "[clean] artifacts cleaned");
+        tl.handle().push_row_output(&k, "[clean] done");
+        tl.on_stage(&k, StageEvent::Completed { annotation: None });
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 1 worktree\n\
+             \u{2502}\n\
+             \u{2713}  master\n\
+             \u{2502}    [clean] artifacts cleaned\n\
+             \u{2502}    [clean] done\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn default_failure_threads_output_but_success_stays_compact() {
+        let (mut tl, term) = captured("Running mise clean in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_default());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("ok"), exec_row("bad")]));
+        let ok = exec_key("ok");
+        tl.on_stage(&ok, StageEvent::Started);
+        tl.handle().push_row_output(&ok, "quiet success chatter");
+        tl.on_stage(&ok, StageEvent::Completed { annotation: None });
+        let bad = exec_key("bad");
+        tl.on_stage(&bad, StageEvent::Started);
+        tl.handle().push_row_output(&bad, "boom: permission denied");
+        tl.on_stage(
+            &bad,
+            StageEvent::Failed {
+                detail: "exit 1".into(),
+            },
+        );
+        tl.finish("Finished with failures in 0.1s");
+        // The success stays a compact row (its chatter is dropped); only the
+        // failure threads its captured output, in default ink.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 2 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  ok\n\
+             \u{2717}  bad  exit 1\n\
+             \u{2502}    boom: permission denied\n\
+             \u{2502}\n\
+             \u{2514}  Finished with failures in 0.1s"
+        );
+    }
+
+    #[test]
+    fn default_silent_failure_stays_compact_no_placeholder() {
+        // The blind spot: a default-mode failure with no output must NOT emit
+        // a `(no output)` thread line — that placeholder is verbose-only.
+        let (mut tl, term) = captured("Running true in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_default());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
+        let k = exec_key("q");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.on_stage(
+            &k,
+            StageEvent::Failed {
+                detail: "exit 2".into(),
+            },
+        );
+        tl.finish("Finished with failures in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running true in 1 worktree\n\
+             \u{2502}\n\
+             \u{2717}  q  exit 2\n\
+             \u{2502}\n\
+             \u{2514}  Finished with failures in 0.1s"
+        );
+    }
+
+    #[test]
+    fn verbose_silent_row_marks_no_output() {
+        let (mut tl, term) = captured("Running true in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_verbose());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
+        let k = exec_key("q");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.on_stage(&k, StageEvent::Completed { annotation: None });
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running true in 1 worktree\n\
+             \u{2502}\n\
+             \u{2713}  q\n\
+             \u{2502}    (no output)\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
         );
     }
 
