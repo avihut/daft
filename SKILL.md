@@ -200,6 +200,7 @@ root via `git rev-parse --git-common-dir`.
 | `daft clone <url> [--layout <LAYOUT>] [--install [--git-exclude]]`                                                                           | Clone a remote repository into worktree layout. `--install` bootstraps a starter `daft.yml` after cloning (copied into every worktree of a multi-branch clone, implies `--trust-hooks`; skipped if the repo ships a tracked `daft.yml`; rejected with `--no-checkout`).                                                                                                                                                                        |
 | `daft init <name> [--layout <LAYOUT>]`                                                                                                       | Initialize a new local repository in worktree layout                                                                                                                                                                                                                                                                                                                                                                                           |
 | `daft go <branch>`                                                                                                                           | Create/enter a worktree for an existing local or remote branch; `--local` skips the remote fetch even when `daft.checkout.fetch` is enabled                                                                                                                                                                                                                                                                                                    |
+| `daft go pr:<number>`                                                                                                                        | Check out a GitHub PR or GitLab MR (`mr:<number>`, or a pasted PR/MR URL) into a worktree on its source branch, configured to pull from the PR head. Fork-aware; resolves via the `gh`/`glab` CLI, which must be installed and authenticated (`daft doctor` reports). The platform is detected from the remote (`pr:`/`mr:` are aliases); `daft.forge.platform` overrides for ambiguous remotes.                                               |
 | `daft go -`                                                                                                                                  | Switch to the previous worktree (`cd -` style toggle)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `daft go -s <branch>`                                                                                                                        | Same, but auto-creates the branch if not found (also `daft.go.autoStart`)                                                                                                                                                                                                                                                                                                                                                                      |
 | `daft start <branch> [base]`                                                                                                                 | Create a new branch and worktree from the current or specified base; does not push by default (`daft.checkout.push`); `--local` skips remote even when push is enabled                                                                                                                                                                                                                                                                         |
@@ -712,20 +713,20 @@ to trust the repo: `daft hooks trust`.
 
 When working in a daft-managed repository, apply these translations:
 
-| User intent                       | Correct daft approach                                                      |
-| --------------------------------- | -------------------------------------------------------------------------- |
-| "Create a branch"                 | `daft start <name>` — creates branch + worktree                            |
-| "Branch from main"                | `daft start <name> main` — branches from the specified base                |
-| "Switch to branch X"              | Navigate to the worktree directory: `cd ../X/`                             |
-| "Go back"                         | `daft go -` — toggles to the previous worktree                             |
-| "Check out a PR"                  | `daft go <branch>` — creates a worktree for the existing branch            |
-| "Delete a branch"                 | `daft remove <branch>` — removes worktree + local branch                   |
-| "Clean up branches"               | `daft prune` — removes worktrees for deleted, merged remote branches       |
-| "Wrong branch"                    | `daft carry <correct-branch>` — moves uncommitted changes                  |
-| "Update from remote"              | `daft update` — updates current or specified worktrees (`source:dest` too) |
-| "Merge my branch"                 | `daft merge <branch> --into main --no-edit`                                |
-| "Run my build on these worktrees" | `daft exec feat/a feat/b -- <cmd>` or `daft exec --all -- <cmd>`           |
-| "Adopt existing repo"             | `daft adopt` — converts a traditional repo to daft layout                  |
+| User intent                       | Correct daft approach                                                                         |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| "Create a branch"                 | `daft start <name>` — creates branch + worktree                                               |
+| "Branch from main"                | `daft start <name> main` — branches from the specified base                                   |
+| "Switch to branch X"              | Navigate to the worktree directory: `cd ../X/`                                                |
+| "Go back"                         | `daft go -` — toggles to the previous worktree                                                |
+| "Check out a PR"                  | `daft go pr:<number>` — fork-aware, via `gh`/`glab`; also `mr:<number>` or a pasted PR/MR URL |
+| "Delete a branch"                 | `daft remove <branch>` — removes worktree + local branch                                      |
+| "Clean up branches"               | `daft prune` — removes worktrees for deleted, merged remote branches                          |
+| "Wrong branch"                    | `daft carry <correct-branch>` — moves uncommitted changes                                     |
+| "Update from remote"              | `daft update` — updates current or specified worktrees (`source:dest` too)                    |
+| "Merge my branch"                 | `daft merge <branch> --into main --no-edit`                                                   |
+| "Run my build on these worktrees" | `daft exec feat/a feat/b -- <cmd>` or `daft exec --all -- <cmd>`                              |
+| "Adopt existing repo"             | `daft adopt` — converts a traditional repo to daft layout                                     |
 
 ### Per-worktree Isolation
 
@@ -818,8 +819,9 @@ the job's `output.log`.
 
 **Column selection (`--columns`)** on `list`/`sync`/`prune`: default columns
 `annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`, `owner`,
-`last-commit`; optional `size` (adds a total footer) and `hash`. Two modes —
-replace (`--columns branch,path,age`: exactly those, in order) and modifier
+`last-commit`; optional `size` (adds a total footer), `hash`, and `pr`
+(`#N`/`!N` for worktrees created from a PR/MR). Two modes — replace
+(`--columns branch,path,age`: exactly those, in order) and modifier
 (`--columns +size,-age`: adjust defaults; auto-detected when every entry starts
 with `+`/`-`). The `status` column is always pinned on `sync`/`prune`.
 Persistent defaults: `git config daft.<cmd>.columns`.
@@ -857,6 +859,10 @@ invocation.
 | `daft.update.args`               | `"--ff-only"`         | Default pull arguments for update (same-branch mode)                                                                                                                        |
 | `daft.prune.cdTarget`            | `"root"`              | Where to cd after pruning (`root` or `default-branch`)                                                                                                                      |
 | `daft.go.autoStart`              | `false`               | Auto-create worktree when branch not found in `daft go`                                                                                                                     |
+| `daft.forge.platform`            | (detected)            | Forge platform for `pr:`/`mr:` checkout (`github`, `gitlab`); unset detects from the remote URL                                                                             |
+| `daft.forge.githubCli`           | `"gh"`                | GitHub CLI binary used for PR resolution (Enterprise wrappers)                                                                                                              |
+| `daft.forge.gitlabCli`           | `"glab"`              | GitLab CLI binary used for MR resolution                                                                                                                                    |
+| `daft.forge.hostname`            | (CLI default)         | Self-hosted / Enterprise forge hostname, passed to the CLI as `--hostname`                                                                                                  |
 | `daft.merge.requireCleanTarget`  | `true`                | Refuse to merge into a target worktree with uncommitted changes                                                                                                             |
 | `daft.merge.adoptTargetOnDemand` | `"prompt"`            | Ephemeral-target behavior for `daft merge` (`prompt`, `yes`, `no`)                                                                                                          |
 | `daft.hooks.enabled`             | `true`                | Master switch for hooks                                                                                                                                                     |

@@ -53,6 +53,14 @@ remote, a new branch and worktree are created automatically, as if 'daft start'
 had been called. This can also be enabled permanently with the daft.go.autoStart
 git config option.
 
+Pass a pull/merge request instead of a branch to check it out into a
+worktree: `pr:123`, `mr:45`, or a pasted PR/MR URL. daft resolves it through
+the `gh`/`glab` CLI (which supply the auth — daft stores no tokens), creates
+a worktree on the PR/MR's source branch, and configures it to pull from the
+PR/MR head. Fork PRs work without adding a remote. The platform is detected
+from the repository's remote; `pr:`/`mr:` are interchangeable aliases. Set
+`daft.forge.platform` (github/gitlab) to disambiguate a mixed-remote repo.
+
 Use '-' as the branch name to switch to the previous worktree, similar to
 'cd -'. Repeated 'daft go -' toggles between the two most recent worktrees.
 Cannot be combined with -b/--create-branch.
@@ -66,7 +74,7 @@ See git-daft(1) for hook management.
 "#)]
 pub struct Args {
     #[arg(
-        help = "Name of the branch to check out (or create with -b); use '-' for previous worktree",
+        help = "Branch to check out (or create with -b), a pull/merge request (pr:123, mr:45, or a PR/MR URL), or '-' for the previous worktree",
         allow_hyphen_values = true
     )]
     branch_name: String,

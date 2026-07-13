@@ -258,6 +258,10 @@ export default defineConfig({
             link: "/worktrees/from-anywhere",
           },
           { text: "Merging across worktrees", link: "/worktrees/merging" },
+          {
+            text: "Checking out pull requests",
+            link: "/worktrees/pull-requests",
+          },
           { text: "Shortcuts", link: "/worktrees/shortcuts" },
         ],
       },

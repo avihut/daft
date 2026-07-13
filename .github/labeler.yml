@@ -76,6 +76,11 @@
       - any-glob-to-any-file:
           - "src/governor/**"
 
+"area:forge":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/forge/**"
+
 "area:git":
   - changed-files:
       - any-glob-to-any-file:

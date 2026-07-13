@@ -58,6 +58,10 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
+The pr column is not shown by default. Add it with --columns +pr to show the
+pull/merge request each worktree tracks (#123 for a GitHub PR, !45 for a GitLab
+MR), read from local git config with no network calls.
+
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
   Sort by branch descending:  --sort -branch
@@ -95,7 +99,7 @@ git worktree-list [OPTIONS] [REPO]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--merging` | Only show worktrees with an in-progress merge |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit |  |
 | `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
 | `--repo <REPO>` | List another cataloged repository's worktrees |  |
 | `--all-repos` | List every cataloged repository's worktrees |  |

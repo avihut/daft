@@ -116,6 +116,21 @@ branch).
 | `daft.checkout.carry`       | `false` | Carry uncommitted changes when checking out existing branches |
 | `daft.checkoutBranch.carry` | `true`  | Carry uncommitted changes when creating new branches          |
 
+## Forge Settings
+
+For checking out pull/merge requests (`daft go pr:123`, `mr:45`, or a PR/MR
+URL). daft shells out to `gh`/`glab`, which supply the authentication — daft
+stores no tokens. These are the only knobs daft itself owns.
+
+| Key                    | Default | Description                                                                                     |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `daft.forge.platform`  |         | Force the platform for an ambiguous remote: `github` or `gitlab`. Unset means detect by remote. |
+| `daft.forge.githubCli` | `gh`    | Override the GitHub CLI binary (for Enterprise wrappers)                                        |
+| `daft.forge.gitlabCli` | `glab`  | Override the GitLab CLI binary                                                                  |
+| `daft.forge.hostname`  |         | Forge hostname for self-hosted / Enterprise instances (passed to the CLI as `--hostname`)       |
+
+Run `daft doctor` to check whether `gh`/`glab` are installed and authenticated.
+
 ## Update Settings
 
 | Key                | Default       | Description                                                                    |
