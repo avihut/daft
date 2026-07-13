@@ -1082,6 +1082,79 @@ fn maybe_consolidate(chosen_layout: &Layout, output: &mut dyn Output) -> Result<
 
 /// Returns `Ok(already_existed)` — true if the worktree already existed
 /// (navigation only, no creation).
+/// A forge PR/MR checkout target resolved from a `pr:`/`mr:`/URL positional.
+struct ResolvedForge {
+    /// The PR/MR's source branch — the local branch daft creates or opens.
+    branch_name: String,
+    /// Everything core needs to fetch the ref and configure tracking.
+    forge: checkout::ForgeCheckout,
+    /// Rail header target, e.g. `PR #123`.
+    header: String,
+}
+
+/// If the checkout positional is a forge PR/MR reference, resolve it (this is
+/// the one networked step) and map it for core. `Ok(None)` for an ordinary
+/// branch. Runs before anything interactive so a bad reference fails fast;
+/// resolution/preflight failures are `CheckoutError::Other`, so the caller's
+/// branch-not-found morph never reinterprets the rewritten source-branch name.
+fn resolve_forge_target(
+    args: &Args,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    project_root: &std::path::Path,
+) -> Result<Option<ResolvedForge>, checkout::CheckoutError> {
+    let Some(target) = crate::forge::ForgeTarget::parse(&args.branch_name) else {
+        return Ok(None);
+    };
+    if args.local {
+        return Err(anyhow::anyhow!(
+            "checking out a pull/merge request requires the network; drop --local"
+        )
+        .into());
+    }
+
+    let started = std::time::Instant::now();
+    let resolved = crate::forge::resolve(
+        &target,
+        git,
+        project_root,
+        &settings.remote,
+        &crate::forge::ForgeConfig::default(),
+    )?;
+    crate::forge::preflight_fork_collision(git, &resolved.info)?;
+    let elapsed = started.elapsed();
+
+    let info = resolved.info;
+    // Fork PR/MR: the head lives at a base-repo ref, fetched into a local
+    // remote-tracking ref named for the platform's convention.
+    let fork = info.is_cross_repo.then(|| {
+        let tag = match info.kind {
+            crate::core::worktree::forge_ref::ForgeRefKind::GithubPr => "pr",
+            crate::core::worktree::forge_ref::ForgeRefKind::GitlabMr => "mr",
+        };
+        checkout::ForgeForkRefs {
+            head_ref: info.head_ref(),
+            local_ref: format!(
+                "refs/remotes/{}/{}/{}",
+                resolved.base_remote, tag, info.number
+            ),
+        }
+    });
+
+    Ok(Some(ResolvedForge {
+        header: info.display(),
+        branch_name: info.source_branch.clone(),
+        forge: checkout::ForgeCheckout {
+            remote: resolved.base_remote,
+            fork,
+            display: info.display(),
+            title: info.title.clone(),
+            state_note: info.state_note(),
+            resolve_elapsed: elapsed,
+        },
+    }))
+}
+
 fn run_checkout(
     args: &Args,
     settings: &DaftSettings,
@@ -1094,6 +1167,20 @@ fn run_checkout(
     };
     let project_root = get_project_root()?;
 
+    // Resolve a forge PR/MR target (pr:/mr:/URL) up front — it rewrites the
+    // branch name, forces the fetch, and drives the rail header.
+    let forge = resolve_forge_target(args, settings, git, &project_root)?;
+    let is_forge = forge.is_some();
+    let effective_branch = forge
+        .as_ref()
+        .map_or(args.branch_name.as_str(), |f| f.branch_name.as_str())
+        .to_string();
+    let header_target = forge
+        .as_ref()
+        .map_or(args.branch_name.as_str(), |f| f.header.as_str())
+        .to_string();
+    let forge_checkout = forge.map(|f| f.forge);
+
     let (resolved_layout, source) = resolve_checkout_layout(git, output);
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
@@ -1105,7 +1192,7 @@ fn run_checkout(
     }
 
     let params = checkout::CheckoutParams {
-        branch_name: args.branch_name.clone(),
+        branch_name: effective_branch,
         carry: args.carry,
         no_carry: args.no_carry,
         remote: args.remote.clone(),
@@ -1114,7 +1201,11 @@ fn run_checkout(
         multi_remote_default: settings.multi_remote_default.clone(),
         checkout_carry: settings.checkout_carry,
         checkout_upstream: settings.checkout_upstream,
-        checkout_fetch: if args.local {
+        // Forge targets always fetch (the PR/MR ref must be materialized);
+        // --local is rejected earlier for them.
+        checkout_fetch: if is_forge {
+            true
+        } else if args.local {
             false
         } else {
             settings.checkout_fetch
@@ -1125,10 +1216,10 @@ fn run_checkout(
         // behind: hold the plan until the branch is known to exist, so the
         // fetch runs under the planning face and a not-found dissolves the
         // face tracelessly instead of closing a Failed receipt before
-        // start's rail opens.
-        defer_plan_until_branch_known: args.start || settings.go_auto_start,
-        // Populated in Phase 4 when the target is a forge PR/MR reference.
-        forge: None,
+        // start's rail opens. Forge targets never morph (their misses are
+        // Other, not BranchNotFound), so they don't defer.
+        defer_plan_until_branch_known: !is_forge && (args.start || settings.go_auto_start),
+        forge: forge_checkout,
     };
 
     let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
@@ -1149,7 +1240,7 @@ fn run_checkout(
     let mut timeline = Timeline::new(
         TimelineMode::auto(output.is_quiet()),
         output.is_verbose(),
-        format!("Opening {}", args.branch_name),
+        format!("Opening {header_target}"),
     );
 
     timeline.open_planning("Resolving branch");
@@ -1219,6 +1310,27 @@ fn run_create_branch_core(
     git: &GitCommand,
     output: &mut dyn Output,
 ) -> Result<checkout_branch::CheckoutBranchResult> {
+    // A forge PR/MR reference names an existing PR, not a new branch to create.
+    // This is the single choke point for the create family (`daft start`,
+    // `checkout -b`, `go -b`, `--with-related`).
+    if crate::forge::ForgeTarget::parse(&args.branch_name).is_some() {
+        anyhow::bail!(
+            "'{}' is a pull/merge request reference, not a new branch name.\n  \
+             tip: `{}` checks it out into a worktree.",
+            args.branch_name,
+            crate::daft_cmd(&format!("go {}", args.branch_name)),
+        );
+    }
+    if let Some(base) = &args.base_branch_name
+        && crate::forge::ForgeTarget::parse(base).is_some()
+    {
+        anyhow::bail!(
+            "basing a new branch on a pull/merge request isn't supported yet.\n  \
+             tip: check out `{base}` first with `{}`.",
+            crate::daft_cmd(&format!("go {base}")),
+        );
+    }
+
     let wt_config = WorktreeConfig {
         remote_name: settings.remote.clone(),
         quiet: output.is_quiet(),

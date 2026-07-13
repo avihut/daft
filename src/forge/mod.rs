@@ -107,6 +107,48 @@ pub fn resolve(
     Ok(ResolvedRef { info, base_remote })
 }
 
+/// Whether checking out a fork PR/MR would clobber an unrelated local branch.
+/// `true` means "bail". Pure core of [`preflight_fork_collision`]: a same-named
+/// local branch exists that doesn't already track this head ref.
+fn is_fork_collision(branch_exists: bool, current_merge: Option<&str>, head_ref: &str) -> bool {
+    branch_exists && current_merge != Some(head_ref)
+}
+
+/// Guard a fork PR/MR checkout from hijacking an unrelated local branch.
+///
+/// Fork PRs are often opened from the fork's default branch, so
+/// `source_branch` is frequently `main`/`master` — a branch the user already
+/// has. Without this guard, checking out would either navigate to that branch's
+/// existing worktree (core's name-based shortcut can't see the mismatch) or
+/// rewrite its `branch.<name>.merge` to the PR head ref, hijacking it so the
+/// next `git pull` pulls PR code into it. Runs in the command layer *before*
+/// `execute`, so it pre-empts both. Same-repo refs need no guard — the
+/// same-named branch genuinely is the PR/MR's branch. A branch already tracking
+/// this head ref is a legitimate re-checkout and passes.
+pub fn preflight_fork_collision(git: &GitCommand, info: &RemoteRefInfo) -> Result<()> {
+    if !info.is_cross_repo {
+        return Ok(());
+    }
+    let branch = &info.source_branch;
+    let branch_exists = git
+        .show_ref_exists(&format!("refs/heads/{branch}"))
+        .unwrap_or(false);
+    let current_merge = git
+        .config_get(&format!("branch.{branch}.merge"))
+        .ok()
+        .flatten();
+    if is_fork_collision(branch_exists, current_merge.as_deref(), &info.head_ref()) {
+        bail!(
+            "local branch '{branch}' already exists and does not track {display}.\n  \
+             tip: `{go}` opens that branch as-is; rename or delete it to check out \
+             {display} fresh.",
+            display = info.display(),
+            go = crate::daft_cmd(&format!("go {branch}")),
+        );
+    }
+    Ok(())
+}
+
 fn provider_for_kind(kind: ForgeRefKind) -> Box<dyn RemoteRefProvider> {
     match kind {
         ForgeRefKind::GithubPr => Box::new(GitHubProvider),
@@ -185,6 +227,7 @@ pub(crate) fn split_repo_key(url: &str) -> Option<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::info::BaseRepo;
 
     #[test]
     fn split_repo_key_handles_forms() {
@@ -198,5 +241,81 @@ mod tests {
         );
         // Local-path fixture remotes don't parse into a forge slug.
         assert_eq!(split_repo_key("/remotes/test-repo"), None);
+    }
+
+    #[test]
+    fn fork_collision_verdict() {
+        let head = "refs/pull/50/head";
+        // No local branch → no collision.
+        assert!(!is_fork_collision(false, None, head));
+        // Branch exists, untracked → collision (would hijack).
+        assert!(is_fork_collision(true, None, head));
+        // Branch exists, tracks a *different* ref → collision.
+        assert!(is_fork_collision(true, Some("refs/heads/main"), head));
+        assert!(is_fork_collision(true, Some("refs/pull/99/head"), head));
+        // Branch already tracks this PR → legitimate re-checkout, no collision.
+        assert!(!is_fork_collision(true, Some(head), head));
+    }
+
+    fn fork_info(source_branch: &str, number: u32) -> RemoteRefInfo {
+        RemoteRefInfo {
+            kind: ForgeRefKind::GithubPr,
+            number,
+            title: "t".into(),
+            author: "a".into(),
+            state: "open".into(),
+            draft: false,
+            source_branch: source_branch.into(),
+            is_cross_repo: true,
+            url: "https://github.com/acme/widget/pull/50".into(),
+            base: BaseRepo {
+                host: "github.com".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+            },
+        }
+    }
+
+    /// Real-git guard: a fork PR opened from the fork's `main` must not hijack
+    /// the user's own local `main`.
+    #[test]
+    #[serial_test::serial]
+    fn preflight_bails_on_conflicting_local_branch() {
+        let original = std::env::current_dir().ok();
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            crate::utils::git_command_at(tmp.path())
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "T")
+                .env("GIT_AUTHOR_EMAIL", "t@t.co")
+                .env("GIT_COMMITTER_NAME", "T")
+                .env("GIT_COMMITTER_EMAIL", "t@t.co")
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["commit", "--allow-empty", "-qm", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let git = GitCommand::new(true);
+
+        // PR #50 from a fork's `main` collides with the user's `main`.
+        let err = preflight_fork_collision(&git, &fork_info("main", 50)).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "got: {err}");
+
+        // Re-checkout: `main` already tracks this PR → passes. A fresh
+        // GitCommand reads current config (gix_repo caches a config snapshot;
+        // in production preflight runs in a new process, so it always sees what
+        // a prior `daft checkout pr:` invocation wrote).
+        git.set_branch_tracking("main", "origin", "refs/pull/50/head")
+            .unwrap();
+        let git = GitCommand::new(true);
+        assert!(preflight_fork_collision(&git, &fork_info("main", 50)).is_ok());
+
+        // A branch that doesn't exist locally → passes.
+        assert!(preflight_fork_collision(&git, &fork_info("brand-new-feature", 51)).is_ok());
+
+        if let Some(dir) = original {
+            let _ = std::env::set_current_dir(dir);
+        }
     }
 }
