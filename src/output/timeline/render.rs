@@ -27,6 +27,9 @@ pub(super) enum RowFace {
     SkippedExpected,
     /// `↓` yellow — resolved without running, attention-worthy.
     SkippedAttention,
+    /// `⊘` yellow — cancelled mid-run (SIGINT); `daft exec`'s interrupted
+    /// workers. Carries the elapsed duration; the label stays imperative.
+    Cancelled { duration: Option<Duration> },
     /// `○` dark grey — never reached because an earlier step failed.
     NotReached,
 }
@@ -224,10 +227,23 @@ pub(super) fn final_row(
             let body = row_body(label, annotation, label_width, reason_inks, None, use_color);
             format!("{glyph}  {body}")
         }
+        RowFace::Cancelled { duration } => {
+            // `⊘` yellow; the `cancelled` annotation renders plain (a reason,
+            // not an identity), with the dim elapsed duration trailing it.
+            let glyph = paint(YELLOW, "\u{2298}", use_color);
+            let dur = duration
+                .filter(|d| *d >= DURATION_THRESHOLD)
+                .map(|d| paint(GREY, &format!("({})", format_duration(d)), use_color));
+            let body = row_body(label, annotation, label_width, reason_inks, None, use_color);
+            match dur {
+                Some(d) => format!("{glyph}  {body}  {d}"),
+                None => format!("{glyph}  {body}"),
+            }
+        }
         RowFace::NotReached => {
             let body = row_body(
                 label,
-                Some("(not run)"),
+                Some(super::NOT_RUN),
                 label_width,
                 PLAIN_INKS,
                 None,
@@ -500,6 +516,39 @@ mod tests {
             false,
         );
         assert_eq!(plain, "\u{2717}  Push  pre-push hook rejected");
+    }
+
+    #[test]
+    fn cancelled_row_shows_ban_glyph_reason_and_duration() {
+        // `⊘  <label>  cancelled  (t)` — plain reason, dim duration, the
+        // label imperative (a fixed exec label anyway).
+        let plain = final_row(
+            &RowFace::Cancelled {
+                duration: Some(Duration::from_millis(2100)),
+            },
+            "daft-335/feat/visitor-config",
+            Some("cancelled"),
+            28,
+            PLAIN_INKS,
+            false,
+        );
+        assert_eq!(
+            plain,
+            "\u{2298}  daft-335/feat/visitor-config  cancelled  (2.1s)"
+        );
+        // Sub-second cancel hides the duration; the glyph wears attention
+        // yellow, the reason stays plain (no identity ink bleeds onto it).
+        let colored = final_row(
+            &RowFace::Cancelled { duration: None },
+            "master",
+            Some("cancelled"),
+            6,
+            REMOTE_ANN,
+            true,
+        );
+        assert!(colored.starts_with(YELLOW), "glyph is yellow: {colored:?}");
+        assert!(!colored.contains(styles::CYAN), "reason plain: {colored:?}");
+        assert!(colored.contains("cancelled"));
     }
 
     #[test]

@@ -7,6 +7,7 @@
 pub mod alias_cache;
 pub mod list_renderer;
 pub mod progress_renderer;
+pub mod rail_presenter;
 
 pub use alias_cache::AliasCache;
 
@@ -204,7 +205,11 @@ impl WorktreeSnapshot {
     }
 }
 
-fn is_glob(tok: &str) -> bool {
+/// Whether a positional token is a glob (vs. an exact branch/dir name). The
+/// command layer reuses this to tell a fan-out request (`daft exec 'feat/*'`)
+/// from a single explicit target, so a glob that resolves to one live worktree
+/// still renders the rail rather than collapsing to stdio passthrough.
+pub(crate) fn is_glob(tok: &str) -> bool {
     tok.contains('*') || tok.contains('?') || tok.contains('[')
 }
 
@@ -613,7 +618,7 @@ pub fn run_pipeline_streaming(
         if exit_code == 0 {
             presenter.on_job_success(&job_name, cmd_elapsed);
         } else {
-            presenter.on_job_failure(&job_name, cmd_elapsed);
+            presenter.on_job_failure_with_exit(&job_name, cmd_elapsed, status.code());
             emit_skips(idx + 1);
             break;
         }

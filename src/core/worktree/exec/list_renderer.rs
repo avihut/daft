@@ -88,7 +88,7 @@ pub fn render_outcome<W: Sink>(
 pub enum DumpMode {
     /// Default: only failed or cancelled worktrees are dumped.
     FailuresOnly,
-    /// `--show-output`: every worktree is dumped, including successes.
+    /// `-v`: every worktree is dumped, including successes.
     All,
 }
 

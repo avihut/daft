@@ -36,6 +36,16 @@ pub trait JobPresenter: Send + Sync {
     /// A job failed.
     fn on_job_failure(&self, name: &str, duration: Duration);
 
+    /// A job failed, carrying the child's exit code when one is known.
+    ///
+    /// `daft exec` surfaces `exit N` on the worker's rail row; hook renderers
+    /// have no use for the code and inherit the default, which drops it and
+    /// defers to [`Self::on_job_failure`]. A caller invokes exactly one of the
+    /// two per failure.
+    fn on_job_failure_with_exit(&self, name: &str, duration: Duration, _exit_code: Option<i32>) {
+        self.on_job_failure(name, duration);
+    }
+
     /// A job was skipped.
     fn on_job_skipped(
         &self,

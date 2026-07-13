@@ -13,12 +13,33 @@
 //! accounting); templates are never empty; rows are single-line (labels and
 //! annotations are pre-composed, annotations truncate via `{wide_msg}`).
 
+use super::RowOutputConfig;
 use super::render::{self, RowFace};
+use super::thread_block::{ThreadStyles, ThreadedJob};
 use crate::core::stage::{PlanCommit, Row, StepKey, StepSpec};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// A plan row's output thread (`daft exec`): the live window / buffered log
+/// ([`ThreadedJob`]) plus the sub-row styles for its group depth. Held in a
+/// side table keyed by slot index so the many `Slot::Step` match sites stay
+/// untouched.
+struct RowThread {
+    job: ThreadedJob,
+    styles: ThreadStyles,
+}
+
+/// The per-invocation region knobs, bundled so the constructors stay lean.
+#[derive(Clone, Copy)]
+pub(super) struct RegionSetup {
+    pub verbose: bool,
+    pub use_color: bool,
+    pub ordered: bool,
+    pub row_output: Option<RowOutputConfig>,
+}
 
 /// House braille spinner frames (same set as the hook job spinners).
 pub(super) const TICK_CHARS: &str =
@@ -91,6 +112,14 @@ enum StepState {
     Active {
         started: Instant,
     },
+    /// Ordered mode only: resolved with a final face, repainted onto the live
+    /// bar in plan position, awaiting the prefix drain into scrollback. `lines`
+    /// is the composed receipt block — the row line, then any output-thread
+    /// lines (failed/cancelled rows always thread; every row threads under
+    /// verbose). Eager mode persists immediately and never uses this.
+    Recorded {
+        lines: Vec<String>,
+    },
     /// Persisted, silently removed, or replaced by an embedded hook block.
     Resolved,
 }
@@ -99,6 +128,25 @@ pub(super) struct TimelineCore {
     mp: MultiProgress,
     use_color: bool,
     verbose: bool,
+    /// Ordered receipts (`daft exec`): rows resolve out of completion order,
+    /// but the scrollback receipt must stay in plan order. When set, `resolve`
+    /// repaints the row's final face in place and defers persistence to
+    /// [`Self::drain_ordered_prefix`], which walks the maximal resolved prefix
+    /// top-down. Lifecycle commands leave this off — their eager path is
+    /// byte-identical to before.
+    ordered: bool,
+    /// Ordered mode: count of front slots already persisted to scrollback.
+    persisted_upto: usize,
+    /// Per-row output threads (`daft exec`): `Some` enables the machinery,
+    /// carrying the live-window / receipt-thread config.
+    row_output: Option<RowOutputConfig>,
+    /// Ordered mode: the last persisted row's receipt block ended with a
+    /// thread `│` air line, so the footer must not double it with its own
+    /// spacer. Eager mode never sets this (footer always spaces — unchanged).
+    suppress_footer_spacer: bool,
+    /// Live output threads keyed by slot index (exec rows). A side table so
+    /// the `Slot::Step` variant and its match sites are unchanged.
+    row_threads: HashMap<usize, RowThread>,
     label_width: usize,
     slots: Vec<Slot>,
     /// Seeded header text, retained until the plan lands (the plan may
@@ -157,11 +205,10 @@ impl TimelineCore {
         mp: MultiProgress,
         header: String,
         plan: PlanCommit,
-        verbose: bool,
-        use_color: bool,
+        setup: RegionSetup,
         started: Instant,
     ) -> Self {
-        let mut core = Self::scaffold(mp, header, verbose, use_color, started);
+        let mut core = Self::scaffold(mp, header, setup, started);
         core.install_plan(plan);
         core
     }
@@ -177,10 +224,10 @@ impl TimelineCore {
         mp: MultiProgress,
         header: String,
         planning_label: &str,
-        verbose: bool,
-        use_color: bool,
+        setup: RegionSetup,
         started: Instant,
     ) -> Self {
+        let use_color = setup.use_color;
         let static_style = line_style();
         let header_bar = add_line_bar(&mp, &static_style, render::header(&header, None, use_color));
         let top_spacer_bar = add_line_bar(&mp, &static_style, render::spacer(use_color));
@@ -188,7 +235,7 @@ impl TimelineCore {
         // grey label — busy, but meta: it is not one of the plan's rows and
         // vanishes when they land.
         let planning_row = mp.add(ProgressBar::new_spinner());
-        planning_row.set_style(active_style(use_color, false));
+        planning_row.set_style(active_style(use_color, false, false));
         planning_row.set_message(render::paint(
             crate::output::palette::GREY,
             planning_label,
@@ -202,7 +249,7 @@ impl TimelineCore {
         planning_row.enable_steady_tick(Duration::from_millis(80));
         planning_row.tick();
 
-        let mut core = Self::scaffold(mp, header, verbose, use_color, started);
+        let mut core = Self::scaffold(mp, header, setup, started);
         core.header_bar = Some(header_bar);
         core.top_spacer_bar = Some(top_spacer_bar);
         core.planning_row = Some(planning_row);
@@ -234,13 +281,13 @@ impl TimelineCore {
     /// echo guard, and the Ctrl-C collapse — everything that survives from
     /// the planning face into the committed plan. Slots come later via
     /// [`Self::install_plan`].
-    fn scaffold(
-        mp: MultiProgress,
-        header: String,
-        verbose: bool,
-        use_color: bool,
-        started: Instant,
-    ) -> Self {
+    fn scaffold(mp: MultiProgress, header: String, setup: RegionSetup, started: Instant) -> Self {
+        let RegionSetup {
+            verbose,
+            use_color,
+            ordered,
+            row_output,
+        } = setup;
         let static_style = line_style();
         let bottom_spacer = add_line_bar(&mp, &static_style, render::spacer(use_color));
         // The pending footer is a stopwatch from its first frame: `└  142ms`
@@ -298,6 +345,11 @@ impl TimelineCore {
             mp,
             use_color,
             verbose,
+            ordered,
+            persisted_upto: 0,
+            row_output,
+            suppress_footer_spacer: false,
+            row_threads: HashMap::new(),
             label_width: 0,
             slots: Vec::new(),
             header,
@@ -565,6 +617,10 @@ impl TimelineCore {
         self.reconnect_after_block();
         let use_color = self.use_color;
         let label_width = self.label_width;
+        // Exec rows carry arbitrary command output as their live annotation, so
+        // their active bar truncates (`{wide_msg}`) instead of wrapping (which
+        // desyncs indicatif's line accounting). Lifecycle rows stay on `{msg}`.
+        let wide = self.row_output.is_some();
         if let Slot::Step {
             spec,
             bar,
@@ -574,6 +630,7 @@ impl TimelineCore {
         } = &mut self.slots[idx]
             && let Some(bar) = bar.as_ref()
         {
+            let in_group = *in_group;
             let msg = render::active_message(
                 &display_label(spec, StepPhase::Active),
                 spec.annotation.as_deref(),
@@ -581,13 +638,30 @@ impl TimelineCore {
                 super::plan::subject_inks_for(spec.key.id),
                 use_color,
             );
-            bar.set_style(active_style(use_color, *in_group));
+            bar.set_style(active_style(use_color, in_group, wide));
             bar.set_message(msg);
             bar.enable_steady_tick(Duration::from_millis(80));
             bar.tick();
             *state = StepState::Active {
                 started: Instant::now(),
             };
+            // Attach the row's output thread. Verbose opens the live window
+            // now (trailer air so parallel blocks don't fuse); the default
+            // density rides its latest line on the row's own annotation, so it
+            // needs only the buffer. No promoter — the row bar's only other
+            // writer would be a detached ticker, and dropping it keeps every
+            // write serialized through the timeline mutex (the stream readers
+            // are joined before the row resolves).
+            if let Some(cfg) = self.row_output {
+                // A top-level exec row is the rail itself (thread depth 0); a
+                // row inside a worktree group nests one tier (depth 1).
+                let styles = ThreadStyles::new(use_color, usize::from(in_group));
+                let mut job = ThreadedJob::new(cfg.buffer_cap, None);
+                if cfg.verbose {
+                    job.open(&self.mp, bar, &styles);
+                }
+                self.row_threads.insert(idx, RowThread { job, styles });
+            }
         }
     }
 
@@ -603,6 +677,17 @@ impl TimelineCore {
             return;
         };
         self.reconnect_after_block();
+        if self.ordered {
+            self.resolve_ordered(idx, resolution);
+        } else {
+            self.resolve_eager(idx, resolution);
+        }
+    }
+
+    /// Eager resolution (lifecycle commands): persist the final row above the
+    /// live bars the moment the step resolves. Rows resolve in plan order, so
+    /// completion order is plan order — the receipt is correct as printed.
+    fn resolve_eager(&mut self, idx: usize, resolution: Resolution) {
         let silent = matches!(resolution, Resolution::Silent);
         if !silent {
             // About to print a visible row: everything above it must be in
@@ -661,21 +746,8 @@ impl TimelineCore {
                 if let Some(a) = annotation {
                     spec.annotation = Some(a);
                 }
-                let face = match face {
-                    FinalFace::Done => RowFace::Done {
-                        duration: started.map(|s| s.elapsed()),
-                    },
-                    FinalFace::Failed => RowFace::Failed,
-                    FinalFace::SkippedExpected => RowFace::SkippedExpected,
-                    FinalFace::SkippedAttention => RowFace::SkippedAttention,
-                };
-                let phase = match face {
-                    // The fact never happened — the label stays imperative
-                    // (`↓ Fetch remote  failed — …`, never `↓ Fetched …`).
-                    RowFace::Failed | RowFace::SkippedAttention => StepPhase::Pending,
-                    RowFace::SkippedExpected => StepPhase::Skipped,
-                    _ => StepPhase::Done,
-                };
+                let face = resolve_face(face, started);
+                let phase = phase_for(&face);
                 let line = render::final_row(
                     &face,
                     &display_label(spec, phase),
@@ -702,6 +774,181 @@ impl TimelineCore {
             // the run — drop it now rather than at teardown.
             self.drop_group_if_span_settled(idx);
         }
+    }
+
+    /// Ordered resolution (`daft exec`): the row's final face is painted onto
+    /// its own live bar in plan position and stashed as [`StepState::Recorded`]
+    /// — nothing persists yet. [`Self::drain_ordered_prefix`] then flushes the
+    /// maximal resolved prefix top-down, so out-of-order completion still
+    /// leaves a plan-ordered receipt. Exec rows carry no section spacers.
+    fn resolve_ordered(&mut self, idx: usize, resolution: Resolution) {
+        self.clear_detail();
+        let use_color = self.use_color;
+        let label_width = self.label_width;
+        let Slot::Step {
+            spec,
+            bar,
+            state,
+            in_group,
+            spacer_above,
+            spacer_below,
+        } = &mut self.slots[idx]
+        else {
+            return;
+        };
+        debug_assert!(
+            spacer_above.is_none() && spacer_below.is_none(),
+            "ordered mode (exec) plans no section spacers"
+        );
+        let in_group = *in_group;
+        let started = match state {
+            StepState::Active { started } => Some(*started),
+            _ => None,
+        };
+        match resolution {
+            Resolution::Silent => {
+                // Nothing to persist — order is irrelevant. Drop the live bar
+                // (and any output thread) now and settle the row.
+                if let Some(thread) = self.row_threads.remove(&idx) {
+                    thread.job.mark_resolved();
+                    thread.job.remove_thread_bars(&self.mp);
+                }
+                if let Some(taken) = bar.take() {
+                    taken.disable_steady_tick();
+                    self.mp.remove(&taken);
+                }
+                *state = StepState::Resolved;
+                self.drop_group_if_span_settled(idx);
+                return;
+            }
+            Resolution::Final { face, annotation } => {
+                if let Some(a) = annotation {
+                    spec.annotation = Some(a);
+                }
+                let face = resolve_face(face, started);
+                let phase = phase_for(&face);
+                let failed = matches!(face, RowFace::Failed | RowFace::Cancelled { .. });
+                let row_line = in_span(
+                    render::final_row(
+                        &face,
+                        &display_label(spec, phase),
+                        spec.annotation.as_deref(),
+                        label_width,
+                        super::plan::subject_inks_for(spec.key.id),
+                        use_color,
+                    ),
+                    in_group,
+                    use_color,
+                );
+                // Compose the receipt block: the row line, then the output
+                // thread. The live window bars leave now; the log rejoins as
+                // scrollback at drain. Verbose threads every row (grey under
+                // success, `(no output)` placeholder included); default only
+                // threads a failure/cancel that actually printed something.
+                let mut lines = vec![row_line.clone()];
+                if let Some(thread) = self.row_threads.remove(&idx) {
+                    thread.job.mark_resolved();
+                    thread.job.remove_thread_bars(&self.mp);
+                    let verbose = self.row_output.is_some_and(|c| c.verbose);
+                    if verbose {
+                        lines.extend(thread.job.compose_log(&thread.styles, failed));
+                        lines.push(thread.styles.thread_air());
+                    } else if failed && !thread.job.output().is_empty() {
+                        lines.extend(thread.job.compose_log(&thread.styles, true));
+                        lines.push(thread.styles.thread_air());
+                    }
+                }
+                // Repaint the live bar in place with the final face (drop the
+                // spinner style so the composed line isn't double-glyphed).
+                if let Some(b) = bar.as_ref() {
+                    b.disable_steady_tick();
+                    b.set_style(line_style());
+                    b.set_message(row_line);
+                }
+                *state = StepState::Recorded { lines };
+            }
+        }
+        self.drain_ordered_prefix();
+    }
+
+    /// Persist the maximal resolved prefix into scrollback, top-down: every
+    /// [`StepState::Recorded`] row (and its lazily-anchored group), stopping at
+    /// the first still-running row — so the receipt stays in plan order even
+    /// though rows resolved out of order.
+    fn drain_ordered_prefix(&mut self) {
+        let mut i = self.persisted_upto;
+        let mut pending_group: Option<usize> = None;
+        loop {
+            match self.slots.get(i) {
+                None => break,
+                Some(Slot::Group { bar: Some(_), .. }) => {
+                    pending_group = Some(i);
+                    i += 1;
+                }
+                Some(Slot::Group { bar: None, .. }) => i += 1,
+                Some(Slot::EndGroup) => {
+                    pending_group = None;
+                    i += 1;
+                }
+                Some(Slot::Note { bar: Some(_), .. }) => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
+                    }
+                    self.print_note_at(i);
+                    i += 1;
+                }
+                Some(Slot::Note { bar: None, .. }) => i += 1,
+                Some(Slot::Step {
+                    state: StepState::Recorded { .. },
+                    ..
+                }) => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
+                    }
+                    self.persist_recorded_at(i);
+                    i += 1;
+                }
+                Some(Slot::Step {
+                    state: StepState::Resolved,
+                    ..
+                }) => i += 1,
+                // A still-running (Pending/Active) row blocks the prefix.
+                Some(Slot::Step { .. }) => break,
+            }
+        }
+        // Rewind to an unprinted group anchor so the next drain revisits it;
+        // the persisted rows between it and here are `Resolved` and skipped.
+        self.persisted_upto = pending_group.unwrap_or(i);
+    }
+
+    /// Persist a `Recorded` row's stored block: remove its (final-faced) live
+    /// bar and print the identical row line (and any output-thread lines) into
+    /// scrollback.
+    fn persist_recorded_at(&mut self, idx: usize) {
+        let lines = {
+            let Slot::Step { bar, state, .. } = &mut self.slots[idx] else {
+                return;
+            };
+            let StepState::Recorded { lines } = state else {
+                return;
+            };
+            let lines = std::mem::take(lines);
+            if let Some(taken) = bar.take() {
+                taken.disable_steady_tick();
+                self.mp.remove(&taken);
+            }
+            *state = StepState::Resolved;
+            lines
+        };
+        // A threaded block (row line + log + `│` air) ends spacer-like; a bare
+        // row line does not. The footer reads this to avoid doubling the
+        // separator; group/note spacing keeps the standard bookkeeping.
+        let ends_with_air = lines.len() > 1;
+        for line in lines {
+            self.mp.println(line).ok();
+        }
+        self.last_persisted_was_spacer = false;
+        self.suppress_footer_spacer = ends_with_air;
     }
 
     /// Patch a pending/active row's annotation in place.
@@ -741,9 +988,68 @@ impl TimelineCore {
                         inks,
                         use_color,
                     )),
-                    StepState::Resolved => {}
+                    // A Recorded row already shows its final face; a resolved
+                    // one is gone. Neither takes a late annotation update.
+                    StepState::Recorded { .. } | StepState::Resolved => {}
                 }
             }
+        }
+    }
+
+    /// Feed a line to a row's output thread (`daft exec`): buffer it for the
+    /// receipt and repaint the live view — a rolling window under the row
+    /// (verbose), or the latest line on the row's own annotation, dim
+    /// (default). No-op without row-output config, an unknown key, or a row
+    /// that is not currently active.
+    pub(super) fn push_row_output(&mut self, key: &StepKey, line: &str) {
+        let Some(idx) = self.step_index(key) else {
+            return;
+        };
+        let Some(cfg) = self.row_output else {
+            return;
+        };
+        let use_color = self.use_color;
+        let label_width = self.label_width;
+        // Snapshot what the default-density repaint needs, then drop the slot
+        // borrow — the thread lives in a disjoint side table.
+        let active = {
+            let Slot::Step {
+                spec, bar, state, ..
+            } = &self.slots[idx]
+            else {
+                return;
+            };
+            if !matches!(state, StepState::Active { .. }) {
+                return;
+            }
+            bar.as_ref().map(|b| {
+                (
+                    display_label(spec, StepPhase::Active),
+                    super::plan::subject_inks_for(spec.key.id),
+                    b.clone(),
+                )
+            })
+        };
+        let Some((label, inks, bar)) = active else {
+            return;
+        };
+        let Some(thread) = self.row_threads.get_mut(&idx) else {
+            return;
+        };
+        thread.job.record(line);
+        if cfg.verbose {
+            thread
+                .job
+                .roll_window(&self.mp, &thread.styles, cfg.tail_lines, &bar);
+        } else {
+            // Default density: the latest line rides the row's annotation, dim.
+            let dim = render::paint(
+                crate::output::palette::DARK_GREY,
+                line.trim_end(),
+                use_color,
+            );
+            let msg = render::active_message(&label, Some(&dim), label_width, inks, use_color);
+            bar.set_message(msg);
         }
     }
 
@@ -897,6 +1203,31 @@ impl TimelineCore {
             self.mp.remove(&bar);
         }
         self.clear_detail();
+        if self.ordered {
+            self.persist_unresolved_ordered(unresolved);
+        } else {
+            self.persist_unresolved_eager(unresolved);
+        }
+        let use_color = self.use_color;
+        self.footer_done.store(true, Ordering::SeqCst);
+        self.mp.remove(&self.bottom_spacer);
+        self.mp.remove(&self.footer);
+        // A threaded exec receipt already ends in the thread's `│` air line, so
+        // don't double it. Eager mode never sets this — byte-identical to the
+        // always-a-spacer behavior.
+        if !self.suppress_footer_spacer {
+            self.mp.println(render::spacer(use_color)).ok();
+        }
+        self.mp.println(render::footer(footer_text, use_color)).ok();
+        // The region is gone; Ctrl-C reverts to the default exit.
+        crate::interrupt::clear_behavior();
+        // `self.mp` drops here with zero live bars — nothing to strand.
+    }
+
+    /// Teardown for eager (lifecycle) mode: walk every slot, persisting
+    /// unresolved steps per `unresolved`, lazily anchoring groups, dropping
+    /// all-silent spans.
+    fn persist_unresolved_eager(&mut self, unresolved: UnresolvedPolicy) {
         let use_color = self.use_color;
         let label_width = self.label_width;
         let mut pending_group: Option<usize> = None;
@@ -993,14 +1324,112 @@ impl TimelineCore {
         if let Some(g) = pending_group {
             self.drop_group_bar_at(g); // span printed nothing
         }
-        self.footer_done.store(true, Ordering::SeqCst);
-        self.mp.remove(&self.bottom_spacer);
-        self.mp.remove(&self.footer);
-        self.mp.println(render::spacer(use_color)).ok();
-        self.mp.println(render::footer(footer_text, use_color)).ok();
-        // The region is gone; Ctrl-C reverts to the default exit.
-        crate::interrupt::clear_behavior();
-        // `self.mp` drops here with zero live bars — nothing to strand.
+    }
+
+    /// Teardown for ordered (exec) mode: flush the resolved prefix, then
+    /// persist the remainder in plan order — `Recorded` stragglers show their
+    /// face, unresolved rows follow `unresolved` (`(not run)` on abort), group
+    /// anchors print lazily. Exec rows carry no section spacers.
+    fn persist_unresolved_ordered(&mut self, unresolved: UnresolvedPolicy) {
+        self.drain_ordered_prefix();
+        let mut pending_group: Option<usize> = None;
+        for i in self.persisted_upto..self.slots.len() {
+            match &self.slots[i] {
+                Slot::Group { bar: Some(_), .. } => {
+                    if let Some(old) = pending_group.replace(i) {
+                        self.drop_group_bar_at(old);
+                    }
+                }
+                Slot::Group { bar: None, .. } | Slot::EndGroup => {
+                    if let Some(old) = pending_group.take() {
+                        self.drop_group_bar_at(old);
+                    }
+                }
+                Slot::Note { bar: Some(_), .. } => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
+                    }
+                    self.print_note_at(i);
+                }
+                Slot::Note { bar: None, .. } => {}
+                Slot::Step {
+                    state: StepState::Recorded { .. },
+                    ..
+                } => {
+                    if let Some(g) = pending_group.take() {
+                        self.print_group_at(g);
+                    }
+                    self.persist_recorded_at(i);
+                }
+                Slot::Step { bar: Some(_), .. } => match unresolved {
+                    UnresolvedPolicy::NotReached => {
+                        if let Some(g) = pending_group.take() {
+                            self.print_group_at(g);
+                        }
+                        self.persist_not_reached_at(i);
+                    }
+                    UnresolvedPolicy::Drop => self.drop_step_bar_at(i),
+                },
+                Slot::Step { bar: None, .. } => {}
+            }
+        }
+        if let Some(g) = pending_group {
+            self.drop_group_bar_at(g);
+        }
+    }
+
+    /// Persist an unresolved (never-launched) exec row as a dim `(not run)`
+    /// receipt line and settle it.
+    fn persist_not_reached_at(&mut self, idx: usize) {
+        let use_color = self.use_color;
+        let label_width = self.label_width;
+        let line = {
+            let Slot::Step {
+                spec,
+                bar,
+                state,
+                in_group,
+                ..
+            } = &mut self.slots[idx]
+            else {
+                return;
+            };
+            let Some(taken) = bar.take() else {
+                return;
+            };
+            taken.disable_steady_tick();
+            self.mp.remove(&taken);
+            let line = in_span(
+                render::final_row(
+                    &RowFace::NotReached,
+                    &display_label(spec, StepPhase::Pending),
+                    None,
+                    label_width,
+                    render::PLAIN_INKS,
+                    use_color,
+                ),
+                *in_group,
+                use_color,
+            );
+            *state = StepState::Resolved;
+            line
+        };
+        self.mp.println(line).ok();
+        self.last_persisted_was_spacer = false;
+        // A `(not run)` row is a real row — the footer needs its spacer.
+        self.suppress_footer_spacer = false;
+    }
+
+    /// Drop an unresolved exec row's live bar without persisting anything
+    /// (`UnresolvedPolicy::Drop` — clean finishes have no such rows).
+    fn drop_step_bar_at(&mut self, idx: usize) {
+        if let Slot::Step { bar, state, .. } = &mut self.slots[idx] {
+            if let Some(taken) = bar.take() {
+                taken.disable_steady_tick();
+                self.mp.remove(&taken);
+            }
+            *state = StepState::Resolved;
+        }
     }
 
     /// Resolve a stage id (+ candidate scope) to the plan's actual key:
@@ -1195,6 +1624,7 @@ pub(super) enum UnresolvedPolicy {
 pub(super) enum FinalFace {
     Done,
     Failed,
+    Cancelled,
     SkippedExpected,
     SkippedAttention,
 }
@@ -1216,6 +1646,36 @@ enum StepPhase {
     Active,
     Done,
     Skipped,
+}
+
+/// The [`FinalFace`] a caller requested → the render [`RowFace`], computing
+/// the elapsed duration from the step's start. Shared by the eager and ordered
+/// resolve paths.
+fn resolve_face(face: FinalFace, started: Option<Instant>) -> RowFace {
+    match face {
+        FinalFace::Done => RowFace::Done {
+            duration: started.map(|s| s.elapsed()),
+        },
+        FinalFace::Failed => RowFace::Failed,
+        FinalFace::Cancelled => RowFace::Cancelled {
+            duration: started.map(|s| s.elapsed()),
+        },
+        FinalFace::SkippedExpected => RowFace::SkippedExpected,
+        FinalFace::SkippedAttention => RowFace::SkippedAttention,
+    }
+}
+
+/// Which tense a resolved row's label wears. A fact that never happened
+/// (failure, attention skip, cancellation) keeps the imperative; a done fact
+/// takes the past tense; an expected skip takes its replacement label.
+fn phase_for(face: &RowFace) -> StepPhase {
+    match face {
+        RowFace::Failed | RowFace::SkippedAttention | RowFace::Cancelled { .. } => {
+            StepPhase::Pending
+        }
+        RowFace::SkippedExpected => StepPhase::Skipped,
+        _ => StepPhase::Done,
+    }
 }
 
 fn display_label(spec: &StepSpec, phase: StepPhase) -> String {
@@ -1267,15 +1727,19 @@ fn in_span(line: String, in_group: bool, use_color: bool) -> String {
     }
 }
 
-fn active_style(use_color: bool, in_group: bool) -> ProgressStyle {
+fn active_style(use_color: bool, in_group: bool, wide: bool) -> ProgressStyle {
+    // `{wide_msg}` truncates over-long content instead of wrapping (which
+    // desyncs indicatif's line accounting) — required for exec rows carrying
+    // arbitrary command output; lifecycle rows keep the plain `{msg}`.
+    let field = if wide { "{wide_msg}" } else { "{msg}" };
     let base = if use_color {
-        "{spinner:.cyan}  {msg}"
+        format!("{{spinner:.cyan}}  {field}")
     } else {
-        "{spinner}  {msg}"
+        format!("{{spinner}}  {field}")
     };
     // In-span rows carry the gutter in the template — the spinner glyph
     // lives there, so the message alone can't provide the prefix.
-    let template = in_span(base.to_string(), in_group, use_color);
+    let template = in_span(base, in_group, use_color);
     ProgressStyle::with_template(&template)
         .expect("active template is valid")
         .tick_chars(TICK_CHARS)

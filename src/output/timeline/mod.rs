@@ -21,17 +21,42 @@ mod plan;
 mod rail_hook;
 mod region;
 mod render;
+mod thread_block;
 
 pub use bridge::RegionOutput;
 pub use bridge::{error_line, warning_line};
 pub use rail_hook::RailHookRenderer;
 pub use region::HookEmbed;
 
+/// The annotation a row that never ran wears: the `○ … (not run)` receipt. Two
+/// paths produce it and must read identically — the region's `NotReached`
+/// teardown face ([`render::final_row`]) and `daft exec`'s presenter resolving
+/// a fail-fast / never-dispatched command as an expected skip.
+pub(crate) const NOT_RUN: &str = "(not run)";
+
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};
-use region::{FinalFace, Resolution, TimelineCore, UnresolvedPolicy};
+use region::{FinalFace, RegionSetup, Resolution, TimelineCore, UnresolvedPolicy};
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Per-row output threads (`daft exec`): each worker's live output rides its
+/// plan row, and its captured log threads into the receipt. Set via
+/// [`Timeline::set_row_output`] before the region materializes; only meaningful
+/// alongside [`Timeline::set_ordered_receipts`].
+#[derive(Clone, Copy)]
+pub struct RowOutputConfig {
+    /// Thread every row's full log into the receipt (grey under success) and
+    /// show a rolling live window while it runs. Off: only failed/cancelled
+    /// rows thread their captured output, and the live view is one latest-line
+    /// annotation per row.
+    pub verbose: bool,
+    /// Rolling live-window height (`daft.hooks.output.tailLines`).
+    pub tail_lines: usize,
+    /// Byte budget for a row's buffered log (a chatty worker keeps only the
+    /// tail); `None` keeps everything.
+    pub buffer_cap: Option<usize>,
+}
 
 /// How the timeline renders for this invocation. Decided once per command.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,6 +98,13 @@ struct Inner {
     header: String,
     verbose: bool,
     use_color: bool,
+    /// Ordered receipts (`daft exec`): out-of-order completion still leaves a
+    /// plan-ordered scrollback receipt. Set via
+    /// [`Timeline::set_ordered_receipts`] before the region materializes.
+    ordered: bool,
+    /// Per-row output threads (`daft exec`). Set via
+    /// [`Timeline::set_row_output`] before the region materializes.
+    row_output: Option<RowOutputConfig>,
     core: Option<TimelineCore>,
     /// Lines held back until the rail closes — a failed hook job's captured
     /// output belongs after the footer (the rail's errors-after pattern),
@@ -90,6 +122,16 @@ struct Inner {
 }
 
 impl Inner {
+    /// Snapshot the region knobs for a constructor call.
+    fn region_setup(&self) -> RegionSetup {
+        RegionSetup {
+            verbose: self.verbose,
+            use_color: self.use_color,
+            ordered: self.ordered,
+            row_output: self.row_output,
+        }
+    }
+
     /// The region's `MultiProgress` — production stderr, or the injected
     /// test target.
     fn make_multi_progress(&mut self) -> indicatif::MultiProgress {
@@ -203,6 +245,96 @@ impl TimelineHandle {
     pub fn defer_after_footer(&self, lines: Vec<String>) {
         self.lock().deferred_after_footer.extend(lines);
     }
+
+    /// Feed one output line to a row's live thread (`daft exec` workers,
+    /// driven from the stream-reader threads through the cloneable handle).
+    /// Buffers the line for the receipt and repaints the row's live view.
+    /// No-op without a live region, an unknown key, or a resolved row.
+    pub fn push_row_output(&self, key: &StepKey, line: &str) {
+        let mut inner = self.lock();
+        if let Some(core) = inner.core.as_mut() {
+            core.push_row_output(key, line);
+        }
+    }
+
+    /// Route a stage event onto the region. Lives on the handle (not just
+    /// [`Timeline`]) so a `JobPresenter` driving from worker threads — `daft
+    /// exec`'s rail rows — can reach it through the cloneable handle without a
+    /// `&mut Timeline`. No-op without a live region.
+    pub fn on_stage(&self, key: &StepKey, event: StageEvent) {
+        let mut inner = self.lock();
+        let use_color = inner.use_color;
+        let Some(core) = inner.core.as_mut() else {
+            return;
+        };
+        // A shared-file outcome the plan never saw (clone without a probed
+        // config, or a target branch declaring more than the source did):
+        // persist its legacy line above the live bars — tear-free, and the
+        // fact is not lost — instead of dropping the unknown key.
+        if key.id == crate::core::stage::StageId::SharedFile
+            && core.resolve_key(key.id, key.scope.as_deref()).is_none()
+        {
+            if let Some(line) =
+                crate::core::shared::legacy_shared_stage_line(key, &event, use_color)
+            {
+                core.println_above(&line);
+            }
+            return;
+        }
+        match event {
+            StageEvent::Started => core.activate(key),
+            StageEvent::Completed { annotation } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Done,
+                    annotation,
+                },
+            ),
+            StageEvent::Failed { detail } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Failed,
+                    annotation: Some(detail),
+                },
+            ),
+            StageEvent::Cancelled => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::Cancelled,
+                    annotation: Some("cancelled".to_string()),
+                },
+            ),
+            StageEvent::SkippedExpected { reason } => core.resolve(
+                key,
+                Resolution::Final {
+                    face: FinalFace::SkippedExpected,
+                    annotation: Some(reason),
+                },
+            ),
+            StageEvent::SkippedAttention { reason } => {
+                // Shared-file and fetch reasons are self-contained phrases
+                // (missing, conflict, "failed — …"); exec's orphan-target
+                // reason ("no worktree") likewise. The generic "skipped — "
+                // prefix would stutter on them.
+                let annotation = match key.id {
+                    crate::core::stage::StageId::SharedFile
+                    | crate::core::stage::StageId::Fetch
+                    | crate::core::stage::StageId::Tracking
+                    | crate::core::stage::StageId::ExecCommand => reason,
+                    _ => format!("skipped \u{2014} {reason}"),
+                };
+                core.resolve(
+                    key,
+                    Resolution::Final {
+                        face: FinalFace::SkippedAttention,
+                        annotation: Some(annotation),
+                    },
+                )
+            }
+            StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
+            StageEvent::Note(text) => core.set_annotation(key, text),
+        }
+    }
 }
 
 /// The timeline a command owns for one invocation.
@@ -223,6 +355,8 @@ impl Timeline {
                     header: header.into(),
                     verbose,
                     use_color,
+                    ordered: false,
+                    row_output: None,
                     core: None,
                     deferred_after_footer: Vec::new(),
                     #[cfg(test)]
@@ -251,14 +385,30 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
+        let setup = inner.region_setup();
         inner.core = Some(TimelineCore::open_planning(
             mp,
             header,
             planning_label,
-            inner.verbose,
-            inner.use_color,
+            setup,
             self.started,
         ));
+    }
+
+    /// Opt into plan-ordered receipts: rows may resolve out of completion
+    /// order (parallel `daft exec` workers), but the scrollback receipt stays
+    /// in plan order. Must be called before the region materializes
+    /// (`open_planning` or `commit_plan`); a no-op afterward. Lifecycle
+    /// commands never call this — their eager persistence is byte-identical.
+    pub fn set_ordered_receipts(&self, ordered: bool) {
+        self.handle.lock().ordered = ordered;
+    }
+
+    /// Enable per-row output threads (`daft exec`): live output on each row,
+    /// captured logs threaded into the receipt. Must be called before the
+    /// region materializes. Pairs with [`Self::set_ordered_receipts`].
+    pub fn set_row_output(&self, config: RowOutputConfig) {
+        self.handle.lock().row_output = Some(config);
     }
 
     /// Update the planning face's label in place ("Cloning repository" →
@@ -298,14 +448,8 @@ impl Timeline {
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
-        inner.core = Some(TimelineCore::new(
-            mp,
-            header,
-            plan,
-            inner.verbose,
-            inner.use_color,
-            self.started,
-        ));
+        let setup = inner.region_setup();
+        inner.core = Some(TimelineCore::new(mp, header, plan, setup, self.started));
     }
 
     /// Collapse a still-planning region without a trace (no footer, no
@@ -327,71 +471,11 @@ impl Timeline {
         }
     }
 
-    /// Route a stage event onto the region.
+    /// Route a stage event onto the region. Delegates to
+    /// [`TimelineHandle::on_stage`] so the command thread and a rail presenter
+    /// running on worker threads speak one routing path.
     pub fn on_stage(&mut self, key: &StepKey, event: StageEvent) {
-        let mut inner = self.handle.lock();
-        let use_color = inner.use_color;
-        let Some(core) = inner.core.as_mut() else {
-            return;
-        };
-        // A shared-file outcome the plan never saw (clone without a probed
-        // config, or a target branch declaring more than the source did):
-        // persist its legacy line above the live bars — tear-free, and the
-        // fact is not lost — instead of dropping the unknown key.
-        if key.id == crate::core::stage::StageId::SharedFile
-            && core.resolve_key(key.id, key.scope.as_deref()).is_none()
-        {
-            if let Some(line) =
-                crate::core::shared::legacy_shared_stage_line(key, &event, use_color)
-            {
-                core.println_above(&line);
-            }
-            return;
-        }
-        match event {
-            StageEvent::Started => core.activate(key),
-            StageEvent::Completed { annotation } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::Done,
-                    annotation,
-                },
-            ),
-            StageEvent::Failed { detail } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::Failed,
-                    annotation: Some(detail),
-                },
-            ),
-            StageEvent::SkippedExpected { reason } => core.resolve(
-                key,
-                Resolution::Final {
-                    face: FinalFace::SkippedExpected,
-                    annotation: Some(reason),
-                },
-            ),
-            StageEvent::SkippedAttention { reason } => {
-                // Shared-file and fetch reasons are self-contained phrases
-                // (missing, conflict, "failed — …") — the generic prefix
-                // would stutter.
-                let annotation = match key.id {
-                    crate::core::stage::StageId::SharedFile
-                    | crate::core::stage::StageId::Fetch
-                    | crate::core::stage::StageId::Tracking => reason,
-                    _ => format!("skipped \u{2014} {reason}"),
-                };
-                core.resolve(
-                    key,
-                    Resolution::Final {
-                        face: FinalFace::SkippedAttention,
-                        annotation: Some(annotation),
-                    },
-                )
-            }
-            StageEvent::SkippedSilent => core.resolve(key, Resolution::Silent),
-            StageEvent::Note(text) => core.set_annotation(key, text),
-        }
+        self.handle.on_stage(key, event);
     }
 
     /// The hook block for an embedded step finished rendering; reconnect
@@ -932,6 +1016,260 @@ mod tests {
              \u{2502}  \u{2713}  Removed worktree\n\
              \u{2502}\n\
              \u{2514}  Removed 2 worktrees in 0.1s"
+        );
+    }
+
+    #[test]
+    fn exec_command_row_cancels_to_the_ban_face() {
+        // An exec worker interrupted mid-run resolves to the yellow `⊘` face
+        // with a plain `cancelled` reason (the sub-second test duration is
+        // below the display threshold, so none shows). The fixed label wins.
+        let (mut tl, term) = captured("Running mise test in 1 worktree");
+        tl.commit_plan(PlanCommit::new(vec![Row::Step(
+            StepSpec::new(StepKey::new(StageId::ExecCommand)).with_label("master"),
+        )]));
+        let key = StepKey::new(StageId::ExecCommand);
+        tl.on_stage(&key, StageEvent::Started);
+        tl.on_stage(&key, StageEvent::Cancelled);
+        tl.finish("Cancelled after 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise test in 1 worktree\n\
+             \u{2502}\n\
+             \u{2298}  master  cancelled\n\
+             \u{2502}\n\
+             \u{2514}  Cancelled after 0.1s"
+        );
+    }
+
+    fn exec_key(scope: &str) -> StepKey {
+        StepKey::scoped(StageId::ExecCommand, scope)
+    }
+
+    fn exec_row(scope: &str) -> Row {
+        Row::Step(StepSpec::new(exec_key(scope)).with_label(scope))
+    }
+
+    #[test]
+    fn ordered_receipts_persist_in_plan_order_despite_out_of_order_completion() {
+        // The exec case: workers finish in completion order (c, a, b) but the
+        // scrollback receipt must stay in plan order (a, b, c). Nothing
+        // persists until the prefix is resolved — c waits behind a and b.
+        let (mut tl, term) = captured("Running mise clean in 3 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            exec_row("a"),
+            exec_row("b"),
+            exec_row("c"),
+        ]));
+        for s in ["c", "a", "b"] {
+            tl.on_stage(&exec_key(s), StageEvent::Started);
+            tl.on_stage(&exec_key(s), StageEvent::Completed { annotation: None });
+        }
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 3 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{2713}  b\n\
+             \u{2713}  c\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn ordered_grouped_receipts_stay_in_plan_order() {
+        // Pipelines (m>1): a ├─ group per worktree. Worktree B's rows resolve
+        // first, but the receipt keeps A's group ahead of B's.
+        let (mut tl, term) = captured("Running 2 commands in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            Row::Group {
+                label: "wtA".into(),
+            },
+            Row::Step(StepSpec::new(exec_key("wtA#0")).with_label("mise clean")),
+            Row::Step(StepSpec::new(exec_key("wtA#1")).with_label("mise dev")),
+            Row::Group {
+                label: "wtB".into(),
+            },
+            Row::Step(StepSpec::new(exec_key("wtB#0")).with_label("mise clean")),
+            Row::Step(StepSpec::new(exec_key("wtB#1")).with_label("mise dev")),
+        ]));
+        for s in ["wtB#0", "wtB#1", "wtA#0", "wtA#1"] {
+            tl.on_stage(&exec_key(s), StageEvent::Started);
+            tl.on_stage(&exec_key(s), StageEvent::Completed { annotation: None });
+        }
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running 2 commands in 2 worktrees\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} wtA\n\
+             \u{2502}  \u{2713}  mise clean\n\
+             \u{2502}  \u{2713}  mise dev\n\
+             \u{2502}\n\
+             \u{251c}\u{2500} wtB\n\
+             \u{2502}  \u{2713}  mise clean\n\
+             \u{2502}  \u{2713}  mise dev\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn ordered_fail_fast_persists_recorded_prefix_then_not_run_suffix() {
+        // Sequential fail-fast: the first worker fails, the rest never launch.
+        // The failed row shows `✗`, the never-launched rows persist as dim
+        // `(not run)` under abort — all in plan order.
+        let (mut tl, term) = captured("Running cargo test in 3 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.commit_plan(PlanCommit::new(vec![
+            exec_row("a"),
+            exec_row("b"),
+            exec_row("c"),
+        ]));
+        tl.on_stage(&exec_key("a"), StageEvent::Started);
+        tl.on_stage(
+            &exec_key("a"),
+            StageEvent::Failed {
+                detail: "exit 101".into(),
+            },
+        );
+        // b and c never start; abort persists them as (not run).
+        tl.abort("Failed after 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 3 worktrees\n\
+             \u{2502}\n\
+             \u{2717}  a  exit 101\n\
+             \u{25cb}  b  (not run)\n\
+             \u{25cb}  c  (not run)\n\
+             \u{2502}\n\
+             \u{2514}  Failed after 0.1s"
+        );
+    }
+
+    fn exec_verbose() -> RowOutputConfig {
+        RowOutputConfig {
+            verbose: true,
+            tail_lines: 6,
+            buffer_cap: None,
+        }
+    }
+
+    fn exec_default() -> RowOutputConfig {
+        RowOutputConfig {
+            verbose: false,
+            tail_lines: 6,
+            buffer_cap: None,
+        }
+    }
+
+    #[test]
+    fn verbose_row_threads_its_log_grey_under_success() {
+        let (mut tl, term) = captured("Running mise clean in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_verbose());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("master")]));
+        let k = exec_key("master");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.handle().push_row_output(&k, "[clean] artifacts cleaned");
+        tl.handle().push_row_output(&k, "[clean] done");
+        tl.on_stage(&k, StageEvent::Completed { annotation: None });
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 1 worktree\n\
+             \u{2502}\n\
+             \u{2713}  master\n\
+             \u{2502}    [clean] artifacts cleaned\n\
+             \u{2502}    [clean] done\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn default_failure_threads_output_but_success_stays_compact() {
+        let (mut tl, term) = captured("Running mise clean in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_default());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("ok"), exec_row("bad")]));
+        let ok = exec_key("ok");
+        tl.on_stage(&ok, StageEvent::Started);
+        tl.handle().push_row_output(&ok, "quiet success chatter");
+        tl.on_stage(&ok, StageEvent::Completed { annotation: None });
+        let bad = exec_key("bad");
+        tl.on_stage(&bad, StageEvent::Started);
+        tl.handle().push_row_output(&bad, "boom: permission denied");
+        tl.on_stage(
+            &bad,
+            StageEvent::Failed {
+                detail: "exit 1".into(),
+            },
+        );
+        tl.finish("Finished with failures in 0.1s");
+        // The success stays a compact row (its chatter is dropped); only the
+        // failure threads its captured output, in default ink.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running mise clean in 2 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  ok\n\
+             \u{2717}  bad  exit 1\n\
+             \u{2502}    boom: permission denied\n\
+             \u{2502}\n\
+             \u{2514}  Finished with failures in 0.1s"
+        );
+    }
+
+    #[test]
+    fn default_silent_failure_stays_compact_no_placeholder() {
+        // The blind spot: a default-mode failure with no output must NOT emit
+        // a `(no output)` thread line — that placeholder is verbose-only.
+        let (mut tl, term) = captured("Running true in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_default());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
+        let k = exec_key("q");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.on_stage(
+            &k,
+            StageEvent::Failed {
+                detail: "exit 2".into(),
+            },
+        );
+        tl.finish("Finished with failures in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running true in 1 worktree\n\
+             \u{2502}\n\
+             \u{2717}  q  exit 2\n\
+             \u{2502}\n\
+             \u{2514}  Finished with failures in 0.1s"
+        );
+    }
+
+    #[test]
+    fn verbose_silent_row_marks_no_output() {
+        let (mut tl, term) = captured("Running true in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_verbose());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
+        let k = exec_key("q");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.on_stage(&k, StageEvent::Completed { annotation: None });
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running true in 1 worktree\n\
+             \u{2502}\n\
+             \u{2713}  q\n\
+             \u{2502}    (no output)\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
         );
     }
 
