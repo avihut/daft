@@ -49,14 +49,14 @@ pub fn maybe_prune_trust() {
 /// Entry point for the `daft __prune-trust` background process.
 /// Loads the trust database, removes stale entries, and writes the cache.
 pub fn run_prune_trust() -> Result<()> {
-    let mut db = TrustDatabase::load().context("Failed to load trust database")?;
-
-    let removed = db.prune();
-    let backfilled = db.backfill_fingerprints();
-
-    if !removed.is_empty() || backfilled > 0 {
-        db.save().context("Failed to save trust database")?;
-    }
+    // Prune + backfill under the registry lock, persisting only when something
+    // actually changed (#666).
+    TrustDatabase::update_if(|db| {
+        let removed = db.prune();
+        let backfilled = db.backfill_fingerprints();
+        Ok(!removed.is_empty() || backfilled > 0)
+    })
+    .context("Failed to prune trust database")?;
 
     // Always update the cache timestamp, even if nothing was pruned
     let now = SystemTime::now()

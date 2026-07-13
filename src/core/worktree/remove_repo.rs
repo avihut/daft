@@ -274,14 +274,10 @@ pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
             let _ = std::fs::remove_dir(&target.project_root);
         }
     }
-    // Drop trust DB entry. Best-effort. Only re-write the file when something
-    // actually changed; otherwise loading + saving on every remove pollutes
-    // the user's real `repos.json` (and tests that don't sandbox it).
-    if let Ok(mut db) = crate::hooks::TrustDatabase::load()
-        && db.reset_repo(&target.bare_git_dir)
-    {
-        let _ = db.save();
-    }
+    // Drop trust DB entry. Best-effort. `update_if` only rewrites the file when
+    // `reset_repo` actually removed something; otherwise it leaves (and never
+    // creates) the user's real `repos.json` (and tests that don't sandbox it).
+    let _ = crate::hooks::TrustDatabase::update_if(|db| Ok(db.reset_repo(&target.bare_git_dir)));
     Ok(())
 }
 

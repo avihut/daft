@@ -168,9 +168,27 @@ impl Default for TrustDatabase {
 
 impl TrustDatabase {
     /// Load the trust database from the default location.
+    ///
+    /// If the registry file exists but is unreadable or corrupt, this fails
+    /// **closed** — it returns an empty (deny-all) database — but **loudly**,
+    /// warning on stderr. A broken registry silently disabled every repo's
+    /// hooks for a month in #666; surfacing it beats hard-erroring (which would
+    /// break every daft command) or silently defaulting (which hid the incident).
     pub fn load() -> Result<Self> {
         let path = Self::default_path()?;
-        Self::load_from(&path)
+        match Self::load_from(&path) {
+            Ok(db) => Ok(db),
+            Err(e) if path.exists() => {
+                eprintln!(
+                    "warning: daft trust registry at {} is unreadable ({e:#}); \
+                     treating all repositories as untrusted and skipping hooks. \
+                     Repair the file or re-run `daft hooks trust`.",
+                    path.display()
+                );
+                Ok(Self::default())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Load the trust database from a specific path.
@@ -235,33 +253,30 @@ impl TrustDatabase {
                     }
                 };
 
-                // Atomic migration: write repos.json, then remove trust.json
-                if path.file_name().and_then(|n| n.to_str()) == Some("trust.json") {
-                    let repos_path = path.with_file_name("repos.json");
-                    let tmp_path = path.with_file_name("repos.json.tmp");
-                    db.save_to(&tmp_path)?;
-                    fs::rename(&tmp_path, &repos_path)?;
-                    let _ = fs::remove_file(path);
-                } else {
-                    db.save_to(path)?;
-                }
-
+                // In-memory migration only — no disk write here. Persisting the
+                // migrated V3 form (and retiring a legacy trust.json) happens on
+                // the next `update()`, under the registry lock. Keeping reads
+                // side-effect-free stops a pure reader from racing writers by
+                // rewriting the file mid-read (#666). The old in-place migration
+                // also used a fixed `repos.json.tmp` name that two concurrent
+                // migrators would collide on — that is gone with it.
                 Ok(db)
             }
         }
     }
 
-    /// Save the trust database to the default location (`repos.json`).
-    pub fn save(&self) -> Result<()> {
-        Self::repos_path().and_then(|p| self.save_to(&p))
-    }
-
     /// Save the trust database to a specific path in V3 format.
+    ///
+    /// The write is atomic: contents go to a same-directory temp file which is
+    /// then renamed over `path`. This is lock-free — serialization across
+    /// processes is `update()`'s job; `save_to` only guarantees a reader never
+    /// sees a torn file.
     pub fn save_to(&self, path: &Path) -> Result<()> {
         use super::trust_dto::{RepoEntryV3_0_0, TrustEntryV2_0_0};
+        use std::io::Write;
 
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory {}", parent.display()))?;
         }
@@ -302,10 +317,133 @@ impl TrustDatabase {
         let contents =
             serde_json::to_string_pretty(&json).context("Failed to serialize trust database")?;
 
-        fs::write(path, contents)
+        // Atomic replace: a same-directory temp file with a random name, then
+        // rename over the destination. Same-dir keeps the rename atomic (no
+        // cross-filesystem copy); the random name means concurrent writers never
+        // collide on a fixed temp path (#666).
+        let tmp_dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(tmp_dir)
+            .with_context(|| format!("Failed to create temp file in {}", tmp_dir.display()))?;
+        tmp.write_all(contents.as_bytes())
+            .with_context(|| format!("Failed to write trust database to {}", path.display()))?;
+        tmp.persist(path)
+            .map_err(|e| e.error)
             .with_context(|| format!("Failed to write trust database to {}", path.display()))?;
 
         Ok(())
+    }
+
+    /// Atomically apply a mutation to the on-disk registry under an exclusive
+    /// lock, serializing concurrent daft processes.
+    ///
+    /// This is the ONLY safe way to write the default registry. It holds an
+    /// advisory `flock` across the whole read-modify-write, and reloads a
+    /// *fresh* copy inside the lock, so two processes can't lost-update each
+    /// other (#666). Because the closure sees state loaded inside the lock, any
+    /// read-decide-write logic (e.g. "trust only if not already trusted") must
+    /// live inside `f` to be race-free. The registry is always rewritten; use
+    /// [`update_if`](Self::update_if) to skip the write on a no-op.
+    pub fn update<T>(f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let dir = crate::daft_config_dir()?;
+        Self::update_in(&dir, f)
+    }
+
+    /// Like [`update`](Self::update) but the closure returns whether it changed
+    /// anything; the registry is only rewritten when it returns `true`. This
+    /// keeps no-op operations (pruning nothing, removing an absent entry) from
+    /// touching — or creating — `repos.json`.
+    pub fn update_if(f: impl FnOnce(&mut Self) -> Result<bool>) -> Result<()> {
+        let dir = crate::daft_config_dir()?;
+        // Fast path: a conditional update against a registry that doesn't exist
+        // yet has nothing to change. Skip it entirely so a no-op (pruning
+        // nothing, removing an absent entry) never creates the config dir or a
+        // lock file — keeping `worktree-remove` from littering a fresh config
+        // dir, and unsandboxed tests from writing the real one.
+        if !dir.join("repos.json").exists() && !dir.join("trust.json").exists() {
+            return Ok(());
+        }
+        Self::with_lock(&dir, |db| {
+            let changed = f(db)?;
+            Ok((changed, ()))
+        })
+    }
+
+    /// `update()` against an explicit config directory. Test seam — production
+    /// code calls [`update`](Self::update).
+    pub(crate) fn update_in<T>(dir: &Path, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        Self::with_lock(dir, |db| Ok((true, f(db)?)))
+    }
+
+    /// Locked read-modify-write core. Acquires an exclusive advisory lock on a
+    /// sidecar file, reloads a fresh copy inside the lock, runs `f`, and — when
+    /// `f` reports a change — atomically persists the result and retires any
+    /// legacy `trust.json`.
+    fn with_lock<T>(dir: &Path, f: impl FnOnce(&mut Self) -> Result<(bool, T)>) -> Result<T> {
+        use fs2::FileExt;
+
+        fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create directory {}", dir.display()))?;
+
+        // Lock a SIDECAR file, never repos.json itself: `flock` binds to the
+        // open file description (the inode). If we locked repos.json and then
+        // renamed a temp file over it, the lock would follow the orphaned inode
+        // while a concurrent writer opened the fresh inode lock-free (#666).
+        let lock_path = dir.join("repos.json.lock");
+        let lock_file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open registry lock {}", lock_path.display()))?;
+        lock_file
+            .lock_exclusive()
+            .with_context(|| format!("Failed to lock registry {}", lock_path.display()))?;
+
+        // Critical section. `lock_file` stays in scope until the function
+        // returns, so the lock is held for the whole closure and released only
+        // after the result has been produced.
+        (|| -> Result<T> {
+            let repos = dir.join("repos.json");
+            let legacy = dir.join("trust.json");
+            let src = if repos.exists() {
+                repos.clone()
+            } else if legacy.exists() {
+                legacy.clone()
+            } else {
+                repos.clone()
+            };
+
+            let mut db = match Self::load_from(&src) {
+                Ok(db) => db,
+                Err(e) => {
+                    // The existing registry is corrupt. Preserve it for manual
+                    // recovery instead of silently overwriting it, then start
+                    // from an empty (deny-all) database (#666).
+                    let backup = back_up_corrupt(&src)?;
+                    eprintln!(
+                        "warning: daft trust registry at {} was unreadable ({e:#}); \
+                         backed it up to {} and started a fresh registry. \
+                         Re-run `daft hooks trust` to restore grants.",
+                        src.display(),
+                        backup.display()
+                    );
+                    Self::default()
+                }
+            };
+
+            let (changed, out) = f(&mut db)?;
+            if changed {
+                db.save_to(&repos)?;
+                // Retire a legacy trust.json now that V3 repos.json is written.
+                if src == legacy && legacy.exists() {
+                    let _ = fs::remove_file(&legacy);
+                }
+            }
+            Ok(out)
+        })()
     }
 
     /// Get the default path for the trust database.
@@ -323,11 +461,6 @@ impl TrustDatabase {
             return Ok(trust_path);
         }
         Ok(repos_path)
-    }
-
-    /// Get the canonical path for the V3 repo store.
-    pub fn repos_path() -> Result<PathBuf> {
-        Ok(crate::daft_config_dir()?.join("repos.json"))
     }
 
     /// Get the trust level for a repository.
@@ -534,6 +667,25 @@ impl TrustDatabase {
         }
         count
     }
+}
+
+/// Rename a corrupt registry file aside so it isn't lost when we start fresh.
+/// Returns the backup path. Mirrors the manual recovery done in the #666
+/// incident (`repos.json.corrupt-<ts>.bak`).
+fn back_up_corrupt(path: &Path) -> Result<PathBuf> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repos.json");
+    let backup = path.with_file_name(format!("{name}.corrupt-{ts}.bak"));
+    fs::rename(path, &backup)
+        .with_context(|| format!("Failed to back up corrupt registry {}", path.display()))?;
+    Ok(backup)
 }
 
 /// Get the remote "origin" URL for a repository given its `.git` directory.
@@ -881,21 +1033,15 @@ mod tests {
         assert_eq!(entry.granted_at, 1738060200);
         assert_eq!(entry.granted_by, "user");
 
-        // trust.json should be removed and repos.json created (atomic migration)
+        // load_from is side-effect-free: it migrates in memory only and must
+        // NOT touch disk. trust.json stays put; repos.json is not created until
+        // the next update() persists the V3 form (see
+        // test_update_migrates_legacy_trust_json).
+        assert!(path.exists(), "load_from must not remove trust.json");
         assert!(
-            !path.exists(),
-            "trust.json should be removed after migration"
+            !temp_dir.path().join("repos.json").exists(),
+            "load_from must not create repos.json"
         );
-        let repos_path = temp_dir.path().join("repos.json");
-        assert!(repos_path.exists(), "repos.json should be created");
-
-        // Verify the migrated file is V3 format
-        let contents = std::fs::read_to_string(&repos_path).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(saved["version"], 3);
-        // V3 format wraps trust entries
-        assert!(saved["repositories"]["/path/to/repo/.git"]["trust"].is_object());
-        assert!(saved["repositories"]["/path/to/repo/.git"]["trust"]["granted_at"].is_number());
     }
 
     #[test]
@@ -926,12 +1072,9 @@ mod tests {
         let entry = db.repositories.get("/path/to/repo/.git").unwrap();
         assert_eq!(entry.granted_at, 1738060200);
 
-        // trust.json should be removed and repos.json created
-        assert!(!path.exists());
-        let repos_path = temp_dir.path().join("repos.json");
-        let contents = std::fs::read_to_string(&repos_path).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(saved["version"], 3);
+        // load_from migrates in memory only — no disk writes.
+        assert!(path.exists(), "load_from must not remove trust.json");
+        assert!(!temp_dir.path().join("repos.json").exists());
     }
 
     #[test]
@@ -1081,9 +1224,9 @@ mod tests {
         assert_eq!(entry.level, TrustLevel::Allow);
         assert_eq!(entry.fingerprint, None);
 
-        // trust.json removed, repos.json created
-        assert!(!path.exists());
-        assert!(temp_dir.path().join("repos.json").exists());
+        // load_from migrates in memory only — no disk writes.
+        assert!(path.exists(), "load_from must not remove trust.json");
+        assert!(!temp_dir.path().join("repos.json").exists());
     }
 
     #[test]
@@ -1200,12 +1343,12 @@ mod tests {
     }
 
     #[test]
-    fn test_atomic_trust_json_migration() {
+    fn test_update_migrates_legacy_trust_json() {
         let temp_dir = tempdir().unwrap();
         let trust_path = temp_dir.path().join("trust.json");
         let repos_path = temp_dir.path().join("repos.json");
 
-        // Write V2 trust.json
+        // Write V2 trust.json (legacy on-disk format).
         let v2_json = r#"{
             "version": 2,
             "default_level": "deny",
@@ -1226,17 +1369,16 @@ mod tests {
         }"#;
         std::fs::write(&trust_path, v2_json).unwrap();
 
-        // Load from trust.json — should trigger atomic migration
-        let db = TrustDatabase::load_from(&trust_path).unwrap();
-        assert_eq!(db.version, 3);
+        // A locked update() reads the legacy file, writes V3 repos.json, and
+        // retires trust.json — all under the registry lock. The no-op closure
+        // exercises pure migration.
+        TrustDatabase::update_in(temp_dir.path(), |_db| Ok(())).unwrap();
 
-        // trust.json should be removed
+        // trust.json retired, repos.json created with V3 format.
         assert!(
             !trust_path.exists(),
-            "trust.json should be removed after migration"
+            "trust.json should be retired after update"
         );
-
-        // repos.json should be created with V3 format
         assert!(repos_path.exists(), "repos.json should be created");
 
         let contents = std::fs::read_to_string(&repos_path).unwrap();
@@ -1253,7 +1395,8 @@ mod tests {
         );
         assert_eq!(saved["patterns"][0]["pattern"], "/trusted/**/.git");
 
-        // Verify trust data roundtrips correctly
+        // And the migrated data roundtrips when reloaded.
+        let db = TrustDatabase::load_from(&repos_path).unwrap();
         let entry = db.repositories.get("/path/to/repo/.git").unwrap();
         assert_eq!(entry.level, TrustLevel::Allow);
         assert_eq!(entry.granted_at, 1738060200);
@@ -1262,5 +1405,179 @@ mod tests {
             Some("https://github.com/user/repo.git".to_string())
         );
         assert_eq!(db.patterns.len(), 1);
+    }
+
+    // ---- #666 regression tests: atomic, lock-serialized registry writes ----
+
+    /// The lost-update bug: concurrent writers each rewrote the whole file from
+    /// their own snapshot, silently dropping each other's entries. With the
+    /// exclusive lock + reload-inside-the-lock in `update`, every distinct entry
+    /// must survive. This fails against the old unlocked `load()...save()` path.
+    ///
+    /// Each `update_in` opens the lock file fresh (its own open file
+    /// description), so the threads genuinely contend on the `flock` — a shared
+    /// handle would re-lock the same OFD as a no-op and pass without contending.
+    #[test]
+    fn concurrent_updates_do_not_lose_entries() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp = Arc::new(tempdir().unwrap());
+        let threads = 8;
+        let rounds = 25;
+        let barrier = Arc::new(Barrier::new(threads));
+
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                let temp = Arc::clone(&temp);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for r in 0..rounds {
+                        let key = format!("/repo/t{t}/r{r}/.git");
+                        TrustDatabase::update_in(temp.path(), |db| {
+                            db.set_trust_level(Path::new(&key), TrustLevel::Allow);
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let db = TrustDatabase::load_from(&temp.path().join("repos.json")).unwrap();
+        assert_eq!(
+            db.repositories.len(),
+            threads * rounds,
+            "entries were lost to a write race"
+        );
+        for t in 0..threads {
+            for r in 0..rounds {
+                let key = format!("/repo/t{t}/r{r}/.git");
+                assert!(db.repositories.contains_key(&key), "missing entry {key}");
+            }
+        }
+    }
+
+    /// The torn-write bug: `fs::write` truncates in place, so a concurrent
+    /// reader could observe a half-written file. With the tmp-file + rename in
+    /// `save_to`, an unlocked reader always sees a complete, parseable file —
+    /// either the old inode or the new one, never a torn one.
+    #[test]
+    fn concurrent_reads_never_see_a_torn_file() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        let temp = Arc::new(tempdir().unwrap());
+        let path = temp.path().join("repos.json");
+
+        // Seed a valid registry.
+        TrustDatabase::update_in(temp.path(), |db| {
+            db.set_trust_level(Path::new("/seed/.git"), TrustLevel::Allow);
+            Ok(())
+        })
+        .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let temp = Arc::clone(&temp);
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                let mut i = 0u32;
+                while !stop.load(Ordering::Relaxed) {
+                    // Cycle a few keys so the file stays small and writes stay hot.
+                    let key = format!("/w/{}/.git", i % 4);
+                    TrustDatabase::update_in(temp.path(), |db| {
+                        db.set_trust_level(Path::new(&key), TrustLevel::Allow);
+                        Ok(())
+                    })
+                    .unwrap();
+                    i += 1;
+                }
+            })
+        };
+
+        // Every unlocked read must parse successfully (load_from returns Err on a
+        // torn/half-written file, so `.unwrap()` would panic).
+        for _ in 0..300 {
+            let db = TrustDatabase::load_from(&path).unwrap();
+            assert!(
+                db.get_trust_level(Path::new("/seed/.git")) == TrustLevel::Allow,
+                "seed entry vanished — a write clobbered unrelated entries"
+            );
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+    }
+
+    /// A corrupt registry must be preserved for recovery, not silently
+    /// overwritten, when the next `update` runs. The write still succeeds
+    /// (self-healing) and the corrupt bytes land in a `.corrupt-*.bak` sibling.
+    #[test]
+    fn update_backs_up_corrupt_registry_and_starts_fresh() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("repos.json");
+        std::fs::write(&path, "{ this is not valid json").unwrap();
+
+        // load_from surfaces the corruption as an error...
+        assert!(TrustDatabase::load_from(&path).is_err());
+
+        // ...and update() recovers: backs the corrupt file up, writes fresh.
+        TrustDatabase::update_in(temp.path(), |db| {
+            db.set_trust_level(Path::new("/new/.git"), TrustLevel::Allow);
+            Ok(())
+        })
+        .unwrap();
+
+        let db = TrustDatabase::load_from(&path).unwrap();
+        assert_eq!(
+            db.get_trust_level(Path::new("/new/.git")),
+            TrustLevel::Allow
+        );
+
+        let backups: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("repos.json.corrupt-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "corrupt registry should be backed up");
+    }
+
+    /// The incident's core failure: a corrupt registry silently disabled hooks
+    /// for a month. `load()` must fail **closed** — resolve everything to Deny —
+    /// without hard-erroring or silently succeeding. Uses `DAFT_CONFIG_DIR`
+    /// (honored under `cfg(test)`) so it never touches the real config dir.
+    #[test]
+    #[serial_test::serial]
+    fn corrupt_registry_load_fails_closed_to_deny() {
+        let temp = tempdir().unwrap();
+        // SAFETY: serialized by `#[serial]`; env mutation is process-global.
+        unsafe {
+            std::env::set_var(crate::CONFIG_DIR_ENV, temp.path());
+        }
+        std::fs::write(temp.path().join("repos.json"), "{ not json").unwrap();
+
+        let loaded = TrustDatabase::load();
+        // SAFETY: as above; restore before asserting so a failure can't leak it.
+        unsafe {
+            std::env::remove_var(crate::CONFIG_DIR_ENV);
+        }
+
+        let db = loaded.expect("load() must not hard-error on a corrupt registry");
+        assert!(db.repositories.is_empty());
+        assert_eq!(
+            db.get_trust_level(Path::new("/anything/.git")),
+            TrustLevel::Deny,
+            "a corrupt registry must fail closed to Deny"
+        );
     }
 }

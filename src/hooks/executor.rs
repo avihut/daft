@@ -665,9 +665,18 @@ impl HookExecutor {
     }
 
     /// Trust a repository.
+    ///
+    /// Persists under the registry lock (`update`), then mirrors the change into
+    /// the cached `trust_db` so this executor's subsequent hook-execution reads
+    /// see the grant. The cached copy is loaded once in `new()` and must not be
+    /// saved wholesale — that is the load-once/save-many lost-update bug (#666).
     pub fn trust_repository(&mut self, git_dir: &Path, level: TrustLevel) -> Result<()> {
+        TrustDatabase::update(|db| {
+            db.set_trust_level(git_dir, level);
+            Ok(())
+        })?;
         self.trust_db.set_trust_level(git_dir, level);
-        self.trust_db.save()
+        Ok(())
     }
 
     /// Trust a repository with a fingerprint (remote URL).
@@ -677,15 +686,23 @@ impl HookExecutor {
         level: TrustLevel,
         fingerprint: String,
     ) -> Result<()> {
+        TrustDatabase::update(|db| {
+            db.set_trust_level_with_fingerprint(git_dir, level, fingerprint.clone());
+            Ok(())
+        })?;
         self.trust_db
             .set_trust_level_with_fingerprint(git_dir, level, fingerprint);
-        self.trust_db.save()
+        Ok(())
     }
 
     /// Untrust a repository.
     pub fn untrust_repository(&mut self, git_dir: &Path) -> Result<()> {
+        TrustDatabase::update(|db| {
+            db.remove_trust(git_dir);
+            Ok(())
+        })?;
         self.trust_db.remove_trust(git_dir);
-        self.trust_db.save()
+        Ok(())
     }
 
     /// Get the effective trust level, considering fingerprint verification.

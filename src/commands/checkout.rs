@@ -1098,9 +1098,10 @@ fn run_checkout(
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
     if should_persist && let Ok(git_dir) = get_git_common_dir() {
-        let mut trust_db = TrustDatabase::load().unwrap_or_default();
-        trust_db.set_layout(&git_dir, layout.name.clone());
-        let _ = trust_db.save();
+        let _ = TrustDatabase::update(|db| {
+            db.set_layout(&git_dir, layout.name.clone());
+            Ok(())
+        });
     }
 
     let params = checkout::CheckoutParams {
@@ -1226,9 +1227,10 @@ fn run_create_branch_core(
     let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
 
     if should_persist && let Ok(git_dir) = get_git_common_dir() {
-        let mut trust_db = TrustDatabase::load().unwrap_or_default();
-        trust_db.set_layout(&git_dir, layout.name.clone());
-        let _ = trust_db.save();
+        let _ = TrustDatabase::update(|db| {
+            db.set_layout(&git_dir, layout.name.clone());
+            Ok(())
+        });
     }
 
     let params = checkout_branch::CheckoutBranchParams {

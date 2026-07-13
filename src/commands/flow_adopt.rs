@@ -188,11 +188,11 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     // Store "contained" layout in repos.json
     let git_dir = get_git_common_dir()?;
-    let mut trust_db = TrustDatabase::load().unwrap_or_default();
-    trust_db.set_layout(&git_dir, "contained".to_string());
-    trust_db
-        .save()
-        .context("Failed to save layout to repos.json")?;
+    TrustDatabase::update(|db| {
+        db.set_layout(&git_dir, "contained".to_string());
+        Ok(())
+    })
+    .context("Failed to save layout to repos.json")?;
 
     // Register the adopted repo in the catalog.
     if let Ok(project_root) = crate::core::repo::get_project_root()
