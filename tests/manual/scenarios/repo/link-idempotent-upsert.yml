@@ -58,3 +58,14 @@ steps:
       file_contains:
         - path: "$WORK_DIR/test-repo/main/daft.yml"
           content: "url: git@github.com:acme/api.git"
+
+  - name: Unlink by a different URL form matches the stored git@ entry
+    run: daft repo unlink https://github.com/acme/api.git 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Unlinked: backend"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "url:"
