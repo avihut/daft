@@ -35,10 +35,15 @@ All steps that touch the user-global path must run with an isolated HOME
 
 ## Show
 
-- [ ] `daft skill show` prints the raw skill (frontmatter first); `| head` exits
-      0 (no broken-pipe error)
-- [ ] `daft skill show > <root>/daft-worktree-workflow/SKILL.md` followed by
-      `daft skill install --dir <root>` reports already up to date
+- [ ] `daft skill show` in a terminal renders the skill (orange headers) and
+      pages it; `q` quits
+- [ ] `daft skill show --no-pager` in a terminal renders but does not page
+- [ ] `daft skill show | head` prints raw markdown (frontmatter first) and exits
+      0 (no broken-pipe error) — the pipe is not a TTY, so no rendering, no
+      pager
+- [ ] `daft skill show > <root>/daft-worktree-workflow/SKILL.md` writes raw
+      bytes; a following `daft skill install --dir <root>` reports already up to
+      date (redirect is byte-identical to the embedded skill)
 
 ## Doctor freshness
 

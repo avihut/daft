@@ -22,6 +22,7 @@ mod cli;
 pub mod emit;
 pub mod format;
 pub mod hook_progress;
+pub mod markdown;
 pub mod outline;
 pub mod pager;
 pub(crate) mod palette;
