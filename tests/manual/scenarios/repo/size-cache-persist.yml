@@ -1,0 +1,52 @@
+name: Repo list size cache persists across runs
+description: |
+  `daft repo list --columns +size` walks each cataloged repo and persists the
+  result to the global size cache (the catalog's `repo_sizes` table), so a later
+  run can seed the Size column with a last-known value instantly. This asserts
+  the write half end-to-end via the `daft __dump-store repo-sizes` debug read
+  path. The stale render is a live-TTY behavior covered by unit + TestBackend
+  tests; piped stdio forces the blocking path here, which warms the cache like
+  the live path (#668).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone registers the repo in the catalog
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: repo list --columns +size walks and persists the repo size
+    run: daft repo list --columns +size 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Size"
+
+  - name: The catalog size cache holds the freshly-walked repo size
+    run: |
+      echo "----- daft __dump-store repo-sizes -----"
+      daft __dump-store repo-sizes
+      echo "----------------------------------------"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"repo_path":'
+        - '"size_bytes":'
+        - '"uuid":'
+
+  - name: A second run keeps exactly one cache row per repo (idempotent upsert)
+    run:
+      daft repo list --columns +size >/dev/null 2>&1 && test "$(daft
+      __dump-store repo-sizes 2>/dev/null | wc -l)" -eq 1 && echo ONE_ROW
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW"

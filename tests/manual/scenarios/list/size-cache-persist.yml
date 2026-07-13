@@ -1,0 +1,54 @@
+name: List size cache persists across runs
+description: |
+  `daft list --columns +size` walks each worktree and persists the result to
+  the per-repo size cache (the `worktree_sizes` table), so a later run can seed
+  the Size column with a last-known value instantly. This asserts the write
+  half end-to-end via the `daft __dump-store worktree-sizes` debug read path.
+  The stale-then-refresh render itself is a live-TTY behavior (dim value
+  superseded in place) covered by unit + TestBackend tests; the runner pipes
+  stdio, so `daft list` takes the blocking path — which also warms the cache,
+  matching the live path (#668).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: List with --columns +size walks and persists the main worktree size
+    run: NO_COLOR=1 git-worktree-list --columns +size 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Size"
+
+  - name: The size cache holds the main worktree's freshly-walked size
+    run: |
+      echo "----- daft __dump-store worktree-sizes -----"
+      daft __dump-store worktree-sizes
+      echo "--------------------------------------------"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"branch_slug":"main"'
+        - '"size_bytes":'
+
+  - name:
+      A second run keeps exactly one cache row per worktree (idempotent upsert)
+    run:
+      NO_COLOR=1 git-worktree-list --columns +size >/dev/null 2>&1 && test
+      "$(daft __dump-store worktree-sizes 2>/dev/null | wc -l)" -eq 1 && echo
+      ONE_ROW
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "ONE_ROW"
