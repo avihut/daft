@@ -51,6 +51,13 @@ relations:
     kind: consumer # optional, free-form
 ```
 
+You rarely write this by hand. [`daft repo link`](/reference/cli/daft-repo-link)
+resolves a catalog name, a repo path, or a URL to the portable remote URL and
+appends a well-formed, deduped entry;
+[`daft repo unlink`](/reference/cli/daft-repo-unlink) removes one. Both edit
+only the `relations:` block — the rest of `daft.yml` is untouched — and leave
+the file for you to commit.
+
 Three properties are load-bearing:
 
 - **Keyed by remote URL, not by path or name.** Paths and catalog names are

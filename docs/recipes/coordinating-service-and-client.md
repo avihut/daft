@@ -55,7 +55,17 @@ With the edge declared, three commands become cross-repo:
 
 ## Recipe
 
-In the service repo's `daft.yml`, declare the client:
+From the service repo, declare the client with `daft repo link` (it resolves the
+target — a catalog name, a repo path, or a remote URL — to the portable remote
+URL and writes a well-formed entry):
+
+```bash
+cd ~/code/api/main
+daft repo link git@github.com:acme/api-client.git --name client --kind consumer
+git add daft.yml && git commit -m "Relate api-client"   # share it with the team
+```
+
+That records the edge in the service repo's `daft.yml`, next to hooks:
 
 ```yaml
 # api/daft.yml
@@ -65,8 +75,9 @@ relations:
     kind: consumer # optional, free-form
 ```
 
-Both repos must be cloned locally (daft's catalog registers every clone
-automatically). Then the coordinated flow, end to end:
+`daft repo unlink client` removes it again. Both repos must be cloned locally
+(daft's catalog registers every clone automatically). Then the coordinated flow,
+end to end:
 
 ```bash
 cd ~/code/api/main

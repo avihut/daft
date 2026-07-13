@@ -65,8 +65,12 @@ relations:
 | `name` | string | Friendly label used in output (optional)                           |
 | `kind` | string | Free-form relationship kind, e.g. `client`, `library` (optional)   |
 
-Consumed by `daft exec --related`, `daft start --with-related`, and
-`daft repo info`. Older daft versions ignore the key.
+Manage this list with [`daft repo link`](/reference/cli/daft-repo-link) and
+[`daft repo unlink`](/reference/cli/daft-repo-unlink) instead of editing it by
+hand — they resolve names, paths, or URLs to the portable remote URL and edit
+only the `relations:` block. Consumed by `daft exec --related`,
+`daft start --with-related`, and `daft repo info`. Older daft versions ignore
+the key.
 
 ## Hook entries
 

@@ -29,6 +29,8 @@ daft repo list --all           # include removed entries (dimmed)
 daft repo list --columns +size # add a disk-usage column (sizes stream in live)
 daft repo list --worktrees     # expand each repo into a tree of its worktrees
 daft repo info client          # one entry in full, with resolved relations
+daft repo link client          # declare a relation to another repo (by name/path/URL)
+daft repo unlink client        # remove that relation
 ```
 
 `repo list` and `repo info` support `--format json|tsv|…` and `--template` for
