@@ -28,6 +28,12 @@ pub mod pool;
 pub mod repos;
 
 pub use error::{Result, StoreError};
-pub use models::{CatalogRepoRow, InvocationRow, JobRow, RepoPolicyRow, VisitorSeedRow};
+pub use models::{
+    CatalogRepoRow, InvocationRow, JobRow, RepoPolicyRow, RepoSizeRow, VisitorSeedRow,
+    WorktreeSizeRow,
+};
 pub use pool::Pool;
-pub use repos::{CatalogReposRepo, InvocationsRepo, JobsRepo, RepoPoliciesRepo, VisitorSeedsRepo};
+pub use repos::{
+    CatalogReposRepo, InvocationsRepo, JobsRepo, RepoPoliciesRepo, RepoSizesRepo, VisitorSeedsRepo,
+    WorktreeSizesRepo,
+};

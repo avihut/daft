@@ -16,7 +16,9 @@
 use crate::catalog::normalize;
 use crate::store::error::StoreError;
 use crate::store::repos::with_write_txn;
-use crate::store::{CatalogRepoRow, CatalogReposRepo, Pool, connection, migrate, paths};
+use crate::store::{
+    CatalogRepoRow, CatalogReposRepo, Pool, RepoSizeRow, RepoSizesRepo, connection, migrate, paths,
+};
 use chrono::Utc;
 use std::path::Path;
 use thiserror::Error;
@@ -318,6 +320,35 @@ impl Catalog {
     pub fn live_names(&self) -> Result<Vec<String>> {
         Ok(self.list(false)?.into_iter().map(|row| row.name).collect())
     }
+
+    // ── Repo-size cache (`daft repo list --columns +size`) ────────────────
+    // A stale-then-refresh display hint: seed the list from the last-known
+    // sizes, then persist the fresh walk. Never authoritative — the walk always
+    // runs and overwrites; `measured_at` lets the UI mark values stale.
+
+    /// Every cached repo size, for seeding the list's Size cells up front.
+    pub fn list_repo_sizes(&self) -> Result<Vec<RepoSizeRow>> {
+        self.read(RepoSizesRepo::list_all)
+    }
+
+    /// Persist fresh repo sizes after a walk — batched in ONE transaction (the
+    /// writer pool is size 1, so never one write per repo).
+    pub fn upsert_repo_sizes(&self, rows: &[RepoSizeRow]) -> Result<()> {
+        self.write(|tx| {
+            for row in rows {
+                RepoSizesRepo::upsert(tx, row)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Evict a repo's cached size (e.g. when it is removed from the catalog).
+    pub fn delete_repo_size(&self, uuid: &str) -> Result<()> {
+        self.write(|tx| {
+            RepoSizesRepo::delete_for_uuid(tx, uuid)?;
+            Ok(())
+        })
+    }
 }
 
 /// Resolve a `--repo <needle>` argument to a usable live catalog entry, or
@@ -409,6 +440,40 @@ mod tests {
             remote_url: Some(format!("git@example.com:org/{name}.git")),
             default_branch: Some("main".into()),
         }
+    }
+
+    #[test]
+    fn repo_size_cache_round_trips_and_evicts() {
+        use chrono::TimeZone;
+        let tmp = TempDir::new().unwrap();
+        let cat = catalog(&tmp);
+        let at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        // No FK to catalog_repos, so sizes can be written without registering.
+        cat.upsert_repo_sizes(&[
+            RepoSizeRow {
+                uuid: "u1".into(),
+                repo_path: "/w/api".into(),
+                size_bytes: 4096,
+                measured_at: at,
+            },
+            RepoSizeRow {
+                uuid: "u2".into(),
+                repo_path: "/w/web".into(),
+                size_bytes: 8192,
+                measured_at: at,
+            },
+        ])
+        .unwrap();
+
+        let sizes = cat.list_repo_sizes().unwrap();
+        assert_eq!(sizes.len(), 2);
+        assert_eq!(sizes[0].uuid, "u1");
+        assert_eq!(sizes[0].size_bytes, 4096);
+
+        cat.delete_repo_size("u1").unwrap();
+        let sizes = cat.list_repo_sizes().unwrap();
+        assert_eq!(sizes.len(), 1);
+        assert_eq!(sizes[0].uuid, "u2");
     }
 
     #[test]

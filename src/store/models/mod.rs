@@ -11,7 +11,9 @@ pub mod hook_profile;
 pub mod invocation;
 pub mod job;
 pub mod repo_policy;
+pub mod repo_size;
 pub mod visitor_seed;
+pub mod worktree_size;
 
 pub use catalog_repo::CatalogRepoRow;
 pub use governor_event::GovernorEventRow;
@@ -19,4 +21,6 @@ pub use hook_profile::HookProfileRow;
 pub use invocation::InvocationRow;
 pub use job::JobRow;
 pub use repo_policy::RepoPolicyRow;
+pub use repo_size::RepoSizeRow;
 pub use visitor_seed::VisitorSeedRow;
+pub use worktree_size::WorktreeSizeRow;
