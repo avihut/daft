@@ -21,6 +21,7 @@ mod plan;
 mod rail_hook;
 mod region;
 mod render;
+mod thread_block;
 
 pub use bridge::RegionOutput;
 pub use bridge::{error_line, warning_line};
