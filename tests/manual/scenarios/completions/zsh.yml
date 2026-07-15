@@ -77,10 +77,13 @@ steps:
 
   # Regression: the daft-go renderer dropped the catalog `repo` group —
   # its per-group parser only knew worktree/local/remote, so `daft go <TAB>`
-  # offered no repo names at position 1.
+  # offered no repo names at position 1. The repo group also carries a
+  # case-insensitive `compadd -M` match spec (repo names fold case; branch
+  # groups stay case-sensitive, since git refs are).
   - name: Zsh go completion renders the catalog repo group
     run: daft completions zsh --command=daft-go 2>&1
     expect:
       exit_code: 0
       output_contains:
-        - "compadd -V repo"
+        - "-V repo -l -d repo_display -a repo_names"
+        - "compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -V repo"

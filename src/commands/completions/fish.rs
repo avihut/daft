@@ -444,8 +444,10 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -l name -r -d 'Catalog name for the repo'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s v -l verbose -d 'Show detailed progress'
-# repo info: repo-name completion + flags
+# repo info: catalog-repo names then directory completion + flags
+# (`repo info .`, a subdirectory, or any worktree resolves to its repo)
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l format -r -d 'Output format'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l template -r -d 'Tera template string'
 # repo list: flags

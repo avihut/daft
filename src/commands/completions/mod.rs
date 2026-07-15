@@ -726,6 +726,90 @@ mod tests {
         );
     }
 
+    /// `daft repo info <target>` accepts a path (`.`, a subdirectory, a
+    /// worktree) as well as a catalog name, so every shell's info arm must
+    /// offer catalog repo names AND directory completion (fig has its own
+    /// spec test).
+    #[test]
+    fn repo_info_completes_names_and_paths_in_all_shells() {
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        for (shell, script, dir_probe) in [("zsh", zsh, "_files -/"), ("bash", bash, "compgen -d")]
+        {
+            let repo_section = script
+                .split("# repo: complete subcommands")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} umbrella must have a repo section"));
+            let after = repo_section
+                .split("info)")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{shell} repo section must have an info arm"));
+            let arm = &after[..after.find(";;").unwrap_or(after.len())];
+            assert!(
+                arm.contains("daft __complete repo-name"),
+                "{shell} repo-info arm must complete catalog names"
+            );
+            assert!(
+                arm.contains(dir_probe),
+                "{shell} repo-info arm must fall back to directory completion ({dir_probe})"
+            );
+        }
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains("__fish_seen_subcommand_from info' -f -a \"(daft __complete repo-name"),
+            "fish repo-info must complete catalog names"
+        );
+        assert!(
+            fish.contains("__fish_seen_subcommand_from info' -a \"(__fish_complete_directories"),
+            "fish repo-info must fall back to directory completion"
+        );
+    }
+
+    /// Repo-name completions must be case-insensitive at the *shell* layer,
+    /// not just in the `__complete repo-name` helper. The helper case-folds
+    /// the prefix, so the shell must not re-filter case-sensitively: bash
+    /// fills COMPREPLY from a direct array (a `compgen -W "$repos"` re-filter
+    /// is case-sensitive and would drop the folded candidates), and zsh adds a
+    /// case-insensitive `compadd -M` match spec. Covers both the umbrella repo
+    /// verbs and a generated `--repo` command. (End-to-end proof — that
+    /// COMPREPLY actually keeps a lowercase repo for an uppercase prefix —
+    /// lives in tests/integration/test_completions.sh, which sources the
+    /// wrapper; string assertions here only guard the structure.)
+    #[test]
+    fn repo_name_completions_are_case_insensitive_in_shells() {
+        const ZSH_MATCHER: &str = "compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}'";
+
+        // Umbrella repo verbs (info/link/remove) live in the static strings.
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        assert!(
+            !bash.contains("compgen -W \"$repos\""),
+            "bash repo verbs must not re-filter repo names through a case-sensitive `compgen -W`"
+        );
+        assert!(
+            bash.contains("mapfile -t repos <"),
+            "bash repo verbs must fill the repo-name array directly (case-insensitive)"
+        );
+        let zsh = zsh::DAFT_ZSH_COMPLETIONS;
+        assert!(
+            zsh.contains(ZSH_MATCHER),
+            "zsh repo verbs must add a case-insensitive `compadd -M` match spec"
+        );
+
+        // Generated `--repo` flag completion (e.g. git-worktree-prune).
+        let bash_prune =
+            bash::generate_bash_completion_string("git-worktree-prune").expect("bash gen");
+        assert!(
+            !bash_prune.contains("compgen -W \"$repos\"")
+                && bash_prune.contains("mapfile -t repos <"),
+            "bash --repo completion must be case-insensitive (direct array, no `compgen -W`)"
+        );
+        let zsh_prune = zsh::generate_zsh_completion_string("git-worktree-prune").expect("zsh gen");
+        assert!(
+            zsh_prune.contains(ZSH_MATCHER),
+            "zsh --repo completion must add the case-insensitive match spec"
+        );
+    }
+
     /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
     /// sections of the umbrella completions are hardcoded per shell, so a
     /// new flag must land in all three (fig has its own spec test).
@@ -783,8 +867,12 @@ mod tests {
             "zsh parser must collect repo-group lines"
         );
         assert!(
-            zsh.contains("compadd -V repo "),
+            zsh.contains("-V repo -l -d repo_display -a repo_names"),
             "zsh must render the catalog repo group"
+        );
+        assert!(
+            zsh.contains("compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -V repo"),
+            "the catalog repo group must match repo names case-insensitively"
         );
 
         // 3-field repo lines display as name\tpath — no age/author columns.

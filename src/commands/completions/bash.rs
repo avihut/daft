@@ -65,13 +65,16 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
 
     // Value completion for --repo flag (catalog repo names)
     if command_has_repo_flag(command_name) {
-        output.push_str("    # Catalog repo-name completion for --repo\n");
+        output.push_str("    # Catalog repo-name completion for --repo. The helper already\n");
+        output
+            .push_str("    # case-folds the prefix, so fill COMPREPLY directly — a `compgen -W`\n");
+        output.push_str("    # re-filter is case-sensitive and would drop the folded matches.\n");
         output.push_str("    if [[ \"$prev\" == \"--repo\" ]]; then\n");
-        output.push_str("        local repos\n");
+        output.push_str("        local -a repos\n");
         output.push_str(
-            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+            "        mapfile -t repos < <(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
         );
-        output.push_str("        COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
+        output.push_str("        COMPREPLY=( \"${repos[@]}\" )\n");
         output.push_str("        return 0\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -143,16 +146,19 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     // never receive repo names; --template and --stat have no prev block,
     // so they are excluded explicitly.
     if command_has_repo_positional(command_name) {
-        output.push_str("    # Positional cataloged-repo completion\n");
+        output.push_str("    # Positional cataloged-repo completion (case-insensitive: the\n");
+        output
+            .push_str("    # helper case-folds, so fill COMPREPLY directly instead of through a\n");
+        output.push_str("    # case-sensitive `compgen -W` re-filter).\n");
         output.push_str(
             "    if [[ \"$cur\" != -* && \"$prev\" != \"--template\" && \"$prev\" != \"--stat\" ]]; then\n",
         );
-        output.push_str("        local repos\n");
+        output.push_str("        local -a repos\n");
         output.push_str(
-            "        repos=$(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
+            "        mapfile -t repos < <(daft __complete repo-name \"$cur\" 2>/dev/null | cut -f1)\n",
         );
-        output.push_str("        if [[ -n \"$repos\" ]]; then\n");
-        output.push_str("            COMPREPLY=( $(compgen -W \"$repos\" -- \"$cur\") )\n");
+        output.push_str("        if [[ ${#repos[@]} -gt 0 ]]; then\n");
+        output.push_str("            COMPREPLY=( \"${repos[@]}\" )\n");
         output.push_str("            return 0\n");
         output.push_str("        fi\n");
         output.push_str("    fi\n");
@@ -256,10 +262,12 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
 
     // Value completion for --repo flag (catalog repo names)
     let repo_flag_pre = if command_has_repo_flag(command_name) {
+        // The helper case-folds the prefix; fill COMPREPLY directly rather
+        // than through a case-sensitive `compgen -W` re-filter.
         r#"    if [[ "$prev" == "--repo" ]]; then
-        local repos
-        repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-        COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+        local -a repos
+        mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+        COMPREPLY=( "${repos[@]}" )
         return 0
     fi
 
@@ -623,9 +631,11 @@ _daft() {
                     COMPREPLY=( $(compgen -W "--format --template --no-headers -h --help" -- "$cur") )
                     return 0
                 fi
-                local repos
-                repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+                # Catalog repo names first, then directories (`repo info .`,
+                # a subdirectory, or any worktree resolves to its repo).
+                local -a repos
+                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( "${repos[@]}" $(compgen -d -- "$cur") )
                 return 0
                 ;;
             install)
@@ -642,9 +652,9 @@ _daft() {
                     COMPREPLY=( $(compgen -W "--name --kind -h --help" -- "$cur") )
                     return 0
                 fi
-                local repos
-                repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                COMPREPLY=( $(compgen -W "$repos" -- "$cur") $(compgen -d -- "$cur") )
+                local -a repos
+                mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                COMPREPLY=( "${repos[@]}" $(compgen -d -- "$cur") )
                 return 0
                 ;;
             list)
@@ -662,9 +672,9 @@ _daft() {
                 ;;
             remove)
                 if [[ "$prev" == "--repo" ]]; then
-                    local repos
-                    repos=$(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                    COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+                    local -a repos
+                    mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
+                    COMPREPLY=( "${repos[@]}" )
                     return 0
                 fi
                 if [[ "$cur" == -* ]]; then
