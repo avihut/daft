@@ -324,11 +324,15 @@ mod tests {
         if std::env::var_os("DAFT_STATE_DIR").is_none() {
             assert_eq!(real_state_dir(), daft::daft_state_dir().unwrap());
         }
-        // The skill path has no env override, so this pin is unconditional.
-        assert_eq!(
-            real_claude_skill_file().unwrap(),
-            daft::skill::skill_file_path(&daft::skill::user_skills_root().unwrap())
-        );
+        // The skill root honors DAFT_SKILLS_DIR in dev builds (same as the
+        // dirs above), so only pin it when *its* override is unset — otherwise
+        // a dev shell that sets it (shared-env.sh) would trip this assert.
+        if std::env::var_os(daft::skill::SKILLS_DIR_ENV).is_none() {
+            assert_eq!(
+                real_claude_skill_file().unwrap(),
+                daft::skill::skill_file_path(&daft::skill::user_skills_root().unwrap())
+            );
+        }
     }
 
     #[test]

@@ -198,6 +198,7 @@ fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
         results.push(installation::check_agent_skill_in(
             &project_skills,
             "Agent skill (project)",
+            true,
         ));
     }
 

@@ -24,7 +24,9 @@ pub fn render(markdown: &str) -> String {
 /// Terminals that don't support it simply display the link text, which is a
 /// graceful degradation from the raw markdown syntax.
 fn markdown_links_to_osc8(markdown: &str) -> String {
-    let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex");
+    // The URL group allows one level of balanced parentheses so links to
+    // targets like `.../Git_(software)` aren't truncated at the first `)`.
+    let link_re = Regex::new(r"\[([^\]]+)\]\(((?:[^()]|\([^()]*\))*)\)").expect("valid regex");
     link_re
         .replace_all(markdown, "\x1b]8;;$2\x1b\\\x1b[34m$1\x1b[39m\x1b]8;;\x1b\\")
         .into_owned()
@@ -117,5 +119,21 @@ mod tests {
         let input = "plain text with no links";
         let result = markdown_links_to_osc8(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_markdown_links_to_osc8_url_with_parens() {
+        // Regression: the URL group keeps a balanced `()` (e.g. a Wikipedia
+        // slug) instead of truncating at the first `)`.
+        let input = "[docs](https://en.wikipedia.org/wiki/Git_(software))";
+        let result = markdown_links_to_osc8(input);
+        assert!(
+            result.contains("\x1b]8;;https://en.wikipedia.org/wiki/Git_(software)\x1b\\"),
+            "URL with balanced parens must not be truncated: {result:?}"
+        );
+        assert!(
+            !result.contains("[docs]"),
+            "should not leave raw markdown link syntax"
+        );
     }
 }

@@ -103,10 +103,19 @@ mod tests {
         // cfg!(test) would honor — clear it so this exercises the real
         // ~/.claude fallback. #[serial] keeps it from racing the other env
         // tests (same reason lib.rs's DAFT_*_DIR default tests are serial).
+        let prior = std::env::var_os(crate::skill::SKILLS_DIR_ENV);
         unsafe {
             std::env::remove_var(crate::skill::SKILLS_DIR_ENV);
         }
-        let root = resolve_skills_root(false, None, "skill install").unwrap();
-        assert!(root.ends_with(".claude/skills"), "{root:?}");
+        let root = resolve_skills_root(false, None, "skill install");
+        // Restore before asserting so a failure can't leave the var cleared for
+        // the rest of the process — a later test that resolves the real
+        // ~/.claude and writes would otherwise trip the state tripwire.
+        if let Some(v) = prior {
+            unsafe {
+                std::env::set_var(crate::skill::SKILLS_DIR_ENV, v);
+            }
+        }
+        assert!(root.unwrap().ends_with(".claude/skills"));
     }
 }
