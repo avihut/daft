@@ -124,11 +124,12 @@ branch).
 
 ## List Settings
 
-| Key                 | Default     | Description                                                                                                                            |
-| ------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft.list.stat`    | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                        |
-| `daft.list.columns` |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                             |
-| `daft.list.sort`    |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity |
+| Key                         | Default     | Description                                                                                                                                                                                                  |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `daft.list.stat`            | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                                                                                              |
+| `daft.list.columns`         |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                                                                                                   |
+| `daft.list.sort`            |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity                                                                       |
+| `daft.list.sizeConcurrency` |             | Max concurrent directory-size walks for `--columns +size` on both `daft list` and `daft repo list`. Default: CPU count. Lower on slow/network filesystems. The `DAFT_SIZE_WALK_JOBS` env var overrides this. |
 
 ## Prune Settings
 
@@ -336,15 +337,16 @@ git config daft.hooks.worktreePostCreate.failMode abort
 
 ## Environment Variables
 
-| Variable                  | Description                                                               |
-| ------------------------- | ------------------------------------------------------------------------- |
-| `DAFT_CD_FILE`            | Temp file path for shell wrapper CD communication (set by shell wrappers) |
-| `DAFT_NO_HINTS`           | Set to suppress contextual hint messages                                  |
-| `DAFT_NO_TRUST_PRUNE`     | Set to disable automatic trust database pruning                           |
-| `DAFT_NO_UPDATE_CHECK`    | Set to disable version update notifications                               |
-| `DAFT_NO_BACKGROUND_JOBS` | Set to promote all background hook jobs to foreground                     |
-| `NO_COLOR`                | Standard variable to disable colored output                               |
-| `PAGER`                   | Override the pager for `daft release-notes`                               |
+| Variable                  | Description                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `DAFT_CD_FILE`            | Temp file path for shell wrapper CD communication (set by shell wrappers)                    |
+| `DAFT_NO_HINTS`           | Set to suppress contextual hint messages                                                     |
+| `DAFT_NO_TRUST_PRUNE`     | Set to disable automatic trust database pruning                                              |
+| `DAFT_NO_UPDATE_CHECK`    | Set to disable version update notifications                                                  |
+| `DAFT_NO_BACKGROUND_JOBS` | Set to promote all background hook jobs to foreground                                        |
+| `DAFT_SIZE_WALK_JOBS`     | Override directory-size-walk concurrency (takes precedence over `daft.list.sizeConcurrency`) |
+| `NO_COLOR`                | Standard variable to disable colored output                                                  |
+| `PAGER`                   | Override the pager for `daft release-notes`                                                  |
 
 ## Git Hooks
 

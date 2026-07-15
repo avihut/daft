@@ -33,6 +33,7 @@ pub mod repo;
 pub mod shared;
 pub mod shell_init;
 pub mod shortcuts;
+pub mod size_cache;
 pub mod sync;
 pub(super) mod sync_shared;
 pub mod worktree_branch;

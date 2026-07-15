@@ -336,6 +336,7 @@ fn run_blocking(args: Args) -> Result<()> {
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
+            crate::core::size_walk::resolve_jobs(settings.list_size_concurrency),
         )?;
         if show_local || show_remote {
             let worktree_branches: HashSet<String> =
@@ -383,10 +384,30 @@ fn run_blocking(args: Args) -> Result<()> {
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
+            crate::core::size_walk::resolve_jobs(settings.list_size_concurrency),
         )?;
         sort_spec.sort(&mut result);
         result
     };
+
+    // Warm the size cache from the blocking walk too, so piped / non-TTY
+    // (`DAFT_NO_LIVE`) runs leave the same last-known sizes a later live run
+    // seeds from. Write-only — blocking prints once, so there's no stale
+    // render to seed. Every `size_bytes` here was freshly walked (no seeding
+    // on this path); the helper stat-guards each path and is best-effort.
+    // Runs before the `--merging` display filter so all walked sizes persist.
+    if has_size
+        && let Ok(repo_hash) =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
+    {
+        let fresh = infos
+            .iter()
+            // Sandboxes all report name "(detached)" and would collide on the
+            // (repo_hash, branch_slug) cache key — don't cache them (review).
+            .filter(|info| !info.is_sandbox)
+            .filter_map(|info| Some((info.name.clone(), info.path.clone()?, info.size_bytes?)));
+        crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
+    }
 
     if args.merging {
         infos.retain(|info| {

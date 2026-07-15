@@ -377,6 +377,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                             assigned_widths[i],
                             |fs| state.live.is_cell_loading(row_idx, fs),
                             |fs| state.live.is_cell_unloaded(row_idx, fs),
+                            |fs| state.live.is_cell_stale(row_idx, fs),
                         )
                     } else {
                         Cell::from("")
@@ -397,6 +398,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                         assigned_widths[i],
                         |fs| state.live.is_cell_loading(row_idx, fs),
                         |fs| state.live.is_cell_unloaded(row_idx, fs),
+                        |fs| state.live.is_cell_stale(row_idx, fs),
                     )
                 })
                 .collect()
@@ -694,12 +696,27 @@ pub(super) fn not_loaded_cell(width: u16) -> Cell<'static> {
     Cell::from(Span::styled(padded, Style::default().fg(Color::Gray)))
 }
 
+/// Render a persisted (stale) cell value — a last-known figure shown while a
+/// fresh walk runs in the background. Styled `DIM` and nothing else: never
+/// colored, never the loading shimmer, so it reads as "real but not yet
+/// refreshed" and supersedes cleanly (to the plain, full-brightness value)
+/// the moment the fresh patch lands. Shared by the worktree and catalog
+/// tables so the stale convention lives in one place.
+pub(super) fn stale_cell(value: &str) -> Cell<'static> {
+    Cell::from(Span::styled(
+        value.to_string(),
+        Style::default().add_modifier(Modifier::DIM),
+    ))
+}
+
 /// Render a single cell for the given column and worktree row.
 ///
 /// `width` is the column's assigned width — used to size shimmer bars when
 /// the cell is in a loading state.
 /// `is_cell_unloaded` returns true when the user cancelled before the cell's
 /// patch arrived; takes precedence over `is_cell_loading`.
+/// `is_cell_stale` returns true when the cell holds a persisted value awaiting
+/// a fresh walk; applies only to cells that already have a value to show.
 #[allow(clippy::too_many_arguments)]
 fn render_cell(
     col: &Column,
@@ -710,6 +727,7 @@ fn render_cell(
     width: u16,
     is_cell_loading: impl Fn(FieldSet) -> bool,
     is_cell_unloaded: impl Fn(FieldSet) -> bool,
+    is_cell_stale: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
@@ -725,6 +743,8 @@ fn render_cell(
                 } else {
                     Cell::from(vals.size.clone())
                 }
+            } else if is_cell_stale(FieldSet::SIZE) {
+                stale_cell(&vals.size)
             } else {
                 Cell::from(vals.size.clone())
             }
@@ -1400,6 +1420,7 @@ mod tests {
                         10,
                         |_fs| false, // not loading (cancelled implies collection_complete)
                         |_fs| true,  // is_cell_unloaded → true
+                        |_fs| false, // not stale
                     );
                     let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
                     frame.render_widget(table, frame.area());
@@ -1448,6 +1469,7 @@ mod tests {
                     10,
                     |_fs| false, // not loading
                     |_fs| false, // not unloaded — received
+                    |_fs| false, // not stale
                 );
                 let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
                 frame.render_widget(table, frame.area());
@@ -1466,6 +1488,68 @@ mod tests {
                 .chars()
                 .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
             "received Size cell should render numeric/unit value; got {row:?}"
+        );
+    }
+
+    #[test]
+    fn render_cell_size_stale_renders_value_dimmed() {
+        // A stale (persisted, not-yet-refreshed) Size cell renders its value
+        // DIM — visible but muted — never the shimmer, never an em-dash.
+        use crate::output::format::{ColumnContext, compute_column_values};
+        use crate::output::tui::state::WorktreeRow;
+
+        let mut info = WorktreeInfo::empty("a");
+        info.size_bytes = Some(1024);
+        let wt = WorktreeRow::idle(info.clone());
+        let ctx = ColumnContext {
+            project_root: &PathBuf::from("/tmp"),
+            cwd: &PathBuf::from("/tmp"),
+            now: 0,
+            stat: Stat::Summary,
+        };
+        let vals = compute_column_values(&info, &ctx);
+
+        let backend = TestBackend::new(10, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let cell = render_cell(
+                    &Column::Size,
+                    &wt,
+                    &vals,
+                    0,
+                    Stat::Summary,
+                    10,
+                    |_fs| false, // not loading
+                    |_fs| false, // not unloaded
+                    |_fs| true,  // stale → dim
+                );
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(10)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        // Value is shown (not shimmer/em-dash) …
+        assert!(
+            !row.contains('\u{25AC}') && !row.contains('\u{2014}'),
+            "stale cell must render the value, not a placeholder; got {row:?}"
+        );
+        assert!(
+            row.trim_end()
+                .chars()
+                .any(|c| c.is_ascii_digit() || c == 'B' || c == 'K'),
+            "stale Size cell should render the numeric/unit value; got {row:?}"
+        );
+        // … and it is dimmed. Find the first glyph cell and assert DIM.
+        let first_glyph = (0..10)
+            .find(|&x| buffer[(x, 0)].symbol().trim() != "")
+            .expect("stale cell should paint at least one glyph");
+        assert!(
+            buffer[(first_glyph, 0)].modifier.contains(Modifier::DIM),
+            "stale Size value should carry the DIM modifier"
         );
     }
 

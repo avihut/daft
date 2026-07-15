@@ -14,10 +14,19 @@
 //!   - `cached_base_lines`          key: `(base_sha, head_sha)`
 //!   - `cached_remote_lines`        key: `(head_sha, upstream_sha)`
 //!
-//! Cells deliberately not cached (working-tree-dependent, would risk staleness):
-//!   - Changes (staged/unstaged/untracked counts)
-//!   - Size (filesystem walk)
-//!   - Branch age, owner (cheap enough already)
+//! Cells deliberately not cached *here* — this cache only holds values that
+//! are provably-correct pure functions of their key SHAs, so a hit needs no
+//! TTL or invalidation:
+//!   - Changes (staged/unstaged/untracked counts): working-tree-dependent, no
+//!     SHA captures it.
+//!   - Branch age, owner: cheap enough already.
+//!   - Size (filesystem walk): not a pure function of any SHA — nested content
+//!     changes don't move a tracked ref — so it can't live in a
+//!     provably-correct cache. It instead has its own *stale-then-refresh*
+//!     cache in the store (`worktree_sizes` / `repo_sizes`): the walk always
+//!     re-runs, and the tri-state Size cell renders the last-known value dim
+//!     until the fresh figure supersedes it, making the staleness honest
+//!     rather than hidden. See `commands::size_cache`.
 
 use crate::core::cache;
 use std::path::{Path, PathBuf};

@@ -12,7 +12,7 @@
 
 use super::columns::truncate_with_ellipsis;
 use super::driver::LiveScreen;
-use super::render::{loading_shimmer_cell, not_loaded_cell};
+use super::render::{loading_shimmer_cell, not_loaded_cell, stale_cell};
 use crate::core::columns::RepoListColumn;
 use crate::output::format::format_human_size;
 use ratatui::{
@@ -92,6 +92,11 @@ pub fn tree_glyph(index: usize, count: usize) -> &'static str {
 #[derive(Debug, Clone, Copy)]
 enum SizeCell {
     Loading,
+    /// A persisted, last-known size seeded from the catalog cache. Rendered
+    /// dim (like the worktree table's stale cell) and superseded in place the
+    /// moment the fresh walk's `Loaded` lands. Distinct from `Loaded` so
+    /// `is_complete` keeps waiting for the real walk.
+    Stale(u64),
     Loaded(Option<u64>),
 }
 
@@ -129,6 +134,37 @@ impl CatalogTable {
         }
     }
 
+    /// Seed the initial size cells with cached (stale) values where available.
+    /// `stale[i] == Some(b)` renders row `i` as a dim, last-known `b` up front
+    /// — superseded when its fresh walk lands — while `None` leaves the cell
+    /// shimmer-loading. A length mismatch leaves every cell Loading
+    /// (defensive; callers align `stale` to `rows` by index).
+    pub fn with_stale_sizes(mut self, stale: Vec<Option<u64>>) -> Self {
+        if stale.len() == self.sizes.len() {
+            for (cell, cached) in self.sizes.iter_mut().zip(stale) {
+                if let Some(bytes) = cached {
+                    *cell = SizeCell::Stale(bytes);
+                }
+            }
+        }
+        self
+    }
+
+    /// Per-row sizes that were actually walked this run — `Some(b)` only for a
+    /// fresh `Loaded(Some)`; `Loading`, a failed `Loaded(None)`, and a
+    /// never-refreshed `Stale` all yield `None`. The command layer zips this
+    /// with its `(uuid, path)` list to persist the fresh figures (a stale
+    /// value is not re-persisted, so its `measured_at` stays honest).
+    pub fn loaded_sizes(&self) -> Vec<Option<u64>> {
+        self.sizes
+            .iter()
+            .map(|s| match s {
+                SizeCell::Loaded(Some(bytes)) => Some(*bytes),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The selected columns minus Annotation, which renders as a separate
     /// unlabeled marker column (and collapses when no row is current).
     fn data_columns(&self) -> Vec<RepoListColumn> {
@@ -163,6 +199,10 @@ impl CatalogTable {
             .iter()
             .filter_map(|s| match s {
                 SizeCell::Loaded(bytes) => *bytes,
+                // Include stale values so the live TOTAL isn't jumpy — it
+                // starts near the true figure and only nudges as fresh walks
+                // supersede each stale cell.
+                SizeCell::Stale(bytes) => Some(*bytes),
                 SizeCell::Loading => None,
             })
             .sum()
@@ -207,6 +247,7 @@ impl CatalogTable {
                         RepoListColumn::Remote => char_w(row.remote.as_deref().unwrap_or("-")),
                         RepoListColumn::Size => match size {
                             SizeCell::Loading => SIZE_LOADING_WIDTH,
+                            SizeCell::Stale(bytes) => char_w(&format_human_size(*bytes)),
                             SizeCell::Loaded(Some(bytes)) => char_w(&format_human_size(*bytes)),
                             SizeCell::Loaded(None) => 1,
                         },
@@ -252,6 +293,9 @@ impl CatalogTable {
                 Cell::from(Span::styled(format_human_size(bytes), style))
             }
             SizeCell::Loaded(None) => not_loaded_cell(width),
+            // A stale value is real (just not re-measured yet), so show it dim
+            // even after cancel — only never-loaded cells fall to the em-dash.
+            SizeCell::Stale(bytes) => stale_cell(&format_human_size(bytes)),
             SizeCell::Loading if self.cancelled => not_loaded_cell(width),
             SizeCell::Loading => loading_shimmer_cell(width, self.tick),
         }
@@ -636,6 +680,92 @@ mod tests {
             "loaded cell must not shimmer: {row:?}"
         );
         assert!(row.contains("2K"), "loaded cell shows the size: {row:?}");
+    }
+
+    #[test]
+    fn stale_seeded_cell_renders_dim_value() {
+        let table = CatalogTable::new(vec![cells("alpha", false, false)], columns())
+            .with_stale_sizes(vec![Some(2048)]);
+        let backend = TestBackend::new(100, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..100)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
+        assert!(
+            !row.contains('\u{25AC}'),
+            "stale cell shows a value, not the shimmer: {row:?}"
+        );
+        assert!(
+            row.contains("2K"),
+            "stale cell shows the cached size: {row:?}"
+        );
+        // The size glyphs are dim. Key off the unit char "K" — unique to the
+        // Size cell here (the Worktrees column's plain "2" would false-match a
+        // bare digit search).
+        let x = (0..100u16)
+            .find(|x| buffer[(*x, 1)].symbol() == "K")
+            .expect("size unit rendered");
+        assert!(
+            buffer[(x, 1)].style().add_modifier.contains(Modifier::DIM),
+            "stale size value should be dim"
+        );
+    }
+
+    #[test]
+    fn stale_cell_superseded_by_fresh_walk() {
+        let mut table = CatalogTable::new(vec![cells("alpha", false, false)], columns())
+            .with_stale_sizes(vec![Some(2048)]);
+        // A stale cell isn't "loaded", so the table keeps waiting for the walk.
+        assert!(!table.is_complete(), "stale must not count as walked");
+        table.apply_event(&CatalogEvent::Size {
+            index: 0,
+            bytes: Some(4096),
+        });
+        assert!(table.is_complete(), "fresh walk completes the cell");
+        let backend = TestBackend::new(100, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let row = buffer_row(&terminal, 1, 100);
+        assert!(row.contains("4K"), "fresh value supersedes stale: {row:?}");
+    }
+
+    #[test]
+    fn stale_values_count_toward_the_total() {
+        // The TOTAL should start near the true figure from stale seeds, not 0.
+        let table = CatalogTable::new(
+            vec![cells("alpha", false, false), cells("beta", false, false)],
+            columns(),
+        )
+        .with_stale_sizes(vec![Some(1024 * 1024), Some(1024 * 1024)]);
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| table.render(f, false)).unwrap();
+        let total_row = buffer_row(&terminal, 4, 100);
+        assert!(
+            total_row.contains("2.0M"),
+            "stale seeds feed the live total: {total_row:?}"
+        );
+    }
+
+    #[test]
+    fn loaded_sizes_reports_only_freshly_walked_values() {
+        let mut table = CatalogTable::new(
+            vec![cells("alpha", false, false), cells("beta", false, false)],
+            columns(),
+        )
+        .with_stale_sizes(vec![Some(2048), None]);
+        // Only beta gets a fresh walk; alpha stays stale.
+        table.apply_event(&CatalogEvent::Size {
+            index: 1,
+            bytes: Some(4096),
+        });
+        assert_eq!(
+            table.loaded_sizes(),
+            vec![None, Some(4096)],
+            "a never-refreshed stale value must not be re-persisted"
+        );
     }
 
     #[test]

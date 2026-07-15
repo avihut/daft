@@ -50,21 +50,23 @@ pub fn coordinator_set() -> MigrationSet {
             M::up(include_str!("migrations/002_visitor_seeds.sql")),
             M::up(include_str!("migrations/003_invocation_status.sql")),
             M::up(include_str!("migrations/004_hook_profiles.sql")),
+            M::up(include_str!("migrations/005_worktree_sizes.sql")),
         ]),
         // rusqlite_migration's version counter is `migrations.len() as u32`
         // after every migration is applied. Kept as i64 for consistency with
         // the on-disk `user_version` PRAGMA type.
-        current_version: 4,
+        current_version: 5,
     }
 }
 
 /// The global repo-catalog lineage (`catalog/catalog.db`).
 pub fn catalog_set() -> MigrationSet {
     MigrationSet {
-        migrations: Migrations::new(vec![M::up(include_str!(
-            "migrations/catalog/001_catalog.sql"
-        ))]),
-        current_version: 1,
+        migrations: Migrations::new(vec![
+            M::up(include_str!("migrations/catalog/001_catalog.sql")),
+            M::up(include_str!("migrations/catalog/002_repo_sizes.sql")),
+        ]),
+        current_version: 2,
     }
 }
 
@@ -176,6 +178,22 @@ mod tests {
     }
 
     #[test]
+    fn catalog_migration_creates_repo_sizes_table() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("catalog.db");
+        let mut conn = open_unmigrated(&path);
+        run_set(&catalog_set(), &mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'repo_sizes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "repo_sizes");
+    }
+
+    #[test]
     fn refuses_open_when_user_version_is_newer() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("db.sqlite");
@@ -239,6 +257,22 @@ mod tests {
                 .unwrap();
             assert_eq!(name, table);
         }
+    }
+
+    #[test]
+    fn worktree_sizes_table_exists_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'worktree_sizes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "worktree_sizes");
     }
 
     #[test]

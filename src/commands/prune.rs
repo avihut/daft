@@ -293,6 +293,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         settings.ownership_strategy,
         user_email.as_deref(),
         &settings.remote,
+        crate::core::size_walk::resolve_jobs(None), // has_size=false: size streams via the collector
     )?;
 
     // Parse worktree list for prune context
@@ -572,6 +573,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                 stat,
                 source: PatchSource::Collector,
                 ctx,
+                size_jobs: crate::core::size_walk::resolve_jobs(None),
             },
             tx_for_collector,
         ))

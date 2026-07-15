@@ -610,6 +610,7 @@ fn run_tui(
         settings.ownership_strategy,
         user_email.as_deref(),
         &settings.remote,
+        crate::core::size_walk::resolve_jobs(None), // has_size=false: size streams via the collector
     )?;
 
     // Get worktree list for DAG (branch name + path pairs)
@@ -1286,6 +1287,7 @@ fn run_tui(
                 stat,
                 source: PatchSource::Collector,
                 ctx,
+                size_jobs: crate::core::size_walk::resolve_jobs(None),
             },
             tx_for_collector,
         ))
@@ -1504,6 +1506,7 @@ fn spawn_post_task_refresh(
             stat,
             source: PatchSource::PostTask(phase),
             ctx,
+            size_jobs: crate::core::size_walk::resolve_jobs(None),
         },
         tx.clone(),
     );

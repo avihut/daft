@@ -686,61 +686,13 @@ pub(crate) fn get_remote_line_counts(branch: &str, worktree_path: &Path) -> Opti
 /// all readable files. Tracks seen inodes to count hard-linked files only once
 /// (matching `du` behavior). Does not follow symlinks.
 pub(crate) fn compute_directory_size(path: &Path) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        use std::collections::HashSet;
-        use std::os::unix::fs::MetadataExt;
-
-        fn walk(dir: &Path, seen: &mut HashSet<(u64, u64)>) -> u64 {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return 0;
-            };
-            let mut total = 0u64;
-            for entry in entries {
-                let Ok(entry) = entry else { continue };
-                let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
-                    continue;
-                };
-                if meta.is_dir() {
-                    total += walk(&entry.path(), seen);
-                } else {
-                    // Skip hard links we've already counted (dev + ino pair).
-                    if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
-                        continue;
-                    }
-                    total += meta.len();
-                }
-            }
-            total
-        }
-
-        let mut seen = HashSet::new();
-        Some(walk(path, &mut seen))
-    }
-
-    #[cfg(not(unix))]
-    {
-        fn walk(dir: &Path) -> u64 {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return 0;
-            };
-            let mut total = 0u64;
-            for entry in entries {
-                let Ok(entry) = entry else { continue };
-                let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
-                    continue;
-                };
-                if meta.is_dir() {
-                    total += walk(&entry.path());
-                } else {
-                    total += meta.len();
-                }
-            }
-            total
-        }
-
-        Some(walk(path))
-    }
+    // Single-path convenience over the shared bounded walker. Preserves the old
+    // always-`Some` contract (a missing/unreadable dir reports `Some(0)`); the
+    // walker still parallelises this one tree's subdirectories.
+    let roots = [path.to_path_buf()];
+    crate::core::size_walk::walk_all(&roots, None, crate::core::size_walk::resolve_jobs(None))
+        .pop()
+        .flatten()
 }
 
 /// Return the most recent mtime among a set of changed/untracked files.
@@ -781,6 +733,7 @@ pub fn collect_worktree_info(
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
     remote_name: &str,
+    size_jobs: usize,
 ) -> Result<Vec<WorktreeInfo>> {
     let porcelain_output = git
         .worktree_list_porcelain()
@@ -911,12 +864,6 @@ pub fn collect_worktree_info(
                 (None, None)
             };
 
-        let size_bytes = if compute_size {
-            compute_directory_size(&entry.path)
-        } else {
-            None
-        };
-
         let working_tree_mtime = if compute_mtime && !changed.paths.is_empty() {
             max_mtime_of_files(&entry.path, &changed.paths)
         } else {
@@ -949,10 +896,27 @@ pub fn collect_worktree_info(
             remote_lines_inserted,
             remote_lines_deleted,
             owner,
-            size_bytes,
+            size_bytes: None,
             working_tree_mtime,
             is_sandbox: entry.is_detached,
         });
+    }
+
+    // Size walk: batched across all worktrees so their trees walk concurrently
+    // under one shared job budget (see core::size_walk), instead of the old
+    // one-worktree-at-a-time sequential walk. `size_jobs` is resolved by the
+    // caller (DAFT_SIZE_WALK_JOBS / daft.list.sizeConcurrency / auto).
+    if compute_size {
+        let indexed: Vec<(usize, PathBuf)> = infos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, info)| info.path.clone().map(|p| (i, p)))
+            .collect();
+        let paths: Vec<PathBuf> = indexed.iter().map(|(_, p)| p.clone()).collect();
+        let sizes = crate::core::size_walk::walk_all(&paths, None, size_jobs);
+        for ((i, _), size) in indexed.into_iter().zip(sizes) {
+            infos[i].size_bytes = size;
+        }
     }
 
     Ok(infos)

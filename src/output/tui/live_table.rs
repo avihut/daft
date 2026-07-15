@@ -58,6 +58,14 @@ pub struct LiveTable {
     pub source_log: PatchSourceLog,
     /// Per-row bitmask of "patches received".
     pub received_patches: Vec<FieldSet>,
+    /// Per-row bitmask of "cell holds a persisted (stale) value awaiting a
+    /// fresh walk". Set at construction from seed values pre-populated by the
+    /// caller (today only SIZE, seeded from the on-disk size cache). A stale
+    /// bit is superseded implicitly the moment its patch lands —
+    /// `is_cell_stale` ANDs against `!received_patches` rather than clearing
+    /// the bit — so it needs no mutation on `apply_event`. Kept in lockstep
+    /// with `received_patches` across resort/push.
+    pub stale_fields: Vec<FieldSet>,
     /// Index of the first row in the unowned section, or `None` if no
     /// partition. Recomputed when `partition_by_owner` is true.
     pub unowned_start_index: Option<usize>,
@@ -71,6 +79,23 @@ impl LiveTable {
         // the default branch row in `daft prune` / `daft sync`).
         let received_patches = vec![cfg.seeded_fields; seed.len()];
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
+        // A cell is stale when the caller pre-populated its value (only SIZE
+        // today, from the size cache) AND that field is still streamed by the
+        // collector — i.e. not in `seeded_fields`, which marks fields the
+        // collector won't emit a patch for. Guarding on `seeded_fields`
+        // prevents a value that's authoritative-at-seed (e.g. size not
+        // requested at all) from rendering as perpetually "refreshing".
+        let seeded = cfg.seeded_fields;
+        let stale_fields: Vec<FieldSet> = rows
+            .iter()
+            .map(|r| {
+                if r.info.size_bytes.is_some() && !seeded.contains(FieldSet::SIZE) {
+                    FieldSet::SIZE
+                } else {
+                    FieldSet::EMPTY
+                }
+            })
+            .collect();
         let mut t = Self {
             rows,
             cfg,
@@ -79,6 +104,7 @@ impl LiveTable {
             cancelled: false,
             source_log: PatchSourceLog::default(),
             received_patches,
+            stale_fields,
             unowned_start_index: None,
         };
         t.resort_and_repartition();
@@ -184,15 +210,18 @@ impl LiveTable {
 
         let mut new_rows: Vec<WorktreeRow> = Vec::with_capacity(self.rows.len());
         let mut new_recv: Vec<FieldSet> = Vec::with_capacity(self.received_patches.len());
+        let mut new_stale: Vec<FieldSet> = Vec::with_capacity(self.stale_fields.len());
         for &i in &indexed {
             new_rows.push(std::mem::replace(
                 &mut self.rows[i],
                 WorktreeRow::placeholder(),
             ));
             new_recv.push(self.received_patches[i]);
+            new_stale.push(self.stale_fields[i]);
         }
         self.rows = new_rows;
         self.received_patches = new_recv;
+        self.stale_fields = new_stale;
 
         self.unowned_start_index = if self.cfg.partition_by_owner {
             self.rows.iter().position(|r| r.info.owner.is_none())
@@ -215,6 +244,17 @@ impl LiveTable {
         self.cancelled && !self.received_patches[row_idx].contains(field)
     }
 
+    /// True when the cell for `field` on `row_idx` holds a persisted (stale)
+    /// value that a fresh patch has not yet superseded — the render path
+    /// styles it DIM to signal "last known, refreshing". Goes false the
+    /// instant the matching patch lands. Deliberately not gated on
+    /// `collection_complete`: a value the walk never refreshes stays honestly
+    /// dim rather than promoting to "fresh" at collection end.
+    pub fn is_cell_stale(&self, row_idx: usize, field: FieldSet) -> bool {
+        self.stale_fields[row_idx].contains(field)
+            && !self.received_patches[row_idx].contains(field)
+    }
+
     /// Append a new row, keeping `received_patches` in lockstep so
     /// `is_cell_loading` cannot index out of bounds. Initialized to
     /// `FieldSet::EMPTY`: dynamically-discovered branches have no
@@ -227,6 +267,9 @@ impl LiveTable {
     pub fn push_row(&mut self, info: WorktreeInfo) {
         self.rows.push(WorktreeRow::idle(info));
         self.received_patches.push(FieldSet::EMPTY);
+        // Dynamically-discovered rows carry no cache seed, so no field is
+        // stale — keep the vector length in lockstep with `received_patches`.
+        self.stale_fields.push(FieldSet::EMPTY);
     }
 }
 
@@ -268,6 +311,12 @@ mod tests {
 
     fn info(name: &str) -> WorktreeInfo {
         WorktreeInfo::empty(name)
+    }
+
+    fn info_with_size(name: &str, bytes: u64) -> WorktreeInfo {
+        let mut info = WorktreeInfo::empty(name);
+        info.size_bytes = Some(bytes);
+        info
     }
 
     #[test]
@@ -378,6 +427,71 @@ mod tests {
         cfg.seeded_fields = FieldSet::OWNER;
         let t = LiveTable::new(vec![info("main")], cfg);
         assert!(!t.is_cell_loading(0, FieldSet::OWNER));
+    }
+
+    #[test]
+    fn seeded_size_value_marks_cell_stale_until_patch_supersedes() {
+        // A row seeded with a cached size (SIZE not in seeded_fields, so it's
+        // still streamed) renders stale until the fresh walk patch lands.
+        let mut t = LiveTable::new(vec![info_with_size("a", 4096)], cfg());
+        assert!(
+            t.is_cell_stale(0, FieldSet::SIZE),
+            "seeded cached size should read as stale before refresh"
+        );
+        // `is_cell_loading` is still technically true (no SIZE patch received
+        // yet), but that is moot for rendering: the Size arm short-circuits on
+        // a non-empty value and consults `is_cell_stale` before it would ever
+        // reach the loading branch. So a stale cell shows its dimmed value,
+        // never the shimmer.
+
+        // Fresh walk result supersedes it.
+        t.apply_event(&DagEvent::WorktreeInfoUpdated {
+            branch_name: "a".into(),
+            patch: WorktreeInfoPatch::Size(Some(8192)),
+            source: PatchSource::Collector,
+        });
+        assert!(
+            !t.is_cell_stale(0, FieldSet::SIZE),
+            "landed patch must clear staleness"
+        );
+        assert_eq!(t.rows[0].info.size_bytes, Some(8192));
+    }
+
+    #[test]
+    fn no_seed_value_is_not_stale() {
+        // The default path (no cache hit) leaves size_bytes None → not stale,
+        // just loading as before.
+        let t = LiveTable::new(vec![info("a")], cfg());
+        assert!(!t.is_cell_stale(0, FieldSet::SIZE));
+        assert!(t.is_cell_loading(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn seeded_size_not_stale_when_size_is_authoritative() {
+        // When SIZE is in seeded_fields (the collector won't stream it), a
+        // pre-populated size is final, not "refreshing" — so never dim.
+        let mut cfg = cfg();
+        cfg.seeded_fields = FieldSet::SIZE;
+        let t = LiveTable::new(vec![info_with_size("a", 4096)], cfg);
+        assert!(!t.is_cell_stale(0, FieldSet::SIZE));
+    }
+
+    #[test]
+    fn stale_fields_track_rows_across_resort() {
+        // Two seeded-stale rows sorted by name: the stale bits must follow
+        // their rows through the resort permutation, not stay by index.
+        let mut c = cfg();
+        c.pin_default_branch = false;
+        let t = LiveTable::new(
+            vec![info_with_size("zebra", 1), info_with_size("alpha", 2)],
+            c,
+        );
+        // Sorted ascending: alpha (2) then zebra (1). Both remain stale, and
+        // the values rode along with their rows.
+        assert_eq!(t.rows[0].info.name, "alpha");
+        assert_eq!(t.rows[0].info.size_bytes, Some(2));
+        assert!(t.is_cell_stale(0, FieldSet::SIZE));
+        assert!(t.is_cell_stale(1, FieldSet::SIZE));
     }
 
     #[test]
