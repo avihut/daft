@@ -330,7 +330,16 @@ pub fn yaml_jobs_to_specs(
 
         let mut env = hook_env.clone();
         if let Some(ref job_env) = job.env {
-            env.extend(job_env.clone());
+            // Substitute template variables in user-authored env *values* (keys
+            // are left verbatim). The computed hook env — DAFT_* plus
+            // ctx.extra_env — was merged above and is never substituted. This
+            // is the single surface that gives both lifecycle hooks and `daft
+            // run` tasks env-value templating (e.g. `api-{worktree_slug}`) (#708).
+            env.extend(
+                job_env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), super::template::substitute(v, ctx, Some(&name)))),
+            );
         }
 
         let wd = if let Some(ref root) = job.root {
@@ -603,6 +612,63 @@ mod tests {
         assert_eq!(env.get("SHARED").unwrap(), "from-job", "job env should win");
         assert_eq!(env.get("HOOK_ONLY").unwrap(), "yes");
         assert_eq!(env.get("JOB_ONLY").unwrap(), "yes");
+    }
+
+    #[test]
+    fn job_env_values_are_template_substituted() {
+        let ctx = make_ctx(); // branch feature/new, worktree /project/feature/new
+        let hook_env = HashMap::new();
+
+        let mut job_env = HashMap::new();
+        job_env.insert("COMPOSE_PROJECT_NAME".into(), "api-{worktree_slug}".into());
+        job_env.insert("ON_BRANCH".into(), "{branch}".into());
+        job_env.insert("LITERAL".into(), "no-templates-here".into());
+
+        let jobs = vec![JobDef {
+            name: Some("backend".into()),
+            run: Some(RunCommand::Simple("docker compose up".into())),
+            env: Some(job_env),
+            ..Default::default()
+        }];
+
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            &JobAdapterContext::default(),
+        );
+
+        let env = &specs[0].env;
+        assert_eq!(env.get("COMPOSE_PROJECT_NAME").unwrap(), "api-feature-new");
+        assert_eq!(env.get("ON_BRANCH").unwrap(), "feature/new");
+        assert_eq!(env.get("LITERAL").unwrap(), "no-templates-here");
+    }
+
+    #[test]
+    fn computed_hook_env_values_are_not_substituted() {
+        // The computed hook env (DAFT_* + extra_env) is merged verbatim; a
+        // brace-bearing value must not be reinterpreted as a template.
+        let ctx = make_ctx();
+        let mut hook_env = HashMap::new();
+        hook_env.insert("SOME_COMPUTED".into(), "{branch}".into());
+
+        let jobs = vec![JobDef {
+            name: Some("j".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            ..Default::default()
+        }];
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            &JobAdapterContext::default(),
+        );
+
+        assert_eq!(specs[0].env.get("SOME_COMPUTED").unwrap(), "{branch}");
     }
 
     #[test]
