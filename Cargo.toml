@@ -10,7 +10,7 @@ term-styles = { path = "term-styles", version = "0.1.0" }
 name = "daft"
 version = "1.20.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"
 authors = ["avihu <avihu@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -151,8 +151,9 @@ r2d2_sqlite = "0.34"
 # Memory probe for the sync push resource governor (#678). `system` is the
 # only feature daft needs (RAM/swap + process RSS); the public API is fully
 # safe, keeping `forbid(unsafe_code)` intact — same precedent as `rusqlite`.
-# Pinned to the 0.38 line: 0.39+ raises sysinfo's MSRV to 1.95, above
-# daft's 1.94 (see the MSRV Policy section in CLAUDE.md).
+# Held on the 0.38 line, but the MSRV rationale for that pin lapsed with the
+# 1.94 → 1.95 bump: 0.39 requires exactly 1.95, so moving the line forward
+# is no longer blocked — see #710.
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 # libc is Unix-only (uses fork/pipes)
