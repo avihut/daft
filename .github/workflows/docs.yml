@@ -36,7 +36,7 @@ jobs:
       # Node 20.x as the default. Without this step the deploy fails with
       # "Wrangler requires at least Node.js v22.0.0". Pinning to the current
       # Active LTS (24, EOL April 2028) buys the longest runway.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6.4.0
         with:
           node-version: "24"
 
