@@ -28,6 +28,10 @@ pub struct CommandResult {
     pub stdout: String,
     /// Captured standard error (empty for interactive commands).
     pub stderr: String,
+    /// Whether the command was terminated by a user cancellation
+    /// (two-stage Ctrl+C) rather than exiting on its own. When true,
+    /// `exit_code` is normalized to `Some(130)` (128 + SIGINT).
+    pub cancelled: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -48,13 +52,21 @@ pub struct CommandResult {
 ///
 /// The caller is responsible for building the complete set of environment
 /// variables (hook env + extra env) and passing them in `env`.
+///
+/// If `cancel` is provided, the wait loop observes the flag: level 1 tears
+/// the child's process tree down with SIGTERM+SIGCONT, level 2 escalates to
+/// SIGKILL (via [`GroupCascade`]). A child killed this way returns a result
+/// with `cancelled: true` and `exit_code: Some(130)`. `cancel: None` (hooks,
+/// coordinator) polls nothing and is behaviorally identical to before.
+#[allow(clippy::too_many_arguments)]
 pub fn run_command(
     cmd: &str,
     env: &HashMap<String, String>,
     working_dir: &Path,
-    timeout: Duration,
+    timeout: Option<Duration>,
     line_sender: Option<std::sync::mpsc::Sender<(OutputKind, String)>>,
     pid_sender: Option<std::sync::mpsc::Sender<u32>>,
+    cancel: Option<&crate::git::cancel::CancelFlag>,
 ) -> Result<CommandResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
@@ -132,22 +144,33 @@ pub fn run_command(
         content
     });
 
-    // Wait with timeout -- if the child exceeds the deadline it is killed,
-    // which closes the pipes and unblocks the reader threads above.
-    let status = wait_with_timeout(&mut child, timeout)
+    // Wait for the child, honoring both the optional timeout and the optional
+    // cancel flag. Killing the child (either path) closes the pipes and
+    // unblocks the reader threads above.
+    let outcome = wait_child(&mut child, timeout, cancel)
         .with_context(|| format!("Command execution failed: {cmd}"))?;
 
     let stdout_content = stdout_thread.join().unwrap_or_default();
     let stderr_content = stderr_thread.join().unwrap_or_default();
 
-    let exit_code = status.code().unwrap_or(-1);
-
-    Ok(CommandResult {
-        success: status.success(),
-        exit_code: Some(exit_code),
-        stdout: stdout_content,
-        stderr: stderr_content,
-    })
+    match outcome {
+        WaitOutcome::Exited(status) => Ok(CommandResult {
+            success: status.success(),
+            exit_code: Some(status.code().unwrap_or(-1)),
+            stdout: stdout_content,
+            stderr: stderr_content,
+            cancelled: false,
+        }),
+        WaitOutcome::Cancelled => Ok(CommandResult {
+            success: false,
+            // Normalize the signal-death status (-1) to the conventional
+            // 128 + SIGINT so downstream exit-code propagation is stable.
+            exit_code: Some(130),
+            stdout: stdout_content,
+            stderr: stderr_content,
+            cancelled: true,
+        }),
+    }
 }
 
 /// Spawn a shell command with inherited stdin/stdout/stderr (interactive).
@@ -157,10 +180,21 @@ pub fn run_command(
 ///
 /// The caller is responsible for building the complete set of environment
 /// variables and passing them in `env`.
+///
+/// The interactive child is **not** placed in its own process group — it
+/// shares the caller's foreground group so it receives the terminal's own
+/// SIGINT directly (the natural Ctrl+C behavior programs like `vim` expect).
+/// When `cancel` is supplied, the wait loop still escalates: level 1 is a
+/// no-op (the child already got the terminal SIGINT; a redundant SIGTERM
+/// would flip graceful-stop handlers into force-quit), and level 2 sends a
+/// direct SIGKILL to the child pid via [`kill_pid`] — never `killpg`, which
+/// would tear down daft's own group. `cancel: None` keeps the original
+/// blocking `status()` path.
 pub fn run_command_interactive(
     cmd: &str,
     env: &HashMap<String, String>,
     working_dir: &Path,
+    cancel: Option<&crate::git::cancel::CancelFlag>,
 ) -> Result<CommandResult> {
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
@@ -172,44 +206,220 @@ pub fn run_command_interactive(
     command.stdout(Stdio::inherit());
     command.stderr(Stdio::inherit());
 
-    let status = command
-        .status()
+    // Fast path: no cancel flag → the original blocking wait, untouched.
+    let Some(cancel) = cancel else {
+        let status = command
+            .status()
+            .with_context(|| format!("Failed to run interactive command: {cmd}"))?;
+        return Ok(CommandResult {
+            success: status.success(),
+            exit_code: Some(status.code().unwrap_or(-1)),
+            stdout: String::new(),
+            stderr: String::new(),
+            cancelled: false,
+        });
+    };
+
+    let mut child = command
+        .spawn()
         .with_context(|| format!("Failed to run interactive command: {cmd}"))?;
 
-    let exit_code = status.code().unwrap_or(-1);
-
-    Ok(CommandResult {
-        success: status.success(),
-        exit_code: Some(exit_code),
-        stdout: String::new(),
-        stderr: String::new(),
-    })
+    match wait_interactive_child(&mut child, cancel)? {
+        WaitOutcome::Exited(status) => Ok(CommandResult {
+            success: status.success(),
+            exit_code: Some(status.code().unwrap_or(-1)),
+            stdout: String::new(),
+            stderr: String::new(),
+            cancelled: false,
+        }),
+        WaitOutcome::Cancelled => Ok(CommandResult {
+            success: false,
+            exit_code: Some(130),
+            stdout: String::new(),
+            stderr: String::new(),
+            cancelled: true,
+        }),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Wait for a child process, polling at 100ms intervals up to `timeout`.
+/// Terminal outcome of waiting on a child: it exited on its own, or it was
+/// torn down by a user cancellation.
+enum WaitOutcome {
+    Exited(ExitStatus),
+    Cancelled,
+}
+
+/// Wait for a captured-output child, polling at 100ms intervals.
 ///
-/// If the timeout is reached the child is killed and an error is returned.
-fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<ExitStatus> {
+/// Honors two independent deadlines:
+/// - `cancel` (checked first): once the flag is raised, the child's process
+///   tree is torn down — SIGTERM+SIGCONT at level 1, SIGKILL at level 2 — via
+///   [`GroupCascade`], and the eventual reap returns [`WaitOutcome::Cancelled`].
+/// - `timeout`: when `Some(t)` and exceeded, the child is killed and an error
+///   is returned (the pre-existing hook timeout semantics). `None` waits
+///   forever (task jobs).
+///
+/// `cancel: None` polls no flag and is behaviorally identical to the previous
+/// `wait_with_timeout`.
+fn wait_child(
+    child: &mut std::process::Child,
+    timeout: Option<Duration>,
+    cancel: Option<&crate::git::cancel::CancelFlag>,
+) -> Result<WaitOutcome> {
     use std::thread;
     use std::time::Instant;
 
     let start = Instant::now();
     let poll_interval = Duration::from_millis(100);
+    let mut cancelling = false;
+    #[cfg(unix)]
+    let mut teardown: Option<CancelTeardown> = None;
 
     loop {
-        match child.try_wait()? {
-            Some(status) => return Ok(status),
-            None => {
-                if start.elapsed() >= timeout {
-                    child.kill().ok();
-                    anyhow::bail!("Command timed out after {timeout:?}");
-                }
-                thread::sleep(poll_interval);
+        if let Some(status) = child.try_wait()? {
+            return Ok(if cancelling {
+                WaitOutcome::Cancelled
+            } else {
+                WaitOutcome::Exited(status)
+            });
+        }
+
+        // Cancellation takes precedence over the timeout deadline.
+        if let Some(flag) = cancel
+            && flag.is_cancelled()
+        {
+            cancelling = true;
+            #[cfg(unix)]
+            {
+                teardown
+                    .get_or_insert_with(|| CancelTeardown::new(child.id()))
+                    .tick(flag.level());
             }
+            #[cfg(not(unix))]
+            {
+                // No process-group teardown off-unix; direct kill is the
+                // best available escalation.
+                child.kill().ok();
+            }
+            thread::sleep(poll_interval);
+            continue;
+        }
+
+        if let Some(t) = timeout
+            && start.elapsed() >= t
+        {
+            child.kill().ok();
+            anyhow::bail!("Command timed out after {t:?}");
+        }
+        thread::sleep(poll_interval);
+    }
+}
+
+/// Wait for an interactive (stdio-inherited) child under cancellation.
+///
+/// The child shares the caller's foreground process group, so it already
+/// received the terminal's SIGINT on the first Ctrl+C — level 1 is therefore
+/// a deliberate no-op (a redundant SIGTERM would defeat graceful-shutdown
+/// handlers). Level 2 sends a direct SIGKILL to the child pid; `killpg` is
+/// off-limits here because the child is in daft's own group.
+#[cfg(unix)]
+fn wait_interactive_child(
+    child: &mut std::process::Child,
+    cancel: &crate::git::cancel::CancelFlag,
+) -> Result<WaitOutcome> {
+    use std::thread;
+
+    let poll_interval = Duration::from_millis(100);
+    let mut cancelling = false;
+    let mut hard_sent = false;
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(if cancelling {
+                WaitOutcome::Cancelled
+            } else {
+                WaitOutcome::Exited(status)
+            });
+        }
+        let level = cancel.level();
+        if level >= 1 {
+            cancelling = true;
+            if level >= 2 && !hard_sent {
+                crate::git::cancel::kill_pid(child.id(), true);
+                hard_sent = true;
+            }
+        }
+        thread::sleep(poll_interval);
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_interactive_child(
+    child: &mut std::process::Child,
+    cancel: &crate::git::cancel::CancelFlag,
+) -> Result<WaitOutcome> {
+    use std::thread;
+
+    let poll_interval = Duration::from_millis(100);
+    let mut cancelling = false;
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(if cancelling {
+                WaitOutcome::Cancelled
+            } else {
+                WaitOutcome::Exited(status)
+            });
+        }
+        if cancel.is_cancelled() {
+            cancelling = true;
+            if cancel.level() >= 2 {
+                child.kill().ok();
+            }
+        }
+        thread::sleep(poll_interval);
+    }
+}
+
+/// Escalating process-tree teardown state for a captured-output child under
+/// cancellation. Wraps a [`GroupCascade`] with the tick cadence: the first
+/// soft tick fires immediately, then every ~500ms while at level 1; a single
+/// hard tick fires on the transition to level 2.
+#[cfg(unix)]
+struct CancelTeardown {
+    cascade: crate::git::cancel::GroupCascade,
+    last_soft: Option<std::time::Instant>,
+    hard_sent: bool,
+}
+
+#[cfg(unix)]
+impl CancelTeardown {
+    fn new(root_pid: u32) -> Self {
+        Self {
+            cascade: crate::git::cancel::GroupCascade::new(root_pid),
+            last_soft: None,
+            hard_sent: false,
+        }
+    }
+
+    fn tick(&mut self, level: usize) {
+        if level >= 2 {
+            if !self.hard_sent {
+                self.cascade.hard_tick();
+                self.hard_sent = true;
+            }
+            return;
+        }
+        let due = self
+            .last_soft
+            .is_none_or(|t| t.elapsed() >= Duration::from_millis(500));
+        if due {
+            self.cascade.soft_tick();
+            self.last_soft = Some(std::time::Instant::now());
         }
     }
 }
@@ -228,6 +438,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "hello\n".into(),
             stderr: String::new(),
+            cancelled: false,
         };
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -242,6 +453,7 @@ mod tests {
             exit_code: Some(1),
             stdout: String::new(),
             stderr: "error\n".into(),
+            cancelled: false,
         };
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
@@ -255,6 +467,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "ok".into(),
             stderr: String::new(),
+            cancelled: false,
         };
         let cloned = result.clone();
         assert_eq!(cloned.success, result.success);
@@ -269,6 +482,7 @@ mod tests {
             exit_code: Some(0),
             stdout: String::new(),
             stderr: String::new(),
+            cancelled: false,
         };
         let debug = format!("{result:?}");
         assert!(debug.contains("CommandResult"));
@@ -281,8 +495,16 @@ mod tests {
     fn run_command_echo() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result =
-            run_command("echo hello", &env, &dir, Duration::from_secs(5), None, None).unwrap();
+        let result = run_command(
+            "echo hello",
+            &env,
+            &dir,
+            Some(Duration::from_secs(5)),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.stdout.trim(), "hello");
@@ -297,7 +519,8 @@ mod tests {
             "echo err >&2",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
+            None,
             None,
             None,
         )
@@ -310,8 +533,16 @@ mod tests {
     fn run_command_nonzero_exit() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result =
-            run_command("exit 42", &env, &dir, Duration::from_secs(5), None, None).unwrap();
+        let result = run_command(
+            "exit 42",
+            &env,
+            &dir,
+            Some(Duration::from_secs(5)),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(42));
     }
@@ -325,7 +556,8 @@ mod tests {
             "echo $MY_TEST_VAR",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
+            None,
             None,
             None,
         )
@@ -338,7 +570,16 @@ mod tests {
     fn run_command_working_dir() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command("pwd", &env, &dir, Duration::from_secs(5), None, None).unwrap();
+        let result = run_command(
+            "pwd",
+            &env,
+            &dir,
+            Some(Duration::from_secs(5)),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(result.success);
         // On macOS /tmp is a symlink to /private/tmp, so canonicalize both.
         let expected = dir.canonicalize().unwrap();
@@ -357,8 +598,9 @@ mod tests {
             "echo line1; echo line2",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             Some(tx),
+            None,
             None,
         )
         .unwrap();
@@ -383,8 +625,9 @@ mod tests {
             "echo on-stderr 1>&2; echo on-stdout",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             Some(tx),
+            None,
             None,
         )
         .unwrap();
@@ -422,7 +665,8 @@ mod tests {
             "sleep 60",
             &env,
             &dir,
-            Duration::from_millis(200),
+            Some(Duration::from_millis(200)),
+            None,
             None,
             None,
         );
@@ -444,9 +688,10 @@ mod tests {
             "true",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             None,
             Some(pid_tx),
+            None,
         )
         .unwrap();
         let pid = pid_rx
@@ -471,8 +716,9 @@ mod tests {
             "ps -o pid=,pgid= -p $$ | tr -s ' '",
             &env,
             &dir,
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             Some(line_tx),
+            None,
             None,
         )
         .unwrap();
@@ -494,7 +740,7 @@ mod tests {
     fn run_command_interactive_success() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command_interactive("true", &env, &dir).unwrap();
+        let result = run_command_interactive("true", &env, &dir, None).unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         // Interactive commands don't capture output.
@@ -506,7 +752,7 @@ mod tests {
     fn run_command_interactive_failure() {
         let env = HashMap::new();
         let dir = std::env::temp_dir();
-        let result = run_command_interactive("exit 7", &env, &dir).unwrap();
+        let result = run_command_interactive("exit 7", &env, &dir, None).unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(7));
     }
@@ -517,7 +763,97 @@ mod tests {
         env.insert("INTERACTIVE_VAR".into(), "present".into());
         let dir = std::env::temp_dir();
         // Use test -n to verify the var is set (non-empty string).
-        let result = run_command_interactive("test -n \"$INTERACTIVE_VAR\"", &env, &dir).unwrap();
+        let result =
+            run_command_interactive("test -n \"$INTERACTIVE_VAR\"", &env, &dir, None).unwrap();
         assert!(result.success);
+    }
+
+    // ── cancellation ────────────────────────────────────────────────────
+
+    #[test]
+    fn run_command_no_timeout_waits_for_completion() {
+        // `timeout: None` must not fire — a short sleep completes normally.
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let result =
+            run_command("sleep 0.2; echo done", &env, &dir, None, None, None, None).unwrap();
+        assert!(result.success);
+        assert!(!result.cancelled);
+        assert_eq!(result.stdout.trim(), "done");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_soft_cancel_tears_down_child() {
+        use crate::git::cancel::CancelFlag;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let cancel = Arc::new(CancelFlag::new());
+
+        // Raise the soft-cancel level from another thread shortly after the
+        // child (a 30s sleep) starts; the cascade should tear it down well
+        // before the sleep would finish.
+        let flag = Arc::clone(&cancel);
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.escalate(); // 0 -> 1 (soft)
+        });
+
+        let start = Instant::now();
+        let result = run_command("sleep 30", &env, &dir, None, None, None, Some(&cancel)).unwrap();
+        raiser.join().ok();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "cancel should terminate the child promptly"
+        );
+        assert!(result.cancelled, "result must be marked cancelled");
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(130));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_hard_cancel_kills_sigterm_trapping_child() {
+        use crate::git::cancel::CancelFlag;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let cancel = Arc::new(CancelFlag::new());
+
+        // A child that traps SIGTERM and keeps running; only SIGKILL (level 2)
+        // stops it.
+        let flag = Arc::clone(&cancel);
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.escalate(); // -> 1 (soft, trapped)
+            std::thread::sleep(Duration::from_millis(600));
+            flag.escalate(); // -> 2 (hard)
+        });
+
+        let start = Instant::now();
+        let result = run_command(
+            "trap '' TERM; sleep 30",
+            &env,
+            &dir,
+            None,
+            None,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+        raiser.join().ok();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "hard cancel should SIGKILL the trapping child"
+        );
+        assert!(result.cancelled);
+        assert_eq!(result.exit_code, Some(130));
     }
 }

@@ -106,6 +106,7 @@ impl BufferingLogSink {
         match status {
             NodeStatus::Succeeded => JobStatus::Completed,
             NodeStatus::Failed => JobStatus::Failed,
+            NodeStatus::Cancelled => JobStatus::Cancelled,
             NodeStatus::Skipped | NodeStatus::DepFailed => JobStatus::Skipped,
             NodeStatus::Pending | NodeStatus::Running => {
                 unreachable!("on_job_complete called with non-terminal NodeStatus: {status:?}")

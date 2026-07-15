@@ -191,7 +191,14 @@ impl DagGraph {
                                         }
                                     }
                                 }
-                            } else if result_status == NodeStatus::Failed {
+                            } else if matches!(
+                                result_status,
+                                NodeStatus::Failed | NodeStatus::Cancelled
+                            ) {
+                                // A cancelled node cascades to its dependents
+                                // exactly like a failed one — without this,
+                                // dependents stay Pending forever and never
+                                // get counted toward `done`.
                                 let count =
                                     cascade_dep_failed(&mut s.status, &self.dependents, task_idx);
                                 s.done += count;
@@ -243,7 +250,7 @@ impl DagGraph {
                         }
                     }
                 }
-            } else if result_status == NodeStatus::Failed {
+            } else if matches!(result_status, NodeStatus::Failed | NodeStatus::Cancelled) {
                 cascade_dep_failed(&mut status, &self.dependents, idx);
                 // Enqueue dep-failed nodes so we can pop-and-skip them,
                 // ensuring the loop terminates even when dependents

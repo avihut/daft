@@ -348,7 +348,7 @@ pub fn yaml_jobs_to_specs(
             needs: job.needs.clone().unwrap_or_default(),
             interactive: job.interactive == Some(true),
             fail_text: job.fail_text.clone(),
-            timeout: JobSpec::DEFAULT_TIMEOUT,
+            timeout: Some(JobSpec::DEFAULT_TIMEOUT),
             background: declared_background,
             background_output: job.background_output.clone(),
             log_config: merge_job_log(job.log.clone(), repo_log),
@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(s.fail_text.as_deref(), Some("install failed"));
         assert_eq!(s.env.get("MY_VAR").unwrap(), "hello");
         assert_eq!(s.working_dir, PathBuf::from("/project"));
-        assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
     }
 
     #[test]
@@ -991,7 +991,7 @@ mod tests {
         assert!(s.needs.is_empty());
         assert!(s.fail_text.is_none());
         assert!(s.description.is_none());
-        assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
     }
 
     // ── repo-level log merge ─────────────────────────────────────────────

@@ -611,6 +611,9 @@ fn run_single_background_job(
         job.timeout,
         Some(tx),
         Some(pid_tx),
+        // Background/coordinator jobs are cancelled through the coordinator's
+        // own PID registry (`daft hooks jobs cancel`), not this flag.
+        None,
     );
 
     // Wait for the registrar (if the child died before send, the channel
@@ -1570,7 +1573,7 @@ mod tests {
             name: "j".to_string(),
             command: "echo ok".to_string(),
             working_dir: std::env::temp_dir(),
-            timeout: Duration::from_secs(120),
+            timeout: Some(Duration::from_secs(120)),
             background: true,
             needs: vec!["dep".to_string()],
             ..Default::default()
@@ -1588,7 +1591,7 @@ mod tests {
         assert_eq!(back.state.jobs.len(), 1);
         let job = &back.state.jobs[0];
         assert_eq!(job.command, "echo ok");
-        assert_eq!(job.timeout, Duration::from_secs(120));
+        assert_eq!(job.timeout, Some(Duration::from_secs(120)));
         assert_eq!(job.needs, vec!["dep".to_string()]);
         assert_eq!(back.log_store_base, PathBuf::from("/tmp/daft-store"));
     }
@@ -2239,7 +2242,7 @@ mod tests {
             name: "long-job".to_string(),
             command: "sleep 5".to_string(),
             working_dir: std::env::temp_dir(),
-            timeout: std::time::Duration::from_secs(30),
+            timeout: Some(std::time::Duration::from_secs(30)),
             background: true,
             ..Default::default()
         };
@@ -2590,7 +2593,7 @@ mod tests {
             name: "long".to_string(),
             command: "sleep 5".to_string(),
             working_dir: std::env::temp_dir(),
-            timeout: std::time::Duration::from_secs(30),
+            timeout: Some(std::time::Duration::from_secs(30)),
             background: true,
             ..Default::default()
         });
