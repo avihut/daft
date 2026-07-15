@@ -76,15 +76,68 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
 
     // Validate each hook definition
     for (hook_name, hook_def) in &config.hooks {
-        validate_hook_def(hook_name, hook_def, &mut result);
+        validate_hook_def("hooks", hook_name, hook_def, &mut result);
+    }
+
+    // Validate each task definition. Tasks share the hook body schema and
+    // validation, but add two task-specific rules: the name must be
+    // CLI/completion-safe, and the legacy `commands:` form is rejected (tasks
+    // are a new surface — jobs-only).
+    for (task_name, task_def) in &config.tasks {
+        validate_task_name(task_name, &mut result);
+        if task_def.commands.is_some() {
+            result.error(
+                format!("tasks.{task_name}"),
+                "tasks do not support the legacy 'commands:' form; use 'jobs:'",
+            );
+        }
+        validate_hook_def("tasks", task_name, task_def, &mut result);
     }
 
     Ok(result)
 }
 
-/// Validate a single hook definition.
-fn validate_hook_def(name: &str, hook: &HookDef, result: &mut ValidationResult) {
-    let path = format!("hooks.{name}");
+/// Validate a task name for CLI and shell-completion safety.
+///
+/// A task name is typed as a bare `daft run <name>` argument and completed on
+/// Tab, so it must not start with `-` (clap would treat it as a flag) or
+/// contain whitespace / path or shell metacharacters. Allowed: an initial
+/// alphanumeric, then alphanumerics plus `.`, `_`, `-`, up to 64 chars.
+fn validate_task_name(name: &str, result: &mut ValidationResult) {
+    let path = format!("tasks.{name}");
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !valid {
+        result.error(
+            &path,
+            format!(
+                "invalid task name '{name}': must start with a letter or digit and contain only \
+                 letters, digits, '.', '_', or '-' (max 64 chars)"
+            ),
+        );
+    }
+
+    // A task named like a lifecycle hook is legal (the namespaces are
+    // disjoint) but confusing — surface it as a warning.
+    if crate::hooks::yaml_config::KNOWN_HOOK_NAMES.contains(&name) {
+        result.warn(
+            &path,
+            format!("task '{name}' shares a name with a lifecycle hook; they are unrelated"),
+        );
+    }
+}
+
+/// Validate a single hook or task definition. `section` is `hooks` or `tasks`
+/// and namespaces the reported paths.
+fn validate_hook_def(section: &str, name: &str, hook: &HookDef, result: &mut ValidationResult) {
+    let path = format!("{section}.{name}");
 
     // Check mutually exclusive execution modes
     let mode_count = [hook.parallel, hook.piped, hook.follow]
@@ -121,7 +174,7 @@ fn validate_hook_def(name: &str, hook: &HookDef, result: &mut ValidationResult) 
         validate_job_dependencies(&path, jobs, result);
 
         // Detect foreground promotion of background jobs
-        detect_foreground_promotions(name, hook, result);
+        detect_foreground_promotions(section, name, hook, result);
     }
 
     // Warn if both jobs and commands are set
@@ -228,6 +281,7 @@ fn validate_background_fields(
 /// Detect foreground promotion: a foreground job that depends on a background job
 /// forces the background job to run in the foreground.
 fn detect_foreground_promotions(
+    section: &str,
     hook_name: &str,
     hook_def: &HookDef,
     result: &mut ValidationResult,
@@ -255,7 +309,7 @@ fn detect_foreground_promotions(
             for dep_name in needs {
                 if bg_map.get(dep_name.as_str()) == Some(&true) {
                     result.warnings.push(ValidationWarning {
-                        path: format!("hooks.{}.jobs", hook_name),
+                        path: format!("{section}.{hook_name}.jobs"),
                         message: format!(
                             "Background job '{}' will be promoted to foreground \
                              (required by '{}')",
@@ -920,5 +974,145 @@ hooks:
         let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
         let result = validate_config(&config).unwrap();
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_tasks_parse_and_validate_clean() {
+        let yaml = r#"
+tasks:
+  run:
+    jobs:
+      - name: web
+        run: pnpm dev
+  seed-db:
+    jobs:
+      - name: seed
+        run: ./scripts/seed.sh
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.tasks.len(), 2);
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok(), "unexpected errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_task_invalid_name_rejected() {
+        // A leading dash would be parsed by clap as a flag; whitespace and
+        // slashes are shell/path hazards.
+        for bad in ["-dev", "web server", "a/b", ""] {
+            let mut tasks = std::collections::HashMap::new();
+            tasks.insert(
+                bad.to_string(),
+                HookDef {
+                    jobs: Some(vec![JobDef {
+                        name: Some("j".to_string()),
+                        run: Some(RunCommand::Simple("true".to_string())),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            );
+            let config = YamlConfig {
+                tasks,
+                ..Default::default()
+            };
+            let result = validate_config(&config).unwrap();
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|e| e.path == format!("tasks.{bad}")),
+                "task name {bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_task_legacy_commands_rejected() {
+        // `commands:` is the deprecated hook form; tasks are jobs-only.
+        let yaml = r#"
+tasks:
+  run:
+    commands:
+      web:
+        run: pnpm dev
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.path == "tasks.run" && e.message.contains("commands")),
+            "legacy commands: in a task must error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_task_mode_exclusivity_reported_under_tasks_path() {
+        let yaml = r#"
+tasks:
+  run:
+    parallel: true
+    piped: true
+    jobs:
+      - name: web
+        run: pnpm dev
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(
+            result.errors.iter().any(|e| e.path == "tasks.run"),
+            "mode-exclusivity error must be namespaced under tasks.run: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_task_shadowing_hook_name_warns_not_errors() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "post-merge".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("j".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        let config = YamlConfig {
+            tasks,
+            ..Default::default()
+        };
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok(), "shadowing must not be an error");
+        assert!(
+            result.warnings.iter().any(|w| w.path == "tasks.post-merge"),
+            "shadowing a hook name should warn: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_unknown_hook_name_validation_unaffected_by_tasks() {
+        // Adding a tasks: section must not change hook validation behavior.
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install
+        run: pnpm install
+tasks:
+  run:
+    jobs:
+      - name: web
+        run: pnpm dev
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok(), "unexpected errors: {:?}", result.errors);
     }
 }
