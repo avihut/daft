@@ -249,6 +249,34 @@ impl Catalog {
         })
     }
 
+    /// Like [`resolve`](Self::resolve), but a path-shaped needle that isn't
+    /// itself a registered root also resolves through the *enclosing* repo:
+    /// daft walks up from the path to the repo's shared git dir and matches
+    /// that. So `daft repo info .` — or a subdirectory, or a sibling worktree —
+    /// finds the repo it belongs to, not just an exact registered path.
+    ///
+    /// Kept separate from [`resolve`](Self::resolve) so the broad name/URL
+    /// callers (clone, `daft go`, `--repo` flags) keep exact-path semantics:
+    /// only `daft repo info` opts into the walk-up.
+    pub fn resolve_including_enclosing_repo(&self, needle: &str) -> Result<Option<CatalogRepoRow>> {
+        if let Some(row) = self.resolve(needle)? {
+            return Ok(Some(row));
+        }
+        // A path-shaped miss: walk up to the enclosing repo's shared git dir.
+        // Gate on the same path-ish shape `resolve` uses so bare names and URLs
+        // never trigger filesystem discovery.
+        let looks_pathish = needle.contains(std::path::MAIN_SEPARATOR) || needle.starts_with('.');
+        if looks_pathish
+            && let Ok(canonical) = Path::new(needle).canonicalize()
+            && let Some(git_common_dir) = crate::core::repo::git_common_dir_at(&canonical)
+        {
+            let git_common_dir = git_common_dir.to_string_lossy().into_owned();
+            return self
+                .read(|conn| CatalogReposRepo::find_by_git_common_dir(conn, &git_common_dir));
+        }
+        Ok(None)
+    }
+
     /// Resolve strictly among live entries by name (the `daft go` fallback
     /// path — removed repos and paths must not hijack branch names).
     pub fn resolve_live_name(&self, name: &str) -> Result<Option<CatalogRepoRow>> {
@@ -634,5 +662,107 @@ mod tests {
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    /// Run a git command in `dir` with a fixed test identity, GIT_* vars
+    /// cleared (never touches global config — CLAUDE.md Critical Rule #1).
+    fn git(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `daft repo info .` and friends: a path *inside* a repo — a
+    /// subdirectory, or a sibling worktree — resolves to the enclosing repo,
+    /// where plain `resolve` (exact path only) can't reach it.
+    #[test]
+    fn resolve_including_enclosing_repo_walks_up_from_subdir_and_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().join("api");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        std::fs::write(main.join("README"), "hi").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        let feat = tmp.path().join("api-feat");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                feat.to_str().unwrap(),
+                "-b",
+                "feat",
+            ],
+        );
+
+        // Register the repo keyed on its shared git dir (as registration does).
+        let cat = catalog(&tmp);
+        let git_common_dir = crate::core::repo::git_common_dir_at(&main).unwrap();
+        let canonical_main = main.canonicalize().unwrap();
+        cat.register(&RegistrationFacts {
+            uuid: "u-real".into(),
+            default_name: "api".into(),
+            path: canonical_main.to_string_lossy().into_owned(),
+            git_common_dir: git_common_dir.to_string_lossy().into_owned(),
+            remote_url: None,
+            default_branch: Some("main".into()),
+        })
+        .unwrap();
+
+        // Plain `resolve` only matches the exact registered root — a
+        // subdirectory misses.
+        let sub = main.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            cat.resolve(&sub.to_string_lossy()).unwrap(),
+            None,
+            "exact-path resolve can't see a subdirectory"
+        );
+
+        // The enclosing-repo resolver walks up: a subdirectory and a linked
+        // worktree both resolve to the repo.
+        assert_eq!(
+            cat.resolve_including_enclosing_repo(&sub.to_string_lossy())
+                .unwrap()
+                .unwrap()
+                .uuid,
+            "u-real",
+            "a subdirectory resolves to its enclosing repo"
+        );
+        assert_eq!(
+            cat.resolve_including_enclosing_repo(&feat.to_string_lossy())
+                .unwrap()
+                .unwrap()
+                .uuid,
+            "u-real",
+            "a sibling worktree resolves to its repo (exact match can't reach it)"
+        );
+
+        // A bare name still misses; a path outside any repo misses.
+        assert_eq!(
+            cat.resolve_including_enclosing_repo("no-such-repo")
+                .unwrap(),
+            None
+        );
+        let outside = TempDir::new().unwrap();
+        assert_eq!(
+            cat.resolve_including_enclosing_repo(&outside.path().to_string_lossy())
+                .unwrap(),
+            None,
+            "a path outside any repo does not resolve"
+        );
     }
 }

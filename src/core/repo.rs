@@ -33,6 +33,22 @@ pub fn get_git_common_dir() -> Result<PathBuf> {
         .with_context(|| format!("Failed to canonicalize git directory: {}", path.display()))
 }
 
+/// The canonical git common directory of the repository enclosing `path`.
+///
+/// Like [`get_git_common_dir`], but walks up from an arbitrary path instead of
+/// the current directory. Returns the *common* dir — the one shared across a
+/// repo's worktrees — so a subdirectory, the main worktree, and any linked
+/// worktree all resolve to the same value, which is what the repo catalog keys
+/// entries on. `None` when `path` is not inside a Git repository.
+///
+/// Used to resolve path-shaped catalog needles (`daft repo info .`, a
+/// subdirectory, a sibling worktree) to the repo they belong to.
+pub fn git_common_dir_at(path: &Path) -> Option<PathBuf> {
+    let repo = gix::discover(path).ok()?;
+    let common = repo.common_dir();
+    Some(std::fs::canonicalize(common).unwrap_or_else(|_| common.to_path_buf()))
+}
+
 /// Return the path to the current worktree.
 pub fn get_current_worktree_path() -> Result<PathBuf> {
     let git = GitCommand::new(false);
@@ -508,5 +524,32 @@ mod tests {
             ),
             other => panic!("expected InWorktree, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn git_common_dir_at_walks_up_to_the_shared_common_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = build_contained_layout(dir.path());
+        // The bare git dir shared by every worktree — what the catalog keys on.
+        let common = proj.join(".git").canonicalize().unwrap();
+
+        // From the main worktree and from a nested subdirectory of it.
+        let main = proj.join("main");
+        assert_eq!(git_common_dir_at(&main).as_ref(), Some(&common));
+        let sub = main.join("nested/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(git_common_dir_at(&sub).as_ref(), Some(&common));
+
+        // A second, linked worktree resolves to the same shared common dir —
+        // the case an exact registered-path match can't reach.
+        git(&proj, &["worktree", "add", "-q", "feat", "-b", "feat"]);
+        assert_eq!(
+            git_common_dir_at(&proj.join("feat")).as_ref(),
+            Some(&common)
+        );
+
+        // Outside any repository → None.
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(git_common_dir_at(outside.path()), None);
     }
 }

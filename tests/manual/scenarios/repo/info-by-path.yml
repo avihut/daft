@@ -1,0 +1,79 @@
+name: Repo info resolves by path
+description:
+  daft repo info accepts a path — `.`, a subdirectory, an absolute path, the
+  container root, or a linked worktree — and resolves it to the enclosing repo,
+  matching the no-argument behavior (the repo you are standing in)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: info . from the main worktree resolves to this repo
+    run: daft repo info . 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Name"
+        - "test-repo"
+        - "live"
+
+  - name: info . matches the no-argument form
+    run: daft repo info 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+
+  - name: info from a subdirectory still resolves to the repo
+    run: mkdir -p deep/nested && daft repo info ./deep/nested 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+      output_not_contains:
+        - "not found"
+
+  - name: info by absolute path from outside the repo
+    run: daft repo info "$WORK_DIR/test-repo/main" 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+
+  - name: info . from the container root resolves to the repo
+    run: daft repo info . 2>&1
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+
+  - name: a linked worktree resolves to the same repo (walk-up, not exact match)
+    run:
+      git-worktree-checkout -b feat >/dev/null 2>&1 && daft repo info
+      "$WORK_DIR/test-repo/feat" 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-repo"
+
+  - name: an unknown name is still an error (path acceptance is a fallback)
+    run: daft repo info no-such-repo 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "not found"
