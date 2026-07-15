@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.0](https://github.com/avihut/daft/compare/v1.19.0...v1.20.0) - 2026-07-15
+
+
+### Bug Fixes
+
+- Atomic, lock-serialized trust/repo registry writes (#703)
+
+
+### Features
+
+- **list**: Fast, shared, stale-then-refresh size walk for --columns +size (#706)
+- **sync**: Dynamic resource governor for parallel pre-push hooks (#702)
+- **exec**: Render multi-worktree runs on the plan-then-execute rail (#704)
+
+
+### Testing
+
+- Real-state tripwire + fix repo-catalog/state test-isolation leaks (#698)
 ## [1.19.0](https://github.com/avihut/daft/compare/v1.18.1...v1.19.0) - 2026-07-12
 
 

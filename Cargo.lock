@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "daft"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
