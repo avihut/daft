@@ -170,19 +170,31 @@ as a fallback if you migrate later.
 
 ## Division of labor: declarative vs imperative
 
-| Concern                                     | Where it goes                                                   |
-| ------------------------------------------- | --------------------------------------------------------------- |
-| Tool versions (Node, Python, Rust)          | `mise.toml` / `.tool-versions`                                  |
-| Committed env-var defaults (non-secret)     | `mise.toml` `[env]`                                             |
-| Secret env vars                             | daft hook ([Env vars & secrets](/recipes/env-vars-and-secrets)) |
-| Install dependencies (`pnpm install`, etc.) | daft hook ([Toolchain bootstrap](/recipes/toolchain-bootstrap)) |
-| Background warmup (`cargo build`, …)        | daft hook ([Background warmup](/recipes/background-warmup))     |
-| Service orchestration (compose up)          | daft hook ([Services with ports](/recipes/services-with-ports)) |
-| Cleanup on remove                           | daft hook ([Cleanup on remove](/recipes/cleanup-on-remove))     |
-| Ad-hoc developer task ("run dev server")    | mise `[tasks]` _or_ `package.json` scripts                      |
+| Concern                                               | Where it goes                                                   |
+| ----------------------------------------------------- | --------------------------------------------------------------- |
+| Tool versions (Node, Python, Rust)                    | `mise.toml` / `.tool-versions`                                  |
+| Committed env-var defaults (non-secret)               | `mise.toml` `[env]`                                             |
+| Secret env vars                                       | daft hook ([Env vars & secrets](/recipes/env-vars-and-secrets)) |
+| Install dependencies (`pnpm install`, etc.)           | daft hook ([Toolchain bootstrap](/recipes/toolchain-bootstrap)) |
+| Background warmup (`cargo build`, …)                  | daft hook ([Background warmup](/recipes/background-warmup))     |
+| Provision services (detached `compose up -d`)         | daft hook ([Services with ports](/recipes/services-with-ports)) |
+| Cleanup on remove                                     | daft hook ([Cleanup on remove](/recipes/cleanup-on-remove))     |
+| Serve on demand (dev server, foreground `compose up`) | daft task ([`daft run`](/reference/cli/daft-run))               |
 
 The declarative tool **describes** what should be there; daft hooks **do** what
-needs doing on lifecycle events.
+needs doing on lifecycle events; daft **tasks** (`daft run`) start the
+long-running processes you attend to.
+
+::: tip Provision on create, serve on demand
+
+Keep `worktree-post-create` finite: install dependencies, copy env files, start
+detached services (`docker compose up -d --wait` returns once containers are
+healthy). Long-running _foreground_ processes — a dev server, a plain
+`docker compose up`, a watcher — belong in a `tasks:` block, started explicitly
+with `daft run`. Tasks have no execution timeout and cancel with Ctrl+C, so they
+won't block a checkout or boot a stack in every worktree you only read.
+
+:::
 
 ::: warning Don't put long-running setup in `mise.toml` `[tasks]`
 
@@ -190,8 +202,8 @@ mise's `[tasks]` is a developer-convenience task runner, not a hook system. It
 doesn't run on worktree create. Putting `pnpm install` in `[tasks.setup]` means
 the user has to remember `mise run setup` after every worktree create — which is
 exactly what you adopted daft to stop doing. Use `worktree-post-create` for
-setup; reserve `[tasks]` for on-demand workflows like "start the dev server" or
-"run the full test suite."
+setup, and daft's own `tasks:` + `daft run` for on-demand workflows like "start
+the dev server" or "run the full test suite."
 
 :::
 

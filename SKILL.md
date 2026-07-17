@@ -26,9 +26,18 @@ its own:
 - Installed dependencies (potentially different versions per branch)
 
 Creating a worktree is spinning up a new development environment, not just
-"checking out a branch". Automation (via `daft.yml` hooks) should install
-dependencies, configure environment tools, and prepare the workspace so the
-developer can start working immediately.
+"checking out a branch". Split that work along two lifecycles:
+
+- **Provision on create.** `daft.yml` lifecycle hooks do finite, idempotent,
+  unattended setup — install dependencies, copy env files, configure environment
+  tools — so the developer can start working immediately.
+- **Serve on demand.** Long-running, attended processes — dev servers,
+  `docker compose` stacks, watchers — belong in **tasks**, started explicitly
+  with `daft run`. Booting a backend stack in every worktree you only ever read
+  wastes resources and invites port collisions.
+
+The same job schema powers both; only the trigger differs (a lifecycle event vs.
+an explicit `daft run`). See Tasks (`daft run`) below.
 
 Never use `git checkout` or `git switch` to change branches in a daft-managed
 repo. Navigate between worktree directories instead.
@@ -93,7 +102,7 @@ hooks:
 
 Run and recommend daft commands using the short verbs exactly as written in this
 file: `daft go`, `daft start`, `daft clone`, `daft init`, `daft carry`,
-`daft exec`, `daft merge`, `daft list`, `daft update`, `daft prune`,
+`daft exec`, `daft run`, `daft merge`, `daft list`, `daft update`, `daft prune`,
 `daft remove`, `daft rename`, `daft sync`, `daft adopt`, `daft eject`, plus the
 noun groups `daft hooks ...`, `daft repo ...`, `daft layout ...`,
 `daft config ...`, `daft doctor`, and `daft skill ...`. Invoke the `daft` binary
@@ -221,6 +230,7 @@ root via `git rev-parse --git-common-dir`.
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `daft list [--format <FMT>] [-b\|-r\|-a] [--columns COLS] [--sort COLS]`        | List worktrees: branch (`✦` = default), path, base ahead/behind, file status, remote status, age, owner, commit. In forge repos the default listing also includes a row per open PR (see Machine-Readable Output; `--columns -pr` for worktrees only). `-b`/`-r`/`-a` include local/remote branches without worktrees. Output contract and JSON fields: see Machine-Readable Output. |
 | `daft exec [TARGETS]... [--all] [-x CMD]... [-- CMD ARGS]...`                   | Run command(s) across worktrees: positional/glob targets or `--all`; `-x` repeatable shell pipelines; trailing `--` for direct argv. Parallel by default (`--sequential`/`--keep-going` for serial); failed worktrees' captured output is dumped after the run, `-v` dumps successful ones too. On an interactive terminal, runs render as a live plan-then-execute rail.            |
+| `daft run [<task>] [--list] [--job <name>] [--tag <tag>]`                       | Run a named task from `daft.yml`'s top-level `tasks:` section in the current worktree; bare `daft run` runs the reserved `run` task. Output streams live, there is no execution timeout, and Ctrl+C cancels (twice force-kills). Executes even in an untrusted repo — explicit invocation counts as consent. See Tasks (`daft run`).                                                 |
 | `daft config remote-sync [--on\|--off\|--status\|--global]`                     | Toggle fetch, push, and remote-delete behavior globally or per-repo; no args opens an interactive TUI                                                                                                                                                                                                                                                                                |
 | `daft layout [show\|list\|transform\|default]`                                  | Manage worktree layouts                                                                                                                                                                                                                                                                                                                                                              |
 | `daft hooks <subcommand>`                                                       | Manage hooks trust and configuration (`trust`, `prompt`, `deny`, `status`, `run`, `install`, `validate`, `dump`, `migrate`, `jobs`)                                                                                                                                                                                                                                                  |
@@ -232,8 +242,9 @@ root via `git rev-parse --git-common-dir`.
 | `daft shell-init <shell>`                                                       | Generate shell integration wrappers (auto-cd)                                                                                                                                                                                                                                                                                                                                        |
 | `daft completions <shell>`                                                      | Generate shell tab completions                                                                                                                                                                                                                                                                                                                                                       |
 
-For ad-hoc commands across worktrees use `daft exec`; for recurring per-worktree
-automation use `daft.yml` hooks.
+For ad-hoc commands across worktrees use `daft exec`; for named tasks committed
+in `daft.yml` (dev servers, compose stacks) use `daft run`; for recurring
+lifecycle automation use `daft.yml` hooks.
 
 ### Repo Catalog and the Graph
 
@@ -277,9 +288,13 @@ complete, stopping on first failure. Interactive programs work — stdio is full
 inherited.
 
 ```bash
-daft clone https://github.com/org/repo -x 'mise install' -x 'npm run dev'
+daft clone https://github.com/org/repo -x 'mise install'
 daft start my-feature -x claude
 ```
+
+Use `-x` for finite setup steps. To start a long-running process (a dev server,
+a compose stack, a watcher), define a task and run it on demand with `daft run`
+— see Tasks (`daft run`).
 
 ## Merging Across Worktrees (`daft merge`)
 
@@ -480,13 +495,15 @@ A job can contain a nested group with its own execution mode:
 
 ### Template Variables
 
-Available in `run` commands:
+Available in job `run`/`script` commands and in job `env:` values, for lifecycle
+hooks and `daft run` tasks alike:
 
 | Variable              | Description                              |
 | --------------------- | ---------------------------------------- |
 | `{branch}`            | Target branch name                       |
 | `{worktree_path}`     | Path to the target worktree              |
 | `{worktree_root}`     | Project root directory                   |
+| `{worktree_slug}`     | Sanitized worktree name (`[a-z0-9-]`)    |
 | `{source_worktree}`   | Path to the source worktree              |
 | `{git_dir}`           | Path to the `.git` directory             |
 | `{remote}`            | Remote name (usually `origin`)           |
@@ -496,6 +513,12 @@ Available in `run` commands:
 | `{default_branch}`    | Default branch name (post-clone)         |
 | `{old_worktree_path}` | Previous worktree path (move hooks only) |
 | `{old_branch}`        | Previous branch name (move hooks only)   |
+
+`{worktree_slug}` is the worktree's name relative to the project root,
+lowercased and reduced to `[a-z0-9-]` (max 63 chars) — safe for `docker compose`
+project names, DB schema names, and temp dirs. Keyed off the worktree, not the
+branch, so it is unique per worktree. Use it to make per-worktree names
+collision-free: `COMPOSE_PROJECT_NAME: "api-{worktree_slug}"`.
 
 ### Skip and Only Conditions
 
@@ -637,6 +660,62 @@ All hooks receive: `DAFT_HOOK`, `DAFT_COMMAND`, `DAFT_PROJECT_ROOT`,
 removal hooks `DAFT_REMOVAL_REASON` (`remote-deleted`, `manual`, `ejecting`);
 move hooks `DAFT_IS_MOVE`, `DAFT_OLD_WORKTREE_PATH`, `DAFT_OLD_BRANCH_NAME`.
 
+## Tasks (`daft run`)
+
+Tasks are named, user-invoked job groups — the **serve on demand** half of the
+workflow. They live under a top-level `tasks:` section in `daft.yml` (a sibling
+of `hooks:`) and run only when asked:
+
+```yaml
+hooks:
+  worktree-post-create:
+    jobs:
+      - name: install
+        run: pnpm install # provision: finite, idempotent, unattended
+
+tasks:
+  run: # reserved default — bare `daft run`
+    parallel: true
+    jobs:
+      - name: backend
+        run: docker compose up
+        env:
+          COMPOSE_PROJECT_NAME: "api-{worktree_slug}"
+      - name: web
+        run: pnpm dev
+        root: frontend
+  seed-db: # `daft run seed-db`
+    jobs:
+      - name: seed
+        run: ./scripts/seed.sh
+```
+
+- `daft run` — runs the reserved task named `run`
+- `daft run <name>` — runs any task; an unknown name errors listing the
+  available tasks
+- `daft run --list` — lists the tasks with job counts
+- `daft run --job <name>` / `--tag <tag>` — run a subset of the task's jobs
+
+Tasks reuse the full job schema — `parallel`/`piped`/`follow`, `needs`, groups,
+`env`, `root`, `skip`/`only`, `interactive`, `background`. Differences from
+lifecycle hooks:
+
+- **No execution timeout.** A task runs until it exits or is cancelled (hook
+  jobs keep the 300s default) — the right home for dev servers and watchers.
+- **Foreground and attended.** Output streams live; Ctrl+C cancels the job tree
+  gracefully, a second Ctrl+C force-kills. There is no detach flag; jobs marked
+  `background: true` still dispatch to the coordinator as usual (visible in
+  `daft hooks jobs`).
+- **Trust.** An explicit `daft run` counts as consent: it executes even in an
+  untrusted repo, printing a `daft hooks trust` hint (same rule as
+  `daft hooks run`).
+- Task jobs receive `DAFT_TASK=<name>` in place of `DAFT_HOOK`, with
+  `DAFT_COMMAND=run`.
+
+Positioning: `daft exec` runs an ad-hoc command you type on the spot; `daft run`
+runs a named task committed in `daft.yml` (npm's `exec`/`run` split). Prefer a
+task over hand-launching a server when one is defined.
+
 ## Environment Tools and Suggested Automation
 
 When working in a daft repo, detect environment tools by their marker files and
@@ -726,6 +805,7 @@ When working in a daft-managed repository, apply these translations:
 | "Update from remote"              | `daft update` — updates current or specified worktrees (`source:dest` too)                    |
 | "Merge my branch"                 | `daft merge <branch> --into main --no-edit`                                                   |
 | "Run my build on these worktrees" | `daft exec feat/a feat/b -- <cmd>` or `daft exec --all -- <cmd>`                              |
+| "Start the dev server / stack"    | `daft run` — runs the reserved `run` task from `daft.yml`, if one exists                      |
 | "Adopt existing repo"             | `daft adopt` — converts a traditional repo to daft layout                                     |
 
 ### Per-worktree Isolation

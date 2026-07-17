@@ -43,6 +43,7 @@ Additionally:
 | `source_dir`       | string      | Directory for script files (default: `".daft"`)                          |
 | `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`) |
 | `hooks`            | map         | Hook definitions, keyed by hook name                                     |
+| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))               |
 | `log`              | object      | Log configuration (see [Log configuration](#log-configuration))          |
 | `relations`        | list        | Related repositories (see [Relations](#relations))                       |
 
@@ -71,6 +72,54 @@ hand — they resolve names, paths, or URLs to the portable remote URL and edit
 only the `relations:` block. Consumed by `daft exec --related`,
 `daft start --with-related`, and `daft repo info`. Older daft versions ignore
 the key.
+
+## Tasks
+
+A top-level `tasks:` map defines named, user-invoked job groups, run with
+[`daft run`](/reference/cli/daft-run). Tasks are the _serve on demand_ half of
+the workflow: provisioning stays finite and unattended in
+`worktree-post-create`, while starting dev servers, `docker compose` stacks, and
+watchers becomes an explicit, attended `daft run`.
+
+```yaml
+tasks:
+  run: # reserved default — bare `daft run`
+    parallel: true
+    jobs:
+      - name: backend
+        run: docker compose up
+        env:
+          COMPOSE_PROJECT_NAME: "api-{worktree_slug}"
+      - name: web
+        run: pnpm dev
+        root: frontend
+  seed-db: # `daft run seed-db`
+    jobs:
+      - name: seed
+        run: ./scripts/seed.sh
+```
+
+A task body is a [hook entry](#hook-entries): it takes the same
+`parallel`/`piped`/`follow`, `jobs`, and `skip`/`only` fields, and each job
+takes the same [job entry](#job-entries) fields. Keeping tasks in their own
+section (rather than as custom hook names) keeps hook-name validation strict.
+
+Task-specific rules:
+
+- **Names** must start with a letter or digit and contain only letters, digits,
+  `.`, `_`, or `-`. The reserved name `run` is what bare `daft run` executes.
+- **Jobs only** — the deprecated `commands:` form is rejected in tasks.
+- **No execution timeout** — a task job runs until it exits or is cancelled
+  (lifecycle-hook jobs keep the 300-second default). This makes tasks the right
+  home for long-running processes.
+- **Foreground** — output streams live and Ctrl+C cancels (twice to force-kill);
+  there is no detached/background mode.
+- **Trust** — an explicit `daft run` runs even in an untrusted repo (it counts
+  as consent), unlike lifecycle hooks which are skipped until the repo is
+  trusted.
+
+The `daft-local.yml` overlay layers machine-local tasks on top of the committed
+`daft.yml`, merged by name exactly like hooks.
 
 ## Hook entries
 
@@ -150,14 +199,16 @@ hooks:
 
 ### Template variables
 
-Commands (`run`) support template variables that are replaced with values from
-the execution context:
+Job `run`/`script` commands **and** job `env:` values support template variables
+that are replaced with values from the execution context (this applies to both
+lifecycle hooks and `daft run` tasks):
 
 | Variable            | Description                                             |
 | ------------------- | ------------------------------------------------------- |
 | `{branch}`          | Target branch name (alias for `{worktree_branch}`)      |
 | `{worktree_path}`   | Path to the target worktree                             |
 | `{worktree_root}`   | Project root directory                                  |
+| `{worktree_slug}`   | Sanitized worktree name — `[a-z0-9-]`, capped at 63     |
 | `{worktree_branch}` | Target branch name                                      |
 | `{source_worktree}` | Path to the source worktree (where command was invoked) |
 | `{git_dir}`         | Path to the `.git` directory                            |
@@ -166,6 +217,14 @@ the execution context:
 | `{base_branch}`     | Base branch name (for `checkout -b` commands)           |
 | `{repository_url}`  | Repository URL (for `post-clone`)                       |
 | `{default_branch}`  | Default branch name (for `post-clone`)                  |
+
+`{worktree_slug}` is the worktree's path relative to the project root (falling
+back to the directory name), lowercased with every run of non-`[a-z0-9]`
+characters collapsed to a single `-` and the result capped at the 63-character
+DNS-label limit. Because it is keyed off the worktree rather than the branch, it
+is unique per worktree and stable even when the worktree is not on a branch —
+use it to keep per-worktree names collision-free, e.g.
+`COMPOSE_PROJECT_NAME: "api-{worktree_slug}"`.
 
 **Move hooks only** (available when `DAFT_IS_MOVE` is `true`):
 

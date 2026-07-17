@@ -449,6 +449,7 @@ export default defineConfig({
                   { text: "update", link: "/reference/cli/daft-update" },
                   { text: "carry", link: "/reference/cli/daft-carry" },
                   { text: "exec", link: "/reference/cli/daft-exec" },
+                  { text: "run", link: "/reference/cli/daft-run" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
                   {
                     text: "repo add",
