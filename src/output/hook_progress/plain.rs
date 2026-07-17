@@ -15,12 +15,14 @@ pub struct PlainHookRenderer {
     compact_finalization: bool,
     name_column_width: usize,
     previews: std::collections::HashMap<String, String>,
+    banner: &'static str,
 }
 
 impl PlainHookRenderer {
     pub fn new() -> Self {
         Self {
             name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
+            banner: "daft hooks",
             ..Self::default()
         }
     }
@@ -29,12 +31,19 @@ impl PlainHookRenderer {
         Self {
             verbose,
             name_column_width: super::formatting::DEFAULT_NAME_COLUMN_WIDTH,
+            banner: "daft hooks",
             ..Self::default()
         }
     }
 
     pub fn set_name_column_width(&mut self, width: usize) {
         self.name_column_width = width;
+    }
+
+    /// Override the header brand label (default `"daft hooks"`). `daft run`
+    /// sets `"daft run"` so a task isn't mislabeled as a hook.
+    pub fn set_banner(&mut self, banner: &'static str) {
+        self.banner = banner;
     }
 
     /// Toggle the compact-finalization branch used by `daft exec` and friends.
@@ -48,7 +57,9 @@ impl PlainHookRenderer {
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
-        for line in super::formatting::format_header_lines(hook_name, target, false, false) {
+        for line in
+            super::formatting::format_header_lines(self.banner, hook_name, target, false, false)
+        {
             eprintln!("{line}");
         }
     }

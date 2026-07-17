@@ -720,6 +720,60 @@ mod tests {
     }
 
     #[test]
+    fn parallel_cancelled_cascades_and_terminates() {
+        // Regression guard: a Cancelled node must cascade to its dependents
+        // exactly like Failed. Without the `| Cancelled` arm in run_parallel,
+        // B and C stay Pending, are never counted toward `done`, and (because
+        // a worker only returns when `active == 0`) the scheduler still exits
+        // but leaves them Pending — so the assertions below fail. This test
+        // fails if that arm is reverted.
+        let dag = DagGraph::new(vec![
+            ("A".into(), vec![]),
+            ("B".into(), vec!["A".into()]),
+            ("C".into(), vec!["B".into()]),
+        ])
+        .unwrap();
+
+        let results = dag.run_parallel(
+            |_, name| {
+                if name == "A" {
+                    NodeStatus::Cancelled
+                } else {
+                    NodeStatus::Succeeded
+                }
+            },
+            4,
+        );
+
+        assert_eq!(results[0], NodeStatus::Cancelled);
+        assert_eq!(results[1], NodeStatus::DepFailed);
+        assert_eq!(results[2], NodeStatus::DepFailed);
+    }
+
+    #[test]
+    fn sequential_cancelled_cascades() {
+        // Same guard for the sequential scheduler's `| Cancelled` cascade arm.
+        let dag = DagGraph::new(vec![
+            ("A".into(), vec![]),
+            ("B".into(), vec!["A".into()]),
+            ("C".into(), vec!["B".into()]),
+        ])
+        .unwrap();
+
+        let results = dag.run_sequential(|_, name| {
+            if name == "A" {
+                NodeStatus::Cancelled
+            } else {
+                NodeStatus::Succeeded
+            }
+        });
+
+        assert_eq!(results[0], NodeStatus::Cancelled);
+        assert_eq!(results[1], NodeStatus::DepFailed);
+        assert_eq!(results[2], NodeStatus::DepFailed);
+    }
+
+    #[test]
     fn parallel_diamond_one_branch_fails() {
         let dag = DagGraph::new(vec![
             ("A".into(), vec![]),

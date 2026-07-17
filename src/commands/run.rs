@@ -144,6 +144,8 @@ fn cmd_run(args: &Args, output: &mut dyn Output) -> Result<()> {
     let mut hooks_config = crate::core::settings::load_hooks_config()?;
     hooks_config.output.verbose = true;
     hooks_config.output.compact_finalization = true;
+    // Label the progress header "daft run" rather than the default "daft hooks".
+    hooks_config.output.banner = "daft run";
     let output_config = hooks_config.output.clone();
 
     let presenter: Arc<dyn JobPresenter> = CliPresenter::auto(&output_config);

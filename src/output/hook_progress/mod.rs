@@ -57,6 +57,7 @@ impl HookRenderer {
         } else {
             let mut plain = PlainHookRenderer::with_verbose(config.verbose);
             plain.set_compact_finalization(config.compact_finalization);
+            plain.set_banner(config.banner);
             HookRenderer::Plain(plain)
         }
     }
@@ -458,7 +459,13 @@ mod tests {
 
     #[test]
     fn test_format_header_lines_plain() {
-        let lines = formatting::format_header_lines("worktree-post-create", None, false, false);
+        let lines = formatting::format_header_lines(
+            "daft hooks",
+            "worktree-post-create",
+            None,
+            false,
+            false,
+        );
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with('\u{250c}'));
         assert!(lines[1].contains("daft hooks"));
@@ -470,8 +477,13 @@ mod tests {
 
     #[test]
     fn format_header_lines_includes_target_segment_when_provided() {
-        let lines =
-            formatting::format_header_lines("worktree-pre-remove", Some("test"), false, false);
+        let lines = formatting::format_header_lines(
+            "daft hooks",
+            "worktree-pre-remove",
+            Some("test"),
+            false,
+            false,
+        );
         assert_eq!(lines.len(), 3);
         assert!(
             lines[1].contains("worktree-pre-remove  on: test"),
@@ -487,7 +499,7 @@ mod tests {
 
     #[test]
     fn format_header_lines_drops_redundant_hook_label() {
-        let lines = formatting::format_header_lines("post-clone", None, false, false);
+        let lines = formatting::format_header_lines("daft hooks", "post-clone", None, false, false);
         // The legacy title carried a "hook:" prefix; the new title drops it
         // because the box border itself signals "this is a hook".
         assert!(
@@ -499,8 +511,20 @@ mod tests {
 
     #[test]
     fn format_header_lines_weld_opens_the_top_corner_only() {
-        let plain = formatting::format_header_lines("worktree-post-create", None, false, false);
-        let welded = formatting::format_header_lines("worktree-post-create", None, false, true);
+        let plain = formatting::format_header_lines(
+            "daft hooks",
+            "worktree-post-create",
+            None,
+            false,
+            false,
+        );
+        let welded = formatting::format_header_lines(
+            "daft hooks",
+            "worktree-post-create",
+            None,
+            false,
+            true,
+        );
         // The rail welds into the banner's top corner (#651)…
         assert!(welded[0].starts_with('\u{251c}'), "got: {:?}", welded[0]);
         // …while the banner still closes below — the job blocks hang

@@ -44,6 +44,7 @@ pub(super) fn output_suppressed() -> bool {
 /// embedded block today (see `HookRenderer::embedded`) — every live caller
 /// passes `false`. Kept for possible reuse by full git hooks rendering.
 pub(super) fn format_header_lines(
+    banner: &str,
     hook_name: &str,
     target: Option<&str>,
     use_color: bool,
@@ -55,7 +56,9 @@ pub(super) fn format_header_lines(
         .map(|t| format!("  {GREY}on: {BRIGHT_WHITE}{t}{}", styles::RESET))
         .unwrap_or_default();
 
-    let content_width = " daft hooks v".len()
+    let content_width = " ".len()
+        + banner.len()
+        + " v".len()
         + VERSION.len()
         + "  ".len()
         + hook_name.len()
@@ -67,7 +70,7 @@ pub(super) fn format_header_lines(
         vec![
             format!("{GREY}{top_corner}{border_h}\u{2510}{}", styles::RESET),
             format!(
-                "{GREY}\u{2502} {ORANGE}daft hooks {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
+                "{GREY}\u{2502} {ORANGE}{banner} {GREY}v{VERSION}  {}{BRIGHT_WHITE}{hook_name}{}{target_part}{GREY} \u{2502}{}",
                 styles::BOLD,
                 styles::RESET,
                 styles::RESET
@@ -77,7 +80,7 @@ pub(super) fn format_header_lines(
     } else {
         vec![
             format!("{top_corner}{border_h}\u{2510}"),
-            format!("\u{2502} daft hooks v{VERSION}  {hook_name}{target_segment} \u{2502}"),
+            format!("\u{2502} {banner} v{VERSION}  {hook_name}{target_segment} \u{2502}"),
             format!("\u{2514}{border_h}\u{2518}"),
         ]
     }
