@@ -151,10 +151,8 @@ r2d2_sqlite = "0.34"
 # Memory probe for the sync push resource governor (#678). `system` is the
 # only feature daft needs (RAM/swap + process RSS); the public API is fully
 # safe, keeping `forbid(unsafe_code)` intact — same precedent as `rusqlite`.
-# Held on the 0.38 line, but the MSRV rationale for that pin lapsed with the
-# 1.94 → 1.95 bump: 0.39 requires exactly 1.95, so moving the line forward
-# is no longer blocked — see #710.
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+# The 0.39 line declares MSRV 1.95, which daft now meets (see #713).
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 # libc is Unix-only (uses fork/pipes)
 [target.'cfg(unix)'.dependencies]
