@@ -41,6 +41,7 @@ use crate::coordinator::ports::JobsStorePort;
 use crate::hooks::HookContext;
 use crate::hooks::HookType;
 use crate::output::Output;
+use crate::output::deferred_warn;
 use crate::store::models::InvocationRow;
 use crate::store::models::invocation::{INVOCATION_STATUS_SKIPPED, SKIP_REASON_UNTRUSTED};
 use std::collections::{BTreeSet, HashMap};
@@ -169,16 +170,17 @@ pub fn flush_pending_notice(git_dir: &Path, output: &mut dyn Output) {
     }
 }
 
-/// Best-effort write of a `status = 'skipped'` invocation row. Failures are
-/// reported on raw stderr (same precedent as the yaml executor's
-/// invocation-meta write) — never via `output.notice`, which in TUI mode
+/// Best-effort write of a `status = 'skipped'` invocation row. Failures go
+/// through the deferred-warning channel (same precedent as the yaml
+/// executor's invocation-meta write): stderr immediately, or after a live
+/// region closes (#720) — never via `output.notice`, which in TUI mode
 /// would vanish into the buffer and hide the degradation.
 pub fn record_skip(ctx: &HookContext, reason: &str) {
     if let Err(e) = try_record_skip(ctx, reason) {
-        eprintln!(
-            "daft: failed to record skipped {} hook: {e}",
+        deferred_warn::warn(format!(
+            "daft: failed to record skipped {} hook: {e:#}",
             ctx.hook_type.yaml_name()
-        );
+        ));
     }
 }
 
@@ -209,10 +211,10 @@ fn try_record_skip(ctx: &HookContext, reason: &str) -> anyhow::Result<()> {
 /// `skip:` condition fires.
 pub fn clear_skips(ctx: &HookContext) {
     if let Err(e) = try_clear_skips(ctx) {
-        eprintln!(
-            "daft: failed to clear skipped-{} records: {e}",
+        deferred_warn::warn(format!(
+            "daft: failed to clear skipped-{} records: {e:#}",
             ctx.hook_type.yaml_name()
-        );
+        ));
     }
 }
 

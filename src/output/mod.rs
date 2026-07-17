@@ -19,6 +19,7 @@
 
 mod buffering;
 mod cli;
+pub mod deferred_warn;
 pub mod emit;
 pub mod format;
 pub mod hook_progress;

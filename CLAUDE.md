@@ -492,8 +492,13 @@ defaults (PRAGMAs, perms, env scrub) come for free.
 
 1. **Schema first.** Add a `.sql` file in `src/store/migrations/` with the next
    sequence number, e.g. `002_trust_registry.sql`. Never edit a shipped
-   migration in place; only append. Add a unit test in `store::migrate::tests`
-   that asserts the new tables exist after `to_latest`.
+   migration in place; only append. Never _renumber_ one either — a number any
+   build has run against real state is burned. If a parallel PR claims your
+   number first, rebase onto the next free number AND manually repair every
+   store your pre-rebase builds stamped (#720: such a store fails every open
+   with "table already exists", forever, and the wedge outlives the rebase). Add
+   a unit test in `store::migrate::tests` that asserts the new tables exist
+   after `to_latest`.
 2. **Typed row model.** Add a struct in `src/store/models/<thing>.rs` — one Rust
    field per SQL column, no JSON blobs.
 3. **Repo with parameterized queries.** Add a struct in

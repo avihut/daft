@@ -13,6 +13,7 @@ use crate::coordinator::log_record::{LogRecord, OutputKind, StatusEvent, record_
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
 use crate::coordinator::ports::JobsStorePort;
 use crate::executor::NodeStatus;
+use crate::output::deferred_warn;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -82,11 +83,11 @@ impl BufferingLogSink {
         let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
             Ok(js) => Some(js),
             Err(e) => {
-                eprintln!(
-                    "daft: warning: opening coordinator store at {} failed: {e} \
+                deferred_warn::warn(format!(
+                    "daft: warning: opening coordinator store at {} failed: {e:#} \
                      (foreground job records will not be persisted to the store)",
                     store.base_dir.display()
-                );
+                ));
                 None
             }
         };
@@ -113,7 +114,8 @@ impl BufferingLogSink {
     }
 
     /// Persist a `JobMeta` into the SQLite store as a `JobRow`. Best
-    /// effort: errors go to stderr and don't abort the surrounding write.
+    /// effort: errors go through the deferred-warning channel and don't
+    /// abort the surrounding write.
     fn persist_job_row(&self, meta: &JobMeta, tags: &[String]) {
         let Some(js) = self.job_store.as_ref() else {
             return;
@@ -141,10 +143,10 @@ impl BufferingLogSink {
             max_log_size_bytes: meta.max_log_size_bytes,
         };
         if let Err(e) = js.upsert_job(&row) {
-            eprintln!(
-                "daft: failed to persist job '{}' to the coordinator store: {e}",
+            deferred_warn::warn(format!(
+                "daft: failed to persist job '{}' to the coordinator store: {e:#}",
                 meta.name
-            );
+            ));
         }
     }
 }
@@ -237,7 +239,10 @@ impl LogSink for BufferingLogSink {
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
+            deferred_warn::warn(format!(
+                "daft: failed to write job record for '{}': {e:#}",
+                spec.name
+            ));
         }
         // SQLite source-of-truth write happens after the log file is on
         // disk so a successful `daft hooks jobs logs` lookup can rely on
@@ -269,7 +274,10 @@ impl LogSink for BufferingLogSink {
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            eprintln!("daft: failed to write job record for '{}': {e}", spec.name);
+            deferred_warn::warn(format!(
+                "daft: failed to write job record for '{}': {e:#}",
+                spec.name
+            ));
         }
         self.persist_job_row(&meta, &spec.tags);
     }
