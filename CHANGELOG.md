@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.21.0](https://github.com/avihut/daft/compare/v1.20.0...v1.21.0) - 2026-07-17
+
+
+### Features
+
+- Native agent-skill install and doctor freshness check (#707)
+
+
+### Miscellaneous
+
+- Bump MSRV 1.94 → 1.95 (#713)
 ## [1.20.0](https://github.com/avihut/daft/compare/v1.19.0...v1.20.0) - 2026-07-15
 
 
