@@ -102,6 +102,13 @@ impl<S: LiveScreen> TuiRenderer<S> {
         let render_start = Instant::now();
         let viewport_height = self.state.viewport_height(self.extra_rows);
 
+        // Foreign `daft:` warnings must not reach stderr while the inline
+        // viewport owns it (#720). Callers usually hold a raw-mode guard
+        // that already defers them for the whole window; this guard makes
+        // the render loop safe even without that discipline. Declared
+        // before `terminal` so it drops after the final teardown.
+        let _defer_warnings = crate::output::deferred_warn::live_region_guard();
+
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
         let mut terminal = Terminal::with_options(
             backend,
@@ -361,12 +368,24 @@ impl LiveScreen for TuiState {
 /// driver echoing `^C` mid-render. Callers keep a process-global SIGINT
 /// handler installed as the fallback for when raw mode fails to enable —
 /// and for the moment this guard drops, when Ctrl+C is a signal again.
+///
+/// The guard also holds a [`deferred_warn`](crate::output::deferred_warn)
+/// live-region guard: `daft:` warnings from worker threads queue for the
+/// whole raw-mode window instead of staircasing through the render (#720).
 pub fn enable_raw_mode_guard() -> RawModeGuard {
+    let defer_warnings = crate::output::deferred_warn::live_region_guard();
     let _ = crossterm::terminal::enable_raw_mode();
-    RawModeGuard
+    RawModeGuard {
+        _defer_warnings: defer_warnings,
+    }
 }
 
-pub struct RawModeGuard;
+pub struct RawModeGuard {
+    /// Struct fields drop after the `Drop::drop` body runs, so the queued
+    /// warnings flush after `disable_raw_mode` — in cooked mode, below the
+    /// region.
+    _defer_warnings: crate::output::deferred_warn::LiveRegionGuard,
+}
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {

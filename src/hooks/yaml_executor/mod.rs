@@ -222,7 +222,9 @@ pub fn execute_yaml_hook_with_rc(
         created_at: chrono::Utc::now(),
     };
     if let Err(e) = store.write_invocation_meta(&invocation_id, &inv_meta) {
-        eprintln!("daft: failed to write invocation meta for '{hook_name}': {e}");
+        crate::output::deferred_warn::warn(format!(
+            "daft: failed to write invocation meta for '{hook_name}': {e:#}"
+        ));
     }
 
     let mut jobs = get_effective_jobs(hook_def);
@@ -408,7 +410,9 @@ pub fn execute_yaml_hook_with_rc(
         match crate::coordinator::adapters::SqliteJobsStore::for_repo_base(&store.base_dir) {
             Ok(js) => Some(js),
             Err(e) => {
-                eprintln!("daft: failed to open coordinator store for '{hook_name}': {e}");
+                crate::output::deferred_warn::warn(format!(
+                    "daft: failed to open coordinator store for '{hook_name}': {e:#}"
+                ));
                 None
             }
         };
@@ -433,10 +437,10 @@ pub fn execute_yaml_hook_with_rc(
             sj.reason.as_str(),
         )];
         if let Err(e) = store.write_job_record_jsonl(&invocation_id, &meta, &records) {
-            eprintln!(
-                "daft: failed to write skipped job record for '{}': {e}",
+            crate::output::deferred_warn::warn(format!(
+                "daft: failed to write skipped job record for '{}': {e:#}",
                 sj.name
-            );
+            ));
         }
         if let Some(ref js) = job_store_for_skipped {
             use crate::coordinator::ports::JobsStorePort;
@@ -462,10 +466,10 @@ pub fn execute_yaml_hook_with_rc(
                 max_log_size_bytes: meta.max_log_size_bytes,
             };
             if let Err(e) = js.upsert_job(&row) {
-                eprintln!(
-                    "daft: failed to persist skipped job row for '{}': {e}",
+                crate::output::deferred_warn::warn(format!(
+                    "daft: failed to persist skipped job row for '{}': {e:#}",
                     sj.name
-                );
+                ));
             }
         }
     }
@@ -481,7 +485,9 @@ pub fn execute_yaml_hook_with_rc(
     if let Some(ref js) = job_store_for_skipped {
         use crate::coordinator::ports::JobsStorePort;
         if let Err(e) = js.write_repo_policy(&repo_hash, &repo_policy) {
-            eprintln!("daft: failed to write repo policy for '{hook_name}': {e}");
+            crate::output::deferred_warn::warn(format!(
+                "daft: failed to write repo policy for '{hook_name}': {e:#}"
+            ));
         }
     }
 

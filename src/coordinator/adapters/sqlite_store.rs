@@ -372,6 +372,43 @@ mod tests {
         (tmp, SqliteJobsStore::new(pool))
     }
 
+    #[test]
+    fn renumbered_migration_wedge_fails_open_with_diagnosable_chain() {
+        // Reproduces #720: a store stamped `user_version = 4` by a build
+        // whose 4th migration was `worktree_sizes` (the pre-rebase #706
+        // branch) collides with the merged lineage, where 004 is
+        // `hook_profiles` and `worktree_sizes` is 005. `to_latest` replays
+        // 005 into a schema that already has the table, so every open of
+        // that store fails. The failure must keep its full context chain:
+        // the best-effort warning sites print `{e:#}`, and without the
+        // SQLite root cause the wedge is undiagnosable in the field.
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join(crate::store::paths::COORDINATOR_DB);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(&format!(
+            "PRAGMA application_id = {};",
+            crate::store::connection::APPLICATION_ID
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../store/migrations/005_worktree_sizes.sql"
+        ))
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        drop(conn);
+
+        let err = SqliteJobsStore::for_repo_base(tmp.path()).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("open coordinator store"),
+            "outer context missing: {chain}"
+        );
+        assert!(
+            chain.contains("already exists"),
+            "SQLite root cause missing from chain: {chain}"
+        );
+    }
+
     fn sample_inv() -> InvocationRow {
         InvocationRow {
             repo_hash: "r".into(),
