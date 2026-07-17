@@ -169,6 +169,9 @@ fn complete(
         // hooks run: complete configured hook types
         ("hooks-run", 1) => complete_configured_hooks(word),
 
+        // daft run: complete task names defined in daft.yml
+        ("daft-run", 1) => complete_task_names(word),
+
         // hooks run --job: complete job names for a hook type
         ("hooks-run-job", 1) => complete_hook_jobs(word, verbose),
 
@@ -886,6 +889,32 @@ fn complete_configured_hooks(prefix: &str) -> Result<Vec<String>> {
         Some(cfg) => {
             let mut names: Vec<String> = cfg
                 .hooks
+                .keys()
+                .filter(|name| name.starts_with(prefix))
+                .cloned()
+                .collect();
+            names.sort();
+            Ok(names)
+        }
+        None => Ok(vec![]),
+    }
+}
+
+/// Complete task names for `daft run <TAB>` from the current worktree's merged
+/// daft.yml. A single in-process config read — no subprocess — to stay within
+/// the `__complete` latency budget.
+fn complete_task_names(prefix: &str) -> Result<Vec<String>> {
+    let Some(root) = find_worktree_root().ok() else {
+        return Ok(vec![]);
+    };
+    let config = yaml_config_loader::load_merged_config(root.as_path())
+        .ok()
+        .flatten();
+
+    match config {
+        Some(cfg) => {
+            let mut names: Vec<String> = cfg
+                .tasks
                 .keys()
                 .filter(|name| name.starts_with(prefix))
                 .cloned()

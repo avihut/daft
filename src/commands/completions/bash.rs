@@ -883,6 +883,12 @@ _daft() {
                 _git_worktree_exec
                 return 0
                 ;;
+            run)
+                COMP_WORDS=("daft-run" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _daft_run
+                return 0
+                ;;
             update)
                 COMP_WORDS=("git-worktree-fetch" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
@@ -939,7 +945,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

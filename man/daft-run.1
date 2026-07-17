@@ -1,0 +1,34 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH daft-run 1  "daft-run 1.21.0" 
+.SH NAME
+daft\-run \- Run a named task defined in daft.yml
+.SH SYNOPSIS
+\fBdaft\-run\fR [\fB\-\-list\fR] [\fB\-\-job\fR] [\fB\-\-tag\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITASK\fR] 
+.SH DESCRIPTION
+Run a named task from the current worktree\*(Aqs daft.yml.
+.PP
+Tasks live under a top\-level `tasks:` section and reuse the hook job schema (jobs, parallel/piped/follow, needs, env, root, skip/only, tags). Bare `git daft run` executes the reserved task named `run`; passing a task name runs that task instead. Tasks stream their output live and run until they exit or you press Ctrl+C (press it twice to force\-kill) — they have no execution timeout, which makes them the home for long\-running dev servers, compose stacks, and watchers.
+.PP
+Use `run` for tasks committed in daft.yml; use `exec` for an ad\-hoc command you type on the spot.
+.SH OPTIONS
+.TP
+\fB\-\-list\fR
+List the tasks defined in daft.yml and exit
+.TP
+\fB\-\-job\fR \fI<NAME>\fR
+Run only the named job within the task
+.TP
+\fB\-\-tag\fR \fI<TAG>\fR
+Run only jobs carrying this tag (repeatable)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fITASK\fR]
+Task to run. Omit to run the reserved `run` task
+.SH VERSION
+v1.21.0

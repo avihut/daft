@@ -1183,6 +1183,47 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
 }
 
 /// Generate the daft.js umbrella spec with subcommands
+/// Build the `daft run` subcommand: a task-name positional completed from
+/// daft.yml, plus the `--list`/`--job`/`--tag` options.
+fn build_fig_run_subcommand() -> FigSubcommand {
+    FigSubcommand {
+        name: "run".to_string(),
+        description: Some("Run a named task defined in daft.yml".to_string()),
+        load_spec: None,
+        subcommands: None,
+        args: Some(FigArgs::Single(FigArg {
+            name: "task".to_string(),
+            description: Some("Task to run (defaults to the 'run' task)".to_string()),
+            generators: Some(FigGenerator {
+                script: vec![
+                    "daft".into(),
+                    "__complete".into(),
+                    "daft-run".into(),
+                    String::new(),
+                ],
+                split_on: "\n".to_string(),
+            }),
+        })),
+        options: Some(vec![
+            FigOption {
+                name: FigName::Single("--list".into()),
+                description: "List the tasks defined in daft.yml".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--job".into()),
+                description: "Run only the named job".into(),
+                args: None,
+            },
+            FigOption {
+                name: FigName::Single("--tag".into()),
+                description: "Run only jobs with this tag".into(),
+                args: None,
+            },
+        ]),
+    }
+}
+
 pub(super) fn generate_fig_daft_spec() -> Result<String> {
     let simple_subcommands = [
         ("shell-init", "Generate shell initialization scripts"),
@@ -1198,6 +1239,7 @@ pub(super) fn generate_fig_daft_spec() -> Result<String> {
         build_fig_skill_subcommand(),
         build_fig_merge_subcommand("merge"),
         build_fig_merge_subcommand("worktree-merge"),
+        build_fig_run_subcommand(),
     ];
     subcommands.extend(
         simple_subcommands

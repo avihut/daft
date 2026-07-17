@@ -392,6 +392,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'go' -d 'Open existing branch wor
 complete -c daft -n '__fish_use_subcommand' -a 'start' -d 'Create new branch worktree'
 complete -c daft -n '__fish_use_subcommand' -a 'carry' -d 'Transfer uncommitted changes'
 complete -c daft -n '__fish_use_subcommand' -a 'exec' -d 'Run a command across one or more worktrees'
+complete -c daft -n '__fish_use_subcommand' -a 'run' -d 'Run a named task defined in daft.yml'
 complete -c daft -n '__fish_use_subcommand' -a 'update' -d 'Update worktree branches'
 complete -c daft -n '__fish_use_subcommand' -a 'prune' -d 'Remove stale worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'rename' -d 'Rename branch and move worktree'
@@ -417,6 +418,8 @@ complete -c daft -n '__fish_seen_subcommand_from list; and test (count (commandl
 complete -c daft -n '__fish_seen_subcommand_from start' -f -a "(daft __complete daft-start '' 2>/dev/null)"
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+# run: task names from daft.yml (plain names, no descriptions)
+complete -c daft -n '__fish_seen_subcommand_from run' -f -a "(daft __complete daft-run (commandline -ct) --position 1 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"

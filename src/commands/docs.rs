@@ -10,8 +10,8 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
-    install, layout, list, merge, multi_remote, prune, release_notes, repo, shared, shell_init,
-    shortcuts, skill, sync, worktree_branch,
+    install, layout, list, merge, multi_remote, prune, release_notes, repo, run, shared,
+    shell_init, shortcuts, skill, sync, worktree_branch,
 };
 use crate::styles;
 
@@ -113,6 +113,14 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             commands: vec![CommandEntry {
                 display_name: "exec",
                 command: exec::Args::command(),
+            }],
+        },
+        CommandCategory {
+            title: "run project tasks",
+            layout: CategoryLayout::List,
+            commands: vec![CommandEntry {
+                display_name: "run",
+                command: run::Args::command(),
             }],
         },
         CommandCategory {
