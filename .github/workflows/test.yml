@@ -179,10 +179,10 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@v4.2.0
 
-      # mise installs the toolchain pinned in mise.toml (rust = "1.94") and
+      # mise installs the toolchain pinned in mise.toml (rust = "1.95") and
       # exports RUSTUP_TOOLCHAIN, overriding the dtolnay-installed `stable`.
       # Components from the dtolnay step were installed for `stable`, not for
-      # the mise-managed 1.94.x — re-install them for the active toolchain so
+      # the mise-managed 1.95.x — re-install them for the active toolchain so
       # `cargo fmt`/`cargo clippy` resolve against a complete component set.
       - name: Ensure rustfmt + clippy for mise-managed toolchain
         run: rustup component add rustfmt clippy
@@ -206,7 +206,7 @@ jobs:
   # declared in Cargo.toml's `rust-version`. `cargo check` is enough; the
   # `lint` job above already runs full build+test on stable. Cheap minutes
   # gate that prevents silent MSRV regressions when new code accidentally
-  # uses post-1.94 stdlib features.
+  # uses post-1.95 stdlib features.
   msrv-check:
     needs: changes
     if: >-
@@ -217,13 +217,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
 
-      - name: Set up Rust 1.94 (MSRV)
-        uses: dtolnay/rust-toolchain@1.94.0
+      - name: Set up Rust 1.95 (MSRV)
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-1.94
+          key: msrv-1.95
 
       # `--locked` refuses to rewrite Cargo.lock, so a manifest/lockfile
       # mismatch (e.g. a Dependabot grouped-update PR that bumps Cargo.lock
