@@ -1,0 +1,40 @@
+name: daft run with an unknown task errors and lists the available tasks
+description:
+  "An unrecognized task name fails with a non-zero exit and an error naming the
+  available tasks, so the user can correct the typo."
+
+repos:
+  - name: run-unknown
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run unknown"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: "true"
+        seed-db:
+          jobs:
+            - name: seed
+              run: "true"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_UNKNOWN
+    expect:
+      exit_code: 0
+
+  - name: An unknown task name errors with the available list
+    run: daft run nope 2>&1
+    cwd: "$WORK_DIR/run-unknown/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown task: 'nope'"
+        - "Available tasks: run, seed-db"

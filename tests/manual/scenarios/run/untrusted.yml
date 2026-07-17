@@ -1,0 +1,41 @@
+name: daft run executes even in an untrusted repo (explicit consent)
+description:
+  "Unlike lifecycle hooks — which are skipped in an untrusted repo — an explicit
+  `daft run` counts as consent and runs, printing a soft hint that trusting the
+  repo also lets lifecycle hooks fire automatically."
+
+repos:
+  - name: run-untrusted
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run untrusted"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: echo ran-despite-untrusted > .ran
+
+steps:
+  - name: Clone the repository (do NOT trust it)
+    run: git-worktree-clone --layout contained $REMOTE_RUN_UNTRUSTED
+    expect:
+      exit_code: 0
+
+  # The .ran marker proves the task ran despite the repo being untrusted; the
+  # trust hint comes from CliOutput (not the DAFT_TESTING-hidden renderer).
+  - name: daft run executes and nudges the user to trust the repo
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-untrusted/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-untrusted/main/.ran"
+      output_contains:
+        - "not in your trust list"
+        - "hooks trust"

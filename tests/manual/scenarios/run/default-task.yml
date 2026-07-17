@@ -1,0 +1,49 @@
+name: Bare daft run executes the reserved 'run' task
+description:
+  "`daft run` with no argument resolves the reserved task named `run` and
+  executes its jobs in the current worktree."
+
+repos:
+  - name: run-default
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run default"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: echo default-task-ran > .ran
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_DEFAULT
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-default/main/daft.yml"
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/run-default/main"
+    expect:
+      exit_code: 0
+
+  # The sandbox sets DAFT_TESTING, which hides the live job-output renderer, so
+  # the task's effect is asserted via the marker file it writes (real users,
+  # without DAFT_TESTING, see the streamed output).
+  - name: Bare daft run executes the reserved task
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-default/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-default/main/.ran"
+      file_contains:
+        - path: "$WORK_DIR/run-default/main/.ran"
+          content: "default-task-ran"

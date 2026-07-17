@@ -1,0 +1,58 @@
+name: Tasks can be defined in the daft.local.yml overlay
+description:
+  "Because tasks share the hooks config loader, a machine-local `daft.local.yml`
+  layers extra tasks on top of the committed daft.yml — a task defined only in
+  the overlay is runnable."
+
+repos:
+  - name: run-overlay
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run overlay"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: "true"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_OVERLAY
+    expect:
+      exit_code: 0
+
+  - name: Add a machine-local task via daft.local.yml
+    run: |
+      printf 'tasks:\n  local-only:\n    jobs:\n      - name: j\n        run: echo overlay-ran > .overlay\n' > daft.local.yml
+    cwd: "$WORK_DIR/run-overlay/main"
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/run-overlay/main"
+    expect:
+      exit_code: 0
+
+  - name: The overlay-only task is listed and runnable
+    run: daft run --list 2>&1
+    cwd: "$WORK_DIR/run-overlay/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "local-only"
+        - "run"
+
+  - name: Run the overlay-only task
+    run: daft run local-only 2>&1
+    cwd: "$WORK_DIR/run-overlay/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-overlay/main/.overlay"
