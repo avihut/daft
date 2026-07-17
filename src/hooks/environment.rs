@@ -75,6 +75,12 @@ pub struct HookContext {
     /// builds). Tests set this to a tempdir so their LogStore writes never
     /// touch the user's real `~/.local/state/daft`.
     pub state_dir: Option<PathBuf>,
+
+    /// Set when this context drives a `daft run <task>` invocation rather than
+    /// a lifecycle hook. When present, the environment emits `DAFT_TASK=<name>`
+    /// instead of `DAFT_HOOK` (tasks are not hooks), and `hook_type` is an
+    /// inert placeholder read only by `working_directory` and header rendering.
+    pub task_name: Option<String>,
 }
 
 /// Reason why a worktree is being removed.
@@ -132,6 +138,40 @@ impl HookContext {
             changed_attributes: None,
             extra_env: BTreeMap::new(),
             state_dir: None,
+            task_name: None,
+        }
+    }
+
+    /// Create a context for a `daft run <task>` invocation in the current
+    /// worktree.
+    ///
+    /// The worktree is both source and target (no create/remove is happening),
+    /// mirroring `daft hooks run`. `hook_type` is set to an inert `PostCreate`
+    /// placeholder: on the task execution path it is read only by
+    /// `working_directory` (which returns the worktree for every non-PreCreate
+    /// type) and by header rendering (which uses the branch) — both give the
+    /// intended answer, and `DAFT_HOOK` is never emitted for a task.
+    pub fn for_task(
+        task_name: impl Into<String>,
+        project_root: impl Into<PathBuf>,
+        git_dir: impl Into<PathBuf>,
+        remote: impl Into<String>,
+        worktree_path: impl Into<PathBuf>,
+        branch_name: impl Into<String>,
+    ) -> Self {
+        let worktree_path = worktree_path.into();
+        Self {
+            task_name: Some(task_name.into()),
+            ..Self::new(
+                HookType::PostCreate,
+                "run",
+                project_root,
+                git_dir,
+                remote,
+                worktree_path.clone(),
+                worktree_path,
+                branch_name,
+            )
         }
     }
 
@@ -198,8 +238,13 @@ impl HookEnvironment {
             vars: HashMap::new(),
         };
 
-        // Universal variables
-        env.set("DAFT_HOOK", ctx.hook_type.filename());
+        // Universal variables. A `daft run` task emits DAFT_TASK (and no
+        // DAFT_HOOK — tasks are not lifecycle hooks); everything else emits
+        // DAFT_HOOK as before.
+        match &ctx.task_name {
+            Some(task) => env.set("DAFT_TASK", task),
+            None => env.set("DAFT_HOOK", ctx.hook_type.filename()),
+        }
         env.set("DAFT_COMMAND", &ctx.command);
         env.set("DAFT_PROJECT_ROOT", ctx.project_root.display());
         env.set("DAFT_GIT_DIR", ctx.git_dir.display());
@@ -319,6 +364,36 @@ mod tests {
         assert_eq!(env.get("DAFT_GIT_DIR"), Some("/project/.git"));
         assert_eq!(env.get("DAFT_REMOTE"), Some("origin"));
         assert_eq!(env.get("DAFT_SOURCE_WORKTREE"), Some("/project/main"));
+    }
+
+    #[test]
+    fn test_for_task_emits_daft_task_not_daft_hook() {
+        let ctx = HookContext::for_task(
+            "dev",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/feature/new",
+            "feature/new",
+        );
+        let env = HookEnvironment::from_context(&ctx);
+
+        // A task emits DAFT_TASK and DAFT_COMMAND=run, and never DAFT_HOOK.
+        assert_eq!(env.get("DAFT_TASK"), Some("dev"));
+        assert_eq!(env.get("DAFT_HOOK"), None);
+        assert_eq!(env.get("DAFT_COMMAND"), Some("run"));
+        // Source == target worktree (no create/remove is happening).
+        assert_eq!(env.get("DAFT_WORKTREE_PATH"), Some("/project/feature/new"));
+        assert_eq!(
+            env.get("DAFT_SOURCE_WORKTREE"),
+            Some("/project/feature/new")
+        );
+        assert_eq!(env.get("DAFT_BRANCH_NAME"), Some("feature/new"));
+        // working_directory resolves to the worktree for the task path.
+        assert_eq!(
+            env.working_directory(&ctx),
+            Path::new("/project/feature/new")
+        );
     }
 
     #[test]
@@ -486,6 +561,7 @@ mod tests {
             changed_attributes: None,
             extra_env: BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert_eq!(env.vars.get("DAFT_IS_MOVE").unwrap(), "true");
@@ -521,6 +597,7 @@ mod tests {
             changed_attributes: None,
             extra_env: BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let env = HookEnvironment::from_context(&ctx);
         assert!(!env.vars.contains_key("DAFT_IS_MOVE"));

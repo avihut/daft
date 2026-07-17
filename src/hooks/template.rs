@@ -254,6 +254,7 @@ mod tests {
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let result = substitute(
             "from {old_worktree_path} to {worktree_path} branch {old_branch}",
@@ -289,6 +290,7 @@ mod tests {
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
         assert_eq!(result, "old= branch=");

@@ -230,7 +230,7 @@ pub fn compute_skip_cascade(jobs: &[JobDef], skip: &SkipSelectors) -> SkipCascad
 /// Tests pass `&JobAdapterContext::default()` since they exercise spec
 /// translation in isolation; production wraps the relevant hook-level
 /// values from `execute_yaml_hook_with_rc`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct JobAdapterContext<'a> {
     /// Path to an RC file whose `source` command is prepended to every job
     /// command — opt-in shell setup like `~/.bashrc`.
@@ -241,6 +241,23 @@ pub struct JobAdapterContext<'a> {
     /// Top-level `log:` config from `daft.yml`, merged into each job's
     /// `log_config` so cleanup policies inherit repo-wide defaults.
     pub repo_log: Option<&'a LogConfig>,
+    /// Default timeout stamped on each produced [`JobSpec`]. Lifecycle hooks
+    /// use `Some(JobSpec::DEFAULT_TIMEOUT)` (the `Default`); `daft run` tasks
+    /// pass `None` so long-running processes aren't force-killed.
+    pub default_timeout: Option<std::time::Duration>,
+}
+
+impl Default for JobAdapterContext<'_> {
+    fn default() -> Self {
+        // Preserve the historical hook default so the many
+        // `&JobAdapterContext::default()` test callers keep 300s timeouts.
+        Self {
+            rc: None,
+            hook_background: None,
+            repo_log: None,
+            default_timeout: Some(JobSpec::DEFAULT_TIMEOUT),
+        }
+    }
 }
 
 /// Convert YAML job definitions into format-agnostic [`JobSpec`] values.
@@ -270,6 +287,7 @@ pub fn yaml_jobs_to_specs(
     let rc = adapter.rc;
     let hook_background = adapter.hook_background;
     let repo_log = adapter.repo_log;
+    let default_timeout = adapter.default_timeout;
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
 
@@ -357,7 +375,7 @@ pub fn yaml_jobs_to_specs(
             needs: job.needs.clone().unwrap_or_default(),
             interactive: job.interactive == Some(true),
             fail_text: job.fail_text.clone(),
-            timeout: Some(JobSpec::DEFAULT_TIMEOUT),
+            timeout: default_timeout,
             background: declared_background,
             background_output: job.background_output.clone(),
             log_config: merge_job_log(job.log.clone(), repo_log),
