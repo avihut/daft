@@ -13,6 +13,10 @@ steps:
     expect:
       exit_code: 0
 
+  # DAFT_SKILLS_DIR (set per-sandbox by the runner) points doctor's agent-skill
+  # check at the sandbox rather than the real ~/.claude, so `daft doctor --fix`
+  # here cannot rewrite the developer's real skill file — which the real-state
+  # tripwire would otherwise catch and fail the suite over.
   - name: Healthy catalog passes
     run: daft doctor 2>&1
     cwd: "$WORK_DIR/test-repo/main"

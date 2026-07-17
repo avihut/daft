@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-skill-show 1  "git-daft-skill-show 1.20.0" 
+.SH NAME
+git\-daft\-skill\-show \- Print the embedded agent skill
+.SH SYNOPSIS
+\fBgit\-daft\-skill\-show\fR [\fB\-\-no\-pager\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Prints the agent skill embedded in this daft binary (the repository\*(Aqs
+SKILL.md, skill name `daft\-worktree\-workflow`).
+.PP
+In a terminal the skill is rendered with daft\*(Aqs markdown styling and shown
+through a pager; piped or redirected it is emitted raw, with no decoration
+and no color, so it composes:
+.PP
+    daft skill show > <skills\-root>/daft\-worktree\-workflow/SKILL.md
+.PP
+installs the skill manually for an agent whose skills directory daft does
+not know, byte\-identical to what `git daft skill install` would write. The
+printed copy carries the `daft_version` frontmatter stamp of this binary,
+so manual installs stay covered by the `git daft doctor` freshness check.
+.PP
+Pass \-\-no\-pager to print the rendered skill straight to the terminal
+without a pager.
+.SH OPTIONS
+.TP
+\fB\-\-no\-pager\fR
+Print rendered output directly instead of through a pager
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.20.0

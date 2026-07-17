@@ -1,0 +1,44 @@
+name: Skill install into a directory
+description:
+  daft skill install --dir writes the embedded, stamped skill; re-running is the
+  update path (already-up-to-date and updated outcomes)
+
+steps:
+  - name: Fresh install
+    run: daft skill install --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Installed agent skill"
+      files_exist:
+        - "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+      file_contains:
+        - path: "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+          content: "name: daft-worktree-workflow"
+        - path: "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+          content: "daft_version:"
+
+  - name: Re-run is a no-op
+    run: daft skill install --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already up to date"
+
+  - name: Age the stamp
+    run: >
+      sed -i.bak 's/^daft_version:.*/daft_version: "0.1.0"/'
+      "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md" && rm
+      "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md.bak"
+    expect:
+      exit_code: 0
+
+  - name: Re-run updates the stale copy
+    run: daft skill install --dir "$WORK_DIR/skills" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Updated agent skill (v0.1.0"
+      file_not_contains:
+        - path: "$WORK_DIR/skills/daft-worktree-workflow/SKILL.md"
+          content: 'daft_version: "0.1.0"'

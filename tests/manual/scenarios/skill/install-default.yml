@@ -1,0 +1,55 @@
+name: Skill install default path and doctor freshness
+description:
+  With no flags, daft skill install targets the user-global skills root
+  (~/.claude/skills). The sandbox redirects that to $DAFT_SKILLS_DIR, so these
+  steps exercise the true default resolution while never touching the real
+  ~/.claude. daft doctor reports the copy's freshness and --fix rewrites a stale
+  one.
+
+steps:
+  - name: Install to the user-global default (sandbox-redirected)
+    run: daft skill install 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Installed agent skill"
+      files_exist:
+        - "$DAFT_SKILLS_DIR/daft-worktree-workflow/SKILL.md"
+
+  - name: Doctor passes on the fresh copy
+    run: daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Agent skill (installed"
+
+  - name: Age the stamp
+    run: >
+      sed -i.bak 's/^daft_version:.*/daft_version: "0.1.0"/'
+      "$DAFT_SKILLS_DIR/daft-worktree-workflow/SKILL.md" && rm
+      "$DAFT_SKILLS_DIR/daft-worktree-workflow/SKILL.md.bak"
+    expect:
+      exit_code: 0
+
+  - name: Doctor flags the stale copy
+    run: daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "installed copy is stale (v0.1.0"
+        - "skill install"
+
+  - name: Doctor --fix rewrites it
+    run: daft doctor --fix 2>&1
+    expect:
+      exit_code: 0
+      file_not_contains:
+        - path: "$DAFT_SKILLS_DIR/daft-worktree-workflow/SKILL.md"
+          content: 'daft_version: "0.1.0"'
+
+  - name: Doctor passes again
+    run: daft doctor 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Agent skill (installed"

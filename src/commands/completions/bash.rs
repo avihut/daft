@@ -665,6 +665,33 @@ _daft() {
         return 0
     fi
 
+    # skill: complete subcommands and arguments
+    if [[ $cword -ge 2 && "${words[1]}" == "skill" ]]; then
+        if [[ $cword -eq 2 ]]; then
+            COMPREPLY=( $(compgen -W "install uninstall show" -- "$cur") )
+            return 0
+        fi
+        case "${words[2]}" in
+            install|uninstall)
+                if [[ "$prev" == "--dir" ]]; then
+                    COMPREPLY=( $(compgen -d -- "$cur") )
+                    return 0
+                fi
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--project --dir -q --quiet -v --verbose -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+            show)
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--no-pager -h --help" -- "$cur") )
+                fi
+                return 0
+                ;;
+        esac
+        return 0
+    fi
+
     # config: complete subcommands
     if [[ $cword -eq 2 && "${words[1]}" == "config" ]]; then
         COMPREPLY=( $(compgen -W "remote-sync" -- "$cur") )
@@ -857,7 +884,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

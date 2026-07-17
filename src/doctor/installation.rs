@@ -568,6 +568,101 @@ fn get_man_search_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// Check the user-global agent-skill copy (`~/.claude/skills`) against the
+/// skill embedded in this binary.
+pub fn check_agent_skill() -> CheckResult {
+    match crate::skill::user_skills_root() {
+        Some(root) => check_agent_skill_in(&root, "Agent skill", false),
+        None => CheckResult::skipped("Agent skill", "could not resolve the home directory"),
+    }
+}
+
+/// Compare the skill copy under `skills_root` against the embedded skill.
+///
+/// Freshness is judged by the `daft_version` frontmatter stamp, not by byte
+/// equality — a hand-edited copy of the current version passes, matching the
+/// stamp's semantics ("documents daft vX.Y.Z"). Not-installed is `Skipped`
+/// (hidden unless `--verbose`): plenty of daft users never run agents, and
+/// that is not a problem to nag about.
+pub fn check_agent_skill_in(skills_root: &Path, name: &str, project: bool) -> CheckResult {
+    let target = crate::skill::skill_file_path(skills_root);
+    let content = match std::fs::read_to_string(&target) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CheckResult::skipped(name, "not installed");
+        }
+        Err(e) => {
+            return CheckResult::warning(
+                name,
+                &format!("could not read {}: {e}", target.display()),
+            );
+        }
+    };
+
+    let embedded = crate::skill::embedded_version();
+    // A project-local copy is repaired by `skill install --project`; plain
+    // `skill install` writes the user-global copy and would leave this one
+    // stale, so the two callers must suggest different commands.
+    let install_hint = if project {
+        "skill install --project"
+    } else {
+        "skill install"
+    };
+    let stale = |message: &str| {
+        let fix_root = skills_root.to_path_buf();
+        let dry_root = skills_root.to_path_buf();
+        CheckResult::warning(name, message)
+            .with_suggestion(&format!(
+                "Run '{}' to update it, or '{}'",
+                crate::daft_cmd(install_hint),
+                crate::daft_cmd("doctor --fix")
+            ))
+            .with_fix(Box::new(move || fix_agent_skill(&fix_root)))
+            .with_dry_run_fix(Box::new(move || dry_run_agent_skill(&dry_root)))
+    };
+
+    match crate::skill::parse_frontmatter_version(&content) {
+        None => stale("installed copy has no daft_version stamp (predates this daft)"),
+        Some(installed) => match crate::skill::cmp_versions(&installed, embedded) {
+            Some(std::cmp::Ordering::Equal) => {
+                CheckResult::pass(name, &format!("installed, v{installed}"))
+            }
+            Some(std::cmp::Ordering::Greater) => CheckResult::pass(
+                name,
+                &format!(
+                    "v{installed}, newer than this binary (v{embedded}) — consider upgrading daft"
+                ),
+            ),
+            Some(std::cmp::Ordering::Less) => stale(&format!(
+                "installed copy is stale (v{installed}; this binary ships v{embedded})"
+            )),
+            None => stale(&format!(
+                "installed copy has an unreadable version stamp ('{installed}')"
+            )),
+        },
+    }
+}
+
+/// Rewrite the installed skill from the embedded copy (`doctor --fix`).
+pub fn fix_agent_skill(skills_root: &Path) -> Result<(), String> {
+    crate::skill::install_to(skills_root)
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
+}
+
+fn dry_run_agent_skill(skills_root: &Path) -> Vec<FixAction> {
+    let target = crate::skill::skill_file_path(skills_root);
+    vec![FixAction {
+        description: format!(
+            "Rewrite {} from the embedded skill (v{})",
+            target.display(),
+            crate::skill::embedded_version()
+        ),
+        would_succeed: true,
+        failure_reason: None,
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,5 +850,136 @@ mod tests {
             &brew_prefix_bin.join("nonexistent"),
             temp.path(),
         ));
+    }
+}
+
+#[cfg(test)]
+mod agent_skill_tests {
+    use super::*;
+    use crate::doctor::CheckStatus;
+    use tempfile::TempDir;
+
+    fn write_copy(root: &Path, content: &str) {
+        let target = crate::skill::skill_file_path(root);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, content).unwrap();
+    }
+
+    fn stamped(version: &str) -> String {
+        format!("---\nname: daft-worktree-workflow\ndaft_version: \"{version}\"\n---\n\n# Body\n")
+    }
+
+    #[test]
+    fn not_installed_is_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Skipped);
+        assert!(!result.fixable());
+    }
+
+    #[test]
+    fn current_copy_passes() {
+        let tmp = TempDir::new().unwrap();
+        crate::skill::install_to(tmp.path()).unwrap();
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(result.message.contains(crate::skill::embedded_version()));
+    }
+
+    #[test]
+    fn hand_edited_current_copy_still_passes() {
+        // Freshness is stamp-based, not byte-based: a locally annotated copy
+        // of the current version is not stale.
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped(crate::skill::embedded_version()));
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn older_stamp_warns_and_fix_repairs() {
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped("0.1.0"));
+
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.message.contains("stale"), "{}", result.message);
+        assert!(result.fixable());
+        assert!(result.dry_run_fix.is_some());
+
+        fix_agent_skill(tmp.path()).unwrap();
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn unstamped_copy_warns() {
+        let tmp = TempDir::new().unwrap();
+        write_copy(
+            tmp.path(),
+            "---\nname: daft-worktree-workflow\n---\n\n# Ancient\n",
+        );
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.fixable());
+    }
+
+    #[test]
+    fn unreadable_stamp_warns() {
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped("not.a.version"));
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Warning);
+        assert!(result.fixable());
+    }
+
+    #[test]
+    fn newer_stamp_passes_with_upgrade_note() {
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped("999.0.0"));
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(
+            result.message.contains("upgrading daft"),
+            "{}",
+            result.message
+        );
+        assert!(!result.fixable());
+    }
+
+    #[test]
+    fn dry_run_names_the_target() {
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped("0.1.0"));
+        let result = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        let actions = (result.dry_run_fix.unwrap())();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].would_succeed);
+        assert!(actions[0].description.contains("SKILL.md"));
+    }
+
+    #[test]
+    fn stale_project_copy_suggests_project_install() {
+        // The project caller must point at `skill install --project`; plain
+        // `skill install` writes the user-global copy and would leave this one
+        // stale (regression: the shared suggestion was hard-coded to global).
+        let tmp = TempDir::new().unwrap();
+        write_copy(tmp.path(), &stamped("0.1.0"));
+
+        let project = check_agent_skill_in(tmp.path(), "Agent skill (project)", true);
+        assert_eq!(project.status, CheckStatus::Warning);
+        let suggestion = project.suggestion.as_deref().unwrap_or_default();
+        assert!(
+            suggestion.contains("skill install --project"),
+            "project suggestion should target the project copy: {suggestion}"
+        );
+
+        // The user-global variant must not gain the flag.
+        let user = check_agent_skill_in(tmp.path(), "Agent skill", false);
+        let user_suggestion = user.suggestion.as_deref().unwrap_or_default();
+        assert!(
+            user_suggestion.contains("skill install") && !user_suggestion.contains("--project"),
+            "user suggestion should be the global install: {user_suggestion}"
+        );
     }
 }

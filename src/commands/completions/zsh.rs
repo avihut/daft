@@ -861,6 +861,34 @@ _daft() {
         return
     fi
 
+    # skill: complete subcommands and arguments
+    if (( CURRENT >= 3 )) && [[ "$words[2]" == "skill" ]]; then
+        if (( CURRENT == 3 )); then
+            compadd install uninstall show
+            return
+        fi
+        case "$words[3]" in
+            install|uninstall)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--dir" ]]; then
+                    _files -/
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --project --dir -q --quiet -v --verbose -h --help
+                fi
+                return
+                ;;
+            show)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --no-pager -h --help
+                fi
+                return
+                ;;
+        esac
+        return
+    fi
+
     # config: complete subcommands
     if (( CURRENT == 3 )) && [[ "$words[2]" == "config" ]]; then
         compadd remote-sync
@@ -1066,7 +1094,7 @@ _daft() {
             compadd -- --version -V --help -h -C
         else
             compadd activate hooks shell-init multi-remote release-notes doctor layout shared \
-                    config file repo clone init install go start carry exec update list prune rename sync remove \
+                    config file repo skill clone init install go start carry exec update list prune rename sync remove \
                     merge worktree-merge adopt eject
         fi
         return

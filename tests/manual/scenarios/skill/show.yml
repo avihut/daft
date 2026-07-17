@@ -1,0 +1,30 @@
+name: Skill show
+description:
+  daft skill show prints the embedded skill raw to stdout, byte-identical to
+  what install writes — the manual install path for other agents
+
+steps:
+  - name: Show prints frontmatter and content
+    run: daft skill show
+    expect:
+      exit_code: 0
+      output_contains:
+        - "name: daft-worktree-workflow"
+        - "daft_version:"
+        - "# daft Worktree Workflow"
+
+  - name: Redirect is the manual install path
+    run: >
+      mkdir -p "$WORK_DIR/manual/daft-worktree-workflow" && daft skill show >
+      "$WORK_DIR/manual/daft-worktree-workflow/SKILL.md"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/manual/daft-worktree-workflow/SKILL.md"
+
+  - name: A redirected copy is already up to date for install
+    run: daft skill install --dir "$WORK_DIR/manual" 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "already up to date"

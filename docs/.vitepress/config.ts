@@ -474,6 +474,18 @@ export default defineConfig({
                   { text: "list", link: "/reference/cli/daft-list" },
                   { text: "doctor", link: "/reference/cli/daft-doctor" },
                   {
+                    text: "skill install",
+                    link: "/reference/cli/daft-skill-install",
+                  },
+                  {
+                    text: "skill uninstall",
+                    link: "/reference/cli/daft-skill-uninstall",
+                  },
+                  {
+                    text: "skill show",
+                    link: "/reference/cli/daft-skill-show",
+                  },
+                  {
                     text: "release-notes",
                     link: "/reference/cli/daft-release-notes",
                   },

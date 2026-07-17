@@ -404,6 +404,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'eject' -d 'Convert back to tradi
 complete -c daft -n '__fish_use_subcommand' -a 'config' -d 'Configure daft settings'
 complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files across worktrees'
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
+complete -c daft -n '__fish_use_subcommand' -a 'skill' -d 'Manage the daft agent skill'
 complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config files'
 complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 3' -f -a "(env DAFT_COMPLETE_GO_FIRST=(commandline -opc)[3] daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
@@ -470,6 +471,22 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
+# skill: subcommands
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'install' -d 'Install or update the agent skill for Claude Code'
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'uninstall' -d 'Remove the installed agent skill'
+complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'show' -d 'Print the embedded SKILL.md to stdout'
+# skill install: flags
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -l project -d "Install into the current worktree's .claude/skills/"
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -l dir -x -a "(__fish_complete_directories (commandline -ct))" -d 'Install under this skills root'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -s q -l quiet -d 'Suppress the result line'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from install' -s v -l verbose -d 'Show detailed progress'
+# skill uninstall: flags
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -l project -d "Remove the current worktree's .claude/skills/ copy"
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -l dir -x -a "(__fish_complete_directories (commandline -ct))" -d 'Remove from this skills root'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -s q -l quiet -d 'Suppress the result line'
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from uninstall' -s v -l verbose -d 'Show detailed progress'
+# skill show: flags
+complete -c daft -n '__fish_seen_subcommand_from skill; and __fish_seen_subcommand_from show' -l no-pager -d 'Print rendered output directly instead of through a pager'
 complete -c daft -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from remote-sync' -f -a 'remote-sync'
 # file: subcommands
 complete -c daft -n '__fish_seen_subcommand_from file; and not __fish_seen_subcommand_from merge' -f -a 'merge' -d 'Merge a source daft.yml into a target daft.yml'

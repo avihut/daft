@@ -43,6 +43,12 @@ pub struct DaftCommandExecutor {
     /// (the var-expansion form is registered on the sandbox at construction
     /// time so scenario commands can reference it directly).
     daft_data_dir: PathBuf,
+    /// Per-sandbox agent-skill root surfaced as `DAFT_SKILLS_DIR` and
+    /// `$DAFT_SKILLS_DIR`. The skill installs under `$HOME/.claude` by default
+    /// (a foreign tool's path, not a `DAFT_*_DIR`), so without this a bare
+    /// `daft skill install` / `daft doctor --fix` would escape the sandbox and
+    /// write the developer's real `~/.claude`.
+    daft_skills_dir: PathBuf,
     /// Per-sandbox state dir surfaced as `DAFT_STATE_DIR`. Isolates the
     /// SQLite store (job records, visitor-config seeds) and the coordinator
     /// socket so scenario runs never read or pollute the developer's real
@@ -58,12 +64,13 @@ pub struct DaftCommandExecutor {
 
 impl DaftCommandExecutor {
     /// Construct an adapter for `sandbox` and register the daft-specific
-    /// variables (`$BINARY_DIR`, `$DAFT_DATA_DIR`) on the sandbox so scenario
-    /// commands can refer to them.
+    /// variables (`$BINARY_DIR`, `$DAFT_DATA_DIR`, `$DAFT_SKILLS_DIR`) on the
+    /// sandbox so scenario commands can refer to them.
     pub fn new_for_sandbox(sandbox: &mut Sandbox, project_root: &Path) -> Result<Self> {
         let binary_dir = resolve_binary_dir(project_root);
         let daft_config_dir = sandbox.base_dir.join("daft-config");
         let daft_data_dir = sandbox.base_dir.join("daft-data");
+        let daft_skills_dir = sandbox.base_dir.join("daft-skills");
         // `tempdir_in("/tmp")`, not `tempdir()`: macOS's $TMPDIR
         // (/var/folders/…/T/) is ~50 chars by itself, which would put the
         // socket path right back over the sun_path limit.
@@ -76,6 +83,8 @@ impl DaftCommandExecutor {
             .with_context(|| format!("creating daft config dir: {}", daft_config_dir.display()))?;
         std::fs::create_dir_all(&daft_data_dir)
             .with_context(|| format!("creating daft data dir: {}", daft_data_dir.display()))?;
+        std::fs::create_dir_all(&daft_skills_dir)
+            .with_context(|| format!("creating daft skills dir: {}", daft_skills_dir.display()))?;
 
         // Surface the adapter-managed paths to scenario commands. These were
         // historically baked into the sandbox's own var store; keeping them
@@ -99,11 +108,16 @@ impl DaftCommandExecutor {
             "DAFT_DATA_DIR",
             daft_data_dir.to_string_lossy().into_owned(),
         );
+        sandbox.register_var(
+            "DAFT_SKILLS_DIR",
+            daft_skills_dir.to_string_lossy().into_owned(),
+        );
 
         Ok(Self {
             binary_dir,
             daft_config_dir,
             daft_data_dir,
+            daft_skills_dir,
             daft_state_dir,
         })
     }
@@ -153,6 +167,10 @@ impl DaftCommandExecutor {
         env.insert(
             "DAFT_DATA_DIR".into(),
             self.daft_data_dir.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "DAFT_SKILLS_DIR".into(),
+            self.daft_skills_dir.to_string_lossy().into_owned(),
         );
         env.insert(
             "DAFT_STATE_DIR".into(),
@@ -490,6 +508,7 @@ mod tests {
         assert!(env.get("PATH").unwrap().contains("target/release"));
         assert!(env.get("DAFT_CONFIG_DIR").unwrap().contains("daft-config"));
         assert!(env.get("DAFT_DATA_DIR").unwrap().contains("daft-data"));
+        assert!(env.get("DAFT_SKILLS_DIR").unwrap().contains("daft-skills"));
     }
 
     #[test]
@@ -499,11 +518,13 @@ mod tests {
 
         let _exec = DaftCommandExecutor::new_for_sandbox(&mut sandbox, &project_root()).unwrap();
 
-        // After construction, $BINARY_DIR and $DAFT_DATA_DIR are expandable
-        // through the sandbox's normal variable expansion.
-        let expanded = sandbox.expand_vars("$BINARY_DIR/daft and data=$DAFT_DATA_DIR");
+        // After construction, $BINARY_DIR, $DAFT_DATA_DIR, and $DAFT_SKILLS_DIR
+        // are expandable through the sandbox's normal variable expansion.
+        let expanded =
+            sandbox.expand_vars("$BINARY_DIR/daft data=$DAFT_DATA_DIR skills=$DAFT_SKILLS_DIR");
         assert!(expanded.contains("target/release"));
         assert!(expanded.contains("daft-data"));
+        assert!(expanded.contains("daft-skills"));
     }
 
     #[test]

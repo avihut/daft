@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-skill-uninstall 1  "git-daft-skill-uninstall 1.20.0" 
+.SH NAME
+git\-daft\-skill\-uninstall \- Remove the installed agent skill
+.SH SYNOPSIS
+\fBgit\-daft\-skill\-uninstall\fR [\fB\-\-project\fR] [\fB\-\-dir\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+.PP
+Removes an agent skill previously written by `git daft skill install` (the
+daft\-worktree\-workflow skill).
+.PP
+By default it removes the user\-global copy
+(~/.claude/skills/daft\-worktree\-workflow/). Use \-\-project to remove the
+current worktree\*(Aqs .claude/skills/ copy, or \-\-dir to target another
+agent\*(Aqs skills root.
+.PP
+Removal is safe by construction: only a SKILL.md whose frontmatter marks
+it as the daft skill is deleted, and the daft\-worktree\-workflow directory
+is removed only when nothing else is left inside it, so files you keep
+beside the skill are preserved. A missing skill is a no\-op, not an error.
+.SH OPTIONS
+.TP
+\fB\-\-project\fR
+Remove from the current worktree\*(Aqs .claude/skills/ instead of ~/.claude/skills
+.TP
+\fB\-\-dir\fR \fI<PATH>\fR
+Remove from this skills root (for agents other than Claude Code)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress the result line
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Show detailed progress
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH VERSION
+v1.20.0

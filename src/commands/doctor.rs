@@ -159,6 +159,7 @@ fn run_installation_checks() -> CheckCategory {
         installation::check_command_symlinks(),
         installation::check_git(),
         installation::check_man_pages(),
+        installation::check_agent_skill(),
         installation::check_shell_integration(),
     ];
 
@@ -180,16 +181,30 @@ fn run_installation_checks() -> CheckCategory {
 }
 
 fn run_repository_checks(ctx: &repository::RepoContext) -> CheckCategory {
+    let mut results = vec![
+        repository::check_daft_config(ctx),
+        repository::check_worktree_layout(ctx),
+        repository::check_worktree_consistency(ctx),
+        repository::check_fetch_refspec(ctx),
+        repository::check_remote_head(ctx),
+        repository::check_remote_sync_config(ctx),
+    ];
+
+    // A project-level agent-skill copy (committed .claude/skills/) gets the
+    // same freshness check as the user-global one, but only when it exists —
+    // most repos have none, and that is not worth a row.
+    let project_skills = ctx.current_worktree.join(".claude").join("skills");
+    if crate::skill::skill_file_path(&project_skills).exists() {
+        results.push(installation::check_agent_skill_in(
+            &project_skills,
+            "Agent skill (project)",
+            true,
+        ));
+    }
+
     CheckCategory {
         title: "Repository".to_string(),
-        results: vec![
-            repository::check_daft_config(ctx),
-            repository::check_worktree_layout(ctx),
-            repository::check_worktree_consistency(ctx),
-            repository::check_fetch_refspec(ctx),
-            repository::check_remote_head(ctx),
-            repository::check_remote_sync_config(ctx),
-        ],
+        results,
     }
 }
 

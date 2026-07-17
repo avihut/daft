@@ -136,6 +136,13 @@ setup() {
     export DAFT_DATA_DIR="$TEMP_BASE_DIR/ddata"
     mkdir -p "$DAFT_DATA_DIR"
 
+    # Isolate the agent-skill root. The skill installs under $HOME/.claude by
+    # default (a foreign tool's path, not a DAFT_*_DIR), so without this a
+    # `daft skill install` / `daft doctor --fix` in a test would write the
+    # developer's real ~/.claude. Dev-build gated, like the DAFT_*_DIR trio.
+    export DAFT_SKILLS_DIR="$TEMP_BASE_DIR/dskills"
+    mkdir -p "$DAFT_SKILLS_DIR"
+
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
     for binary in "${binary_names[@]}"; do

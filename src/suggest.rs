@@ -29,6 +29,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "repo",
     "shared",
     "shell-init",
+    "skill",
     "start",
     "sync",
     "update",
@@ -50,6 +51,9 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
 
 /// All subcommands available via `daft repo <verb>`.
 pub const DAFT_REPO_SUBCOMMANDS: &[&str] = &["add", "info", "install", "list", "remove"];
+
+/// All subcommands available via `daft skill <verb>`.
+pub const DAFT_SKILL_SUBCOMMANDS: &[&str] = &["install", "show", "uninstall"];
 
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -285,5 +289,16 @@ mod repo_subcommands_tests {
         let mut sorted = DAFT_REPO_SUBCOMMANDS.to_vec();
         sorted.sort();
         assert_eq!(sorted, DAFT_REPO_SUBCOMMANDS);
+    }
+}
+
+#[cfg(test)]
+mod skill_subcommands_tests {
+    use super::*;
+    #[test]
+    fn daft_skill_subcommands_sorted() {
+        let mut sorted = DAFT_SKILL_SUBCOMMANDS.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, DAFT_SKILL_SUBCOMMANDS);
     }
 }

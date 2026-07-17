@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use clap_mangen::Man;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
@@ -36,6 +36,9 @@ const COMMANDS: &[&str] = &[
     "git-daft-repo-install",
     "git-daft-repo-list",
     "git-daft-repo-remove",
+    "git-daft-skill-install",
+    "git-daft-skill-show",
+    "git-daft-skill-uninstall",
     "daft-activate",
     "daft-config",
     "daft-doctor",
@@ -180,6 +183,9 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-daft-repo-install" => Some(daft::commands::repo::install::Args::command()),
         "git-daft-repo-list" => Some(daft::commands::repo::list::Args::command()),
         "git-daft-repo-remove" => Some(daft::commands::repo::remove::Args::command()),
+        "git-daft-skill-install" => Some(daft::commands::skill::install::Args::command()),
+        "git-daft-skill-show" => Some(daft::commands::skill::show::Args::command()),
+        "git-daft-skill-uninstall" => Some(daft::commands::skill::uninstall::Args::command()),
         "daft-config" => Some(daft::commands::config::remote_sync::Args::command()),
         "daft-doctor" => Some(daft::commands::doctor::Args::command()),
         "daft-file" => Some(daft::commands::file::merge::Args::command()),
@@ -443,6 +449,20 @@ enum Commands {
         /// Fingerprint file to write (snapshot) or read (verify).
         file: PathBuf,
     },
+
+    /// Rewrite the `daft_version:` frontmatter stamp in SKILL.md. Runs from
+    /// the release.toml pre-release-hook so the stamp lands in the same
+    /// release commit as the Cargo.toml bump, CHANGELOG, man pages, and CLI
+    /// docs; a daft unit test pins the embedded stamp to the crate version.
+    StampSkill {
+        /// Version to stamp (the release hook passes `{{version}}`).
+        #[arg(long)]
+        version: String,
+
+        /// The skill file to stamp.
+        #[arg(long, default_value = "SKILL.md")]
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -459,6 +479,7 @@ fn main() -> Result<()> {
         } => generate_cli_docs(&output_dir, command.as_deref()),
         Commands::TestMatrix { entry, list } => run_test_matrix(&entry, list),
         Commands::Bench { parallel } => bench::run(parallel),
+        Commands::StampSkill { version, file } => stamp_skill(&file, &version),
         Commands::ManualTest {
             scenarios,
             interactive,
@@ -1266,6 +1287,59 @@ fn has_been_orphaned() -> bool {
 }
 
 /// Run integration tests across a matrix of configurations
+/// Rewrite (or insert) the `daft_version:` stamp in a SKILL.md's
+/// frontmatter. Invoked by the release.toml pre-release-hook with the
+/// version being released.
+fn stamp_skill(file: &Path, version: &str) -> Result<()> {
+    let content =
+        fs::read_to_string(file).with_context(|| format!("could not read {}", file.display()))?;
+    let stamped = stamp_frontmatter(&content, version).with_context(|| {
+        format!(
+            "{} has no ----delimited frontmatter to stamp",
+            file.display()
+        )
+    })?;
+    if stamped == content {
+        println!(
+            "{} already stamped with daft_version {version}",
+            file.display()
+        );
+        return Ok(());
+    }
+    fs::write(file, &stamped).with_context(|| format!("could not write {}", file.display()))?;
+    println!("Stamped {} with daft_version {version}", file.display());
+    Ok(())
+}
+
+/// Pure rewrite: replace a top-level `daft_version:` line inside the
+/// `---`-delimited frontmatter, or insert one before the closing delimiter.
+/// `None` when the content has no frontmatter.
+fn stamp_frontmatter(content: &str, version: &str) -> Option<String> {
+    let rest = content.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n")?;
+    let body = &rest[..end];
+    let stamp_line = format!("daft_version: \"{version}\"");
+
+    // Top-level key only (no indentation), so a nested `daft_version` in
+    // some future frontmatter map can never be clobbered by accident.
+    let new_body = if body.lines().any(|l| l.starts_with("daft_version:")) {
+        body.lines()
+            .map(|l| {
+                if l.starts_with("daft_version:") {
+                    stamp_line.as_str()
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        format!("{body}\n{stamp_line}")
+    };
+
+    Some(format!("---\n{new_body}{}", &rest[end..]))
+}
+
 fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
     if list {
         println!("Available matrix entries:");
@@ -1447,6 +1521,55 @@ fn run_test_matrix(entries: &[String], list: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stamp_frontmatter_replaces_existing_key() {
+        let content = "---\nname: x\ndaft_version: \"1.18.0\"\n---\n\n# Body\n";
+        let stamped = stamp_frontmatter(content, "1.19.0").unwrap();
+        assert_eq!(
+            stamped,
+            "---\nname: x\ndaft_version: \"1.19.0\"\n---\n\n# Body\n"
+        );
+    }
+
+    #[test]
+    fn stamp_frontmatter_inserts_missing_key_before_close() {
+        let content = "---\nname: x\n---\n\n# Body\n";
+        let stamped = stamp_frontmatter(content, "1.19.0").unwrap();
+        assert_eq!(
+            stamped,
+            "---\nname: x\ndaft_version: \"1.19.0\"\n---\n\n# Body\n"
+        );
+    }
+
+    #[test]
+    fn stamp_frontmatter_is_idempotent() {
+        let content = "---\nname: x\ndaft_version: \"1.19.0\"\n---\n\n# Body\n";
+        assert_eq!(stamp_frontmatter(content, "1.19.0").unwrap(), content);
+    }
+
+    #[test]
+    fn stamp_frontmatter_rejects_missing_frontmatter() {
+        assert!(stamp_frontmatter("# No frontmatter\n", "1.19.0").is_none());
+    }
+
+    #[test]
+    fn stamp_frontmatter_ignores_indented_keys() {
+        let content = "---\nname: x\nmeta:\n  daft_version: \"9.9.9\"\n---\n\n# Body\n";
+        let stamped = stamp_frontmatter(content, "1.19.0").unwrap();
+        // The nested key is untouched; a top-level stamp is inserted.
+        assert!(stamped.contains("  daft_version: \"9.9.9\""));
+        assert!(stamped.contains("\ndaft_version: \"1.19.0\"\n---\n"));
+    }
+
+    #[test]
+    fn stamp_skill_stamps_the_repo_skill_shape() {
+        // The real SKILL.md must always be stampable — this guards the
+        // release hook against a frontmatter reshape breaking the splice.
+        let repo_skill = include_str!("../../SKILL.md");
+        let stamped = stamp_frontmatter(repo_skill, "9.9.9").unwrap();
+        assert!(stamped.contains("daft_version: \"9.9.9\""));
+    }
 
     #[test]
     fn test_all_commands_have_valid_handlers() {

@@ -288,6 +288,7 @@ pub mod logging;
 pub mod output;
 pub mod prompt;
 pub mod shortcuts;
+pub mod skill;
 pub mod store;
 pub mod styles;
 pub mod suggest;
