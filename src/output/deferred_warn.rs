@@ -19,8 +19,8 @@
 //! [`enable_raw_mode_guard`](crate::output::tui::enable_raw_mode_guard)
 //! holds a guard for the whole raw-mode window, so the inline-TUI commands
 //! get deferral without per-site wiring. The indicatif-region renderers
-//! (see [`term_guard`](crate::output::term_guard)) share the foreign-bytes
-//! hazard and can adopt a guard the same way when needed.
+//! (see `output::term_guard`) share the foreign-bytes hazard and can adopt
+//! a guard the same way when needed.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

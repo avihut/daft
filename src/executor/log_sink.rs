@@ -13,6 +13,7 @@ use crate::coordinator::log_record::{LogRecord, OutputKind, StatusEvent, record_
 use crate::coordinator::log_store::{JobMeta, JobStatus, LogStore};
 use crate::coordinator::ports::JobsStorePort;
 use crate::executor::NodeStatus;
+use crate::output::deferred_warn;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -82,7 +83,7 @@ impl BufferingLogSink {
         let job_store = match SqliteJobsStore::for_repo_base(&store.base_dir) {
             Ok(js) => Some(js),
             Err(e) => {
-                crate::output::deferred_warn::warn(format!(
+                deferred_warn::warn(format!(
                     "daft: warning: opening coordinator store at {} failed: {e:#} \
                      (foreground job records will not be persisted to the store)",
                     store.base_dir.display()
@@ -142,7 +143,7 @@ impl BufferingLogSink {
             max_log_size_bytes: meta.max_log_size_bytes,
         };
         if let Err(e) = js.upsert_job(&row) {
-            crate::output::deferred_warn::warn(format!(
+            deferred_warn::warn(format!(
                 "daft: failed to persist job '{}' to the coordinator store: {e:#}",
                 meta.name
             ));
@@ -238,7 +239,7 @@ impl LogSink for BufferingLogSink {
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            crate::output::deferred_warn::warn(format!(
+            deferred_warn::warn(format!(
                 "daft: failed to write job record for '{}': {e:#}",
                 spec.name
             ));
@@ -273,7 +274,7 @@ impl LogSink for BufferingLogSink {
             .store
             .write_job_record_jsonl(&self.invocation_id, &meta, &records)
         {
-            crate::output::deferred_warn::warn(format!(
+            deferred_warn::warn(format!(
                 "daft: failed to write job record for '{}': {e:#}",
                 spec.name
             ));

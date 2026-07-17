@@ -41,6 +41,7 @@ use crate::coordinator::ports::JobsStorePort;
 use crate::hooks::HookContext;
 use crate::hooks::HookType;
 use crate::output::Output;
+use crate::output::deferred_warn;
 use crate::store::models::InvocationRow;
 use crate::store::models::invocation::{INVOCATION_STATUS_SKIPPED, SKIP_REASON_UNTRUSTED};
 use std::collections::{BTreeSet, HashMap};
@@ -176,7 +177,7 @@ pub fn flush_pending_notice(git_dir: &Path, output: &mut dyn Output) {
 /// would vanish into the buffer and hide the degradation.
 pub fn record_skip(ctx: &HookContext, reason: &str) {
     if let Err(e) = try_record_skip(ctx, reason) {
-        crate::output::deferred_warn::warn(format!(
+        deferred_warn::warn(format!(
             "daft: failed to record skipped {} hook: {e:#}",
             ctx.hook_type.yaml_name()
         ));
@@ -210,7 +211,7 @@ fn try_record_skip(ctx: &HookContext, reason: &str) -> anyhow::Result<()> {
 /// `skip:` condition fires.
 pub fn clear_skips(ctx: &HookContext) {
     if let Err(e) = try_clear_skips(ctx) {
-        crate::output::deferred_warn::warn(format!(
+        deferred_warn::warn(format!(
             "daft: failed to clear skipped-{} records: {e:#}",
             ctx.hook_type.yaml_name()
         ));

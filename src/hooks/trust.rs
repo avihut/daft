@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::trust_dto::{TrustDatabaseV1_0_0, TrustDatabaseV2_0_0};
+use crate::output::deferred_warn;
 
 /// Trust level for a repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -430,14 +431,18 @@ impl TrustDatabase {
                     // so a recoverable-but-corrupt registry is never lost, and
                     // warn. This is the foreground heal path, so the warning is
                     // seen (unlike the background pruner, which no-ops above).
+                    // Deferred rather than `eprintln!`ed: no live region reaches
+                    // a trust mutation today, but that is a property of the
+                    // current call graph, not something this side of the lock
+                    // can check (#720).
                     let backup = back_up_corrupt(&src)?;
-                    eprintln!(
+                    deferred_warn::warn(format!(
                         "warning: daft trust registry at {} was unreadable ({e:#}); \
                          backed it up to {} and started a fresh registry. \
                          Re-run `daft hooks trust` to restore grants.",
                         src.display(),
                         backup.display()
-                    );
+                    ));
                 }
                 db.save_to(&repos)?;
                 // Retire a legacy trust.json now that V3 repos.json is written.

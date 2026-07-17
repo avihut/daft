@@ -2,6 +2,7 @@ use super::columns::Column;
 use super::render;
 use super::state::TuiState;
 use crate::core::worktree::sync_dag::DagEvent;
+use crate::output::deferred_warn::{self, LiveRegionGuard};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
@@ -107,7 +108,7 @@ impl<S: LiveScreen> TuiRenderer<S> {
         // that already defers them for the whole window; this guard makes
         // the render loop safe even without that discipline. Declared
         // before `terminal` so it drops after the final teardown.
-        let _defer_warnings = crate::output::deferred_warn::live_region_guard();
+        let _defer_warnings = deferred_warn::live_region_guard();
 
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stderr());
         let mut terminal = Terminal::with_options(
@@ -369,11 +370,11 @@ impl LiveScreen for TuiState {
 /// handler installed as the fallback for when raw mode fails to enable —
 /// and for the moment this guard drops, when Ctrl+C is a signal again.
 ///
-/// The guard also holds a [`deferred_warn`](crate::output::deferred_warn)
-/// live-region guard: `daft:` warnings from worker threads queue for the
-/// whole raw-mode window instead of staircasing through the render (#720).
+/// The guard also holds a [`deferred_warn`] live-region guard: `daft:`
+/// warnings from worker threads queue for the whole raw-mode window instead
+/// of staircasing through the render (#720).
 pub fn enable_raw_mode_guard() -> RawModeGuard {
-    let defer_warnings = crate::output::deferred_warn::live_region_guard();
+    let defer_warnings = deferred_warn::live_region_guard();
     let _ = crossterm::terminal::enable_raw_mode();
     RawModeGuard {
         _defer_warnings: defer_warnings,
@@ -384,7 +385,7 @@ pub struct RawModeGuard {
     /// Struct fields drop after the `Drop::drop` body runs, so the queued
     /// warnings flush after `disable_raw_mode` — in cooked mode, below the
     /// region.
-    _defer_warnings: crate::output::deferred_warn::LiveRegionGuard,
+    _defer_warnings: LiveRegionGuard,
 }
 
 impl Drop for RawModeGuard {
