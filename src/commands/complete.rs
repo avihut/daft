@@ -80,11 +80,13 @@ fn complete(
     fetch_on_miss: bool,
 ) -> Result<Vec<String>> {
     match (command, position) {
-        // git-worktree-checkout: rich grouped completions (same as daft-go)
-        ("git-worktree-checkout", 1) => Ok(format_entries_as_strings(&complete_rich_branches(
-            word,
-            &CONFIG_CHECKOUT,
-        )?)),
+        // git-worktree-checkout: rich grouped completions (same as daft-go),
+        // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
+        ("git-worktree-checkout", 1) => {
+            let mut entries = complete_rich_branches(word, &CONFIG_CHECKOUT)?;
+            entries.extend(complete_forge_targets(word));
+            Ok(format_entries_as_strings(&entries))
+        }
 
         // git-worktree-clone: repository URL (no dynamic completion for now)
         ("git-worktree-clone", 1) => Ok(vec![]),
@@ -116,9 +118,11 @@ fn complete(
             &CONFIG_BRANCH,
         )?)),
 
-        // daft-go: grouped worktree/local/remote completions with fetch-on-miss
+        // daft-go: grouped worktree/local/remote completions with fetch-on-miss,
+        // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
         ("daft-go", 1) => {
-            let entries = complete_daft_go(word, fetch_on_miss)?;
+            let mut entries = complete_daft_go(word, fetch_on_miss)?;
+            entries.extend(complete_forge_targets(word));
             Ok(format_entries_as_strings(&entries))
         }
 
@@ -1829,6 +1833,104 @@ fn touch_fetch_marker(marker: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Forge PR/MR targets for the checkout/go position-1 slot. NEVER invokes
+/// `gh`/`glab` — this runs on every Tab keypress, and the hard rule is that
+/// the completion path stays local: the literal syntax tokens, the repo's
+/// `branch.<name>.merge` config, and the forge-PR cache are the only sources.
+/// Best-effort throughout: any failure yields fewer entries, never an error
+/// (noise on the Tab path leaks into the shell).
+fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
+    let mut entries = Vec::new();
+
+    // Literal syntax tokens while the user could still be typing one.
+    for (token, description) in [
+        (
+            "pr:",
+            "check out a GitHub pull request by number (a pasted PR/MR URL works too)",
+        ),
+        ("mr:", "check out a GitLab merge request by number"),
+    ] {
+        if token.starts_with(word) && word.len() < token.len() {
+            entries.push(CompletionEntry {
+                name: token.to_string(),
+                group: CompletionGroup::Forge,
+                description: description.to_string(),
+            });
+        }
+    }
+    if !(word.starts_with("pr:") || word.starts_with("mr:")) {
+        return entries;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+
+    // Cache-backed candidates: every PR/MR the last refresh saw, titles
+    // included (open first — the repo order). Stored titles are sanitized at
+    // the persistence boundary, so they are safe for the completion stream.
+    if let Ok(repo_hash) = crate::core::repo_identity::compute_repo_id() {
+        for row in crate::commands::forge_cache::read_prs(&repo_hash) {
+            let name = format!("{}:{}", row.kind, row.number);
+            if !name.starts_with(word) || !seen.insert(name.clone()) {
+                continue;
+            }
+            let description = if row.state == "open" {
+                row.title.clone()
+            } else {
+                format!("{} ({})", row.title, row.state)
+            };
+            entries.push(CompletionEntry {
+                name,
+                group: CompletionGroup::Forge,
+                description,
+            });
+        }
+    }
+
+    // Config-backed candidates: PRs already checked out locally
+    // (`branch.<name>.merge = refs/pull/N/head`) that the cache doesn't know —
+    // a cold cache, or a PR that left the open-snapshot. One git config read.
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(output) = crate::utils::git_command_at(&cwd)
+            .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
+            .output()
+        && output.status.success()
+    {
+        for (branch, forge_ref) in
+            parse_branch_merge_lines(&String::from_utf8_lossy(&output.stdout))
+        {
+            let name = format!("{}:{}", forge_ref.kind.tag(), forge_ref.number);
+            if !name.starts_with(word) || !seen.insert(name.clone()) {
+                continue;
+            }
+            entries.push(CompletionEntry {
+                name,
+                group: CompletionGroup::Forge,
+                description: format!("checked out: {branch}"),
+            });
+        }
+    }
+
+    entries
+}
+
+/// Parse `git config --get-regexp '^branch\..*\.merge$'` output into
+/// `(branch, forge ref)` pairs, keeping only PR/MR-shaped merge refs. Pure,
+/// so the recognition logic tests without a repo.
+fn parse_branch_merge_lines(
+    output: &str,
+) -> Vec<(String, crate::core::worktree::forge_ref::ForgeBranchRef)> {
+    use crate::core::worktree::forge_ref::ForgeBranchRef;
+    output
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            let forge_ref = ForgeBranchRef::parse_merge_ref(value)?;
+            let branch = key.strip_prefix("branch.")?.strip_suffix(".merge")?;
+            Some((branch.to_string(), forge_ref))
+        })
+        .collect()
+}
+
 /// Which group a completion entry belongs to, used for visual separation
 /// in shells that support per-item tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1841,6 +1943,8 @@ pub(crate) enum CompletionGroup {
     Remote,
     /// A repository from the repo catalog (cross-repo navigation).
     Repo,
+    /// A forge PR/MR target (`pr:`/`mr:` tokens and cached PR numbers).
+    Forge,
 }
 
 impl CompletionGroup {
@@ -1850,6 +1954,7 @@ impl CompletionGroup {
             CompletionGroup::Local => "local",
             CompletionGroup::Remote => "remote",
             CompletionGroup::Repo => "repo",
+            CompletionGroup::Forge => "forge",
         }
     }
 }
@@ -2115,6 +2220,48 @@ pub(crate) fn format_rich_completions(entries: &[CompletionEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forge_tokens_offered_while_typing_the_prefix() {
+        // Empty word and partial prefixes offer the literal syntax tokens.
+        for word in ["", "p", "pr"] {
+            let names: Vec<String> = complete_forge_targets(word)
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+            assert!(names.contains(&"pr:".to_string()), "word {word:?}");
+        }
+        let names: Vec<String> = complete_forge_targets("m")
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["mr:"]);
+        // An ordinary branch-name prefix gets no forge noise.
+        assert!(complete_forge_targets("feat").is_empty());
+    }
+
+    #[test]
+    fn forge_entries_use_the_forge_group() {
+        for entry in complete_forge_targets("") {
+            assert_eq!(entry.group.as_str(), "forge");
+        }
+    }
+
+    #[test]
+    fn branch_merge_lines_parse_only_forge_refs() {
+        use crate::core::worktree::forge_ref::ForgeRefKind;
+        let output = "branch.main.merge refs/heads/main\n\
+                      branch.contributor-feature.merge refs/pull/2/head\n\
+                      branch.mr-branch.merge refs/merge-requests/45/head\n\
+                      garbage-line\n";
+        let parsed = parse_branch_merge_lines(output);
+        assert_eq!(parsed.len(), 2, "ordinary branches and noise are skipped");
+        assert_eq!(parsed[0].0, "contributor-feature");
+        assert_eq!(parsed[0].1.kind, ForgeRefKind::GithubPr);
+        assert_eq!(parsed[0].1.number, 2);
+        assert_eq!(parsed[1].0, "mr-branch");
+        assert_eq!(parsed[1].1.number, 45);
+    }
 
     #[test]
     fn test_suggest_new_branch_names() {

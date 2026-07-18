@@ -132,6 +132,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'base:Ahead/behind base branch'\n");
         output.push_str("            'changes:Local changes'\n");
         output.push_str("            'remote:Ahead/behind remote'\n");
+        output.push_str("            'pr:Pull/merge request'\n");
         output.push_str("            'age:Branch age'\n");
         output.push_str("            'owner:Branch owner'\n");
         output.push_str("            'hash:Commit hash'\n");
@@ -143,6 +144,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+base:Add ahead/behind base branch'\n");
         output.push_str("            '+changes:Add local changes'\n");
         output.push_str("            '+remote:Add ahead/behind remote'\n");
+        output.push_str("            '+pr:Add pull/merge request'\n");
         output.push_str("            '+age:Add branch age'\n");
         output.push_str("            '+owner:Add branch owner'\n");
         output.push_str("            '+hash:Add commit hash'\n");
@@ -154,6 +156,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-base:Remove ahead/behind base branch'\n");
         output.push_str("            '-changes:Remove local changes'\n");
         output.push_str("            '-remote:Remove ahead/behind remote'\n");
+        output.push_str("            '-pr:Remove pull/merge request'\n");
         output.push_str("            '-age:Remove branch age'\n");
         output.push_str("            '-owner:Remove branch owner'\n");
         output.push_str("            '-hash:Remove commit hash'\n");

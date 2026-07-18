@@ -156,6 +156,62 @@ test_dynamic_branch_completion() {
     fi
 }
 
+# Test: forge pr:/mr: target completion — tokens and config-derived numbers
+test_forge_target_completion() {
+    run_test "Forge pr:/mr: target completion"
+
+    local test_repo="/tmp/test-completions-forge-$$"
+    mkdir -p "$test_repo"
+    cd "$test_repo"
+
+    git init >/dev/null 2>&1
+    git config user.name "Test" >/dev/null 2>&1
+    git config user.email "test@example.com" >/dev/null 2>&1
+    echo "test" > README.md
+    git add README.md >/dev/null 2>&1
+    git commit -m "Initial commit" >/dev/null 2>&1
+    # A branch tracking a PR head, as `daft go pr:2` would configure it.
+    git branch contributor-feature >/dev/null 2>&1
+    git config branch.contributor-feature.merge refs/pull/2/head >/dev/null 2>&1
+    git config branch.contributor-feature.remote origin >/dev/null 2>&1
+
+    local tokens numbered
+    tokens=$("$DAFT_BIN" __complete git-worktree-checkout "" --position 1 2>&1)
+    numbered=$("$DAFT_BIN" __complete git-worktree-checkout "pr:" --position 1 2>&1)
+
+    cd /
+    rm -rf "$test_repo"
+
+    if [[ "$tokens" != *"pr:"* || "$tokens" != *"mr:"* ]]; then
+        fail_test "empty word should offer the pr:/mr: syntax tokens"
+    elif [[ "$numbered" != *"pr:2"* ]]; then
+        fail_test "'pr:' should complete the config-tracked PR number (got: $numbered)"
+    elif [[ "$numbered" == *"mr:"* ]]; then
+        fail_test "'pr:'-prefixed word must not offer mr: entries"
+    else
+        pass_test
+    fi
+}
+
+# Test: bash colon handling for forge targets (COMP_WORDBREAKS splits at ':')
+test_bash_forge_colon_handling() {
+    run_test "Bash forge-target colon handling"
+
+    local checkout_fn daft_list_fn
+    checkout_fn=$("$DAFT_BIN" completions bash --command=git-worktree-checkout 2>&1)
+    daft_list_fn=$("$DAFT_BIN" completions bash --command=git-worktree-list 2>&1)
+
+    if [[ "$checkout_fn" != *'_init_completion -n :'* ]]; then
+        fail_test "checkout must keep ':' in \$cur (_init_completion -n :)"
+    elif [[ "$checkout_fn" != *'__ltrim_colon_completions'* ]]; then
+        fail_test "checkout must strip the colon prefix from COMPREPLY"
+    elif [[ "$daft_list_fn" == *'_init_completion -n :'* ]]; then
+        fail_test "commands without forge targets keep plain _init_completion"
+    else
+        pass_test
+    fi
+}
+
 # Test: Bash completion includes dynamic branch wiring
 test_bash_dynamic_wiring() {
     run_test "Bash completion includes dynamic branch logic"
@@ -759,6 +815,8 @@ main() {
     test_zsh_git_subcommand_registration
     test_all_commands_generate
     test_flag_extraction_consistency
+    test_forge_target_completion
+    test_bash_forge_colon_handling
 
     # Print summary
     echo "========================================="

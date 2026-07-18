@@ -19,7 +19,17 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
 
     output.push_str(&format!("_{func_name}() {{\n"));
     output.push_str("    local cur prev words cword\n");
-    output.push_str("    _init_completion || return\n");
+    // Position-1 accepts pr:/mr: forge targets on these commands only.
+    let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
+    // checkout/go complete pr:<n>/mr:<n> targets; bash's COMP_WORDBREAKS
+    // splits words at ':', so keep it in $cur (-n :) and strip the colon
+    // prefix from COMPREPLY afterwards (__ltrim_colon_completions) — the
+    // standard bash-completion idiom for colon-bearing candidates.
+    if takes_forge_targets {
+        output.push_str("    _init_completion -n : || return\n");
+    } else {
+        output.push_str("    _init_completion || return\n");
+    }
     output.push('\n');
 
     if has_branches {
@@ -32,6 +42,11 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         ));
         output.push_str("        if [[ -n \"$branches\" ]]; then\n");
         output.push_str("            COMPREPLY=( $(compgen -W \"$branches\" -- \"$cur\") )\n");
+        if takes_forge_targets {
+            output.push_str(
+                "            declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n",
+            );
+        }
         output.push_str("            return 0\n");
         output.push_str("        fi\n");
         output.push_str("    fi\n");
@@ -110,7 +125,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     if has_columns {
         output.push_str("    # Column name completion for --columns\n");
         output.push_str("    if [[ \"$prev\" == \"--columns\" ]]; then\n");
-        output.push_str("        local columns=\"annotation branch path size base changes remote age owner hash last-commit\"\n");
+        output.push_str("        local columns=\"annotation branch path size base changes remote pr age owner hash last-commit\"\n");
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $columns; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");

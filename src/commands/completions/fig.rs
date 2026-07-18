@@ -233,6 +233,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("base", "Ahead/behind base branch"),
                     ("changes", "Local changes"),
                     ("remote", "Ahead/behind remote"),
+                    ("pr", "Pull/merge request"),
                     ("age", "Branch age"),
                     ("owner", "Branch owner"),
                     ("hash", "Commit hash"),
