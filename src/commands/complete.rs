@@ -84,7 +84,7 @@ fn complete(
         // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
         ("git-worktree-checkout", 1) => {
             let mut entries = complete_rich_branches(word, &CONFIG_CHECKOUT)?;
-            entries.extend(complete_forge_targets(word));
+            entries.extend(complete_forge_targets(word, None));
             Ok(format_entries_as_strings(&entries))
         }
 
@@ -130,7 +130,8 @@ fn complete(
         )?)),
 
         // daft-go position 2: branches of the catalog repo named at
-        // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST).
+        // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST),
+        // plus that repo's forge pr:/mr: targets.
         ("daft-go", 2) => {
             let first = std::env::var("DAFT_COMPLETE_GO_FIRST").unwrap_or_default();
             Ok(format_entries_as_strings(&complete_go_second(&first, word)))
@@ -713,7 +714,7 @@ fn append_catalog_group(entries: &mut Vec<CompletionEntry>, prefix: &str) {
 /// spin) despite having `pr:` to offer.
 fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings: bool) {
     let t = std::time::Instant::now();
-    entries.extend(complete_forge_targets(prefix));
+    entries.extend(complete_forge_targets(prefix, None));
     if timings {
         eprintln!(
             "[timings] forge            : {:>7.1}ms",
@@ -723,9 +724,13 @@ fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings:
 }
 
 /// Position-2 completion for `daft go <repo> <branch>`: branches of the
-/// repo named by `DAFT_COMPLETE_GO_FIRST` (set by the shell snippets).
-/// Empty when the first word isn't a live catalog repo — position 2 then
-/// means a base branch for `-b`, which keeps its default completion.
+/// repo named by `DAFT_COMPLETE_GO_FIRST` (set by the shell snippets), plus
+/// that repo's forge `pr:`/`mr:` targets — the branch slot accepts them
+/// (`daft go api pr:9` opens api's PR 9), so Tab offers the *target* repo's
+/// candidates, not the caller's. Empty when the first word isn't a live
+/// catalog repo — position 2 then means a base branch for `-b`, which keeps
+/// its default completion (and stays forge-free: the create-family guard
+/// rejects basing a new branch on a PR ref).
 fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
     if first_word.is_empty() {
         return Vec::new();
@@ -740,6 +745,18 @@ fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
     if !root.is_dir() {
         return Vec::new();
     }
+    let mut entries = go_second_branches(root, &row.name, prefix);
+    entries.extend(complete_forge_targets(prefix, Some(root)));
+    entries
+}
+
+/// The branch half of [`complete_go_second`]: local + remote branch names of
+/// the repo at `root`, deduped, described by the repo's catalog name.
+fn go_second_branches(
+    root: &std::path::Path,
+    repo_name: &str,
+    prefix: &str,
+) -> Vec<CompletionEntry> {
     let Ok(out) = crate::utils::git_command_at(root)
         .args([
             "for-each-ref",
@@ -775,7 +792,7 @@ fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
         .map(|name| CompletionEntry {
             name,
             group: CompletionGroup::Local,
-            description: row.name.clone(),
+            description: repo_name.to_string(),
         })
         .collect()
 }
@@ -1869,13 +1886,18 @@ fn touch_fetch_marker(marker: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Forge PR/MR targets for the checkout/go position-1 slot. NEVER invokes
+/// Forge PR/MR targets for the checkout/go branch slots. NEVER invokes
 /// `gh`/`glab` — this runs on every Tab keypress, and the hard rule is that
 /// the completion path stays local: the literal syntax tokens, the repo's
 /// `branch.<name>.merge` config, and the forge-PR cache are the only sources.
 /// Best-effort throughout: any failure yields fewer entries, never an error
 /// (noise on the Tab path leaks into the shell).
-fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
+///
+/// `repo_root` picks the repo the candidates come from: `None` is the repo
+/// the cwd sits in (position 1), `Some(root)` a catalog repo addressed
+/// cross-repo — `daft go <repo> pr:<Tab>` completes against the *target*
+/// repo's cache and branch config, not the caller's.
+fn complete_forge_targets(word: &str, repo_root: Option<&std::path::Path>) -> Vec<CompletionEntry> {
     let mut entries = Vec::new();
 
     // Literal syntax tokens while the user could still be typing one.
@@ -1902,8 +1924,17 @@ fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
 
     // One bulk cache read serves both sections below: open rows become
     // candidates, and any row supplies status/owner metadata for a PR the
-    // user has checked out locally.
-    let rows = crate::core::repo_identity::compute_repo_id()
+    // user has checked out locally. The cross-repo hash derives from the
+    // target's live git dir (not the catalog row's recorded uuid) so it
+    // matches what `__refresh-forge` keyed the cache with, even if the repo
+    // was re-created since it was cataloged.
+    let repo_hash = match repo_root {
+        None => crate::core::repo_identity::compute_repo_id().ok(),
+        Some(root) => crate::core::repo::git_common_dir_at(root).and_then(|common| {
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&common).ok()
+        }),
+    };
+    let rows = repo_hash
         .map(|repo_hash| crate::commands::forge_cache::read_prs(&repo_hash))
         .unwrap_or_default();
 
@@ -1937,8 +1968,12 @@ fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
     // local branch demonstrably exists, so `go` remains a navigation target
     // regardless of the PR's forge state. One git config read; status/owner
     // columns fill from the cache row when the snapshot still has one.
-    if let Ok(cwd) = std::env::current_dir()
-        && let Ok(output) = crate::utils::git_command_at(&cwd)
+    let config_dir = match repo_root {
+        None => std::env::current_dir().ok(),
+        Some(root) => Some(root.to_path_buf()),
+    };
+    if let Some(dir) = config_dir
+        && let Ok(output) = crate::utils::git_command_at(&dir)
             .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
             .output()
         && output.status.success()
@@ -2288,26 +2323,42 @@ mod tests {
     fn forge_tokens_offered_while_typing_the_prefix() {
         // Empty word and partial prefixes offer the literal syntax tokens.
         for word in ["", "p", "pr"] {
-            let names: Vec<String> = complete_forge_targets(word)
+            let names: Vec<String> = complete_forge_targets(word, None)
                 .into_iter()
                 .map(|e| e.name)
                 .collect();
             assert!(names.contains(&"pr:".to_string()), "word {word:?}");
         }
-        let names: Vec<String> = complete_forge_targets("m")
+        let names: Vec<String> = complete_forge_targets("m", None)
             .into_iter()
             .map(|e| e.name)
             .collect();
         assert_eq!(names, vec!["mr:"]);
         // An ordinary branch-name prefix gets no forge noise.
-        assert!(complete_forge_targets("feat").is_empty());
+        assert!(complete_forge_targets("feat", None).is_empty());
     }
 
     #[test]
     fn forge_entries_use_the_forge_group() {
-        for entry in complete_forge_targets("") {
+        for entry in complete_forge_targets("", None) {
             assert_eq!(entry.group.as_str(), "forge");
         }
+    }
+
+    /// A cross-repo root that no longer exists (or was never a repo) yields
+    /// no candidates and no error — and, with a `pr:`-prefixed word, provably
+    /// never falls back to the cwd repo's cache or config.
+    #[test]
+    fn forge_targets_at_a_dead_root_yield_nothing() {
+        let dead = std::path::Path::new("/nonexistent/daft-completion-test");
+        assert!(complete_forge_targets("pr:", Some(dead)).is_empty());
+        // The literal tokens still offer while typing the prefix — they
+        // don't depend on the repo existing.
+        let names: Vec<String> = complete_forge_targets("p", Some(dead))
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["pr:"]);
     }
 
     #[test]

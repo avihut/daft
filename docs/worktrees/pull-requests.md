@@ -149,7 +149,9 @@ deleted on the forge — except ones you already have checked out, whose local
 branch keeps them a navigation target regardless. Forge words also never trip
 `daft go`'s fetch-on-miss fallback (the spinner that fetches refs when a word
 matches no branch): a word with completions isn't a miss, and a `pr:`/`mr:` word
-can never match a branch anyway.
+can never match a branch anyway. All of it works cross-repo:
+`daft go <repo> pr:<Tab>` completes against the _target_ repo's cache, and
+`daft go <repo> pr:<number>` checks the PR out over there — from anywhere.
 
 ## Mixed-remote repositories
 

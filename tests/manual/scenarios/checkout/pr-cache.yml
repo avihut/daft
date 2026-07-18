@@ -167,6 +167,35 @@ steps:
       output_contains:
         - "NO-FETCH-RAN"
 
+  - name: Position 2 offers the target repo's PRs from anywhere
+    run: |
+      set -e
+      # `daft go test-repo <word>` — the branch slot of a cross-repo go also
+      # accepts pr:/mr: targets, so Tab completes them against the *target*
+      # repo's cache (cwd here is the sandbox root, outside any repo; the
+      # catalog names the repo). The shim stays on PATH so any accidental
+      # forge call fails loudly. Status/owner columns ride along as at
+      # position 1.
+      export PATH="$WORK_DIR/bin:$PATH"
+      export DAFT_COMPLETE_GO_FIRST=test-repo
+      daft __complete daft-go "p" --position 2 | grep -q "^pr:"
+      daft __complete daft-go "pr:" --position 2 | grep -q "pr:5"
+      daft __complete daft-go "pr:" --position 2 | grep -q "Add feature five"
+      # Branch and forge candidates share the slot.
+      daft __complete daft-go "" --position 2 | grep -q "develop"
+      # Position 2 has no fetch-on-miss: a miss must not create the marker.
+      daft __complete daft-go "zzz-no-such-branch" --position 2
+      test ! -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      # A first word that isn't a cataloged repo keeps the slot forge-free —
+      # it's the base slot of `daft go -b <new> <base>`, and a base can't be
+      # a PR ref.
+      ! DAFT_COMPLETE_GO_FIRST=zzz-not-a-repo daft __complete daft-go "p" --position 2 | grep -q "pr:"
+      echo "POS2-FORGE-OK"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "POS2-FORGE-OK"
+
   - name: A genuine branch miss still fetches — the marker proves it ran
     run: |
       set -e

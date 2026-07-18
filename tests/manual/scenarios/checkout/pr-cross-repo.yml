@@ -1,0 +1,58 @@
+name: Checkout a pull request of another repo
+description: >
+  `daft go <repo> pr:N` from inside a different repository resolves the PR
+  against the *target* repo and creates the worktree there — the cross-repo
+  chdir happens before forge resolution, so `gh` runs in the target repo's
+  context. The fake gh proves that by failing loudly unless invoked from within
+  the target repo's tree. Same-repo PR shape (head on the base repo); the fork
+  and cache mechanics have their own scenarios.
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repositories
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+        - "$WORK_DIR/test-repo-b/main"
+
+  - name: From repo A, open repo B's pr:1 (source branch = develop)
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      # The cross-repo crux: daft must resolve the PR *inside repo B* — the
+      # chdir precedes forge resolution. A gh call from anywhere else (e.g.
+      # repo A, where the command was typed) is the bug this guard catches.
+      case "$PWD" in
+        */test-repo-b|*/test-repo-b/*) ;;
+        *) echo "gh called outside test-repo-b: $PWD ($*)" >&2; exit 3 ;;
+      esac
+      if [ "$*" = "repo set-default --view" ]; then echo "acme/widget"; exit 0; fi
+      if [ "$1" = "api" ] && [ "$2" = "repos/acme/widget/pulls/1" ]; then
+        printf '%s' '{"title":"Develop work","state":"open","draft":false,"user":{"login":"octocat"},"html_url":"https://github.com/acme/widget/pull/1","head":{"ref":"develop","repo":{"name":"widget","owner":{"login":"acme"}}},"base":{"ref":"main","repo":{"name":"widget","owner":{"login":"acme"}}}}'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft go test-repo-b pr:1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/develop"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo-b/develop"
+          branch: develop
