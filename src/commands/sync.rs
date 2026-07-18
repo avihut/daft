@@ -312,11 +312,20 @@ pub fn run() -> Result<()> {
         });
     }
 
-    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
+    let result = if !std::io::IsTerminal::is_terminal(&std::io::stderr()) || args.verbose >= 2 {
         run_sequential(args, settings, &cancel)
     } else {
         run_tui(args, settings, &cancel, cancel_render)
+    };
+
+    // The sync just talked to the remote — piggyback a forge-PR cache refresh
+    // (detached; feeds `daft list --columns +pr` and pr: completion). Cancel
+    // paths exit the process directly and never reach here.
+    if result.is_ok() {
+        crate::commands::forge_cache::spawn_background_refresh();
     }
+
+    result
 }
 
 /// Shared exit path once a run observed a cancel: print the partial-result

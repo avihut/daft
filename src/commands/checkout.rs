@@ -1132,21 +1132,22 @@ fn resolve_forge_target(
     crate::forge::preflight_fork_collision(git, &resolved.info)?;
     let elapsed = started.elapsed();
 
+    // Write-through to the forge-PR cache: we hold this PR's fresh metadata,
+    // so `daft list --columns +pr` and pr: completion learn it immediately.
+    // Best-effort; never delays or fails the checkout.
+    crate::commands::forge_cache::persist_resolved(&resolved.info);
+
     let info = resolved.info;
     // Fork PR/MR: the head lives at a base-repo ref, fetched into a local
     // remote-tracking ref named for the platform's convention.
-    let fork = info.is_cross_repo.then(|| {
-        let tag = match info.kind {
-            crate::core::worktree::forge_ref::ForgeRefKind::GithubPr => "pr",
-            crate::core::worktree::forge_ref::ForgeRefKind::GitlabMr => "mr",
-        };
-        checkout::ForgeForkRefs {
-            head_ref: info.head_ref(),
-            local_ref: format!(
-                "refs/remotes/{}/{}/{}",
-                resolved.base_remote, tag, info.number
-            ),
-        }
+    let fork = info.is_cross_repo.then(|| checkout::ForgeForkRefs {
+        head_ref: info.head_ref(),
+        local_ref: format!(
+            "refs/remotes/{}/{}/{}",
+            resolved.base_remote,
+            info.kind.tag(),
+            info.number
+        ),
     });
 
     Ok(Some(ResolvedForge {

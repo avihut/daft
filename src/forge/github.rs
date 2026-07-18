@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::cli::{self, CliApiRequest};
-use crate::forge::info::{BaseRepo, RemoteRefInfo};
+use crate::forge::info::{BaseRepo, CiStatus, PrListEntry, RemoteRefInfo};
 use crate::forge::provider::{ForgeContext, RemoteRefProvider, RepoCoords};
 use crate::git::GitCommand;
 
@@ -38,6 +38,7 @@ impl RemoteRefProvider for GitHubProvider {
             args: &args,
             repo_root: ctx.repo_root,
             prompt_env: GH_PROMPT_ENV,
+            extra_env: &[],
             install_hint: INSTALL_HINT,
             run_context: "failed to run gh api",
         })?;
@@ -51,6 +52,136 @@ impl RemoteRefProvider for GitHubProvider {
         })?;
         into_info(number, response)
     }
+
+    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
+        // `gh pr list` resolves the repo from the cwd's remotes (and honors
+        // `gh repo set-default` in fork workflows) — no explicit coords needed.
+        // `statusCheckRollup` rides along in the same single invocation, which
+        // is the whole reason this uses `gh pr list --json` (GraphQL-backed)
+        // rather than the REST listing endpoint (no check data).
+        let mut extra_env: Vec<(&str, &str)> = Vec::new();
+        if let Some(host) = ctx.hostname {
+            // `gh pr list` has no `--hostname` flag (only `gh api` does);
+            // GH_HOST is gh's documented equivalent.
+            extra_env.push(("GH_HOST", host));
+        }
+
+        let output = cli::run_cli_api(CliApiRequest {
+            tool: ctx.tool_or("gh"),
+            args: &[
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "number,title,state,headRefName,isCrossRepository,url,author,statusCheckRollup",
+            ],
+            repo_root: ctx.repo_root,
+            prompt_env: GH_PROMPT_ENV,
+            extra_env: &extra_env,
+            install_hint: INSTALL_HINT,
+            run_context: "failed to run gh pr list",
+        })?;
+
+        if !output.status.success() {
+            return Err(cli::generic_api_error(
+                "could not list open pull requests via gh",
+                &output,
+            ));
+        }
+
+        parse_pr_list(&output.stdout)
+    }
+}
+
+/// Parse `gh pr list --json ...` output into list entries. Pure, so the JSON
+/// shapes (and the rollup derivation) unit-test without a subprocess.
+fn parse_pr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
+    let items: Vec<GhPrListItem> = serde_json::from_slice(json)
+        .context("could not parse the gh pr list response (a GitHub API change?)")?;
+    Ok(items
+        .into_iter()
+        .map(|item| PrListEntry {
+            kind: ForgeRefKind::GithubPr,
+            number: item.number,
+            title: item.title,
+            state: item.state.to_lowercase(),
+            head_branch: item.head_ref_name,
+            is_cross_repo: item.is_cross_repository,
+            ci_status: derive_ci_status(&item.status_check_rollup),
+            url: item.url,
+            author: item.author.login,
+        })
+        .collect())
+}
+
+/// Roll a PR's check contexts up to one [`CiStatus`]: any failing context
+/// dominates, then any still-running one; all conclusive-and-benign is a
+/// pass. No contexts at all → `None` (the PR has no CI, distinct from green).
+///
+/// The rollup mixes two GraphQL shapes — CheckRun (`status` + `conclusion`)
+/// and StatusContext (`state`) — whose vocabularies differ; both are folded
+/// through the same three buckets.
+fn derive_ci_status(contexts: &[GhCheckContext]) -> Option<CiStatus> {
+    if contexts.is_empty() {
+        return None;
+    }
+    let mut pending = false;
+    for ctx in contexts {
+        // CheckRun: `conclusion` is authoritative once COMPLETED; until then
+        // `status` (QUEUED / IN_PROGRESS / ...) means the run is still going.
+        // StatusContext: `state` is the whole story.
+        let verdict = ctx
+            .conclusion
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .or(ctx.state.as_deref());
+        match verdict {
+            Some(
+                "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED"
+                | "STARTUP_FAILURE",
+            ) => return Some(CiStatus::Fail),
+            Some("PENDING" | "EXPECTED") => pending = true,
+            Some(_) => {}           // SUCCESS / NEUTRAL / SKIPPED and friends
+            None => pending = true, // a CheckRun that hasn't concluded
+        }
+    }
+    Some(if pending {
+        CiStatus::Pending
+    } else {
+        CiStatus::Pass
+    })
+}
+
+#[derive(Deserialize)]
+struct GhPrListItem {
+    number: u32,
+    title: String,
+    state: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "isCrossRepository")]
+    is_cross_repository: bool,
+    url: String,
+    author: GhListAuthor,
+    #[serde(rename = "statusCheckRollup", default)]
+    status_check_rollup: Vec<GhCheckContext>,
+}
+
+#[derive(Deserialize, Default)]
+struct GhListAuthor {
+    #[serde(default)]
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GhCheckContext {
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
 }
 
 /// Which owner/repo to query: the pasted URL's, else `gh repo set-default`
@@ -231,6 +362,91 @@ mod tests {
     fn parse(json: &str, number: u32) -> Result<RemoteRefInfo> {
         let response: GhPrResponse = serde_json::from_str(json).unwrap();
         into_info(number, response)
+    }
+
+    fn check(conclusion: Option<&str>, state: Option<&str>) -> GhCheckContext {
+        GhCheckContext {
+            conclusion: conclusion.map(String::from),
+            state: state.map(String::from),
+        }
+    }
+
+    #[test]
+    fn ci_rollup_no_contexts_is_none() {
+        assert_eq!(derive_ci_status(&[]), None);
+    }
+
+    #[test]
+    fn ci_rollup_any_failure_dominates() {
+        // A failing CheckRun outweighs a pending StatusContext and a success.
+        let contexts = [
+            check(Some("SUCCESS"), None),
+            check(None, Some("PENDING")),
+            check(Some("FAILURE"), None),
+        ];
+        assert_eq!(derive_ci_status(&contexts), Some(CiStatus::Fail));
+        // StatusContext ERROR also fails.
+        assert_eq!(
+            derive_ci_status(&[check(None, Some("ERROR"))]),
+            Some(CiStatus::Fail)
+        );
+    }
+
+    #[test]
+    fn ci_rollup_pending_beats_pass() {
+        // A CheckRun with no conclusion yet (still running) → pending.
+        let contexts = [check(Some("SUCCESS"), None), check(None, None)];
+        assert_eq!(derive_ci_status(&contexts), Some(CiStatus::Pending));
+    }
+
+    #[test]
+    fn ci_rollup_all_benign_is_pass() {
+        let contexts = [
+            check(Some("SUCCESS"), None),
+            check(Some("NEUTRAL"), None),
+            check(Some("SKIPPED"), None),
+            check(None, Some("SUCCESS")),
+        ];
+        assert_eq!(derive_ci_status(&contexts), Some(CiStatus::Pass));
+    }
+
+    #[test]
+    fn parses_pr_list_with_rollup() {
+        let json = r#"[
+            {"number": 7, "title": "feat: x", "state": "OPEN",
+             "headRefName": "feat/x", "isCrossRepository": false,
+             "url": "https://github.com/acme/widget/pull/7",
+             "author": {"login": "octocat"},
+             "statusCheckRollup": [
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "StatusContext", "state": "SUCCESS"}
+             ]},
+            {"number": 9, "title": "fix: y", "state": "OPEN",
+             "headRefName": "fix/y", "isCrossRepository": true,
+             "url": "https://github.com/acme/widget/pull/9",
+             "author": {"login": "contributor"},
+             "statusCheckRollup": []}
+        ]"#;
+        let entries = parse_pr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].number, 7);
+        assert_eq!(entries[0].state, "open", "gh's OPEN is lowercased");
+        assert_eq!(entries[0].head_branch, "feat/x");
+        assert_eq!(entries[0].ci_status, Some(CiStatus::Pass));
+        assert!(entries[1].is_cross_repo);
+        assert_eq!(entries[1].ci_status, None, "no checks ≠ green");
+        assert_eq!(entries[1].author, "contributor");
+    }
+
+    #[test]
+    fn pr_list_tolerates_null_author() {
+        // A deleted account serializes as author: null (gh returns {} or null).
+        let json = r#"[{"number": 3, "title": "t", "state": "MERGED",
+            "headRefName": "b", "isCrossRepository": false,
+            "url": "u", "author": {}}]"#;
+        let entries = parse_pr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries[0].author, "");
+        assert_eq!(entries[0].state, "merged");
     }
 
     #[test]

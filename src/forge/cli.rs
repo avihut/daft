@@ -24,6 +24,10 @@ pub struct CliApiRequest<'a> {
     /// (`GH_PROMPT_DISABLED=1` / `GLAB_NO_PROMPT=1`) so a missing/expired auth
     /// surfaces as an error instead of hanging on a prompt.
     pub prompt_env: (&'a str, &'a str),
+    /// Additional env vars for this invocation — the escape hatch for CLI
+    /// options that have no flag spelling (e.g. `GH_HOST` for `gh pr list`,
+    /// whose `--hostname` exists only on `gh api`). Usually empty.
+    pub extra_env: &'a [(&'a str, &'a str)],
     /// Shown (as the whole error) when the tool isn't installed.
     pub install_hint: &'a str,
     /// Context wrapped around a spawn failure that isn't "not found".
@@ -38,6 +42,7 @@ pub fn run_cli_api(request: CliApiRequest<'_>) -> Result<Output> {
         .args(request.args.iter().copied())
         .current_dir(request.repo_root)
         .env(request.prompt_env.0, request.prompt_env.1)
+        .envs(request.extra_env.iter().copied())
         .output()
     {
         Ok(output) => Ok(output),

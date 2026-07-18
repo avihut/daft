@@ -38,6 +38,52 @@ pub struct BaseRepo {
     pub repo: String,
 }
 
+/// CI rollup for one PR/MR, derived from the forge's check contexts. Any
+/// failing context dominates, then any still-running one; all-green (or
+/// neutral/skipped) is `Pass`. A PR with no checks at all has no status
+/// (`Option<CiStatus>` is `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiStatus {
+    Pass,
+    Fail,
+    Pending,
+}
+
+impl CiStatus {
+    /// The TEXT value persisted in the forge-PR cache.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CiStatus::Pass => "pass",
+            CiStatus::Fail => "fail",
+            CiStatus::Pending => "pending",
+        }
+    }
+}
+
+/// One entry of a provider's open-PR/MR listing — the forge-cache refresh
+/// payload. Leaner than [`RemoteRefInfo`]: a listing decorates `daft list`
+/// and tab completion, it doesn't drive a checkout, so base-repo coords and
+/// draft state aren't carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrListEntry {
+    pub kind: ForgeRefKind,
+    pub number: u32,
+    /// Raw forge title — sanitized at the cache's persistence boundary, not
+    /// here.
+    pub title: String,
+    /// Lowercased state (`open`, `merged`, `closed`).
+    pub state: String,
+    /// Branch name in the head repository.
+    pub head_branch: String,
+    /// Whether the head lives in a fork of the base repository.
+    pub is_cross_repo: bool,
+    /// CI rollup, `None` when the PR has no checks (or the platform's listing
+    /// doesn't carry pipeline status — GitLab, deferred).
+    pub ci_status: Option<CiStatus>,
+    pub url: String,
+    pub author: String,
+}
+
 impl RemoteRefInfo {
     /// Compact identity for rail rows / result line: `PR #123` / `MR !45`.
     pub fn display(&self) -> String {

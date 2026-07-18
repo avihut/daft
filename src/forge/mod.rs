@@ -15,7 +15,7 @@ pub mod info;
 pub mod parse;
 pub mod provider;
 
-pub use info::{BaseRepo, RemoteRefInfo};
+pub use info::{BaseRepo, CiStatus, PrListEntry, RemoteRefInfo};
 pub use parse::{ForgeTarget, TargetSource};
 pub use provider::{ForgeContext, RemoteRefProvider, RepoCoords};
 
@@ -121,6 +121,30 @@ pub fn resolve(
 
     let base_remote = find_base_remote(git, &info.base, default_remote);
     Ok(ResolvedRef { info, base_remote })
+}
+
+/// Fetch the repo's open-PR/MR snapshot from its selected platform — the
+/// forge-cache refresh payload. Provider selection follows the same chain as
+/// a bare `pr:`/`mr:` target (config override → remote host → GitHub); the
+/// listing always runs from repo context, so a pasted URL never reaches here.
+pub fn fetch_open_snapshot(
+    git: &GitCommand,
+    repo_root: &Path,
+    config: &ForgeConfig,
+) -> Result<(ForgeRefKind, Vec<PrListEntry>)> {
+    let provider = select_provider(git, config)?;
+    let tool = match provider.kind() {
+        ForgeRefKind::GithubPr => config.github_cli.as_deref(),
+        ForgeRefKind::GitlabMr => config.gitlab_cli.as_deref(),
+    };
+    let ctx = ForgeContext {
+        git,
+        repo_root,
+        explicit_coords: None,
+        tool,
+        hostname: config.hostname.as_deref(),
+    };
+    Ok((provider.kind(), provider.fetch_open_list(&ctx)?))
 }
 
 /// Whether checking out a fork PR/MR would clobber an unrelated local branch.

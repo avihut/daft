@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::cli::{self, CliApiRequest};
-use crate::forge::info::{BaseRepo, RemoteRefInfo};
+use crate::forge::info::{BaseRepo, PrListEntry, RemoteRefInfo};
 use crate::forge::provider::{ForgeContext, RemoteRefProvider};
 
 const GLAB_PROMPT_ENV: (&str, &str) = ("GLAB_NO_PROMPT", "1");
@@ -47,6 +47,7 @@ impl RemoteRefProvider for GitLabProvider {
             args: &args,
             repo_root: ctx.repo_root,
             prompt_env: GLAB_PROMPT_ENV,
+            extra_env: &[],
             install_hint: INSTALL_HINT,
             run_context: "failed to run glab api",
         })?;
@@ -61,6 +62,82 @@ impl RemoteRefProvider for GitLabProvider {
             })?;
         into_info(number, response)
     }
+
+    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
+        // Same `glab api` + `:id`-placeholder pattern as `fetch_info` (keeps
+        // the `--hostname` flag and repo-context resolution). The REST listing
+        // carries no pipeline status — GitLab CI in the cache is a deferred
+        // follow-up (would cost one extra call per MR), so `ci_status` is
+        // always `None` here.
+        let api_path = "projects/:id/merge_requests?state=opened&per_page=100";
+        let mut args = vec!["api", api_path];
+        if let Some(host) = ctx.hostname {
+            args.extend(["--hostname", host]);
+        }
+
+        let output = cli::run_cli_api(CliApiRequest {
+            tool: ctx.tool_or("glab"),
+            args: &args,
+            repo_root: ctx.repo_root,
+            prompt_env: GLAB_PROMPT_ENV,
+            extra_env: &[],
+            install_hint: INSTALL_HINT,
+            run_context: "failed to run glab api",
+        })?;
+
+        if !output.status.success() {
+            return Err(cli::generic_api_error(
+                "could not list open merge requests via glab",
+                &output,
+            ));
+        }
+
+        parse_mr_list(&output.stdout)
+    }
+}
+
+/// Parse the merge-requests listing into entries. Pure, so the JSON shape
+/// unit-tests without a subprocess.
+fn parse_mr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
+    let items: Vec<GlabMrListItem> = serde_json::from_slice(json)
+        .context("could not parse the glab merge-request listing (a GitLab API change?)")?;
+    Ok(items
+        .into_iter()
+        .map(|item| PrListEntry {
+            kind: ForgeRefKind::GitlabMr,
+            number: item.iid,
+            title: item.title,
+            // GitLab says "opened"; normalize to the cache's "open".
+            state: match item.state.as_str() {
+                "opened" => "open".to_string(),
+                other => other.to_lowercase(),
+            },
+            head_branch: item.source_branch,
+            is_cross_repo: item.source_project_id != item.target_project_id,
+            ci_status: None,
+            url: item.web_url,
+            author: item.author.username,
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct GlabMrListItem {
+    iid: u32,
+    title: String,
+    state: String,
+    source_branch: String,
+    source_project_id: u64,
+    target_project_id: u64,
+    web_url: String,
+    #[serde(default)]
+    author: GlabListAuthor,
+}
+
+#[derive(Deserialize, Default)]
+struct GlabListAuthor {
+    #[serde(default)]
+    username: String,
 }
 
 /// Percent-encode the `/` separators in a project path (`group/sub/repo` →
@@ -164,6 +241,33 @@ struct GlabErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_mr_list() {
+        let json = r#"[
+            {"iid": 45, "title": "Add feature", "state": "opened",
+             "source_branch": "feature-x",
+             "source_project_id": 1, "target_project_id": 1,
+             "web_url": "https://gitlab.com/group/widget/-/merge_requests/45",
+             "author": {"username": "dev"}},
+            {"iid": 46, "title": "Fork work", "state": "opened",
+             "source_branch": "fork-branch",
+             "source_project_id": 2, "target_project_id": 1,
+             "web_url": "https://gitlab.com/group/widget/-/merge_requests/46",
+             "author": {"username": "contributor"}}
+        ]"#;
+        let entries = parse_mr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].number, 45);
+        assert_eq!(entries[0].kind, ForgeRefKind::GitlabMr);
+        assert_eq!(entries[0].state, "open", "GitLab's 'opened' normalizes");
+        assert!(!entries[0].is_cross_repo);
+        assert!(entries[1].is_cross_repo);
+        assert_eq!(
+            entries[0].ci_status, None,
+            "the REST listing carries no pipeline status (deferred)"
+        );
+    }
 
     fn parse(json: &str, number: u32) -> Result<RemoteRefInfo> {
         let response: GlabMrResponse = serde_json::from_str(json).unwrap();

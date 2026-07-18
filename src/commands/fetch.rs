@@ -201,6 +201,10 @@ fn run_in_current_repo(args: Args) -> Result<()> {
         anyhow::bail!("{} worktree(s) failed to update", result.failed_count());
     }
 
+    // The update just talked to the remote — piggyback a forge-PR cache
+    // refresh (detached; feeds `daft list --columns +pr` and pr: completion).
+    crate::commands::forge_cache::spawn_background_refresh();
+
     Ok(())
 }
 

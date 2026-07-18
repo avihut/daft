@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
-use crate::forge::info::RemoteRefInfo;
+use crate::forge::info::{PrListEntry, RemoteRefInfo};
 use crate::git::GitCommand;
 
 /// A base repository's `owner`/`repo` (or `group/sub/repo` for GitLab).
@@ -51,4 +51,8 @@ pub trait RemoteRefProvider {
 
     /// Resolve a PR/MR number to its metadata via the CLI.
     fn fetch_info(&self, number: u32, ctx: &ForgeContext<'_>) -> Result<RemoteRefInfo>;
+
+    /// List the repo's open PRs/MRs via the CLI — the forge-cache refresh
+    /// payload (`daft list --columns +pr` decoration, `pr:`/`mr:` completion).
+    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>>;
 }

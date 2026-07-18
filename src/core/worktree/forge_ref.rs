@@ -19,6 +19,19 @@ pub enum ForgeRefKind {
     GitlabMr,
 }
 
+impl ForgeRefKind {
+    /// Stable short tag: `"pr"` / `"mr"`. The canonical spelling everywhere a
+    /// kind becomes a string — the forge-PR cache's TEXT column, the fork
+    /// tracking-ref namespace (`refs/remotes/<remote>/pr/N`), the user-facing
+    /// `pr:`/`mr:` prefixes.
+    pub fn tag(self) -> &'static str {
+        match self {
+            ForgeRefKind::GithubPr => "pr",
+            ForgeRefKind::GitlabMr => "mr",
+        }
+    }
+}
+
 /// A PR/MR reference recovered from (or written to) a branch's tracking config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForgeBranchRef {
