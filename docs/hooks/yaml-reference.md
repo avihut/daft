@@ -108,6 +108,12 @@ Task-specific rules:
 
 - **Names** must start with a letter or digit and contain only letters, digits,
   `.`, `_`, or `-`. The reserved name `run` is what bare `daft run` executes.
+- **Arguments forward.** Words after the task name are shell-escaped and
+  appended to the task's command (`daft run seed-db --reset` runs
+  `./scripts/seed.sh --reset`); a first word naming no task forwards every word
+  to the reserved `run` task, and a leading `--` forces forwarding past the name
+  match. Forwarding requires the task to resolve to a single foreground job with
+  a single-line command — narrow multi-job tasks with `--job`.
 - **Jobs only** — the deprecated `commands:` form is rejected in tasks.
 - **No execution timeout** — a task job runs until it exits or is cancelled
   (lifecycle-hook jobs keep the 300-second default). This makes tasks the right

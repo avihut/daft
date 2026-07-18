@@ -1,7 +1,8 @@
 name: daft run with an unknown task errors and lists the available tasks
 description:
-  "An unrecognized task name fails with a non-zero exit and an error naming the
-  available tasks, so the user can correct the typo."
+  "A first word naming no task falls through to the reserved `run` task — so
+  when no `run` task exists to receive it, the invocation fails with an error
+  naming both the miss and the fallback, plus the available tasks."
 
 repos:
   - name: run-unknown
@@ -15,13 +16,13 @@ repos:
           - message: "Initial commit"
     daft_yml: |
       tasks:
-        run:
-          jobs:
-            - name: serve
-              run: "true"
         seed-db:
           jobs:
             - name: seed
+              run: "true"
+        build:
+          jobs:
+            - name: build
               run: "true"
 
 steps:
@@ -37,4 +38,14 @@ steps:
       exit_code: 1
       output_contains:
         - "unknown task: 'nope'"
-        - "Available tasks: run, seed-db"
+        - "no 'run' task defined to receive it as an argument"
+        - "Available tasks: build, seed-db"
+
+  - name: A bare run without the reserved task explains the convention
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-unknown/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no 'run' task defined in daft.yml"
+        - "Available tasks: build, seed-db"

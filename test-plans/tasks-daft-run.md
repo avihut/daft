@@ -80,6 +80,18 @@ tasks:
 - [ ] Tab completion: with the shell integration loaded, `daft run <TAB>` offers
       the task names from daft.yml
 
+## Argument forwarding (dogfood)
+
+In the daft repo itself, where the `run` task wraps `mise run daft`:
+
+- [ ] `daft run list` — builds via the dev chain, then runs `daft list`: the
+      worktree table renders, proving the unmatched word fell through to the
+      reserved task and was appended to its command
+- [ ] `daft run run --help` — the forwarded `--help` reaches the built daft
+      binary (its help, not `daft run`'s)
+- [ ] `daft run --help` — a flag before the first word still belongs to
+      `daft run` itself
+
 ## Trust
 
 - [ ] In an untrusted repo, `daft run` prints the "not in your trust list"

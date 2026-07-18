@@ -62,7 +62,9 @@ tasks:
     jobs:
       - name: daft
         description: Build via the mise dev chain, then run the daft binary
-        run: mise run daft
+        # The trailing -- keeps mise transparent to forwarded words: without
+        # it, mise intercepts --help as task help instead of passing it on.
+        run: mise run daft --
   docs:
     jobs:
       - name: docs

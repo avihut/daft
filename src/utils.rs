@@ -190,6 +190,21 @@ pub fn validate_repo_name(repo_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Shell-quote each argv element (POSIX) and join with spaces so the
+/// result can be handed to `sh -c` while preserving the original
+/// argument boundaries.
+pub fn quote_argv(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            shlex::try_quote(p)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| p.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn print_error_cleanup(error_msg: &str, cleanup_path: Option<&Path>) {
     eprintln!("Error: {error_msg}");
     if let Some(path) = cleanup_path {
