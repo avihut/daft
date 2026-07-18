@@ -141,15 +141,34 @@ pub fn host_from_url(url: &str) -> Result<String> {
         .with_context(|| format!("could not parse host from URL: {url}"))
 }
 
+/// Construct an [`ExitStatus`](std::process::ExitStatus) carrying a specific
+/// exit `code`, portably across Unix and Windows, for tests that exercise
+/// forge-CLI failure classification. Unix packs the code into the high byte of
+/// the wait status; Windows stores it directly — both yield
+/// `.code() == Some(code)` and `.success() == (code == 0)`.
+#[cfg(test)]
+pub(crate) fn exit_status_with_code(code: i32) -> std::process::ExitStatus {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+
+    #[cfg(unix)]
+    let raw = code << 8;
+    #[cfg(windows)]
+    let raw = code as u32;
+
+    std::process::ExitStatus::from_raw(raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
     use std::process::Output;
 
     fn output(stdout: &str, stderr: &str) -> Output {
         Output {
-            status: std::process::ExitStatus::from_raw(1 << 8), // exit code 1
+            status: exit_status_with_code(1),
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
         }

@@ -486,10 +486,9 @@ mod tests {
 
     #[test]
     fn listing_failure_recognizes_deep_shapes() {
-        use crate::forge::cli::ForgeUnavailable;
-        use std::os::unix::process::ExitStatusExt;
+        use crate::forge::cli::{ForgeUnavailable, exit_status_with_code};
         let failed = |code: i32, stderr: &str| std::process::Output {
-            status: std::process::ExitStatus::from_raw(code << 8),
+            status: exit_status_with_code(code),
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
         };

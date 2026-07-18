@@ -411,6 +411,10 @@ fn spawn_inner() -> anyhow::Result<()> {
 /// hides the default `pr` column until a later refresh succeeds.
 pub fn run_refresh_forge() -> anyhow::Result<()> {
     // Detach from the parent's session/TTY per the spawn-self contract.
+    // Unix-only: `nix` is a cfg(unix) dependency, and Windows has no session to
+    // leave — the spawn's null stdio already detaches the child there. Mirrors
+    // the `#[cfg(unix)]` gate on `coordinator::process::run_coordinator`.
+    #[cfg(unix)]
     nix::unistd::setsid().ok();
     let project_root = crate::core::repo::get_project_root()?;
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
