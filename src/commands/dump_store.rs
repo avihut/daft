@@ -19,6 +19,9 @@
 //!   object per line (`kind`, `number`, `title`, `state`, `head_branch`,
 //!   `is_cross_repo`, `ci_status`, `url`, `author`, `fetched_at`). Feeds
 //!   the forge-cache scenarios (#127).
+//! - `forge-health` — the repo's forge-health singleton (`healthy`,
+//!   `error_kind`, attempt timestamps), or `{}` when no refresh ever ran.
+//!   Feeds the PR-column visibility scenarios.
 //!
 //! The output is JSON-serialized [`crate::coordinator::clean_policy::RepoPolicy`]
 //! (or `{}` when no row exists). Field names match the historical
@@ -46,9 +49,10 @@ pub fn run() -> Result<()> {
         "worktree-sizes" => dump_worktree_sizes(),
         "repo-sizes" => dump_repo_sizes(),
         "forge-prs" => dump_forge_prs(),
+        "forge-health" => dump_forge_health(),
         other => {
             bail!(
-                "unknown table '{other}' (supported: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes, forge-prs)"
+                "unknown table '{other}' (supported: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes, forge-prs, forge-health)"
             )
         }
     }
@@ -132,6 +136,29 @@ fn dump_forge_prs() -> Result<()> {
             "fetched_at": row.fetched_at.to_rfc3339(),
         });
         println!("{json}");
+    }
+    Ok(())
+}
+
+fn dump_forge_health() -> Result<()> {
+    let (_repo_hash, store) = open_store_for_cwd()?;
+    let conn = store
+        .pool()
+        .reader()
+        .context("checkout store reader for dump")?;
+    let rfc = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
+    match crate::store::repos::ForgeHealthRepo::get(&conn)? {
+        Some(row) => {
+            let json = serde_json::json!({
+                "healthy": row.healthy,
+                "error_kind": row.error_kind,
+                "started_at": rfc(row.started_at),
+                "finished_at": rfc(row.finished_at),
+                "succeeded_at": rfc(row.succeeded_at),
+            });
+            println!("{json}");
+        }
+        None => println!("{{}}"),
     }
     Ok(())
 }

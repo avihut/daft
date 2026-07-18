@@ -66,14 +66,36 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
       a loading shimmer briefly, then `#<n>` / blank, and the table doesn't
       jump.
 
+## Default PR column and forge health
+
+- [ ] In a repo with a GitHub remote, bare `daft list` shows the PR column
+      without asking for it; in a purely local repo (no forge remote), it
+      doesn't — and `daft list --format json` still carries the `pr_*` fields in
+      both.
+- [ ] Break auth (`gh auth token` revoked / `gh auth logout`), run `daft list`,
+      wait a beat for the background refresh, run `daft list` again: the PR
+      column is gone, silently, and stays gone across runs.
+      `daft __dump-store forge-health` shows `"healthy":false`; `daft doctor`
+      explains the hidden column under "Forge integration".
+- [ ] While hidden, `daft list --columns +pr` still shows the column
+      (config-recorded refs render without the forge).
+- [ ] `gh auth login`, then `daft list` twice (the first probes, throttled at
+      most once a minute; the second shows): the column is back, persistently.
+- [ ] A successful `daft go pr:<n>` also restores a hidden column on the next
+      list (write-through flips health without waiting for a refresh).
+
 ## Forge-PR cache (live forge)
 
 - [ ] In a repo with open PRs and a **cold cache** (`rm` the coordinator db or a
-      fresh clone), `daft list --columns +pr --sort activity` (anything that
-      keeps the table up a few seconds): the PR column starts empty, then
-      populates mid-run when the background refresh lands — no second invocation
-      needed. A very fast list may still finish undecorated; the next run shows
-      the data.
+      fresh clone), bare `daft list`: the PR cells show the loading skeleton
+      (like size), the table holds its final frame a moment, and the fresh
+      statuses land before it settles — no second invocation needed. If the
+      forge answers slowly (>~4s), the run finishes with plain numbers and the
+      next run shows the data.
+- [ ] With a **warm cache**, `daft list` right after (within the ~60s refresh
+      throttle) shows colored fates immediately; after the throttle lapses, the
+      numbers render plain first and re-colorize in place when the refresh lands
+      — a cached fate is never presented as current.
 - [ ] In the TUI, PR numbers are colored by fate: green/red/yellow for CI
       pass/fail/running, purple for a branch whose PR merged, dim for a
       closed-unmerged PR — with **no trailing glyph** (the number alone).

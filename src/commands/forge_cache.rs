@@ -11,8 +11,14 @@
 //! Refresh triggers (never the Tab path, never the `list` render path):
 //! - **write-through** when `daft go pr:N` resolves a PR (we hold its data),
 //! - **background** ([`spawn_background_refresh`]) after remote-touching
-//!   commands and when `daft list` explicitly renders the `pr` column —
-//!   detached `daft __refresh-forge`, one `gh pr list` per repo.
+//!   commands and when `daft list` has the `pr` column in play (a default in
+//!   forge-capable repos) — detached `daft __refresh-forge`, one
+//!   `gh pr list` per repo, throttled to one attempt per minute.
+//!
+//! Each refresh also records **forge health** ([`ForgeGate`]): a deep failure
+//! (missing tool, dead auth, lost repo access) silently hides the default
+//! `pr` column until a later refresh — or a successful `pr:` checkout —
+//! proves the forge reachable again.
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::{PrListEntry, RemoteRefInfo};

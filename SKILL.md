@@ -819,18 +819,23 @@ the job's `output.log`.
 
 **Column selection (`--columns`)** on `list`/`sync`/`prune`: default columns
 `annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`, `owner`,
-`last-commit`; optional `size` (adds a total footer), `hash`, and `pr`
-(`#N`/`!N` for PR/MR checkouts and for local branches with an open or merged
-PR). In piped/`NO_COLOR` output — what agents read — the PR's cached fate trails
-as a glyph: `✓`/`✗`/`●` CI pass/fail/running, `◆` merged, `○` closed; in a color
-terminal the number's color carries the same states instead (green/red/yellow,
-purple merged, dim closed). The cache refreshes in the background via
-`daft update`/`daft sync` and on selecting the column; prefer `--format json`
-(`pr_state`, `ci_status`, `pr_url` fields) over parsing glyphs. Two modes —
-replace (`--columns branch,path,age`: exactly those, in order) and modifier
-(`--columns +size,-age`: adjust defaults; auto-detected when every entry starts
-with `+`/`-`). The `status` column is always pinned on `sync`/`prune`.
-Persistent defaults: `git config daft.<cmd>.columns`.
+`last-commit`; optional `size` (adds a total footer) and `hash`. On `list` only,
+`pr` is also a default (`#N`/`!N` for PR/MR checkouts and for local branches
+with an open or merged PR) — but only in repos with a GitHub/GitLab remote, and
+daft silently drops it while the forge integration is broken in a way needing
+user action (gh/glab missing or unauthenticated; it returns after a successful
+refresh — do not treat the column's absence as an error). `--columns +pr` forces
+it regardless. In piped/`NO_COLOR` output — what agents read — the PR's cached
+fate trails as a glyph: `✓`/`✗`/`●` CI pass/fail/running, `◆` merged, `○`
+closed; in a color terminal the number's color carries the same states instead
+(green/red/yellow, purple merged, dim closed). The cache refreshes in the
+background via `daft update`/`daft sync` and on listing with the column; prefer
+`--format json` (`pr_state`, `ci_status`, `pr_url` fields — present in the
+default schema even when the table hides the column) over parsing glyphs. Two
+modes — replace (`--columns branch,path,age`: exactly those, in order) and
+modifier (`--columns +size,-age`: adjust defaults; auto-detected when every
+entry starts with `+`/`-`). The `status` column is always pinned on
+`sync`/`prune`. Persistent defaults: `git config daft.<cmd>.columns`.
 
 **Sorting (`--sort`)** on `list`/`sync`/`prune`: columns `branch`, `path`,
 `size`, `age`, `owner`, `hash`, `activity`, `commit`; prefix `+` ascending
