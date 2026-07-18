@@ -224,7 +224,10 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     // checkout/go complete pr:<n>/mr:<n> forge targets; bash's COMP_WORDBREAKS
     // splits words at ':', so keep it in $cur (-n :) and strip the colon
     // prefix from COMPREPLY afterwards (__ltrim_colon_completions) — the
-    // standard bash-completion idiom for colon-bearing candidates.
+    // standard bash-completion idiom for colon-bearing candidates. When the
+    // sole surviving candidate is a bare pr:/mr: syntax token, suppress the
+    // trailing space so the accepted token stays glued to the number the
+    // user types next.
     let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
     let init_completion = if takes_forge_targets {
         "_init_completion -n : || return"
@@ -232,7 +235,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         "_init_completion || return"
     };
     let ltrim_post = if takes_forge_targets {
-        "        declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n"
+        "        declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n        if [[ ${#COMPREPLY[@]} -eq 1 && ( \"${COMPREPLY[0]}\" == \"pr:\" || \"${COMPREPLY[0]}\" == \"mr:\" ) ]]; then\n            compopt -o nospace 2>/dev/null || true\n        fi\n"
     } else {
         ""
     };

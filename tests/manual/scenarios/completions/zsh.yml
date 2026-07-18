@@ -87,3 +87,16 @@ steps:
       output_contains:
         - "-V repo -l -d repo_display -a repo_names"
         - "compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -V repo"
+
+  # Regression (same shape as the repo group above): the forge group was
+  # missing from the per-group parser, so `daft go p<TAB>` offered no `pr:`
+  # token and `daft go pr:<TAB>` offered no cached PR numbers even though
+  # `daft __complete` emitted them. The bare pr:/mr: tokens complete
+  # suffix-free so the PR number can be typed right after the colon.
+  - name: Zsh go completion renders the forge group
+    run: daft completions zsh --command=daft-go 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "compadd -V forge "
+        - "compadd -V forge-syntax -S ''"

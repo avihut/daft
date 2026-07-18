@@ -381,12 +381,16 @@ __{func_name}_impl() {{
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
     local -a repo_names repo_paths
+    local -a forge_names forge_descs forge_tok_names forge_tok_descs
     raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
     # Catalog repo lines have 3 fields: name\trepo\tpath
+    # Forge lines have 3 fields: name\tforge\tdescription — the bare pr:/mr:
+    # syntax tokens go in their own group so they can complete without a
+    # trailing space (the user keeps typing the number after the colon).
     # Worktree names may have *? dirty indicators — strip for completion
     # value, keep for display. (* and ? are invalid in git branch names.)
     local line name rest group desc max_len=0 len clean_name
@@ -439,14 +443,23 @@ __{func_name}_impl() {{
                 # desc is the repo's display path
                 repo_paths+=("$desc")
                 ;;
+            forge)
+                if [[ "$name" == "pr:" || "$name" == "mr:" ]]; then
+                    forge_tok_names+=("$name")
+                    forge_tok_descs+=("$desc")
+                else
+                    forge_names+=("$name")
+                    forge_descs+=("$desc")
+                fi
+                ;;
         esac
     done
 
     # Second pass: build padded display strings.
     # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
-    # Catalog repos: two columns (name, path).
-    local -a wt_display local_display remote_display repo_display
+    # Catalog repos and forge targets: two columns (name, description).
+    local -a wt_display local_display remote_display repo_display forge_display forge_tok_display
     local i pad apad authpad
     (( max_len += 2 ))
     (( max_age_len += 2 ))
@@ -473,15 +486,27 @@ __{func_name}_impl() {{
         pad=$(( max_len - ${{#repo_names[$i]}} ))
         repo_display+=("${{repo_names[$i]}}${{(l:$pad:: :)}}  ${{repo_paths[$i]}}")
     done
+    for (( i=1; i<=${{#forge_names}}; i++ )); do
+        pad=$(( max_len - ${{#forge_names[$i]}} ))
+        forge_display+=("${{forge_names[$i]}}${{(l:$pad:: :)}}  ${{forge_descs[$i]}}")
+    done
+    for (( i=1; i<=${{#forge_tok_names}}; i++ )); do
+        pad=$(( max_len - ${{#forge_tok_names[$i]}} ))
+        forge_tok_display+=("${{forge_tok_names[$i]}}${{(l:$pad:: :)}}  ${{forge_tok_descs[$i]}}")
+    done
 
     # -V preserves group insertion order: worktrees first, then local, then
-    # remote, then catalog repos (cross-repo navigation). The catalog-repo
-    # group matches case-insensitively (a repo-name convenience); branch
-    # groups stay case-sensitive, since git refs are.
+    # remote, then catalog repos (cross-repo navigation), then forge PR/MR
+    # targets. The catalog-repo group matches case-insensitively (a repo-name
+    # convenience); branch groups stay case-sensitive, since git refs are. The
+    # pr:/mr: syntax tokens complete suffix-free (-S '') so the accepted token
+    # stays glued to the number the user types next.
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
     (( ${{#repo_names}} ))   && compadd -M 'm:{{[:lower:][:upper:]}}={{[:upper:][:lower:]}}' -V repo -l -d repo_display -a repo_names
+    (( ${{#forge_names}} ))  && compadd -V forge -l -d forge_display -a forge_names
+    (( ${{#forge_tok_names}} )) && compadd -V forge-syntax -S '' -l -d forge_tok_display -a forge_tok_names
 {path_post}}}
 
 _{func_name}() {{

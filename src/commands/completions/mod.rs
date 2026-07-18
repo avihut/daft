@@ -641,6 +641,53 @@ mod tests {
         );
     }
 
+    /// Regression: the shared zsh renderer buckets `daft __complete` lines by
+    /// group, and the forge group was missing from its `case` — every pr:/mr:
+    /// candidate the engine emitted was silently dropped, so `daft go p<TAB>`
+    /// offered no `pr:` token and `daft go pr:<TAB>` offered no cached PR
+    /// numbers. (Same failure shape as the dropped catalog `repo` group.)
+    #[test]
+    fn zsh_renders_forge_group_for_forge_target_commands() {
+        for cmd in ["daft-go", "git-worktree-checkout"] {
+            let script = zsh::generate_zsh_completion_string(cmd).expect("generator must succeed");
+            assert!(
+                script.contains("forge)"),
+                "{cmd} zsh parser must have a forge group arm"
+            );
+            assert!(
+                script.contains("compadd -V forge "),
+                "{cmd} zsh must render forge PR/MR candidates"
+            );
+            assert!(
+                script.contains("compadd -V forge-syntax -S ''"),
+                "{cmd} zsh must complete the bare pr:/mr: tokens suffix-free \
+                 so the number can be typed right after the colon"
+            );
+        }
+    }
+
+    /// Bash counterpart of the token-glue behavior: when the sole candidate is
+    /// a bare `pr:`/`mr:` syntax token, the completion must suppress the
+    /// trailing space (readline would otherwise insert `pr: ` and the typed
+    /// number lands as a second word). Only forge-target commands carry it.
+    #[test]
+    fn bash_glues_bare_forge_tokens_to_the_cursor() {
+        for cmd in ["daft-go", "git-worktree-checkout"] {
+            let script =
+                bash::generate_bash_completion_string(cmd).expect("generator must succeed");
+            assert!(
+                script.contains("compopt -o nospace"),
+                "{cmd} bash completion must suppress the trailing space after \
+                 a bare pr:/mr: token"
+            );
+        }
+        let carry = bash::generate_bash_completion_string("git-worktree-carry").expect("generator");
+        assert!(
+            !carry.contains("compopt -o nospace"),
+            "non-forge rich commands must not carry the token nospace branch"
+        );
+    }
+
     /// `daft list [<repo>]` — the positional is sugar for --repo, so every
     /// shell must offer catalog repo names at the first positional (fig has
     /// its own test beside its generator).
