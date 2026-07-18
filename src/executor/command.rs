@@ -188,7 +188,9 @@ pub fn run_command(
 /// no-op (the child already got the terminal SIGINT; a redundant SIGTERM
 /// would flip graceful-stop handlers into force-quit), and level 2 sends a
 /// direct SIGKILL to the child pid via [`kill_pid`] — never `killpg`, which
-/// would tear down daft's own group. `cancel: None` keeps the original
+/// would tear down daft's own group. The result is marked cancelled (exit
+/// 130) only if that SIGKILL fired; a child that catches the SIGINT and exits
+/// on its own propagates its real code. `cancel: None` keeps the original
 /// blocking `status()` path.
 pub fn run_command_interactive(
     cmd: &str,
@@ -341,6 +343,13 @@ fn wait_child(
 /// a deliberate no-op (a redundant SIGTERM would defeat graceful-shutdown
 /// handlers). Level 2 sends a direct SIGKILL to the child pid; `killpg` is
 /// off-limits here because the child is in daft's own group.
+///
+/// The reap reports [`WaitOutcome::Cancelled`] **only** when daft issued that
+/// hard kill. A child that catches the terminal's SIGINT and exits on its own
+/// — a REPL you ^C to abort a line, then quit cleanly — propagates its real
+/// status: the passthrough mirrors direct invocation, so only a daft-forced
+/// SIGKILL, which the child cannot turn into a graceful exit, reads as a
+/// cancellation.
 #[cfg(unix)]
 fn wait_interactive_child(
     child: &mut std::process::Child,
@@ -349,29 +358,21 @@ fn wait_interactive_child(
     use std::thread;
 
     let poll_interval = Duration::from_millis(100);
-    let mut cancelling = false;
     let mut hard_sent = false;
 
     loop {
         if let Some(status) = child.try_wait()? {
-            // Re-check the flag at reap time: the terminal delivers ^C's
-            // SIGINT to the child (shared foreground group) and to daft in
-            // the same instant, so the child can die before this loop's
-            // stale `cancelling` — read from a *previous* iteration — has
-            // caught up.
-            return Ok(if cancelling || cancel.is_cancelled() {
+            return Ok(if hard_sent {
                 WaitOutcome::Cancelled
             } else {
                 WaitOutcome::Exited(status)
             });
         }
-        let level = cancel.level();
-        if level >= 1 {
-            cancelling = true;
-            if level >= 2 && !hard_sent {
-                crate::git::cancel::kill_pid(child.id(), true);
-                hard_sent = true;
-            }
+        // Level 1 does nothing here (the child already got the terminal's
+        // SIGINT); only level 2 escalates to a direct SIGKILL of the child pid.
+        if cancel.level() >= 2 && !hard_sent {
+            crate::git::cancel::kill_pid(child.id(), true);
+            hard_sent = true;
         }
         thread::sleep(poll_interval);
     }
@@ -385,21 +386,21 @@ fn wait_interactive_child(
     use std::thread;
 
     let poll_interval = Duration::from_millis(100);
-    let mut cancelling = false;
+    let mut hard_killed = false;
 
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(if cancelling || cancel.is_cancelled() {
+            // Cancelled only when daft forced the kill; a child that exits on
+            // its own propagates its real status (mirrors direct invocation).
+            return Ok(if hard_killed {
                 WaitOutcome::Cancelled
             } else {
                 WaitOutcome::Exited(status)
             });
         }
-        if cancel.is_cancelled() {
-            cancelling = true;
-            if cancel.level() >= 2 {
-                child.kill().ok();
-            }
+        if cancel.level() >= 2 && !hard_killed {
+            child.kill().ok();
+            hard_killed = true;
         }
         thread::sleep(poll_interval);
     }
@@ -885,6 +886,75 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "hard cancel should SIGKILL the trapping child"
+        );
+        assert!(result.cancelled);
+        assert_eq!(result.exit_code, Some(130));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn interactive_soft_cancel_propagates_a_clean_self_exit() {
+        // Regression: a passthrough child that fields the terminal's SIGINT and
+        // then exits 0 on its own (a REPL you ^C to abort a line, then quit
+        // cleanly) must propagate exit 0 — not be laundered into a 130
+        // cancellation just because the interrupt flag was raised. Level 1
+        // never signals the child on this path, so a self-exit is authoritative.
+        use crate::git::cancel::CancelFlag;
+        use std::sync::Arc;
+
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let cancel = Arc::new(CancelFlag::new());
+
+        // Raise the soft level while the child still runs; it must not flip the
+        // outcome once the child exits 0 on its own.
+        let flag = Arc::clone(&cancel);
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.escalate(); // 0 -> 1 (soft only, never hard)
+        });
+
+        let result =
+            run_command_interactive("sleep 0.4; exit 0", &env, &dir, Some(&cancel)).unwrap();
+        raiser.join().ok();
+
+        assert!(
+            !result.cancelled,
+            "a soft-cancelled child that exits 0 on its own is not a cancellation"
+        );
+        assert!(result.success);
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn interactive_hard_cancel_marks_cancelled() {
+        // The second Ctrl+C (level 2) SIGKILLs an interactive child that traps
+        // the softer signals; the reap reports the run cancelled with exit 130.
+        use crate::git::cancel::CancelFlag;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let cancel = Arc::new(CancelFlag::new());
+
+        let flag = Arc::clone(&cancel);
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.escalate(); // -> 1 (soft, trapped)
+            flag.escalate(); // -> 2 (hard)
+        });
+
+        let start = Instant::now();
+        let result =
+            run_command_interactive("trap '' INT TERM; sleep 30", &env, &dir, Some(&cancel))
+                .unwrap();
+        raiser.join().ok();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "hard cancel must SIGKILL the trapping interactive child promptly"
         );
         assert!(result.cancelled);
         assert_eq!(result.exit_code, Some(130));
