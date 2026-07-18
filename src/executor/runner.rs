@@ -41,9 +41,10 @@ pub fn run_jobs(
 ///
 /// When `cancel` is `Some`, a raised flag tears down in-flight jobs (SIGTERM
 /// then SIGKILL via the process-group cascade in `command.rs`) and short-
-/// circuits not-yet-started jobs to `Skipped`. Interrupted jobs surface as
-/// [`NodeStatus::Cancelled`]. `cancel: None` is behaviorally identical to
-/// [`run_jobs`] — no flag is polled — so hook and coordinator callers are
+/// circuits not-yet-started jobs to [`NodeStatus::Cancelled`] — like the
+/// interrupted job itself — so the whole run aggregates to a non-success exit
+/// 130 rather than a false success. `cancel: None` is behaviorally identical
+/// to [`run_jobs`] — no flag is polled — so hook and coordinator callers are
 /// unaffected.
 pub fn run_jobs_with_cancel(
     jobs: &[JobSpec],
@@ -89,9 +90,17 @@ fn run_sequential(
 
     for (i, job) in jobs.iter().enumerate() {
         // A cancellation raised before this job starts short-circuits it and
-        // every remaining job to Skipped.
+        // every remaining job. They surface as Cancelled (not Skipped) so the
+        // aggregate reads as an interruption (exit 130), never a false success.
         if is_cancelled(cancel) {
-            skip_remaining(&jobs[i..], "cancelled", presenter, sink, &mut results);
+            skip_remaining(
+                &jobs[i..],
+                "cancelled",
+                NodeStatus::Cancelled,
+                presenter,
+                sink,
+                &mut results,
+            );
             return Ok(results);
         }
 
@@ -115,13 +124,21 @@ fn run_sequential(
         // A user cancellation halts the sequence regardless of mode — even
         // Sequential (continue-on-failure), since the user asked to stop.
         if status == NodeStatus::Cancelled {
-            skip_remaining(&jobs[i + 1..], "cancelled", presenter, sink, &mut results);
+            skip_remaining(
+                &jobs[i + 1..],
+                "cancelled",
+                NodeStatus::Cancelled,
+                presenter,
+                sink,
+                &mut results,
+            );
             return Ok(results);
         }
         if status == NodeStatus::Failed && stop_on_failure {
             skip_remaining(
                 &jobs[i + 1..],
                 "previous job failed",
+                NodeStatus::Skipped,
                 presenter,
                 sink,
                 &mut results,
@@ -133,11 +150,15 @@ fn run_sequential(
     Ok(results)
 }
 
-/// Mark a run of jobs as skipped with the given reason, emitting presenter
-/// and sink events and appending `Skipped` results.
+/// Mark a run of not-executed jobs with the given reason and terminal status,
+/// emitting presenter and sink events and appending results. The `status`
+/// distinguishes a benign skip (`Skipped` — a prior job failed) from a
+/// cancellation (`Cancelled`), which must aggregate to a non-success exit 130
+/// rather than read as a false success.
 fn skip_remaining(
     jobs: &[JobSpec],
     reason: &str,
+    status: NodeStatus,
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
     results: &mut Vec<JobResult>,
@@ -149,7 +170,7 @@ fn skip_remaining(
         }
         results.push(JobResult {
             name: remaining.name.clone(),
-            status: NodeStatus::Skipped,
+            status,
             duration: Duration::ZERO,
             exit_code: None,
             stdout: String::new(),
@@ -238,14 +259,15 @@ fn run_dag_execution(
             };
 
             // A cancellation raised before this node is scheduled short-
-            // circuits it to Skipped so the scheduler drains quickly instead
-            // of launching fresh work into a torn-down session.
+            // circuits it (Cancelled, not Skipped, so the run aggregates to
+            // exit 130) and drains the scheduler quickly instead of launching
+            // fresh work into a torn-down session.
             if is_cancelled(cancel) {
                 presenter.on_job_skipped(name, "cancelled", Duration::ZERO, false, None);
                 if let Some(ref s) = sink_for_closure {
                     s.on_job_runner_skipped(job, "cancelled");
                 }
-                return NodeStatus::Skipped;
+                return NodeStatus::Cancelled;
             }
 
             presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
@@ -329,12 +351,13 @@ fn run_dag_sequential_exec(
             return NodeStatus::Failed;
         };
 
+        // Cancelled (not Skipped) so an interrupted run aggregates to exit 130.
         if is_cancelled(cancel) {
             presenter.on_job_skipped(name, "cancelled", Duration::ZERO, false, None);
             if let Some(ref s) = sink_for_closure {
                 s.on_job_runner_skipped(job, "cancelled");
             }
-            return NodeStatus::Skipped;
+            return NodeStatus::Cancelled;
         }
 
         presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
@@ -1211,7 +1234,12 @@ mod tests {
     // ── Cancellation ───────────────────────────────────────────────────
 
     #[test]
-    fn pre_raised_cancel_skips_all_sequential_jobs() {
+    fn pre_raised_cancel_cancels_all_sequential_jobs() {
+        // Regression: a Ctrl+C that lands before the first job spawns must not
+        // read as a false success. The short-circuited jobs surface as
+        // Cancelled (not Skipped), so the aggregate resolves to exit 130 — a
+        // `Skipped` verdict here would let `job_results_to_hook_result` report
+        // success and exit 0.
         let recorder = RecordingPresenter::new();
         let presenter: Arc<dyn JobPresenter> = recorder.clone();
         let cancel = CancelFlag::new();
@@ -1232,9 +1260,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.status == NodeStatus::Skipped));
+        assert!(results.iter().all(|r| r.status == NodeStatus::Cancelled));
         let events = recorder.events();
-        // No job ever started; each was skipped with the cancelled reason.
+        // No job ever started; each was reported with the cancelled reason.
         assert!(events.iter().all(|e| !e.starts_with("job_start:")));
         assert_eq!(
             events
