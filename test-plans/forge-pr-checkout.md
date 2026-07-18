@@ -68,19 +68,36 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
 
 ## Forge-PR cache (live forge)
 
-- [ ] In a repo with open PRs, `daft list --columns +pr` twice: the first run
-      may be undecorated (cold cache) but kicks the background refresh; the
-      second shows `#<n>` on branches with open PRs, with the CI glyph
-      (`✓`/`✗`/`●`) colored green/red/yellow in the TUI.
-- [ ] `NO_COLOR=1 daft list --columns +pr | cat`: glyphs survive, no ANSI.
+- [ ] In a repo with open PRs and a **cold cache** (`rm` the coordinator db or a
+      fresh clone), `daft list --columns +pr --sort activity` (anything that
+      keeps the table up a few seconds): the PR column starts empty, then
+      populates mid-run when the background refresh lands — no second invocation
+      needed. A very fast list may still finish undecorated; the next run shows
+      the data.
+- [ ] In the TUI, PR numbers are colored by fate: green/red/yellow for CI
+      pass/fail/running, purple for a branch whose PR merged, dim for a
+      closed-unmerged PR — with **no trailing glyph** (the number alone).
+- [ ] `NO_COLOR=1 daft list --columns +pr | cat`: no ANSI, and the fates appear
+      as trailing glyphs instead — `✓`/`✗`/`●` CI, `◆` merged, `○` closed.
+- [ ] In a linking terminal (iTerm2/Kitty/WezTerm), a static-table render
+      (`DAFT_NO_LIVE=1`, `+pr`) makes each PR number a clickable link to the PR
+      (hover shows the URL; the live table does not link — ratatui buffers can't
+      carry OSC 8).
+- [ ] A branch whose PR just merged shows `#<n>` purple (◆ piped) — and an open
+      PR reusing that branch name wins over the merged one.
 - [ ] A fork PR whose head branch name matches one of your local branches does
-      NOT decorate that branch.
+      NOT decorate that branch (open or merged).
 - [ ] `daft update` (or `daft sync`) refreshes the cache in the background:
-      `daft __dump-store forge-prs` shows fresh `fetched_at` afterwards.
-- [ ] `daft go pr:<Tab>` in bash AND zsh completes open PR numbers with titles;
-      in bash, accepting a completion inserts `pr:<n>` exactly once (no
-      duplicated `pr:` — the colon-wordbreak handling).
+      `daft __dump-store forge-prs` shows fresh `fetched_at` afterwards, and
+      merged PRs appear with `"state":"merged"`.
+- [ ] `daft list --columns +pr --format json` rows carry `pr_state`,
+      `ci_status`, and `pr_url`.
+- [ ] `daft go pr:<Tab>` in bash AND zsh completes open PR numbers with titles
+      (merged ones listed after); in bash, accepting a completion inserts
+      `pr:<n>` exactly once (no duplicated `pr:` — the colon-wordbreak
+      handling).
 - [ ] `daft go <Tab>` on an empty word offers the `pr:`/`mr:` syntax tokens
       after the branch groups.
 - [ ] GitLab: `mr:` completion and `!<n>` column decoration from a `glab`
-      listing (CI stays blank — the REST listing carries no pipeline status).
+      listing, including a merged MR in purple (CI stays blank — the REST
+      listing carries no pipeline status).

@@ -68,30 +68,38 @@ Two kinds of branches get a value:
 
 - **Worktrees checked out from a PR/MR** show `#123` (GitHub) or `!45` (GitLab),
   read from local git config.
-- **Your own branches with an open PR** show the PR opened _from_ them, matched
-  by branch name against daft's forge-PR cache. Fork PRs whose head branch
-  happens to share a local branch's name never match.
+- **Your own branches with an open or merged PR** show the PR opened _from_
+  them, matched by branch name against daft's forge-PR cache. An open PR wins
+  over a merged one (a reused branch shows its live PR); fork PRs whose head
+  branch happens to share a local branch's name never match.
 
-When the cache knows the PR's CI state, a glyph follows the number — `#123 ✓`
-(passing, green), `#123 ✗` (failing, red), `#123 ●` (running, yellow). The glyph
-carries the meaning; color only reinforces it, so piped and `NO_COLOR` output
-stay readable. Persist the column with `git config daft.list.columns +pr`.
+In a color terminal, the number's color is the PR's fate: green/red/yellow for
+CI passing/failing/running, purple for merged — the "this worktree is done,
+prune it" signal — and dim for closed-without-merge. When color is off
+(`NO_COLOR`, piped output), the same states trail the number as a glyph instead:
+`#123 ✓`/`✗`/`●` for CI, `#123 ◆` merged, `#123 ○` closed — the signal never
+exists as color alone. Where the table is printed as plain text, supporting
+terminals also make the number a clickable link to the PR. Persist the column
+with `git config daft.list.columns +pr`.
 
 ### The forge-PR cache
 
-The PR numbers, titles, and CI states come from a per-repository snapshot of the
-forge's open-PR listing, stored locally. It refreshes in the background — never
-while you wait:
+The PR numbers, titles, states, and CI come from a per-repository snapshot of
+the forge's open and recently-merged PR listings, stored locally. It refreshes
+in the background — never while you wait:
 
 - checking out a `pr:`/`mr:` reference records that PR immediately;
 - `daft update` and `daft sync` kick a detached refresh after they finish (they
   already talked to the remote);
-- selecting the `pr` column in `daft list` kicks the same detached refresh, so
-  the next listing is fresh.
+- selecting the `pr` column in `daft list` kicks the same detached refresh — and
+  while the live table is open, the fresh data slots into the PR column the
+  moment it lands, so even a first-ever run decorates within a couple of
+  seconds.
 
-A cold cache simply means undecorated cells — nothing blocks, nothing errors.
-The cache also powers tab completion: `daft go pr:<Tab>` completes open PR
-numbers with their titles, entirely from local data.
+A cold cache simply means undecorated cells until the refresh lands — nothing
+blocks, nothing errors. The cache also powers tab completion: `daft go pr:<Tab>`
+completes cached PR numbers with their titles, open PRs first, entirely from
+local data.
 
 ## Mixed-remote repositories
 

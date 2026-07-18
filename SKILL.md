@@ -820,13 +820,17 @@ the job's `output.log`.
 **Column selection (`--columns`)** on `list`/`sync`/`prune`: default columns
 `annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`, `owner`,
 `last-commit`; optional `size` (adds a total footer), `hash`, and `pr`
-(`#N`/`!N` for PR/MR checkouts and for local branches with an open PR; a
-trailing `✓`/`✗`/`●` glyph is that PR's cached CI state — pass/fail/running —
-refreshed in the background by `daft update`/`daft sync` and by selecting the
-column). Two modes — replace (`--columns branch,path,age`: exactly those, in
-order) and modifier (`--columns +size,-age`: adjust defaults; auto-detected when
-every entry starts with `+`/`-`). The `status` column is always pinned on
-`sync`/`prune`. Persistent defaults: `git config daft.<cmd>.columns`.
+(`#N`/`!N` for PR/MR checkouts and for local branches with an open or merged
+PR). In piped/`NO_COLOR` output — what agents read — the PR's cached fate trails
+as a glyph: `✓`/`✗`/`●` CI pass/fail/running, `◆` merged, `○` closed; in a color
+terminal the number's color carries the same states instead (green/red/yellow,
+purple merged, dim closed). The cache refreshes in the background via
+`daft update`/`daft sync` and on selecting the column; prefer `--format json`
+(`pr_state`, `ci_status`, `pr_url` fields) over parsing glyphs. Two modes —
+replace (`--columns branch,path,age`: exactly those, in order) and modifier
+(`--columns +size,-age`: adjust defaults; auto-detected when every entry starts
+with `+`/`-`). The `status` column is always pinned on `sync`/`prune`.
+Persistent defaults: `git config daft.<cmd>.columns`.
 
 **Sorting (`--sort`)** on `list`/`sync`/`prune`: columns `branch`, `path`,
 `size`, `age`, `owner`, `hash`, `activity`, `commit`; prefix `+` ascending
