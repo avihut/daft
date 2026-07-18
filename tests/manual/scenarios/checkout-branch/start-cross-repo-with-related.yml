@@ -1,0 +1,54 @@
+name: Start cross-repo combined with --with-related
+description:
+  daft start <repo> <branch> --with-related roots the fan-out at the TARGET repo
+  — the branch is created there and in every repo of ITS relations manifest (not
+  the current repo's), and a target without relations aborts before creating
+  anything
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+  - name: test-repo-c
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone all three repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_C
+    expect:
+      exit_code: 0
+
+  - name: Declare a relation from B to C
+    run: |
+      printf 'relations:\n  - url: %s\n' "$REMOTE_TEST_REPO_C" > daft.yml
+    cwd: "$WORK_DIR/test-repo-b/main"
+    expect:
+      exit_code: 0
+
+  - name: Positional target roots the fan-out in the target repo
+    run: daft start test-repo-b feat-r --with-related 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feat-r"
+        - "$WORK_DIR/test-repo-c/feat-r"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-a/feat-r"
+      output_contains:
+        - "Creating branch 'feat-r' in 'test-repo-b'"
+        - "Creating 'feat-r' in 'test-repo-c'"
+
+  - name: A target without relations aborts before creating anything
+    run: daft start test-repo-c feat-nr --with-related 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "declares no relations"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-c/feat-nr"

@@ -582,6 +582,47 @@ test_c_flag_cd_redirect_through_wrapper() {
     return 0
 }
 
+# Regression for #725: cross-repo `daft start <repo> <branch>` through the
+# wrapper must land the shell in the TARGET repo's new worktree — the
+# positional-repo form writes DAFT_CD_FILE with a path in another repo, and
+# only the parent shell can follow it.
+test_start_cross_repo_cd_through_wrapper() {
+    log "Testing: daft start <repo> <branch> through wrapper lands shell in the target repo's new worktree"
+
+    local remote_a remote_b
+    remote_a=$(create_test_remote "test-start-cross-a" "main")
+    remote_b=$(create_test_remote "test-start-cross-b" "main")
+
+    git-worktree-clone --layout contained "$remote_a" >/dev/null 2>&1
+    git-worktree-clone --layout contained "$remote_b" >/dev/null 2>&1
+    local repo_a="$PWD/test-start-cross-a"
+    local repo_b="$PWD/test-start-cross-b"
+
+    # From inside repo_a/main, the guessed two-name form targets repo_b.
+    local out
+    out=$(REPO_A_MAIN="$repo_a/main" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$REPO_A_MAIN" || exit 11
+        daft start test-start-cross-b feat-wrap >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    # Resolve symlinks: /tmp -> /private/tmp on macOS, where daft canonicalizes
+    # paths in DAFT_CD_FILE but $repo_b stays un-resolved.
+    local resolved_repo_b
+    resolved_repo_b=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$repo_b")
+
+    if [[ "$out" != "$resolved_repo_b/feat-wrap"* ]]; then
+        log_error "wrapper did not cd into the target repo's new worktree"
+        log_error "  expected prefix: $resolved_repo_b/feat-wrap"
+        log_error "  actual pwd:      $out"
+        return 1
+    fi
+
+    log_success "daft start <repo> <branch> through wrapper lands shell at: $out"
+    return 0
+}
+
 # Regression: trailing `daft -C` (no path argument) through the wrapper must
 # emit the same `option requires an argument` error the binary would print,
 # and exit 2. Previously the wrapper's `shift 2 || return 2` short-circuited
@@ -671,6 +712,7 @@ main() {
     run_test "wrapper_resolves_binary_live" test_wrapper_resolves_binary_live
     run_test "daft_repo_wrapper_writes_cd_file" test_daft_repo_wrapper_writes_cd_file
     run_test "c_flag_cd_redirect_through_wrapper" test_c_flag_cd_redirect_through_wrapper
+    run_test "start_cross_repo_cd_through_wrapper" test_start_cross_repo_cd_through_wrapper
     run_test "c_flag_no_arg_through_wrapper_errors_cleanly" test_c_flag_no_arg_through_wrapper_errors_cleanly
     run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
 

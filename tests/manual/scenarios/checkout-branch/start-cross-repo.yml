@@ -1,0 +1,81 @@
+name: Start cross-repo creation
+description:
+  daft start takes a leading cataloged-repo positional — the guessed two-name
+  form and the explicit three-name form create the branch in the target repo
+  (based on its default branch unless a base is given), announce the resolved
+  destination before any work, work from outside any repository, and leave a
+  previous-worktree trail daft go - can hop back across
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  - name: Guessed two-name form creates the branch in the other repo
+    run: daft start test-repo-b feat-x 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feat-x"
+      output_contains:
+        - "Creating branch 'feat-x' in 'test-repo-b'"
+        - "based on 'main'"
+
+  - name: The new branch exists on the target's remote
+    run: "true"
+    expect:
+      exit_code: 0
+      branch_exists:
+        - repo: test-repo-b
+          branch: feat-x
+
+  - name: Three names pick an explicit base in the target
+    run: daft start test-repo-b feat-y develop 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feat-y"
+      output_contains:
+        - "Creating branch 'feat-y' in 'test-repo-b'"
+        - "based on 'develop'"
+
+  - name: Two names stay local when the first is no repo
+    run: daft start feat-local develop 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/feat-local"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-b/feat-local"
+      output_not_contains:
+        - "Creating branch"
+
+  - name: Cross-repo creation works from outside any repository
+    run: daft start test-repo-b feat-out 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feat-out"
+      output_contains:
+        - "Creating branch 'feat-out' in 'test-repo-b'"
+
+  - name: daft go - hops back across repos from the new worktree
+    run: daft go - 2>&1
+    cwd: "$WORK_DIR/test-repo-b/feat-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Switched to worktree"
