@@ -152,7 +152,7 @@ fn parse_pr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             is_cross_repo: item.is_cross_repository,
             ci_status: derive_ci_status(&item.status_check_rollup),
             url: item.url,
-            author: item.author.display_name(),
+            author: item.author.unwrap_or_default().display_name(),
             head_repo_owner: item.head_repository_owner.unwrap_or_default().login,
             updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
         })
@@ -207,7 +207,10 @@ struct GhPrListItem {
     #[serde(rename = "isCrossRepository")]
     is_cross_repository: bool,
     url: String,
-    author: GhListAuthor,
+    /// Nullable: a deleted account serializes as `author: null` (gh emits `{}`
+    /// or `null`), so a single such PR must not abort the whole listing parse.
+    #[serde(default)]
+    author: Option<GhListAuthor>,
     /// Nullable: a deleted fork leaves the head repository ownerless.
     #[serde(rename = "headRepositoryOwner", default)]
     head_repository_owner: Option<GhListAuthor>,
@@ -327,8 +330,9 @@ fn into_info(number: u32, response: GhPrResponse) -> Result<RemoteRefInfo> {
         title: response.title,
         // REST's user summary carries no display name (unlike the GraphQL
         // listing), so the login stands in; the next listing refresh
-        // overwrites the cached author with the full name.
-        author: response.user.login,
+        // overwrites the cached author with the full name. A deleted author
+        // (`user: null`) leaves it blank rather than failing the resolve.
+        author: response.user.map(|u| u.login).unwrap_or_default(),
         state: if response.merged {
             "merged".to_string()
         } else {
@@ -385,7 +389,10 @@ fn classify_error(
 #[derive(Debug, Deserialize)]
 struct GhPrResponse {
     title: String,
-    user: GhUser,
+    /// Nullable: a deleted PR author serializes as `user: null`, which must
+    /// not fail the checkout resolve.
+    #[serde(default)]
+    user: Option<GhUser>,
     state: String,
     /// REST reports a merged PR as `state: closed` + `merged: true`; daft
     /// folds that back into the `merged` state everywhere else uses.
@@ -559,7 +566,9 @@ mod tests {
     #[test]
     fn pr_list_tolerates_null_author() {
         // A deleted account serializes as author: null (gh returns {} or null),
-        // and a set login can still carry a null or blank display name.
+        // and a set login can still carry a null or blank display name. A single
+        // such row must never abort the whole listing (a null `author` fails to
+        // deserialize unless the field is `Option`).
         let json = r#"[
             {"number": 3, "title": "t", "state": "MERGED",
              "headRefName": "b", "isCrossRepository": false,
@@ -569,13 +578,40 @@ mod tests {
              "url": "u", "author": {"login": "bot", "name": null}},
             {"number": 5, "title": "t", "state": "OPEN",
              "headRefName": "d", "isCrossRepository": false,
-             "url": "u", "author": {"login": "ghost", "name": "  "}}
+             "url": "u", "author": {"login": "ghost", "name": "  "}},
+            {"number": 6, "title": "t", "state": "OPEN",
+             "headRefName": "e", "isCrossRepository": false,
+             "url": "u", "author": null}
         ]"#;
         let entries = parse_pr_list(json.as_bytes()).unwrap();
+        assert_eq!(
+            entries.len(),
+            4,
+            "a null-author row must not drop the listing"
+        );
         assert_eq!(entries[0].author, "");
         assert_eq!(entries[0].state, "merged");
         assert_eq!(entries[1].author, "bot", "null name falls back to login");
         assert_eq!(entries[2].author, "ghost", "blank name falls back to login");
+        assert_eq!(
+            entries[3].author, "",
+            "a null author object is blank, not an error"
+        );
+    }
+
+    #[test]
+    fn single_pr_tolerates_null_user() {
+        // `gh api .../pulls/N` returns `user: null` for a deleted author; the
+        // checkout resolve must not fail on it (non-Option `user` panics here).
+        let json = r#"{
+            "title": "t", "state": "open", "draft": false, "user": null,
+            "html_url": "https://github.com/acme/widget/pull/8",
+            "head": {"ref": "b", "repo": {"name": "widget", "owner": {"login": "acme"}}},
+            "base": {"ref": "main", "repo": {"name": "widget", "owner": {"login": "acme"}}}
+        }"#;
+        let info = parse(json, 8).unwrap();
+        assert_eq!(info.author, "", "a null user leaves the author blank");
+        assert_eq!(info.source_branch, "b");
     }
 
     #[test]

@@ -124,11 +124,7 @@ fn parse_mr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             kind: ForgeRefKind::GitlabMr,
             number: item.iid,
             title: item.title,
-            // GitLab says "opened"; normalize to the cache's "open".
-            state: match item.state.as_str() {
-                "opened" => "open".to_string(),
-                other => other.to_lowercase(),
-            },
+            state: normalize_gitlab_state(&item.state),
             head_branch: item.source_branch,
             is_cross_repo: item.source_project_id != item.target_project_id,
             ci_status: None,
@@ -149,8 +145,13 @@ struct GlabMrListItem {
     title: String,
     state: String,
     source_branch: String,
-    source_project_id: u64,
-    target_project_id: u64,
+    /// Nullable: a deleted source (fork) project serializes as `null`. One such
+    /// MR must not abort the whole listing — mirrors the GitHub null-author
+    /// hardening. `None` compares unequal to a present target ⇒ cross-repo.
+    #[serde(default)]
+    source_project_id: Option<u64>,
+    #[serde(default)]
+    target_project_id: Option<u64>,
     web_url: String,
     #[serde(default)]
     updated_at: Option<String>,
@@ -162,6 +163,18 @@ struct GlabMrListItem {
 /// `group%2Fsub%2Frepo`) so it's a single path segment for the projects API.
 fn encode_project(path: &str) -> String {
     path.replace('/', "%2F")
+}
+
+/// Normalize a GitLab MR state to the cache's vocabulary. GitLab says
+/// `"opened"` for an open MR; every cache consumer keys off the literal
+/// `"open"`, so both the listing and the single-MR write-through path must
+/// agree here — otherwise a just-resolved MR is invisible to its own
+/// completion and list row until a later background refresh.
+fn normalize_gitlab_state(state: &str) -> String {
+    match state {
+        "opened" => "open".to_string(),
+        other => other.to_lowercase(),
+    }
 }
 
 fn into_info(number: u32, response: GlabMrResponse) -> Result<RemoteRefInfo> {
@@ -183,7 +196,7 @@ fn into_info(number: u32, response: GlabMrResponse) -> Result<RemoteRefInfo> {
         number,
         title: response.title,
         author: response.author.display_name(),
-        state: response.state.to_lowercase(),
+        state: normalize_gitlab_state(&response.state),
         draft: response.draft,
         source_branch: response.source_branch,
         is_cross_repo,
@@ -320,6 +333,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mr_list_tolerates_null_source_project() {
+        // A deleted source (fork) project serializes `source_project_id: null`;
+        // one such MR must not drop the whole listing (non-Option u64 panics).
+        let json = r#"[
+            {"iid": 45, "title": "t", "state": "opened", "source_branch": "x",
+             "source_project_id": null, "target_project_id": 1,
+             "web_url": "https://gitlab.com/g/r/-/merge_requests/45",
+             "author": {"username": "dev"}}
+        ]"#;
+        let entries = parse_mr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries.len(), 1, "a null source-project row must survive");
+        assert_eq!(entries[0].number, 45);
+        assert!(
+            entries[0].is_cross_repo,
+            "an absent source project ≠ the present target ⇒ cross-repo"
+        );
+    }
+
     fn parse(json: &str, number: u32) -> Result<RemoteRefInfo> {
         let response: GlabMrResponse = serde_json::from_str(json).unwrap();
         into_info(number, response)
@@ -338,6 +370,11 @@ mod tests {
         assert_eq!(info.kind, ForgeRefKind::GitlabMr);
         assert_eq!(info.source_branch, "feature-x");
         assert_eq!(info.author, "Devon Developer");
+        assert_eq!(
+            info.state, "open",
+            "GitLab's 'opened' must normalize on the single-MR path too, or the \
+             just-resolved MR is invisible to its own completion and list row"
+        );
         assert!(!info.is_cross_repo);
         assert_eq!(info.base.host, "gitlab.com");
         assert_eq!(info.base.owner, "group");
