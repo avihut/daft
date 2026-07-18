@@ -1,0 +1,51 @@
+name: push of an upstream-less worktree branch sets tracking
+description:
+  "A branch created locally (worktree checked out, never pushed) has no
+  upstream; daft push uses --set-upstream so tracking is configured as a side
+  effect — mirroring checkout's autopush shape."
+
+repos:
+  - name: push-upstream-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_UPSTREAM_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-upstream-repo/main"
+
+  - name: Create a new local branch with its own worktree (no autopush)
+    run: git-worktree-checkout -b feat-new --local
+    cwd: "$WORK_DIR/push-upstream-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-upstream-repo/feat-new"
+
+  - name: The fresh branch has no upstream yet
+    run: git config branch.feat-new.remote || echo "no-upstream"
+    cwd: "$WORK_DIR/push-upstream-repo/feat-new"
+    expect:
+      exit_code: 0
+      output_contains: ["no-upstream"]
+
+  - name: Push it from the main worktree
+    run: daft push feat-new 2>&1
+    cwd: "$WORK_DIR/push-upstream-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feat-new' to 'origin'"
+
+  - name: Tracking is configured and the branch is on the remote
+    run: |
+      git config branch.feat-new.remote
+      git ls-remote --heads origin feat-new
+    cwd: "$WORK_DIR/push-upstream-repo/feat-new"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "origin"
+        - "feat-new"

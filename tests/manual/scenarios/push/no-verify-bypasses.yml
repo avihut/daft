@@ -1,0 +1,58 @@
+name: push --no-verify bypasses a failing pre-push hook
+description:
+  "--no-verify is the explicit opt-out: the same push a failing hook rejects
+  goes through with the hook bypassed."
+
+repos:
+  - name: push-bypass-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_BYPASS_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-bypass-repo/main"
+
+  - name: Checkout the feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-bypass-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Commit a change on the feature branch
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "bypassed change" > bypassed.txt
+      git add bypassed.txt
+      git commit -m "Bypassed change"
+    cwd: "$WORK_DIR/push-bypass-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/push-bypass-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: The bypassed push goes through
+    run: daft push --no-verify feature/test-feature 2>&1
+    cwd: "$WORK_DIR/push-bypass-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feature/test-feature' to 'origin'"
+
+  - name: The push landed on the remote
+    run: |
+      git fetch origin 2>/dev/null
+      git rev-list --count origin/feature/test-feature..feature/test-feature
+    cwd: "$WORK_DIR/push-bypass-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]
