@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.22.0](https://github.com/avihut/daft/compare/v1.21.1...v1.22.0) - 2026-07-18
+
+
+### Features
+
+- **repo**: Daft repo link/unlink — imperative relation editing (#724)
+
+
+### Testing
+
+- Finish integration-suite state isolation — completions sandbox + wider tripwire (#730)
 ## [1.21.1](https://github.com/avihut/daft/compare/v1.21.0...v1.21.1) - 2026-07-17
 
 
