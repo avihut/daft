@@ -112,8 +112,11 @@ Task-specific rules:
 - **No execution timeout** — a task job runs until it exits or is cancelled
   (lifecycle-hook jobs keep the 300-second default). This makes tasks the right
   home for long-running processes.
-- **Foreground** — output streams live and Ctrl+C cancels (twice to force-kill);
-  there is no detached/background mode.
+- **Foreground** — a task that resolves to a single job passes the terminal
+  straight through: the job inherits daft's stdio and its raw output is the
+  whole interface, exactly as if you ran the command yourself. A multi-job task
+  renders one live row per job with the logs threaded beneath. Either way,
+  Ctrl+C cancels (twice to force-kill); there is no detached mode.
 - **Trust** — an explicit `daft run` runs even in an untrusted repo (it counts
   as consent), unlike lifecycle hooks which are skipped until the repo is
   trusted.

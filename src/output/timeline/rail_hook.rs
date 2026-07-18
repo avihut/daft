@@ -140,15 +140,21 @@ impl RailHookRenderer {
     /// the phase name. Verbose carries the banner's surviving facts — the
     /// raw hook key (the daft.yml lookup key) and the engine version — as a
     /// grey annotation; the `on: <target>` segment is gone for good, because
-    /// the rail header or branch anchor already names the target.
+    /// the rail header or branch anchor already names the target. When the
+    /// key IS the label (`daft run` tasks: the section is the daft.yml
+    /// lookup key), the annotation keeps only the version — no stutter.
     pub fn print_header(&self, hook_name: &str, _target: Option<&str>) {
         let label = match &self.section_label {
             Some(label) => label.clone(),
             None => format!("{hook_name} hooks"),
         };
-        let annotation = self
-            .verbose
-            .then(|| format!("{hook_name} \u{b7} daft v{}", crate::VERSION));
+        let annotation = self.verbose.then(|| {
+            if label == hook_name {
+                format!("daft v{}", crate::VERSION)
+            } else {
+                format!("{hook_name} \u{b7} daft v{}", crate::VERSION)
+            }
+        });
         self.mp
             .println(self.tucked(render::group(&label, annotation.as_deref(), self.use_color)))
             .ok();
@@ -334,15 +340,19 @@ impl RailHookRenderer {
         });
     }
 
-    /// Hooks have no cancellation path today (only `daft exec` cancels, and
-    /// it always runs the block renderer) — defensive parity. Verbose
+    /// A Ctrl+C'd `daft run` task job: the spine's `⊘` cancel vocabulary on
+    /// a job row (lifecycle hooks still have no cancellation path). Verbose
     /// treats the log as evidence, same as a failure.
     pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
         let state = self.remove_bar(name);
+        let annotation = match self.duration_annotation(duration) {
+            Some(dur) => format!("cancelled {dur}"),
+            None => "cancelled".to_string(),
+        };
         self.persist_receipt(render::hook_job_row(
-            &HookJobFace::Failed,
+            &HookJobFace::Cancelled,
             name,
-            Some("cancelled"),
+            Some(&annotation),
             self.name_width,
             self.use_color,
         ));
@@ -663,6 +673,33 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_row_uses_the_ban_face() {
+        // A Ctrl+C'd `daft run` task job: the spine's `⊘` vocabulary, with
+        // the duration folded into the annotation. Records as a failure
+        // outcome so the non-zero exit propagates.
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("serve", None);
+        r.update_job_output("serve", "listening on :3000");
+        r.finish_job_cancelled("serve", Duration::from_millis(2100));
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{2298}  serve  cancelled (2.1s)"
+        );
+        assert!(matches!(
+            r.take_finished_jobs()[0].outcome,
+            JobOutcome::Failed
+        ));
+    }
+
+    #[test]
+    fn subsecond_cancel_hides_the_duration() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("serve", None);
+        r.finish_job_cancelled("serve", Duration::from_millis(300));
+        assert_eq!(term.contents(), "\u{2502}  \u{2298}  serve  cancelled");
+    }
+
+    #[test]
     fn failure_without_output_defers_nothing() {
         let (mut r, _term, h) = harness(None, false);
         r.start_job("build", None);
@@ -829,6 +866,19 @@ mod tests {
         let (r, term, _h) = harness(Some("post-create hooks"), false);
         r.print_header("worktree-post-create", None);
         assert_eq!(term.contents(), "\u{251c}\u{2500} post-create hooks");
+    }
+
+    #[test]
+    fn verbose_anchor_drops_the_key_when_it_is_the_label() {
+        // `daft run` tasks: the section label IS the daft.yml lookup key, so
+        // the annotation keeps only the engine version — `stack  stack · …`
+        // would stutter.
+        let (r, term, _h) = harness_with(verbose_config(), Some("stack"), false);
+        r.print_header("stack", None);
+        assert_eq!(
+            term.contents(),
+            format!("\u{251c}\u{2500} stack  daft v{}", crate::VERSION)
+        );
     }
 
     #[test]

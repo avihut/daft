@@ -62,7 +62,9 @@ impl HookRenderer {
         }
     }
 
-    #[cfg(test)]
+    /// A renderer that draws nothing. Behind `daft run`'s single-job
+    /// passthrough (the job owns the terminal — daft adds no chrome) and
+    /// test harnesses.
     pub fn new_hidden(config: &HookOutputConfig) -> Self {
         HookRenderer::Progress(Box::new(HookProgressRenderer::new_hidden(config)))
     }

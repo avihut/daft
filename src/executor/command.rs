@@ -213,7 +213,7 @@ pub fn run_command_interactive(
             .with_context(|| format!("Failed to run interactive command: {cmd}"))?;
         return Ok(CommandResult {
             success: status.success(),
-            exit_code: Some(status.code().unwrap_or(-1)),
+            exit_code: Some(status_exit_code(&status)),
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
@@ -227,7 +227,7 @@ pub fn run_command_interactive(
     match wait_interactive_child(&mut child, cancel)? {
         WaitOutcome::Exited(status) => Ok(CommandResult {
             success: status.success(),
-            exit_code: Some(status.code().unwrap_or(-1)),
+            exit_code: Some(status_exit_code(&status)),
             stdout: String::new(),
             stderr: String::new(),
             cancelled: false,
@@ -245,6 +245,21 @@ pub fn run_command_interactive(
 // ─────────────────────────────────────────────────────────────────────────
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────
+
+/// An exited child's code under the shell convention: a signal death
+/// resolves `128 + N` (sh reports a SIGINT'd child as 130, SIGTERM as 143),
+/// never a synthetic -1. Matters for `daft run`'s passthrough, where the
+/// terminal's ^C SIGINTs the interactive child directly.
+fn status_exit_code(status: &ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(-1)
+}
 
 /// Terminal outcome of waiting on a child: it exited on its own, or it was
 /// torn down by a user cancellation.
@@ -339,7 +354,12 @@ fn wait_interactive_child(
 
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(if cancelling {
+            // Re-check the flag at reap time: the terminal delivers ^C's
+            // SIGINT to the child (shared foreground group) and to daft in
+            // the same instant, so the child can die before this loop's
+            // stale `cancelling` — read from a *previous* iteration — has
+            // caught up.
+            return Ok(if cancelling || cancel.is_cancelled() {
                 WaitOutcome::Cancelled
             } else {
                 WaitOutcome::Exited(status)
@@ -369,7 +389,7 @@ fn wait_interactive_child(
 
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(if cancelling {
+            return Ok(if cancelling || cancel.is_cancelled() {
                 WaitOutcome::Cancelled
             } else {
                 WaitOutcome::Exited(status)
@@ -755,6 +775,19 @@ mod tests {
         let result = run_command_interactive("exit 7", &env, &dir, None).unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(7));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_interactive_signal_death_resolves_shell_convention() {
+        // A child killed by a signal carries no exit code; the shell
+        // convention is 128 + N — a ^C'd passthrough job must surface 130,
+        // not a synthetic -1 (255 once truncated to a u8).
+        let env = HashMap::new();
+        let dir = std::env::temp_dir();
+        let result = run_command_interactive("kill -INT $$", &env, &dir, None).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(130));
     }
 
     #[test]

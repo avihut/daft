@@ -65,11 +65,16 @@ tasks:
 
 ## Output rendering
 
-- [ ] Live output streams per job with labels while running (the compact,
-      finalization-on-finish presentation — not a re-dump of the whole
-      scrollback when a job ends)
-- [ ] `daft run once`: the short task shows its output live and resolves to a
-      compact success row
+- [ ] `daft run once` (single-job task): pure passthrough — the job's raw output
+      with **no** daft chrome (no header, no rows, no summary), exit code
+      verbatim, exactly as if you ran the command yourself
+- [ ] `daft run` (multi-job): the plan-then-execute rail —
+      `┌ Running task     run on <branch>` header, a `├─ run` section anchor,
+      one live row per job with its log threaded beneath, `└ Done in <t>` footer
+- [ ] Ctrl+C on the rail: cancelled jobs persist as `⊘ <job> cancelled` rows and
+      the footer reads `Cancelled after <t>`
+- [ ] Piped (`daft run 2>&1 | cat`): no rail — the classic block output, as
+      before
 - [ ] `daft run --list` shows the tasks with job counts; unknown task name
       prints the available list
 - [ ] Tab completion: with the shell integration loaded, `daft run <TAB>` offers

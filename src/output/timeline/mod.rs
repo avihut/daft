@@ -835,6 +835,23 @@ mod tests {
     }
 
     #[test]
+    fn task_step_embeds_with_its_fixed_label_as_the_section() {
+        // `daft run`'s multi-job rail: one Task step carrying the task name
+        // as a fixed label; the embed consumes it into a `├─ <task>` section.
+        let mut tl = interactive();
+        tl.commit_plan(PlanCommit::new(vec![Row::Step(
+            StepSpec::new(StepKey::new(StageId::Task)).with_label("dev-stack"),
+        )]));
+        let embed = tl
+            .handle()
+            .begin_hook_embed(&StepKey::new(StageId::Task))
+            .expect("region live, key known");
+        assert_eq!(embed.section_label.as_deref(), Some("dev-stack"));
+        tl.finish("Done in 0.1s");
+        assert!(!tl.region_live());
+    }
+
+    #[test]
     fn gate_embed_on_an_active_step_has_no_section_label() {
         let mut tl = interactive();
         tl.commit_plan(PlanCommit::new(vec![

@@ -843,19 +843,33 @@ fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<
         return Ok(HookResult::success());
     }
 
-    // Find the first failure
+    // Find the first failure — a real failure's exit code is more
+    // informative than a cancellation's, so it wins when both exist.
     let first_failure = results
         .iter()
         .find(|r| r.status == crate::executor::NodeStatus::Failed);
-
-    match first_failure {
-        Some(failed) => Ok(HookResult::failed(
+    if let Some(failed) = first_failure {
+        return Ok(HookResult::failed(
             failed.exit_code.unwrap_or(-1),
             failed.stdout.clone(),
             failed.stderr.clone(),
-        )),
-        None => Ok(HookResult::success()),
+        ));
     }
+
+    // A cancelled run (Ctrl+C on a `daft run` task) must not read as
+    // success: resolve 130 (128 + SIGINT) so the exit code propagates.
+    let first_cancelled = results
+        .iter()
+        .find(|r| r.status == crate::executor::NodeStatus::Cancelled);
+    if let Some(cancelled) = first_cancelled {
+        return Ok(HookResult::failed(
+            cancelled.exit_code.unwrap_or(130),
+            cancelled.stdout.clone(),
+            cancelled.stderr.clone(),
+        ));
+    }
+
+    Ok(HookResult::success())
 }
 
 /// Filter jobs to those whose effective tracking set intersects with the
@@ -962,6 +976,52 @@ mod tests {
     use crate::output::TestOutput;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn job_result(
+        status: crate::executor::NodeStatus,
+        exit_code: Option<i32>,
+    ) -> crate::executor::JobResult {
+        crate::executor::JobResult {
+            name: "j".into(),
+            status,
+            duration: std::time::Duration::from_secs(1),
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn cancelled_results_resolve_130_not_success() {
+        // Regression: a Ctrl+C'd `daft run` task whose jobs all resolved
+        // `Cancelled` (no `Failed` in sight) must not aggregate to success —
+        // the command's exit code is how scripts and prompts see the cancel.
+        let results = [job_result(
+            crate::executor::NodeStatus::Cancelled,
+            Some(130),
+        )];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(130));
+    }
+
+    #[test]
+    fn cancelled_without_exit_code_defaults_to_130() {
+        let results = [job_result(crate::executor::NodeStatus::Cancelled, None)];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert_eq!(hr.exit_code, Some(130));
+    }
+
+    #[test]
+    fn failure_outranks_cancellation_in_aggregation() {
+        let results = [
+            job_result(crate::executor::NodeStatus::Cancelled, Some(130)),
+            job_result(crate::executor::NodeStatus::Failed, Some(7)),
+        ];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(7));
+    }
 
     /// Build a `HookContext` whose `git_dir` is a real temp directory and
     /// whose `state_dir` is the same temp directory.

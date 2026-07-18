@@ -702,7 +702,9 @@ lifecycle hooks:
 
 - **No execution timeout.** A task runs until it exits or is cancelled (hook
   jobs keep the 300s default) — the right home for dev servers and watchers.
-- **Foreground and attended.** Output streams live; Ctrl+C cancels the job tree
+- **Foreground and attended.** A single-job task passes the terminal straight
+  through — the job's raw output, no wrapper. A multi-job task renders one live
+  row per job with the logs threaded beneath. Ctrl+C cancels the job tree
   gracefully, a second Ctrl+C force-kills. There is no detach flag; jobs marked
   `background: true` still dispatch to the coordinator as usual (visible in
   `daft hooks jobs`).
