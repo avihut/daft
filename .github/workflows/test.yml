@@ -145,7 +145,9 @@ jobs:
       - name: Run cargo-deny
         run: mise run deny
 
-  # Fast feedback: formatting, linting, unit tests (debug mode only - no release build needed)
+  # Fast feedback: formatting and linting. Unit tests run in the parallel
+  # `unit-tests` job below, split out (#583) so a test failure doesn't
+  # surface as a red `lint` check.
   lint:
     needs: changes
     if: >-
@@ -199,14 +201,41 @@ jobs:
       - name: Run Rust clippy
         run: mise run clippy
 
+  # Rust unit tests (debug build). Split out of `lint` (#583) so the PR
+  # check that goes red names what actually failed, and the two jobs run
+  # in parallel. Same change gating as `lint`.
+  unit-tests:
+    needs: changes
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'release') &&
+      (needs.changes.outputs.self == 'true' || needs.changes.outputs.rust ==
+      'true' || needs.changes.outputs.tests == 'true' ||
+      needs.changes.outputs.xtask == 'true')
+    runs-on: ubuntu-latest
+    env:
+      # cargo-cooldown is a local-dev guard with no CI payoff — see the
+      # identical override on `lint` for the full rationale.
+      MISE_DISABLE_TOOLS: cargo:cargo-cooldown
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mise
+        uses: jdx/mise-action@v4.2.0
+
       - name: Run Rust unit tests
         run: mise run test:unit
 
   # MSRV check — proves the source still compiles under the pinned floor
   # declared in Cargo.toml's `rust-version`. `cargo check` is enough; the
-  # `lint` job above already runs full build+test on stable. Cheap minutes
-  # gate that prevents silent MSRV regressions when new code accidentally
-  # uses post-1.95 stdlib features.
+  # `unit-tests` job above already runs full build+test on stable. Cheap
+  # minutes gate that prevents silent MSRV regressions when new code
+  # accidentally uses post-1.95 stdlib features.
   msrv-check:
     needs: changes
     if: >-
