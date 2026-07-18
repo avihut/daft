@@ -770,8 +770,8 @@ fn decode_start_grammar(
 /// Silent probe for the two-name guess: does `refs/heads/<name>` exist in
 /// the repository the cwd sits in? False outside any repository. Runs
 /// through `git_command_at` so an inherited `GIT_DIR` (hook context) cannot
-/// retarget the check.
-fn local_branch_exists(name: &str) -> bool {
+/// retarget the check. Also used by tab completion to mirror the guess.
+pub(crate) fn local_branch_exists(name: &str) -> bool {
     let Ok(cwd) = get_current_directory() else {
         return false;
     };

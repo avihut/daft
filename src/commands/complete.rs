@@ -137,7 +137,38 @@ fn complete(
             Ok(format_entries_as_strings(&complete_go_second(&first, word)))
         }
 
-        // daft-start: no dynamic completion for new branch names
+        // daft-start position 1: catalog repo names only (#725) — a NEW
+        // branch name has nothing to complete, and repo candidates double as
+        // collision warnings for the two-name guess.
+        ("daft-start", 1) => Ok(format_entries_as_strings(&catalog_repo_entries(
+            word,
+            &Default::default(),
+        ))),
+
+        // daft-start position 2: the new branch when position 1 names a live
+        // repo (nothing to complete); otherwise the local base branch. The
+        // shell passes position 1 via DAFT_COMPLETE_START_FIRST.
+        ("daft-start", 2) => {
+            let first = std::env::var("DAFT_COMPLETE_START_FIRST").unwrap_or_default();
+            if start_first_is_cross_repo(&first) {
+                Ok(vec![])
+            } else {
+                Ok(format_entries_as_strings(&complete_rich_branches(
+                    word,
+                    &CONFIG_CHECKOUT,
+                )?))
+            }
+        }
+
+        // daft-start position 3: base branches inside the target repo of the
+        // three-name form (empty when position 1 isn't a live repo — the
+        // local form has no third argument).
+        ("daft-start", 3) => {
+            let first = std::env::var("DAFT_COMPLETE_START_FIRST").unwrap_or_default();
+            Ok(format_entries_as_strings(&complete_go_second(&first, word)))
+        }
+
+        // daft-start: nothing beyond position 3
         ("daft-start", _) => Ok(vec![]),
 
         // repo-name: catalog repo names (for `daft repo info`, `--repo`
@@ -721,6 +752,22 @@ fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings:
             t.elapsed().as_secs_f64() * 1000.0
         );
     }
+}
+
+/// Would `daft start <first> …` read cross-repo? Mirrors the decode guess
+/// (`decode_start_grammar`): an existing local branch keeps the local
+/// reading; otherwise a live catalog repo goes cross. Silent, hot-path.
+fn start_first_is_cross_repo(first: &str) -> bool {
+    if first.is_empty() || crate::commands::checkout::local_branch_exists(first) {
+        return false;
+    }
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return false;
+    };
+    matches!(
+        catalog.resolve_live_name(first),
+        Ok(Some(row)) if std::path::Path::new(&row.path).is_dir()
+    )
 }
 
 /// Position-2 completion for `daft go <repo> <branch>`: branches of the

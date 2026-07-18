@@ -180,7 +180,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
     let cmd =
         get_command_for_name(command_name).context(format!("Unknown command: {command_name}"))?;
 
-    let has_branches = uses_rich_completions(command_name) || command_name == "daft-start";
+    let has_branches = uses_rich_completions(command_name);
 
     let about = cmd.get_about().map(|a| a.to_string());
 
@@ -1400,6 +1400,21 @@ mod tests {
         assert!(
             !spec.contains("generators"),
             "prune spec should not have generators"
+        );
+    }
+
+    /// `daft start [<repo>] <branch> [base]` (#725) — every positional gets
+    /// a dynamic generator through the rich pipeline.
+    #[test]
+    fn fig_start_spec_completes_all_positionals() {
+        let spec = generate_fig_completion_string("daft-start").unwrap();
+        assert!(
+            spec.contains("__complete") && spec.contains("\"daft-start\""),
+            "start spec must generate positional completions dynamically"
+        );
+        assert!(
+            spec.matches("--position").count() >= 2,
+            "start spec must cover the branch and base positions (2 and 3)"
         );
     }
 

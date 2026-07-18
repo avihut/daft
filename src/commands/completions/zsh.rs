@@ -12,8 +12,6 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     let mut output = String::new();
-    // daft-start still uses simple branch-prefix patterns (not rich).
-    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -26,21 +24,6 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     output.push_str("    curword=\"${words[$CURRENT]}\"\n");
     output.push_str("    cword=$((CURRENT - 1))\n");
     output.push('\n');
-
-    if has_branches {
-        output.push_str("    # Branch completions for non-flag words\n");
-        output.push_str("    if [[ $curword != -* ]]; then\n");
-        output.push_str("        local -a branches\n");
-        output.push_str(&format!(
-            "        branches=($(daft __complete \"{}\" \"$curword\" --position \"$cword\" 2>/dev/null))\n",
-            command_name
-        ));
-        output.push_str("        if [[ ${#branches[@]} -gt 0 ]]; then\n");
-        output.push_str("            compadd -a branches\n");
-        output.push_str("        fi\n");
-        output.push_str("    fi\n");
-        output.push('\n');
-    }
 
     // Value completion for -b / --branch flag (clone only)
     let has_branch_completions = command_name == "git-worktree-clone";
@@ -337,9 +320,12 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     } else {
         ""
     };
-    // Rich commands that also carry --skip-hooks (checkout, go) complete its
-    // selector vocabulary when the previous word is the flag.
-    let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+    // Rich commands that also carry --skip-hooks (checkout, go, start)
+    // complete its selector vocabulary when the previous word is the flag.
+    let skip_hooks_pre = if matches!(
+        command_name,
+        "git-worktree-checkout" | "daft-go" | "daft-start"
+    ) {
         "    if [[ \"${words[$((CURRENT-1))]}\" == \"--skip-hooks\" ]]; then\n        local -a selectors\n        selectors=(\"${(@f)$(daft __complete skip-hooks-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n        _describe 'skip-hooks selector' selectors\n        return\n    fi\n\n"
     } else {
         ""
@@ -352,13 +338,13 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
-    // daft-go position 2 completes branches of the repo named at position 1;
-    // the __complete protocol only carries the current word, so pass the
-    // first positional via env.
-    let env_prefix = if command_name == "daft-go" {
-        r#"DAFT_COMPLETE_GO_FIRST="$words[2]" "#
-    } else {
-        ""
+    // daft-go and daft-start complete later positions against the repo named
+    // at position 1; the __complete protocol only carries the current word,
+    // so pass the first positional via env.
+    let env_prefix = match command_name {
+        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="$words[2]" "#,
+        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="$words[2]" "#,
+        _ => "",
     };
 
     let mut output = format!(

@@ -12,8 +12,6 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     }
 
     let mut output = String::new();
-    // daft-start still uses simple branch-prefix patterns (not rich).
-    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -21,22 +19,6 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     output.push_str("    local cur prev words cword\n");
     output.push_str("    _init_completion || return\n");
     output.push('\n');
-
-    if has_branches {
-        output.push_str("    # Dynamic branch name completion for positional arguments\n");
-        output.push_str("    if [[ \"$cur\" != -* ]]; then\n");
-        output.push_str("        local branches\n");
-        output.push_str(&format!(
-            "        branches=$(daft __complete \"{}\" \"$cur\" --position \"$cword\" 2>/dev/null)\n",
-            command_name
-        ));
-        output.push_str("        if [[ -n \"$branches\" ]]; then\n");
-        output.push_str("            COMPREPLY=( $(compgen -W \"$branches\" -- \"$cur\") )\n");
-        output.push_str("            return 0\n");
-        output.push_str("        fi\n");
-        output.push_str("    fi\n");
-        output.push('\n');
-    }
 
     // Value completion for -b / --branch flag (clone only)
     if command_name == "git-worktree-clone" {
@@ -294,18 +276,21 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         ""
     };
 
-    // daft-go's position-2 completion (branches of the repo at position 1)
-    // needs the first positional; pass it via env — the __complete protocol
-    // only carries the current word.
-    let env_prefix = if command_name == "daft-go" {
-        r#"DAFT_COMPLETE_GO_FIRST="${words[1]}" "#
-    } else {
-        ""
+    // daft-go and daft-start complete later positions against the repo named
+    // at position 1; pass it via env — the __complete protocol only carries
+    // the current word.
+    let env_prefix = match command_name {
+        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="${words[1]}" "#,
+        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="${words[1]}" "#,
+        _ => "",
     };
 
-    // Rich commands that also carry --skip-hooks (checkout, go) complete its
-    // selector vocabulary when the previous word is the flag.
-    let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+    // Rich commands that also carry --skip-hooks (checkout, go, start)
+    // complete its selector vocabulary when the previous word is the flag.
+    let skip_hooks_pre = if matches!(
+        command_name,
+        "git-worktree-checkout" | "daft-go" | "daft-start"
+    ) {
         r#"    if [[ "$prev" == "--skip-hooks" ]]; then
         local selectors
         selectors=$(daft __complete skip-hooks-value "$cur" 2>/dev/null | cut -f1)

@@ -93,6 +93,7 @@ pub(super) fn uses_rich_completions(command_name: &str) -> bool {
     matches!(
         command_name,
         "daft-go"
+            | "daft-start"
             | "git-worktree-checkout"
             | "daft-remove"
             | "daft-rename"
@@ -114,6 +115,7 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
     matches!(
         command_name,
         "daft-go"
+            | "daft-start"
             | "git-worktree-list"
             | "git-worktree-fetch"
             | "git-worktree-exec"
@@ -984,6 +986,53 @@ mod tests {
         );
     }
 
+    /// `daft start <repo> <branch>` (#725): position 1 completes catalog
+    /// repo names through the rich pipeline, and positions 2-3 consult the
+    /// first word via DAFT_COMPLETE_START_FIRST in every shell.
+    #[test]
+    fn start_completions_are_rich_and_repo_aware_in_all_shells() {
+        let zsh = zsh::generate_zsh_completion_string("daft-start").expect("zsh gen");
+        assert!(
+            zsh.contains("compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -V repo"),
+            "zsh must render the catalog repo group for daft-start"
+        );
+        assert!(
+            zsh.contains(r#"DAFT_COMPLETE_START_FIRST="$words[2]""#),
+            "zsh must pass the first word for start's later positions"
+        );
+
+        let bash = bash::generate_bash_completion_string("daft-start").expect("bash gen");
+        assert!(
+            bash.contains(r#"DAFT_COMPLETE_START_FIRST="${words[1]}""#),
+            "bash must pass the first word for start's later positions"
+        );
+
+        // Per-command fish must handle 3-field repo lines; the umbrella
+        // gates each position by token count and threads the env var.
+        let repo_branch = "else printf \\\"%s\\t%s\\n\\\",c,$3";
+        let fish = fish::generate_fish_completion_string("daft-start").expect("fish gen");
+        assert!(
+            fish.contains(repo_branch),
+            "fish per-command awk must handle 3-field repo lines for daft-start"
+        );
+        let umbrella = fish::generate_daft_fish_completions();
+        assert!(
+            umbrella.contains(
+                "__fish_seen_subcommand_from start; and test (count (commandline -opc)) -eq 2"
+            ),
+            "fish umbrella must gate start position 1 by token count"
+        );
+        assert!(
+            umbrella.contains("DAFT_COMPLETE_START_FIRST=(commandline -opc)[3]"),
+            "fish umbrella must pass start's first word to later positions"
+        );
+        assert!(
+            umbrella
+                .contains("'__fish_seen_subcommand_from go list update exec prune start' -l repo"),
+            "fish umbrella --repo values must include start"
+        );
+    }
+
     #[test]
     fn zsh_daft_go_passes_fetch_on_miss_flag() {
         let script =
@@ -1020,7 +1069,7 @@ mod tests {
             "daft-go",                 // rich
             "git-worktree-clone",      // non-rich
             "git-worktree-flow-adopt", // non-rich
-            "daft-start",              // non-rich
+            "daft-start",              // rich
         ] {
             let bash = bash::generate_bash_completion_string(cmd).expect("bash gen");
             assert!(
