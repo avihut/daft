@@ -1978,9 +1978,22 @@ fn complete_forge_targets(word: &str, repo_root: Option<&std::path::Path>) -> Ve
             .output()
         && output.status.success()
     {
-        for (branch, forge_ref) in
-            parse_branch_merge_lines(&String::from_utf8_lossy(&output.stdout))
-        {
+        // One shared parser with the list PR-rows path (pr_rows), so completion
+        // and `daft list` never disagree about which local branches track a PR.
+        // HashMap iteration order is unstable — sort for deterministic
+        // completion output (by kind, then number).
+        let mut checked_out: Vec<_> = crate::core::worktree::pr_rows::parse_branch_forge_refs(
+            &String::from_utf8_lossy(&output.stdout),
+        )
+        .into_iter()
+        .collect();
+        checked_out.sort_by(|a, b| {
+            a.1.kind
+                .tag()
+                .cmp(b.1.kind.tag())
+                .then(a.1.number.cmp(&b.1.number))
+        });
+        for (branch, forge_ref) in checked_out {
             let name = format!("{}:{}", forge_ref.kind.tag(), forge_ref.number);
             if !name.starts_with(word) || !seen.insert(name.clone()) {
                 continue;
@@ -2009,24 +2022,6 @@ fn row_status_glyph(row: &crate::store::models::ForgePrRow) -> &'static str {
     use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
     let ci = row.ci_status.as_deref().and_then(CiStatus::parse);
     PrStatus::from_state_and_ci(&row.state, ci).glyph()
-}
-
-/// Parse `git config --get-regexp '^branch\..*\.merge$'` output into
-/// `(branch, forge ref)` pairs, keeping only PR/MR-shaped merge refs. Pure,
-/// so the recognition logic tests without a repo.
-fn parse_branch_merge_lines(
-    output: &str,
-) -> Vec<(String, crate::core::worktree::forge_ref::ForgeBranchRef)> {
-    use crate::core::worktree::forge_ref::ForgeBranchRef;
-    output
-        .lines()
-        .filter_map(|line| {
-            let (key, value) = line.split_once(' ')?;
-            let forge_ref = ForgeBranchRef::parse_merge_ref(value)?;
-            let branch = key.strip_prefix("branch.")?.strip_suffix(".merge")?;
-            Some((branch.to_string(), forge_ref))
-        })
-        .collect()
 }
 
 /// Which group a completion entry belongs to, used for visual separation
@@ -2380,22 +2375,6 @@ mod tests {
         assert!(!fetch_could_surface_match("pr:99", &no_candidates));
         // Bare <Tab> never fetches.
         assert!(!fetch_could_surface_match("", &no_candidates));
-    }
-
-    #[test]
-    fn branch_merge_lines_parse_only_forge_refs() {
-        use crate::core::worktree::forge_ref::ForgeRefKind;
-        let output = "branch.main.merge refs/heads/main\n\
-                      branch.contributor-feature.merge refs/pull/2/head\n\
-                      branch.mr-branch.merge refs/merge-requests/45/head\n\
-                      garbage-line\n";
-        let parsed = parse_branch_merge_lines(output);
-        assert_eq!(parsed.len(), 2, "ordinary branches and noise are skipped");
-        assert_eq!(parsed[0].0, "contributor-feature");
-        assert_eq!(parsed[0].1.kind, ForgeRefKind::GithubPr);
-        assert_eq!(parsed[0].1.number, 2);
-        assert_eq!(parsed[1].0, "mr-branch");
-        assert_eq!(parsed[1].1.number, 45);
     }
 
     /// The forge completion's status column speaks the list column's
