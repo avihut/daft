@@ -975,12 +975,19 @@ fn complete_shared_files(prefix: &str) -> Result<Vec<String>> {
     Ok(entries)
 }
 
-/// Complete relation labels declared in the current worktree's daft.yml, for
-/// `daft repo unlink <TAB>`. Reads the manifest only (no catalog), matching
-/// the label rendering used by `repo info`.
+/// Complete relation labels for `daft repo unlink <TAB>`. Sources labels from
+/// the *same* file `unlink` edits — the located manifest — rather than the
+/// merged view (`current_repo_relations()`), which folds in `extends:` and
+/// daft.local.yml. Offering a label declared only in an overlay would suggest
+/// something `unlink` can't remove (it edits one physical daft.yml), so
+/// completion and the command must read the same source. Manifest read only,
+/// no catalog open — cheaper than the merged walk, too.
 fn complete_relation_labels(prefix: &str) -> Result<Vec<String>> {
-    let mut labels: Vec<String> = crate::catalog::relations::current_repo_relations()
-        .unwrap_or_default()
+    let text = crate::commands::repo::relation_io::locate_manifest()
+        .map(|target| target.text)
+        .unwrap_or_default();
+    let entries = crate::catalog::relations_edit::parse_relations(&text).unwrap_or_default();
+    let mut labels: Vec<String> = entries
         .iter()
         .map(|entry| entry.label().to_string())
         .filter(|label| label.starts_with(prefix))
