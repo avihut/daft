@@ -151,6 +151,13 @@ steps:
       assert by["local-pr-branch"]["kind"] == "branch"
       assert by["local-pr-branch"]["owner_name"] == "Carol Danvers"
       assert by["local-pr-branch"]["pr_number"] == 6
+      # The worktree row's PR decorates the pr cells only: the row describes
+      # the local checkout, so the deduced git identity (real email) must
+      # survive — the PR author ("dan") never clobbers a worktree's owner.
+      assert by["feature-x"]["kind"] == "worktree"
+      assert by["feature-x"]["pr_number"] == 5
+      assert by["feature-x"]["owner_name"] != "dan"
+      assert by["feature-x"]["owner_email"] == "test@daft.test"
       # Owner is the author's full name; the row NAME keeps the fork
       # namespace login (owner:branch) — a namespace, not a person.
       assert by["alice:patch-1"]["owner_name"] == "Alice Liddell"
@@ -202,3 +209,59 @@ steps:
       exit_code: 0
       output_contains:
         - "SUBSUME-OK"
+
+  - name: An auth-dead refresh flips health but keeps the stale snapshot
+    run: |
+      set -e
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+      exit 4
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+      daft __dump-store forge-health
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"healthy":false'
+
+  - name: Structured rows survive the silent gate on the stale cache
+    run: |
+      set -e
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-list --format json > "$WORK_DIR/list-unhealthy.json"
+      python3 - "$WORK_DIR/list-unhealthy.json" <<'PY'
+      import json, sys
+      rows = json.load(open(sys.argv[1]))
+      by = {r["name"]: r for r in rows}
+      # The structured row set is keyed to the ungated column selection, not
+      # the health-gated table: like the pr_* headers, the synthesized and
+      # surfaced PR rows must not vanish when a refresh dies.
+      assert by["alice:patch-1"]["kind"] == "pr", by.keys()
+      assert by["renovate/bump"]["kind"] == "pr"
+      assert by["local-pr-branch"]["pr_number"] == 6
+      print("STALE-JSON-OK")
+      PY
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "STALE-JSON-OK"
+
+  - name: The printed table hides the column and its rows together
+    run: |
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"
+      output_not_contains:
+        - "PR"
+        - "alice:patch-1"
+        - "renovate/bump"
+        - "local-pr-branch"

@@ -120,12 +120,19 @@ pub fn synthesized_row(p: &OpenPr) -> WorktreeInfo {
     info
 }
 
-/// Wherever a PR decoration attaches to a row, prefer the forge's author for
-/// the Owner cell over branch-history deduction — the forge's answer to
-/// "whose PR is this" is canonical where the history walk is a heuristic.
-/// Rows without a decoration (or a cache miss) keep their deduced owner.
+/// Wherever a PR decoration attaches to a branch or synthesized row, prefer
+/// the forge's author for the Owner cell over branch-history deduction — the
+/// forge's answer to "whose PR is this" is canonical where the history walk
+/// is a heuristic. Worktree rows are exempt: they describe a local checkout,
+/// where the deduced identity is the richer answer (real email, current-user
+/// detection) and structured emit must not trade it for a login with an empty
+/// email. Rows without a decoration (or a cache miss) keep their deduced
+/// owner.
 pub fn apply_pr_owners(infos: &mut [WorktreeInfo], lookup: &ForgePrLookup) {
     for info in infos.iter_mut() {
+        if info.kind == EntryKind::Worktree {
+            continue;
+        }
         if let Some(author) = lookup
             .decorate(&info.name, info.forge_ref)
             .and_then(|d| d.author)
@@ -389,14 +396,47 @@ mod tests {
             is_current_user: true,
         };
         let mut with_pr = WorktreeInfo::empty("feat/x");
+        with_pr.kind = EntryKind::LocalBranch;
         with_pr.owner = Some(deduced.clone());
         let mut without_pr = WorktreeInfo::empty("feat/other");
+        without_pr.kind = EntryKind::LocalBranch;
         without_pr.owner = Some(deduced.clone());
         let mut infos = vec![with_pr, without_pr];
 
         apply_pr_owners(&mut infos, &lookup);
         assert_eq!(infos[0].owner.as_ref().unwrap().name, "alice");
+        assert_eq!(infos[0].owner.as_ref().unwrap().email, "");
         assert_eq!(infos[1].owner.as_ref().unwrap().name, "History Name");
+    }
+
+    #[test]
+    fn apply_pr_owners_never_touches_worktree_rows() {
+        // A worktree whose branch heads an open PR keeps its deduced identity:
+        // the row describes the local checkout, and structured emit must not
+        // lose the real email (or current-user detection) for a forge login.
+        let mut lookup = lookup_with(vec![]);
+        let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, 5);
+        lookup.by_branch.insert(
+            "feature-x".into(),
+            PrDecoration {
+                author: Some("dan".into()),
+                ..PrDecoration::bare(r)
+            },
+        );
+
+        let mut checked_out = WorktreeInfo::empty("feature-x");
+        checked_out.owner = Some(BranchOwner {
+            name: "History Name".into(),
+            email: "h@x".into(),
+            is_current_user: true,
+        });
+        let mut infos = vec![checked_out];
+
+        apply_pr_owners(&mut infos, &lookup);
+        let owner = infos[0].owner.as_ref().unwrap();
+        assert_eq!(owner.name, "History Name");
+        assert_eq!(owner.email, "h@x");
+        assert!(owner.is_current_user);
     }
 
     #[test]

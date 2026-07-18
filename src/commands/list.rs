@@ -588,13 +588,14 @@ fn run_blocking(args: Args) -> Result<()> {
         None
     };
 
-    // Default open-PR rows ride the pr column's effective (gated) visibility:
-    // every open PR the table doesn't already represent gets a row — a local
-    // branch surfaced, or a row synthesized from the cache. One unit with the
-    // column: `--columns -pr` (or the silent gate) removes both.
-    if table_columns.contains(&ListColumn::Pr)
-        && let Some(lookup) = &forge_lookup
-    {
+    // Default open-PR rows ride the pr column's visibility: every open PR the
+    // table doesn't already represent gets a row — a local branch surfaced, or
+    // a row synthesized from the cache. `has_pr` keys off the same set the
+    // output uses: the health-gated `table_columns` for the printed table (so
+    // `--columns -pr` or the silent gate removes column and rows together), the
+    // ungated `emit_columns` for structured output (so the row set — like the
+    // schema — stays stable across forge health).
+    if has_pr && let Some(lookup) = &forge_lookup {
         let worktree_branches: HashSet<String> = infos
             .iter()
             .filter(|i| i.kind == EntryKind::Worktree)
