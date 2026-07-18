@@ -152,7 +152,7 @@ fn parse_pr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             is_cross_repo: item.is_cross_repository,
             ci_status: derive_ci_status(&item.status_check_rollup),
             url: item.url,
-            author: item.author.login,
+            author: item.author.display_name(),
             head_repo_owner: item.head_repository_owner.unwrap_or_default().login,
             updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
         })
@@ -221,6 +221,22 @@ struct GhPrListItem {
 struct GhListAuthor {
     #[serde(default)]
     login: String,
+    /// The profile's display name; often absent (bots, spartan profiles).
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl GhListAuthor {
+    /// The human-facing name: the profile's full name when set, else the
+    /// login. Owner cells and completion columns show a person, so the
+    /// display name wins; namespace uses (fork `owner:branch`) read `login`
+    /// directly and never come through here.
+    fn display_name(self) -> String {
+        match self.name {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => self.login,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -309,6 +325,9 @@ fn into_info(number: u32, response: GhPrResponse) -> Result<RemoteRefInfo> {
         kind: ForgeRefKind::GithubPr,
         number,
         title: response.title,
+        // REST's user summary carries no display name (unlike the GraphQL
+        // listing), so the login stands in; the next listing refresh
+        // overwrites the cached author with the full name.
         author: response.user.login,
         state: if response.merged {
             "merged".to_string()
@@ -509,7 +528,7 @@ mod tests {
             {"number": 7, "title": "feat: x", "state": "OPEN",
              "headRefName": "feat/x", "isCrossRepository": false,
              "url": "https://github.com/acme/widget/pull/7",
-             "author": {"login": "octocat"},
+             "author": {"login": "octocat", "name": "The Octocat"},
              "statusCheckRollup": [
                 {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"__typename": "StatusContext", "state": "SUCCESS"}
@@ -526,20 +545,38 @@ mod tests {
         assert_eq!(entries[0].state, "open", "gh's OPEN is lowercased");
         assert_eq!(entries[0].head_branch, "feat/x");
         assert_eq!(entries[0].ci_status, Some(CiStatus::Pass));
+        assert_eq!(
+            entries[0].author, "The Octocat",
+            "the profile's full name beats the login"
+        );
         assert!(entries[1].is_cross_repo);
         assert_eq!(entries[1].ci_status, None, "no checks ≠ green");
-        assert_eq!(entries[1].author, "contributor");
+        assert_eq!(
+            entries[1].author, "contributor",
+            "no display name (bots, spartan profiles) falls back to the login"
+        );
     }
 
     #[test]
     fn pr_list_tolerates_null_author() {
-        // A deleted account serializes as author: null (gh returns {} or null).
-        let json = r#"[{"number": 3, "title": "t", "state": "MERGED",
-            "headRefName": "b", "isCrossRepository": false,
-            "url": "u", "author": {}}]"#;
+        // A deleted account serializes as author: null (gh returns {} or null),
+        // and a set login can still carry a null or blank display name.
+        let json = r#"[
+            {"number": 3, "title": "t", "state": "MERGED",
+             "headRefName": "b", "isCrossRepository": false,
+             "url": "u", "author": {}},
+            {"number": 4, "title": "t", "state": "OPEN",
+             "headRefName": "c", "isCrossRepository": false,
+             "url": "u", "author": {"login": "bot", "name": null}},
+            {"number": 5, "title": "t", "state": "OPEN",
+             "headRefName": "d", "isCrossRepository": false,
+             "url": "u", "author": {"login": "ghost", "name": "  "}}
+        ]"#;
         let entries = parse_pr_list(json.as_bytes()).unwrap();
         assert_eq!(entries[0].author, "");
         assert_eq!(entries[0].state, "merged");
+        assert_eq!(entries[1].author, "bot", "null name falls back to login");
+        assert_eq!(entries[2].author, "ghost", "blank name falls back to login");
     }
 
     #[test]

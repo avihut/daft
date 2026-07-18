@@ -46,7 +46,7 @@ steps:
           {"number": 5, "title": "Add feature five", "state": "OPEN",
            "headRefName": "feature-x", "isCrossRepository": false,
            "url": "https://github.com/acme/widget/pull/5",
-           "author": {"login": "octocat"},
+           "author": {"login": "octocat", "name": "The Octocat"},
            "statusCheckRollup": [
              {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
            ]},
@@ -63,7 +63,7 @@ steps:
           {"number": 3, "title": "Landed work", "state": "MERGED",
            "headRefName": "feature-done", "isCrossRepository": false,
            "url": "https://github.com/acme/widget/pull/3",
-           "author": {"login": "octocat"}}
+           "author": {"login": "octocat", "name": "The Octocat"}}
         ]'
         exit 0
       fi
@@ -117,9 +117,10 @@ steps:
       exit_code: 0
       output_contains:
         # Owner and last-fetched CI status ride along as extra columns:
-        # name\tforge\tstatus\towner\ttitle.
+        # name\tforge\tstatus\towner\ttitle. Owner is the profile's full
+        # name; a profile without one (pr:6) falls back to the login.
         - "pr:5"
-        - "✓\toctocat\tAdd feature five"
+        - "✓\tThe Octocat\tAdd feature five"
         - "pr:6"
         - "contributor\tFork collision"
       output_not_contains:
@@ -140,4 +141,4 @@ steps:
       output_contains:
         # Status/owner columns fill from the cache row: merged glyph + author.
         - "pr:3"
-        - "◆\toctocat\tchecked out: review-3"
+        - "◆\tThe Octocat\tchecked out: review-3"

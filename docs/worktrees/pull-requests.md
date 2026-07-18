@@ -72,9 +72,12 @@ working state, not just your worktrees: the `pr` column is on by default, and
   — two contributors' `patch-1`s, a fork's `main` versus yours.
 - Merged and closed PRs decorate existing rows (the purple "this branch is done"
   signal) but never add one.
-- Wherever a row has a PR, the Owner column shows the **PR author** rather than
-  an owner deduced from commit history — the forge's answer is canonical, and
-  for foreign rows there is no local history to deduce from.
+- Wherever a row has a PR, the Owner column shows the **PR author's name** — the
+  forge profile's full name, falling back to the login for profiles without one
+  — rather than an owner deduced from commit history. The forge's answer is
+  canonical, and for foreign rows there is no local history to deduce from.
+  (Fork rows' `owner:branch` prefix stays the login: that's the fork's
+  namespace, not a person.)
 
 The open-PR rows and the `pr` column are one unit, governed by the same silent
 rules, so the list never nags:

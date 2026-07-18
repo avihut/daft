@@ -133,7 +133,7 @@ fn parse_mr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             is_cross_repo: item.source_project_id != item.target_project_id,
             ci_status: None,
             url: item.web_url,
-            author: item.author.username,
+            author: item.author.display_name(),
             // The REST listing names the source project only by ID; resolving
             // its namespace would cost one `projects/{id}` call per fork MR.
             // Empty = synthesized rows render the plain branch name.
@@ -155,13 +155,7 @@ struct GlabMrListItem {
     #[serde(default)]
     updated_at: Option<String>,
     #[serde(default)]
-    author: GlabListAuthor,
-}
-
-#[derive(Deserialize, Default)]
-struct GlabListAuthor {
-    #[serde(default)]
-    username: String,
+    author: GlabAuthor,
 }
 
 /// Percent-encode the `/` separators in a project path (`group/sub/repo` →
@@ -188,7 +182,7 @@ fn into_info(number: u32, response: GlabMrResponse) -> Result<RemoteRefInfo> {
         kind: ForgeRefKind::GitlabMr,
         number,
         title: response.title,
-        author: response.author.username,
+        author: response.author.display_name(),
         state: response.state.to_lowercase(),
         draft: response.draft,
         source_branch: response.source_branch,
@@ -249,9 +243,24 @@ struct GlabMrResponse {
     web_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct GlabAuthor {
+    #[serde(default)]
     username: String,
+    /// The profile's display name; may be absent or blank.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl GlabAuthor {
+    /// The human-facing name: the profile's full name when set, else the
+    /// username. Owner cells and completion columns show a person.
+    fn display_name(self) -> String {
+        match self.name {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => self.username,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,7 +283,7 @@ mod tests {
              "source_project_id": 1, "target_project_id": 1,
              "web_url": "https://gitlab.com/group/widget/-/merge_requests/45",
              "updated_at": "2026-07-18T09:30:00Z",
-             "author": {"username": "dev"}},
+             "author": {"username": "dev", "name": "Devon Developer"}},
             {"iid": 46, "title": "Fork work", "state": "opened",
              "source_branch": "fork-branch",
              "source_project_id": 2, "target_project_id": 1,
@@ -285,6 +294,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].number, 45);
         assert_eq!(entries[0].kind, ForgeRefKind::GitlabMr);
+        assert_eq!(
+            entries[0].author, "Devon Developer",
+            "the profile's full name beats the username"
+        );
+        assert_eq!(
+            entries[1].author, "contributor",
+            "no display name falls back to the username"
+        );
         assert_eq!(entries[0].state, "open", "GitLab's 'opened' normalizes");
         assert!(!entries[0].is_cross_repo);
         assert!(entries[1].is_cross_repo);
@@ -312,7 +329,7 @@ mod tests {
     fn parses_same_repo_mr() {
         let json = r#"{
             "title": "Add feature", "state": "opened", "draft": false,
-            "author": {"username": "dev"},
+            "author": {"username": "dev", "name": "Devon Developer"},
             "source_branch": "feature-x",
             "source_project_id": 1, "target_project_id": 1,
             "web_url": "https://gitlab.com/group/widget/-/merge_requests/45"
@@ -320,7 +337,7 @@ mod tests {
         let info = parse(json, 45).unwrap();
         assert_eq!(info.kind, ForgeRefKind::GitlabMr);
         assert_eq!(info.source_branch, "feature-x");
-        assert_eq!(info.author, "dev");
+        assert_eq!(info.author, "Devon Developer");
         assert!(!info.is_cross_repo);
         assert_eq!(info.base.host, "gitlab.com");
         assert_eq!(info.base.owner, "group");

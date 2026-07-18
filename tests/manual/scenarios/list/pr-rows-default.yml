@@ -55,13 +55,13 @@ steps:
           {"number": 6, "title": "Local branch work", "state": "OPEN",
            "headRefName": "local-pr-branch", "isCrossRepository": false,
            "url": "https://github.com/acme/widget/pull/6",
-           "author": {"login": "carol"},
+           "author": {"login": "carol", "name": "Carol Danvers"},
            "headRepositoryOwner": {"login": "acme"},
            "updatedAt": "2026-07-18T08:00:00Z"},
           {"number": 9, "title": "Fix panic on empty input", "state": "OPEN",
            "headRefName": "patch-1", "isCrossRepository": true,
            "url": "https://github.com/acme/widget/pull/9",
-           "author": {"login": "alice"},
+           "author": {"login": "alice", "name": "Alice Liddell"},
            "headRepositoryOwner": {"login": "alice"},
            "updatedAt": "2026-07-18T07:00:00Z",
            "statusCheckRollup": [
@@ -107,10 +107,11 @@ steps:
         # Worktree row decorated in place — no extra row for its PR.
         - "feature-x"
         - "#5 ✓"
-        # PR-bearing local branch surfaces without --branches, owner = author.
+        # PR-bearing local branch surfaces without --branches, owner = the
+        # author's full name (prefix-matched: the cell may truncate).
         - "local-pr-branch"
         - "#6"
-        - "carol"
+        - "Carol"
         # Fork PR synthesizes with the owner:branch prefix.
         - "alice:patch-1"
         - "#9 ✗"
@@ -148,9 +149,11 @@ steps:
           "renovate/bump",
       ], by.keys()
       assert by["local-pr-branch"]["kind"] == "branch"
-      assert by["local-pr-branch"]["owner_name"] == "carol"
+      assert by["local-pr-branch"]["owner_name"] == "Carol Danvers"
       assert by["local-pr-branch"]["pr_number"] == 6
-      assert by["alice:patch-1"]["owner_name"] == "alice"
+      # Owner is the author's full name; the row NAME keeps the fork
+      # namespace login (owner:branch) — a namespace, not a person.
+      assert by["alice:patch-1"]["owner_name"] == "Alice Liddell"
       assert by["alice:patch-1"]["ci_status"] == "fail"
       assert by["renovate/bump"]["last_commit_subject"] == "Bump tokio"
       assert "old-thing" not in by
