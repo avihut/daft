@@ -11,9 +11,11 @@
 //! Refresh triggers (never the Tab path, never the `list` render path):
 //! - **write-through** when `daft go pr:N` resolves a PR (we hold its data),
 //! - **background** ([`spawn_background_refresh`]) after remote-touching
-//!   commands and when `daft list` has the `pr` column in play (a default in
-//!   forge-capable repos) — detached `daft __refresh-forge`, one
-//!   `gh pr list` per repo, throttled to one attempt per minute.
+//!   commands and on every `daft list` with the `pr` column in play (a
+//!   default in forge-capable repos) — detached `daft __refresh-forge`, one
+//!   `gh pr list` per repo. One refresh at a time: concurrent invocations
+//!   attach to the in-flight one rather than stacking calls, but there is
+//!   no freshness window — every list re-verifies.
 //!
 //! Each refresh also records **forge health** ([`ForgeGate`]): a deep failure
 //! (missing tool, dead auth, lost repo access) silently hides the default
@@ -29,11 +31,13 @@ use crate::store::paths;
 use crate::store::repos::{ForgeHealthRepo, ForgePrsRepo, with_write_txn};
 use std::process::{Command, Stdio};
 
-/// Minimum spacing between background snapshot refreshes for one repo — also
-/// the re-probe cadence while the repo is unhealthy, so a fixed auth is
-/// *detected* (and the hidden `pr` column restored) without hammering a
-/// broken gh/glab on every `daft list`.
-const REFRESH_THROTTLE_SECS: i64 = 60;
+/// Age past which an *unconcluded* refresh attempt is presumed dead (a
+/// crashed child) rather than in flight. Freshness is deliberately not
+/// time-gated — every `daft list` re-verifies, so a status never renders
+/// without an active verification behind it; the only spawn guard is
+/// one-refresh-at-a-time, and this horizon is what keeps a crashed child's
+/// start stamp from blocking that guard forever.
+const REFRESH_LIVENESS_SECS: i64 = 60;
 
 /// Strip a forge title down to terminal-safe text: control characters
 /// (including ESC, killing ANSI sequences, and the tab/newline that would
@@ -243,25 +247,13 @@ impl ForgeGate {
             .is_some_and(|h| h.succeeded_at.is_some())
     }
 
-    /// A refresh attempt started inside the throttle window — either still
-    /// in flight or recent enough that its snapshot counts as current.
-    /// Compared on signed age so a skewed future stamp throttles rather
-    /// than spawning on every invocation.
-    fn recently_attempted(&self) -> bool {
-        self.health
-            .as_ref()
-            .and_then(|h| h.started_at)
-            .is_some_and(|at| {
-                chrono::Utc::now().signed_duration_since(at)
-                    < chrono::Duration::seconds(REFRESH_THROTTLE_SECS)
-            })
-    }
-
-    /// A refresh some other daft command kicked off is still running: it
-    /// started recently (a stale unconcluded stamp means a crashed child,
-    /// not a live one) and hasn't stamped a conclusion. The live table
-    /// treats such a refresh exactly like one it spawned itself — statuses
-    /// wait for the verdict.
+    /// A refresh is currently running: an attempt started recently (a stale
+    /// unconcluded stamp means a crashed child, not a live one; signed age,
+    /// so a skewed future stamp reads as running rather than spawning
+    /// forever) and hasn't stamped a conclusion. New invocations attach to
+    /// it instead of double-spawning — its verdict is seconds away and
+    /// answers them all, and the live table treats it exactly like a
+    /// refresh it spawned itself.
     pub fn refresh_in_flight(&self) -> bool {
         let Some(health) = &self.health else {
             return false;
@@ -270,7 +262,9 @@ impl ForgeGate {
             return false;
         };
         let concluded = health.finished_at.is_some_and(|f| f >= started);
-        !concluded && self.recently_attempted()
+        !concluded
+            && chrono::Utc::now().signed_duration_since(started)
+                < chrono::Duration::seconds(REFRESH_LIVENESS_SECS)
     }
 }
 
@@ -359,14 +353,16 @@ pub fn spawn_background_refresh() {
 /// which needs the gate for column visibility anyway). Skipped — returning
 /// `false` — for agent/test invocations ([`crate::should_skip_background_tasks`]:
 /// they must never fan out network work), for repos that name no forge, and
-/// while a recent attempt is inside the throttle window (in flight, or fresh
-/// enough that its snapshot counts as current). The live table only starts
-/// its refresh-poll when this returns `true`.
+/// while another refresh is already in flight (the caller attaches to that
+/// one — its verdict is the same fresh data). There is deliberately no
+/// freshness window beyond the in-flight guard: every invocation
+/// re-verifies, however recently the last refresh concluded, so a rendered
+/// status always has an active verification behind it.
 pub fn spawn_background_refresh_gated(gate: &ForgeGate) -> bool {
     if crate::should_skip_background_tasks(crate::cli::argv()) {
         return false;
     }
-    if !gate.capable || gate.recently_attempted() {
+    if !gate.capable || gate.refresh_in_flight() {
         return false;
     }
     spawn_inner().is_ok()
@@ -398,8 +394,9 @@ pub fn run_refresh_forge() -> anyhow::Result<()> {
     nix::unistd::setsid().ok();
     let project_root = crate::core::repo::get_project_root()?;
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
-    // Stamped before the fetch: the start stamp is the spawn throttle's key,
-    // so a slow gh can't let a second `daft list` pile on a second refresh.
+    // Stamped before the fetch: the start stamp is the in-flight guard's
+    // key, so a slow gh can't let a second `daft list` pile on a second
+    // concurrent refresh (it attaches to this one instead).
     record_refresh_started(&repo_hash);
     let git = GitCommand::new(true);
     let config = crate::forge::ForgeConfig::load(&git);
@@ -558,26 +555,17 @@ mod tests {
     }
 
     #[test]
-    fn gate_throttles_recent_attempts_including_skewed_future_stamps() {
-        assert!(!gate(true, None).recently_attempted());
-        assert!(gate(true, Some(health_row(true, Some(10), true))).recently_attempted());
-        assert!(!gate(true, Some(health_row(true, Some(120), true))).recently_attempted());
-        // A future stamp (clock skew) throttles rather than spawning forever.
-        assert!(gate(true, Some(health_row(true, Some(-30), true))).recently_attempted());
-    }
-
-    #[test]
     fn gate_sees_a_concurrent_refresh_as_in_flight() {
-        // Started recently, not concluded → in flight.
+        // Started recently, not concluded → in flight (attach, don't stack).
         let mut h = health_row(true, Some(5), true);
         h.finished_at = None;
         assert!(gate(true, Some(h)).refresh_in_flight());
 
-        // Started recently and already concluded → not in flight.
-        let now = chrono::Utc::now();
-        let mut h = health_row(true, Some(5), true);
-        h.finished_at = Some(now);
-        assert!(!gate(true, Some(h)).refresh_in_flight());
+        // A skewed future start stamp reads as in flight rather than
+        // spawning forever until the clock catches up.
+        let mut h = health_row(true, Some(-30), true);
+        h.finished_at = None;
+        assert!(gate(true, Some(h)).refresh_in_flight());
 
         // A stale unconcluded stamp is a crashed child, not a live refresh.
         let mut h = health_row(true, Some(300), true);
@@ -585,6 +573,17 @@ mod tests {
         assert!(!gate(true, Some(h)).refresh_in_flight());
 
         assert!(!gate(true, None).refresh_in_flight());
+    }
+
+    /// Freshness is deliberately not time-gated: a refresh that concluded
+    /// seconds ago must not block the next invocation from re-verifying —
+    /// every `daft list` gets a new call.
+    #[test]
+    fn gate_lets_every_invocation_reverify_once_the_last_refresh_concluded() {
+        let now = chrono::Utc::now();
+        let mut h = health_row(true, Some(5), true);
+        h.finished_at = Some(now);
+        assert!(!gate(true, Some(h)).refresh_in_flight());
     }
 
     #[test]

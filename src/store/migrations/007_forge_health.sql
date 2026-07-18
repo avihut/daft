@@ -10,11 +10,12 @@
 -- flips it back and the column reappears — both verdicts persist.
 --
 -- Timestamps are TEXT ISO-8601 UTC per 001_initial.sql. `started_at` is the
--- background-refresh throttle key (spawned refreshes are skipped while a
--- recent attempt exists); `finished_at` concludes the live table's
--- refresh-in-flight display state (statusless cells settle when it
--- advances); `succeeded_at` NULL means no snapshot was ever taken, which
--- drives the first-load skeleton in the PR column.
+-- in-flight guard key (a young unconcluded attempt is a running refresh —
+-- new invocations attach to it instead of double-spawning; there is no
+-- freshness window, every list re-verifies); `finished_at` concludes the
+-- live table's refresh-in-flight display state (statusless cells settle
+-- when it advances); `succeeded_at` NULL means no snapshot was ever taken,
+-- which drives the first-load skeleton in the PR column.
 CREATE TABLE forge_health (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     healthy      INTEGER NOT NULL DEFAULT 1,

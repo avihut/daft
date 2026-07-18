@@ -14,8 +14,9 @@ pub struct ForgeHealthRow {
     /// `"missing-tool"`, `"unauthenticated"`, or `"repo-access"` when
     /// `healthy` is false; `None` otherwise.
     pub error_kind: Option<String>,
-    /// When the last refresh attempt started — the background-refresh
-    /// throttle key.
+    /// When the last refresh attempt started — the in-flight guard key (a
+    /// young unconcluded attempt is a running refresh that new invocations
+    /// attach to instead of double-spawning).
     pub started_at: Option<DateTime<Utc>>,
     /// When the last refresh attempt concluded (success or failure) — the
     /// live table's refresh-in-flight display state settles when this

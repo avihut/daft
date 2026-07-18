@@ -185,26 +185,26 @@ pub fn run_live(args: Args) -> Result<()> {
     };
 
     // Forge-PR cache. The gate decided column visibility; here it decides
-    // display freshness. Three seed states for the PR cells:
+    // display freshness. Every interactive list re-verifies (a refresh is
+    // spawned, or attached to when one is already running), so the seed
+    // states for the PR cells are:
     // - refresh in flight, no snapshot ever taken → loading skeleton until
     //   the refresh concludes (the size-column treatment);
     // - refresh in flight, snapshot exists → decorations stripped to bare
     //   identity: a possibly-stale fate must not render as current, so
     //   numbers show immediately and statuses arrive with the refresh
     //   (`ForgePrsRefreshed`) — or not at all this run;
-    // - no refresh in flight → the recent snapshot is authoritative and
-    //   renders fully.
-    // "In flight" includes a refresh some other daft command kicked moments
-    // ago, not just one this invocation spawned.
+    // - no refresh in flight (agent/test invocations, or the spawn itself
+    //   failed) → the cache renders as-is.
     let mut forge_refresh_pending = false;
     let mut forge_loading = false;
     let mut forge_repo_hash: Option<String> = None;
     let mut forge_lookup: Option<ForgePrLookup> = None;
     let mut forge_finished_baseline = None;
     if let Some(gate) = &forge_gate {
-        // Probe even when the gate hid the column: the throttled refresh is
-        // what detects a repaired auth and restores the column on a later
-        // run. Decorations are only loaded when the column survived.
+        // Probe even when the gate hid the column: the refresh is what
+        // detects a repaired auth and restores the column on a later run.
+        // Decorations are only loaded when the column survived.
         let spawned = crate::commands::forge_cache::spawn_background_refresh_gated(gate);
         forge_refresh_pending = spawned || gate.refresh_in_flight();
         forge_repo_hash = gate.repo_hash.clone();

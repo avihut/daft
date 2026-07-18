@@ -91,12 +91,12 @@ prune it" signal — and dim for closed-without-merge. When color is off
 exists as color alone. Where the table is printed as plain text, supporting
 terminals also make the number a clickable link to the PR.
 
-The live table never presents a cached status as current. While a background
-refresh is in flight, PR numbers render without any fate; the colors arrive the
-moment the refresh lands — the table holds its final frame a few seconds for the
-verdict when needed. On the very first run in a repository, before any snapshot
-exists, the PR cells show a loading skeleton (like the size column) until that
-first refresh concludes.
+The live table never presents a cached status as current: every run re-verifies
+against the forge. PR numbers render immediately but fateless, and the colors
+arrive the moment the fresh verdict lands — typically a second or two; the table
+holds its final frame briefly for it when needed. On the very first run in a
+repository, before any snapshot exists, the PR cells show a loading skeleton
+(like the size column) until that first refresh concludes.
 
 ### The forge-PR cache
 
@@ -112,11 +112,12 @@ in the background — never while you wait:
   moment it lands, so even a first-ever run decorates within a couple of
   seconds.
 
-Refreshes are throttled to about one per minute per repository, so back-to-back
-lists reuse the just-taken snapshot instead of re-asking the forge. A cold cache
-never blocks and never errors — cells simply wait for the refresh. The cache
-also powers tab completion: `daft go pr:<Tab>` completes cached PR numbers with
-their titles, open PRs first, entirely from local data.
+Every list re-verifies: a rendered status always has a verification behind it
+that the run itself started — or attached to, since lists fired while a refresh
+is already running share its verdict instead of stacking forge calls. A cold
+cache never blocks and never errors — cells simply wait for the refresh. The
+cache also powers tab completion: `daft go pr:<Tab>` completes cached PR numbers
+with their titles, open PRs first, entirely from local data.
 
 ## Mixed-remote repositories
 

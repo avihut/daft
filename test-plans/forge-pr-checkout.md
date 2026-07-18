@@ -79,8 +79,8 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
       explains the hidden column under "Forge integration".
 - [ ] While hidden, `daft list --columns +pr` still shows the column
       (config-recorded refs render without the forge).
-- [ ] `gh auth login`, then `daft list` twice (the first probes, throttled at
-      most once a minute; the second shows): the column is back, persistently.
+- [ ] `gh auth login`, then `daft list` twice (the first probes and restores
+      health; the second shows): the column is back, persistently.
 - [ ] A successful `daft go pr:<n>` also restores a hidden column on the next
       list (write-through flips health without waiting for a refresh).
 
@@ -92,10 +92,11 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
       statuses land before it settles — no second invocation needed. If the
       forge answers slowly (>~4s), the run finishes with plain numbers and the
       next run shows the data.
-- [ ] With a **warm cache**, `daft list` right after (within the ~60s refresh
-      throttle) shows colored fates immediately; after the throttle lapses, the
-      numbers render plain first and re-colorize in place when the refresh lands
-      — a cached fate is never presented as current.
+- [ ] Every `daft list` re-verifies: numbers render plain first and re-colorize
+      in place when the fresh verdict lands (~1–2s), on every run — a cached
+      fate is never presented as current. Two lists fired within a second share
+      one refresh (the second attaches to the in-flight one and still
+      re-colorizes).
 - [ ] In the TUI, PR numbers are colored by fate: green/red/yellow for CI
       pass/fail/running, purple for a branch whose PR merged, dim for a
       closed-unmerged PR — with **no trailing glyph** (the number alone).
