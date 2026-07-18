@@ -1,0 +1,84 @@
+name: Forge-PR cache decorates list and completion
+description: >
+  The forge-PR cache round trip: `daft __refresh-forge` snapshots the (faked) gh
+  CLI's open-PR listing into the per-repo store, `daft list --columns +pr` then
+  decorates a plain local branch with its outbound PR number and CI glyph (`#5
+  ✓`), and `pr:` tab completion offers the cached number with its title. A
+  cross-repo (fork) PR with the same head-branch name must NOT decorate the
+  local branch. The fake `gh` fails loudly on any unexpected call.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a local branch with an open PR upstream
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git-worktree-checkout -b feature-x
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature-x"
+
+  - name: Refresh the forge-PR cache through a fake gh listing
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        printf '%s' '[
+          {"number": 5, "title": "Add feature five", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/5",
+           "author": {"login": "octocat"},
+           "statusCheckRollup": [
+             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
+           ]},
+          {"number": 6, "title": "Fork collision", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": true,
+           "url": "https://github.com/acme/widget/pull/6",
+           "author": {"login": "contributor"},
+           "statusCheckRollup": []}
+        ]'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+
+  - name: The snapshot landed in the per-repo store
+    run: daft __dump-store forge-prs
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"number":5'
+        - '"ci_status":"pass"'
+        - '"head_branch":"feature-x"'
+
+  - name: daft list decorates the outbound branch with PR number and CI glyph
+    run: git-worktree-list --columns +pr
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "#5 ✓"
+
+  - name: Tab completion offers the cached PR with its title
+    run: daft __complete git-worktree-checkout "pr:" --position 1
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pr:5"
+        - "Add feature five"

@@ -56,7 +56,7 @@ repository's remote, so `pr:45` on a GitLab repo resolves the merge request.
 A closed or merged PR still checks out (with a note) — inspecting merged work is
 legitimate.
 
-## Seeing which worktrees track a PR
+## Seeing PRs and their CI in `daft list`
 
 Add the `pr` column to `daft list`:
 
@@ -64,9 +64,34 @@ Add the `pr` column to `daft list`:
 daft list --columns +pr
 ```
 
-Worktrees checked out from a PR/MR show `#123` (GitHub) or `!45` (GitLab). The
-value comes from local git config, so it needs no network. Persist the column
-with `git config daft.list.columns +pr`.
+Two kinds of branches get a value:
+
+- **Worktrees checked out from a PR/MR** show `#123` (GitHub) or `!45` (GitLab),
+  read from local git config.
+- **Your own branches with an open PR** show the PR opened _from_ them, matched
+  by branch name against daft's forge-PR cache. Fork PRs whose head branch
+  happens to share a local branch's name never match.
+
+When the cache knows the PR's CI state, a glyph follows the number — `#123 ✓`
+(passing, green), `#123 ✗` (failing, red), `#123 ●` (running, yellow). The glyph
+carries the meaning; color only reinforces it, so piped and `NO_COLOR` output
+stay readable. Persist the column with `git config daft.list.columns +pr`.
+
+### The forge-PR cache
+
+The PR numbers, titles, and CI states come from a per-repository snapshot of the
+forge's open-PR listing, stored locally. It refreshes in the background — never
+while you wait:
+
+- checking out a `pr:`/`mr:` reference records that PR immediately;
+- `daft update` and `daft sync` kick a detached refresh after they finish (they
+  already talked to the remote);
+- selecting the `pr` column in `daft list` kicks the same detached refresh, so
+  the next listing is fresh.
+
+A cold cache simply means undecorated cells — nothing blocks, nothing errors.
+The cache also powers tab completion: `daft go pr:<Tab>` completes open PR
+numbers with their titles, entirely from local data.
 
 ## Mixed-remote repositories
 

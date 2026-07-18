@@ -65,3 +65,22 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
 - [ ] `daft list --columns +pr` in an interactive terminal: the PR column shows
       a loading shimmer briefly, then `#<n>` / blank, and the table doesn't
       jump.
+
+## Forge-PR cache (live forge)
+
+- [ ] In a repo with open PRs, `daft list --columns +pr` twice: the first run
+      may be undecorated (cold cache) but kicks the background refresh; the
+      second shows `#<n>` on branches with open PRs, with the CI glyph
+      (`✓`/`✗`/`●`) colored green/red/yellow in the TUI.
+- [ ] `NO_COLOR=1 daft list --columns +pr | cat`: glyphs survive, no ANSI.
+- [ ] A fork PR whose head branch name matches one of your local branches does
+      NOT decorate that branch.
+- [ ] `daft update` (or `daft sync`) refreshes the cache in the background:
+      `daft __dump-store forge-prs` shows fresh `fetched_at` afterwards.
+- [ ] `daft go pr:<Tab>` in bash AND zsh completes open PR numbers with titles;
+      in bash, accepting a completion inserts `pr:<n>` exactly once (no
+      duplicated `pr:` — the colon-wordbreak handling).
+- [ ] `daft go <Tab>` on an empty word offers the `pr:`/`mr:` syntax tokens
+      after the branch groups.
+- [ ] GitLab: `mr:` completion and `!<n>` column decoration from a `glab`
+      listing (CI stays blank — the REST listing carries no pipeline status).
