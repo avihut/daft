@@ -11,11 +11,18 @@ use crate::doctor::{CheckCategory, CheckResult};
 
 /// Run the forge tooling checks: `gh` for GitHub PRs, `glab` for GitLab MRs,
 /// plus this repo's persisted forge health when it is hiding the `pr` column.
+///
+/// Probes the *configured* CLI binaries (`daft.forge.githubCli` /
+/// `gitlabCli`) that the real checkout path uses — otherwise an Enterprise
+/// user whose working `gh` is a wrapper (`gh-ent`, no plain `gh` on PATH) sees
+/// a misleading "not installed" that contradicts a functioning integration.
 pub fn run_forge_checks() -> CheckCategory {
+    let config = crate::forge::ForgeConfig::load(&crate::git::GitCommand::new(true));
+    let (gh, glab) = forge_binaries(&config);
     let mut results = vec![
-        check_cli("gh", "GitHub CLI", "https://cli.github.com/"),
+        check_cli(&gh, "GitHub CLI", "https://cli.github.com/"),
         check_cli(
-            "glab",
+            &glab,
             "GitLab CLI",
             "https://gitlab.com/gitlab-org/cli#installation",
         ),
@@ -25,6 +32,22 @@ pub fn run_forge_checks() -> CheckCategory {
         title: "Forge integration".to_string(),
         results,
     }
+}
+
+/// The `gh`/`glab` binary names to probe, honoring the configured overrides so
+/// doctor checks the same binary the checkout path invokes. Defaults to the
+/// canonical `gh`/`glab` when unset.
+fn forge_binaries(config: &crate::forge::ForgeConfig) -> (String, String) {
+    (
+        config
+            .github_cli
+            .clone()
+            .unwrap_or_else(|| "gh".to_string()),
+        config
+            .gitlab_cli
+            .clone()
+            .unwrap_or_else(|| "glab".to_string()),
+    )
 }
 
 /// Surface a persisted deep refresh failure — the record that silently hides
@@ -96,5 +119,29 @@ fn check_cli(bin: &str, label: &str, install_url: &str) -> CheckResult {
             &format!("installed but not authenticated{version_note}"),
         )
         .with_suggestion(&format!("Run `{bin} auth login` to enable PR/MR checkout"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forge::ForgeConfig;
+
+    #[test]
+    fn forge_binaries_honor_configured_overrides() {
+        let cfg = ForgeConfig {
+            github_cli: Some("gh-ent".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            forge_binaries(&cfg),
+            ("gh-ent".to_string(), "glab".to_string()),
+            "an Enterprise gh wrapper must be the binary doctor probes"
+        );
+        assert_eq!(
+            forge_binaries(&ForgeConfig::default()),
+            ("gh".to_string(), "glab".to_string()),
+            "unset overrides fall back to the canonical binaries"
+        );
     }
 }
