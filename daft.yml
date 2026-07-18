@@ -56,3 +56,6 @@ hooks:
       - name: sandbox-clean
         description: Remove the sandbox for this worktree
         run: mise run sandbox:clean
+
+relations:
+  - url: git@github.com:avihut/web-turf
