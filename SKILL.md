@@ -103,10 +103,10 @@ hooks:
 Run and recommend daft commands using the short verbs exactly as written in this
 file: `daft go`, `daft start`, `daft clone`, `daft init`, `daft carry`,
 `daft exec`, `daft run`, `daft merge`, `daft list`, `daft update`, `daft prune`,
-`daft remove`, `daft rename`, `daft sync`, `daft adopt`, `daft eject`, plus the
-noun groups `daft hooks ...`, `daft repo ...`, `daft layout ...`,
-`daft config ...`, `daft doctor`, and `daft skill ...`. Invoke the `daft` binary
-directly.
+`daft remove`, `daft rename`, `daft sync`, `daft push`, `daft adopt`,
+`daft eject`, plus the noun groups `daft hooks ...`, `daft repo ...`,
+`daft layout ...`, `daft config ...`, `daft doctor`, and `daft skill ...`.
+Invoke the `daft` binary directly.
 
 Never run or emit the alternate spellings some users have configured:
 `git worktree-*` subcommands, `git-worktree-*` binaries, long `daft worktree-*`
@@ -138,6 +138,7 @@ acknowledge their form once ("`gwtco` runs `daft go`").
 | `git worktree-branch -d` / `-D`, `gwtbd`             | `daft remove` / `daft remove -f`    |
 | `git worktree-branch -m`, `gwtrn`                    | `daft rename`                       |
 | `git worktree-sync`, `gwtsync`                       | `daft sync`                         |
+| `git worktree-push`, `gwtpush`                       | `daft push`                         |
 | `git worktree-flow-adopt` / `-eject`                 | `daft adopt` / `daft eject`         |
 | `git daft <noun> ...` (e.g. `git daft hooks trust`)  | `daft <noun> ...`                   |
 
@@ -220,6 +221,7 @@ root via `git rev-parse --git-common-dir`.
 | `daft update [targets]`                                                                                                                      | Update worktree branches from remote; refspec syntax `source:destination` for cross-branch updates                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `daft rename <source> <new-branch>`                                                                                                          | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `daft sync [-f] [--rebase BRANCH [--autostash]] [--push [--force-with-lease] [--no-verify] [--jobs N] [--no-throttle]] [--include VALUE]...` | Prune stale worktrees + update all + optional rebase + optional push. Rebase and push apply only to branches you own by default; `--include` widens (`unowned`, an email, or a branch name). `-f`/`--prune-dirty` includes dirty worktrees. Parallel hook-bearing pushes are memory-governed (`--jobs N` caps concurrency, `--no-throttle` disables). First Ctrl+C cancels gracefully (partial results print, exit 130); a second force-kills.                                                          |
+| `daft push [branch] [--no-verify] [--force-with-lease]`                                                                                      | Push one branch with the repo's git `pre-push` hook running in that branch's own worktree — the command's whole point. Defaults to the current branch; targets `daft.remote` (origin); sets upstream when the branch has none; a branch with no worktree pushes from the current directory. Single-branch by design (use `daft sync --push` for a fleet push).                                                                                 |
 | `daft merge ...`                                                                                                                             | Merge branches across worktrees without `git switch` — see Merging Across Worktrees below                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `daft adopt [path]`                                                                                                                          | Convert a traditional repository to daft's worktree layout                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `daft eject`                                                                                                                                 | Convert back to a traditional repository layout                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -616,6 +618,11 @@ hook only when it introduces new commits; a ref-only push skips it
 (`daft.checkout.pushVerify`: `auto` default, `always`, `never`). Pass
 `--no-verify` to the pushing command to skip the hook once. `--skip-hooks` does
 NOT affect git-level hooks — it only filters daft's own jobs.
+
+To push a branch from outside its worktree with the hook still running in the
+RIGHT tree, use `daft push <branch>`: it resolves the branch's worktree and runs
+the push (and therefore the shared hook) from there. Plain `git push` would run
+the hook in whatever worktree you happen to be in.
 
 Parallel `sync --push` hook runs are memory-governed (#678): a governor caps
 concurrent hook-bearing pushes (default `max(2, cores/4)`; `--jobs N` overrides,

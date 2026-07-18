@@ -445,6 +445,7 @@ export default defineConfig({
                 items: [
                   { text: "sync", link: "/reference/cli/daft-sync" },
                   { text: "merge", link: "/reference/cli/daft-merge" },
+                  { text: "push", link: "/reference/cli/daft-push" },
                   { text: "prune", link: "/reference/cli/daft-prune" },
                   { text: "update", link: "/reference/cli/daft-update" },
                   { text: "carry", link: "/reference/cli/daft-carry" },
