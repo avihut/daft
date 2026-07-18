@@ -104,13 +104,35 @@ fn run_pr_list(
     })?;
 
     if !output.status.success() {
-        return Err(cli::generic_api_error(
-            &format!("could not list {state} pull requests via gh"),
-            &output,
-        ));
+        let context = format!("could not list {state} pull requests via gh");
+        return Err(match listing_failure(&output) {
+            Some(kind) => anyhow::Error::new(kind)
+                .context(format!("{context}: {}", cli::error_details(&output))),
+            None => cli::generic_api_error(&context, &output),
+        });
     }
 
     parse_pr_list(&output.stdout)
+}
+
+/// Recognize the "keeps failing until the user acts" shapes in a failed
+/// `gh pr list`, for forge-health classification: gh reserves exit code 4
+/// for authentication failures (its auth prompt also names `gh auth login`),
+/// and an authenticated-but-invisible repo (revoked access, deleted,
+/// renamed) errors with "Could not resolve to a Repository". Anything else —
+/// network, rate limit, API drift — stays untyped, i.e. transient.
+fn listing_failure(output: &std::process::Output) -> Option<cli::ForgeUnavailable> {
+    if output.status.code() == Some(4) {
+        return Some(cli::ForgeUnavailable::Unauthenticated);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("gh auth login") {
+        return Some(cli::ForgeUnavailable::Unauthenticated);
+    }
+    if stderr.contains("Could not resolve to a Repository") {
+        return Some(cli::ForgeUnavailable::RepoAccess);
+    }
+    None
 }
 
 /// Parse `gh pr list --json ...` output into list entries. Pure, so the JSON
@@ -433,6 +455,44 @@ mod tests {
             check(None, Some("SUCCESS")),
         ];
         assert_eq!(derive_ci_status(&contexts), Some(CiStatus::Pass));
+    }
+
+    #[test]
+    fn listing_failure_recognizes_deep_shapes() {
+        use crate::forge::cli::ForgeUnavailable;
+        use std::os::unix::process::ExitStatusExt;
+        let failed = |code: i32, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+
+        // gh reserves exit code 4 for authentication failures.
+        assert_eq!(
+            listing_failure(&failed(4, "")),
+            Some(ForgeUnavailable::Unauthenticated)
+        );
+        // Belt-and-suspenders: the auth prompt names `gh auth login`.
+        assert_eq!(
+            listing_failure(&failed(
+                1,
+                "To get started with GitHub CLI, please run:  gh auth login"
+            )),
+            Some(ForgeUnavailable::Unauthenticated)
+        );
+        // Authenticated but the repo is invisible (revoked/renamed/deleted).
+        assert_eq!(
+            listing_failure(&failed(
+                1,
+                "GraphQL: Could not resolve to a Repository with the name 'acme/widget'."
+            )),
+            Some(ForgeUnavailable::RepoAccess)
+        );
+        // Network trouble stays untyped — transient, never flips health.
+        assert_eq!(
+            listing_failure(&failed(1, "dial tcp: network is unreachable")),
+            None
+        );
     }
 
     #[test]

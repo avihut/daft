@@ -15,6 +15,7 @@ pub mod info;
 pub mod parse;
 pub mod provider;
 
+pub use cli::{ForgeUnavailable, classify_unavailable};
 pub use info::{BaseRepo, CiStatus, PrListEntry, RemoteRefInfo};
 pub use parse::{ForgeTarget, TargetSource};
 pub use provider::{ForgeContext, RemoteRefProvider, RepoCoords};
@@ -212,14 +213,7 @@ pub fn select_provider(
         };
     }
 
-    let hosts: Vec<String> = git
-        .remote_list()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|r| git.remote_get_url(r).ok())
-        .filter_map(|url| split_repo_key(&url).map(|(host, _, _)| host))
-        .collect();
-
+    let hosts = remote_forge_hosts(git);
     if hosts.iter().any(|h| h.contains("github")) {
         return Ok(Box::new(GitHubProvider));
     }
@@ -229,6 +223,42 @@ pub fn select_provider(
     // Ambiguous host: default to GitHub. A wrong guess surfaces as a GitHub
     // error whose remedy is `forge.platform`.
     Ok(Box::new(GitHubProvider))
+}
+
+/// Hosts of every configured remote that parses into a forge slug.
+fn remote_forge_hosts(git: &GitCommand) -> Vec<String> {
+    git.remote_list()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| git.remote_get_url(r).ok())
+        .filter_map(|url| split_repo_key(&url).map(|(host, _, _)| host))
+        .collect()
+}
+
+/// Whether this repo plausibly has a forge to talk to at all — the local,
+/// no-network gate for the default `pr` column in `daft list` and for the
+/// background snapshot refresh. True when `daft.forge.platform` names a
+/// platform (self-hosted / Enterprise hosts are opaque, so the explicit
+/// override is the signal there) or any remote URL's host names a known
+/// forge — the same signal [`select_provider`] keys on. A repo that fails
+/// this never spawns a refresh and never shows the default `pr` column; an
+/// explicit `--columns +pr` still renders config-recorded refs.
+pub fn repo_forge_capable(git: &GitCommand) -> bool {
+    let platform = git
+        .config_get(crate::core::settings::keys::FORGE_PLATFORM)
+        .ok()
+        .flatten();
+    names_a_forge(platform.as_deref(), &remote_forge_hosts(git))
+}
+
+/// Pure core of [`repo_forge_capable`].
+fn names_a_forge(platform: Option<&str>, hosts: &[String]) -> bool {
+    if platform.is_some_and(|p| matches!(p.to_ascii_lowercase().as_str(), "github" | "gitlab")) {
+        return true;
+    }
+    hosts
+        .iter()
+        .any(|h| h.contains("github") || h.contains("gitlab"))
 }
 
 /// Find the local remote pointing at the PR/MR's base repository, matching by
@@ -282,6 +312,24 @@ mod tests {
         );
         // Local-path fixture remotes don't parse into a forge slug.
         assert_eq!(split_repo_key("/remotes/test-repo"), None);
+    }
+
+    #[test]
+    fn forge_capability_needs_a_known_host_or_an_override() {
+        let gh = || vec!["github.com".to_string()];
+        let opaque = || vec!["git.corp.example".to_string()];
+
+        assert!(names_a_forge(None, &gh()));
+        assert!(names_a_forge(None, &["gitlab.corp.example".to_string()]));
+        // Opaque hosts and local-path fixtures (no parsed host at all) are
+        // not forge-capable on their own…
+        assert!(!names_a_forge(None, &opaque()));
+        assert!(!names_a_forge(None, &[]));
+        // …but the explicit platform override vouches for them.
+        assert!(names_a_forge(Some("github"), &opaque()));
+        assert!(names_a_forge(Some("GitLab"), &[]));
+        // An invalid override vouches for nothing.
+        assert!(!names_a_forge(Some("bitbucket"), &opaque()));
     }
 
     #[test]

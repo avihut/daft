@@ -18,10 +18,16 @@ use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::{PrListEntry, RemoteRefInfo};
 use crate::git::GitCommand;
 use crate::store::Pool;
-use crate::store::models::ForgePrRow;
+use crate::store::models::{ForgeHealthRow, ForgePrRow};
 use crate::store::paths;
-use crate::store::repos::{ForgePrsRepo, with_write_txn};
+use crate::store::repos::{ForgeHealthRepo, ForgePrsRepo, with_write_txn};
 use std::process::{Command, Stdio};
+
+/// Minimum spacing between background snapshot refreshes for one repo — also
+/// the re-probe cadence while the repo is unhealthy, so a fixed auth is
+/// *detected* (and the hidden `pr` column restored) without hammering a
+/// broken gh/glab on every `daft list`.
+const REFRESH_THROTTLE_SECS: i64 = 60;
 
 /// Strip a forge title down to terminal-safe text: control characters
 /// (including ESC, killing ANSI sequences, and the tab/newline that would
@@ -163,11 +169,14 @@ fn persist_inner(repo_hash: &str, kind: &str, rows: &[ForgePrRow]) -> anyhow::Re
 /// fresh metadata, so record it without waiting for a wholesale refresh. CI
 /// status is unknown on this path (the single-PR resolve carries no check
 /// rollup) — recorded as `None`, corrected by the next snapshot refresh.
-/// Best-effort; never delays or fails the checkout.
+/// A successful resolve also proves the forge reachable, so it flips the
+/// repo healthy (restoring a hidden `pr` column) without claiming a
+/// snapshot. Best-effort; never delays or fails the checkout.
 pub fn persist_resolved(info: &RemoteRefInfo) {
     let Ok(repo_hash) = crate::core::repo_identity::compute_repo_id() else {
         return;
     };
+    let _ = with_health_writer(&repo_hash, ForgeHealthRepo::record_healthy);
     let row = ForgePrRow {
         repo_hash: repo_hash.clone(),
         kind: info.kind.tag().to_string(),
@@ -195,14 +204,147 @@ fn persist_one_inner(repo_hash: &str, row: &ForgePrRow) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Spawn a detached `daft __refresh-forge` for the repo the cwd is in.
-/// Fire-and-forget: the caller's command completes regardless. Gated by
-/// [`crate::should_skip_background_tasks`] so agent/test invocations and
-/// coordinator children never fan out network work. Returns whether a
-/// refresh was actually spawned — the live table only starts its
-/// change-poll when one is in flight.
-pub fn spawn_background_refresh() -> bool {
+/// The repo-level verdict deciding whether forge-derived UI is in play:
+/// capability (does this repo name a forge at all) plus persisted health
+/// (did the last refresh die a death only the user can fix). Computed once
+/// per command and shared by `daft list`'s column gate, the refresh spawn,
+/// and the live table's seed state.
+#[derive(Debug, Clone)]
+pub struct ForgeGate {
+    /// The repo names a forge — a known remote host or an explicit
+    /// `daft.forge.platform` override.
+    pub capable: bool,
+    pub repo_hash: Option<String>,
+    /// Persisted health as of the gate read. `None` when no refresh ever
+    /// ran (or the store is unreadable) — which fails open, i.e. healthy.
+    pub health: Option<ForgeHealthRow>,
+}
+
+impl ForgeGate {
+    /// Whether the *default-sourced* `pr` column shows. Capability is the
+    /// instant local signal (a repo with no forge remote never grows the
+    /// column); a persisted deep failure silently hides it until a later
+    /// refresh succeeds. An explicit `+pr` bypasses this entirely.
+    pub fn column_visible(&self) -> bool {
+        self.capable && self.health.as_ref().is_none_or(|h| h.healthy)
+    }
+
+    /// Whether any snapshot was ever taken. `false` drives the PR column's
+    /// first-load skeleton while the first refresh is in flight.
+    pub fn ever_succeeded(&self) -> bool {
+        self.health
+            .as_ref()
+            .is_some_and(|h| h.succeeded_at.is_some())
+    }
+
+    /// A refresh attempt started inside the throttle window — either still
+    /// in flight or recent enough that its snapshot counts as current.
+    /// Compared on signed age so a skewed future stamp throttles rather
+    /// than spawning on every invocation.
+    fn recently_attempted(&self) -> bool {
+        self.health
+            .as_ref()
+            .and_then(|h| h.started_at)
+            .is_some_and(|at| {
+                chrono::Utc::now().signed_duration_since(at)
+                    < chrono::Duration::seconds(REFRESH_THROTTLE_SECS)
+            })
+    }
+}
+
+/// Read the repo's forge gate: local capability plus persisted health. The
+/// health read is skipped for incapable repos (their store has nothing to
+/// say about a forge they don't have).
+pub fn forge_gate(git: &GitCommand, repo_hash: Option<String>) -> ForgeGate {
+    let capable = crate::forge::repo_forge_capable(git);
+    let health = match (&repo_hash, capable) {
+        (Some(hash), true) => read_health(hash),
+        _ => None,
+    };
+    ForgeGate {
+        capable,
+        repo_hash,
+        health,
+    }
+}
+
+/// The repo's persisted forge health. `None` on any error and when the
+/// coordinator store doesn't exist yet — reading is pure (never
+/// materializes a store) and fails open, i.e. healthy.
+pub fn read_health(repo_hash: &str) -> Option<ForgeHealthRow> {
+    let state_dir = crate::daft_state_dir().ok()?;
+    let db_path = state_dir
+        .join(paths::JOBS_SUBDIR)
+        .join(repo_hash)
+        .join(paths::COORDINATOR_DB);
+    if !db_path.exists() {
+        return None;
+    }
+    let pool = Pool::open(&db_path).ok()?;
+    let conn = pool.reader().ok()?;
+    ForgeHealthRepo::get(&conn).ok().flatten()
+}
+
+fn with_health_writer(
+    repo_hash: &str,
+    f: impl FnOnce(&rusqlite::Connection) -> crate::store::error::Result<()>,
+) -> anyhow::Result<()> {
+    let db_path = paths::for_repo(repo_hash)?;
+    let pool = Pool::open(&db_path)?;
+    let conn = pool.writer()?;
+    conn.busy_timeout(std::time::Duration::from_millis(
+        crate::store::connection::READER_BUSY_TIMEOUT_MS as u64,
+    ))?;
+    f(&conn)?;
+    Ok(())
+}
+
+// Best-effort health stamps around a snapshot refresh. Failures are
+// swallowed: health is advisory display state, never worth failing a
+// refresh over.
+fn record_refresh_started(repo_hash: &str) {
+    let _ = with_health_writer(repo_hash, |c| {
+        ForgeHealthRepo::record_started(c, chrono::Utc::now())
+    });
+}
+
+fn record_refresh_success(repo_hash: &str) {
+    let _ = with_health_writer(repo_hash, |c| {
+        ForgeHealthRepo::record_success(c, chrono::Utc::now())
+    });
+}
+
+fn record_refresh_failure(repo_hash: &str, deep_kind: Option<&str>) {
+    let _ = with_health_writer(repo_hash, |c| {
+        ForgeHealthRepo::record_failure(c, chrono::Utc::now(), deep_kind)
+    });
+}
+
+/// Spawn a detached `daft __refresh-forge` for the repo the cwd is in —
+/// the fire-and-forget form for remote-touching commands (update/sync),
+/// which builds its own [`ForgeGate`]. The caller's command completes
+/// regardless of the verdict.
+pub fn spawn_background_refresh() {
     if crate::should_skip_background_tasks(crate::cli::argv()) {
+        return;
+    }
+    let git = GitCommand::new(true);
+    let repo_hash = crate::core::repo_identity::compute_repo_id().ok();
+    spawn_background_refresh_gated(&forge_gate(&git, repo_hash));
+}
+
+/// Spawn a detached refresh against an already-computed gate ( `daft list`,
+/// which needs the gate for column visibility anyway). Skipped — returning
+/// `false` — for agent/test invocations ([`crate::should_skip_background_tasks`]:
+/// they must never fan out network work), for repos that name no forge, and
+/// while a recent attempt is inside the throttle window (in flight, or fresh
+/// enough that its snapshot counts as current). The live table only starts
+/// its refresh-poll when this returns `true`.
+pub fn spawn_background_refresh_gated(gate: &ForgeGate) -> bool {
+    if crate::should_skip_background_tasks(crate::cli::argv()) {
+        return false;
+    }
+    if !gate.capable || gate.recently_attempted() {
         return false;
     }
     spawn_inner().is_ok()
@@ -224,18 +366,36 @@ fn spawn_inner() -> anyhow::Result<()> {
 
 /// Entry point for the `daft __refresh-forge` background process: one
 /// `gh pr list` / `glab api` listing for the cwd's repo, persisted as the new
-/// snapshot. Errors are silently swallowed by the caller (the process is
-/// detached; there is nowhere useful to report).
+/// snapshot, with the outcome recorded as forge health. Errors are silently
+/// swallowed by the caller (the process is detached; there is nowhere useful
+/// to report) — health *is* the error channel: a deep failure (missing tool,
+/// dead auth, lost repo access) marks the repo unhealthy, which silently
+/// hides the default `pr` column until a later refresh succeeds.
 pub fn run_refresh_forge() -> anyhow::Result<()> {
     // Detach from the parent's session/TTY per the spawn-self contract.
     nix::unistd::setsid().ok();
     let project_root = crate::core::repo::get_project_root()?;
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    // Stamped before the fetch: the start stamp is the spawn throttle's key,
+    // so a slow gh can't let a second `daft list` pile on a second refresh.
+    record_refresh_started(&repo_hash);
     let git = GitCommand::new(true);
     let config = crate::forge::ForgeConfig::load(&git);
-    let (kind, entries) = crate::forge::fetch_snapshot(&git, &project_root, &config)?;
-    persist_snapshot(&repo_hash, kind, &entries);
-    Ok(())
+    match crate::forge::fetch_snapshot(&git, &project_root, &config) {
+        Ok((kind, entries)) => {
+            // Snapshot first, then the success stamp — the live table's poll
+            // concludes on the stamp, so the data is always there when it
+            // reloads the lookup.
+            persist_snapshot(&repo_hash, kind, &entries);
+            record_refresh_success(&repo_hash);
+            Ok(())
+        }
+        Err(err) => {
+            let deep = crate::forge::classify_unavailable(&err).map(|k| k.kind_str());
+            record_refresh_failure(&repo_hash, deep);
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +500,79 @@ mod tests {
     fn read_missing_store_is_empty_and_creates_nothing() {
         let _guard = crate::store::paths::IsolatedStateDir::new();
         assert!(read_prs("never-seen").is_empty());
+        assert!(read_health("never-seen").is_none());
+    }
+
+    fn gate(capable: bool, health: Option<ForgeHealthRow>) -> ForgeGate {
+        ForgeGate {
+            capable,
+            repo_hash: Some("repo".into()),
+            health,
+        }
+    }
+
+    fn health_row(healthy: bool, started_secs_ago: Option<i64>, succeeded: bool) -> ForgeHealthRow {
+        let now = chrono::Utc::now();
+        ForgeHealthRow {
+            healthy,
+            error_kind: (!healthy).then(|| "unauthenticated".into()),
+            started_at: started_secs_ago.map(|s| now - chrono::Duration::seconds(s)),
+            finished_at: None,
+            succeeded_at: succeeded.then_some(now),
+        }
+    }
+
+    #[test]
+    fn gate_hides_the_default_column_for_incapable_or_unhealthy_repos() {
+        // No forge remote → never visible, regardless of health.
+        assert!(!gate(false, None).column_visible());
+        // Capable with no history → optimistic (visible until proven deep-broken).
+        assert!(gate(true, None).column_visible());
+        assert!(gate(true, Some(health_row(true, None, true))).column_visible());
+        // A persisted deep failure hides it…
+        assert!(!gate(true, Some(health_row(false, None, false))).column_visible());
+        // …until a success restores it (health flips back).
+        assert!(gate(true, Some(health_row(true, None, true))).column_visible());
+    }
+
+    #[test]
+    fn gate_throttles_recent_attempts_including_skewed_future_stamps() {
+        assert!(!gate(true, None).recently_attempted());
+        assert!(gate(true, Some(health_row(true, Some(10), true))).recently_attempted());
+        assert!(!gate(true, Some(health_row(true, Some(120), true))).recently_attempted());
+        // A future stamp (clock skew) throttles rather than spawning forever.
+        assert!(gate(true, Some(health_row(true, Some(-30), true))).recently_attempted());
+    }
+
+    #[test]
+    fn gate_first_load_state_keys_off_ever_succeeded() {
+        assert!(!gate(true, None).ever_succeeded());
+        assert!(!gate(true, Some(health_row(true, Some(5), false))).ever_succeeded());
+        assert!(gate(true, Some(health_row(true, Some(5), true))).ever_succeeded());
+    }
+
+    #[test]
+    #[serial]
+    fn refresh_health_stamps_round_trip() {
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let repo = "forge-health-repo";
+
+        record_refresh_started(repo);
+        let h = read_health(repo).unwrap();
+        assert!(h.healthy);
+        assert!(h.started_at.is_some());
+        assert_eq!(h.finished_at, None);
+
+        record_refresh_failure(repo, Some("missing-tool"));
+        let h = read_health(repo).unwrap();
+        assert!(!h.healthy);
+        assert_eq!(h.error_kind.as_deref(), Some("missing-tool"));
+
+        record_refresh_success(repo);
+        let h = read_health(repo).unwrap();
+        assert!(h.healthy);
+        assert_eq!(h.error_kind, None);
+        assert!(h.succeeded_at.is_some());
     }
 
     #[test]

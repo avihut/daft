@@ -85,9 +85,13 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
-The pr column is not shown by default. Add it with --columns +pr to show the
-pull/merge request each worktree tracks (#123 for a GitHub PR, !45 for a GitLab
-MR), read from local git config with no network calls.
+The pr column shows the pull/merge request each worktree tracks (#123 for a
+GitHub PR, !45 for a GitLab MR). It is on by default in repositories with a
+GitHub or GitLab remote and disappears silently — persisting across runs —
+when the forge integration is broken in a way that needs your intervention
+(gh/glab missing or unauthenticated); it returns automatically once a
+background refresh succeeds again. Repositories with no forge remote never
+show it. Add --columns +pr to force the column regardless, or -pr to drop it.
 
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
@@ -283,6 +287,48 @@ pub(crate) fn resolve_base_branch(
         .unwrap_or_else(|_| "master".to_string())
 }
 
+/// Apply the forge-visibility gate to a resolved column set: the
+/// default-sourced `pr` column silently drops when the repo names no forge,
+/// or when the last background refresh hit a deep failure (gh/glab missing,
+/// dead auth, lost repo access) — and silently returns once a refresh
+/// succeeds again; both verdicts persist in the repo's coordinator store.
+/// A `pr` the user *named* (replace-mode `--columns`/`daft.list.columns`, or
+/// a `+pr` modifier) always stays: config-recorded refs render without any
+/// forge. Returns the effective columns plus the gate whenever `pr` was in
+/// play at all — callers reuse it for the refresh spawn and the live table's
+/// seed state, so health is read once per invocation.
+pub(crate) fn gate_pr_column(
+    columns: &[ListColumn],
+    columns_input: Option<&str>,
+    git: &GitCommand,
+    git_common_dir: &std::path::Path,
+) -> (
+    Vec<ListColumn>,
+    Option<crate::commands::forge_cache::ForgeGate>,
+) {
+    if !columns.contains(&ListColumn::Pr) {
+        return (columns.to_vec(), None);
+    }
+    let repo_hash =
+        crate::core::repo_identity::compute_repo_id_from_common_dir(git_common_dir).ok();
+    let gate = crate::commands::forge_cache::forge_gate(git, repo_hash);
+    let mut effective = columns.to_vec();
+    if !columns_input.is_some_and(pr_explicitly_selected) && !gate.column_visible() {
+        effective.retain(|c| *c != ListColumn::Pr);
+    }
+    (effective, Some(gate))
+}
+
+/// Whether a `--columns`/`daft.list.columns` spec names the `pr` column
+/// itself (replace-mode token or `+pr` modifier) — as opposed to inheriting
+/// it from the defaults, which is what the visibility gate may override.
+fn pr_explicitly_selected(input: &str) -> bool {
+    input
+        .split(',')
+        .map(str::trim)
+        .any(|t| t.eq_ignore_ascii_case("pr") || t.eq_ignore_ascii_case("+pr"))
+}
+
 fn run_blocking(args: Args) -> Result<()> {
     // Construct the body `GitCommand` first and load settings through it so the
     // repo is discovered once and reused for the command body (#584).
@@ -300,7 +346,6 @@ fn run_blocking(args: Args) -> Result<()> {
         }
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
-    let selected_columns = &resolved.columns;
     let sort_input = args.sort.or(settings.list_sort);
     let sort_spec = match sort_input {
         Some(ref input) => SortSpec::parse(input)
@@ -308,10 +353,25 @@ fn run_blocking(args: Args) -> Result<()> {
             .with_stat(stat),
         None => SortSpec::default_sort().with_stat(stat),
     };
-    let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
-    let has_pr = selected_columns.contains(&ListColumn::Pr);
     let compute_mtime = sort_spec.needs_mtime();
     let git = git.with_gitoxide(settings.use_gitoxide);
+    // The forge gate may silently drop a default-sourced `pr` column from the
+    // printed table. Structured emit keeps the ungated set instead: its
+    // schema must stay stable across repos and health states, so `pr_*`
+    // fields simply carry nulls where the table would hide the column.
+    let (table_columns, forge_gate) = gate_pr_column(
+        &resolved.columns,
+        columns_input.as_deref(),
+        &git,
+        &git_common_dir,
+    );
+    let emit_columns = &resolved.columns;
+    let has_size = resolved.columns.contains(&ListColumn::Size) || sort_spec.needs_size();
+    let has_pr = if args.emit.is_structured() {
+        emit_columns.contains(&ListColumn::Pr)
+    } else {
+        table_columns.contains(&ListColumn::Pr)
+    };
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let current_path = get_current_worktree_path()
         .ok()
@@ -418,15 +478,20 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
-    // Forge-PR decoration: read the cache and kick a detached refresh, only
-    // when the PR column is in play — explicitly asking for +pr is asking for
-    // forge-derived data (the local-first judgment call). The render below
-    // uses whatever the cache holds now; the refresh feeds the next run.
+    // Kick the (throttled) detached refresh whenever `pr` was in play at
+    // all — including when the gate just hid the column: the probe is what
+    // detects a repaired auth and silently restores it on a later run.
+    if let Some(gate) = &forge_gate {
+        crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+    }
+    // Forge-PR decoration for the cells actually rendered. The blocking path
+    // prints once, so it serves the cache snapshot as-is; the no-stale-status
+    // display contract lives in the live table, which can update mid-run.
     let forge_lookup = if has_pr {
-        crate::commands::forge_cache::spawn_background_refresh();
-        crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
-            .ok()
-            .map(|h| crate::commands::forge_cache::load_lookup(&h))
+        forge_gate
+            .as_ref()
+            .and_then(|g| g.repo_hash.as_deref())
+            .map(crate::commands::forge_cache::load_lookup)
     } else {
         None
     };
@@ -450,7 +515,7 @@ fn run_blocking(args: Args) -> Result<()> {
             &project_root,
             &cwd,
             stat,
-            selected_columns,
+            emit_columns,
             now,
             forge_lookup.as_ref(),
         );
@@ -468,7 +533,7 @@ fn run_blocking(args: Args) -> Result<()> {
         &project_root,
         &cwd,
         stat,
-        selected_columns,
+        &table_columns,
         &sort_spec,
         forge_lookup.as_ref(),
     );
@@ -1400,6 +1465,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_base_branch(gcd, &origin), "wrongdefault");
+    }
+
+    /// The visibility gate only overrides a *default-sourced* `pr` column —
+    /// naming it (replace mode or `+pr`, CLI or config) must always win.
+    #[test]
+    fn pr_explicit_selection_detection() {
+        assert!(pr_explicitly_selected("pr"));
+        assert!(pr_explicitly_selected("branch,pr,age"));
+        assert!(pr_explicitly_selected("+pr"));
+        assert!(pr_explicitly_selected("+size, +PR"));
+        // Removing it, or naming other columns, is not asking for it.
+        assert!(!pr_explicitly_selected("-pr"));
+        assert!(!pr_explicitly_selected("+size"));
+        assert!(!pr_explicitly_selected("branch,path"));
+        // Token match, not substring match.
+        assert!(!pr_explicitly_selected("prune"));
     }
 
     #[test]

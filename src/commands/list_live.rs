@@ -52,7 +52,15 @@ pub fn run_live(args: Args) -> Result<()> {
         }
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
-    let selected_columns = resolved.columns.clone();
+    // The forge gate may silently drop the default-sourced `pr` column (no
+    // forge remote, or a persisted deep failure). Reused below for the
+    // refresh spawn and the live seed state, so health is read once.
+    let (selected_columns, forge_gate) = crate::commands::list::gate_pr_column(
+        &resolved.columns,
+        columns_input.as_deref(),
+        &git,
+        &git_common_dir,
+    );
     let columns_explicit = resolved.explicit;
     let sort_input = args.sort.clone().or(settings.list_sort.clone());
     let sort_spec = match sort_input {
@@ -187,16 +195,19 @@ pub fn run_live(args: Args) -> Result<()> {
     // config-only cells.
     let mut forge_refresh_pending = false;
     let mut forge_repo_hash: Option<String> = None;
-    let forge_lookup = if fields.contains(FieldSet::FORGE_REF) {
-        forge_refresh_pending = crate::commands::forge_cache::spawn_background_refresh();
-        forge_repo_hash =
-            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir).ok();
-        forge_repo_hash
-            .as_deref()
-            .map(crate::commands::forge_cache::load_lookup)
-    } else {
-        None
-    };
+    let mut forge_lookup = None;
+    if let Some(gate) = &forge_gate {
+        // Probe even when the gate hid the column: the throttled refresh is
+        // what detects a repaired auth and restores the column on a later
+        // run. Decorations are only loaded when the column survived.
+        forge_refresh_pending = crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+        forge_repo_hash = gate.repo_hash.clone();
+        if fields.contains(FieldSet::FORGE_REF) {
+            forge_lookup = forge_repo_hash
+                .as_deref()
+                .map(crate::commands::forge_cache::load_lookup);
+        }
+    }
 
     // Build TUI state — pin_default_branch=false, partition_by_owner=false
     // for `daft list` (per spec).
@@ -263,7 +274,10 @@ pub fn run_live(args: Args) -> Result<()> {
     // change is the whole update. No join — the thread spawns no
     // subprocesses and dies with the process (or at the deadline when the
     // refresh never lands: gh missing, network down).
-    if forge_refresh_pending && let Some(hash) = forge_repo_hash {
+    if forge_refresh_pending
+        && fields.contains(FieldSet::FORGE_REF)
+        && let Some(hash) = forge_repo_hash
+    {
         let seed = forge_lookup.unwrap_or_default();
         let forge_tx = forge_poll_tx;
         std::thread::spawn(move || {

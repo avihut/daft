@@ -98,10 +98,16 @@ fn run_mr_list(ctx: &ForgeContext<'_>, api_path: &str) -> Result<Vec<PrListEntry
     })?;
 
     if !output.status.success() {
-        return Err(cli::generic_api_error(
-            "could not list merge requests via glab",
-            &output,
-        ));
+        let context = "could not list merge requests via glab";
+        // Doc-derived (glab isn't run in CI): an unauthenticated `glab api`
+        // reports 401 and its auth hint names `glab auth login`. Both mark
+        // the failure as forge-health-deep; anything else stays transient.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("glab auth login") || stderr.contains("401") {
+            return Err(anyhow::Error::new(cli::ForgeUnavailable::Unauthenticated)
+                .context(format!("{context}: {}", cli::error_details(&output))));
+        }
+        return Err(cli::generic_api_error(context, &output));
     }
 
     parse_mr_list(&output.stdout)

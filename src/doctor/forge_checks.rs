@@ -9,19 +9,47 @@ use std::process::Command;
 
 use crate::doctor::{CheckCategory, CheckResult};
 
-/// Run the forge tooling checks: `gh` for GitHub PRs, `glab` for GitLab MRs.
+/// Run the forge tooling checks: `gh` for GitHub PRs, `glab` for GitLab MRs,
+/// plus this repo's persisted forge health when it is hiding the `pr` column.
 pub fn run_forge_checks() -> CheckCategory {
+    let mut results = vec![
+        check_cli("gh", "GitHub CLI", "https://cli.github.com/"),
+        check_cli(
+            "glab",
+            "GitLab CLI",
+            "https://gitlab.com/gitlab-org/cli#installation",
+        ),
+    ];
+    results.extend(check_repo_health());
     CheckCategory {
         title: "Forge integration".to_string(),
-        results: vec![
-            check_cli("gh", "GitHub CLI", "https://cli.github.com/"),
-            check_cli(
-                "glab",
-                "GitLab CLI",
-                "https://gitlab.com/gitlab-org/cli#installation",
-            ),
-        ],
+        results,
     }
+}
+
+/// Surface a persisted deep refresh failure — the record that silently hides
+/// the default `pr` column in `daft list`. Doctor is where the silence gets
+/// explained; nothing is shown when outside a repo, no failure is on record,
+/// or the store is unreadable.
+fn check_repo_health() -> Option<CheckResult> {
+    let repo_hash = crate::core::repo_identity::compute_repo_id().ok()?;
+    let health = crate::commands::forge_cache::read_health(&repo_hash)?;
+    if health.healthy {
+        return None;
+    }
+    let reason = match health.error_kind.as_deref() {
+        Some("missing-tool") => "the forge CLI is not installed",
+        Some("unauthenticated") => "the forge CLI is not authenticated",
+        Some("repo-access") => "the forge repository is not accessible",
+        _ => "the last background refresh hit a persistent failure",
+    };
+    Some(
+        CheckResult::warning("PR column", &format!("hidden in `daft list`: {reason}"))
+            .with_suggestion(
+                "Fix the underlying issue (e.g. `gh auth login`); the next background \
+             refresh detects it and restores the column automatically",
+            ),
+    )
 }
 
 /// Probe one forge CLI: installed? version? authenticated?

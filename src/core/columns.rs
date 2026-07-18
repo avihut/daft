@@ -187,7 +187,31 @@ impl ListColumn {
 
     /// The default column set for the list command.
     /// Size is excluded — it must be explicitly added via `--columns +size`.
+    /// Pr is included, but the command layer silently drops it when the repo
+    /// names no forge or the forge integration is persistently broken
+    /// (`commands::list::gate_pr_column`) — the default only *offers* the
+    /// column; visibility is the repo's call.
     pub fn list_defaults() -> &'static [ListColumn] {
+        &[
+            ListColumn::Annotation,
+            ListColumn::Branch,
+            ListColumn::Path,
+            ListColumn::Base,
+            ListColumn::Changes,
+            ListColumn::Remote,
+            ListColumn::Pr,
+            ListColumn::Age,
+            ListColumn::Owner,
+            ListColumn::LastCommit,
+        ]
+    }
+
+    /// The default column set for sync and prune commands.
+    /// (Status is pinned separately by TUI code, not included here.)
+    /// Size is excluded — it must be explicitly added via `--columns +size`.
+    /// Pr too: sync/prune don't wire the forge cache or its visibility gate,
+    /// and their tables are busy enough without a mostly-empty column.
+    pub fn tui_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
             ListColumn::Branch,
@@ -199,13 +223,6 @@ impl ListColumn {
             ListColumn::Owner,
             ListColumn::LastCommit,
         ]
-    }
-
-    /// The default column set for sync and prune commands.
-    /// (Status is pinned separately by TUI code, not included here.)
-    /// Size is excluded — it must be explicitly added via `--columns +size`.
-    pub fn tui_defaults() -> &'static [ListColumn] {
-        Self::list_defaults()
     }
 
     pub fn clone_defaults() -> &'static [ListColumn] {
@@ -765,6 +782,13 @@ mod tests {
         assert!(!ListColumn::list_defaults().contains(&ListColumn::Size));
         assert!(!ListColumn::tui_defaults().contains(&ListColumn::Size));
         assert!(ListColumn::all().contains(&ListColumn::Size));
+    }
+
+    #[test]
+    fn list_defaults_offer_pr_but_tui_defaults_do_not() {
+        assert!(ListColumn::list_defaults().contains(&ListColumn::Pr));
+        // sync/prune don't wire the forge cache or its visibility gate.
+        assert!(!ListColumn::tui_defaults().contains(&ListColumn::Pr));
     }
 
     #[test]

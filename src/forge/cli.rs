@@ -10,7 +10,54 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+
+/// Typed marker carried in the error chain when a forge call failed in a way
+/// that will *keep* failing until the user intervenes — as opposed to a
+/// transient network/API hiccup. The background refresh downcasts for it
+/// ([`classify_unavailable`]) to record repo forge health, which decides
+/// whether `daft list` shows its default `pr` column. Attached as the error
+/// *source* (via `.context(...)`), so user-facing messages are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgeUnavailable {
+    /// The gh/glab binary isn't installed.
+    MissingTool,
+    /// The CLI ran but isn't authenticated (dead/expired login).
+    Unauthenticated,
+    /// The CLI is authenticated but cannot see the repository (revoked
+    /// access, repo deleted or renamed).
+    RepoAccess,
+}
+
+impl ForgeUnavailable {
+    /// The TEXT persisted in the store's `forge_health.error_kind` column.
+    pub fn kind_str(self) -> &'static str {
+        match self {
+            ForgeUnavailable::MissingTool => "missing-tool",
+            ForgeUnavailable::Unauthenticated => "unauthenticated",
+            ForgeUnavailable::RepoAccess => "repo-access",
+        }
+    }
+}
+
+impl std::fmt::Display for ForgeUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ForgeUnavailable::MissingTool => "forge CLI is not installed",
+            ForgeUnavailable::Unauthenticated => "forge CLI is not authenticated",
+            ForgeUnavailable::RepoAccess => "forge repository is not accessible",
+        })
+    }
+}
+
+impl std::error::Error for ForgeUnavailable {}
+
+/// Recover the [`ForgeUnavailable`] marker from anywhere in an error chain.
+/// `None` means the failure is transient (network, rate limit, API change)
+/// and must not flip the repo's forge health.
+pub fn classify_unavailable(err: &anyhow::Error) -> Option<ForgeUnavailable> {
+    err.downcast_ref::<ForgeUnavailable>().copied()
+}
 
 /// One `gh`/`glab` invocation.
 pub struct CliApiRequest<'a> {
@@ -46,7 +93,10 @@ pub fn run_cli_api(request: CliApiRequest<'_>) -> Result<Output> {
         .output()
     {
         Ok(output) => Ok(output),
-        Err(error) if error.kind() == ErrorKind::NotFound => bail!("{}", request.install_hint),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            Err(anyhow::Error::new(ForgeUnavailable::MissingTool)
+                .context(request.install_hint.to_string()))
+        }
         Err(error) => Err(anyhow::Error::from(error).context(request.run_context.to_string())),
     }
 }
@@ -103,6 +153,21 @@ mod tests {
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn unavailable_marker_survives_context_wrapping() {
+        let err = anyhow::Error::new(ForgeUnavailable::MissingTool)
+            .context("GitHub CLI (gh) is not installed.");
+        assert_eq!(
+            classify_unavailable(&err),
+            Some(ForgeUnavailable::MissingTool)
+        );
+        // The context, not the marker, is what the user sees.
+        assert!(err.to_string().contains("not installed"));
+
+        let transient = anyhow::anyhow!("connect: network is unreachable");
+        assert_eq!(classify_unavailable(&transient), None);
     }
 
     #[test]
