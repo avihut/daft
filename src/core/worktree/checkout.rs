@@ -106,6 +106,13 @@ pub struct ForgeCheckout {
     /// the base repo — reached through the normal remote-branch path with the
     /// fetch forced on.
     pub fork: Option<ForgeForkRefs>,
+    /// Same-repo PR/MR only: the head-ref details consulted when the source
+    /// branch turns out to be gone from the base repo (deleted after a merge
+    /// or close). The head ref still holds the commits, so the checkout falls
+    /// back to the fork mechanics — fetch it into its tracking ref, create
+    /// the branch from there — instead of failing. `None` for forks, whose
+    /// `fork` refs are the primary mechanism.
+    pub head_fallback: Option<ForgeForkRefs>,
     /// Compact identity for rail rows and the result line: `PR #123` / `MR !45`.
     pub display: String,
     /// PR/MR title, shown as the resolve row's annotation.
@@ -275,9 +282,15 @@ pub fn execute(
 
     // Forge PR/MR facts (resolved by the command layer). `fork` is Some only
     // for a cross-repo PR/MR, whose head lives at a base-repo ref rather than a
-    // normal remote branch.
+    // normal remote branch. It is rebound when a same-repo checkout falls back
+    // to the head ref because the source branch is gone (deleted after merge).
     let forge = params.forge.as_ref();
-    let fork = forge.and_then(|f| f.fork.as_ref());
+    let mut fork = forge.and_then(|f| f.fork.as_ref());
+    // Every remote-branch fact (fetch, existence probe, creation ref,
+    // upstream) follows the PR/MR's base remote for a forge checkout — the
+    // resolved PR names it, and it may differ from the settings default
+    // (`daft.remote`, usually `origin`).
+    let source_remote: &str = forge.map_or(&params.remote_name, |f| f.remote.as_str());
 
     // The CheckOut row's provenance annotation, from the existence probe.
     let annotation_for = |local_exists: bool, remote_exists: bool| {
@@ -291,9 +304,9 @@ pub fn execute(
             return format!("\u{2190} {}", fc.display);
         }
         if !local_exists {
-            format!("\u{2190} {}/{}", params.remote_name, params.branch_name)
+            format!("\u{2190} {}/{}", source_remote, params.branch_name)
         } else if remote_exists && params.checkout_upstream {
-            format!("tracking {}/{}", params.remote_name, params.branch_name)
+            format!("tracking {}/{}", source_remote, params.branch_name)
         } else {
             "local only".to_string()
         }
@@ -377,7 +390,7 @@ pub fn execute(
     }
     if params.checkout_fetch {
         let mut fetch_spec =
-            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(params.remote_name.clone());
+            StepSpec::new(StepKey::new(StageId::Fetch)).with_annotation(source_remote.to_string());
         // A deferred fetch that succeeded leads the plan as a receipt row,
         // like clone's bare phase; a failed one keeps the normal row and
         // resolves yellow right after the commit (below).
@@ -456,36 +469,67 @@ pub fn execute(
             local_exists
         }
         None => {
-            let fetch_failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            let fetch_failed = !fetch_branch(git, source_remote, &params.branch_name, sink);
             let (local_exists, remote_exists) =
-                check_branch_existence(git, &params.branch_name, &params.remote_name)?;
+                check_branch_existence(git, &params.branch_name, source_remote)?;
             if !local_exists && !remote_exists {
                 // The plan is committed: the command layer aborts the rail
-                // into a Failed receipt, and this error prints below it.
-                if let Some(fc) = forge {
-                    // Same-repo PR/MR whose source branch vanished between
-                    // resolution and fetch. Return Other, not BranchNotFound,
-                    // so the command layer's auto-start / catalog morph can't
-                    // reinterpret the (rewritten) source-branch name.
+                // into a Failed receipt, and errors print below it.
+                let Some(fc) = forge else {
+                    return Err(CheckoutError::BranchNotFound {
+                        branch: params.branch_name.clone(),
+                        remote: params.remote_name.clone(),
+                        fetch_failed,
+                    });
+                };
+                // Same-repo PR/MR whose source branch is gone from the base
+                // repo — deleted after a merge/close, or vanished between
+                // resolution and fetch. The head ref still holds the commits,
+                // so fall back to the fork mechanics: fetch it into its
+                // tracking ref and create the branch from there. Errors are
+                // Other, not BranchNotFound, so the command layer's
+                // auto-start / catalog morph can't reinterpret the
+                // (rewritten) source-branch name.
+                let Some(fb) = fc.head_fallback.as_ref() else {
                     return Err(CheckoutError::Other(anyhow::anyhow!(
                         "{}'s source branch '{}' was not found on '{}' after fetching \
                          (it may have been deleted since)",
                         fc.display,
                         params.branch_name,
-                        params.remote_name,
+                        source_remote,
+                    )));
+                };
+                sink.on_step(&format!(
+                    "Source branch '{}' not found on '{}'; falling back to {} ({})",
+                    params.branch_name, source_remote, fc.display, fb.head_ref
+                ));
+                // `+` force-updates the tracking ref; the Fetch row already
+                // resolved above, so this fetch reports through the CheckOut
+                // row's provenance note instead.
+                let refspec = format!("+{}:{}", fb.head_ref, fb.local_ref);
+                if let Err(e) = git.fetch_refspec(&fc.remote, &refspec) {
+                    return Err(CheckoutError::Other(anyhow::anyhow!(
+                        "{}'s source branch '{}' is gone from '{}' (deleted after \
+                         merge/close), and its head ref {} could not be fetched: {e}",
+                        fc.display,
+                        params.branch_name,
+                        source_remote,
+                        fb.head_ref,
                     )));
                 }
-                return Err(CheckoutError::BranchNotFound {
-                    branch: params.branch_name.clone(),
-                    remote: params.remote_name.clone(),
-                    fetch_failed,
-                });
+                sink.on_stage(
+                    &StepKey::new(StageId::CheckOut),
+                    StageEvent::Note(format!("\u{2190} {}", fc.display)),
+                );
+                fork = Some(fb);
+                false
+            } else {
+                sink.on_stage(
+                    &StepKey::new(StageId::CheckOut),
+                    StageEvent::Note(annotation_for(local_exists, remote_exists)),
+                );
+                local_exists
             }
-            sink.on_stage(
-                &StepKey::new(StageId::CheckOut),
-                StageEvent::Note(annotation_for(local_exists, remote_exists)),
-            );
-            local_exists
         }
     };
 
@@ -498,7 +542,7 @@ pub fn execute(
     } else {
         sink.on_step(&format!(
             "Local branch '{}' not found, will create from remote '{}/{}'",
-            params.branch_name, params.remote_name, params.branch_name
+            params.branch_name, source_remote, params.branch_name
         ));
         false
     };
@@ -538,7 +582,7 @@ pub fn execute(
         // remote branch.
         git.worktree_add_new_branch(&worktree_path, &params.branch_name, &fk.local_ref, true)
     } else {
-        let remote_ref = format!("{}/{}", params.remote_name, params.branch_name);
+        let remote_ref = format!("{}/{}", source_remote, params.branch_name);
         git.worktree_add_new_branch(&worktree_path, &params.branch_name, &remote_ref, false)
     };
 
@@ -611,7 +655,7 @@ pub fn execute(
             &fk.head_ref,
             sink,
         ),
-        None => set_upstream_if_enabled(params, git, sink)?,
+        None => set_upstream_if_enabled(params, source_remote, git, sink)?,
     };
 
     // Propagate in-scope untracked daft files from source worktree to the new
@@ -884,6 +928,7 @@ fn apply_stash(
 /// Set upstream tracking if the setting is enabled.
 fn set_upstream_if_enabled(
     params: &CheckoutParams,
+    source_remote: &str,
     git: &GitCommand,
     sink: &mut impl ProgressSink,
 ) -> Result<(bool, bool)> {
@@ -892,26 +937,26 @@ fn set_upstream_if_enabled(
         return Ok((false, true));
     }
 
-    let remote_branch_ref = format!("refs/remotes/{}/{}", params.remote_name, params.branch_name);
+    let remote_branch_ref = format!("refs/remotes/{}/{}", source_remote, params.branch_name);
     sink.on_step(&format!(
         "Checking for remote branch '{}/{}'...",
-        params.remote_name, params.branch_name
+        source_remote, params.branch_name
     ));
 
     if !git.show_ref_exists(&remote_branch_ref)? {
         sink.on_step(&format!(
             "Remote branch '{}/{}' not found, skipping upstream setup",
-            params.remote_name, params.branch_name
+            source_remote, params.branch_name
         ));
         return Ok((false, true));
     }
 
     sink.on_step(&format!(
         "Setting upstream to '{}/{}'...",
-        params.remote_name, params.branch_name
+        source_remote, params.branch_name
     ));
 
-    if let Err(e) = git.set_upstream(&params.remote_name, &params.branch_name) {
+    if let Err(e) = git.set_upstream(source_remote, &params.branch_name) {
         sink.on_warning(&format!(
             "Failed to set upstream tracking: {}. Worktree created, but upstream may need manual configuration.",
             e
@@ -920,7 +965,7 @@ fn set_upstream_if_enabled(
     } else {
         sink.on_step(&format!(
             "Upstream tracking set to '{}/{}'",
-            params.remote_name, params.branch_name
+            source_remote, params.branch_name
         ));
         Ok((true, false))
     }
@@ -1390,6 +1435,7 @@ mod timeline_tests {
         let forge = ForgeCheckout {
             remote: "origin".to_string(),
             fork: None,
+            head_fallback: None,
             display: "PR #7".to_string(),
             title: "Same-repo work".to_string(),
             state_note: None,
@@ -1463,6 +1509,7 @@ mod timeline_tests {
                 head_ref: "refs/pull/1/head".to_string(),
                 local_ref: "refs/remotes/origin/pr/1".to_string(),
             }),
+            head_fallback: None,
             display: "PR #1".to_string(),
             title: "Fork contribution".to_string(),
             state_note: None,
@@ -1537,6 +1584,7 @@ mod timeline_tests {
         let forge = ForgeCheckout {
             remote: "origin".to_string(),
             fork: None,
+            head_fallback: None,
             display: "PR #9".to_string(),
             title: "Old work".to_string(),
             state_note: Some("PR #9 is merged".to_string()),
@@ -1581,6 +1629,7 @@ mod timeline_tests {
                 head_ref: "refs/pull/999/head".to_string(),
                 local_ref: "refs/remotes/origin/pr/999".to_string(),
             }),
+            head_fallback: None,
             display: "PR #999".to_string(),
             title: "Ghost".to_string(),
             state_note: None,
@@ -1601,6 +1650,136 @@ mod timeline_tests {
         assert!(
             sink.plan.is_some(),
             "the plan commits before the required fork fetch runs"
+        );
+    }
+
+    /// Same-repo PR/MR whose base remote is not the settings default: every
+    /// remote-branch fact (fetch, existence probe, creation ref, upstream)
+    /// must follow the PR's base remote, not `daft.remote`.
+    #[test]
+    #[serial]
+    fn same_repo_forge_uses_the_base_remote_not_the_settings_default() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        // The PR's base repo is a second remote; only it has the source branch.
+        let upstream = tmp.path().join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        git(&upstream, &["init", "-q", "-b", "main"]);
+        git(
+            &upstream,
+            &["commit", "--allow-empty", "-q", "-m", "base init"],
+        );
+        git(&upstream, &["branch", "feat-up"]);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        git(
+            &work,
+            &["remote", "add", "upstream", upstream.to_str().unwrap()],
+        );
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("feat-up-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let forge = ForgeCheckout {
+            remote: "upstream".to_string(),
+            fork: None,
+            head_fallback: Some(ForgeForkRefs {
+                head_ref: "refs/pull/4/head".to_string(),
+                local_ref: "refs/remotes/upstream/pr/4".to_string(),
+            }),
+            display: "PR #4".to_string(),
+            title: "Upstream work".to_string(),
+            state_note: None,
+            resolve_elapsed: std::time::Duration::from_millis(2),
+        };
+        // params() sets remote_name = "origin" — the mismatch under test.
+        execute(
+            &forge_params("feat-up", worktree_path.clone(), forge),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("the checkout fetches the branch from the PR's base remote");
+        assert!(worktree_path.exists());
+        assert_eq!(
+            git_out(
+                &worktree_path,
+                &["config", "--get", "branch.feat-up.remote"]
+            ),
+            "upstream",
+            "upstream tracking follows the base remote"
+        );
+    }
+
+    /// Same-repo PR/MR whose source branch was deleted from the base repo
+    /// (the merged-and-cleaned-up shape): the checkout falls back to the PR
+    /// head ref — fork mechanics — instead of failing.
+    #[test]
+    #[serial]
+    fn same_repo_forge_falls_back_to_the_head_ref_when_the_branch_is_gone() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        // The PR head survives only as the pull ref — the branch is gone.
+        seed_pull_ref(&origin, 6);
+        git(tmp.path(), &["clone", "-q", "origin", "work"]);
+        let work = tmp.path().join("work");
+        std::env::set_current_dir(&work).unwrap();
+
+        let worktree_path = tmp.path().join("gone-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        let forge = ForgeCheckout {
+            remote: "origin".to_string(),
+            fork: None,
+            head_fallback: Some(ForgeForkRefs {
+                head_ref: "refs/pull/6/head".to_string(),
+                local_ref: "refs/remotes/origin/pr/6".to_string(),
+            }),
+            display: "PR #6".to_string(),
+            title: "Merged and cleaned up".to_string(),
+            state_note: Some("PR #6 is merged".to_string()),
+            resolve_elapsed: std::time::Duration::from_millis(2),
+        };
+        execute(
+            &forge_params("feat-gone", worktree_path.clone(), forge),
+            &git_cmd,
+            &work,
+            &mut sink,
+        )
+        .expect("a deleted source branch falls back to the PR head ref");
+        assert!(worktree_path.exists());
+
+        // The branch was created from the fetched head ref, and pulls from it.
+        assert_eq!(
+            git_out(
+                &worktree_path,
+                &["config", "--get", "branch.feat-gone.merge"]
+            ),
+            "refs/pull/6/head",
+            "tracking falls back to the PR head ref"
+        );
+        assert_eq!(
+            git_out(
+                &worktree_path,
+                &["config", "--get", "branch.feat-gone.remote"]
+            ),
+            "origin"
+        );
+        // The provenance note names the PR, not a nonexistent origin/<branch>.
+        assert!(
+            sink.events.iter().any(|(k, e)| k.id == StageId::CheckOut
+                && matches!(e, StageEvent::Note(n) if n == "\u{2190} PR #6")),
+            "the CheckOut row notes the head-ref provenance: {:?}",
+            sink.events
         );
     }
 }

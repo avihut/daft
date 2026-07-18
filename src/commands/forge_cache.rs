@@ -336,16 +336,20 @@ pub fn forge_gate(git: &GitCommand, repo_hash: Option<String>) -> ForgeGate {
 /// coordinator-store open — for the `daft list` render path, which needs both
 /// the health gate and the PR rows. One `Pool::open` (bring-up + migration
 /// check) instead of the two a separate `read_health` + `read_prs` would pay
-/// on this hot path. When capable, `lookup` is always `Some` (empty if the
-/// store or snapshot is absent), matching [`load_lookup`]'s contract.
+/// on this hot path. With a repo hash, `lookup` is always `Some` (empty if
+/// the store or snapshot is absent), matching [`load_lookup`]'s contract —
+/// deliberately not conditioned on `capable`: capability only gates the
+/// *default* column, while an explicit `+pr` must decorate from the cache
+/// even when no remote looks like a forge (provider selection defaults to
+/// GitHub, so the cache can be populated regardless).
 pub fn forge_gate_and_lookup(git: &GitCommand, repo_hash: Option<String>) -> ForgeGate {
     let capable = crate::forge::repo_forge_capable(git);
-    let (health, lookup) = match (&repo_hash, capable) {
-        (Some(hash), true) => {
+    let (health, lookup) = match &repo_hash {
+        Some(hash) => {
             let (health, rows) = read_health_and_prs(hash);
             (health, Some(lookup_from_rows(rows)))
         }
-        _ => (None, None),
+        None => (None, None),
     };
     ForgeGate {
         capable,
@@ -607,6 +611,52 @@ mod tests {
             health,
             lookup: None,
         }
+    }
+
+    /// Restore the original cwd when the test ends (pass or panic).
+    struct CwdRestore(std::path::PathBuf);
+    impl Drop for CwdRestore {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    /// Regression (caught by checkout/pr-cache.yml): the one-open gate+lookup
+    /// read must not condition the lookup on forge capability. Capability only
+    /// gates the *default* column — an explicit `+pr` in a repo whose remotes
+    /// are all local paths (every test sandbox, any mirror setup) still
+    /// decorates from the cache, which provider-selection's GitHub default can
+    /// populate regardless.
+    #[test]
+    #[serial]
+    fn gate_lookup_loads_from_the_cache_even_without_a_forge_remote() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let repo = "forge-repo-nocap";
+        persist_snapshot(
+            repo,
+            ForgeRefKind::GithubPr,
+            &[entry(5, "feature-x", Some(CiStatus::Pass))],
+        );
+
+        // A repo with no remotes at all — not forge-capable.
+        let tmp = tempfile::tempdir().unwrap();
+        let init = crate::utils::git_command_at(tmp.path())
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let _cwd = CwdRestore(std::env::current_dir().unwrap());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let gate = forge_gate_and_lookup(&GitCommand::new(true), Some(repo.into()));
+        assert!(!gate.capable, "a remoteless repo names no forge");
+        let lookup = gate
+            .lookup
+            .expect("the lookup loads whenever the repo hash is known");
+        assert!(
+            lookup.by_branch.contains_key("feature-x"),
+            "explicit +pr decorates from the cache regardless of capability"
+        );
     }
 
     fn health_row(healthy: bool, started_secs_ago: Option<i64>, succeeded: bool) -> ForgeHealthRow {

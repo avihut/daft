@@ -1138,9 +1138,12 @@ fn resolve_forge_target(
     crate::commands::forge_cache::persist_resolved(&resolved.info);
 
     let info = resolved.info;
-    // Fork PR/MR: the head lives at a base-repo ref, fetched into a local
-    // remote-tracking ref named for the platform's convention.
-    let fork = info.is_cross_repo.then(|| checkout::ForgeForkRefs {
+    // The head lives at a base-repo ref, fetched into a local remote-tracking
+    // ref named for the platform's convention. For a fork PR/MR that ref is
+    // the only way to the source branch; for a same-repo one it is the
+    // fallback core uses when the source branch is gone from the base repo
+    // (deleted after a merge/close).
+    let head_refs = checkout::ForgeForkRefs {
         head_ref: info.head_ref(),
         local_ref: format!(
             "refs/remotes/{}/{}/{}",
@@ -1148,7 +1151,12 @@ fn resolve_forge_target(
             info.kind.tag(),
             info.number
         ),
-    });
+    };
+    let (fork, head_fallback) = if info.is_cross_repo {
+        (Some(head_refs), None)
+    } else {
+        (None, Some(head_refs))
+    };
 
     Ok(Some(ResolvedForge {
         header: info.display(),
@@ -1156,6 +1164,7 @@ fn resolve_forge_target(
         forge: checkout::ForgeCheckout {
             remote: resolved.base_remote,
             fork,
+            head_fallback,
             display: info.display(),
             title: info.title.clone(),
             state_note: info.state_note(),
