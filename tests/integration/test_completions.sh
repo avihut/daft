@@ -39,11 +39,14 @@ export DAFT_TESTING=1
 # Color codes for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Test counters
 TESTS_RUN=0
 TESTS_PASSED=0
+TESTS_SKIPPED=0
+SKIPPED_TESTS=()
 
 # Test helper functions
 run_test() {
@@ -61,6 +64,17 @@ pass_test() {
 fail_test() {
     local message="$1"
     echo -e "${RED}✗ FAIL: $message${NC}"
+    echo ""
+}
+
+# A test that could not run in this environment. Deliberately NOT a pass: the
+# summary reports skips on their own line so an assertion that never executed
+# can't masquerade as coverage.
+skip_test() {
+    local reason="$1"
+    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+    SKIPPED_TESTS+=("$reason")
+    echo -e "${YELLOW}○ SKIP: $reason${NC}"
     echo ""
 }
 
@@ -596,12 +610,8 @@ test_repo_name_completion_case_insensitive() {
         trap 'rm -rf "$sb"' EXIT
         export DAFT_CONFIG_DIR="$sb/cfg" DAFT_DATA_DIR="$sb/data" DAFT_STATE_DIR="$sb/st"
 
-        # Never touch real state: if the binary ignores DAFT_*_DIR (a tagged
-        # release build), skip rather than pollute the real catalog.
-        if [[ "$("$DAFT_BIN" __dirs 2>/dev/null)" != *"$sb"* ]]; then
-            echo "SKIP: binary ignores DAFT_*_DIR (isolation unavailable)"
-            exit 0
-        fi
+        # (No DAFT_*_DIR preflight here: main() already hard-fails on that
+        # condition before any test runs.)
 
         # The sourced wrapper calls a bare `daft`; point it at the binary
         # under test, then register a lowercase-named repo.
@@ -621,13 +631,25 @@ test_repo_name_completion_case_insensitive() {
         # a documented bash 4+ floor (`mapfile -t`; its `_init_completion`
         # caller comes from bash-completion 2.x, which already requires 4+),
         # but this script runs under `#!/bin/bash` = 3.2 on macOS — there
-        # `mapfile` silently no-ops and every drive comes back empty. Hop to
-        # the newest bash on PATH for this layer (mise/Homebrew dev shells and
-        # CI all have 4+), and skip on a stock mac rather than fail on an
-        # environment the payload documents as unsupported.
-        drive_bash=$(command -v bash || echo /bin/bash)
-        if ! "$drive_bash" -c 'type mapfile' >/dev/null 2>&1; then
-            echo "SKIP: no bash 4+ on PATH for the sourced-wrapper layer"
+        # `mapfile` is command-not-found, the completion function swallows it
+        # via its own 2>/dev/null, and every drive returns an empty COMPREPLY.
+        # So pick a bash that actually clears the floor: probe each candidate
+        # for `mapfile` rather than trusting `command -v bash`, which yields
+        # whichever bash comes first on PATH (3.2 on a stock mac even when
+        # Homebrew's 5.x is installed further down).
+        drive_bash=""
+        for candidate in "$(command -v bash)" /opt/homebrew/bin/bash \
+                         /usr/local/bin/bash /bin/bash; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'type mapfile' >/dev/null 2>&1; then
+                drive_bash="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$drive_bash" ]]; then
+            # Reported as a SKIP, which main() counts separately — never as a
+            # pass. Counting it green would hide a real case-sensitivity
+            # regression on every machine without a bash 4+.
+            echo "SKIP: no bash 4+ available for the sourced-wrapper layer"
             exit 0
         fi
         # `_init_completion` (from bash-completion) is stubbed minimally;
@@ -654,7 +676,7 @@ DRIVE_EOS
     )
     case "$result" in
         PASS) pass_test ;;
-        SKIP*) echo "  ($result)"; pass_test ;;
+        SKIP*) skip_test "${result#SKIP: }" ;;
         *) fail_test "$result" ;;
     esac
 }
@@ -676,12 +698,28 @@ main() {
     # Preflight (#667): refuse to run if the binary ignores DAFT_*_DIR (the
     # overrides compile out of non-dev builds) — its writes would land in the
     # real user dirs. Mirrors assert_binary_honors_overrides in the mise task;
-    # needed here too because CI runs this script directly.
-    if [[ "$("$DAFT_BIN" __dirs 2>/dev/null)" != *"$COMPLETIONS_SANDBOX"* ]]; then
-        echo -e "${RED}Error: $DAFT_BIN ignores DAFT_*_DIR overrides (not a daft_dev_build?)${NC}"
-        echo "Refusing to run: completions tests would touch real user state. See #697."
+    # needed here too because CI runs this script directly rather than through
+    # `mise run completions:test`.
+    #
+    # Checked per key, not as one substring match over the whole output: a
+    # build that honored DAFT_CONFIG_DIR but resolved data/state to the real
+    # dirs would satisfy a whole-output match while still leaking the catalog
+    # and the jobs dir — exactly the #696/#697 leak this exists to stop.
+    preflight_dirs="$("$DAFT_BIN" __dirs 2>/dev/null)" || {
+        echo -e "${RED}Error: '$DAFT_BIN __dirs' failed (binary too old, or broken)${NC}"
         exit 1
-    fi
+    }
+    for key in config data state; do
+        resolved="$(printf '%s\n' "$preflight_dirs" | awk -F '\t' -v k="$key" '$1 == k { print $2 }')"
+        case "$resolved" in
+            "$COMPLETIONS_SANDBOX"/*) ;;
+            *)
+                echo -e "${RED}Error: $DAFT_BIN ignores DAFT_${key}_DIR (resolved: ${resolved:-<none>})${NC}"
+                echo "Refusing to run: completions tests would touch real user state. See #697."
+                exit 1
+                ;;
+        esac
+    done
 
     # Run all tests
     test_bash_completion_generation
@@ -728,9 +766,21 @@ main() {
     echo "========================================="
     echo "Tests run: $TESTS_RUN"
     echo "Tests passed: $TESTS_PASSED"
+    if [ "$TESTS_SKIPPED" -gt 0 ]; then
+        # Surfaced separately and never folded into the pass count — a skipped
+        # assertion is absent coverage, not a green one.
+        echo -e "${YELLOW}Tests skipped: $TESTS_SKIPPED${NC}"
+        for reason in "${SKIPPED_TESTS[@]}"; do
+            echo "  - $reason"
+        done
+    fi
 
-    if [ $TESTS_PASSED -eq $TESTS_RUN ]; then
-        echo -e "${GREEN}All tests passed!${NC}"
+    if [ $((TESTS_PASSED + TESTS_SKIPPED)) -eq $TESTS_RUN ]; then
+        if [ "$TESTS_SKIPPED" -gt 0 ]; then
+            echo -e "${YELLOW}All executed tests passed ($TESTS_SKIPPED skipped)${NC}"
+        else
+            echo -e "${GREEN}All tests passed!${NC}"
+        fi
         exit 0
     else
         echo -e "${RED}Some tests failed${NC}"

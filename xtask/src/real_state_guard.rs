@@ -21,10 +21,14 @@
 //! centralized-layout worktrees, so a wholesale walk would be slow and trip on
 //! unrelated edits. Instead:
 //!   * `<data>/daft/catalog/`     — content-hash every file (the DB triplet).
-//!   * `<config>/daft/`           — content-hash every top-level file: the
-//!     `repos.json` repo/trust registry plus the update-check stamps (#667
-//!     widened this from `repos.json` alone). Worktrees hosted alongside are
-//!     directories, which the file-only scan skips.
+//!   * `<config>/daft/`           — content-hash every top-level file except
+//!     the volatile stamps in [`VOLATILE_CONFIG_FILES`] (#667 widened this
+//!     from `repos.json` alone, so `config.toml` and any *unexpected* new
+//!     file — the real leak signature — are covered too). Two deliberate
+//!     blind spots: subdirectories are skipped, because on macOS this dir
+//!     also hosts centralized-layout worktrees and walking them would be slow
+//!     and noisy; and a leak into a future `<config>/daft/<subdir>/` would go
+//!     unseen until this scan learns to descend into known-daft subdirs.
 //!   * `<state>/daft/` + `jobs/`  — a compact entry-set digest (count + a hash
 //!     of the sorted child names). These dirs are litter-prone — the real
 //!     `jobs/` can hold tens of thousands of orphaned dirs (#669) — so we store
@@ -43,6 +47,28 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Config-dir files that daft's own *background* work rewrites, independently
+/// of whatever the test suite is doing: the update-check/trust-prune/log-clean
+/// daemons (`__check-update` & co., which `setsid` away and land seconds after
+/// their parent exits) and the one-shot hint ledger.
+///
+/// They are excluded from the fingerprint because a change to them cannot be
+/// attributed to the run under guard — the developer running `daft go` in
+/// another terminal, or a git hook invoking daft, writes them just as readily.
+/// Watching them made a clean suite fail with "the test suite leaked into your
+/// real config/state/data dirs", and a tripwire that cries wolf gets disabled.
+/// The residual risk (a genuine leak of exactly these files going unseen) is
+/// small: any binary leaking them also leaks `repos.json` / the catalog / the
+/// state dir, which are watched, and the `__dirs` preflight already rejects a
+/// binary that ignores `DAFT_*_DIR` before the suite starts.
+const VOLATILE_CONFIG_FILES: &[&str] = &[
+    "update-check.json",
+    "update-notification.json",
+    "trust-prune.json",
+    "log-clean.json",
+    "hints.json",
+];
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Mode {
@@ -85,8 +111,9 @@ struct Snapshot {
     /// `<data>/daft/catalog/`. Empty when the catalog dir does not exist.
     catalog: BTreeMap<String, String>,
     /// `filename -> content hash` for every file directly in `<config>/daft/`
-    /// (`repos.json`, `update-check.json`, …). Empty when the config dir does
-    /// not exist. Deliberately file-only: on macOS this dir can also host
+    /// except [`VOLATILE_CONFIG_FILES`] (`repos.json`, `config.toml`, and
+    /// anything unexpected). Empty when the config dir does not exist.
+    /// Deliberately file-only: on macOS this dir can also host
     /// centralized-layout worktrees, which are subdirectories.
     #[serde(default)]
     config_files: BTreeMap<String, String>,
@@ -154,8 +181,8 @@ impl Snapshot {
 /// Capture the current fingerprint of the real surfaces.
 fn capture() -> Result<Snapshot> {
     Ok(Snapshot {
-        catalog: hash_dir_files(&real_data_dir()?.join("catalog"))?,
-        config_files: hash_dir_files(&real_config_dir()?)?,
+        catalog: hash_dir_files(&real_data_dir()?.join("catalog"), &[])?,
+        config_files: hash_dir_files(&real_config_dir()?, VOLATILE_CONFIG_FILES)?,
         state_top: dir_digest(&real_state_dir())?,
         state_jobs: dir_digest(&real_state_dir().join("jobs"))?,
         claude_skill: hash_file_opt(&real_claude_skill_file()?)?,
@@ -251,10 +278,17 @@ fn real_state_dir() -> PathBuf {
 
 // --- fingerprint primitives ---
 
-/// `filename -> content hash` for every regular file directly under `dir`.
-/// A missing `dir` is a valid state (empty map) — the catalog dir does not
-/// exist until daft first writes it.
-fn hash_dir_files(dir: &Path) -> Result<BTreeMap<String, String>> {
+/// `filename -> content hash` for every regular file directly under `dir`,
+/// skipping any name in `skip`. A missing `dir` is a valid state (empty map) —
+/// the catalog dir does not exist until daft first writes it.
+///
+/// Files that vanish between the listing and the read are skipped rather than
+/// propagated as an error: both scanned dirs receive `NamedTempFile`s that
+/// exist only for the moment between write and atomic rename (`repos.json` via
+/// `hooks::trust::save_to`, the catalog DB's journal churn), and a snapshot
+/// that aborts on that race takes the whole suite down with it — a guard that
+/// fails the run it is supposed to be watching over.
+fn hash_dir_files(dir: &Path, skip: &[&str]) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -263,9 +297,15 @@ fn hash_dir_files(dir: &Path) -> Result<BTreeMap<String, String>> {
     };
     for entry in rd {
         let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if skip.contains(&name.as_str()) {
+            continue;
+        }
+        // No let-chain: xtask is edition 2021.
         if entry.path().is_file() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            map.insert(name, hash_file(&entry.path())?);
+            if let Some(hash) = hash_file_opt(&entry.path())? {
+                map.insert(name, hash);
+            }
         }
     }
     Ok(map)
@@ -278,12 +318,6 @@ fn hash_file_opt(path: &Path) -> Result<Option<String>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("hashing {}", path.display())),
     }
-}
-
-/// Content hash of an existing file.
-fn hash_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).with_context(|| format!("hashing {}", path.display()))?;
-    Ok(hex(fnv1a64(&bytes)))
 }
 
 /// Compact entry-set digest of `dir` (see [`DirDigest`]). A missing dir yields
@@ -363,10 +397,88 @@ mod tests {
         // "nothing there" rather than erroring — otherwise a clean machine
         // reads as a leak.
         let missing = PathBuf::from("/definitely/not/a/real/daft/dir/zzz");
-        assert!(hash_dir_files(&missing.join("catalog")).unwrap().is_empty());
-        assert!(hash_dir_files(&missing).unwrap().is_empty());
+        assert!(hash_dir_files(&missing.join("catalog"), &[])
+            .unwrap()
+            .is_empty());
+        assert!(hash_dir_files(&missing, VOLATILE_CONFIG_FILES)
+            .unwrap()
+            .is_empty());
         assert!(hash_file_opt(&missing.join("SKILL.md")).unwrap().is_none());
         assert!(!dir_digest(&missing).unwrap().exists);
+    }
+
+    /// The daemon stamps must not enter the fingerprint: `__check-update` &
+    /// co. rewrite them from a *detached* process on the developer's own
+    /// unrelated `daft` invocations, so watching them turned "someone used
+    /// daft in another terminal" into a fatal "the suite leaked real state".
+    #[test]
+    fn volatile_daemon_stamps_are_excluded_from_config_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("repos.json"), "{}").unwrap();
+        for name in VOLATILE_CONFIG_FILES {
+            std::fs::write(dir.path().join(name), "{}").unwrap();
+        }
+        let snap = hash_dir_files(dir.path(), VOLATILE_CONFIG_FILES).unwrap();
+        assert_eq!(snap.keys().collect::<Vec<_>>(), vec!["repos.json"]);
+
+        // A daemon rewriting a stamp mid-run must not move the fingerprint…
+        std::fs::write(dir.path().join("update-check.json"), "{\"v\":2}").unwrap();
+        assert_eq!(
+            hash_dir_files(dir.path(), VOLATILE_CONFIG_FILES).unwrap(),
+            snap
+        );
+        // …while a genuinely unexpected file still does.
+        std::fs::write(dir.path().join("leaked-by-a-test.json"), "x").unwrap();
+        assert_ne!(
+            hash_dir_files(dir.path(), VOLATILE_CONFIG_FILES).unwrap(),
+            snap
+        );
+    }
+
+    /// `repos.json` is rewritten via `NamedTempFile` + rename *in this dir*, so
+    /// an entry can be listed by `read_dir` and gone by the time we read it.
+    /// That must be a skip, not an error — an erroring snapshot aborts the run
+    /// the guard is supposed to be watching over.
+    ///
+    /// Drives the real interleaving (a deleter thread against a live scan)
+    /// rather than deleting up front, which would just make the entry absent
+    /// from the listing and prove nothing.
+    #[test]
+    fn vanishing_file_is_skipped_not_fatal() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("repos.json"), "{}").unwrap();
+
+        const CHURN_FILES: usize = 128;
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn_dir = dir.path().to_path_buf();
+        let churn_stop = Arc::clone(&stop);
+        // Mimics save_to's temp-file churn. Batched (create all, then unlink
+        // all) rather than create-then-unlink one at a time, so a scan that
+        // lists a full batch routinely finds it gone by the time it reads —
+        // the interleaving that made this fatal in the first place.
+        let churn = std::thread::spawn(move || {
+            while !churn_stop.load(Ordering::Relaxed) {
+                for i in 0..CHURN_FILES {
+                    let _ = std::fs::write(churn_dir.join(format!(".tmp{i}")), "half-written");
+                }
+                for i in 0..CHURN_FILES {
+                    let _ = std::fs::remove_file(churn_dir.join(format!(".tmp{i}")));
+                }
+            }
+        });
+
+        for _ in 0..500 {
+            let snap = hash_dir_files(dir.path(), &[])
+                .expect("a file vanishing mid-scan must not fail the snapshot");
+            // The durable file is always present regardless of the churn.
+            assert!(snap.contains_key("repos.json"));
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        churn.join().unwrap();
     }
 
     #[test]
