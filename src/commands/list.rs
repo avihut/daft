@@ -85,13 +85,23 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
-The pr column shows the pull/merge request each worktree tracks (#123 for a
+The pr column shows the pull/merge request each row relates to (#123 for a
 GitHub PR, !45 for a GitLab MR). It is on by default in repositories with a
 GitHub or GitLab remote and disappears silently — persisting across runs —
 when the forge integration is broken in a way that needs your intervention
 (gh/glab missing or unauthenticated); it returns automatically once a
 background refresh succeeds again. Repositories with no forge remote never
 show it. Add --columns +pr to force the column regardless, or -pr to drop it.
+
+While the pr column is shown, every open PR in the repository gets a row, not
+just the ones your worktrees represent: a local branch with an open PR is
+listed without --branches, and a PR with no local presence at all (a
+colleague's branch, any fork PR) appears as a dimmed row built from the forge
+data — fork PRs render owner:branch. Merged and closed PRs decorate existing
+rows but never add one. Rows with a PR show the PR author in the Owner
+column. The open-PR rows and the pr column are one unit: --columns -pr (or
+the silent gate above) removes both, so prefer just your worktrees per-repo
+with `git config -- daft.list.columns -pr`.
 
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
@@ -604,6 +614,16 @@ fn run_blocking(args: Args) -> Result<()> {
             &settings.remote,
         )?;
         infos.extend(pr_rows);
+        if show_remote {
+            let synthesized: HashSet<String> = infos
+                .iter()
+                .filter(|i| i.kind == EntryKind::ForgePr)
+                .map(|i| i.name.clone())
+                .collect();
+            infos.retain(|i| {
+                !crate::core::worktree::pr_rows::remote_row_subsumed(&i.name, i.kind, &synthesized)
+            });
+        }
         crate::core::worktree::pr_rows::apply_pr_owners(&mut infos, lookup);
         infos.sort_by(|a, b| {
             a.kind

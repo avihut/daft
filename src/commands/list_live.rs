@@ -229,6 +229,20 @@ pub fn run_live(args: Args) -> Result<()> {
                 seeded_pr_rows.insert(info.name.clone());
                 worktree_infos.push(info);
             }
+            if show_remote {
+                // A synthesized PR row subsumes its branch's `-r` remote
+                // row — one row per branch, and the PR row is the richer.
+                let synthesized: HashSet<String> = worktree_infos
+                    .iter()
+                    .filter(|i| i.kind == EntryKind::ForgePr)
+                    .map(|i| i.name.clone())
+                    .collect();
+                let subsumed = |name: &str, kind: EntryKind| {
+                    crate::core::worktree::pr_rows::remote_row_subsumed(name, kind, &synthesized)
+                };
+                worktree_infos.retain(|i| !subsumed(&i.name, i.kind));
+                targets.retain(|t| !subsumed(&t.branch_name, t.kind));
+            }
         }
         pr_row_ctx = Some(ctx);
     }

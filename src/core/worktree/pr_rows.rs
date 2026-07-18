@@ -143,6 +143,18 @@ fn pr_owner(author: Option<&str>) -> Option<BranchOwner> {
     })
 }
 
+/// Under `--remotes`, a synthesized PR row subsumes its branch's remote row:
+/// `feat-x  #7` and `origin/feat-x` are two spellings of the same branch, and
+/// the PR row is the richer one. `synthesized` holds the PR rows' display
+/// names — fork rows (`owner:branch`) never match a remote short name, which
+/// is correct: the fork's branch is not `origin/<branch>`.
+pub fn remote_row_subsumed(name: &str, kind: EntryKind, synthesized: &HashSet<String>) -> bool {
+    kind == EntryKind::RemoteBranch
+        && name
+            .strip_prefix("origin/")
+            .is_some_and(|short| synthesized.contains(short))
+}
+
 /// A concluded forge refresh delivered to the live table: the fresh lookup
 /// (statuses become authoritative, cells re-derive) plus the row-set
 /// reconcile computed against it — both land in the same repaint, during the
@@ -446,6 +458,28 @@ mod tests {
         );
         assert!(refresh.add_rows.is_empty());
         assert!(refresh.drop_rows.is_empty());
+    }
+
+    #[test]
+    fn synthesized_rows_subsume_their_remote_row_under_dash_r() {
+        let synthesized = set(&["feat-x", "owner9:patch-1"]);
+        assert!(remote_row_subsumed(
+            "origin/feat-x",
+            EntryKind::RemoteBranch,
+            &synthesized
+        ));
+        assert!(
+            !remote_row_subsumed("origin/other", EntryKind::RemoteBranch, &synthesized),
+            "unrelated remote rows stay"
+        );
+        assert!(
+            !remote_row_subsumed("origin/patch-1", EntryKind::RemoteBranch, &synthesized),
+            "a fork row's branch is not origin's — the remote row is a different branch"
+        );
+        assert!(
+            !remote_row_subsumed("feat-x", EntryKind::LocalBranch, &synthesized),
+            "only remote rows are ever subsumed"
+        );
     }
 
     #[test]

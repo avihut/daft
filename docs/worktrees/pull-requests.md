@@ -56,32 +56,50 @@ repository's remote, so `pr:45` on a GitLab repo resolves the merge request.
 A closed or merged PR still checks out (with a note) — inspecting merged work is
 legitimate.
 
-## Seeing PRs and their CI in `daft list`
+## Seeing every open PR in `daft list`
 
-In a repository with a GitHub or GitLab remote, `daft list` shows the `pr`
-column by default. Two silent rules govern it, so it never nags:
+In a repository with a GitHub or GitLab remote, `daft list` shows the repo's
+working state, not just your worktrees: the `pr` column is on by default, and
+**every open PR gets a row**. Concretely:
+
+- A worktree whose branch has an open PR shows it in place — `#123` (GitHub) or
+  `!45` (GitLab) — no extra row.
+- A local branch with an open PR is listed even without `--branches`.
+- An open PR with no local presence at all — a colleague's branch, any fork PR —
+  appears as a dimmed row built from the forge data: the PR title where a commit
+  subject would be, the PR's last activity as its age. Fork PRs render
+  `owner:branch` (GitHub's own notation), because per-fork branch names collide
+  — two contributors' `patch-1`s, a fork's `main` versus yours.
+- Merged and closed PRs decorate existing rows (the purple "this branch is done"
+  signal) but never add one.
+- Wherever a row has a PR, the Owner column shows the **PR author** rather than
+  an owner deduced from commit history — the forge's answer is canonical, and
+  for foreign rows there is no local history to deduce from.
+
+The open-PR rows and the `pr` column are one unit, governed by the same silent
+rules, so the list never nags:
 
 - Repositories with no forge remote (and no `daft.forge.platform` override)
-  never show the column.
+  never show either.
 - If the background refresh fails in a way only you can fix — `gh`/`glab` not
-  installed, authentication expired, repository access lost — the column
-  disappears from the next `daft list` on, and stays gone. Fix the underlying
-  issue (say, `gh auth login`) and the next refresh detects it and restores the
-  column, again persistently. `daft doctor` explains a hidden column under
-  "Forge integration".
+  installed, authentication expired, repository access lost — column and rows
+  disappear from the next `daft list` on, and stay gone. Fix the underlying
+  issue (say, `gh auth login`) and the next refresh detects it and restores
+  them, again persistently. `daft doctor` explains a hidden column under "Forge
+  integration".
 
-Transient trouble (network down, rate limits) never hides the column. Force it
-regardless with `--columns +pr`, or drop it with `--columns -pr` (persist either
-with `git config daft.list.columns`).
+Transient trouble (network down, rate limits) never hides anything. Force the
+forge overlay regardless with `--columns +pr`, or remove it — rows and column
+together — with `--columns -pr`. To prefer just your local worktrees permanently
+in a repository (say, a large open-source project with hundreds of open PRs),
+persist the opt-out there:
 
-Two kinds of branches get a value:
+```bash
+git config -- daft.list.columns -pr
+```
 
-- **Worktrees checked out from a PR/MR** show `#123` (GitHub) or `!45` (GitLab),
-  read from local git config.
-- **Your own branches with an open or merged PR** show the PR opened _from_
-  them, matched by branch name against daft's forge-PR cache. An open PR wins
-  over a merged one (a reused branch shows its live PR); fork PRs whose head
-  branch happens to share a local branch's name never match.
+`--branches` remains a superset — it shows _all_ local branches, PR-bearing or
+not — and structured output marks the foreign-PR rows with `"kind": "pr"`.
 
 In a color terminal, the number's color is the PR's fate: green/red/yellow for
 CI passing/failing/running, purple for merged — the "this worktree is done,
@@ -92,11 +110,15 @@ exists as color alone. Where the table is printed as plain text, supporting
 terminals also make the number a clickable link to the PR.
 
 The live table never presents a cached status as current: every run re-verifies
-against the forge. PR numbers render immediately but fateless, and the colors
-arrive the moment the fresh verdict lands — typically a second or two; the table
-holds its final frame briefly for it when needed. On the very first run in a
-repository, before any snapshot exists, the PR cells show a loading skeleton
-(like the size column) until that first refresh concludes.
+against the forge. PR numbers and rows render immediately but fateless, and the
+fresh verdict lands as one repaint — colors arrive, rows for PRs that opened
+since the snapshot appear, rows for PRs that closed drop — typically a second or
+two; the table holds its final frame briefly for it when needed. On the very
+first run in a repository, before any snapshot exists, the PR cells show a
+loading skeleton (like the size column) until that first refresh concludes and
+its open PRs take their rows. The one next-run case: a PR freshly opened from a
+branch that already exists locally surfaces on the following list (its row needs
+local git data the live table doesn't gather mid-run).
 
 ### The forge-PR cache
 

@@ -124,3 +124,28 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
 - [ ] GitLab: `mr:` completion and `!<n>` column decoration from a `glab`
       listing, including a merged MR in purple (CI stays blank — the REST
       listing carries no pipeline status).
+
+## Default open-PR rows (live forge)
+
+- [ ] In a repo with open PRs, bare `daft list` shows a row for every open PR:
+      your PR-bearing local branches appear without `--branches` (real local
+      age/commit, owner = the PR author), and PRs with no local presence appear
+      dimmed with the PR title as the commit subject and last activity as age.
+      Fork PRs render `owner:branch`.
+- [ ] Merged and closed PRs decorate existing rows but never add one.
+- [ ] Live reconcile: with the table open on a warm cache, a PR opened from a
+      foreign branch since the last run pops its row in when the fresh verdict
+      lands (same repaint as the colors); a PR closed since drops its row. On a
+      **cold cache**, the first refresh populates the foreign rows mid-run,
+      within the settle hold.
+- [ ] A PR freshly opened from an existing local branch surfaces on the _next_
+      list (the stated next-run case), not mid-run.
+- [ ] `daft go pr:<fork-pr>`; the fork row disappears (the worktree row absorbs
+      it via the tracking ref); `daft rm` the worktree but keep the branch — the
+      branch row is surfaced instead, still no duplicate.
+- [ ] `--columns +pr` in a huge OSS repo: the foreign-PR section is loud;
+      `git config -- daft.list.columns -pr` silences rows + column in that repo
+      only, and other repos keep the default.
+- [ ] `daft list -b` shows all local branches with no duplicate row for the
+      PR-bearing ones; `daft list -r` doesn't duplicate a synthesized row's
+      branch as a remote row.
