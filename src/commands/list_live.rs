@@ -197,32 +197,40 @@ pub fn run_live(args: Args) -> Result<()> {
     // honors the same freshness states: identity now, fates with the
     // refresh. On a cold cache (no identities yet) rows land when the first
     // refresh concludes, via the same reconcile that recolors the cells.
-    if selected_columns.contains(&crate::core::columns::ListColumn::Pr)
-        && let Some(lookup) = &forge_lookup
-    {
-        let pr_rows = crate::commands::list::collect_pr_rows(
-            &git,
-            lookup,
-            &worktree_branches,
-            show_local,
-            &base_branch,
-            stat,
-            &project_root,
-            settings.ownership_strategy,
-            user_email.as_deref(),
-            &settings.remote,
-        )?;
-        for info in pr_rows {
-            if info.kind != EntryKind::ForgePr {
-                targets.push(list_stream::CollectorTarget {
-                    branch_name: info.name.clone(),
-                    path: info.path.clone(),
-                    kind: info.kind,
-                    is_detached: false,
-                });
+    // The context and the seeded-row names feed that reconcile: the refresh
+    // poll re-plans against the fresh snapshot and diffs it with the seed.
+    let mut pr_row_ctx: Option<crate::commands::list::PrRowContext> = None;
+    let mut seeded_pr_rows: HashSet<String> = HashSet::new();
+    if selected_columns.contains(&crate::core::columns::ListColumn::Pr) {
+        let ctx = crate::commands::list::pr_row_context(&git);
+        if let Some(lookup) = &forge_lookup {
+            let pr_rows = crate::commands::list::collect_pr_rows(
+                &git,
+                lookup,
+                &ctx,
+                &worktree_branches,
+                show_local,
+                &base_branch,
+                stat,
+                &project_root,
+                settings.ownership_strategy,
+                user_email.as_deref(),
+                &settings.remote,
+            )?;
+            for info in pr_rows {
+                if info.kind != EntryKind::ForgePr {
+                    targets.push(list_stream::CollectorTarget {
+                        branch_name: info.name.clone(),
+                        path: info.path.clone(),
+                        kind: info.kind,
+                        is_detached: false,
+                    });
+                }
+                seeded_pr_rows.insert(info.name.clone());
+                worktree_infos.push(info);
             }
-            worktree_infos.push(info);
         }
+        pr_row_ctx = Some(ctx);
     }
 
     // Short-circuit when the merged set is empty: skip TUI bringup and
@@ -326,11 +334,14 @@ pub fn run_live(args: Args) -> Result<()> {
     if forge_refresh_pending
         && fields.contains(FieldSet::FORGE_REF)
         && let Some(hash) = forge_repo_hash
+        && let Some(pr_ctx) = pr_row_ctx
     {
         let baseline = forge_finished_baseline;
         let forge_tx = forge_poll_tx;
         let (done_tx, done_rx) = mpsc::channel::<()>();
         forge_done_rx = Some(done_rx);
+        let poll_worktree_branches = worktree_branches.clone();
+        let poll_seeded = seeded_pr_rows.clone();
         std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             let outcome = loop {
@@ -343,9 +354,19 @@ pub fn run_live(args: Args) -> Result<()> {
                     && h.finished_at != baseline
                 {
                     // Concluded. This attempt succeeded iff it stamped its
-                    // snapshot (success writes finished == succeeded).
-                    break (h.succeeded_at == h.finished_at)
-                        .then(|| crate::commands::forge_cache::load_lookup(&hash));
+                    // snapshot (success writes finished == succeeded). The
+                    // fresh lookup ships with the row-set reconcile, planned
+                    // against the same branch/ref universe the seed used.
+                    break (h.succeeded_at == h.finished_at).then(|| {
+                        crate::core::worktree::pr_rows::reconcile_pr_rows(
+                            crate::commands::forge_cache::load_lookup(&hash),
+                            &poll_worktree_branches,
+                            &pr_ctx.local_branches,
+                            &pr_ctx.branch_refs,
+                            show_local,
+                            &poll_seeded,
+                        )
+                    });
                 }
             };
             // Event before the barrier signal: the shared channel then

@@ -329,6 +329,34 @@ fn pr_explicitly_selected(input: &str) -> bool {
         .any(|t| t.eq_ignore_ascii_case("pr") || t.eq_ignore_ascii_case("+pr"))
 }
 
+/// The branch/ref universe the open-PR row plan is computed against — read
+/// once per list, and captured by the live path's refresh poll so the
+/// mid-run reconcile plans against the same universe the seed did.
+#[derive(Clone)]
+pub(crate) struct PrRowContext {
+    pub local_branches: HashSet<String>,
+    pub branch_refs:
+        std::collections::HashMap<String, crate::core::worktree::forge_ref::ForgeBranchRef>,
+}
+
+pub(crate) fn pr_row_context(git: &GitCommand) -> PrRowContext {
+    let local_branches: HashSet<String> = git
+        .for_each_ref("%(refname:short)", "refs/heads/")
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .collect();
+    let branch_refs = crate::core::worktree::pr_rows::parse_branch_forge_refs(
+        &git.branch_merge_refs().unwrap_or_default(),
+    );
+    PrRowContext {
+        local_branches,
+        branch_refs,
+    }
+}
+
 /// The default open-PR rows for both list paths: local branches surfaced
 /// because an open PR heads there (enriched exactly like `--branches` rows,
 /// with their tracking ref attached for `by_ref` decoration), plus rows
@@ -338,6 +366,7 @@ fn pr_explicitly_selected(input: &str) -> bool {
 pub(crate) fn collect_pr_rows(
     git: &GitCommand,
     lookup: &crate::core::worktree::forge_ref::ForgePrLookup,
+    ctx: &PrRowContext,
     worktree_branches: &HashSet<String>,
     show_local: bool,
     base_branch: &str,
@@ -349,21 +378,11 @@ pub(crate) fn collect_pr_rows(
 ) -> Result<Vec<crate::core::worktree::list::WorktreeInfo>> {
     use crate::core::worktree::pr_rows;
 
-    let local_branches: HashSet<String> = git
-        .for_each_ref("%(refname:short)", "refs/heads/")
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-        .map(str::to_string)
-        .collect();
-    let branch_refs =
-        pr_rows::parse_branch_forge_refs(&git.branch_merge_refs().unwrap_or_default());
     let plan = pr_rows::plan_pr_rows(
         lookup,
         worktree_branches,
-        &local_branches,
-        &branch_refs,
+        &ctx.local_branches,
+        &ctx.branch_refs,
         show_local,
     );
 
@@ -386,7 +405,7 @@ pub(crate) fn collect_pr_rows(
         for info in &mut surfaced {
             // Fork-tracking branches decorate through `by_ref`; the branch
             // enrichment doesn't read tracking config, so attach it here.
-            info.forge_ref = branch_refs.get(&info.name).copied();
+            info.forge_ref = ctx.branch_refs.get(&info.name).copied();
         }
         rows.extend(surfaced);
     }
@@ -570,9 +589,11 @@ fn run_blocking(args: Args) -> Result<()> {
             .filter(|i| i.kind == EntryKind::Worktree)
             .map(|i| i.name.clone())
             .collect();
+        let ctx = pr_row_context(&git);
         let pr_rows = collect_pr_rows(
             &git,
             lookup,
+            &ctx,
             &worktree_branches,
             show_local,
             &base_branch,

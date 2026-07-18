@@ -142,12 +142,23 @@ impl LiveTable {
             DagEvent::ForgePrsRefreshed(outcome) => {
                 // The next frame recomputes column values against the fresh
                 // lookup — no per-row patching needed, the PR cell derives
-                // from cfg at render time. A `None` outcome (refresh failed
-                // or timed out) settles the loading skeleton but keeps any
-                // identity-only seed statusless: the status never loaded, so
-                // it must not appear.
-                if let Some(lookup) = outcome {
-                    self.cfg.forge_prs = Some(lookup.clone());
+                // from cfg at render time — and the row-set reconcile lands
+                // in the same repaint: rows for PRs that closed drop, rows
+                // for PRs the seed didn't know insert. A `None` outcome
+                // (refresh failed or timed out) settles the loading skeleton
+                // but keeps any identity-only seed statusless: the status
+                // never loaded, so it must not appear.
+                if let Some(refresh) = outcome {
+                    self.cfg.forge_prs = Some(refresh.lookup.clone());
+                    for name in &refresh.drop_rows {
+                        self.remove_row(name);
+                    }
+                    for info in &refresh.add_rows {
+                        if self.find_row_idx(&info.name).is_none() {
+                            self.push_row(info.clone());
+                        }
+                    }
+                    self.pending_resort = true;
                 }
                 self.cfg.forge_prs_loading = false;
             }
@@ -210,6 +221,17 @@ impl LiveTable {
 
     fn find_row_idx(&self, branch: &str) -> Option<usize> {
         self.rows.iter().position(|r| r.info.name == branch)
+    }
+
+    /// Remove a row by name, keeping `received_patches` and `stale_fields`
+    /// in lockstep. Used by the forge reconcile to drop PR-sourced rows
+    /// whose PR is no longer open.
+    fn remove_row(&mut self, branch: &str) {
+        if let Some(idx) = self.find_row_idx(branch) {
+            self.rows.remove(idx);
+            self.received_patches.remove(idx);
+            self.stale_fields.remove(idx);
+        }
     }
 
     fn resort_and_repartition(&mut self) {
@@ -386,6 +408,7 @@ mod tests {
         use crate::core::worktree::forge_ref::{
             ForgeBranchRef, ForgePrLookup, ForgeRefKind, PrDecoration, PrStatus,
         };
+        use crate::core::worktree::pr_rows::ForgePrRowsRefresh;
 
         let mut t = LiveTable::new(vec![info("feat/x")], cfg());
         assert!(t.cfg.forge_prs.is_none(), "cold cache: no lookup at start");
@@ -401,9 +424,48 @@ mod tests {
                 author: None,
             },
         );
-        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(fresh.clone())));
+        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(ForgePrRowsRefresh {
+            lookup: fresh.clone(),
+            add_rows: vec![],
+            drop_rows: vec![],
+        })));
 
         assert_eq!(t.cfg.forge_prs, Some(fresh));
+    }
+
+    /// The refresh's row-set reconcile lands in the same repaint as the
+    /// fresh statuses: rows for PRs the seed didn't know insert (seed-final,
+    /// no shimmer), rows whose PR closed drop — with the bookkeeping vectors
+    /// staying in lockstep.
+    #[test]
+    fn forge_refresh_reconciles_the_pr_row_set() {
+        use crate::core::worktree::forge_ref::ForgePrLookup;
+        use crate::core::worktree::list::EntryKind;
+        use crate::core::worktree::pr_rows::ForgePrRowsRefresh;
+
+        let mut stale_pr = info("alice:patch-1");
+        stale_pr.kind = EntryKind::ForgePr;
+        let mut t = LiveTable::new(vec![info("feat/x"), stale_pr], cfg());
+        assert_eq!(t.rows.len(), 2);
+
+        let mut fresh_row = info("bob:fix-panic");
+        fresh_row.kind = EntryKind::ForgePr;
+        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(ForgePrRowsRefresh {
+            lookup: ForgePrLookup::default(),
+            add_rows: vec![fresh_row],
+            drop_rows: vec!["alice:patch-1".into()],
+        })));
+        t.tick();
+
+        let names: Vec<&str> = t.rows.iter().map(|r| r.info.name.as_str()).collect();
+        assert_eq!(names, vec!["feat/x", "bob:fix-panic"]);
+        assert_eq!(t.received_patches.len(), 2, "vectors stay in lockstep");
+        assert_eq!(t.stale_fields.len(), 2);
+        let idx = t.rows.iter().position(|r| r.info.name == "bob:fix-panic");
+        assert!(
+            !t.is_cell_loading(idx.unwrap(), FieldSet::SIZE),
+            "an inserted PR row is seed-final — blank, never shimmer"
+        );
     }
 
     /// First load in a repo that never had a snapshot: PR cells skeleton

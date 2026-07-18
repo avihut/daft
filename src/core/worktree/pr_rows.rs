@@ -143,6 +143,63 @@ fn pr_owner(author: Option<&str>) -> Option<BranchOwner> {
     })
 }
 
+/// A concluded forge refresh delivered to the live table: the fresh lookup
+/// (statuses become authoritative, cells re-derive) plus the row-set
+/// reconcile computed against it — both land in the same repaint, during the
+/// table's settle hold.
+#[derive(Debug, Clone)]
+pub struct ForgePrRowsRefresh {
+    pub lookup: ForgePrLookup,
+    /// Synthesized rows for open PRs the seed didn't know — new since the
+    /// cached snapshot, or a cold cache's very first snapshot.
+    pub add_rows: Vec<WorktreeInfo>,
+    /// Names of PR-sourced rows whose PR is no longer open. Only rows that
+    /// exist *because* of a PR are ever dropped — user-requested
+    /// `--branches` rows are not in the seeded set and thus never named.
+    pub drop_rows: Vec<String>,
+}
+
+/// Diff the fresh snapshot's row plan against the rows the seed created.
+///
+/// `seeded_pr_rows` holds the names of rows that exist because of a PR
+/// (surfaced branches + synthesized rows). Additions are synthesized rows
+/// only: a fresh PR on an existing local branch needs git enrichment the
+/// live table can't do mid-run, so it surfaces on the next list instead.
+pub fn reconcile_pr_rows(
+    lookup: ForgePrLookup,
+    worktree_branches: &HashSet<String>,
+    local_branches: &HashSet<String>,
+    branch_refs: &HashMap<String, ForgeBranchRef>,
+    show_local: bool,
+    seeded_pr_rows: &HashSet<String>,
+) -> ForgePrRowsRefresh {
+    let plan = plan_pr_rows(
+        &lookup,
+        worktree_branches,
+        local_branches,
+        branch_refs,
+        show_local,
+    );
+    let mut fresh_names: HashSet<String> = plan.surface_local.into_iter().collect();
+    let mut add_rows = Vec::new();
+    for info in plan.synthesized {
+        fresh_names.insert(info.name.clone());
+        if !seeded_pr_rows.contains(&info.name) {
+            add_rows.push(info);
+        }
+    }
+    let drop_rows = seeded_pr_rows
+        .iter()
+        .filter(|n| !fresh_names.contains(*n))
+        .cloned()
+        .collect();
+    ForgePrRowsRefresh {
+        lookup,
+        add_rows,
+        drop_rows,
+    }
+}
+
 /// Parse the output of `git config --get-regexp '^branch\..*\.merge$'` into
 /// each branch's forge tracking ref. Non-forge merge refs (`refs/heads/...`)
 /// drop out; branch names containing dots survive (the key is everything
@@ -328,6 +385,67 @@ mod tests {
         apply_pr_owners(&mut infos, &lookup);
         assert_eq!(infos[0].owner.as_ref().unwrap().name, "alice");
         assert_eq!(infos[1].owner.as_ref().unwrap().name, "History Name");
+    }
+
+    #[test]
+    fn reconcile_adds_new_and_drops_closed_pr_rows_only() {
+        // Seeded this run: synthesized rows for PRs 9 (fork) and 5. Fresh
+        // snapshot: 9 still open, 5 closed, 11 brand new.
+        let lookup = lookup_with(vec![
+            open_pr(11, "new-work", false),
+            open_pr(9, "patch-1", true),
+        ]);
+        let seeded: HashSet<String> = set(&["owner9:patch-1", "old-branch"]);
+        let refresh = reconcile_pr_rows(
+            lookup,
+            &set(&["main"]),
+            &set(&[]),
+            &HashMap::new(),
+            false,
+            &seeded,
+        );
+        let added: Vec<&str> = refresh.add_rows.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(added, vec!["new-work"]);
+        assert_eq!(refresh.drop_rows, vec!["old-branch".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_cold_cache_first_snapshot_adds_everything_foreign() {
+        // Cold cache: nothing seeded. The first snapshot's synthesized rows
+        // all insert; a PR heading an existing local branch is NOT inserted
+        // mid-run (it needs git enrichment — it surfaces on the next list).
+        let lookup = lookup_with(vec![
+            open_pr(9, "patch-1", true),
+            open_pr(6, "local-only", false),
+        ]);
+        let refresh = reconcile_pr_rows(
+            lookup,
+            &set(&["main"]),
+            &set(&["local-only"]),
+            &HashMap::new(),
+            false,
+            &HashSet::new(),
+        );
+        let added: Vec<&str> = refresh.add_rows.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(added, vec!["owner9:patch-1"]);
+        assert!(refresh.drop_rows.is_empty());
+    }
+
+    #[test]
+    fn reconcile_never_names_rows_it_did_not_seed() {
+        // A `--branches` row for a branch whose PR just closed is a user-
+        // requested row, not a PR-sourced one — it is not in the seeded set
+        // and must survive the reconcile untouched.
+        let refresh = reconcile_pr_rows(
+            lookup_with(vec![]),
+            &set(&["main"]),
+            &set(&["some-branch"]),
+            &HashMap::new(),
+            true,
+            &HashSet::new(),
+        );
+        assert!(refresh.add_rows.is_empty());
+        assert!(refresh.drop_rows.is_empty());
     }
 
     #[test]
