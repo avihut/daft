@@ -3,7 +3,7 @@ use super::columns::{
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
-use crate::core::worktree::forge_ref::CiStatus;
+use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, ColumnContext, ColumnValues, format_human_size};
@@ -119,6 +119,9 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         now,
         stat: state.live.cfg.stat,
         forge_prs: state.live.cfg.forge_prs.as_ref(),
+        // The TUI always styles cells, so the PR status rides in color and
+        // the cell text stays the bare number.
+        colors: true,
     };
 
     // Pre-compute all column values for sizing and reuse.
@@ -809,14 +812,26 @@ fn render_cell(
                     Cell::from(vals.pr.clone())
                 }
             } else {
-                // Color reinforces the CI glyph already in the text
-                // (`#723 ✓`) — never carries the meaning alone.
+                // Color carries the status here (a ratatui buffer can't hold
+                // the colorless glyph fallback's escape-free sibling — plain
+                // renderers append `✓`/`✗`/`●`/`◆`/`○` instead). LightMagenta
+                // matches the ✦ default-branch purple.
                 let cell = Cell::from(vals.pr.clone());
-                match vals.pr_ci {
-                    Some(CiStatus::Pass) => cell.style(Style::default().fg(Color::Green)),
-                    Some(CiStatus::Fail) => cell.style(Style::default().fg(Color::Red)),
-                    Some(CiStatus::Pending) => cell.style(Style::default().fg(Color::Yellow)),
-                    None => cell,
+                match vals.pr_status {
+                    Some(PrStatus::Ci(CiStatus::Pass)) => {
+                        cell.style(Style::default().fg(Color::Green))
+                    }
+                    Some(PrStatus::Ci(CiStatus::Fail)) => {
+                        cell.style(Style::default().fg(Color::Red))
+                    }
+                    Some(PrStatus::Ci(CiStatus::Pending)) => {
+                        cell.style(Style::default().fg(Color::Yellow))
+                    }
+                    Some(PrStatus::Merged) => cell.style(Style::default().fg(Color::LightMagenta)),
+                    Some(PrStatus::Closed) => {
+                        cell.style(Style::default().add_modifier(Modifier::DIM))
+                    }
+                    Some(PrStatus::Open) | None => cell,
                 }
             }
         }
@@ -1416,6 +1431,7 @@ mod tests {
             now: 0,
             stat: Stat::Lines,
             forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1478,6 +1494,7 @@ mod tests {
             now: 0,
             stat: Stat::Lines,
             forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1532,6 +1549,7 @@ mod tests {
             now: 0,
             stat: Stat::Summary,
             forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 

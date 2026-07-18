@@ -1,6 +1,7 @@
 //! Read/write access to the per-repo forge-PR cache — the `forge_prs` table
 //! in the repo's coordinator store. Powers the `daft list --columns +pr`
-//! decoration (PR number + CI glyph) and `pr:`/`mr:` tab completion.
+//! decoration (PR number + open/merged/CI fate) and `pr:`/`mr:` tab
+//! completion.
 //!
 //! Everything here is **best-effort**, mirroring `size_cache`: the cache is a
 //! display/completion accelerator, never a source of truth (the forge is), so
@@ -39,6 +40,19 @@ pub(crate) fn sanitize_title(title: &str) -> String {
         .join(" ")
 }
 
+/// Keep a PR URL only when it's a plausible web link that can be embedded in
+/// an OSC 8 hyperlink without breaking out of the sequence: http(s) scheme,
+/// no control characters (ESC/BEL terminate an OSC payload early) and no
+/// whitespace. Anything else persists as the empty string, which readers
+/// treat as "no link". Runs at the persistence boundary like
+/// [`sanitize_title`].
+pub(crate) fn sanitize_url(url: &str) -> String {
+    let clean = url.trim();
+    let ok = (clean.starts_with("https://") || clean.starts_with("http://"))
+        && !clean.chars().any(|c| c.is_control() || c.is_whitespace());
+    if ok { clean.to_string() } else { String::new() }
+}
+
 /// Every cached PR/MR for `repo_hash`, open first (the completion order).
 /// Empty on any error and — deliberately — when the coordinator store doesn't
 /// exist yet: reading is pure, only persists create the store. Runs on the
@@ -67,16 +81,20 @@ fn read_inner(repo_hash: &str) -> Option<Vec<ForgePrRow>> {
 }
 
 /// Build the PR-column lookup for `repo_hash` from the cache. Outbound
-/// matches (`by_branch`) take only open same-repo PRs — a stranger's fork
-/// branch with a colliding name or a merged PR must not decorate a local
-/// branch; inbound CI (`ci_by_ref`) covers every cached row so a checked-out
-/// PR shows its CI regardless of state. Same filters as the SQL in
-/// `ForgePrsRepo::by_head_branch`, applied here because one bulk read beats
-/// a query per row.
+/// matches (`by_branch`) take same-repo open and merged PRs — open beats
+/// merged, newer number wins — while fork branches with colliding names and
+/// closed-unmerged PRs never map; inbound decorations (`by_ref`) cover every
+/// cached row so a checked-out PR shows its fate regardless of state. Same
+/// rules as the SQL in `ForgePrsRepo::by_head_branch`, applied here because
+/// one bulk read beats a query per row.
 pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePrLookup {
-    use crate::core::worktree::forge_ref::{CiStatus, ForgeBranchRef, ForgePrLookup};
+    use crate::core::worktree::forge_ref::{
+        CiStatus, ForgeBranchRef, ForgePrLookup, PrDecoration, PrStatus,
+    };
 
     let mut lookup = ForgePrLookup::default();
+    // `read_prs` orders open-first, newest-number-first within a state, so a
+    // first-wins insert per branch realizes the open-beats-merged priority.
     for row in read_prs(repo_hash) {
         let kind = match row.kind.as_str() {
             "pr" => ForgeRefKind::GithubPr,
@@ -85,12 +103,18 @@ pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePr
         };
         let forge_ref = ForgeBranchRef::new(kind, row.number);
         let ci = row.ci_status.as_deref().and_then(CiStatus::parse);
-        lookup.ci_by_ref.insert(forge_ref, ci);
-        if row.state == "open" && !row.is_cross_repo {
+        let decoration = PrDecoration {
+            r: forge_ref,
+            status: Some(PrStatus::from_state_and_ci(&row.state, ci)),
+            url: (!row.url.is_empty()).then(|| row.url.clone()),
+        };
+        if matches!(row.state.as_str(), "open" | "merged") && !row.is_cross_repo {
             lookup
                 .by_branch
-                .insert(row.head_branch.clone(), (forge_ref, ci));
+                .entry(row.head_branch.clone())
+                .or_insert_with(|| decoration.clone());
         }
+        lookup.by_ref.insert(forge_ref, decoration);
     }
     lookup
 }
@@ -111,7 +135,7 @@ pub fn persist_snapshot(repo_hash: &str, kind: ForgeRefKind, entries: &[PrListEn
             head_branch: entry.head_branch.clone(),
             is_cross_repo: entry.is_cross_repo,
             ci_status: entry.ci_status.map(|s| s.as_str().to_string()),
-            url: entry.url.clone(),
+            url: sanitize_url(&entry.url),
             author: entry.author.clone(),
             fetched_at,
         })
@@ -153,7 +177,7 @@ pub fn persist_resolved(info: &RemoteRefInfo) {
         head_branch: info.source_branch.clone(),
         is_cross_repo: info.is_cross_repo,
         ci_status: None,
-        url: info.url.clone(),
+        url: sanitize_url(&info.url),
         author: info.author.clone(),
         fetched_at: chrono::Utc::now(),
     };
@@ -174,12 +198,14 @@ fn persist_one_inner(repo_hash: &str, row: &ForgePrRow) -> anyhow::Result<()> {
 /// Spawn a detached `daft __refresh-forge` for the repo the cwd is in.
 /// Fire-and-forget: the caller's command completes regardless. Gated by
 /// [`crate::should_skip_background_tasks`] so agent/test invocations and
-/// coordinator children never fan out network work.
-pub fn spawn_background_refresh() {
+/// coordinator children never fan out network work. Returns whether a
+/// refresh was actually spawned — the live table only starts its
+/// change-poll when one is in flight.
+pub fn spawn_background_refresh() -> bool {
     if crate::should_skip_background_tasks(crate::cli::argv()) {
-        return;
+        return false;
     }
-    let _ = spawn_inner();
+    spawn_inner().is_ok()
 }
 
 fn spawn_inner() -> anyhow::Result<()> {
@@ -207,7 +233,7 @@ pub fn run_refresh_forge() -> anyhow::Result<()> {
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
     let git = GitCommand::new(true);
     let config = crate::forge::ForgeConfig::load(&git);
-    let (kind, entries) = crate::forge::fetch_open_snapshot(&git, &project_root, &config)?;
+    let (kind, entries) = crate::forge::fetch_snapshot(&git, &project_root, &config)?;
     persist_snapshot(&repo_hash, kind, &entries);
     Ok(())
 }
@@ -239,6 +265,24 @@ mod tests {
             "fix: bad title [31mred [0m end"
         );
         assert_eq!(sanitize_title("  plain title  "), "plain title");
+    }
+
+    #[test]
+    fn sanitize_url_keeps_web_links_and_drops_hostile_input() {
+        assert_eq!(
+            sanitize_url("https://github.com/acme/widget/pull/5"),
+            "https://github.com/acme/widget/pull/5"
+        );
+        assert_eq!(
+            sanitize_url("  https://gitlab.com/g/r/-/merge_requests/4 "),
+            { "https://gitlab.com/g/r/-/merge_requests/4" }
+        );
+        // OSC-breaking control chars, embedded whitespace, non-web schemes.
+        assert_eq!(sanitize_url("https://evil.com/\x1b]0;owned\x07"), "");
+        assert_eq!(sanitize_url("https://a.com/b c"), "");
+        assert_eq!(sanitize_url("file:///etc/passwd"), "");
+        assert_eq!(sanitize_url("javascript:alert(1)"), "");
+        assert_eq!(sanitize_url(""), "");
     }
 
     #[test]
@@ -300,40 +344,62 @@ mod tests {
 
     #[test]
     #[serial]
-    fn load_lookup_filters_outbound_but_keeps_inbound_ci() {
-        use crate::core::worktree::forge_ref::{CiStatus as Ci, ForgeBranchRef, ForgeRefKind as K};
+    fn load_lookup_prioritizes_outbound_and_keeps_inbound_fate() {
+        use crate::core::worktree::forge_ref::{
+            CiStatus as Ci, ForgeBranchRef, ForgeRefKind as K, PrStatus,
+        };
         let _guard = crate::store::paths::IsolatedStateDir::new();
         let repo = "forge-repo-4";
 
         let mut fork = entry(8, "feat/x", Some(CiStatus::Fail));
         fork.is_cross_repo = true;
+        // A reused branch: PR 5 merged there before PR 7 was opened.
+        let mut old_merged = entry(5, "feat/x", None);
+        old_merged.state = "merged".into();
         let mut merged = entry(6, "feat/done", Some(CiStatus::Pass));
         merged.state = "merged".into();
+        let mut closed = entry(4, "feat/abandoned", None);
+        closed.state = "closed".into();
         persist_snapshot(
             repo,
             ForgeRefKind::GithubPr,
-            &[entry(7, "feat/x", Some(CiStatus::Pass)), fork, merged],
+            &[
+                entry(7, "feat/x", Some(CiStatus::Pass)),
+                fork,
+                old_merged,
+                merged,
+                closed,
+            ],
         );
 
         let lookup = load_lookup(repo);
 
-        // Outbound: only the open same-repo PR decorates the branch.
-        let (r, ci) = lookup.by_branch["feat/x"];
-        assert_eq!(r, ForgeBranchRef::new(K::GithubPr, 7));
-        assert_eq!(ci, Some(Ci::Pass));
-        assert!(
-            !lookup.by_branch.contains_key("feat/done"),
-            "merged PRs don't decorate branches"
+        // Outbound: the open same-repo PR beats the fork PR and the merged one.
+        let d = &lookup.by_branch["feat/x"];
+        assert_eq!(d.r, ForgeBranchRef::new(K::GithubPr, 7));
+        assert_eq!(d.status, Some(PrStatus::Ci(Ci::Pass)));
+        assert_eq!(
+            d.url.as_deref(),
+            Some("https://github.com/acme/widget/pull/7")
         );
 
-        // Inbound CI is available for every cached row, fork/merged included.
+        // A merged PR decorates its branch when nothing open shadows it…
+        assert_eq!(lookup.by_branch["feat/done"].status, Some(PrStatus::Merged));
+        // …but closed-unmerged never does.
+        assert!(!lookup.by_branch.contains_key("feat/abandoned"));
+
+        // Inbound fate is available for every cached row, fork/closed included.
         assert_eq!(
-            lookup.ci_by_ref[&ForgeBranchRef::new(K::GithubPr, 8)],
-            Some(Ci::Fail)
+            lookup.by_ref[&ForgeBranchRef::new(K::GithubPr, 8)].status,
+            Some(PrStatus::Ci(Ci::Fail))
         );
         assert_eq!(
-            lookup.ci_by_ref[&ForgeBranchRef::new(K::GithubPr, 6)],
-            Some(Ci::Pass)
+            lookup.by_ref[&ForgeBranchRef::new(K::GithubPr, 6)].status,
+            Some(PrStatus::Merged)
+        );
+        assert_eq!(
+            lookup.by_ref[&ForgeBranchRef::new(K::GithubPr, 4)].status,
+            Some(PrStatus::Closed)
         );
     }
 }

@@ -123,11 +123,12 @@ pub fn resolve(
     Ok(ResolvedRef { info, base_remote })
 }
 
-/// Fetch the repo's open-PR/MR snapshot from its selected platform — the
-/// forge-cache refresh payload. Provider selection follows the same chain as
-/// a bare `pr:`/`mr:` target (config override → remote host → GitHub); the
-/// listing always runs from repo context, so a pasted URL never reaches here.
-pub fn fetch_open_snapshot(
+/// Fetch the repo's PR/MR snapshot (open + recently merged) from its selected
+/// platform — the forge-cache refresh payload. Provider selection follows the
+/// same chain as a bare `pr:`/`mr:` target (config override → remote host →
+/// GitHub); the listing always runs from repo context, so a pasted URL never
+/// reaches here.
+pub fn fetch_snapshot(
     git: &GitCommand,
     repo_root: &Path,
     config: &ForgeConfig,
@@ -144,7 +145,7 @@ pub fn fetch_open_snapshot(
         tool,
         hostname: config.hostname.as_deref(),
     };
-    Ok((provider.kind(), provider.fetch_open_list(&ctx)?))
+    Ok((provider.kind(), provider.fetch_list(&ctx)?))
 }
 
 /// Whether checking out a fork PR/MR would clobber an unrelated local branch.

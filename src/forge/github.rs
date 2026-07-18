@@ -53,47 +53,64 @@ impl RemoteRefProvider for GitHubProvider {
         into_info(number, response)
     }
 
-    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
-        // `gh pr list` resolves the repo from the cwd's remotes (and honors
-        // `gh repo set-default` in fork workflows) — no explicit coords needed.
-        // `statusCheckRollup` rides along in the same single invocation, which
-        // is the whole reason this uses `gh pr list --json` (GraphQL-backed)
-        // rather than the REST listing endpoint (no check data).
-        let mut extra_env: Vec<(&str, &str)> = Vec::new();
-        if let Some(host) = ctx.hostname {
-            // `gh pr list` has no `--hostname` flag (only `gh api` does);
-            // GH_HOST is gh's documented equivalent.
-            extra_env.push(("GH_HOST", host));
-        }
-
-        let output = cli::run_cli_api(CliApiRequest {
-            tool: ctx.tool_or("gh"),
-            args: &[
-                "pr",
-                "list",
-                "--state",
-                "open",
-                "--limit",
-                "200",
-                "--json",
-                "number,title,state,headRefName,isCrossRepository,url,author,statusCheckRollup",
-            ],
-            repo_root: ctx.repo_root,
-            prompt_env: GH_PROMPT_ENV,
-            extra_env: &extra_env,
-            install_hint: INSTALL_HINT,
-            run_context: "failed to run gh pr list",
-        })?;
-
-        if !output.status.success() {
-            return Err(cli::generic_api_error(
-                "could not list open pull requests via gh",
-                &output,
-            ));
-        }
-
-        parse_pr_list(&output.stdout)
+    fn fetch_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
+        // Every open PR (up to gh's practical page cap), plus a window of
+        // recently merged ones so `daft list` can mark a local branch's PR as
+        // merged — the "this worktree is done, prune it" signal. Merged PRs
+        // skip the check rollup: their CI is dead information, and dropping
+        // the field keeps the GraphQL cost of the second call down.
+        let mut entries = run_pr_list(ctx, "open", "200", true)?;
+        entries.extend(run_pr_list(ctx, "merged", "50", false)?);
+        Ok(entries)
     }
+}
+
+/// One `gh pr list` invocation for one `--state`. The repo resolves from the
+/// cwd's remotes (honoring `gh repo set-default` in fork workflows) — no
+/// explicit coords needed. `statusCheckRollup` rides along in the same single
+/// invocation when requested, which is the whole reason this uses
+/// `gh pr list --json` (GraphQL-backed) rather than the REST listing endpoint
+/// (no check data).
+fn run_pr_list(
+    ctx: &ForgeContext<'_>,
+    state: &str,
+    limit: &str,
+    with_rollup: bool,
+) -> Result<Vec<PrListEntry>> {
+    let mut extra_env: Vec<(&str, &str)> = Vec::new();
+    if let Some(host) = ctx.hostname {
+        // `gh pr list` has no `--hostname` flag (only `gh api` does);
+        // GH_HOST is gh's documented equivalent.
+        extra_env.push(("GH_HOST", host));
+    }
+
+    let base_fields = "number,title,state,headRefName,isCrossRepository,url,author";
+    let fields = if with_rollup {
+        format!("{base_fields},statusCheckRollup")
+    } else {
+        base_fields.to_string()
+    };
+
+    let output = cli::run_cli_api(CliApiRequest {
+        tool: ctx.tool_or("gh"),
+        args: &[
+            "pr", "list", "--state", state, "--limit", limit, "--json", &fields,
+        ],
+        repo_root: ctx.repo_root,
+        prompt_env: GH_PROMPT_ENV,
+        extra_env: &extra_env,
+        install_hint: INSTALL_HINT,
+        run_context: "failed to run gh pr list",
+    })?;
+
+    if !output.status.success() {
+        return Err(cli::generic_api_error(
+            &format!("could not list {state} pull requests via gh"),
+            &output,
+        ));
+    }
+
+    parse_pr_list(&output.stdout)
 }
 
 /// Parse `gh pr list --json ...` output into list entries. Pure, so the JSON
@@ -263,7 +280,11 @@ fn into_info(number: u32, response: GhPrResponse) -> Result<RemoteRefInfo> {
         number,
         title: response.title,
         author: response.user.login,
-        state: response.state.to_lowercase(),
+        state: if response.merged {
+            "merged".to_string()
+        } else {
+            response.state.to_lowercase()
+        },
         draft: response.draft,
         source_branch: response.head.ref_name,
         is_cross_repo,
@@ -317,6 +338,10 @@ struct GhPrResponse {
     title: String,
     user: GhUser,
     state: String,
+    /// REST reports a merged PR as `state: closed` + `merged: true`; daft
+    /// folds that back into the `merged` state everywhere else uses.
+    #[serde(default)]
+    merged: bool,
     #[serde(default)]
     draft: bool,
     head: GhPrRef,
@@ -498,6 +523,37 @@ mod tests {
         }"#;
         let info = parse(json, 9).unwrap();
         assert_eq!(info.state_note().as_deref(), Some("PR #9 is closed"));
+    }
+
+    #[test]
+    fn merged_flag_overrides_rest_closed_state() {
+        // REST reports a merged PR as state=closed + merged=true; daft folds
+        // that into the `merged` state (drives the purple PR-column fate and
+        // the state note's wording).
+        let json = r#"{
+            "title": "Done", "state": "closed", "merged": true, "draft": false,
+            "user": {"login": "x"},
+            "html_url": "https://github.com/a/b/pull/9",
+            "head": {"ref": "old", "repo": {"name": "b", "owner": {"login": "a"}}},
+            "base": {"ref": "main", "repo": {"name": "b", "owner": {"login": "a"}}}
+        }"#;
+        let info = parse(json, 9).unwrap();
+        assert_eq!(info.state, "merged");
+        assert_eq!(info.state_note().as_deref(), Some("PR #9 is merged"));
+    }
+
+    #[test]
+    fn pr_list_normalizes_merged_state() {
+        // The merged-window listing call carries no statusCheckRollup.
+        let json = r#"[{
+            "number": 6, "title": "Landed", "state": "MERGED",
+            "headRefName": "feat/done", "isCrossRepository": false,
+            "url": "https://github.com/a/b/pull/6",
+            "author": {"login": "x"}
+        }]"#;
+        let entries = parse_pr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries[0].state, "merged");
+        assert_eq!(entries[0].ci_status, None);
     }
 
     #[test]

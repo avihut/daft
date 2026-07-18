@@ -52,7 +52,8 @@ pub trait RemoteRefProvider {
     /// Resolve a PR/MR number to its metadata via the CLI.
     fn fetch_info(&self, number: u32, ctx: &ForgeContext<'_>) -> Result<RemoteRefInfo>;
 
-    /// List the repo's open PRs/MRs via the CLI — the forge-cache refresh
-    /// payload (`daft list --columns +pr` decoration, `pr:`/`mr:` completion).
-    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>>;
+    /// List the repo's open + recently-merged PRs/MRs via the CLI — the
+    /// forge-cache refresh payload (`daft list --columns +pr` decoration,
+    /// `pr:`/`mr:` completion).
+    fn fetch_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>>;
 }

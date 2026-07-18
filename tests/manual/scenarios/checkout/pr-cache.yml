@@ -1,27 +1,31 @@
 name: Forge-PR cache decorates list and completion
 description: >
   The forge-PR cache round trip: `daft __refresh-forge` snapshots the (faked) gh
-  CLI's open-PR listing into the per-repo store, `daft list --columns +pr` then
-  decorates a plain local branch with its outbound PR number and CI glyph (`#5
-  ✓`), and `pr:` tab completion offers the cached number with its title. A
-  cross-repo (fork) PR with the same head-branch name must NOT decorate the
-  local branch. The fake `gh` fails loudly on any unexpected call.
+  CLI's open + merged PR listings into the per-repo store, `daft list --columns
+  +pr` then decorates a plain local branch with its outbound PR number and CI
+  glyph (`#5 ✓`), marks a branch whose PR merged (`#3 ◆`), and `pr:` tab
+  completion offers the cached number with its title. A cross-repo (fork) PR
+  with the same head-branch name must NOT decorate the local branch. Structured
+  output carries pr_state/ci_status/pr_url fields. The fake `gh` fails loudly on
+  any unexpected call.
 
 repos:
   - name: test-repo
     use_fixture: standard-remote
 
 steps:
-  - name: Clone and create a local branch with an open PR upstream
+  - name: Clone and create local branches with PRs upstream
     run: |
       set -e
       git-worktree-clone --layout contained $REMOTE_TEST_REPO
       cd test-repo/main
       git-worktree-checkout -b feature-x
+      git-worktree-checkout -b feature-done
     expect:
       exit_code: 0
       dirs_exist:
         - "$WORK_DIR/test-repo/feature-x"
+        - "$WORK_DIR/test-repo/feature-done"
 
   - name: Refresh the forge-PR cache through a fake gh listing
     run: |
@@ -29,7 +33,13 @@ steps:
       mkdir -p "$WORK_DIR/bin"
       cat > "$WORK_DIR/bin/gh" <<'GH'
       #!/usr/bin/env bash
-      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+      state=""
+      prev=""
+      for a in "$@"; do
+        if [ "$prev" = "--state" ]; then state="$a"; fi
+        prev="$a"
+      done
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
         printf '%s' '[
           {"number": 5, "title": "Add feature five", "state": "OPEN",
            "headRefName": "feature-x", "isCrossRepository": false,
@@ -43,6 +53,15 @@ steps:
            "url": "https://github.com/acme/widget/pull/6",
            "author": {"login": "contributor"},
            "statusCheckRollup": []}
+        ]'
+        exit 0
+      fi
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then
+        printf '%s' '[
+          {"number": 3, "title": "Landed work", "state": "MERGED",
+           "headRefName": "feature-done", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/3",
+           "author": {"login": "octocat"}}
         ]'
         exit 0
       fi
@@ -65,14 +84,28 @@ steps:
         - '"number":5'
         - '"ci_status":"pass"'
         - '"head_branch":"feature-x"'
+        - '"number":3'
+        - '"state":"merged"'
 
-  - name: daft list decorates the outbound branch with PR number and CI glyph
+  - name: daft list decorates open and merged branches with their fates
     run: git-worktree-list --columns +pr
     cwd: "$WORK_DIR/test-repo/feature-x"
     expect:
       exit_code: 0
       output_contains:
         - "#5 ✓"
+        - "#3 ◆"
+
+  - name: Structured output carries the PR state, CI, and URL fields
+    run: git-worktree-list --columns +pr --format json
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"pr_state"'
+        - '"pr_url"'
+        - '"https://github.com/acme/widget/pull/5"'
+        - '"merged"'
 
   - name: Tab completion offers the cached PR with its title
     run: daft __complete git-worktree-checkout "pr:" --position 1

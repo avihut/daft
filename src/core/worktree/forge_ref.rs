@@ -84,7 +84,7 @@ impl ForgeBranchRef {
 /// `src/forge/`) for the same reason as [`ForgeBranchRef`]: the renderers that
 /// decorate the `daft list` PR column are core/output-level and must not
 /// depend on the forge CLI layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CiStatus {
     Pass,
     Fail,
@@ -110,50 +110,97 @@ impl CiStatus {
             _ => None,
         }
     }
+}
 
-    /// The typographic glyph appended to the PR cell (`#723 ✓`). Colors
-    /// reinforce but never carry the meaning alone (NO_COLOR, pipes,
-    /// red/green colorblindness), so the glyph is the load-bearing signal.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            CiStatus::Pass => "\u{2713}",    // ✓
-            CiStatus::Fail => "\u{2717}",    // ✗
-            CiStatus::Pending => "\u{25cf}", // ●
+/// Lifecycle + CI state of a PR/MR, folded into the one signal the PR cell
+/// communicates. Color carries it in color-capable renderers (green/red/
+/// yellow CI, purple merged, dim closed); [`Self::glyph`] is the colorless
+/// encoding appended to the cell text when color is off (`NO_COLOR`, pipes),
+/// so the signal never exists as color alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrStatus {
+    /// Open with no CI information (the PR has no checks, or the platform's
+    /// listing carries none — GitLab). Renders plain, like an unknown state.
+    Open,
+    /// Open with a CI rollup.
+    Ci(CiStatus),
+    Merged,
+    /// Closed without merging.
+    Closed,
+}
+
+impl PrStatus {
+    /// Fold a cached row's `state` + CI rollup into one display status.
+    /// Unknown states (GitLab's transitional `locked`, future additions) are
+    /// treated as open.
+    pub fn from_state_and_ci(state: &str, ci: Option<CiStatus>) -> Self {
+        match state {
+            "merged" => PrStatus::Merged,
+            "closed" => PrStatus::Closed,
+            _ => ci.map_or(PrStatus::Open, PrStatus::Ci),
         }
     }
+
+    /// The colorless encoding for the PR cell (`#723 ✓`), appended only when
+    /// the renderer applies no color; empty for [`PrStatus::Open`] (a bare
+    /// number already reads as "open, nothing notable").
+    pub fn glyph(self) -> &'static str {
+        match self {
+            PrStatus::Open => "",
+            PrStatus::Ci(CiStatus::Pass) => "\u{2713}", // ✓
+            PrStatus::Ci(CiStatus::Fail) => "\u{2717}", // ✗
+            PrStatus::Ci(CiStatus::Pending) => "\u{25cf}", // ●
+            PrStatus::Merged => "\u{25c6}",             // ◆
+            PrStatus::Closed => "\u{25cb}",             // ○
+        }
+    }
+}
+
+/// One resolved PR-cell decoration: the ref plus everything the renderers
+/// need to style it. `status`/`url` are `None` when the ref is known only
+/// from branch config (inbound checkout with no cache row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrDecoration {
+    pub r: ForgeBranchRef,
+    pub status: Option<PrStatus>,
+    /// Web URL of the PR/MR — plain-print renderers wrap the cell in an
+    /// OSC 8 terminal hyperlink.
+    pub url: Option<String>,
 }
 
 /// PR decorations resolved from the forge-PR cache, keyed for the two match
 /// directions the `daft list` PR column uses. Pure data: built by the command
 /// layer (which owns store access), consumed by renderers — core never reads
-/// the store.
-#[derive(Debug, Default, Clone)]
+/// the store. `PartialEq` is load-bearing: the live table's refresh poll
+/// compares snapshots to detect that the background refresh landed.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ForgePrLookup {
-    /// Outbound: the open same-repo PR whose head is this local branch.
-    /// (Fork PRs and non-open PRs are excluded by the builder so a stranger's
-    /// colliding branch name or a merged PR can't decorate a local branch.)
-    pub by_branch: std::collections::HashMap<String, (ForgeBranchRef, Option<CiStatus>)>,
-    /// Inbound: CI by the `(kind, number)` identity a `daft go pr:N` checkout
-    /// recorded in `branch.<name>.merge` — any state, so a closed PR's
-    /// worktree still shows its CI.
-    pub ci_by_ref: std::collections::HashMap<ForgeBranchRef, Option<CiStatus>>,
+    /// Outbound: the best same-repo PR whose head is this local branch —
+    /// open beats merged, newer number wins, closed and fork PRs never map
+    /// (a stranger's colliding branch name must not decorate a local branch).
+    pub by_branch: std::collections::HashMap<String, PrDecoration>,
+    /// Inbound: every cached row by its `(kind, number)` identity, as
+    /// recorded in `branch.<name>.merge` by a `daft go pr:N` checkout — any
+    /// state, so a merged/closed PR's worktree still shows its fate.
+    pub by_ref: std::collections::HashMap<ForgeBranchRef, PrDecoration>,
 }
 
 impl ForgePrLookup {
     /// Resolve one row's PR cell: a config-recorded ref (inbound) is
-    /// authoritative and only gains CI; otherwise the branch name may match an
-    /// outbound PR from the cache.
+    /// authoritative and only gains status/URL; otherwise the branch name may
+    /// match an outbound PR from the cache.
     pub fn decorate(
         &self,
         branch: &str,
         config_ref: Option<ForgeBranchRef>,
-    ) -> (Option<ForgeBranchRef>, Option<CiStatus>) {
+    ) -> Option<PrDecoration> {
         match config_ref {
-            Some(r) => (Some(r), self.ci_by_ref.get(&r).copied().flatten()),
-            None => match self.by_branch.get(branch) {
-                Some((r, ci)) => (Some(*r), *ci),
-                None => (None, None),
-            },
+            Some(r) => Some(self.by_ref.get(&r).cloned().unwrap_or(PrDecoration {
+                r,
+                status: None,
+                url: None,
+            })),
+            None => self.by_branch.get(branch).cloned(),
         }
     }
 }
@@ -162,55 +209,99 @@ impl ForgePrLookup {
 mod tests {
     use super::*;
 
+    fn decor(r: ForgeBranchRef, status: Option<PrStatus>) -> PrDecoration {
+        PrDecoration {
+            r,
+            status,
+            url: None,
+        }
+    }
+
     #[test]
-    fn decorate_prefers_config_ref_and_adds_ci() {
+    fn decorate_prefers_config_ref_and_adds_status() {
         let inbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
         let mut lookup = ForgePrLookup::default();
-        lookup.ci_by_ref.insert(inbound, Some(CiStatus::Fail));
+        lookup
+            .by_ref
+            .insert(inbound, decor(inbound, Some(PrStatus::Ci(CiStatus::Fail))));
         // An outbound row for the same branch name must NOT shadow config.
         lookup.by_branch.insert(
             "feat/x".into(),
-            (ForgeBranchRef::new(ForgeRefKind::GithubPr, 99), None),
+            decor(ForgeBranchRef::new(ForgeRefKind::GithubPr, 99), None),
         );
 
-        let (r, ci) = lookup.decorate("feat/x", Some(inbound));
-        assert_eq!(r, Some(inbound));
-        assert_eq!(ci, Some(CiStatus::Fail));
+        let d = lookup.decorate("feat/x", Some(inbound)).unwrap();
+        assert_eq!(d.r, inbound);
+        assert_eq!(d.status, Some(PrStatus::Ci(CiStatus::Fail)));
+    }
+
+    #[test]
+    fn decorate_config_ref_without_cache_row_is_bare() {
+        let inbound = ForgeBranchRef::new(ForgeRefKind::GitlabMr, 45);
+        let lookup = ForgePrLookup::default();
+        assert_eq!(
+            lookup.decorate("feat/x", Some(inbound)),
+            Some(decor(inbound, None))
+        );
     }
 
     #[test]
     fn decorate_falls_back_to_outbound_match() {
         let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 42);
         let mut lookup = ForgePrLookup::default();
-        lookup
-            .by_branch
-            .insert("feat/y".into(), (outbound, Some(CiStatus::Pass)));
+        lookup.by_branch.insert(
+            "feat/y".into(),
+            decor(outbound, Some(PrStatus::Ci(CiStatus::Pass))),
+        );
 
         assert_eq!(
             lookup.decorate("feat/y", None),
-            (Some(outbound), Some(CiStatus::Pass))
+            Some(decor(outbound, Some(PrStatus::Ci(CiStatus::Pass))))
         );
-        assert_eq!(lookup.decorate("feat/other", None), (None, None));
+        assert_eq!(lookup.decorate("feat/other", None), None);
     }
 
     #[test]
-    fn ci_status_round_trips_and_has_distinct_glyphs() {
+    fn ci_status_round_trips() {
         for s in [CiStatus::Pass, CiStatus::Fail, CiStatus::Pending] {
             assert_eq!(CiStatus::parse(s.as_str()), Some(s));
         }
         assert_eq!(CiStatus::parse("bogus"), None);
-        let glyphs = [
-            CiStatus::Pass.glyph(),
-            CiStatus::Fail.glyph(),
-            CiStatus::Pending.glyph(),
-        ];
+    }
+
+    #[test]
+    fn pr_status_folds_state_and_ci() {
+        use PrStatus as S;
+        assert_eq!(S::from_state_and_ci("open", None), S::Open);
         assert_eq!(
-            glyphs.len(),
-            glyphs
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len()
+            S::from_state_and_ci("open", Some(CiStatus::Pass)),
+            S::Ci(CiStatus::Pass)
         );
+        assert_eq!(
+            S::from_state_and_ci("merged", Some(CiStatus::Fail)),
+            S::Merged
+        );
+        assert_eq!(S::from_state_and_ci("closed", None), S::Closed);
+        // Unknown states behave like open.
+        assert_eq!(
+            S::from_state_and_ci("locked", Some(CiStatus::Pending)),
+            S::Ci(CiStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn pr_status_glyphs_are_distinct_except_open() {
+        let statuses = [
+            PrStatus::Ci(CiStatus::Pass),
+            PrStatus::Ci(CiStatus::Fail),
+            PrStatus::Ci(CiStatus::Pending),
+            PrStatus::Merged,
+            PrStatus::Closed,
+        ];
+        let glyphs: std::collections::HashSet<_> = statuses.iter().map(|s| s.glyph()).collect();
+        assert_eq!(glyphs.len(), statuses.len());
+        assert!(!glyphs.contains(""), "every non-open status has a glyph");
+        assert_eq!(PrStatus::Open.glyph(), "");
     }
 
     #[test]

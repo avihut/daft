@@ -63,37 +63,48 @@ impl RemoteRefProvider for GitLabProvider {
         into_info(number, response)
     }
 
-    fn fetch_open_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
-        // Same `glab api` + `:id`-placeholder pattern as `fetch_info` (keeps
-        // the `--hostname` flag and repo-context resolution). The REST listing
-        // carries no pipeline status — GitLab CI in the cache is a deferred
-        // follow-up (would cost one extra call per MR), so `ci_status` is
-        // always `None` here.
-        let api_path = "projects/:id/merge_requests?state=opened&per_page=100";
-        let mut args = vec!["api", api_path];
-        if let Some(host) = ctx.hostname {
-            args.extend(["--hostname", host]);
-        }
-
-        let output = cli::run_cli_api(CliApiRequest {
-            tool: ctx.tool_or("glab"),
-            args: &args,
-            repo_root: ctx.repo_root,
-            prompt_env: GLAB_PROMPT_ENV,
-            extra_env: &[],
-            install_hint: INSTALL_HINT,
-            run_context: "failed to run glab api",
-        })?;
-
-        if !output.status.success() {
-            return Err(cli::generic_api_error(
-                "could not list open merge requests via glab",
-                &output,
-            ));
-        }
-
-        parse_mr_list(&output.stdout)
+    fn fetch_list(&self, ctx: &ForgeContext<'_>) -> Result<Vec<PrListEntry>> {
+        // Every open MR plus a window of recently merged ones (the "branch's
+        // MR merged, prune the worktree" signal for `daft list`).
+        let mut entries =
+            run_mr_list(ctx, "projects/:id/merge_requests?state=opened&per_page=100")?;
+        entries.extend(run_mr_list(
+            ctx,
+            "projects/:id/merge_requests?state=merged&order_by=updated_at&per_page=50",
+        )?);
+        Ok(entries)
     }
+}
+
+/// One `glab api` merge-request listing. Same `:id`-placeholder pattern as
+/// `fetch_info` (keeps the `--hostname` flag and repo-context resolution).
+/// The REST listing carries no pipeline status — GitLab CI in the cache is a
+/// deferred follow-up (would cost one extra call per MR), so `ci_status` is
+/// always `None` here.
+fn run_mr_list(ctx: &ForgeContext<'_>, api_path: &str) -> Result<Vec<PrListEntry>> {
+    let mut args = vec!["api", api_path];
+    if let Some(host) = ctx.hostname {
+        args.extend(["--hostname", host]);
+    }
+
+    let output = cli::run_cli_api(CliApiRequest {
+        tool: ctx.tool_or("glab"),
+        args: &args,
+        repo_root: ctx.repo_root,
+        prompt_env: GLAB_PROMPT_ENV,
+        extra_env: &[],
+        install_hint: INSTALL_HINT,
+        run_context: "failed to run glab api",
+    })?;
+
+    if !output.status.success() {
+        return Err(cli::generic_api_error(
+            "could not list merge requests via glab",
+            &output,
+        ));
+    }
+
+    parse_mr_list(&output.stdout)
 }
 
 /// Parse the merge-requests listing into entries. Pure, so the JSON shape

@@ -566,7 +566,9 @@ impl EmitColumns {
         if self.pr {
             h.push("pr_kind".into());
             h.push("pr_number".into());
+            h.push("pr_state".into());
             h.push("ci_status".into());
+            h.push("pr_url".into());
         }
         if self.age {
             h.push("branch_age".into());
@@ -715,23 +717,40 @@ fn build_emit_table(
             );
         }
         if cols.pr {
-            let (forge_ref, ci) = match forge_lookup {
+            use crate::core::worktree::forge_ref::{PrDecoration, PrStatus};
+            let decoration = match forge_lookup {
                 Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
-                None => (info.forge_ref, None),
+                None => info.forge_ref.map(|r| PrDecoration {
+                    r,
+                    status: None,
+                    url: None,
+                }),
             };
-            match forge_ref {
-                Some(r) => {
-                    row.push(Cell::str(r.kind.tag()));
-                    row.push(Cell::Int(r.number as i64));
-                    row.push(match ci {
-                        Some(ci) => Cell::str(ci.as_str()),
+            match decoration {
+                Some(d) => {
+                    row.push(Cell::str(d.r.kind.tag()));
+                    row.push(Cell::Int(d.r.number as i64));
+                    row.push(match d.status {
+                        Some(PrStatus::Merged) => Cell::str("merged"),
+                        Some(PrStatus::Closed) => Cell::str("closed"),
+                        Some(PrStatus::Open | PrStatus::Ci(_)) => Cell::str("open"),
+                        // Config-recorded ref with no cache row: the PR's
+                        // current state is unknown, not "open".
+                        None => Cell::null(),
+                    });
+                    row.push(match d.status {
+                        Some(PrStatus::Ci(ci)) => Cell::str(ci.as_str()),
+                        _ => Cell::null(),
+                    });
+                    row.push(match d.url {
+                        Some(url) => Cell::str(url),
                         None => Cell::null(),
                     });
                 }
                 None => {
-                    row.push(Cell::null());
-                    row.push(Cell::null());
-                    row.push(Cell::null());
+                    for _ in 0..5 {
+                        row.push(Cell::null());
+                    }
                 }
             }
         }
@@ -898,6 +917,7 @@ fn print_table(
         now,
         stat,
         forge_prs: forge_lookup,
+        colors: use_color,
     };
 
     // Pre-compute plain column values for alignment and reuse
@@ -1029,6 +1049,28 @@ fn print_table(
                 format!("{commit_age}{pad} {}", vals.last_commit_subject)
             };
 
+            // PR cell: in color mode the status rides in the number's color
+            // (green/red/yellow CI, purple merged, dim closed) and the cell
+            // links to the PR via OSC 8; colorless mode already carries the
+            // status as a glyph in the text.
+            let pr = if vals.pr.is_empty() || !use_color {
+                vals.pr.clone()
+            } else {
+                use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
+                let colored = match vals.pr_status {
+                    Some(PrStatus::Ci(CiStatus::Pass)) => styles::green(&vals.pr),
+                    Some(PrStatus::Ci(CiStatus::Fail)) => styles::red(&vals.pr),
+                    Some(PrStatus::Ci(CiStatus::Pending)) => styles::yellow(&vals.pr),
+                    Some(PrStatus::Merged) => styles::bright_purple(&vals.pr),
+                    Some(PrStatus::Closed) => styles::dim(&vals.pr),
+                    Some(PrStatus::Open) | None => vals.pr.clone(),
+                };
+                match &vals.pr_url {
+                    Some(url) => styles::hyperlink(&colored, url),
+                    None => colored,
+                }
+            };
+
             let is_non_worktree = info.kind != EntryKind::Worktree;
             if use_color && is_non_worktree {
                 TableRow {
@@ -1058,7 +1100,12 @@ fn print_table(
                     pr: if vals.pr.is_empty() {
                         vals.pr.clone()
                     } else {
-                        styles::dim(&vals.pr)
+                        // Row-level de-emphasis wins over status color for
+                        // non-worktree rows, but the link is orthogonal.
+                        match &vals.pr_url {
+                            Some(url) => styles::hyperlink(&styles::dim(&vals.pr), url),
+                            None => styles::dim(&vals.pr),
+                        }
                     },
                     branch_age: if branch_age.is_empty() {
                         branch_age
@@ -1090,7 +1137,7 @@ fn print_table(
                     base,
                     head,
                     remote,
-                    pr: vals.pr.clone(),
+                    pr,
                     branch_age,
                     owner: vals.owner.clone(),
                     hash: vals.hash.clone(),

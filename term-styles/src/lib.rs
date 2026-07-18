@@ -120,6 +120,16 @@ pub fn dim_underline(text: &str) -> String {
     format!("{DIM}{UNDERLINE}{text}{RESET}")
 }
 
+/// Wraps text in an OSC 8 terminal hyperlink to `url` (ST-terminated).
+/// Supporting terminals (iTerm2, Kitty, WezTerm, recent GNOME/Windows
+/// Terminal) make the text clickable; others ignore the sequence and render
+/// the text unchanged. The caller is responsible for `url` being
+/// control-character-free — a stray ESC/BEL would terminate the payload
+/// early (daft's forge cache sanitizes URLs at the persistence boundary).
+pub fn hyperlink(text: &str, url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
+}
+
 /// Paints one fully-rendered table line with the current-row background —
 /// the blocking-table counterpart of a ratatui row styled with
 /// `Color::Indexed(CURRENT_ROW_BG_INDEX)`.

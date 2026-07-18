@@ -80,10 +80,14 @@ impl ForgePrsRepo {
         Ok(rows)
     }
 
-    /// The open same-repo PR whose head is `branch`, if any — the outbound
-    /// match for `daft list --columns +pr`. Cross-repo rows are excluded so a
-    /// fork branch with a colliding name can't label a local one; non-open
-    /// rows are excluded so a merged PR stops decorating a reused branch.
+    /// The best same-repo PR whose head is `branch`, if any — the outbound
+    /// match for `daft list --columns +pr`. An open PR beats a merged one
+    /// (a reused branch decorates with its live PR, not its history), newer
+    /// number wins within a state. Cross-repo rows are excluded so a fork
+    /// branch with a colliding name can't label a local one; closed-unmerged
+    /// rows are excluded (an abandoned PR shouldn't haunt the branch).
+    /// [`crate::commands::forge_cache::load_lookup`] applies the same rules
+    /// in bulk — keep the two in sync.
     pub fn by_head_branch(
         conn: &Connection,
         repo_hash: &str,
@@ -95,8 +99,8 @@ impl ForgePrsRepo {
                         is_cross_repo, ci_status, url, author, fetched_at
                  FROM forge_prs
                  WHERE repo_hash = ?1 AND head_branch = ?2
-                   AND state = 'open' AND is_cross_repo = 0
-                 ORDER BY number DESC
+                   AND state IN ('open', 'merged') AND is_cross_repo = 0
+                 ORDER BY (state = 'open') DESC, number DESC
                  LIMIT 1",
                 params![repo_hash, branch],
                 row_to_pr,
@@ -204,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn by_head_branch_matches_open_same_repo_only() {
+    fn by_head_branch_prefers_open_and_excludes_forks_and_closed() {
         let (_tmp, conn) = fresh_db();
         ForgePrsRepo::upsert(&conn, &sample(7, "feat/x")).unwrap();
 
@@ -212,19 +216,35 @@ mod tests {
         cross.is_cross_repo = true;
         ForgePrsRepo::upsert(&conn, &cross).unwrap();
 
+        // A reused branch: PR 5 merged, PR 7 reopened the work.
+        let mut old_merged = sample(5, "feat/x");
+        old_merged.state = "merged".into();
+        ForgePrsRepo::upsert(&conn, &old_merged).unwrap();
+
         let mut merged = sample(6, "feat/done");
         merged.state = "merged".into();
         ForgePrsRepo::upsert(&conn, &merged).unwrap();
 
-        // Same-repo open PR matches.
+        let mut closed = sample(4, "feat/abandoned");
+        closed.state = "closed".into();
+        ForgePrsRepo::upsert(&conn, &closed).unwrap();
+
+        // Same-repo open PR wins over both the fork PR and the merged one.
         let hit = ForgePrsRepo::by_head_branch(&conn, "repo", "feat/x")
             .unwrap()
             .unwrap();
-        assert_eq!(hit.number, 7, "the same-repo PR wins over the fork PR");
+        assert_eq!(hit.number, 7);
 
-        // A merged PR no longer decorates its branch.
+        // A merged PR decorates its branch when no open PR shadows it.
+        let hit = ForgePrsRepo::by_head_branch(&conn, "repo", "feat/done")
+            .unwrap()
+            .unwrap();
+        assert_eq!(hit.number, 6);
+        assert_eq!(hit.state, "merged");
+
+        // Closed-without-merge never decorates.
         assert!(
-            ForgePrsRepo::by_head_branch(&conn, "repo", "feat/done")
+            ForgePrsRepo::by_head_branch(&conn, "repo", "feat/abandoned")
                 .unwrap()
                 .is_none()
         );

@@ -11,7 +11,9 @@
 -- primary key, no blobs. `title` is attacker-influenced text (anyone can open
 -- a PR against a public repo) and every reader renders it into a terminal or
 -- a shell completion stream — it is sanitized (control characters stripped)
--- BEFORE persistence so readers can trust the store.
+-- BEFORE persistence so readers can trust the store. `url` is embedded in
+-- OSC 8 terminal hyperlinks by renderers, so it too is sanitized before
+-- persistence (http(s)-only, no control chars; empty string = no link).
 CREATE TABLE forge_prs (
     repo_hash     TEXT    NOT NULL,
     kind          TEXT    NOT NULL, -- 'pr' (GitHub) | 'mr' (GitLab)
