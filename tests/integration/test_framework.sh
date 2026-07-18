@@ -114,6 +114,18 @@ setup() {
         export GIT_CONFIG_GLOBAL="$DAFT_TEST_GLOBAL_CONFIG"
     fi
 
+    # The system-level gitconfig (/etc/gitconfig, Homebrew's etc/gitconfig)
+    # can carry the same behavior-changing settings as the global file; shut
+    # it out entirely (#667).
+    export GIT_CONFIG_NOSYSTEM=1
+
+    # Mirror the matrix/CI env (xtask test-matrix and test.yml both set this
+    # for test_all.sh): suppresses the update-check/trust-prune/log-clean
+    # daemons every daft invocation would otherwise spawn — they orphan under
+    # PID 1 across the suite, and the update check hits the network (#667).
+    # Direct `./test_<name>.sh` runs get the same env as matrix runs.
+    export DAFT_TESTING=1
+
     # Isolate daft config to prevent global config leakage
     export DAFT_CONFIG_DIR="$TEMP_BASE_DIR/daft-config"
     mkdir -p "$DAFT_CONFIG_DIR"

@@ -102,9 +102,10 @@ a substitute. Production two-stage probes that expect
 the call site.
 
 **Never let a test write daft's real config/state/data dirs.** A tripwire —
-`xtask real-state-guard`, wired into `test:{unit,integration,manual}` and `ci`
-through `mise-tasks/test/_state_guard_lib.sh` — fingerprints the real
-`~/Library/Application Support/daft` (catalog DB + `repos.json`) and
+`xtask real-state-guard`, wired into `test:{unit,integration,manual}`,
+`completions:test`, and `ci` through `mise-tasks/test/_state_guard_lib.sh` —
+fingerprints the real `~/Library/Application Support/daft` (catalog DB + every
+top-level config file: `repos.json`, update-check stamps, …) and
 `~/.local/state/daft` (`jobs/` entry set) before each suite and fails the run if
 they change, locally and in CI. Tests that exercise hook / visitor-seed code
 paths open the coordinator store via `paths::for_repo`, which resolves

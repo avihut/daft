@@ -21,7 +21,10 @@
 //! centralized-layout worktrees, so a wholesale walk would be slow and trip on
 //! unrelated edits. Instead:
 //!   * `<data>/daft/catalog/`     — content-hash every file (the DB triplet).
-//!   * `<config>/daft/repos.json` — content-hash the repo/trust registry.
+//!   * `<config>/daft/`           — content-hash every top-level file: the
+//!     `repos.json` repo/trust registry plus the update-check stamps (#667
+//!     widened this from `repos.json` alone). Worktrees hosted alongside are
+//!     directories, which the file-only scan skips.
 //!   * `<state>/daft/` + `jobs/`  — a compact entry-set digest (count + a hash
 //!     of the sorted child names). These dirs are litter-prone — the real
 //!     `jobs/` can hold tens of thousands of orphaned dirs (#669) — so we store
@@ -81,8 +84,12 @@ struct Snapshot {
     /// `filename -> content hash` for every file directly in
     /// `<data>/daft/catalog/`. Empty when the catalog dir does not exist.
     catalog: BTreeMap<String, String>,
-    /// Content hash of `<config>/daft/repos.json`, or `None` when absent.
-    repos_json: Option<String>,
+    /// `filename -> content hash` for every file directly in `<config>/daft/`
+    /// (`repos.json`, `update-check.json`, …). Empty when the config dir does
+    /// not exist. Deliberately file-only: on macOS this dir can also host
+    /// centralized-layout worktrees, which are subdirectories.
+    #[serde(default)]
+    config_files: BTreeMap<String, String>,
     /// Entry-set digest of `<state>/daft/`.
     state_top: DirDigest,
     /// Entry-set digest of `<state>/daft/jobs/`.
@@ -117,8 +124,11 @@ impl Snapshot {
         if self.catalog != now.catalog {
             out.push("data:   the repo catalog under <data>/daft/catalog/ changed".to_string());
         }
-        if self.repos_json != now.repos_json {
-            out.push("config: <config>/daft/repos.json changed".to_string());
+        if self.config_files != now.config_files {
+            out.push(format!(
+                "config: files under <config>/daft/ changed ({})",
+                changed_keys(&self.config_files, &now.config_files).join(", ")
+            ));
         }
         if self.state_top != now.state_top {
             out.push(format!(
@@ -145,11 +155,23 @@ impl Snapshot {
 fn capture() -> Result<Snapshot> {
     Ok(Snapshot {
         catalog: hash_dir_files(&real_data_dir()?.join("catalog"))?,
-        repos_json: hash_file_opt(&real_config_dir()?.join("repos.json"))?,
+        config_files: hash_dir_files(&real_config_dir()?)?,
         state_top: dir_digest(&real_state_dir())?,
         state_jobs: dir_digest(&real_state_dir().join("jobs"))?,
         claude_skill: hash_file_opt(&real_claude_skill_file()?)?,
     })
+}
+
+/// Names of files added, removed, or rewritten between two filename→hash
+/// maps, so the tripwire names *which* config files moved.
+fn changed_keys(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<String> {
+    let mut names = Vec::new();
+    for k in a.keys().chain(b.keys()) {
+        if a.get(k) != b.get(k) && !names.contains(k) {
+            names.push(k.clone());
+        }
+    }
+    names
 }
 
 /// Build the failure message, appending the concrete real paths so the reader
@@ -342,9 +364,8 @@ mod tests {
         // reads as a leak.
         let missing = PathBuf::from("/definitely/not/a/real/daft/dir/zzz");
         assert!(hash_dir_files(&missing.join("catalog")).unwrap().is_empty());
-        assert!(hash_file_opt(&missing.join("repos.json"))
-            .unwrap()
-            .is_none());
+        assert!(hash_dir_files(&missing).unwrap().is_empty());
+        assert!(hash_file_opt(&missing.join("SKILL.md")).unwrap().is_none());
         assert!(!dir_digest(&missing).unwrap().exists);
     }
 
@@ -372,10 +393,22 @@ mod tests {
         assert_eq!(base.diff(&catalog_changed).len(), 1);
         assert!(base.diff(&catalog_changed)[0].contains("catalog"));
 
-        let repos_changed = Snapshot {
-            repos_json: Some("abc".to_string()),
-            ..Snapshot::default()
-        };
+        // #667: a config write beyond repos.json (the update-check stamp) must
+        // trip the config surface — hashing only repos.json missed it — and
+        // the message must name the file.
+        let mut config_changed = Snapshot::default();
+        config_changed
+            .config_files
+            .insert("update-check.json".to_string(), "abc".to_string());
+        let config_msgs = base.diff(&config_changed);
+        assert_eq!(config_msgs.len(), 1);
+        assert!(config_msgs[0].contains("config"));
+        assert!(config_msgs[0].contains("update-check.json"));
+
+        let mut repos_changed = Snapshot::default();
+        repos_changed
+            .config_files
+            .insert("repos.json".to_string(), "abc".to_string());
         assert!(base.diff(&repos_changed)[0].contains("repos.json"));
 
         let jobs_changed = Snapshot {
@@ -403,6 +436,8 @@ mod tests {
         let mut snap = Snapshot::default();
         snap.catalog
             .insert("catalog.db".to_string(), "1234".to_string());
+        snap.config_files
+            .insert("update-check.json".to_string(), "5678".to_string());
         snap.state_top = DirDigest {
             exists: true,
             count: 3,
