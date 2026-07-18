@@ -633,9 +633,11 @@ _daft() {
                 fi
                 # Catalog repo names first, then directories (`repo info .`,
                 # a subdirectory, or any worktree resolves to its repo).
-                local -a repos
+                local -a repos dirs
                 mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                COMPREPLY=( "${repos[@]}" $(compgen -d -- "$cur") )
+                mapfile -t dirs < <(compgen -d -- "$cur")
+                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
+                compopt -o filenames 2>/dev/null || true
                 return 0
                 ;;
             install)
@@ -652,9 +654,11 @@ _daft() {
                     COMPREPLY=( $(compgen -W "--name --kind -h --help" -- "$cur") )
                     return 0
                 fi
-                local -a repos
+                local -a repos dirs
                 mapfile -t repos < <(daft __complete repo-name "$cur" 2>/dev/null | cut -f1)
-                COMPREPLY=( "${repos[@]}" $(compgen -d -- "$cur") )
+                mapfile -t dirs < <(compgen -d -- "$cur")
+                COMPREPLY=( "${repos[@]}" "${dirs[@]}" )
+                compopt -o filenames 2>/dev/null || true
                 return 0
                 ;;
             list)
@@ -689,9 +693,9 @@ _daft() {
                     COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
                     return 0
                 fi
-                local labels
-                labels=$(daft __complete relation-label "$cur" 2>/dev/null)
-                COMPREPLY=( $(compgen -W "$labels" -- "$cur") )
+                local -a labels
+                mapfile -t labels < <(daft __complete relation-label "$cur" 2>/dev/null)
+                COMPREPLY=( "${labels[@]}" )
                 return 0
                 ;;
         esac

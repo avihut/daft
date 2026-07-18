@@ -765,6 +765,48 @@ mod tests {
         );
     }
 
+    /// Regression: the umbrella `repo` arms that append directory or relation
+    /// completions must fill COMPREPLY from `mapfile`d arrays, never unquoted
+    /// command substitution. `COMPREPLY=( "${repos[@]}" $(compgen -d ...) )`
+    /// word-splits a directory like `my service/` into `my` and `service/`,
+    /// and `compgen -W "$labels"` splits a relation label declared with
+    /// `--name "payments service"`. (End-to-end coverage of the `mapfile`
+    /// idiom for whitespace paths lives in
+    /// `bash_path_accepting_commands_offer_directory_completion`; these
+    /// assertions guard the hand-written repo `info`/`link`/`unlink` arms.)
+    #[test]
+    fn repo_dir_and_label_completions_are_not_word_split() {
+        let bash = bash::DAFT_BASH_COMPLETIONS;
+        let repo = bash
+            .split("# repo: complete subcommands")
+            .nth(1)
+            .expect("bash umbrella must have a repo section");
+
+        // info/link append directories to the repo-name array: they must
+        // `mapfile` the dirs, never splice `"${repos[@]}" $(compgen -d ...)`.
+        assert!(
+            repo.contains("mapfile -t dirs < <(compgen -d -- \"$cur\")"),
+            "repo info/link arms must fill directories via `mapfile -t dirs`"
+        );
+        assert!(
+            !repo.contains("\"${repos[@]}\" $(compgen -d"),
+            "repo arms must not splice unquoted `$(compgen -d ...)` alongside \
+             repo names — it word-splits directories containing spaces"
+        );
+
+        // unlink completes relation labels, which may contain spaces: fill via
+        // `mapfile`, never re-split through `compgen -W "$labels"`.
+        assert!(
+            repo.contains("mapfile -t labels < <(daft __complete relation-label \"$cur\""),
+            "repo unlink arm must fill labels via `mapfile -t labels`"
+        );
+        assert!(
+            !repo.contains("compgen -W \"$labels\""),
+            "repo unlink arm must not re-split labels through `compgen -W` — \
+             it breaks relation labels containing spaces"
+        );
+    }
+
     /// Repo-name completions must be case-insensitive at the *shell* layer,
     /// not just in the `__complete repo-name` helper. The helper case-folds
     /// the prefix, so the shell must not re-filter case-sensitively: bash
