@@ -503,7 +503,9 @@ impl TuiState {
                     };
                 }
             }
-            DagEvent::WorktreeInfoUpdated { .. } | DagEvent::WorktreeInfoCollectionDone => {
+            DagEvent::WorktreeInfoUpdated { .. }
+            | DagEvent::WorktreeInfoCollectionDone
+            | DagEvent::ForgePrsRefreshed(_) => {
                 self.live.apply_event(event);
             }
         }

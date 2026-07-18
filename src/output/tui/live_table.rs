@@ -119,6 +119,12 @@ impl LiveTable {
 
     pub fn apply_event(&mut self, event: &DagEvent) {
         match event {
+            DagEvent::ForgePrsRefreshed(lookup) => {
+                // The next frame recomputes column values against the fresh
+                // lookup — no per-row patching needed, the PR cell derives
+                // from cfg at render time.
+                self.cfg.forge_prs = Some(lookup.clone());
+            }
             DagEvent::WorktreeInfoUpdated {
                 branch_name,
                 patch,
@@ -333,6 +339,30 @@ mod tests {
         assert!(!t.collection_complete);
         t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
         assert!(t.collection_complete);
+    }
+
+    #[test]
+    fn forge_refresh_event_swaps_the_pr_lookup_mid_run() {
+        use crate::core::worktree::forge_ref::{
+            ForgeBranchRef, ForgePrLookup, ForgeRefKind, PrDecoration, PrStatus,
+        };
+
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        assert!(t.cfg.forge_prs.is_none(), "cold cache: no lookup at start");
+
+        let mut fresh = ForgePrLookup::default();
+        let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
+        fresh.by_branch.insert(
+            "feat/x".into(),
+            PrDecoration {
+                r,
+                status: Some(PrStatus::Merged),
+                url: None,
+            },
+        );
+        t.apply_event(&DagEvent::ForgePrsRefreshed(fresh.clone()));
+
+        assert_eq!(t.cfg.forge_prs, Some(fresh));
     }
 
     #[test]

@@ -175,16 +175,25 @@ pub fn run_live(args: Args) -> Result<()> {
         None
     };
 
-    // Forge-PR cache: read decorations (outbound PR numbers + CI) and kick a
-    // detached refresh, only when the PR column is in play — explicitly asking
-    // for +pr is asking for forge-derived data (the local-first judgment
-    // call). Rendering uses whatever the cache holds now; the refresh feeds
-    // the next run. Best-effort — a cold cache leaves config-only cells.
+    // Forge-PR cache: read decorations (outbound PR numbers + statuses) and
+    // kick a detached refresh, only when the PR column is in play —
+    // explicitly asking for +pr is asking for forge-derived data (the
+    // local-first judgment call). The first paint uses whatever the cache
+    // holds now; when a refresh was actually spawned, a poll thread (started
+    // below, once the event channel exists) watches the store and swaps the
+    // lookup into the live table mid-run, so even a cold first invocation
+    // decorates within a couple of seconds instead of on the *next* run.
+    // Best-effort — a cold cache and a failed refresh just leave
+    // config-only cells.
+    let mut forge_refresh_pending = false;
+    let mut forge_repo_hash: Option<String> = None;
     let forge_lookup = if fields.contains(FieldSet::FORGE_REF) {
-        crate::commands::forge_cache::spawn_background_refresh();
-        crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
-            .ok()
-            .map(|h| crate::commands::forge_cache::load_lookup(&h))
+        forge_refresh_pending = crate::commands::forge_cache::spawn_background_refresh();
+        forge_repo_hash =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir).ok();
+        forge_repo_hash
+            .as_deref()
+            .map(crate::commands::forge_cache::load_lookup)
     } else {
         None
     };
@@ -197,6 +206,9 @@ pub fn run_live(args: Args) -> Result<()> {
         .collect();
 
     let (tx, rx) = mpsc::channel::<DagEvent>();
+    // Cloned before the collector consumes `tx`; feeds the forge-refresh
+    // poll thread spawned after TUI state exists.
+    let forge_poll_tx = tx.clone();
 
     // Spawn the streaming collector. Cells stream into LiveTable as they
     // arrive.
@@ -241,7 +253,31 @@ pub fn run_live(args: Args) -> Result<()> {
     );
     // Post-set like `unowned_start_index`: TuiState::new stays untouched for
     // the one caller that decorates.
-    state.live.cfg.forge_prs = forge_lookup;
+    state.live.cfg.forge_prs = forge_lookup.clone();
+
+    // Watch for the detached forge refresh landing while the table is live:
+    // poll the store (cheap reader-pool read, no network — the render layer
+    // never touches the store itself) and deliver the fresh lookup through
+    // the same event channel the collectors use. One-shot: the refresh
+    // rewrites its snapshot in a single transaction, so the first observed
+    // change is the whole update. No join — the thread spawns no
+    // subprocesses and dies with the process (or at the deadline when the
+    // refresh never lands: gh missing, network down).
+    if forge_refresh_pending && let Some(hash) = forge_repo_hash {
+        let seed = forge_lookup.unwrap_or_default();
+        let forge_tx = forge_poll_tx;
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(750));
+                let fresh = crate::commands::forge_cache::load_lookup(&hash);
+                if fresh != seed {
+                    let _ = forge_tx.send(DagEvent::ForgePrsRefreshed(fresh));
+                    return;
+                }
+            }
+        });
+    }
 
     // Single source of truth for cancellation: the renderer's Ctrl-C handler
     // flips the same flag the collector workers observe between cluster calls.

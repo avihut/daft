@@ -671,6 +671,12 @@ pub enum DagEvent {
         source: PatchSource,
     },
 
+    /// The forge-PR cache finished a background refresh while the table is
+    /// live: swap in the fresh PR-column lookup so rows re-decorate without
+    /// waiting for the next invocation. Emitted by `daft list`'s cache poll
+    /// (command layer — renderers never read the store), not by collectors.
+    ForgePrsRefreshed(super::forge_ref::ForgePrLookup),
+
     /// The initial `source=Collector` run completed. Subset re-runs
     /// (`PostFetch`, `PostTask`) do not emit this — they end silently.
     WorktreeInfoCollectionDone,
