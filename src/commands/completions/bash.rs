@@ -921,6 +921,12 @@ _daft() {
                 _git_worktree_sync
                 return 0
                 ;;
+            push)
+                COMP_WORDS=("git-worktree-push" "${COMP_WORDS[@]:2}")
+                COMP_CWORD=$((COMP_CWORD - 1))
+                _git_worktree_push
+                return 0
+                ;;
             remove)
                 COMP_WORDS=("daft-remove" "${COMP_WORDS[@]:2}")
                 COMP_CWORD=$((COMP_CWORD - 1))
@@ -959,7 +965,7 @@ _daft() {
         if [[ "$cur" == -* ]]; then
             COMPREPLY=( $(compgen -W "--version -V --help -h -C" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run update list prune rename sync remove merge worktree-merge adopt eject" -- "$cur") )
+            COMPREPLY=( $(compgen -W "activate hooks shell-init multi-remote release-notes doctor layout shared config file repo skill clone init install go start carry exec run update list prune rename sync push remove merge worktree-merge adopt eject" -- "$cur") )
         fi
         return 0
     fi

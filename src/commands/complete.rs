@@ -192,6 +192,12 @@ fn complete(
             &CONFIG_RENAME,
         )?)),
 
+        // git-worktree-push: single branch positional (worktree + local)
+        ("git-worktree-push", 1) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_PUSH,
+        )?)),
+
         // git-worktree-prune: no arguments
         ("git-worktree-prune", _) => Ok(vec![]),
 
@@ -2217,6 +2223,17 @@ const CONFIG_EXEC: RichCompletionConfig = RichCompletionConfig {
 };
 
 const CONFIG_BRANCH: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: true,
+    include_remote: false,
+    exclude_current: false,
+};
+
+/// `daft push <branch>`: any pushable branch — checked-out worktree branches
+/// first (the command's raison d'être), then plain local branches (pushed
+/// from the invoking cwd). Remote-tracking names are not pushable targets.
+/// The current branch stays in (pushing it is the valid no-op resolution).
+const CONFIG_PUSH: RichCompletionConfig = RichCompletionConfig {
     include_worktrees: true,
     include_local: true,
     include_remote: false,

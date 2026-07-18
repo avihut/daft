@@ -39,6 +39,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["shared"], "daft-shared"),
     (&["exec"], "git-worktree-exec"),
     (&["run"], "daft-run"),
+    (&["push"], "git-worktree-push"),
 ];
 
 /// Available daft commands that need completion scripts
@@ -58,6 +59,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "daft-remove",
     "daft-rename",
     "git-worktree-sync",
+    "git-worktree-push",
     "daft-shared",
     "daft-install",
     "daft-file",
@@ -82,6 +84,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "daft-remove" => Some(crate::commands::worktree_branch::RemoveArgs::command()),
         "daft-rename" => Some(crate::commands::worktree_branch::RenameArgs::command()),
         "git-worktree-sync" => Some(crate::commands::sync::Args::command()),
+        "git-worktree-push" => Some(crate::commands::push::Args::command()),
         "daft-shared" => Some(crate::commands::shared::Args::command()),
         "daft-install" => Some(crate::commands::install::Args::command()),
         "daft-file" => Some(crate::commands::file::merge::Args::command()),
@@ -104,6 +107,7 @@ pub(super) fn uses_rich_completions(command_name: &str) -> bool {
             | "git-worktree-fetch"
             | "git-worktree-branch"
             | "git-worktree-exec"
+            | "git-worktree-push"
     )
 }
 
