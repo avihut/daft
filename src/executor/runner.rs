@@ -1276,6 +1276,75 @@ mod tests {
     }
 
     #[test]
+    fn pre_raised_cancel_cancels_all_parallel_jobs() {
+        // Covers the parallel DAG closure (run_dag_execution): a pre-raised
+        // cancel short-circuits every no-dep node to Cancelled (not Skipped),
+        // so a Parallel task interrupted before it starts aggregates to exit
+        // 130 rather than a false success.
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let cancel = CancelFlag::new();
+        cancel.escalate(); // level 1 before anything runs
+
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job("b", "echo b"),
+            make_job("c", "echo c"),
+        ];
+        let results = run_jobs_with_cancel(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|r| r.status == NodeStatus::Cancelled),
+            "every no-dep parallel node must short-circuit to Cancelled: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pre_raised_cancel_cancels_the_dag_frontier_with_needs() {
+        // Covers the sequential DAG closure (run_dag_sequential_exec): a needs
+        // chain routes through the DAG scheduler, where a pre-raised cancel
+        // short-circuits the frontier node to Cancelled and cascades dependents
+        // to DepFailed. What matters is a Cancelled reaches the aggregate (exit
+        // 130) and nothing reads as a benign Skipped false success.
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let cancel = CancelFlag::new();
+        cancel.escalate(); // level 1 before anything runs
+
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job_with_needs("b", "echo b", vec!["a"]),
+            make_job_with_needs("c", "echo c", vec!["b"]),
+        ];
+        let results = run_jobs_with_cancel(
+            &jobs,
+            ExecutionMode::Sequential,
+            &presenter,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+
+        assert!(
+            results.iter().any(|r| r.status == NodeStatus::Cancelled),
+            "the DAG frontier must short-circuit to Cancelled: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+        assert!(
+            results.iter().all(|r| r.status != NodeStatus::Skipped),
+            "a cancel-induced skip must not read as a benign Skipped: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn cancel_none_runs_all_jobs_normally() {
         // The delegating no-cancel path must be behavior-identical.
         let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
