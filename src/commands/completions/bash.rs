@@ -19,17 +19,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
 
     output.push_str(&format!("_{func_name}() {{\n"));
     output.push_str("    local cur prev words cword\n");
-    // Position-1 accepts pr:/mr: forge targets on these commands only.
-    let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
-    // checkout/go complete pr:<n>/mr:<n> targets; bash's COMP_WORDBREAKS
-    // splits words at ':', so keep it in $cur (-n :) and strip the colon
-    // prefix from COMPREPLY afterwards (__ltrim_colon_completions) — the
-    // standard bash-completion idiom for colon-bearing candidates.
-    if takes_forge_targets {
-        output.push_str("    _init_completion -n : || return\n");
-    } else {
-        output.push_str("    _init_completion || return\n");
-    }
+    output.push_str("    _init_completion || return\n");
     output.push('\n');
 
     if has_branches {
@@ -42,11 +32,6 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
         ));
         output.push_str("        if [[ -n \"$branches\" ]]; then\n");
         output.push_str("            COMPREPLY=( $(compgen -W \"$branches\" -- \"$cur\") )\n");
-        if takes_forge_targets {
-            output.push_str(
-                "            declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n",
-            );
-        }
         output.push_str("            return 0\n");
         output.push_str("        fi\n");
         output.push_str("    fi\n");
@@ -236,6 +221,21 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     let flags_joined = all_flags.join(" ");
 
     let func_name = command_name.replace('-', "_");
+    // checkout/go complete pr:<n>/mr:<n> forge targets; bash's COMP_WORDBREAKS
+    // splits words at ':', so keep it in $cur (-n :) and strip the colon
+    // prefix from COMPREPLY afterwards (__ltrim_colon_completions) — the
+    // standard bash-completion idiom for colon-bearing candidates.
+    let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
+    let init_completion = if takes_forge_targets {
+        "_init_completion -n : || return"
+    } else {
+        "_init_completion || return"
+    };
+    let ltrim_post = if takes_forge_targets {
+        "        declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n"
+    } else {
+        ""
+    };
     let fetch_flag = if uses_fetch_on_miss(command_name) {
         " --fetch-on-miss"
     } else {
@@ -318,7 +318,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     let mut output = format!(
         r#"_{func_name}() {{
     local cur prev words cword
-    _init_completion || return
+    {init_completion}
 
 {repo_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
@@ -331,7 +331,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true
-    fi
+{ltrim_post}    fi
 {path_post}    if [[ ${{#COMPREPLY[@]}} -gt 0 ]]; then
         return 0
     fi
