@@ -175,6 +175,20 @@ pub fn run_live(args: Args) -> Result<()> {
         None
     };
 
+    // Forge-PR cache: read decorations (outbound PR numbers + CI) and kick a
+    // detached refresh, only when the PR column is in play — explicitly asking
+    // for +pr is asking for forge-derived data (the local-first judgment
+    // call). Rendering uses whatever the cache holds now; the refresh feeds
+    // the next run. Best-effort — a cold cache leaves config-only cells.
+    let forge_lookup = if fields.contains(FieldSet::FORGE_REF) {
+        crate::commands::forge_cache::spawn_background_refresh();
+        crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
+            .ok()
+            .map(|h| crate::commands::forge_cache::load_lookup(&h))
+    } else {
+        None
+    };
+
     // Build TUI state — pin_default_branch=false, partition_by_owner=false
     // for `daft list` (per spec).
     let tui_columns: Vec<Column> = selected_columns
@@ -206,7 +220,7 @@ pub fn run_live(args: Args) -> Result<()> {
         tx,
     );
 
-    let state = TuiState::new(
+    let mut state = TuiState::new(
         Vec::new(), // no phases
         worktree_infos,
         project_root.clone(),
@@ -225,6 +239,9 @@ pub fn run_live(args: Args) -> Result<()> {
         // and transitions when its patch lands.
         !fields,
     );
+    // Post-set like `unowned_start_index`: TuiState::new stays untouched for
+    // the one caller that decorates.
+    state.live.cfg.forge_prs = forge_lookup;
 
     // Single source of truth for cancellation: the renderer's Ctrl-C handler
     // flips the same flag the collector workers observe between cluster calls.

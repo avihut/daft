@@ -3,6 +3,7 @@
 //! These formatters produce plain or ANSI-colored strings used by both the
 //! `tabled`-based CLI table (`list.rs`) and the ratatui TUI table (`tui.rs`).
 
+use crate::core::worktree::forge_ref::{CiStatus, ForgePrLookup};
 use crate::core::worktree::list::{Stat, WorktreeInfo};
 use crate::styles;
 use pathdiff::diff_paths;
@@ -289,6 +290,8 @@ pub struct ColumnValues {
     pub changes: String,
     pub remote: String,
     pub pr: String,
+    /// CI state behind the `pr` cell's glyph — renderers color by it.
+    pub pr_ci: Option<CiStatus>,
     pub branch_age: String,
     pub last_commit_age: String,
     pub last_commit_subject: String,
@@ -304,6 +307,10 @@ pub struct ColumnContext<'a> {
     pub cwd: &'a Path,
     pub now: i64,
     pub stat: Stat,
+    /// Forge-PR cache decorations for the PR column (outbound PR numbers +
+    /// CI states). `None` when the column isn't selected or no cache exists —
+    /// the cell then falls back to config-recorded refs only.
+    pub forge_prs: Option<&'a ForgePrLookup>,
 }
 
 /// Format head status using line-level counts: combined staged+unstaged
@@ -400,7 +407,19 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let hash = info.last_commit_hash.clone().unwrap_or_default();
 
-    let pr = info.forge_ref.map(|r| r.short()).unwrap_or_default();
+    // PR cell: config-recorded ref (inbound checkout), else an outbound match
+    // from the forge cache; CI state renders as a trailing glyph (`#723 ✓`) —
+    // the glyph carries the meaning, color (applied by renderers via `pr_ci`)
+    // only reinforces.
+    let (forge_ref, pr_ci) = match ctx.forge_prs {
+        Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
+        None => (info.forge_ref, None),
+    };
+    let pr = match (forge_ref, pr_ci) {
+        (Some(r), Some(ci)) => format!("{} {}", r.short(), ci.glyph()),
+        (Some(r), None) => r.short(),
+        (None, _) => String::new(),
+    };
 
     ColumnValues {
         branch,
@@ -410,6 +429,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         changes,
         remote,
         pr,
+        pr_ci,
         branch_age,
         last_commit_age,
         last_commit_subject,
@@ -433,6 +453,7 @@ mod tests {
             cwd: Path::new("/"),
             now: 0,
             stat: Stat::Summary,
+            forge_prs: None,
         };
         let mut info = WorktreeInfo::empty("feat");
 
@@ -443,6 +464,45 @@ mod tests {
         assert_eq!(compute_column_values(&info, &ctx).pr, "!45");
 
         info.forge_ref = None;
+        assert_eq!(compute_column_values(&info, &ctx).pr, "");
+    }
+
+    #[test]
+    fn pr_column_decorates_from_the_forge_cache() {
+        use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::WorktreeInfo;
+
+        let inbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
+        let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 723);
+        let mut lookup = ForgePrLookup::default();
+        lookup.ci_by_ref.insert(inbound, Some(CiStatus::Fail));
+        lookup
+            .by_branch
+            .insert("daft-127/feat".into(), (outbound, Some(CiStatus::Pass)));
+
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: Some(&lookup),
+        };
+
+        // Outbound: a plain local branch gains its open PR + CI glyph.
+        let info = WorktreeInfo::empty("daft-127/feat");
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.pr, "#723 \u{2713}");
+        assert_eq!(vals.pr_ci, Some(CiStatus::Pass));
+
+        // Inbound: the config ref is authoritative, cache only adds CI.
+        let mut info = WorktreeInfo::empty("contributor-feature");
+        info.forge_ref = Some(inbound);
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.pr, "#7 \u{2717}");
+        assert_eq!(vals.pr_ci, Some(CiStatus::Fail));
+
+        // No match anywhere: empty cell.
+        let info = WorktreeInfo::empty("plain-branch");
         assert_eq!(compute_column_values(&info, &ctx).pr, "");
     }
 

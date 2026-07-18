@@ -38,27 +38,10 @@ pub struct BaseRepo {
     pub repo: String,
 }
 
-/// CI rollup for one PR/MR, derived from the forge's check contexts. Any
-/// failing context dominates, then any still-running one; all-green (or
-/// neutral/skipped) is `Pass`. A PR with no checks at all has no status
-/// (`Option<CiStatus>` is `None`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CiStatus {
-    Pass,
-    Fail,
-    Pending,
-}
-
-impl CiStatus {
-    /// The TEXT value persisted in the forge-PR cache.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CiStatus::Pass => "pass",
-            CiStatus::Fail => "fail",
-            CiStatus::Pending => "pending",
-        }
-    }
-}
+// The CI rollup enum lives in core next to `ForgeBranchRef` (renderers use it
+// without depending on the forge CLI layer); re-exported here so provider code
+// and consumers keep one import path.
+pub use crate::core::worktree::forge_ref::CiStatus;
 
 /// One entry of a provider's open-PR/MR listing — the forge-cache refresh
 /// payload. Leaner than [`RemoteRefInfo`]: a listing decorates `daft list`

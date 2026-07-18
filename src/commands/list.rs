@@ -418,6 +418,19 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Forge-PR decoration: read the cache and kick a detached refresh, only
+    // when the PR column is in play — explicitly asking for +pr is asking for
+    // forge-derived data (the local-first judgment call). The render below
+    // uses whatever the cache holds now; the refresh feeds the next run.
+    let forge_lookup = if has_pr {
+        crate::commands::forge_cache::spawn_background_refresh();
+        crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
+            .ok()
+            .map(|h| crate::commands::forge_cache::load_lookup(&h))
+    } else {
+        None
+    };
+
     if args.merging {
         infos.retain(|info| {
             info.path.as_ref().is_some_and(|p| {
@@ -432,7 +445,15 @@ fn run_blocking(args: Args) -> Result<()> {
     let now = Utc::now().timestamp();
 
     if args.emit.is_structured() {
-        let table = build_emit_table(&infos, &project_root, &cwd, stat, selected_columns, now);
+        let table = build_emit_table(
+            &infos,
+            &project_root,
+            &cwd,
+            stat,
+            selected_columns,
+            now,
+            forge_lookup.as_ref(),
+        );
         return emit::emit_and_handle(
             "git-worktree-list",
             EmitPayload::Tabular(table),
@@ -449,6 +470,7 @@ fn run_blocking(args: Args) -> Result<()> {
         stat,
         selected_columns,
         &sort_spec,
+        forge_lookup.as_ref(),
     );
     Ok(())
 }
@@ -544,6 +566,7 @@ impl EmitColumns {
         if self.pr {
             h.push("pr_kind".into());
             h.push("pr_number".into());
+            h.push("ci_status".into());
         }
         if self.age {
             h.push("branch_age".into());
@@ -570,6 +593,7 @@ fn build_emit_table(
     stat: Stat,
     selected_columns: &[ListColumn],
     now: i64,
+    forge_lookup: Option<&crate::core::worktree::forge_ref::ForgePrLookup>,
 ) -> Table {
     let is_default_columns = selected_columns == ListColumn::list_defaults();
     let cols = EmitColumns::compute(is_default_columns, selected_columns, stat);
@@ -691,17 +715,21 @@ fn build_emit_table(
             );
         }
         if cols.pr {
-            use crate::core::worktree::forge_ref::ForgeRefKind;
-            match info.forge_ref {
+            let (forge_ref, ci) = match forge_lookup {
+                Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
+                None => (info.forge_ref, None),
+            };
+            match forge_ref {
                 Some(r) => {
-                    let kind = match r.kind {
-                        ForgeRefKind::GithubPr => "pr",
-                        ForgeRefKind::GitlabMr => "mr",
-                    };
-                    row.push(Cell::str(kind));
+                    row.push(Cell::str(r.kind.tag()));
                     row.push(Cell::Int(r.number as i64));
+                    row.push(match ci {
+                        Some(ci) => Cell::str(ci.as_str()),
+                        None => Cell::null(),
+                    });
                 }
                 None => {
+                    row.push(Cell::null());
                     row.push(Cell::null());
                     row.push(Cell::null());
                 }
@@ -816,6 +844,7 @@ fn print_table(
     stat: Stat,
     selected_columns: &[ListColumn],
     sort_spec: &SortSpec,
+    forge_lookup: Option<&crate::core::worktree::forge_ref::ForgePrLookup>,
 ) {
     if infos.is_empty() {
         let _ = crate::commands::list_empty::print(
@@ -868,6 +897,7 @@ fn print_table(
         cwd,
         now,
         stat,
+        forge_prs: forge_lookup,
     };
 
     // Pre-compute plain column values for alignment and reuse
@@ -1335,6 +1365,7 @@ mod tests {
             Stat::Summary,
             selected,
             0,
+            None,
         );
         // Default columns include: kind, name, is_current, is_default_branch,
         // is_sandbox, path, ahead, behind, staged, unstaged, untracked,
@@ -1457,6 +1488,7 @@ mod tests {
             Stat::Summary,
             selected,
             0,
+            None,
         );
         assert!(table.headers.contains(&"size_bytes".to_string()));
         // One data row + one TOTAL row.

@@ -66,6 +66,35 @@ fn read_inner(repo_hash: &str) -> Option<Vec<ForgePrRow>> {
     ForgePrsRepo::list_for_repo(&conn, repo_hash).ok()
 }
 
+/// Build the PR-column lookup for `repo_hash` from the cache. Outbound
+/// matches (`by_branch`) take only open same-repo PRs — a stranger's fork
+/// branch with a colliding name or a merged PR must not decorate a local
+/// branch; inbound CI (`ci_by_ref`) covers every cached row so a checked-out
+/// PR shows its CI regardless of state. Same filters as the SQL in
+/// `ForgePrsRepo::by_head_branch`, applied here because one bulk read beats
+/// a query per row.
+pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePrLookup {
+    use crate::core::worktree::forge_ref::{CiStatus, ForgeBranchRef, ForgePrLookup};
+
+    let mut lookup = ForgePrLookup::default();
+    for row in read_prs(repo_hash) {
+        let kind = match row.kind.as_str() {
+            "pr" => ForgeRefKind::GithubPr,
+            "mr" => ForgeRefKind::GitlabMr,
+            _ => continue,
+        };
+        let forge_ref = ForgeBranchRef::new(kind, row.number);
+        let ci = row.ci_status.as_deref().and_then(CiStatus::parse);
+        lookup.ci_by_ref.insert(forge_ref, ci);
+        if row.state == "open" && !row.is_cross_repo {
+            lookup
+                .by_branch
+                .insert(row.head_branch.clone(), (forge_ref, ci));
+        }
+    }
+    lookup
+}
+
 /// Replace the cached snapshot for one `(repo, kind)` with `entries`, in a
 /// single transaction. Best-effort: creates the store if missing, swallows
 /// any failure. Titles are sanitized here.
@@ -267,5 +296,44 @@ mod tests {
     fn read_missing_store_is_empty_and_creates_nothing() {
         let _guard = crate::store::paths::IsolatedStateDir::new();
         assert!(read_prs("never-seen").is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn load_lookup_filters_outbound_but_keeps_inbound_ci() {
+        use crate::core::worktree::forge_ref::{CiStatus as Ci, ForgeBranchRef, ForgeRefKind as K};
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let repo = "forge-repo-4";
+
+        let mut fork = entry(8, "feat/x", Some(CiStatus::Fail));
+        fork.is_cross_repo = true;
+        let mut merged = entry(6, "feat/done", Some(CiStatus::Pass));
+        merged.state = "merged".into();
+        persist_snapshot(
+            repo,
+            ForgeRefKind::GithubPr,
+            &[entry(7, "feat/x", Some(CiStatus::Pass)), fork, merged],
+        );
+
+        let lookup = load_lookup(repo);
+
+        // Outbound: only the open same-repo PR decorates the branch.
+        let (r, ci) = lookup.by_branch["feat/x"];
+        assert_eq!(r, ForgeBranchRef::new(K::GithubPr, 7));
+        assert_eq!(ci, Some(Ci::Pass));
+        assert!(
+            !lookup.by_branch.contains_key("feat/done"),
+            "merged PRs don't decorate branches"
+        );
+
+        // Inbound CI is available for every cached row, fork/merged included.
+        assert_eq!(
+            lookup.ci_by_ref[&ForgeBranchRef::new(K::GithubPr, 8)],
+            Some(Ci::Fail)
+        );
+        assert_eq!(
+            lookup.ci_by_ref[&ForgeBranchRef::new(K::GithubPr, 6)],
+            Some(Ci::Pass)
+        );
     }
 }

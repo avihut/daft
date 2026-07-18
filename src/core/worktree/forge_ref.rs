@@ -11,7 +11,7 @@
 //! the forge CLI layer, and both the writer and the list reader are core-level.
 
 /// The forge a tracked PR/MR ref belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgeRefKind {
     /// GitHub Pull Request (`refs/pull/<n>/head`).
     GithubPr,
@@ -33,7 +33,7 @@ impl ForgeRefKind {
 }
 
 /// A PR/MR reference recovered from (or written to) a branch's tracking config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ForgeBranchRef {
     pub kind: ForgeRefKind,
     pub number: u32,
@@ -80,9 +80,138 @@ impl ForgeBranchRef {
     }
 }
 
+/// CI rollup state of a PR/MR, as cached from the forge. Lives here (not in
+/// `src/forge/`) for the same reason as [`ForgeBranchRef`]: the renderers that
+/// decorate the `daft list` PR column are core/output-level and must not
+/// depend on the forge CLI layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiStatus {
+    Pass,
+    Fail,
+    Pending,
+}
+
+impl CiStatus {
+    /// The TEXT value persisted in the forge-PR cache.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CiStatus::Pass => "pass",
+            CiStatus::Fail => "fail",
+            CiStatus::Pending => "pending",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`] for cache reads; unknown text is `None`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pass" => Some(CiStatus::Pass),
+            "fail" => Some(CiStatus::Fail),
+            "pending" => Some(CiStatus::Pending),
+            _ => None,
+        }
+    }
+
+    /// The typographic glyph appended to the PR cell (`#723 ✓`). Colors
+    /// reinforce but never carry the meaning alone (NO_COLOR, pipes,
+    /// red/green colorblindness), so the glyph is the load-bearing signal.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            CiStatus::Pass => "\u{2713}",    // ✓
+            CiStatus::Fail => "\u{2717}",    // ✗
+            CiStatus::Pending => "\u{25cf}", // ●
+        }
+    }
+}
+
+/// PR decorations resolved from the forge-PR cache, keyed for the two match
+/// directions the `daft list` PR column uses. Pure data: built by the command
+/// layer (which owns store access), consumed by renderers — core never reads
+/// the store.
+#[derive(Debug, Default, Clone)]
+pub struct ForgePrLookup {
+    /// Outbound: the open same-repo PR whose head is this local branch.
+    /// (Fork PRs and non-open PRs are excluded by the builder so a stranger's
+    /// colliding branch name or a merged PR can't decorate a local branch.)
+    pub by_branch: std::collections::HashMap<String, (ForgeBranchRef, Option<CiStatus>)>,
+    /// Inbound: CI by the `(kind, number)` identity a `daft go pr:N` checkout
+    /// recorded in `branch.<name>.merge` — any state, so a closed PR's
+    /// worktree still shows its CI.
+    pub ci_by_ref: std::collections::HashMap<ForgeBranchRef, Option<CiStatus>>,
+}
+
+impl ForgePrLookup {
+    /// Resolve one row's PR cell: a config-recorded ref (inbound) is
+    /// authoritative and only gains CI; otherwise the branch name may match an
+    /// outbound PR from the cache.
+    pub fn decorate(
+        &self,
+        branch: &str,
+        config_ref: Option<ForgeBranchRef>,
+    ) -> (Option<ForgeBranchRef>, Option<CiStatus>) {
+        match config_ref {
+            Some(r) => (Some(r), self.ci_by_ref.get(&r).copied().flatten()),
+            None => match self.by_branch.get(branch) {
+                Some((r, ci)) => (Some(*r), *ci),
+                None => (None, None),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decorate_prefers_config_ref_and_adds_ci() {
+        let inbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
+        let mut lookup = ForgePrLookup::default();
+        lookup.ci_by_ref.insert(inbound, Some(CiStatus::Fail));
+        // An outbound row for the same branch name must NOT shadow config.
+        lookup.by_branch.insert(
+            "feat/x".into(),
+            (ForgeBranchRef::new(ForgeRefKind::GithubPr, 99), None),
+        );
+
+        let (r, ci) = lookup.decorate("feat/x", Some(inbound));
+        assert_eq!(r, Some(inbound));
+        assert_eq!(ci, Some(CiStatus::Fail));
+    }
+
+    #[test]
+    fn decorate_falls_back_to_outbound_match() {
+        let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 42);
+        let mut lookup = ForgePrLookup::default();
+        lookup
+            .by_branch
+            .insert("feat/y".into(), (outbound, Some(CiStatus::Pass)));
+
+        assert_eq!(
+            lookup.decorate("feat/y", None),
+            (Some(outbound), Some(CiStatus::Pass))
+        );
+        assert_eq!(lookup.decorate("feat/other", None), (None, None));
+    }
+
+    #[test]
+    fn ci_status_round_trips_and_has_distinct_glyphs() {
+        for s in [CiStatus::Pass, CiStatus::Fail, CiStatus::Pending] {
+            assert_eq!(CiStatus::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(CiStatus::parse("bogus"), None);
+        let glyphs = [
+            CiStatus::Pass.glyph(),
+            CiStatus::Fail.glyph(),
+            CiStatus::Pending.glyph(),
+        ];
+        assert_eq!(
+            glyphs.len(),
+            glyphs
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        );
+    }
 
     #[test]
     fn merge_ref_matches_platform_convention() {

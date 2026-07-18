@@ -3,6 +3,7 @@ use super::columns::{
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
+use crate::core::worktree::forge_ref::CiStatus;
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, ColumnContext, ColumnValues, format_human_size};
@@ -117,6 +118,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         cwd: &state.live.cfg.cwd,
         now,
         stat: state.live.cfg.stat,
+        forge_prs: state.live.cfg.forge_prs.as_ref(),
     };
 
     // Pre-compute all column values for sizing and reuse.
@@ -807,7 +809,15 @@ fn render_cell(
                     Cell::from(vals.pr.clone())
                 }
             } else {
-                Cell::from(vals.pr.clone())
+                // Color reinforces the CI glyph already in the text
+                // (`#723 ✓`) — never carries the meaning alone.
+                let cell = Cell::from(vals.pr.clone());
+                match vals.pr_ci {
+                    Some(CiStatus::Pass) => cell.style(Style::default().fg(Color::Green)),
+                    Some(CiStatus::Fail) => cell.style(Style::default().fg(Color::Red)),
+                    Some(CiStatus::Pending) => cell.style(Style::default().fg(Color::Yellow)),
+                    None => cell,
+                }
             }
         }
         Column::Owner => {
@@ -1405,6 +1415,7 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Lines,
+            forge_prs: None,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1466,6 +1477,7 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Lines,
+            forge_prs: None,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1519,6 +1531,7 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Summary,
+            forge_prs: None,
         };
         let vals = compute_column_values(&info, &ctx);
 

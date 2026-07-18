@@ -188,7 +188,9 @@ pub(super) fn column_content_width(
             Column::Base => v.base.len() as u16,
             Column::Changes => v.changes.len() as u16,
             Column::Remote => v.remote.len() as u16,
-            Column::Pr => v.pr.len() as u16,
+            // chars(), not len(): the CI glyph (`✓`/`✗`/`●`) is multi-byte
+            // but single-column.
+            Column::Pr => v.pr.chars().count() as u16,
             Column::Age => v.branch_age.len() as u16,
             Column::Owner => v.owner.len() as u16,
             Column::Hash => 7,

@@ -8,6 +8,7 @@ use crate::{
     core::{
         sort::SortSpec,
         worktree::{
+            forge_ref::ForgePrLookup,
             info_field::FieldSet,
             list::{EntryKind, Stat, WorktreeInfo},
             sync_dag::{DagEvent, PatchSourceLog},
@@ -43,6 +44,11 @@ pub struct LiveTableConfig {
     /// the bit set but no seed value render as "final empty" rather than
     /// shimmering.
     pub seeded_fields: FieldSet,
+    /// Forge-PR cache decorations for the PR column (outbound PR numbers +
+    /// CI states). Loaded once by `daft list` before the TUI starts and
+    /// post-set after `TuiState::new` (like `unowned_start_index`); `None`
+    /// for commands that don't decorate.
+    pub forge_prs: Option<ForgePrLookup>,
 }
 
 pub struct LiveTable {
@@ -307,6 +313,7 @@ mod tests {
             project_root: PathBuf::from("/tmp"),
             cwd: PathBuf::from("/tmp"),
             seeded_fields: FieldSet::EMPTY,
+            forge_prs: None,
         }
     }
 
