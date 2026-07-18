@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#MISE description="Run all tests (unit + integration)"
+#MISE description="Run all tests (unit + integration + completions)"
 #MISE alias=["t", "default"]
-#MISE depends=["test:unit", "test:integration"]
+#MISE depends=["test:unit", "test:integration", "completions:test"]
 set -euo pipefail
 
 echo "All tests completed"

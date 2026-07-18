@@ -7,14 +7,46 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DAFT_BIN="$PROJECT_ROOT/target/release/daft"
 
+# --- Real-state isolation (#667) ---
+# Every $DAFT_BIN invocation below must resolve daft's XDG surface inside a
+# throwaway sandbox, never the developer's real dirs. Mirrors the DAFT_*_DIR
+# block in test_framework.sh setup(); kept bespoke because this script runs
+# standalone (own mise task + CI step) and must not share — or trap-delete —
+# the matrix's /tmp sandbox. The completions:test task wraps this script in
+# the real-state guard, which catches any drift between the twin blocks.
+# Short /tmp names on purpose: coordinator sockets cap sun_path at ~104 bytes
+# on macOS.
+COMPLETIONS_SANDBOX="$(mktemp -d /tmp/daft-completions.XXXXXX)"
+trap 'rm -rf "$COMPLETIONS_SANDBOX"' EXIT
+export DAFT_CONFIG_DIR="$COMPLETIONS_SANDBOX/cfg"
+export DAFT_DATA_DIR="$COMPLETIONS_SANDBOX/data"
+export DAFT_STATE_DIR="$COMPLETIONS_SANDBOX/st"
+export DAFT_SKILLS_DIR="$COMPLETIONS_SANDBOX/skills"
+mkdir -p "$DAFT_CONFIG_DIR" "$DAFT_DATA_DIR" "$DAFT_STATE_DIR" "$DAFT_SKILLS_DIR"
+
+# Keep the host's git config (system and global) out of the binary's behavior.
+export GIT_CONFIG_NOSYSTEM=1
+if [[ -z "${GIT_CONFIG_GLOBAL:-}" ]]; then
+    touch "$COMPLETIONS_SANDBOX/gitconfig"
+    export GIT_CONFIG_GLOBAL="$COMPLETIONS_SANDBOX/gitconfig"
+fi
+
+# Suppress the update-check/trust-prune/log-clean daemons a non-completion
+# command (e.g. `daft repo add` below) would spawn — they orphan under PID 1
+# and the update check hits the network.
+export DAFT_TESTING=1
+
 # Color codes for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Test counters
 TESTS_RUN=0
 TESTS_PASSED=0
+TESTS_SKIPPED=0
+SKIPPED_TESTS=()
 
 # Test helper functions
 run_test() {
@@ -32,6 +64,17 @@ pass_test() {
 fail_test() {
     local message="$1"
     echo -e "${RED}✗ FAIL: $message${NC}"
+    echo ""
+}
+
+# A test that could not run in this environment. Deliberately NOT a pass: the
+# summary reports skips on their own line so an assertion that never executed
+# can't masquerade as coverage.
+skip_test() {
+    local reason="$1"
+    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+    SKIPPED_TESTS+=("$reason")
+    echo -e "${YELLOW}○ SKIP: $reason${NC}"
     echo ""
 }
 
@@ -567,12 +610,8 @@ test_repo_name_completion_case_insensitive() {
         trap 'rm -rf "$sb"' EXIT
         export DAFT_CONFIG_DIR="$sb/cfg" DAFT_DATA_DIR="$sb/data" DAFT_STATE_DIR="$sb/st"
 
-        # Never touch real state: if the binary ignores DAFT_*_DIR (a tagged
-        # release build), skip rather than pollute the real catalog.
-        if [[ "$("$DAFT_BIN" __dirs 2>/dev/null)" != *"$sb"* ]]; then
-            echo "SKIP: binary ignores DAFT_*_DIR (isolation unavailable)"
-            exit 0
-        fi
+        # (No DAFT_*_DIR preflight here: main() already hard-fails on that
+        # condition before any test runs.)
 
         # The sourced wrapper calls a bare `daft`; point it at the binary
         # under test, then register a lowercase-named repo.
@@ -588,28 +627,56 @@ test_repo_name_completion_case_insensitive() {
         helper=$(daft __complete repo-name AP 2>/dev/null | cut -f1)
         [[ "$helper" == *apiservice* ]] || { echo "FAIL helper=[$helper]"; exit 0; }
 
-        # Layer 2: drive the sourced bash completion. `_init_completion` (from
-        # bash-completion) is stubbed minimally; drive() completes the last word.
-        _init_completion() {
-            cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
-            words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
-        }
-        source <(daft completions bash 2>/dev/null)
-        drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
-
-        # An uppercase prefix surfaces the lowercase repo (the whole point)…
-        drive daft repo info AP;            match="${COMPREPLY[*]}"
-        # …and a genuine miss stays empty (no false positives from case-folding).
-        drive daft repo remove --repo ZZQQ; miss="${COMPREPLY[*]}"
-        if [[ "$match" == *apiservice* && -z "$miss" ]]; then
-            echo "PASS"
-        else
-            echo "FAIL match=[$match] miss=[$miss]"
+        # Layer 2: drive the sourced bash completion. The emitted payload has
+        # a documented bash 4+ floor (`mapfile -t`; its `_init_completion`
+        # caller comes from bash-completion 2.x, which already requires 4+),
+        # but this script runs under `#!/bin/bash` = 3.2 on macOS — there
+        # `mapfile` is command-not-found, the completion function swallows it
+        # via its own 2>/dev/null, and every drive returns an empty COMPREPLY.
+        # So pick a bash that actually clears the floor: probe each candidate
+        # for `mapfile` rather than trusting `command -v bash`, which yields
+        # whichever bash comes first on PATH (3.2 on a stock mac even when
+        # Homebrew's 5.x is installed further down).
+        drive_bash=""
+        for candidate in "$(command -v bash)" /opt/homebrew/bin/bash \
+                         /usr/local/bin/bash /bin/bash; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'type mapfile' >/dev/null 2>&1; then
+                drive_bash="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$drive_bash" ]]; then
+            # Reported as a SKIP, which main() counts separately — never as a
+            # pass. Counting it green would hide a real case-sensitivity
+            # regression on every machine without a bash 4+.
+            echo "SKIP: no bash 4+ available for the sourced-wrapper layer"
+            exit 0
         fi
+        # `_init_completion` (from bash-completion) is stubbed minimally;
+        # drive() completes the last word. env (PATH with the daft symlink,
+        # DAFT_*_DIR sandbox) and cwd are inherited by the child bash.
+        "$drive_bash" <<'DRIVE_EOS'
+_init_completion() {
+    cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
+}
+eval "$(daft completions bash 2>/dev/null)"
+drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
+
+# An uppercase prefix surfaces the lowercase repo (the whole point)…
+drive daft repo info AP;            match="${COMPREPLY[*]}"
+# …and a genuine miss stays empty (no false positives from case-folding).
+drive daft repo remove --repo ZZQQ; miss="${COMPREPLY[*]}"
+if [[ "$match" == *apiservice* && -z "$miss" ]]; then
+    echo "PASS"
+else
+    echo "FAIL match=[$match] miss=[$miss]"
+fi
+DRIVE_EOS
     )
     case "$result" in
         PASS) pass_test ;;
-        SKIP*) echo "  ($result)"; pass_test ;;
+        SKIP*) skip_test "${result#SKIP: }" ;;
         *) fail_test "$result" ;;
     esac
 }
@@ -627,6 +694,32 @@ main() {
         echo "Run 'cargo build --release' first"
         exit 1
     fi
+
+    # Preflight (#667): refuse to run if the binary ignores DAFT_*_DIR (the
+    # overrides compile out of non-dev builds) — its writes would land in the
+    # real user dirs. Mirrors assert_binary_honors_overrides in the mise task;
+    # needed here too because CI runs this script directly rather than through
+    # `mise run completions:test`.
+    #
+    # Checked per key, not as one substring match over the whole output: a
+    # build that honored DAFT_CONFIG_DIR but resolved data/state to the real
+    # dirs would satisfy a whole-output match while still leaking the catalog
+    # and the jobs dir — exactly the #696/#697 leak this exists to stop.
+    preflight_dirs="$("$DAFT_BIN" __dirs 2>/dev/null)" || {
+        echo -e "${RED}Error: '$DAFT_BIN __dirs' failed (binary too old, or broken)${NC}"
+        exit 1
+    }
+    for key in config data state; do
+        resolved="$(printf '%s\n' "$preflight_dirs" | awk -F '\t' -v k="$key" '$1 == k { print $2 }')"
+        case "$resolved" in
+            "$COMPLETIONS_SANDBOX"/*) ;;
+            *)
+                echo -e "${RED}Error: $DAFT_BIN ignores DAFT_${key}_DIR (resolved: ${resolved:-<none>})${NC}"
+                echo "Refusing to run: completions tests would touch real user state. See #697."
+                exit 1
+                ;;
+        esac
+    done
 
     # Run all tests
     test_bash_completion_generation
@@ -673,9 +766,21 @@ main() {
     echo "========================================="
     echo "Tests run: $TESTS_RUN"
     echo "Tests passed: $TESTS_PASSED"
+    if [ "$TESTS_SKIPPED" -gt 0 ]; then
+        # Surfaced separately and never folded into the pass count — a skipped
+        # assertion is absent coverage, not a green one.
+        echo -e "${YELLOW}Tests skipped: $TESTS_SKIPPED${NC}"
+        for reason in "${SKIPPED_TESTS[@]}"; do
+            echo "  - $reason"
+        done
+    fi
 
-    if [ $TESTS_PASSED -eq $TESTS_RUN ]; then
-        echo -e "${GREEN}All tests passed!${NC}"
+    if [ $((TESTS_PASSED + TESTS_SKIPPED)) -eq $TESTS_RUN ]; then
+        if [ "$TESTS_SKIPPED" -gt 0 ]; then
+            echo -e "${YELLOW}All executed tests passed ($TESTS_SKIPPED skipped)${NC}"
+        else
+            echo -e "${GREEN}All tests passed!${NC}"
+        fi
         exit 0
     else
         echo -e "${RED}Some tests failed${NC}"

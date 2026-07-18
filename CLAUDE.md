@@ -102,13 +102,17 @@ a substitute. Production two-stage probes that expect
 the call site.
 
 **Never let a test write daft's real config/state/data dirs.** A tripwire —
-`xtask real-state-guard`, wired into `test:{unit,integration,manual}` and `ci`
-through `mise-tasks/test/_state_guard_lib.sh` — fingerprints the real
-`~/Library/Application Support/daft` (catalog DB + `repos.json`) and
-`~/.local/state/daft` (`jobs/` entry set) before each suite and fails the run if
-they change, locally and in CI. Tests that exercise hook / visitor-seed code
-paths open the coordinator store via `paths::for_repo`, which resolves
-`daft_state_dir()`; wrap them in `#[serial]` +
+`xtask real-state-guard`, wired into `test:{unit,integration,manual}`,
+`completions:test`, and `ci` through `mise-tasks/test/_state_guard_lib.sh` —
+fingerprints the real `~/Library/Application Support/daft` (catalog DB + every
+top-level config file except the volatile daemon stamps, which unrelated
+concurrent daft activity rewrites) and `~/.local/state/daft` (`jobs/` entry set)
+before each suite and fails the run if they change. The guard wraps the **mise
+tasks**; CI's own steps invoke some suites directly
+(`tests/integration/test_completions.sh`), where the script's built-in
+`daft __dirs` preflight is the protection instead. Tests that exercise hook /
+visitor-seed code paths open the coordinator store via `paths::for_repo`, which
+resolves `daft_state_dir()`; wrap them in `#[serial]` +
 `store::paths::IsolatedStateDir::new()` so they write a tempdir, not the
 developer's real state. Suites that exec a built binary also run a read-only
 `daft __dirs` preflight that fails fast if the binary ignores `DAFT_*_DIR` (a
