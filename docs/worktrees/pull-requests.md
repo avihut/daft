@@ -139,10 +139,11 @@ that the run itself started — or attached to, since lists fired while a refres
 is already running share its verdict instead of stacking forge calls. A cold
 cache never blocks and never errors — cells simply wait for the refresh. The
 cache also powers tab completion: `daft go pr:<Tab>` completes the cached
-**open** PR numbers with their titles, entirely from local data. Merged and
-closed PRs don't complete — their branch has usually been deleted on the forge —
-except ones you already have checked out, whose local branch keeps them a
-navigation target regardless.
+**open** PR numbers, each with its status as of the last refresh (the same
+`✓`/`✗`/`●` glyphs as the column), its author, and its title — entirely from
+local data. Merged and closed PRs don't complete — their branch has usually been
+deleted on the forge — except ones you already have checked out, whose local
+branch keeps them a navigation target regardless.
 
 ## Mixed-remote repositories
 

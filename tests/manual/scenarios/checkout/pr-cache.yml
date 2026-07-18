@@ -116,9 +116,12 @@ steps:
     expect:
       exit_code: 0
       output_contains:
+        # Owner and last-fetched CI status ride along as extra columns:
+        # name\tforge\tstatus\towner\ttitle.
         - "pr:5"
-        - "Add feature five"
+        - "✓\toctocat\tAdd feature five"
         - "pr:6"
+        - "contributor\tFork collision"
       output_not_contains:
         - "pr:3"
 
@@ -135,5 +138,6 @@ steps:
     expect:
       exit_code: 0
       output_contains:
+        # Status/owner columns fill from the cache row: merged glyph + author.
         - "pr:3"
-        - "checked out: review-3"
+        - "◆\toctocat\tchecked out: review-3"

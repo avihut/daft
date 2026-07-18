@@ -663,6 +663,13 @@ mod tests {
                 "{cmd} zsh must complete the bare pr:/mr: tokens suffix-free \
                  so the number can be typed right after the colon"
             );
+            assert!(
+                script.contains("forge_stats")
+                    && script.contains("forge_owners")
+                    && script.contains("forge_titles"),
+                "{cmd} zsh must split forge PR descriptions into \
+                 status/owner/title columns"
+            );
         }
     }
 

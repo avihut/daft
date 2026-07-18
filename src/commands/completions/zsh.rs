@@ -381,16 +381,19 @@ __{func_name}_impl() {{
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
     local -a repo_names repo_paths
-    local -a forge_names forge_descs forge_tok_names forge_tok_descs
+    local -a forge_names forge_stats forge_owners forge_titles
+    local -a forge_tok_names forge_tok_descs
     raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
     # Catalog repo lines have 3 fields: name\trepo\tpath
-    # Forge lines have 3 fields: name\tforge\tdescription — the bare pr:/mr:
-    # syntax tokens go in their own group so they can complete without a
-    # trailing space (the user keeps typing the number after the colon).
+    # Forge PR lines have 5 fields: name\tforge\tstatus\towner\ttitle —
+    # status/owner pad in the age/author slots so PR rows align like branch
+    # rows. The bare pr:/mr: syntax tokens are 3-field (name\tforge\thelp) and
+    # go in their own group so they can complete without a trailing space
+    # (the user keeps typing the number after the colon).
     # Worktree names may have *? dirty indicators — strip for completion
     # value, keep for display. (* and ? are invalid in git branch names.)
     local line name rest group desc max_len=0 len clean_name
@@ -449,7 +452,15 @@ __{func_name}_impl() {{
                     forge_tok_descs+=("$desc")
                 else
                     forge_names+=("$name")
-                    forge_descs+=("$desc")
+                    # desc is "status\towner\ttitle"
+                    forge_stats+=("${{desc%%$'\t'*}}")
+                    local forge_rest="${{desc#*$'\t'}}"
+                    forge_owners+=("${{forge_rest%%$'\t'*}}")
+                    forge_titles+=("${{forge_rest#*$'\t'}}")
+                    age_len=${{#${{desc%%$'\t'*}}}}
+                    (( age_len > max_age_len )) && max_age_len=$age_len
+                    auth_len=${{#${{forge_rest%%$'\t'*}}}}
+                    (( auth_len > max_auth_len )) && max_auth_len=$auth_len
                 fi
                 ;;
         esac
@@ -458,7 +469,8 @@ __{func_name}_impl() {{
     # Second pass: build padded display strings.
     # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
-    # Catalog repos and forge targets: two columns (name, description).
+    # Forge PRs: four columns (name, status, owner, title).
+    # Catalog repos and forge syntax tokens: two columns (name, description).
     local -a wt_display local_display remote_display repo_display forge_display forge_tok_display
     local i pad apad authpad
     (( max_len += 2 ))
@@ -488,7 +500,9 @@ __{func_name}_impl() {{
     done
     for (( i=1; i<=${{#forge_names}}; i++ )); do
         pad=$(( max_len - ${{#forge_names[$i]}} ))
-        forge_display+=("${{forge_names[$i]}}${{(l:$pad:: :)}}  ${{forge_descs[$i]}}")
+        apad=$(( max_age_len - ${{#forge_stats[$i]}} ))
+        authpad=$(( max_auth_len - ${{#forge_owners[$i]}} ))
+        forge_display+=("${{forge_names[$i]}}${{(l:$pad:: :)}}  ${{forge_stats[$i]}}${{(l:$apad:: :)}}  ${{forge_owners[$i]}}${{(l:$authpad:: :)}}  ${{forge_titles[$i]}}")
     done
     for (( i=1; i<=${{#forge_tok_names}}; i++ )); do
         pad=$(( max_len - ${{#forge_tok_names[$i]}} ))

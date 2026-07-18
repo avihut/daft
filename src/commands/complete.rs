@@ -1864,34 +1864,43 @@ fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
 
     let mut seen = std::collections::HashSet::new();
 
-    // Cache-backed candidates: the open PRs/MRs from the last refresh, titles
-    // included. Open only — an open PR's head branch is alive by definition,
-    // while a merged/closed PR's branch has usually been deleted on the forge,
-    // so it is no longer a useful `go` target (and the Tab path must not ask
-    // the forge whether it survived). Stored titles are sanitized at the
-    // persistence boundary, so they are safe for the completion stream.
-    if let Ok(repo_hash) = crate::core::repo_identity::compute_repo_id() {
-        for row in crate::commands::forge_cache::read_prs(&repo_hash) {
-            if row.state != "open" {
-                continue;
-            }
-            let name = format!("{}:{}", row.kind, row.number);
-            if !name.starts_with(word) || !seen.insert(name.clone()) {
-                continue;
-            }
-            entries.push(CompletionEntry {
-                name,
-                group: CompletionGroup::Forge,
-                description: row.title,
-            });
+    // One bulk cache read serves both sections below: open rows become
+    // candidates, and any row supplies status/owner metadata for a PR the
+    // user has checked out locally.
+    let rows = crate::core::repo_identity::compute_repo_id()
+        .map(|repo_hash| crate::commands::forge_cache::read_prs(&repo_hash))
+        .unwrap_or_default();
+
+    // Cache-backed candidates: the open PRs/MRs from the last refresh. Open
+    // only — an open PR's head branch is alive by definition, while a
+    // merged/closed PR's branch has usually been deleted on the forge, so it
+    // is no longer a useful `go` target (and the Tab path must not ask the
+    // forge whether it survived). The description carries two more
+    // tab-separated columns — the status glyph as of the last refresh and the
+    // PR author — which zsh/fish render alongside the title. Stored titles and
+    // authors are sanitized at the persistence boundary, so they are safe for
+    // the completion stream.
+    for row in &rows {
+        if row.state != "open" {
+            continue;
         }
+        let name = format!("{}:{}", row.kind, row.number);
+        if !name.starts_with(word) || !seen.insert(name.clone()) {
+            continue;
+        }
+        entries.push(CompletionEntry {
+            name,
+            group: CompletionGroup::Forge,
+            description: format!("{}\t{}\t{}", row_status_glyph(row), row.author, row.title),
+        });
     }
 
     // Config-backed candidates: PRs already checked out locally
     // (`branch.<name>.merge = refs/pull/N/head`) that the loop above didn't
     // offer — a cold cache, or a PR that merged/closed since checkout. The
     // local branch demonstrably exists, so `go` remains a navigation target
-    // regardless of the PR's forge state. One git config read.
+    // regardless of the PR's forge state. One git config read; status/owner
+    // columns fill from the cache row when the snapshot still has one.
     if let Ok(cwd) = std::env::current_dir()
         && let Ok(output) = crate::utils::git_command_at(&cwd)
             .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
@@ -1905,15 +1914,30 @@ fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
             if !name.starts_with(word) || !seen.insert(name.clone()) {
                 continue;
             }
+            let cached = rows
+                .iter()
+                .find(|r| r.kind == forge_ref.kind.tag() && r.number == forge_ref.number);
+            let (glyph, owner) =
+                cached.map_or(("", ""), |r| (row_status_glyph(r), r.author.as_str()));
             entries.push(CompletionEntry {
                 name,
                 group: CompletionGroup::Forge,
-                description: format!("checked out: {branch}"),
+                description: format!("{glyph}\t{owner}\tchecked out: {branch}"),
             });
         }
     }
 
     entries
+}
+
+/// The colorless status glyph for a cached PR row — the same vocabulary the
+/// list column falls back to when colors are off (`✓`/`✗`/`●` CI, `◆` merged,
+/// `○` closed, empty for open-without-CI). Completion display strings can't
+/// carry color, so the glyph is the status column.
+fn row_status_glyph(row: &crate::store::models::ForgePrRow) -> &'static str {
+    use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
+    let ci = row.ci_status.as_deref().and_then(CiStatus::parse);
+    PrStatus::from_state_and_ci(&row.state, ci).glyph()
 }
 
 /// Parse `git config --get-regexp '^branch\..*\.merge$'` output into
@@ -2264,6 +2288,34 @@ mod tests {
         assert_eq!(parsed[0].1.number, 2);
         assert_eq!(parsed[1].0, "mr-branch");
         assert_eq!(parsed[1].1.number, 45);
+    }
+
+    /// The forge completion's status column speaks the list column's
+    /// colorless glyph vocabulary — and stays empty for an open PR without
+    /// CI, so the column doesn't invent a state the forge never reported.
+    #[test]
+    fn forge_completion_status_glyphs_match_the_list_column() {
+        let row = |state: &str, ci: Option<&str>| crate::store::models::ForgePrRow {
+            repo_hash: "hash".into(),
+            kind: "pr".into(),
+            number: 7,
+            title: "t".into(),
+            state: state.into(),
+            head_branch: "b".into(),
+            is_cross_repo: false,
+            ci_status: ci.map(str::to_string),
+            url: String::new(),
+            author: "alice".into(),
+            head_repo_owner: String::new(),
+            updated_at: None,
+            fetched_at: chrono::Utc::now(),
+        };
+        assert_eq!(row_status_glyph(&row("open", Some("pass"))), "✓");
+        assert_eq!(row_status_glyph(&row("open", Some("fail"))), "✗");
+        assert_eq!(row_status_glyph(&row("open", Some("pending"))), "●");
+        assert_eq!(row_status_glyph(&row("open", None)), "");
+        assert_eq!(row_status_glyph(&row("merged", None)), "◆");
+        assert_eq!(row_status_glyph(&row("closed", None)), "○");
     }
 
     #[test]
