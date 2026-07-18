@@ -368,25 +368,33 @@ impl ColumnSelection {
                 replace: "--columns branch,path,age",
                 modifier: "--columns -annotation,-remote",
             },
-            |name| Self::check_status_token(name, command),
+            |name| Self::check_unsupported_token(name, command),
         )?;
         Ok(ResolvedColumns { columns, explicit })
     }
 
-    fn check_status_token(name: &str, command: CommandKind) -> Result<(), String> {
-        if name.trim().to_lowercase() == "status" {
-            match command {
-                CommandKind::List => {
-                    // Falls through to unknown column error via FromStr
-                }
-                CommandKind::Sync | CommandKind::Prune | CommandKind::Clone => {
-                    return Err("'status' column cannot be controlled on this command\n  \
-                         it is always shown as the first column"
-                        .to_string());
-                }
+    /// Reject tokens that name a real column the command can't honor — a clean
+    /// error beats silently rendering a dead column. `status` is always the
+    /// fixed first column (uncontrollable); `pr` needs the forge cache and
+    /// `FORGE_REF` streaming that only `daft list` wires, so sync/prune/clone
+    /// would render it permanently blank.
+    fn check_unsupported_token(name: &str, command: CommandKind) -> Result<(), String> {
+        let token = name.trim().to_lowercase();
+        match (token.as_str(), command) {
+            ("status", CommandKind::Sync | CommandKind::Prune | CommandKind::Clone) => {
+                Err("'status' column cannot be controlled on this command\n  \
+                     it is always shown as the first column"
+                    .to_string())
             }
+            ("pr", CommandKind::Sync | CommandKind::Prune | CommandKind::Clone) => {
+                Err("'pr' column is only available on `daft list`\n  \
+                     sync, prune, and clone don't load forge data"
+                    .to_string())
+            }
+            // List (or any other token) falls through to the FromStr check,
+            // which accepts `pr`/`status` where valid or reports unknown column.
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -887,6 +895,34 @@ mod tests {
     fn test_status_on_list_unknown() {
         let err = ColumnSelection::parse("status,branch", CommandKind::List).unwrap_err();
         assert!(err.contains("unknown column 'status'"), "Got: {err}");
+    }
+
+    #[test]
+    fn test_pr_on_sync_and_prune_errors() {
+        // sync/prune don't wire the forge cache, so `+pr` would render a
+        // permanently-blank column — reject it cleanly instead (finding [8]).
+        let sync = ColumnSelection::parse("+pr", CommandKind::Sync).unwrap_err();
+        assert!(
+            sync.contains("only available on `daft list`"),
+            "Got: {sync}"
+        );
+        let prune = ColumnSelection::parse("pr,branch", CommandKind::Prune).unwrap_err();
+        assert!(
+            prune.contains("only available on `daft list`"),
+            "Got: {prune}"
+        );
+        let clone = ColumnSelection::parse("+pr", CommandKind::Clone).unwrap_err();
+        assert!(
+            clone.contains("only available on `daft list`"),
+            "Got: {clone}"
+        );
+    }
+
+    #[test]
+    fn test_pr_on_list_is_accepted() {
+        // The guard must not regress the legitimate `daft list --columns +pr`.
+        let resolved = ColumnSelection::parse("+pr", CommandKind::List).unwrap();
+        assert!(resolved.columns.contains(&ListColumn::Pr));
     }
 
     #[test]
