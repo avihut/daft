@@ -115,8 +115,9 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
       merged PRs appear with `"state":"merged"`.
 - [ ] `daft list --columns +pr --format json` rows carry `pr_state`,
       `ci_status`, and `pr_url`.
-- [ ] `daft go pr:<Tab>` in bash AND zsh completes open PR numbers with titles
-      (merged ones listed after); in bash, accepting a completion inserts
+- [ ] `daft go pr:<Tab>` in bash AND zsh completes open PR numbers with titles —
+      merged/closed PRs do NOT complete unless checked out locally (then they
+      show as `checked out: <branch>`); in bash, accepting a completion inserts
       `pr:<n>` exactly once (no duplicated `pr:` — the colon-wordbreak
       handling).
 - [ ] `daft go <Tab>` on an empty word offers the `pr:`/`mr:` syntax tokens

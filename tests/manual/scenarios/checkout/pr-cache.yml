@@ -4,10 +4,12 @@ description: >
   CLI's open + merged PR listings into the per-repo store, `daft list --columns
   +pr` then decorates a plain local branch with its outbound PR number and CI
   glyph (`#5 ✓`), marks a branch whose PR merged (`#3 ◆`), and `pr:` tab
-  completion offers the cached number with its title. A cross-repo (fork) PR
-  with the same head-branch name must NOT decorate the local branch. Structured
-  output carries pr_state/ci_status/pr_url fields. The fake `gh` fails loudly on
-  any unexpected call.
+  completion offers the cached open numbers with titles — merged/closed PRs
+  complete only when checked out locally (the branch exists here even if the
+  forge-side one was deleted). A cross-repo (fork) PR with the same head-branch
+  name must NOT decorate the local branch. Structured output carries
+  pr_state/ci_status/pr_url fields. The fake `gh` fails loudly on any unexpected
+  call.
 
 repos:
   - name: test-repo
@@ -107,7 +109,8 @@ steps:
         - '"https://github.com/acme/widget/pull/5"'
         - '"merged"'
 
-  - name: Tab completion offers the cached PR with its title
+  - name:
+      Tab completion offers open PRs only — a merged PR's branch is likely gone
     run: daft __complete git-worktree-checkout "pr:" --position 1
     cwd: "$WORK_DIR/test-repo/feature-x"
     expect:
@@ -115,3 +118,22 @@ steps:
       output_contains:
         - "pr:5"
         - "Add feature five"
+        - "pr:6"
+      output_not_contains:
+        - "pr:3"
+
+  - name:
+      A merged PR checked out locally still completes — its branch exists here
+    run: |
+      set -e
+      # The exact branch shape `daft go pr:N` writes for a PR checkout.
+      git branch review-3
+      git config branch.review-3.remote origin
+      git config branch.review-3.merge refs/pull/3/head
+      daft __complete git-worktree-checkout "pr:" --position 1
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "pr:3"
+        - "checked out: review-3"

@@ -1864,31 +1864,34 @@ fn complete_forge_targets(word: &str) -> Vec<CompletionEntry> {
 
     let mut seen = std::collections::HashSet::new();
 
-    // Cache-backed candidates: every PR/MR the last refresh saw, titles
-    // included (open first — the repo order). Stored titles are sanitized at
-    // the persistence boundary, so they are safe for the completion stream.
+    // Cache-backed candidates: the open PRs/MRs from the last refresh, titles
+    // included. Open only — an open PR's head branch is alive by definition,
+    // while a merged/closed PR's branch has usually been deleted on the forge,
+    // so it is no longer a useful `go` target (and the Tab path must not ask
+    // the forge whether it survived). Stored titles are sanitized at the
+    // persistence boundary, so they are safe for the completion stream.
     if let Ok(repo_hash) = crate::core::repo_identity::compute_repo_id() {
         for row in crate::commands::forge_cache::read_prs(&repo_hash) {
+            if row.state != "open" {
+                continue;
+            }
             let name = format!("{}:{}", row.kind, row.number);
             if !name.starts_with(word) || !seen.insert(name.clone()) {
                 continue;
             }
-            let description = if row.state == "open" {
-                row.title.clone()
-            } else {
-                format!("{} ({})", row.title, row.state)
-            };
             entries.push(CompletionEntry {
                 name,
                 group: CompletionGroup::Forge,
-                description,
+                description: row.title,
             });
         }
     }
 
     // Config-backed candidates: PRs already checked out locally
-    // (`branch.<name>.merge = refs/pull/N/head`) that the cache doesn't know —
-    // a cold cache, or a PR that left the open-snapshot. One git config read.
+    // (`branch.<name>.merge = refs/pull/N/head`) that the loop above didn't
+    // offer — a cold cache, or a PR that merged/closed since checkout. The
+    // local branch demonstrably exists, so `go` remains a navigation target
+    // regardless of the PR's forge state. One git config read.
     if let Ok(cwd) = std::env::current_dir()
         && let Ok(output) = crate::utils::git_command_at(&cwd)
             .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
