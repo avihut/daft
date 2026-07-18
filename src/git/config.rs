@@ -63,6 +63,24 @@ impl GitCommand {
         oxide::config_get_global(key)
     }
 
+    /// Every branch's `branch.<name>.merge` value in one call — raw
+    /// `git config --get-regexp` lines (`branch.<name>.merge <ref>`), for
+    /// bulk PR-tracking-ref resolution where a per-branch `config_get` would
+    /// cost a read per row. No matches is not an error (exit code 1 → empty).
+    pub fn branch_merge_refs(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
+            .output()
+            .context("Failed to execute git config --get-regexp command")?;
+
+        if !output.status.success() && output.status.code() != Some(1) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git config --get-regexp failed: {}", stderr);
+        }
+
+        String::from_utf8(output.stdout).context("Failed to parse git config output")
+    }
+
     /// Get the tracking remote for a branch.
     pub fn get_branch_tracking_remote(&self, branch: &str) -> Result<Option<String>> {
         let key = format!("branch.{branch}.remote");

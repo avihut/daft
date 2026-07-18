@@ -709,14 +709,9 @@ fn run_tui(
         let mut sorted = worktree_infos.clone();
         sorted.sort_by(|a, b| {
             let default_order = |w: &list::WorktreeInfo| u8::from(!w.is_default_branch);
-            let kind_order = |k: &list::EntryKind| match k {
-                list::EntryKind::Worktree => 0,
-                list::EntryKind::LocalBranch => 1,
-                list::EntryKind::RemoteBranch => 2,
-            };
             default_order(a)
                 .cmp(&default_order(b))
-                .then_with(|| kind_order(&a.kind).cmp(&kind_order(&b.kind)))
+                .then_with(|| a.kind.section_order().cmp(&b.kind.section_order()))
                 .then_with(|| match &sort_spec {
                     Some(spec) => spec.compare(a, b),
                     None => a.name.to_lowercase().cmp(&b.name.to_lowercase()),

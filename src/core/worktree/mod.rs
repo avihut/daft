@@ -30,6 +30,7 @@ pub mod merge_set_default;
 pub mod merged;
 pub mod porcelain;
 pub mod ports;
+pub mod pr_rows;
 pub mod previous;
 pub mod prune;
 pub mod push;

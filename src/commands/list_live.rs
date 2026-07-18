@@ -136,6 +136,7 @@ pub fn run_live(args: Args) -> Result<()> {
             show_local,
             show_remote,
             &worktree_branches,
+            None,
             &project_root,
             settings.ownership_strategy,
             user_email.as_deref(),
@@ -151,38 +152,6 @@ pub fn run_live(args: Args) -> Result<()> {
             worktree_infos.push(info);
         }
     }
-
-    // Short-circuit when the merged set is empty: skip TUI bringup and
-    // print a static empty-state hint. Avoids ratatui flicker and a
-    // raw-mode bringup just to render three lines of static text.
-    if worktree_infos.is_empty() {
-        crate::commands::list_empty::print(
-            &mut std::io::stdout(),
-            crate::styles::colors_enabled(),
-        )?;
-        return Ok(());
-    }
-
-    // Size cache: seed each worktree row with its last-known size so the Size
-    // column shows a value instantly (rendered dim/stale) while the bounded
-    // walk refreshes it in the background. Keyed by branch slug in the repo's
-    // coordinator store; only worktree rows (those with a path) are seeded,
-    // since only they are walked and can supersede the stale value. Held for
-    // the post-run persist. Best-effort — a cold/missing cache just yields
-    // today's shimmer.
-    let size_repo_hash: Option<String> = if fields.contains(FieldSet::SIZE) {
-        let hash =
-            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir).ok();
-        if let Some(ref h) = hash {
-            let cached = crate::commands::size_cache::read_worktree_sizes(h);
-            if !cached.is_empty() {
-                crate::commands::size_cache::seed_worktree_sizes(&mut worktree_infos, &cached);
-            }
-        }
-        hash
-    } else {
-        None
-    };
 
     // Forge-PR cache. The gate decided column visibility; here it decides
     // display freshness. Every interactive list re-verifies (a refresh is
@@ -220,6 +189,73 @@ pub fn run_live(args: Args) -> Result<()> {
             };
         }
     }
+
+    // Default open-PR rows: every open PR not already represented by a row
+    // gets one — a PR-bearing local branch surfaced (a streamed target, like
+    // a `--branches` row), or a display-only row synthesized from the cache.
+    // They ride the pr column's effective (gated) visibility, and the seed
+    // honors the same freshness states: identity now, fates with the
+    // refresh. On a cold cache (no identities yet) rows land when the first
+    // refresh concludes, via the same reconcile that recolors the cells.
+    if selected_columns.contains(&crate::core::columns::ListColumn::Pr)
+        && let Some(lookup) = &forge_lookup
+    {
+        let pr_rows = crate::commands::list::collect_pr_rows(
+            &git,
+            lookup,
+            &worktree_branches,
+            show_local,
+            &base_branch,
+            stat,
+            &project_root,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
+        )?;
+        for info in pr_rows {
+            if info.kind != EntryKind::ForgePr {
+                targets.push(list_stream::CollectorTarget {
+                    branch_name: info.name.clone(),
+                    path: info.path.clone(),
+                    kind: info.kind,
+                    is_detached: false,
+                });
+            }
+            worktree_infos.push(info);
+        }
+    }
+
+    // Short-circuit when the merged set is empty: skip TUI bringup and
+    // print a static empty-state hint. Avoids ratatui flicker and a
+    // raw-mode bringup just to render three lines of static text.
+    if worktree_infos.is_empty() {
+        crate::commands::list_empty::print(
+            &mut std::io::stdout(),
+            crate::styles::colors_enabled(),
+        )?;
+        return Ok(());
+    }
+
+    // Size cache: seed each worktree row with its last-known size so the Size
+    // column shows a value instantly (rendered dim/stale) while the bounded
+    // walk refreshes it in the background. Keyed by branch slug in the repo's
+    // coordinator store; only worktree rows (those with a path) are seeded,
+    // since only they are walked and can supersede the stale value. Held for
+    // the post-run persist. Best-effort — a cold/missing cache just yields
+    // today's shimmer.
+    let size_repo_hash: Option<String> = if fields.contains(FieldSet::SIZE) {
+        let hash =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir).ok();
+        if let Some(ref h) = hash {
+            let cached = crate::commands::size_cache::read_worktree_sizes(h);
+            if !cached.is_empty() {
+                crate::commands::size_cache::seed_worktree_sizes(&mut worktree_infos, &cached);
+            }
+        }
+        hash
+    } else {
+        None
+    };
 
     // Build TUI state — pin_default_branch=false, partition_by_owner=false
     // for `daft list` (per spec).

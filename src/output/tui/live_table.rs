@@ -90,8 +90,20 @@ impl LiveTable {
         // Pre-seed `received_patches` with bits for fields not arriving via
         // the streaming collector. This stops the loading shimmer for cells
         // the collector won't emit a patch for (e.g. `info.owner = None` for
-        // the default branch row in `daft prune` / `daft sync`).
-        let received_patches = vec![cfg.seeded_fields; seed.len()];
+        // the default branch row in `daft prune` / `daft sync`). Synthesized
+        // open-PR rows are seed-final by definition — everything they show
+        // came from the forge cache and no collector targets them — so every
+        // cell is marked received (blank means blank, not loading).
+        let received_patches = seed
+            .iter()
+            .map(|info| {
+                if info.kind == EntryKind::ForgePr {
+                    FieldSet::ALL
+                } else {
+                    cfg.seeded_fields
+                }
+            })
+            .collect();
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         // A cell is stale when the caller pre-populated its value (only SIZE
         // today, from the size cache) AND that field is still streamed by the
@@ -215,12 +227,11 @@ impl LiveTable {
                     return c;
                 }
             }
-            let kind = |k: &EntryKind| match k {
-                EntryKind::Worktree => 0,
-                EntryKind::LocalBranch => 1,
-                EntryKind::RemoteBranch => 2,
-            };
-            let c = kind(&ra.info.kind).cmp(&kind(&rb.info.kind));
+            let c = ra
+                .info
+                .kind
+                .section_order()
+                .cmp(&rb.info.kind.section_order());
             if c != std::cmp::Ordering::Equal {
                 return c;
             }
@@ -298,8 +309,15 @@ impl LiveTable {
     /// indefinitely. Callers that need rows treated as seed-final
     /// should extend this API rather than rely on the default.
     pub fn push_row(&mut self, info: WorktreeInfo) {
+        // Synthesized open-PR rows are seed-final wherever they enter (see
+        // `new`); other dynamic rows start all-loading as documented above.
+        let received = if info.kind == EntryKind::ForgePr {
+            FieldSet::ALL
+        } else {
+            FieldSet::EMPTY
+        };
         self.rows.push(WorktreeRow::idle(info));
-        self.received_patches.push(FieldSet::EMPTY);
+        self.received_patches.push(received);
         // Dynamically-discovered rows carry no cache seed, so no field is
         // stale — keep the vector length in lockstep with `received_patches`.
         self.stale_fields.push(FieldSet::EMPTY);

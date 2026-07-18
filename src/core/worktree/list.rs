@@ -40,6 +40,23 @@ pub enum EntryKind {
     LocalBranch,
     /// Remote tracking branch without a local branch or worktree.
     RemoteBranch,
+    /// An open PR with no local presence, synthesized from the forge-PR
+    /// cache (`daft list` shows every open PR by default).
+    ForgePr,
+}
+
+impl EntryKind {
+    /// Display-section order: worktrees first, then local branches, then
+    /// remote branches, then foreign open PRs — most local to least. Every
+    /// list sort composes this before the user's sort key.
+    pub fn section_order(self) -> u8 {
+        match self {
+            EntryKind::Worktree => 0,
+            EntryKind::LocalBranch => 1,
+            EntryKind::RemoteBranch => 2,
+            EntryKind::ForgePr => 3,
+        }
+    }
 }
 
 /// Enriched information about a single worktree or branch.
@@ -967,6 +984,11 @@ pub fn collect_worktree_info(
 /// Enumerates local and/or remote branches, filters out those already represented
 /// by a worktree, and enriches each with ahead/behind, commit info, and optionally
 /// line-level stats.
+///
+/// `only_local` restricts the local arm to the named branches — the default
+/// open-PR rows surface a handful of PR-bearing branches, and enriching every
+/// local branch (several git calls each) just to discard most would tax every
+/// bare `daft list`. `None` enriches all (the `--branches` path).
 #[allow(clippy::too_many_arguments)]
 pub fn collect_branch_info(
     git: &GitCommand,
@@ -975,6 +997,7 @@ pub fn collect_branch_info(
     include_local: bool,
     include_remote: bool,
     worktree_branches: &HashSet<String>,
+    only_local: Option<&HashSet<String>>,
     cwd: &Path,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
@@ -992,6 +1015,11 @@ pub fn collect_branch_info(
         for branch in output.lines() {
             let branch = branch.trim();
             if branch.is_empty() || worktree_branches.contains(branch) {
+                continue;
+            }
+            if let Some(only) = only_local
+                && !only.contains(branch)
+            {
                 continue;
             }
             local_branch_names.insert(branch.to_string());

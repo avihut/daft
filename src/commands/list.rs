@@ -329,6 +329,71 @@ fn pr_explicitly_selected(input: &str) -> bool {
         .any(|t| t.eq_ignore_ascii_case("pr") || t.eq_ignore_ascii_case("+pr"))
 }
 
+/// The default open-PR rows for both list paths: local branches surfaced
+/// because an open PR heads there (enriched exactly like `--branches` rows,
+/// with their tracking ref attached for `by_ref` decoration), plus rows
+/// synthesized from the cache for PRs with no local presence. The caller
+/// merges these into the row set, applies `apply_pr_owners`, and re-sorts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_pr_rows(
+    git: &GitCommand,
+    lookup: &crate::core::worktree::forge_ref::ForgePrLookup,
+    worktree_branches: &HashSet<String>,
+    show_local: bool,
+    base_branch: &str,
+    stat: Stat,
+    project_root: &std::path::Path,
+    ownership_strategy: crate::core::ownership::OwnershipStrategy,
+    user_email: Option<&str>,
+    remote_name: &str,
+) -> Result<Vec<crate::core::worktree::list::WorktreeInfo>> {
+    use crate::core::worktree::pr_rows;
+
+    let local_branches: HashSet<String> = git
+        .for_each_ref("%(refname:short)", "refs/heads/")
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .collect();
+    let branch_refs =
+        pr_rows::parse_branch_forge_refs(&git.branch_merge_refs().unwrap_or_default());
+    let plan = pr_rows::plan_pr_rows(
+        lookup,
+        worktree_branches,
+        &local_branches,
+        &branch_refs,
+        show_local,
+    );
+
+    let mut rows = Vec::new();
+    if !plan.surface_local.is_empty() {
+        let only: HashSet<String> = plan.surface_local.iter().cloned().collect();
+        let mut surfaced = collect_branch_info(
+            git,
+            base_branch,
+            stat,
+            true,
+            false,
+            worktree_branches,
+            Some(&only),
+            project_root,
+            ownership_strategy,
+            user_email,
+            remote_name,
+        )?;
+        for info in &mut surfaced {
+            // Fork-tracking branches decorate through `by_ref`; the branch
+            // enrichment doesn't read tracking config, so attach it here.
+            info.forge_ref = branch_refs.get(&info.name).copied();
+        }
+        rows.extend(surfaced);
+    }
+    rows.extend(plan.synthesized);
+    Ok(rows)
+}
+
 fn run_blocking(args: Args) -> Result<()> {
     // Construct the body `GitCommand` first and load settings through it so the
     // repo is discovered once and reused for the command body (#584).
@@ -416,6 +481,7 @@ fn run_blocking(args: Args) -> Result<()> {
                 show_local,
                 show_remote,
                 &worktree_branches,
+                None,
                 &project_root,
                 settings.ownership_strategy,
                 user_email.as_deref(),
@@ -424,13 +490,9 @@ fn run_blocking(args: Args) -> Result<()> {
             let mut merged = result;
             merged.extend(branch_infos);
             merged.sort_by(|a, b| {
-                let kind_order = |k: &EntryKind| match k {
-                    EntryKind::Worktree => 0,
-                    EntryKind::LocalBranch => 1,
-                    EntryKind::RemoteBranch => 2,
-                };
-                kind_order(&a.kind)
-                    .cmp(&kind_order(&b.kind))
+                a.kind
+                    .section_order()
+                    .cmp(&b.kind.section_order())
                     .then_with(|| sort_spec.compare(a, b))
             });
             output.finish_spinner();
@@ -478,9 +540,9 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
-    // Kick the (throttled) detached refresh whenever `pr` was in play at
-    // all — including when the gate just hid the column: the probe is what
-    // detects a repaired auth and silently restores it on a later run.
+    // Kick the detached refresh whenever `pr` was in play at all — including
+    // when the gate just hid the column: the probe is what detects a repaired
+    // auth and silently restores it on a later run.
     if let Some(gate) = &forge_gate {
         crate::commands::forge_cache::spawn_background_refresh_gated(gate);
     }
@@ -495,6 +557,40 @@ fn run_blocking(args: Args) -> Result<()> {
     } else {
         None
     };
+
+    // Default open-PR rows ride the pr column's effective (gated) visibility:
+    // every open PR the table doesn't already represent gets a row — a local
+    // branch surfaced, or a row synthesized from the cache. One unit with the
+    // column: `--columns -pr` (or the silent gate) removes both.
+    if table_columns.contains(&ListColumn::Pr)
+        && let Some(lookup) = &forge_lookup
+    {
+        let worktree_branches: HashSet<String> = infos
+            .iter()
+            .filter(|i| i.kind == EntryKind::Worktree)
+            .map(|i| i.name.clone())
+            .collect();
+        let pr_rows = collect_pr_rows(
+            &git,
+            lookup,
+            &worktree_branches,
+            show_local,
+            &base_branch,
+            stat,
+            &project_root,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
+        )?;
+        infos.extend(pr_rows);
+        crate::core::worktree::pr_rows::apply_pr_owners(&mut infos, lookup);
+        infos.sort_by(|a, b| {
+            a.kind
+                .section_order()
+                .cmp(&b.kind.section_order())
+                .then_with(|| sort_spec.compare(a, b))
+        });
+    }
 
     if args.merging {
         infos.retain(|info| {
@@ -675,6 +771,7 @@ fn build_emit_table(
                 EntryKind::Worktree => "worktree",
                 EntryKind::LocalBranch => "branch",
                 EntryKind::RemoteBranch => "remote",
+                EntryKind::ForgePr => "pr",
             };
             row.push(Cell::str(kind_str));
             row.push(Cell::str(&info.name));

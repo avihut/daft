@@ -461,12 +461,6 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let last_commit_subject = info.last_commit_subject.clone();
 
-    let owner = info
-        .owner
-        .as_ref()
-        .map(|o| o.name.clone())
-        .unwrap_or_default();
-
     let hash = info.last_commit_hash.clone().unwrap_or_default();
 
     // PR cell: config-recorded ref (inbound checkout), else an outbound match
@@ -477,6 +471,16 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
         None => info.forge_ref.map(PrDecoration::bare),
     };
+
+    // Owner cell: rows with a PR show the PR's author — the forge's answer
+    // to "whose PR" beats the branch-history heuristic, and it's present at
+    // seed (identity) where the deduced owner streams in later. Undecorated
+    // rows keep the deduced owner.
+    let owner = decoration
+        .as_ref()
+        .and_then(|d| d.author.clone())
+        .or_else(|| info.owner.as_ref().map(|o| o.name.clone()))
+        .unwrap_or_default();
     let (pr, pr_status, pr_url) = match decoration {
         Some(d) => {
             let text = match d.status.map(PrStatus::glyph) {
