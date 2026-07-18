@@ -182,22 +182,25 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
 
     // Soft trust hint (like `daft hooks run`): an explicit `daft run` counts as
     // consent and executes regardless of trust, but we nudge the user to trust
-    // the repo so lifecycle hooks fire automatically too.
+    // the repo so lifecycle hooks fire automatically too. The hint goes to
+    // stderr (`notice`, not `info`) so a single-job passthrough's stdout stays
+    // verbatim — `daft run dump > out.json` must capture the job's output, not
+    // three lines of trust advice prepended to it.
     let trust_level = TrustDatabase::load()
         .unwrap_or_default()
         .get_trust_level(&git_dir);
     if trust_level != TrustLevel::Allow {
-        output.info(&format!(
+        output.notice(&format!(
             "{} this repository is not in your trust list ({}).",
             dim("Note:"),
             trust_level
         ));
-        output.info(&format!(
+        output.notice(&format!(
             "  {} run `{}` to let lifecycle hooks run automatically too.",
             dim("Tip:"),
             cyan(&crate::daft_cmd("hooks trust"))
         ));
-        output.info("");
+        output.notice("");
     }
 
     let ctx = crate::hooks::HookContext::for_task(
@@ -286,12 +289,12 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
             Err(_) => tl.abort(&format!("Failed after {elapsed}")),
             Ok(r) => {
                 tl.resolve_hook_step(&task_key, r.skipped, r.skip_reason.as_deref());
-                if cancel.is_cancelled() || r.exit_code == Some(130) {
-                    tl.abort(&format!("Cancelled after {elapsed}"));
-                } else if !r.success && !r.skipped {
-                    tl.finish(&format!("Finished with failures in {elapsed}"));
-                } else {
-                    tl.finish(&format!("Done in {elapsed}"));
+                match rail_outcome(cancel.is_cancelled(), r.success, r.skipped) {
+                    RailOutcome::Cancelled => tl.abort(&format!("Cancelled after {elapsed}")),
+                    RailOutcome::Failures => {
+                        tl.finish(&format!("Finished with failures in {elapsed}"))
+                    }
+                    RailOutcome::Done => tl.finish(&format!("Done in {elapsed}")),
                 }
             }
         }
@@ -312,6 +315,28 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
     }
 
     Ok(())
+}
+
+/// Which terminal footer the multi-job timeline rail closes with.
+#[derive(Debug, PartialEq, Eq)]
+enum RailOutcome {
+    Cancelled,
+    Failures,
+    Done,
+}
+
+/// Pick the rail's closing footer from the run's outcome. A cancellation is
+/// keyed on the interrupt flag alone — never on a 130 exit code, which a job
+/// can legitimately return on its own without any Ctrl+C (that reads as a
+/// failure, not an interruption).
+fn rail_outcome(cancelled: bool, success: bool, skipped: bool) -> RailOutcome {
+    if cancelled {
+        RailOutcome::Cancelled
+    } else if !success && !skipped {
+        RailOutcome::Failures
+    } else {
+        RailOutcome::Done
+    }
 }
 
 /// The forced-interactive clone for a single-job passthrough run, or `None`
@@ -524,6 +549,25 @@ mod tests {
 
     fn words(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ── rail footer outcome ───────────────────────────────────────────────
+
+    #[test]
+    fn rail_outcome_keys_cancellation_on_the_interrupt_flag_not_exit_130() {
+        // A job that exits 130 on its own (no Ctrl+C) is a failure, not a
+        // cancellation — the footer must not read the exit code.
+        assert_eq!(
+            rail_outcome(false, false, false),
+            RailOutcome::Failures,
+            "a 130 exit without an interrupt is a failure"
+        );
+        // The interrupt flag wins regardless of the aggregate success flag.
+        assert_eq!(rail_outcome(true, false, false), RailOutcome::Cancelled);
+        assert_eq!(rail_outcome(true, true, false), RailOutcome::Cancelled);
+        // Clean success, and a skip, both close as done.
+        assert_eq!(rail_outcome(false, true, false), RailOutcome::Done);
+        assert_eq!(rail_outcome(false, true, true), RailOutcome::Done);
     }
 
     // ── clap surface: verbatim trailing capture ───────────────────────────

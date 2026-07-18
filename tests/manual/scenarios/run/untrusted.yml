@@ -20,6 +20,10 @@ repos:
           jobs:
             - name: serve
               run: echo ran-despite-untrusted > .ran
+        emit:
+          jobs:
+            - name: emit
+              run: printf 'CLEAN-PASSTHROUGH-STDOUT\n'
 
 steps:
   - name: Clone the repository (do NOT trust it)
@@ -39,3 +43,20 @@ steps:
       output_contains:
         - "not in your trust list"
         - "hooks trust"
+
+  # Regression: the trust hint must land on STDERR, not STDOUT — a single-job
+  # passthrough's stdout is its interface (verbatim, like running the command
+  # yourself). Redirect the job's stdout to a file; bash `>` isolates stdout
+  # from the hint (now on stderr), so the marker is captured but the hint must
+  # never leak into it. Before the fix the 3-line hint prepended to stdout.
+  - name: The trust hint stays off a single-job passthrough's stdout
+    run: daft run emit > $WORK_DIR/run-untrusted/main/out.txt
+    cwd: "$WORK_DIR/run-untrusted/main"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/run-untrusted/main/out.txt"
+          content: "CLEAN-PASSTHROUGH-STDOUT"
+      file_not_contains:
+        - path: "$WORK_DIR/run-untrusted/main/out.txt"
+          content: "not in your trust list"
