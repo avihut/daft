@@ -154,6 +154,40 @@ impl PrStatus {
             PrStatus::Closed => "\u{25cb}",             // ○
         }
     }
+
+    /// The semantic color slot this status renders in, or `None` when the
+    /// number stays plain (open without CI). The live (ratatui) and blocking
+    /// (term-styles) tables use different color types, so they share this
+    /// classification rather than the concrete color — the status→color
+    /// mapping then lives in exactly one place, and a new `PrStatus` variant
+    /// can't drift the two tables out of agreement.
+    pub fn semantic_color(self) -> Option<PrStatusColor> {
+        match self {
+            PrStatus::Ci(CiStatus::Pass) => Some(PrStatusColor::Pass),
+            PrStatus::Ci(CiStatus::Fail) => Some(PrStatusColor::Fail),
+            PrStatus::Ci(CiStatus::Pending) => Some(PrStatusColor::Pending),
+            PrStatus::Merged => Some(PrStatusColor::Merged),
+            PrStatus::Closed => Some(PrStatusColor::Closed),
+            PrStatus::Open => None,
+        }
+    }
+}
+
+/// The color a PR's fate maps to, shared by the live and blocking renderers.
+/// Each translates it into its own color type (ratatui `Color` /
+/// term-styles), keeping the two tables in lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrStatusColor {
+    /// CI passing — green.
+    Pass,
+    /// CI failing — red.
+    Fail,
+    /// CI running — yellow.
+    Pending,
+    /// Merged — purple (the "done, prune it" signal).
+    Merged,
+    /// Closed without merging — dim.
+    Closed,
 }
 
 /// One resolved PR-cell decoration: the ref plus everything the renderers
@@ -469,6 +503,21 @@ mod tests {
         assert_eq!(glyphs.len(), statuses.len());
         assert!(!glyphs.contains(""), "every non-open status has a glyph");
         assert_eq!(PrStatus::Open.glyph(), "");
+    }
+
+    #[test]
+    fn semantic_color_classifies_every_status() {
+        use PrStatusColor as C;
+        assert_eq!(PrStatus::Ci(CiStatus::Pass).semantic_color(), Some(C::Pass));
+        assert_eq!(PrStatus::Ci(CiStatus::Fail).semantic_color(), Some(C::Fail));
+        assert_eq!(
+            PrStatus::Ci(CiStatus::Pending).semantic_color(),
+            Some(C::Pending)
+        );
+        assert_eq!(PrStatus::Merged.semantic_color(), Some(C::Merged));
+        assert_eq!(PrStatus::Closed.semantic_color(), Some(C::Closed));
+        // Open renders plain — no color in either table.
+        assert_eq!(PrStatus::Open.semantic_color(), None);
     }
 
     #[test]

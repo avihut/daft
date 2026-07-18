@@ -179,9 +179,9 @@ pub fn run_live(args: Args) -> Result<()> {
         forge_repo_hash = gate.repo_hash.clone();
         forge_finished_baseline = gate.health.as_ref().and_then(|h| h.finished_at);
         if fields.contains(FieldSet::FORGE_REF) {
-            let lookup = forge_repo_hash
-                .as_deref()
-                .map(crate::commands::forge_cache::load_lookup);
+            // Reuse the lookup read alongside the health gate (one store open);
+            // the mid-run refresh reload below re-reads fresh.
+            let lookup = gate.lookup.clone();
             (forge_lookup, forge_loading) = match (forge_refresh_pending, gate.ever_succeeded()) {
                 (true, false) => (None, true),
                 (true, true) => (lookup.map(ForgePrLookup::identity_only), false),

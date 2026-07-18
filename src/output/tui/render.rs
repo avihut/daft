@@ -3,7 +3,7 @@ use super::columns::{
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
-use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
+use crate::core::worktree::forge_ref::{PrStatus, PrStatusColor};
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, ColumnContext, ColumnValues, format_human_size};
@@ -815,23 +815,20 @@ fn render_cell(
                 // Color carries the status here (a ratatui buffer can't hold
                 // the colorless glyph fallback's escape-free sibling — plain
                 // renderers append `✓`/`✗`/`●`/`◆`/`○` instead). LightMagenta
-                // matches the ✦ default-branch purple.
+                // matches the ✦ default-branch purple. The status→slot mapping
+                // is shared with the blocking renderer via `semantic_color`.
                 let cell = Cell::from(vals.pr.clone());
-                match vals.pr_status {
-                    Some(PrStatus::Ci(CiStatus::Pass)) => {
-                        cell.style(Style::default().fg(Color::Green))
+                match vals.pr_status.and_then(PrStatus::semantic_color) {
+                    Some(PrStatusColor::Pass) => cell.style(Style::default().fg(Color::Green)),
+                    Some(PrStatusColor::Fail) => cell.style(Style::default().fg(Color::Red)),
+                    Some(PrStatusColor::Pending) => cell.style(Style::default().fg(Color::Yellow)),
+                    Some(PrStatusColor::Merged) => {
+                        cell.style(Style::default().fg(Color::LightMagenta))
                     }
-                    Some(PrStatus::Ci(CiStatus::Fail)) => {
-                        cell.style(Style::default().fg(Color::Red))
-                    }
-                    Some(PrStatus::Ci(CiStatus::Pending)) => {
-                        cell.style(Style::default().fg(Color::Yellow))
-                    }
-                    Some(PrStatus::Merged) => cell.style(Style::default().fg(Color::LightMagenta)),
-                    Some(PrStatus::Closed) => {
+                    Some(PrStatusColor::Closed) => {
                         cell.style(Style::default().add_modifier(Modifier::DIM))
                     }
-                    Some(PrStatus::Open) | None => cell,
+                    None => cell,
                 }
             }
         }

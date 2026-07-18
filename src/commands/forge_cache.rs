@@ -79,21 +79,34 @@ pub fn read_prs(repo_hash: &str) -> Vec<ForgePrRow> {
 }
 
 fn read_inner(repo_hash: &str) -> Option<Vec<ForgePrRow>> {
+    with_reader(repo_hash, |conn| {
+        ForgePrsRepo::list_for_repo(conn, repo_hash).ok()
+    })
+    .flatten()
+}
+
+/// Open the repo's coordinator store read-only and run `f` with a reader
+/// connection. `None` when the store doesn't exist yet (pure reads never
+/// materialize it) or on any open/checkout error — every forge read is
+/// best-effort. Centralizes the WAL-safe open so callers that need both health
+/// and PR rows share a single `Pool::open`.
+///
+/// Same WAL-safe read shape as `size_cache::read_inner`: existence-gate so a
+/// pure read never materializes a store, then the pool's read-write bootstrap
+/// (a checkpointed db with no -wal/-shm sidecars is SQLITE_CANTOPEN under a
+/// bare read-only open).
+fn with_reader<T>(repo_hash: &str, f: impl FnOnce(&rusqlite::Connection) -> T) -> Option<T> {
     let state_dir = crate::daft_state_dir().ok()?;
     let db_path = state_dir
         .join(paths::JOBS_SUBDIR)
         .join(repo_hash)
         .join(paths::COORDINATOR_DB);
-    // Same WAL-safe read shape as size_cache::read_inner: existence-gate so a
-    // pure read never materializes a store, then the pool's read-write
-    // bootstrap (a checkpointed db with no -wal/-shm sidecars is
-    // SQLITE_CANTOPEN under a bare read-only open).
     if !db_path.exists() {
         return None;
     }
     let pool = Pool::open(&db_path).ok()?;
     let conn = pool.reader().ok()?;
-    ForgePrsRepo::list_for_repo(&conn, repo_hash).ok()
+    Some(f(&conn))
 }
 
 /// Build the PR-column lookup for `repo_hash` from the cache. Outbound
@@ -104,15 +117,24 @@ fn read_inner(repo_hash: &str) -> Option<Vec<ForgePrRow>> {
 /// rules as the SQL in `ForgePrsRepo::by_head_branch`, applied here because
 /// one bulk read beats a query per row.
 pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePrLookup {
+    lookup_from_rows(read_prs(repo_hash))
+}
+
+/// Build the PR-column lookup from already-read cache rows. Split from
+/// [`load_lookup`] so a caller that read the rows in a shared store open (e.g.
+/// [`forge_gate_and_lookup`]) needn't re-open. `rows` must be ordered open
+/// first, newest-number-first within a state (as `read_prs` returns them) for
+/// the first-wins-per-branch priority to hold.
+fn lookup_from_rows(rows: Vec<ForgePrRow>) -> crate::core::worktree::forge_ref::ForgePrLookup {
     use crate::core::worktree::forge_ref::{
         CiStatus, ForgeBranchRef, ForgePrLookup, OpenPr, PrDecoration, PrStatus,
     };
 
     let mut lookup = ForgePrLookup::default();
-    // `read_prs` orders open-first, newest-number-first within a state, so a
+    // Rows arrive open-first, newest-number-first within a state, so a
     // first-wins insert per branch realizes the open-beats-merged priority —
     // and `open` comes out newest-number-first.
-    for row in read_prs(repo_hash) {
+    for row in rows {
         let kind = match row.kind.as_str() {
             "pr" => ForgeRefKind::GithubPr,
             "mr" => ForgeRefKind::GitlabMr,
@@ -248,6 +270,11 @@ pub struct ForgeGate {
     /// Persisted health as of the gate read. `None` when no refresh ever
     /// ran (or the store is unreadable) — which fails open, i.e. healthy.
     pub health: Option<ForgeHealthRow>,
+    /// The PR-cache lookup, read in the *same* store open as `health` by
+    /// [`forge_gate_and_lookup`] (the `daft list` render path). `None` for the
+    /// lighter [`forge_gate`] used by the refresh-spawn path, which needs no
+    /// PR rows.
+    pub lookup: Option<crate::core::worktree::forge_ref::ForgePrLookup>,
 }
 
 impl ForgeGate {
@@ -301,24 +328,49 @@ pub fn forge_gate(git: &GitCommand, repo_hash: Option<String>) -> ForgeGate {
         capable,
         repo_hash,
         health,
+        lookup: None,
     }
+}
+
+/// Like [`forge_gate`] but also loads the PR-cache lookup in the *same*
+/// coordinator-store open — for the `daft list` render path, which needs both
+/// the health gate and the PR rows. One `Pool::open` (bring-up + migration
+/// check) instead of the two a separate `read_health` + `read_prs` would pay
+/// on this hot path. When capable, `lookup` is always `Some` (empty if the
+/// store or snapshot is absent), matching [`load_lookup`]'s contract.
+pub fn forge_gate_and_lookup(git: &GitCommand, repo_hash: Option<String>) -> ForgeGate {
+    let capable = crate::forge::repo_forge_capable(git);
+    let (health, lookup) = match (&repo_hash, capable) {
+        (Some(hash), true) => {
+            let (health, rows) = read_health_and_prs(hash);
+            (health, Some(lookup_from_rows(rows)))
+        }
+        _ => (None, None),
+    };
+    ForgeGate {
+        capable,
+        repo_hash,
+        health,
+        lookup,
+    }
+}
+
+/// Read forge health and the PR-cache rows in a single coordinator-store open.
+/// Best-effort: a missing or unreadable store yields `(None, empty)`.
+fn read_health_and_prs(repo_hash: &str) -> (Option<ForgeHealthRow>, Vec<ForgePrRow>) {
+    with_reader(repo_hash, |conn| {
+        let health = ForgeHealthRepo::get(conn).ok().flatten();
+        let rows = ForgePrsRepo::list_for_repo(conn, repo_hash).unwrap_or_default();
+        (health, rows)
+    })
+    .unwrap_or((None, Vec::new()))
 }
 
 /// The repo's persisted forge health. `None` on any error and when the
 /// coordinator store doesn't exist yet — reading is pure (never
 /// materializes a store) and fails open, i.e. healthy.
 pub fn read_health(repo_hash: &str) -> Option<ForgeHealthRow> {
-    let state_dir = crate::daft_state_dir().ok()?;
-    let db_path = state_dir
-        .join(paths::JOBS_SUBDIR)
-        .join(repo_hash)
-        .join(paths::COORDINATOR_DB);
-    if !db_path.exists() {
-        return None;
-    }
-    let pool = Pool::open(&db_path).ok()?;
-    let conn = pool.reader().ok()?;
-    ForgeHealthRepo::get(&conn).ok().flatten()
+    with_reader(repo_hash, |conn| ForgeHealthRepo::get(conn).ok().flatten()).flatten()
 }
 
 fn with_health_writer(
@@ -553,6 +605,7 @@ mod tests {
             capable,
             repo_hash: Some("repo".into()),
             health,
+            lookup: None,
         }
     }
 
@@ -641,6 +694,34 @@ mod tests {
         assert!(h.healthy);
         assert_eq!(h.error_kind, None);
         assert!(h.succeeded_at.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn read_health_and_prs_reads_both_in_one_open() {
+        // The combined reader must return the same data the separate
+        // read_health + read_prs pair does — from a single store open.
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let repo = "forge-combined-repo";
+        record_refresh_success(repo);
+        persist_snapshot(
+            repo,
+            ForgeRefKind::GithubPr,
+            &[entry(7, "feat/x", Some(CiStatus::Pass))],
+        );
+
+        let (health, rows) = read_health_and_prs(repo);
+        assert_eq!(
+            health.map(|h| h.healthy),
+            Some(true),
+            "health is read in the combined open"
+        );
+        assert_eq!(rows.len(), 1, "PR rows are read in the same open");
+        assert_eq!(rows[0].number, 7);
+
+        // Parity with the separate reads it collapses.
+        assert_eq!(read_health(repo).map(|h| h.healthy), Some(true));
+        assert_eq!(read_prs(repo).len(), 1);
     }
 
     #[test]

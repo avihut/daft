@@ -321,7 +321,10 @@ pub(crate) fn gate_pr_column(
     }
     let repo_hash =
         crate::core::repo_identity::compute_repo_id_from_common_dir(git_common_dir).ok();
-    let gate = crate::commands::forge_cache::forge_gate(git, repo_hash);
+    // One store open for both the health gate and the PR-cache lookup the
+    // render needs (`gate.lookup`), instead of a second open at row-decoration
+    // time.
+    let gate = crate::commands::forge_cache::forge_gate_and_lookup(git, repo_hash);
     let mut effective = columns.to_vec();
     if !columns_input.is_some_and(pr_explicitly_selected) && !gate.column_visible() {
         effective.retain(|c| *c != ListColumn::Pr);
@@ -579,10 +582,8 @@ fn run_blocking(args: Args) -> Result<()> {
     // prints once, so it serves the cache snapshot as-is; the no-stale-status
     // display contract lives in the live table, which can update mid-run.
     let forge_lookup = if has_pr {
-        forge_gate
-            .as_ref()
-            .and_then(|g| g.repo_hash.as_deref())
-            .map(crate::commands::forge_cache::load_lookup)
+        // Reuse the lookup read alongside the health gate (one store open).
+        forge_gate.as_ref().and_then(|g| g.lookup.clone())
     } else {
         None
     };
@@ -1255,14 +1256,15 @@ fn print_table(
             let pr = if vals.pr.is_empty() || !use_color {
                 vals.pr.clone()
             } else {
-                use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
-                let colored = match vals.pr_status {
-                    Some(PrStatus::Ci(CiStatus::Pass)) => styles::green(&vals.pr),
-                    Some(PrStatus::Ci(CiStatus::Fail)) => styles::red(&vals.pr),
-                    Some(PrStatus::Ci(CiStatus::Pending)) => styles::yellow(&vals.pr),
-                    Some(PrStatus::Merged) => styles::bright_purple(&vals.pr),
-                    Some(PrStatus::Closed) => styles::dim(&vals.pr),
-                    Some(PrStatus::Open) | None => vals.pr.clone(),
+                use crate::core::worktree::forge_ref::{PrStatus, PrStatusColor};
+                // Same status→slot mapping as the live renderer (semantic_color).
+                let colored = match vals.pr_status.and_then(PrStatus::semantic_color) {
+                    Some(PrStatusColor::Pass) => styles::green(&vals.pr),
+                    Some(PrStatusColor::Fail) => styles::red(&vals.pr),
+                    Some(PrStatusColor::Pending) => styles::yellow(&vals.pr),
+                    Some(PrStatusColor::Merged) => styles::bright_purple(&vals.pr),
+                    Some(PrStatusColor::Closed) => styles::dim(&vals.pr),
+                    None => vals.pr.clone(),
                 };
                 match &vals.pr_url {
                     Some(url) => styles::hyperlink(&colored, url),
