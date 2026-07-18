@@ -15,6 +15,10 @@
 //! - `repo-sizes` — every cached repo size from the global catalog, one
 //!   JSON object per line (`uuid`, `repo_path`, `size_bytes`,
 //!   `measured_at`).
+//! - `forge-prs` — every cached forge PR/MR for the cwd's repo, one JSON
+//!   object per line (`kind`, `number`, `title`, `state`, `head_branch`,
+//!   `is_cross_repo`, `ci_status`, `url`, `author`, `fetched_at`). Feeds
+//!   the forge-cache scenarios (#127).
 //!
 //! The output is JSON-serialized [`crate::coordinator::clean_policy::RepoPolicy`]
 //! (or `{}` when no row exists). Field names match the historical
@@ -32,7 +36,7 @@ pub fn run() -> Result<()> {
     let args: Vec<String> = crate::cli::argv().to_vec();
     let Some(table) = args.get(2) else {
         bail!(
-            "usage: daft __dump-store <table>\n  tables: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes"
+            "usage: daft __dump-store <table>\n  tables: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes, forge-prs"
         );
     };
     match table.as_str() {
@@ -41,9 +45,10 @@ pub fn run() -> Result<()> {
         "invocations" => dump_invocations(),
         "worktree-sizes" => dump_worktree_sizes(),
         "repo-sizes" => dump_repo_sizes(),
+        "forge-prs" => dump_forge_prs(),
         other => {
             bail!(
-                "unknown table '{other}' (supported: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes)"
+                "unknown table '{other}' (supported: repo-policy, visitor-seeds, invocations, worktree-sizes, repo-sizes, forge-prs)"
             )
         }
     }
@@ -100,6 +105,31 @@ fn dump_worktree_sizes() -> Result<()> {
             "worktree_path": row.worktree_path,
             "size_bytes": row.size_bytes,
             "measured_at": row.measured_at.to_rfc3339(),
+        });
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn dump_forge_prs() -> Result<()> {
+    let (repo_hash, store) = open_store_for_cwd()?;
+    let conn = store
+        .pool()
+        .reader()
+        .context("checkout store reader for dump")?;
+    let rows = crate::store::repos::ForgePrsRepo::list_for_repo(&conn, &repo_hash)?;
+    for row in rows {
+        let json = serde_json::json!({
+            "kind": row.kind,
+            "number": row.number,
+            "title": row.title,
+            "state": row.state,
+            "head_branch": row.head_branch,
+            "is_cross_repo": row.is_cross_repo,
+            "ci_status": row.ci_status,
+            "url": row.url,
+            "author": row.author,
+            "fetched_at": row.fetched_at.to_rfc3339(),
         });
         println!("{json}");
     }

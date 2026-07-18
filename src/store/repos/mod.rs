@@ -11,6 +11,7 @@ use crate::store::error::Result;
 use rusqlite::Connection;
 
 pub mod catalog_repos;
+pub mod forge_prs;
 pub mod governor_events;
 pub mod hook_profiles;
 pub mod invocations;
@@ -21,6 +22,7 @@ pub mod visitor_seeds;
 pub mod worktree_sizes;
 
 pub use catalog_repos::CatalogReposRepo;
+pub use forge_prs::ForgePrsRepo;
 pub use governor_events::GovernorEventsRepo;
 pub use hook_profiles::HookProfilesRepo;
 pub use invocations::InvocationsRepo;

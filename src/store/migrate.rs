@@ -51,11 +51,12 @@ pub fn coordinator_set() -> MigrationSet {
             M::up(include_str!("migrations/003_invocation_status.sql")),
             M::up(include_str!("migrations/004_hook_profiles.sql")),
             M::up(include_str!("migrations/005_worktree_sizes.sql")),
+            M::up(include_str!("migrations/006_forge_prs.sql")),
         ]),
         // rusqlite_migration's version counter is `migrations.len() as u32`
         // after every migration is applied. Kept as i64 for consistency with
         // the on-disk `user_version` PRAGMA type.
-        current_version: 5,
+        current_version: 6,
     }
 }
 
@@ -257,6 +258,22 @@ mod tests {
                 .unwrap();
             assert_eq!(name, table);
         }
+    }
+
+    #[test]
+    fn forge_prs_table_exists_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'forge_prs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "forge_prs");
     }
 
     #[test]
