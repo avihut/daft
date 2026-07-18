@@ -157,8 +157,8 @@ impl PrStatus {
 }
 
 /// One resolved PR-cell decoration: the ref plus everything the renderers
-/// need to style it. `status`/`url` are `None` when the ref is known only
-/// from branch config (inbound checkout with no cache row).
+/// need to style it. `status`/`url`/`author` are `None` when the ref is known
+/// only from branch config (inbound checkout with no cache row).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrDecoration {
     pub r: ForgeBranchRef,
@@ -166,6 +166,64 @@ pub struct PrDecoration {
     /// Web URL of the PR/MR — plain-print renderers wrap the cell in an
     /// OSC 8 terminal hyperlink.
     pub url: Option<String>,
+    /// The PR author's login. Wherever a decoration attaches to a row, the
+    /// Owner cell prefers this over branch-history deduction — the forge's
+    /// answer to "whose PR" is canonical where the history walk is a
+    /// winning-commit heuristic (and synthesized fork rows have no history
+    /// at all).
+    pub author: Option<String>,
+}
+
+impl PrDecoration {
+    /// A decoration known only by its ref — the config-recorded fallback when
+    /// no cache row backs it (no status, no URL, no author).
+    pub fn bare(r: ForgeBranchRef) -> Self {
+        Self {
+            r,
+            status: None,
+            url: None,
+            author: None,
+        }
+    }
+}
+
+/// One open PR from the cache snapshot — the seed for a synthesized `daft
+/// list` row when no worktree or local branch already represents it. Carries
+/// exactly what such a row can display: identity + fate via `decoration`,
+/// and the cache-sourced stand-ins for the local columns (title for the
+/// last-commit cell, `updated_at` for age).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPr {
+    pub decoration: PrDecoration,
+    /// Branch name in the head repository.
+    pub head_branch: String,
+    /// The head lives in a fork of the base repository.
+    pub is_cross_repo: bool,
+    /// Owner login of the head (fork) repository; empty when the platform's
+    /// listing doesn't carry it (GitLab) or the write-through path recorded
+    /// the row.
+    pub head_repo_owner: String,
+    /// Sanitized PR title (control characters stripped at the cache's
+    /// persistence boundary).
+    pub title: String,
+    /// The PR's last-activity timestamp, when the platform supplied one.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl OpenPr {
+    /// The branch-cell text for a synthesized row. Fork branch names live in
+    /// per-fork namespaces — two contributors' `patch-1`s collide, and a
+    /// fork's `main` must not read as yours — so cross-repo rows render
+    /// GitHub-style `owner:branch`. Same-repo rows show the plain name (that
+    /// IS an origin branch); a fork whose owner the listing couldn't supply
+    /// falls back to the plain name too.
+    pub fn display_branch(&self) -> String {
+        if self.is_cross_repo && !self.head_repo_owner.is_empty() {
+            format!("{}:{}", self.head_repo_owner, self.head_branch)
+        } else {
+            self.head_branch.clone()
+        }
+    }
 }
 
 /// PR decorations resolved from the forge-PR cache, keyed for the two match
@@ -183,6 +241,11 @@ pub struct ForgePrLookup {
     /// recorded in `branch.<name>.merge` by a `daft go pr:N` checkout — any
     /// state, so a merged/closed PR's worktree still shows its fate.
     pub by_ref: std::collections::HashMap<ForgeBranchRef, PrDecoration>,
+    /// Every open PR in the snapshot, newest number first — the seeds for the
+    /// default open-PR rows in `daft list`. Includes cross-repo PRs (they
+    /// never match `by_branch` but do get rows); the list layer dedups
+    /// against worktrees and local branches.
+    pub open: Vec<OpenPr>,
 }
 
 impl ForgePrLookup {
@@ -195,20 +258,22 @@ impl ForgePrLookup {
         config_ref: Option<ForgeBranchRef>,
     ) -> Option<PrDecoration> {
         match config_ref {
-            Some(r) => Some(self.by_ref.get(&r).cloned().unwrap_or(PrDecoration {
-                r,
-                status: None,
-                url: None,
-            })),
+            Some(r) => Some(
+                self.by_ref
+                    .get(&r)
+                    .cloned()
+                    .unwrap_or_else(|| PrDecoration::bare(r)),
+            ),
             None => self.by_branch.get(branch).cloned(),
         }
     }
 
-    /// The same decorations stripped to bare identity — number only, no
-    /// status, no URL. The live table seeds with this while a background
-    /// refresh is in flight: a possibly-stale fate must not render as
-    /// current, so the number appears immediately and the status arrives
-    /// with the refresh (or not at all this run).
+    /// The same decorations stripped to bare identity — no status, no URL.
+    /// The live table seeds with this while a background refresh is in
+    /// flight: a possibly-stale fate must not render as current, while
+    /// identity (numbers, branch names, titles, authors) may be a run stale
+    /// and shows immediately; statuses arrive with the refresh (or not at
+    /// all this run).
     pub fn identity_only(mut self) -> Self {
         let strip = |d: &mut PrDecoration| {
             d.status = None;
@@ -216,6 +281,7 @@ impl ForgePrLookup {
         };
         self.by_branch.values_mut().for_each(strip);
         self.by_ref.values_mut().for_each(strip);
+        self.open.iter_mut().for_each(|p| strip(&mut p.decoration));
         self
     }
 }
@@ -226,9 +292,8 @@ mod tests {
 
     fn decor(r: ForgeBranchRef, status: Option<PrStatus>) -> PrDecoration {
         PrDecoration {
-            r,
             status,
-            url: None,
+            ..PrDecoration::bare(r)
         }
     }
 
@@ -277,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_only_strips_status_and_url_but_keeps_refs() {
+    fn identity_only_strips_status_and_url_but_keeps_identity() {
         let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 42);
         let inbound = ForgeBranchRef::new(ForgeRefKind::GitlabMr, 7);
         let mut lookup = ForgePrLookup::default();
@@ -287,6 +352,7 @@ mod tests {
                 r: outbound,
                 status: Some(PrStatus::Ci(CiStatus::Fail)),
                 url: Some("https://github.com/a/b/pull/42".into()),
+                author: Some("alice".into()),
             },
         );
         lookup.by_ref.insert(
@@ -295,16 +361,71 @@ mod tests {
                 r: inbound,
                 status: Some(PrStatus::Merged),
                 url: Some("https://gitlab.com/a/b/-/merge_requests/7".into()),
+                author: None,
             },
         );
+        lookup.open.push(OpenPr {
+            decoration: PrDecoration {
+                r: outbound,
+                status: Some(PrStatus::Ci(CiStatus::Fail)),
+                url: Some("https://github.com/a/b/pull/42".into()),
+                author: Some("alice".into()),
+            },
+            head_branch: "feat/y".into(),
+            is_cross_repo: false,
+            head_repo_owner: String::new(),
+            title: "feat: y".into(),
+            updated_at: None,
+        });
 
         let bare = lookup.identity_only();
         let d = &bare.by_branch["feat/y"];
         assert_eq!(d.r, outbound, "the number itself stays");
         assert_eq!((d.status, d.url.as_deref()), (None, None));
+        assert_eq!(d.author.as_deref(), Some("alice"), "author is identity");
         let d = &bare.by_ref[&inbound];
         assert_eq!(d.r, inbound);
         assert_eq!((d.status, d.url.as_deref()), (None, None));
+        let p = &bare.open[0];
+        assert_eq!(
+            (p.decoration.status, p.decoration.url.as_deref()),
+            (None, None)
+        );
+        assert_eq!(p.title, "feat: y", "row identity survives the strip");
+        assert_eq!(p.decoration.author.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn display_branch_prefixes_forks_only_when_owner_is_known() {
+        let base = OpenPr {
+            decoration: decor(ForgeBranchRef::new(ForgeRefKind::GithubPr, 9), None),
+            head_branch: "patch-1".into(),
+            is_cross_repo: true,
+            head_repo_owner: "alice".into(),
+            title: String::new(),
+            updated_at: None,
+        };
+        assert_eq!(base.display_branch(), "alice:patch-1");
+
+        let same_repo = OpenPr {
+            is_cross_repo: false,
+            ..base.clone()
+        };
+        assert_eq!(
+            same_repo.display_branch(),
+            "patch-1",
+            "a same-repo head IS an origin branch — no prefix"
+        );
+
+        let unknown_owner = OpenPr {
+            head_repo_owner: String::new(),
+            ..base
+        };
+        assert_eq!(
+            unknown_owner.display_branch(),
+            "patch-1",
+            "fork with no owner in the listing (GitLab) falls back plain"
+        );
     }
 
     #[test]

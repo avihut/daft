@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::cli::{self, CliApiRequest};
-use crate::forge::info::{BaseRepo, CiStatus, PrListEntry, RemoteRefInfo};
+use crate::forge::info::{BaseRepo, CiStatus, PrListEntry, RemoteRefInfo, parse_forge_timestamp};
 use crate::forge::provider::{ForgeContext, RemoteRefProvider, RepoCoords};
 use crate::git::GitCommand;
 
@@ -84,7 +84,8 @@ fn run_pr_list(
         extra_env.push(("GH_HOST", host));
     }
 
-    let base_fields = "number,title,state,headRefName,isCrossRepository,url,author";
+    let base_fields =
+        "number,title,state,headRefName,isCrossRepository,url,author,headRepositoryOwner,updatedAt";
     let fields = if with_rollup {
         format!("{base_fields},statusCheckRollup")
     } else {
@@ -152,6 +153,8 @@ fn parse_pr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             ci_status: derive_ci_status(&item.status_check_rollup),
             url: item.url,
             author: item.author.login,
+            head_repo_owner: item.head_repository_owner.unwrap_or_default().login,
+            updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
         })
         .collect())
 }
@@ -205,6 +208,11 @@ struct GhPrListItem {
     is_cross_repository: bool,
     url: String,
     author: GhListAuthor,
+    /// Nullable: a deleted fork leaves the head repository ownerless.
+    #[serde(rename = "headRepositoryOwner", default)]
+    head_repository_owner: Option<GhListAuthor>,
+    #[serde(rename = "updatedAt", default)]
+    updated_at: Option<String>,
     #[serde(rename = "statusCheckRollup", default)]
     status_check_rollup: Vec<GhCheckContext>,
 }
@@ -614,6 +622,38 @@ mod tests {
         let entries = parse_pr_list(json.as_bytes()).unwrap();
         assert_eq!(entries[0].state, "merged");
         assert_eq!(entries[0].ci_status, None);
+        // Absent row fields degrade to empty/None, never a parse failure.
+        assert_eq!(entries[0].head_repo_owner, "");
+        assert_eq!(entries[0].updated_at, None);
+    }
+
+    #[test]
+    fn pr_list_carries_head_owner_and_updated_at() {
+        let json = r#"[{
+            "number": 9, "title": "Fork work", "state": "OPEN",
+            "headRefName": "patch-1", "isCrossRepository": true,
+            "url": "https://github.com/a/b/pull/9",
+            "author": {"login": "alice"},
+            "headRepositoryOwner": {"login": "alice-fork"},
+            "updatedAt": "2026-07-18T09:30:00Z"
+        }, {
+            "number": 8, "title": "Deleted fork", "state": "OPEN",
+            "headRefName": "gone", "isCrossRepository": true,
+            "url": "https://github.com/a/b/pull/8",
+            "author": {"login": "bob"},
+            "headRepositoryOwner": null,
+            "updatedAt": "not-a-timestamp"
+        }]"#;
+        let entries = parse_pr_list(json.as_bytes()).unwrap();
+        assert_eq!(entries[0].head_repo_owner, "alice-fork");
+        assert_eq!(
+            entries[0].updated_at.unwrap().to_rfc3339(),
+            "2026-07-18T09:30:00+00:00"
+        );
+        // A deleted fork's null owner and a malformed timestamp both degrade
+        // gracefully — the listing itself must never fail on one bad row.
+        assert_eq!(entries[1].head_repo_owner, "");
+        assert_eq!(entries[1].updated_at, None);
     }
 
     #[test]

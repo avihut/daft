@@ -105,12 +105,13 @@ fn read_inner(repo_hash: &str) -> Option<Vec<ForgePrRow>> {
 /// one bulk read beats a query per row.
 pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePrLookup {
     use crate::core::worktree::forge_ref::{
-        CiStatus, ForgeBranchRef, ForgePrLookup, PrDecoration, PrStatus,
+        CiStatus, ForgeBranchRef, ForgePrLookup, OpenPr, PrDecoration, PrStatus,
     };
 
     let mut lookup = ForgePrLookup::default();
     // `read_prs` orders open-first, newest-number-first within a state, so a
-    // first-wins insert per branch realizes the open-beats-merged priority.
+    // first-wins insert per branch realizes the open-beats-merged priority —
+    // and `open` comes out newest-number-first.
     for row in read_prs(repo_hash) {
         let kind = match row.kind.as_str() {
             "pr" => ForgeRefKind::GithubPr,
@@ -123,12 +124,23 @@ pub fn load_lookup(repo_hash: &str) -> crate::core::worktree::forge_ref::ForgePr
             r: forge_ref,
             status: Some(PrStatus::from_state_and_ci(&row.state, ci)),
             url: (!row.url.is_empty()).then(|| row.url.clone()),
+            author: (!row.author.is_empty()).then(|| row.author.clone()),
         };
         if matches!(row.state.as_str(), "open" | "merged") && !row.is_cross_repo {
             lookup
                 .by_branch
                 .entry(row.head_branch.clone())
                 .or_insert_with(|| decoration.clone());
+        }
+        if row.state == "open" {
+            lookup.open.push(OpenPr {
+                decoration: decoration.clone(),
+                head_branch: row.head_branch.clone(),
+                is_cross_repo: row.is_cross_repo,
+                head_repo_owner: row.head_repo_owner.clone(),
+                title: row.title.clone(),
+                updated_at: row.updated_at,
+            });
         }
         lookup.by_ref.insert(forge_ref, decoration);
     }
@@ -152,7 +164,11 @@ pub fn persist_snapshot(repo_hash: &str, kind: ForgeRefKind, entries: &[PrListEn
             is_cross_repo: entry.is_cross_repo,
             ci_status: entry.ci_status.map(|s| s.as_str().to_string()),
             url: sanitize_url(&entry.url),
-            author: entry.author.clone(),
+            // Logins render into the Owner column and the fork row's
+            // `owner:branch` cell — same boundary rule as titles.
+            author: sanitize_title(&entry.author),
+            head_repo_owner: sanitize_title(&entry.head_repo_owner),
+            updated_at: entry.updated_at,
             fetched_at,
         })
         .collect();
@@ -197,7 +213,11 @@ pub fn persist_resolved(info: &RemoteRefInfo) {
         is_cross_repo: info.is_cross_repo,
         ci_status: None,
         url: sanitize_url(&info.url),
-        author: info.author.clone(),
+        author: sanitize_title(&info.author),
+        // The single-PR resolve doesn't carry these; the next snapshot
+        // refresh fills them (same treatment as ci_status above).
+        head_repo_owner: String::new(),
+        updated_at: None,
         fetched_at: chrono::Utc::now(),
     };
     let _ = persist_one_inner(&repo_hash, &row);
@@ -434,6 +454,8 @@ mod tests {
             ci_status: ci,
             url: format!("https://github.com/acme/widget/pull/{number}"),
             author: "octocat".into(),
+            head_repo_owner: String::new(),
+            updated_at: None,
         }
     }
 
@@ -676,5 +698,12 @@ mod tests {
             lookup.by_ref[&ForgeBranchRef::new(K::GithubPr, 4)].status,
             Some(PrStatus::Closed)
         );
+
+        // Row seeds: exactly the open PRs (fork included), newest first, with
+        // the author carried for the Owner cell.
+        let numbers: Vec<u32> = lookup.open.iter().map(|p| p.decoration.r.number).collect();
+        assert_eq!(numbers, vec![8, 7], "open PRs only, newest number first");
+        assert!(lookup.open[0].is_cross_repo);
+        assert_eq!(lookup.open[0].decoration.author.as_deref(), Some("octocat"));
     }
 }

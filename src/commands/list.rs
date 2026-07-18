@@ -785,11 +785,7 @@ fn build_emit_table(
             use crate::core::worktree::forge_ref::{PrDecoration, PrStatus};
             let decoration = match forge_lookup {
                 Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
-                None => info.forge_ref.map(|r| PrDecoration {
-                    r,
-                    status: None,
-                    url: None,
-                }),
+                None => info.forge_ref.map(PrDecoration::bare),
             };
             match decoration {
                 Some(d) => {

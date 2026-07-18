@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::core::worktree::forge_ref::ForgeRefKind;
 use crate::forge::cli::{self, CliApiRequest};
-use crate::forge::info::{BaseRepo, PrListEntry, RemoteRefInfo};
+use crate::forge::info::{BaseRepo, PrListEntry, RemoteRefInfo, parse_forge_timestamp};
 use crate::forge::provider::{ForgeContext, RemoteRefProvider};
 
 const GLAB_PROMPT_ENV: (&str, &str) = ("GLAB_NO_PROMPT", "1");
@@ -134,6 +134,11 @@ fn parse_mr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             ci_status: None,
             url: item.web_url,
             author: item.author.username,
+            // The REST listing names the source project only by ID; resolving
+            // its namespace would cost one `projects/{id}` call per fork MR.
+            // Empty = synthesized rows render the plain branch name.
+            head_repo_owner: String::new(),
+            updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
         })
         .collect())
 }
@@ -147,6 +152,8 @@ struct GlabMrListItem {
     source_project_id: u64,
     target_project_id: u64,
     web_url: String,
+    #[serde(default)]
+    updated_at: Option<String>,
     #[serde(default)]
     author: GlabListAuthor,
 }
@@ -266,6 +273,7 @@ mod tests {
              "source_branch": "feature-x",
              "source_project_id": 1, "target_project_id": 1,
              "web_url": "https://gitlab.com/group/widget/-/merge_requests/45",
+             "updated_at": "2026-07-18T09:30:00Z",
              "author": {"username": "dev"}},
             {"iid": 46, "title": "Fork work", "state": "opened",
              "source_branch": "fork-branch",
@@ -283,6 +291,15 @@ mod tests {
         assert_eq!(
             entries[0].ci_status, None,
             "the REST listing carries no pipeline status (deferred)"
+        );
+        assert_eq!(
+            entries[0].updated_at.unwrap().to_rfc3339(),
+            "2026-07-18T09:30:00+00:00"
+        );
+        assert_eq!(
+            (entries[1].head_repo_owner.as_str(), entries[1].updated_at),
+            ("", None),
+            "fork namespace isn't in the REST listing; absent timestamp is None"
         );
     }
 

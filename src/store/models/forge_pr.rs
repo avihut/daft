@@ -31,6 +31,16 @@ pub struct ForgePrRow {
     /// `"pass"`, `"fail"`, `"pending"`, or `None` when the PR has no CI.
     pub ci_status: Option<String>,
     pub url: String,
+    /// The PR author's login — sanitized before persistence (it renders into
+    /// the Owner column).
     pub author: String,
+    /// Owner login of the head (fork) repository — the `owner:branch` prefix
+    /// on synthesized fork rows. Empty when the head is same-repo, the
+    /// platform's listing didn't carry it (GitLab), or the row came from the
+    /// single-PR write-through. Sanitized before persistence.
+    pub head_repo_owner: String,
+    /// The PR's last-activity timestamp; `None` when the source didn't
+    /// supply one.
+    pub updated_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
 }

@@ -475,11 +475,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
     // appended (`#723 ✓`) so the signal never exists as color alone.
     let decoration = match ctx.forge_prs {
         Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
-        None => info.forge_ref.map(|r| PrDecoration {
-            r,
-            status: None,
-            url: None,
-        }),
+        None => info.forge_ref.map(PrDecoration::bare),
     };
     let (pr, pr_status, pr_url) = match decoration {
         Some(d) => {
@@ -554,6 +550,7 @@ mod tests {
                 r: inbound,
                 status: Some(PrStatus::Ci(CiStatus::Fail)),
                 url: Some("https://github.com/acme/widget/pull/7".into()),
+                author: None,
             },
         );
         lookup.by_branch.insert(
@@ -562,6 +559,7 @@ mod tests {
                 r: outbound,
                 status: Some(PrStatus::Ci(CiStatus::Pass)),
                 url: Some("https://github.com/acme/widget/pull/723".into()),
+                author: None,
             },
         );
         lookup.by_branch.insert(
@@ -570,6 +568,7 @@ mod tests {
                 r: ForgeBranchRef::new(ForgeRefKind::GithubPr, 6),
                 status: Some(PrStatus::Merged),
                 url: None,
+                author: None,
             },
         );
         lookup

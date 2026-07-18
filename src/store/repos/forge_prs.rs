@@ -15,17 +15,20 @@ impl ForgePrsRepo {
         conn.execute(
             "INSERT INTO forge_prs
                  (repo_hash, kind, number, title, state, head_branch,
-                  is_cross_repo, ci_status, url, author, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                  is_cross_repo, ci_status, url, author, head_repo_owner,
+                  updated_at, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(repo_hash, kind, number) DO UPDATE SET
-                 title         = excluded.title,
-                 state         = excluded.state,
-                 head_branch   = excluded.head_branch,
-                 is_cross_repo = excluded.is_cross_repo,
-                 ci_status     = excluded.ci_status,
-                 url           = excluded.url,
-                 author        = excluded.author,
-                 fetched_at    = excluded.fetched_at",
+                 title           = excluded.title,
+                 state           = excluded.state,
+                 head_branch     = excluded.head_branch,
+                 is_cross_repo   = excluded.is_cross_repo,
+                 ci_status       = excluded.ci_status,
+                 url             = excluded.url,
+                 author          = excluded.author,
+                 head_repo_owner = excluded.head_repo_owner,
+                 updated_at      = excluded.updated_at,
+                 fetched_at      = excluded.fetched_at",
             params![
                 row.repo_hash,
                 row.kind,
@@ -37,6 +40,8 @@ impl ForgePrsRepo {
                 row.ci_status,
                 row.url,
                 row.author,
+                row.head_repo_owner,
+                row.updated_at.map(|t| t.to_rfc3339()),
                 row.fetched_at.to_rfc3339(),
             ],
         )?;
@@ -69,7 +74,8 @@ impl ForgePrsRepo {
     pub fn list_for_repo(conn: &Connection, repo_hash: &str) -> Result<Vec<ForgePrRow>> {
         let mut stmt = conn.prepare(
             "SELECT repo_hash, kind, number, title, state, head_branch,
-                    is_cross_repo, ci_status, url, author, fetched_at
+                    is_cross_repo, ci_status, url, author, head_repo_owner,
+                    updated_at, fetched_at
              FROM forge_prs
              WHERE repo_hash = ?1
              ORDER BY (state = 'open') DESC, number DESC",
@@ -96,7 +102,8 @@ impl ForgePrsRepo {
         let row = conn
             .query_row(
                 "SELECT repo_hash, kind, number, title, state, head_branch,
-                        is_cross_repo, ci_status, url, author, fetched_at
+                        is_cross_repo, ci_status, url, author, head_repo_owner,
+                        updated_at, fetched_at
                  FROM forge_prs
                  WHERE repo_hash = ?1 AND head_branch = ?2
                    AND state IN ('open', 'merged') AND is_cross_repo = 0
@@ -121,7 +128,8 @@ impl ForgePrsRepo {
         let row = conn
             .query_row(
                 "SELECT repo_hash, kind, number, title, state, head_branch,
-                        is_cross_repo, ci_status, url, author, fetched_at
+                        is_cross_repo, ci_status, url, author, head_repo_owner,
+                        updated_at, fetched_at
                  FROM forge_prs
                  WHERE repo_hash = ?1 AND kind = ?2 AND number = ?3",
                 params![repo_hash, kind, i64::from(number)],
@@ -134,6 +142,7 @@ impl ForgePrsRepo {
 
 fn row_to_pr(row: &rusqlite::Row<'_>) -> rusqlite::Result<ForgePrRow> {
     let number: i64 = row.get("number")?;
+    let updated_at_str: Option<String> = row.get("updated_at")?;
     let fetched_at_str: String = row.get("fetched_at")?;
     Ok(ForgePrRow {
         repo_hash: row.get("repo_hash")?,
@@ -146,6 +155,10 @@ fn row_to_pr(row: &rusqlite::Row<'_>) -> rusqlite::Result<ForgePrRow> {
         ci_status: row.get("ci_status")?,
         url: row.get("url")?,
         author: row.get("author")?,
+        head_repo_owner: row.get("head_repo_owner")?,
+        updated_at: updated_at_str
+            .map(|s| parse_rfc3339(&s, "updated_at"))
+            .transpose()?,
         fetched_at: parse_rfc3339(&fetched_at_str, "fetched_at")?,
     })
 }
@@ -179,6 +192,8 @@ mod tests {
             ci_status: Some("pass".into()),
             url: format!("https://github.com/acme/widget/pull/{number}"),
             author: "octocat".into(),
+            head_repo_owner: String::new(),
+            updated_at: Some(Utc.with_ymd_and_hms(2026, 7, 17, 12, 0, 0).unwrap()),
             fetched_at: Utc.with_ymd_and_hms(2026, 7, 18, 0, 0, 0).unwrap(),
         }
     }
@@ -320,5 +335,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(back.ci_status, None);
+    }
+
+    #[test]
+    fn fork_row_fields_round_trip_including_null_updated_at() {
+        let (_tmp, conn) = fresh_db();
+        let mut row = sample(9, "patch-1");
+        row.is_cross_repo = true;
+        row.head_repo_owner = "alice".into();
+        row.updated_at = None;
+        ForgePrsRepo::upsert(&conn, &row).unwrap();
+        let back = ForgePrsRepo::by_number(&conn, "repo", "pr", 9)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, row);
     }
 }

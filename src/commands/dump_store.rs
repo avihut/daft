@@ -17,8 +17,8 @@
 //!   `measured_at`).
 //! - `forge-prs` — every cached forge PR/MR for the cwd's repo, one JSON
 //!   object per line (`kind`, `number`, `title`, `state`, `head_branch`,
-//!   `is_cross_repo`, `ci_status`, `url`, `author`, `fetched_at`). Feeds
-//!   the forge-cache scenarios (#127).
+//!   `is_cross_repo`, `ci_status`, `url`, `author`, `head_repo_owner`,
+//!   `updated_at`, `fetched_at`). Feeds the forge-cache scenarios (#127).
 //! - `forge-health` — the repo's forge-health singleton (`healthy`,
 //!   `error_kind`, attempt timestamps), or `{}` when no refresh ever ran.
 //!   Feeds the PR-column visibility scenarios.
@@ -133,6 +133,8 @@ fn dump_forge_prs() -> Result<()> {
             "ci_status": row.ci_status,
             "url": row.url,
             "author": row.author,
+            "head_repo_owner": row.head_repo_owner,
+            "updated_at": row.updated_at.map(|t| t.to_rfc3339()),
             "fetched_at": row.fetched_at.to_rfc3339(),
         });
         println!("{json}");

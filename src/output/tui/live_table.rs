@@ -380,6 +380,7 @@ mod tests {
                 r,
                 status: Some(PrStatus::Merged),
                 url: None,
+                author: None,
             },
         );
         t.apply_event(&DagEvent::ForgePrsRefreshed(Some(fresh.clone())));

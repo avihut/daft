@@ -65,6 +65,22 @@ pub struct PrListEntry {
     pub ci_status: Option<CiStatus>,
     pub url: String,
     pub author: String,
+    /// Owner login of the head (fork) repository — the `owner:` prefix on a
+    /// synthesized fork row in `daft list`. Empty when the platform's listing
+    /// doesn't carry it (GitLab's REST listing names only project IDs).
+    pub head_repo_owner: String,
+    /// The PR's last-activity timestamp — the Age cell on a synthesized row.
+    /// `None` when the platform didn't supply one.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parse a forge timestamp (RFC 3339, e.g. `2026-07-18T12:00:00Z`) into UTC.
+/// `None` on any parse failure — a malformed timestamp must never fail a
+/// listing, it just costs one Age cell.
+pub(crate) fn parse_forge_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 impl RemoteRefInfo {
