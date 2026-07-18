@@ -120,11 +120,14 @@ fn complete(
 
         // daft-go: grouped worktree/local/remote completions with fetch-on-miss,
         // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
-        ("daft-go", 1) => {
-            let mut entries = complete_daft_go(word, fetch_on_miss)?;
-            entries.extend(complete_forge_targets(word));
-            Ok(format_entries_as_strings(&entries))
-        }
+        // Forge targets are folded in by complete_daft_go itself — appending
+        // them here would hide them from the fetch-on-miss decision, and the
+        // fetch would fire (spinner scribbling over the command line) for
+        // words like `p` that already complete to `pr:`.
+        ("daft-go", 1) => Ok(format_entries_as_strings(&complete_daft_go(
+            word,
+            fetch_on_miss,
+        )?)),
 
         // daft-go position 2: branches of the catalog repo named at
         // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST).
@@ -465,9 +468,11 @@ fn current_worktree_branch(repo: &gix::Repository) -> Option<String> {
 }
 
 /// Top-level completion helper for `daft go`. Collects real git data,
-/// applies grouping rules, and returns the ordered candidate list.
-/// When `fetch_on_miss` is true and the prefix has no local matches,
-/// runs `git fetch` with a spinner and re-resolves.
+/// catalog repos, and forge `pr:`/`mr:` targets, applies grouping rules,
+/// and returns the ordered candidate list. When `fetch_on_miss` is true,
+/// the prefix matched nothing at all, and a fetch could still surface a
+/// matching branch (a word containing `:` never gains one), runs
+/// `git fetch` with a spinner and re-resolves.
 pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
     use std::time::Instant;
 
@@ -480,8 +485,12 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     let repo = match discover_repo() {
         Ok(repo) => repo,
         // Outside any git repo, `daft go` is a pure catalog jump — offer
-        // live repo names instead of nothing.
-        Err(_) => return Ok(catalog_repo_entries(prefix, &Default::default())),
+        // live repo names (plus the forge syntax tokens) instead of nothing.
+        Err(_) => {
+            let mut entries = catalog_repo_entries(prefix, &Default::default());
+            append_forge_group(&mut entries, prefix, timings);
+            return Ok(entries);
+        }
     };
     let d_discover = t.elapsed();
 
@@ -578,10 +587,12 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
 
     let mut entries = collect(&repo, timings);
     append_catalog_group(&mut entries, prefix);
+    append_forge_group(&mut entries, prefix, timings);
 
-    // A catalog-repo match counts as a hit: no point fetching refs when the
-    // word already names another repo.
-    if !entries.is_empty() || !fetch_on_miss || !go_fetch_on_miss || prefix.is_empty() {
+    // A catalog-repo or forge match counts as a hit: no point fetching refs
+    // when the word already names another repo or a pr:/mr: target — the
+    // spinner would scribble over the command line for nothing.
+    if !fetch_on_miss || !go_fetch_on_miss || !fetch_could_surface_match(prefix, &entries) {
         if timings {
             eprintln!(
                 "[timings] total            : {:>7.1}ms",
@@ -635,6 +646,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
 
     let mut entries = collect(&repo, timings);
     append_catalog_group(&mut entries, prefix);
+    append_forge_group(&mut entries, prefix, timings);
 
     if timings {
         eprintln!(
@@ -693,6 +705,21 @@ fn append_catalog_group(entries: &mut Vec<CompletionEntry>, prefix: &str) {
     let existing: std::collections::BTreeSet<String> =
         entries.iter().map(|e| e.name.clone()).collect();
     entries.extend(catalog_repo_entries(prefix, &existing));
+}
+
+/// Append the forge `pr:`/`mr:` group to a `daft go` completion list.
+/// Folded in before the fetch-on-miss decision so a forge candidate counts
+/// as a hit like any other — otherwise `daft go p<Tab>` would fetch (and
+/// spin) despite having `pr:` to offer.
+fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings: bool) {
+    let t = std::time::Instant::now();
+    entries.extend(complete_forge_targets(prefix));
+    if timings {
+        eprintln!(
+            "[timings] forge            : {:>7.1}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 }
 
 /// Position-2 completion for `daft go <repo> <branch>`: branches of the
@@ -1799,6 +1826,15 @@ fn format_entries_as_strings(entries: &[CompletionEntry]) -> Vec<String> {
         .collect()
 }
 
+/// Whether the fetch-on-miss fallback could possibly help: the word matched
+/// no candidate of any kind, and a fetch could still surface a matching
+/// branch. A word containing `:` never gains one — colon is illegal in git
+/// refnames — so `pr:`/`mr:` targets and pasted URLs stay pure local
+/// lookups no matter how stale the remote refs are.
+fn fetch_could_surface_match(prefix: &str, entries: &[CompletionEntry]) -> bool {
+    entries.is_empty() && !prefix.is_empty() && !prefix.contains(':')
+}
+
 /// Return `true` if the cooldown marker is missing or older than
 /// `cooldown`. Used to decide whether the fetch-on-miss path should run.
 fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> bool {
@@ -2272,6 +2308,27 @@ mod tests {
         for entry in complete_forge_targets("") {
             assert_eq!(entry.group.as_str(), "forge");
         }
+    }
+
+    #[test]
+    fn fetch_on_miss_only_fires_when_a_fetch_could_help() {
+        let no_candidates: Vec<CompletionEntry> = Vec::new();
+        let forge_token = vec![CompletionEntry {
+            name: "pr:".to_string(),
+            group: CompletionGroup::Forge,
+            description: String::new(),
+        }];
+        // A genuine branch-word miss still fetches.
+        assert!(fetch_could_surface_match("fea", &no_candidates));
+        // Any candidate is a hit — here the pr: syntax token that
+        // `daft go p<Tab>` completes to. Fetching would only draw the
+        // spinner over the user's command line.
+        assert!(!fetch_could_surface_match("p", &forge_token));
+        // `:` is illegal in refnames: no fetch can make a branch match
+        // pr:99, even with an empty forge cache.
+        assert!(!fetch_could_surface_match("pr:99", &no_candidates));
+        // Bare <Tab> never fetches.
+        assert!(!fetch_could_surface_match("", &no_candidates));
     }
 
     #[test]

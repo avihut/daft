@@ -124,6 +124,11 @@ machine — its command shapes are doc-derived, not run), and the interactive TU
       handling).
 - [ ] `daft go <Tab>` on an empty word offers the `pr:`/`mr:` syntax tokens
       after the branch groups.
+- [ ] `daft go p<Tab>` / `daft go pr:<Tab>` / `daft go pr:999<Tab>` (no such
+      cached PR) never flash the "Fetching refs from origin…" fetch-on-miss
+      spinner or scribble over the command line — forge candidates count as hits
+      and `:`-words can't be branches; a genuinely unknown branch prefix (e.g.
+      `daft go zzz<Tab>`) still fetches as before.
 - [ ] GitLab: `mr:` completion and `!<n>` column decoration from a `glab`
       listing, including a merged MR in purple (CI stays blank — the REST
       listing carries no pipeline status).

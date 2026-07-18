@@ -146,7 +146,10 @@ cache also powers tab completion: `daft go pr:<Tab>` completes the cached
 `✓`/`✗`/`●` glyphs as the column), its author, and its title — entirely from
 local data. Merged and closed PRs don't complete — their branch has usually been
 deleted on the forge — except ones you already have checked out, whose local
-branch keeps them a navigation target regardless.
+branch keeps them a navigation target regardless. Forge words also never trip
+`daft go`'s fetch-on-miss fallback (the spinner that fetches refs when a word
+matches no branch): a word with completions isn't a miss, and a `pr:`/`mr:` word
+can never match a branch anyway.
 
 ## Mixed-remote repositories
 

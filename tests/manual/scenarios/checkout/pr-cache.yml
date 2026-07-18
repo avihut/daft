@@ -9,7 +9,10 @@ description: >
   forge-side one was deleted). A cross-repo (fork) PR with the same head-branch
   name must NOT decorate the local branch. Structured output carries
   pr_state/ci_status/pr_url fields. The fake `gh` fails loudly on any unexpected
-  call.
+  call. Forge words never trigger `daft go`'s fetch-on-miss network fallback — a
+  forge candidate counts as a hit, and a `:`-bearing word can never match a
+  branch — while a genuine branch miss still fetches (asserted via the cooldown
+  marker file).
 
 repos:
   - name: test-repo
@@ -142,3 +145,37 @@ steps:
         # Status/owner columns fill from the cache row: merged glyph + author.
         - "pr:3"
         - "◆\tThe Octocat\tchecked out: review-3"
+
+  - name: Forge words never trigger the fetch-on-miss network fallback
+    run: |
+      set -e
+      # Shim gh stays on PATH: any forge call from the Tab path would hit its
+      # loud unexpected-args failure. No branch here starts with "p", so each
+      # word below is a miss for the branch groups — but `p` completes to the
+      # pr: token and `pr:` to cached numbers, and pr:99 contains a colon no
+      # branch can ever match. None may fetch: the fetch's spinner draws over
+      # the user's command line, and its cooldown marker must stay absent.
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __complete daft-go "p" --position 1 --fetch-on-miss | grep -q "pr:"
+      daft __complete daft-go "pr:" --position 1 --fetch-on-miss | grep -q "pr:5"
+      daft __complete daft-go "pr:99" --position 1 --fetch-on-miss
+      test ! -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      echo "NO-FETCH-RAN"
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NO-FETCH-RAN"
+
+  - name: A genuine branch miss still fetches — the marker proves it ran
+    run: |
+      set -e
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __complete daft-go "zzz-no-such-branch" --position 1 --fetch-on-miss
+      test -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      echo "FETCH-MARKER-PRESENT"
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "FETCH-MARKER-PRESENT"
