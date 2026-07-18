@@ -10,16 +10,20 @@ Create a new branch and worktree
 ## Usage
 
 ```
-daft start [OPTIONS] <BRANCH_NAME> [BASE_BRANCH_NAME]
+daft start [OPTIONS] <BRANCH_NAME> [BASE_OR_BRANCH] [BASE]
+
+daft start <branch> [<base>]                # local
+daft start <repo> <branch> [<base>]         # in another cataloged repo
+daft start --repo <repo> <branch> [<base>]  # explicit / script-safe
 ```
 
-This is equivalent to `git worktree-checkout -b`. All options and arguments
-are the same as `git worktree-checkout` with `-b` implied.
+The local form is equivalent to `git worktree-checkout -b`. All flags are the
+same as `git worktree-checkout` with `-b` implied.
 
 ## Description
 
 Creates a new branch and a corresponding worktree in a single operation.
-The new branch is based on the current branch, or on `<BASE_BRANCH_NAME>`
+The new branch is based on the current branch, or on the base branch
 if specified.
 
 By default, daft does not push the new branch to the remote. To enable pushing
@@ -32,17 +36,61 @@ introduces new commits; a ref-only push of already-pushed commits skips it
 (configurable via `daft.checkout.pushVerify`: `auto`, `always`, or `never` —
 see [Git Hooks](/reference/configuration#git-hooks)).
 
+## Creating in another repo
+
+`daft start` takes a leading [repo catalog](/graph/repo-catalog) target,
+mirroring `daft go <repo> <branch>`. How the names are read:
+
+| Form | Meaning |
+| --- | --- |
+| `daft start A` | Always local: new branch `A` (a lone repo name is never a target) |
+| `daft start A B` | Local branch `A` wins if it exists (fails fast as "already exists"); otherwise cataloged repo `A` → create `B` there; otherwise local `A` based on `B` |
+| `daft start A B C` | Always cross-repo: branch `B` in repo `A`, based on `C` (a catalog miss is a hard error) |
+| `daft start --repo A B [C]` | Explicit cross-repo — for repo names shadowed by local branches, and for scripts |
+
+Anything meaningful in the current repository wins over a catalog match, so a
+new branch name that happens to equal a repo name never silently retargets;
+the unambiguous local-with-base spelling is `daft go -b <branch> [base]`. The
+guess matches names only — paths (and UUIDs) work in the explicit forms.
+
+Cross-repo semantics:
+
+- The resolved destination is announced before any work:
+  `Creating branch 'X' in 'repo' (path) — based on 'base'` (`--quiet` opts
+  out).
+- Without a base, the branch is based on the **target repo's default branch**
+  (never whatever happens to be checked out there). An explicit base must
+  exist in the target repo.
+- The shell lands in the new worktree over there, and `daft go -` hops back.
+- The target repo's hooks run under **its** trust; an untrusted target skips
+  them with a notice.
+- `-c`/`--carry` cannot cross repositories (hard error); `-x` runs in the
+  target repo's new worktree; a relative `--at` resolves inside the target
+  repo.
+
+## Coordinated fan-out (--with-related)
+
+`daft start <branch> --with-related` also creates the branch in every repo the
+current repo's `daft.yml` `relations:` manifest points at — see
+[Coordinated changes](/graph/coordinated-changes). Combined with a repo
+target, the fan-out is **rooted at the target**:
+`daft start api feat/x --with-related` creates `feat/x` in `api` and in the
+repos *api's* manifest declares, and the shell lands in api's new worktree.
+
 ## Arguments
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<BRANCH_NAME>` | Name of the new branch to create | Yes |
-| `<BASE_BRANCH_NAME>` | Branch to use as the base; defaults to the current branch | No |
+| `<BRANCH_NAME>` | Name of the new branch — or a cataloged repo to create it in, when two or more names are given | Yes |
+| `[BASE_OR_BRANCH]` | Base branch (defaults to the current branch) — or the new branch inside the repo | No |
+| `[BASE]` | Base branch inside the repo (three-name form); must exist there | No |
 
 ## Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--repo <REPO>` | Create the branch in a repository from the catalog (for repo names shadowed by local branches) | |
+| `--with-related` | Also create the branch in every related repo (relations manifest), each based on its own default branch | |
 | `--local` | Skip all remote operations (no fetch, no push) for this invocation | |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (`all` \| a hook name like `worktree-post-create` \| `tag:<tag>` \| `<job>`); repeatable/comma-separated | |
 | `-c, --carry` | Apply uncommitted changes from the current worktree to the new one | |

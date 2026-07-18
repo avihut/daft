@@ -56,13 +56,17 @@ daft go client feat/login      # a specific branch's worktree (created if needed
 daft go --repo client          # explicit form, for names shadowed by branches
 daft go --repo client -b feat/x main   # create a branch over there
 daft go -                      # after a cross-repo hop: back where you came from
+daft start client feat/x [base]        # NEW branch over there (announced first)
 ```
 
 Precedence is strict and predictable: an existing worktree, local branch, or
 remote branch in the current repo always beats a catalog repo of the same name;
 a catalog match beats `daft.go.autoStart` branch creation; `--start` forces
-creation. Tab completion offers repo names after your branches, and
-`daft go <repo> <Tab>` completes the target repo's branches.
+creation. The same local-first rule guards `daft start <repo> <branch>` — an
+existing local branch keeps the local `<branch> <base>` reading, and the
+resolved destination is announced before any work. Tab completion offers repo
+names after your branches, `daft go <repo> <Tab>` completes the target repo's
+branches, and `daft start <Tab>` completes repo names for the leading slot.
 
 ## Fleet commands
 

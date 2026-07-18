@@ -15,14 +15,14 @@ resolution ties them together.
 
 Every repository daft touches gets a catalog entry:
 
-| Field          | Meaning                                                              |
-| -------------- | -------------------------------------------------------------------- |
-| identity       | The repo's `daft-id` (a UUID created on first contact)               |
-| name           | Short handle used by `daft go <repo>`, `--repo`, `daft clone <name>` |
-| path           | Project root on this machine                                         |
-| remote URL     | As configured; also stored in normalized form for matching           |
-| default branch | Where bare `daft go <repo>` lands                                    |
-| removed        | Tombstone timestamp — see below                                      |
+| Field          | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| identity       | The repo's `daft-id` (a UUID created on first contact)                                             |
+| name           | Short handle used by `daft go <repo>`, `daft start <repo> <branch>`, `--repo`, `daft clone <name>` |
+| path           | Project root on this machine                                                                       |
+| remote URL     | As configured; also stored in normalized form for matching                                         |
+| default branch | Where bare `daft go <repo>` lands                                                                  |
+| removed        | Tombstone timestamp — see below                                                                    |
 
 Identity lives in the repository's git directory (`daft-id`), so it survives
 moves and dies with the repo; the catalog is the index that survives _outside_

@@ -47,6 +47,18 @@ branch. Rules that keep the fan-out safe:
 - You land in the current repo's new worktree; per-repo failures are reported at
   the end rather than cascading.
 
+When only one other repo needs the branch, skip the fan-out and target it
+directly — `daft start <repo> <branch>` creates it over there (based on that
+repo's default branch) and lands you in the new worktree:
+
+```bash
+daft start client feat/rename-field
+```
+
+Combining both forms roots the fan-out at the target:
+`daft start client feat/rename-field --with-related` creates the branch in
+`client` and in the repos _client's_ manifest declares.
+
 ## 3. Work across the set
 
 Hop between the repos' worktrees as if they were one project:
