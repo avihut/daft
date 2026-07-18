@@ -202,6 +202,7 @@ impl TuiState {
             // Post-set by `daft list` when the PR column is selected (same
             // pattern as `unowned_start_index` below).
             forge_prs: None,
+            forge_prs_loading: false,
         };
         let mut live = LiveTable::new(worktree_infos, cfg);
         live.unowned_start_index = unowned_start_index;

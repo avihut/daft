@@ -11,6 +11,7 @@ use crate::{
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
         sort::SortSpec,
         worktree::{
+            forge_ref::ForgePrLookup,
             info_field::FieldSet,
             list::{EntryKind, Stat, WorktreeInfo, collect_branch_info},
             list_stream,
@@ -183,29 +184,40 @@ pub fn run_live(args: Args) -> Result<()> {
         None
     };
 
-    // Forge-PR cache: read decorations (outbound PR numbers + statuses) and
-    // kick a detached refresh, only when the PR column is in play —
-    // explicitly asking for +pr is asking for forge-derived data (the
-    // local-first judgment call). The first paint uses whatever the cache
-    // holds now; when a refresh was actually spawned, a poll thread (started
-    // below, once the event channel exists) watches the store and swaps the
-    // lookup into the live table mid-run, so even a cold first invocation
-    // decorates within a couple of seconds instead of on the *next* run.
-    // Best-effort — a cold cache and a failed refresh just leave
-    // config-only cells.
+    // Forge-PR cache. The gate decided column visibility; here it decides
+    // display freshness. Three seed states for the PR cells:
+    // - refresh in flight, no snapshot ever taken → loading skeleton until
+    //   the refresh concludes (the size-column treatment);
+    // - refresh in flight, snapshot exists → decorations stripped to bare
+    //   identity: a possibly-stale fate must not render as current, so
+    //   numbers show immediately and statuses arrive with the refresh
+    //   (`ForgePrsRefreshed`) — or not at all this run;
+    // - no refresh in flight → the recent snapshot is authoritative and
+    //   renders fully.
+    // "In flight" includes a refresh some other daft command kicked moments
+    // ago, not just one this invocation spawned.
     let mut forge_refresh_pending = false;
+    let mut forge_loading = false;
     let mut forge_repo_hash: Option<String> = None;
-    let mut forge_lookup = None;
+    let mut forge_lookup: Option<ForgePrLookup> = None;
+    let mut forge_finished_baseline = None;
     if let Some(gate) = &forge_gate {
         // Probe even when the gate hid the column: the throttled refresh is
         // what detects a repaired auth and restores the column on a later
         // run. Decorations are only loaded when the column survived.
-        forge_refresh_pending = crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+        let spawned = crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+        forge_refresh_pending = spawned || gate.refresh_in_flight();
         forge_repo_hash = gate.repo_hash.clone();
+        forge_finished_baseline = gate.health.as_ref().and_then(|h| h.finished_at);
         if fields.contains(FieldSet::FORGE_REF) {
-            forge_lookup = forge_repo_hash
+            let lookup = forge_repo_hash
                 .as_deref()
                 .map(crate::commands::forge_cache::load_lookup);
+            (forge_lookup, forge_loading) = match (forge_refresh_pending, gate.ever_succeeded()) {
+                (true, false) => (None, true),
+                (true, true) => (lookup.map(ForgePrLookup::identity_only), false),
+                (false, _) => (lookup, false),
+            };
         }
     }
 
@@ -264,32 +276,46 @@ pub fn run_live(args: Args) -> Result<()> {
     );
     // Post-set like `unowned_start_index`: TuiState::new stays untouched for
     // the one caller that decorates.
-    state.live.cfg.forge_prs = forge_lookup.clone();
+    state.live.cfg.forge_prs = forge_lookup;
+    state.live.cfg.forge_prs_loading = forge_loading;
 
-    // Watch for the detached forge refresh landing while the table is live:
-    // poll the store (cheap reader-pool read, no network — the render layer
-    // never touches the store itself) and deliver the fresh lookup through
-    // the same event channel the collectors use. One-shot: the refresh
-    // rewrites its snapshot in a single transaction, so the first observed
-    // change is the whole update. No join — the thread spawns no
-    // subprocesses and dies with the process (or at the deadline when the
-    // refresh never lands: gh missing, network down).
+    // Watch the detached refresh conclude while the table is live: poll the
+    // store's health stamp (cheap reader-pool read, no network — the render
+    // layer never touches the store itself) and deliver the verdict through
+    // the same event channel the collectors use. A concluded success reloads
+    // the lookup (fresh statuses swap in); a failure or the deadline sends
+    // `None`, settling skeletons and leaving identity-only cells statusless
+    // for this run. The `()` channel feeds the completion barrier below.
+    let mut forge_done_rx: Option<mpsc::Receiver<()>> = None;
     if forge_refresh_pending
         && fields.contains(FieldSet::FORGE_REF)
         && let Some(hash) = forge_repo_hash
     {
-        let seed = forge_lookup.unwrap_or_default();
+        let baseline = forge_finished_baseline;
         let forge_tx = forge_poll_tx;
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        forge_done_rx = Some(done_rx);
         std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            while std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(750));
-                let fresh = crate::commands::forge_cache::load_lookup(&hash);
-                if fresh != seed {
-                    let _ = forge_tx.send(DagEvent::ForgePrsRefreshed(fresh));
-                    return;
+            let outcome = loop {
+                if std::time::Instant::now() >= deadline {
+                    break None;
                 }
-            }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if let Some(h) = crate::commands::forge_cache::read_health(&hash)
+                    && h.finished_at.is_some()
+                    && h.finished_at != baseline
+                {
+                    // Concluded. This attempt succeeded iff it stamped its
+                    // snapshot (success writes finished == succeeded).
+                    break (h.succeeded_at == h.finished_at)
+                        .then(|| crate::commands::forge_cache::load_lookup(&hash));
+                }
+            };
+            // Event before the barrier signal: the shared channel then
+            // guarantees the verdict lands before the completion sentinel.
+            let _ = forge_tx.send(DagEvent::ForgePrsRefreshed(outcome));
+            let _ = done_tx.send(());
         });
     }
 
@@ -310,10 +336,28 @@ pub fn run_live(args: Args) -> Result<()> {
     });
 
     // The renderer waits for `WorktreeInfoCollectionDone`, which the collector
-    // handle emits on `join()`. Joining must happen on a separate thread so the
-    // sentinel fires while the renderer is still listening on the channel.
+    // handle emits after all workers join. Joining must happen on a separate
+    // thread so the sentinel fires while the renderer is still listening on
+    // the channel. When a forge refresh is in flight, the sentinel
+    // additionally waits — bounded, cancel-aware — for the refresh verdict,
+    // so fresh PR statuses land in the final frame instead of on the next
+    // run; the poll thread always signals (verdict, deadline, or death), and
+    // sends its event *before* the signal, so the shared channel orders the
+    // verdict ahead of the sentinel.
+    let barrier_cancel = std::sync::Arc::clone(&cancel);
     let join_thread = std::thread::spawn(move || {
-        collector_handle.join();
+        collector_handle.join_after(move || {
+            let Some(done_rx) = forge_done_rx else { return };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+            while std::time::Instant::now() < deadline
+                && !barrier_cancel.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                match done_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        });
     });
 
     // Enable raw mode so crossterm's event loop receives Ctrl-C as a key event

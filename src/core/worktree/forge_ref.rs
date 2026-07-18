@@ -203,6 +203,21 @@ impl ForgePrLookup {
             None => self.by_branch.get(branch).cloned(),
         }
     }
+
+    /// The same decorations stripped to bare identity — number only, no
+    /// status, no URL. The live table seeds with this while a background
+    /// refresh is in flight: a possibly-stale fate must not render as
+    /// current, so the number appears immediately and the status arrives
+    /// with the refresh (or not at all this run).
+    pub fn identity_only(mut self) -> Self {
+        let strip = |d: &mut PrDecoration| {
+            d.status = None;
+            d.url = None;
+        };
+        self.by_branch.values_mut().for_each(strip);
+        self.by_ref.values_mut().for_each(strip);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +274,37 @@ mod tests {
             Some(decor(outbound, Some(PrStatus::Ci(CiStatus::Pass))))
         );
         assert_eq!(lookup.decorate("feat/other", None), None);
+    }
+
+    #[test]
+    fn identity_only_strips_status_and_url_but_keeps_refs() {
+        let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 42);
+        let inbound = ForgeBranchRef::new(ForgeRefKind::GitlabMr, 7);
+        let mut lookup = ForgePrLookup::default();
+        lookup.by_branch.insert(
+            "feat/y".into(),
+            PrDecoration {
+                r: outbound,
+                status: Some(PrStatus::Ci(CiStatus::Fail)),
+                url: Some("https://github.com/a/b/pull/42".into()),
+            },
+        );
+        lookup.by_ref.insert(
+            inbound,
+            PrDecoration {
+                r: inbound,
+                status: Some(PrStatus::Merged),
+                url: Some("https://gitlab.com/a/b/-/merge_requests/7".into()),
+            },
+        );
+
+        let bare = lookup.identity_only();
+        let d = &bare.by_branch["feat/y"];
+        assert_eq!(d.r, outbound, "the number itself stays");
+        assert_eq!((d.status, d.url.as_deref()), (None, None));
+        let d = &bare.by_ref[&inbound];
+        assert_eq!(d.r, inbound);
+        assert_eq!((d.status, d.url.as_deref()), (None, None));
     }
 
     #[test]

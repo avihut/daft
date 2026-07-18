@@ -88,10 +88,21 @@ impl CollectorHandle {
     /// Wait for all workers to finish. Emits
     /// `DagEvent::WorktreeInfoCollectionDone` if and only if the spawning
     /// run was `source=Collector`.
-    pub fn join(mut self) {
+    pub fn join(self) {
+        self.join_after(|| {});
+    }
+
+    /// Like [`Self::join`], with a bounded barrier between the workers
+    /// joining and the completion sentinel firing. `daft list` uses it to
+    /// hold the live table's "collection in progress" state briefly while
+    /// the detached forge refresh concludes, so fresh PR statuses land in
+    /// the final frame instead of on the next run. The barrier must bound
+    /// its own wait — the sentinel is what lets the renderer exit.
+    pub fn join_after(mut self, barrier: impl FnOnce()) {
         for h in self.handles.drain(..) {
             let _ = h.join();
         }
+        barrier();
         if let Some((tx, source)) = self.sentinel.take()
             && matches!(source, PatchSource::Collector)
         {

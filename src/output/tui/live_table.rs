@@ -47,8 +47,16 @@ pub struct LiveTableConfig {
     /// Forge-PR cache decorations for the PR column (outbound PR numbers +
     /// CI states). Loaded once by `daft list` before the TUI starts and
     /// post-set after `TuiState::new` (like `unowned_start_index`); `None`
-    /// for commands that don't decorate.
+    /// for commands that don't decorate. While a refresh is in flight the
+    /// seed is stripped to identity (`ForgePrLookup::identity_only`) —
+    /// statuses only render once `ForgePrsRefreshed` delivers fresh data.
     pub forge_prs: Option<ForgePrLookup>,
+    /// True while no PR snapshot has *ever* been taken and a refresh is in
+    /// flight: PR cells without a value render the loading skeleton until
+    /// `ForgePrsRefreshed` concludes the refresh (with or without data).
+    /// Unlike per-cell patch state this survives collection completing —
+    /// the refresh is out-of-band — but cancel clears it like any shimmer.
+    pub forge_prs_loading: bool,
 }
 
 pub struct LiveTable {
@@ -119,11 +127,17 @@ impl LiveTable {
 
     pub fn apply_event(&mut self, event: &DagEvent) {
         match event {
-            DagEvent::ForgePrsRefreshed(lookup) => {
+            DagEvent::ForgePrsRefreshed(outcome) => {
                 // The next frame recomputes column values against the fresh
                 // lookup — no per-row patching needed, the PR cell derives
-                // from cfg at render time.
-                self.cfg.forge_prs = Some(lookup.clone());
+                // from cfg at render time. A `None` outcome (refresh failed
+                // or timed out) settles the loading skeleton but keeps any
+                // identity-only seed statusless: the status never loaded, so
+                // it must not appear.
+                if let Some(lookup) = outcome {
+                    self.cfg.forge_prs = Some(lookup.clone());
+                }
+                self.cfg.forge_prs_loading = false;
             }
             DagEvent::WorktreeInfoUpdated {
                 branch_name,
@@ -243,8 +257,15 @@ impl LiveTable {
     }
 
     /// True when the cell for `field` on `row_idx` should render the
-    /// loading glyph. Only meaningful while !collection_complete.
+    /// loading glyph. Per-row patch state is only meaningful while
+    /// !collection_complete; the repo-level PR first-load skeleton
+    /// (`forge_prs_loading`) is out-of-band — the forge refresh outlives
+    /// the collectors — and is cleared by its own conclusion event or by
+    /// cancel.
     pub fn is_cell_loading(&self, row_idx: usize, field: FieldSet) -> bool {
+        if field.contains(FieldSet::FORGE_REF) && self.cfg.forge_prs_loading && !self.cancelled {
+            return true;
+        }
         !self.collection_complete && !self.received_patches[row_idx].contains(field)
     }
 
@@ -320,6 +341,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             seeded_fields: FieldSet::EMPTY,
             forge_prs: None,
+            forge_prs_loading: false,
         }
     }
 
@@ -360,9 +382,44 @@ mod tests {
                 url: None,
             },
         );
-        t.apply_event(&DagEvent::ForgePrsRefreshed(fresh.clone()));
+        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(fresh.clone())));
 
         assert_eq!(t.cfg.forge_prs, Some(fresh));
+    }
+
+    /// First load in a repo that never had a snapshot: PR cells skeleton
+    /// until the refresh concludes — with data (statuses land) or without
+    /// (cells settle empty; a failed refresh must not strand the shimmer).
+    #[test]
+    fn forge_first_load_skeleton_settles_on_conclusion() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_loading = true;
+        // Out-of-band skeleton: survives per-row patches AND collection
+        // completing (the refresh outlives the collectors).
+        t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
+        assert!(
+            !t.is_cell_loading(0, FieldSet::SIZE),
+            "only the PR cell rides the repo-level flag"
+        );
+
+        t.apply_event(&DagEvent::ForgePrsRefreshed(None));
+        assert!(
+            !t.is_cell_loading(0, FieldSet::FORGE_REF),
+            "a concluded-without-data refresh settles the skeleton"
+        );
+        assert!(t.cfg.forge_prs.is_none(), "no data means no decorations");
+    }
+
+    /// Cancel must clear the PR skeleton like any other shimmer — the final
+    /// frame renders blanks, not perpetual loading bars.
+    #[test]
+    fn forge_first_load_skeleton_clears_on_cancel() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_loading = true;
+        assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
+        t.mark_cancelled();
+        assert!(!t.is_cell_loading(0, FieldSet::FORGE_REF));
     }
 
     #[test]

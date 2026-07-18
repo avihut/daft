@@ -250,6 +250,22 @@ impl ForgeGate {
                     < chrono::Duration::seconds(REFRESH_THROTTLE_SECS)
             })
     }
+
+    /// A refresh some other daft command kicked off is still running: it
+    /// started recently (a stale unconcluded stamp means a crashed child,
+    /// not a live one) and hasn't stamped a conclusion. The live table
+    /// treats such a refresh exactly like one it spawned itself — statuses
+    /// wait for the verdict.
+    pub fn refresh_in_flight(&self) -> bool {
+        let Some(health) = &self.health else {
+            return false;
+        };
+        let Some(started) = health.started_at else {
+            return false;
+        };
+        let concluded = health.finished_at.is_some_and(|f| f >= started);
+        !concluded && self.recently_attempted()
+    }
 }
 
 /// Read the repo's forge gate: local capability plus persisted health. The
@@ -542,6 +558,27 @@ mod tests {
         assert!(!gate(true, Some(health_row(true, Some(120), true))).recently_attempted());
         // A future stamp (clock skew) throttles rather than spawning forever.
         assert!(gate(true, Some(health_row(true, Some(-30), true))).recently_attempted());
+    }
+
+    #[test]
+    fn gate_sees_a_concurrent_refresh_as_in_flight() {
+        // Started recently, not concluded → in flight.
+        let mut h = health_row(true, Some(5), true);
+        h.finished_at = None;
+        assert!(gate(true, Some(h)).refresh_in_flight());
+
+        // Started recently and already concluded → not in flight.
+        let now = chrono::Utc::now();
+        let mut h = health_row(true, Some(5), true);
+        h.finished_at = Some(now);
+        assert!(!gate(true, Some(h)).refresh_in_flight());
+
+        // A stale unconcluded stamp is a crashed child, not a live refresh.
+        let mut h = health_row(true, Some(300), true);
+        h.finished_at = None;
+        assert!(!gate(true, Some(h)).refresh_in_flight());
+
+        assert!(!gate(true, None).refresh_in_flight());
     }
 
     #[test]
