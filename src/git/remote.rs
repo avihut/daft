@@ -305,15 +305,25 @@ impl GitCommand {
         self.pre_push_hook_path(cwd).is_some()
     }
 
-    /// Push a branch and set upstream, running from a specific directory.
+    /// Push a branch and set upstream, running from a specific directory,
+    /// optionally with --force-with-lease.
     pub fn push_set_upstream_from(
         &self,
         remote: &str,
         branch: &str,
         cwd: &Path,
+        force_with_lease: bool,
         opts: &PushOptions,
     ) -> Result<PushIo> {
-        self.run_push(&["--set-upstream", remote, branch], cwd, opts)
+        if force_with_lease {
+            self.run_push(
+                &["--set-upstream", "--force-with-lease", remote, branch],
+                cwd,
+                opts,
+            )
+        } else {
+            self.run_push(&["--set-upstream", remote, branch], cwd, opts)
+        }
     }
 
     pub fn set_upstream(&self, remote: &str, branch: &str) -> Result<()> {

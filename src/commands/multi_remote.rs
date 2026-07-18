@@ -706,6 +706,7 @@ fn cmd_move(
             PushAction::SetUpstream {
                 remote: to_remote,
                 branch: &branch_name,
+                force_with_lease: false,
             },
             &new_path,
             !no_verify,

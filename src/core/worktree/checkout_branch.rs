@@ -787,6 +787,7 @@ fn push_if_enabled(
         PushAction::SetUpstream {
             remote: &params.remote_name,
             branch: &params.new_branch_name,
+            force_with_lease: false,
         },
         worktree_path,
         verify,

@@ -118,8 +118,14 @@ impl PushResult {
 /// the matching `GitCommand` primitive.
 #[derive(Debug, Clone, Copy)]
 pub enum PushAction<'a> {
-    /// `git push --set-upstream <remote> <branch>`
-    SetUpstream { remote: &'a str, branch: &'a str },
+    /// `git push --set-upstream <remote> <branch>` (optionally
+    /// `--force-with-lease` — `daft push --force-with-lease` on a branch
+    /// with no upstream yet must not silently drop the flag)
+    SetUpstream {
+        remote: &'a str,
+        branch: &'a str,
+        force_with_lease: bool,
+    },
     /// `git push <remote> <branch>` (optionally `--force-with-lease`)
     Sync {
         remote: &'a str,
@@ -154,8 +160,19 @@ impl PushAction<'_> {
     /// Human preview of the underlying git command (verbose job display).
     fn preview(&self) -> String {
         match self {
-            PushAction::SetUpstream { remote, branch } => {
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease: false,
+            } => {
                 format!("git push --set-upstream {remote} {branch}")
+            }
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease: true,
+            } => {
+                format!("git push --set-upstream --force-with-lease {remote} {branch}")
             }
             PushAction::Sync {
                 remote,
@@ -175,9 +192,11 @@ impl PushAction<'_> {
 
     fn run(&self, git: &GitCommand, cwd: &Path, opts: &PushOptions) -> Result<PushIo> {
         match *self {
-            PushAction::SetUpstream { remote, branch } => {
-                git.push_set_upstream_from(remote, branch, cwd, opts)
-            }
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease,
+            } => git.push_set_upstream_from(remote, branch, cwd, force_with_lease, opts),
             PushAction::Sync {
                 remote,
                 branch,
@@ -1480,6 +1499,59 @@ mod tests {
         assert!(outcome.success(), "failure: {:?}", outcome.failure);
         assert_eq!(outcome.hook, HookVerdict::Passed);
         assert!(remote_has_branch(&repo, "main"));
+    }
+
+    #[test]
+    fn set_upstream_preview_reflects_force_with_lease() {
+        let plain = PushAction::SetUpstream {
+            remote: "origin",
+            branch: "main",
+            force_with_lease: false,
+        };
+        assert_eq!(plain.preview(), "git push --set-upstream origin main");
+        let forced = PushAction::SetUpstream {
+            remote: "origin",
+            branch: "main",
+            force_with_lease: true,
+        };
+        assert_eq!(
+            forced.preview(),
+            "git push --set-upstream --force-with-lease origin main"
+        );
+    }
+
+    #[test]
+    fn set_upstream_with_force_with_lease_pushes_and_sets_upstream() {
+        // `daft push --force-with-lease` on a branch with no upstream routes
+        // through SetUpstream and must not drop the lease flag (#600). On a
+        // ref the remote doesn't have yet the lease is trivially satisfied,
+        // so the push lands and tracking gets configured.
+        let repo = test_repo();
+        let git = GitCommand::new(false);
+
+        let outcome = push_with_hooks(
+            &git,
+            PushAction::SetUpstream {
+                remote: "origin",
+                branch: "main",
+                force_with_lease: true,
+            },
+            &repo.work,
+            true,
+            &NoopStageRunner,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(outcome.success(), "failure: {:?}", outcome.failure);
+        assert!(remote_has_branch(&repo, "main"));
+        let tracking = git_in(&repo.work, &["config", "branch.main.remote"]);
+        assert_eq!(
+            String::from_utf8_lossy(&tracking.stdout).trim(),
+            "origin",
+            "--set-upstream must still configure tracking"
+        );
     }
 
     #[test]
