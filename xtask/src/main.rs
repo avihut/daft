@@ -31,6 +31,7 @@ const COMMANDS: &[&str] = &[
     "git-worktree-list",
     "git-worktree-merge",
     "git-worktree-sync",
+    "git-worktree-push",
     "git-daft-repo-add",
     "git-daft-repo-info",
     "git-daft-repo-install",
@@ -143,6 +144,11 @@ const DAFT_VERBS: &[DaftVerbEntry] = &[
         source_command: "git-worktree-merge",
         about_override: None,
     },
+    DaftVerbEntry {
+        daft_name: "daft-push",
+        source_command: "git-worktree-push",
+        about_override: None,
+    },
 ];
 
 /// A matrix entry defines a configuration variant for integration tests
@@ -181,6 +187,7 @@ fn get_command_for_name(command_name: &str) -> Option<clap::Command> {
         "git-worktree-list" => Some(daft::commands::list::Args::command()),
         "git-worktree-merge" => Some(daft::commands::merge::Args::command()),
         "git-worktree-sync" => Some(daft::commands::sync::Args::command()),
+        "git-worktree-push" => Some(daft::commands::push::Args::command()),
         "git-daft-repo-add" => Some(daft::commands::repo::add::Args::command()),
         "git-daft-repo-info" => Some(daft::commands::repo::info::Args::command()),
         "git-daft-repo-install" => Some(daft::commands::repo::install::Args::command()),
@@ -257,6 +264,9 @@ fn daft_verb_tip(command_name: &str) -> Option<&'static str> {
         "git-worktree-merge" => Some(
             "::: tip\nThis command is also available as `daft merge`. See [daft merge](./daft-merge.md).\n:::\n",
         ),
+        "git-worktree-push" => Some(
+            "::: tip\nThis command is also available as `daft push`. See [daft push](./daft-push.md).\n:::\n",
+        ),
         _ => None,
     }
 }
@@ -300,7 +310,11 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-sync",
             "git-worktree-carry",
         ],
-        "git-worktree-sync" => vec!["git-worktree-prune", "git-worktree-fetch"],
+        "git-worktree-sync" => vec![
+            "git-worktree-prune",
+            "git-worktree-fetch",
+            "git-worktree-push",
+        ],
         "git-worktree-carry" => vec!["git-worktree-checkout", "git-worktree-fetch"],
         "git-worktree-flow-eject" => vec![
             "git-worktree-flow-adopt",
@@ -323,6 +337,7 @@ fn related_commands(command_name: &str) -> Vec<&'static str> {
             "git-worktree-sync",
             "git-worktree-flow-adopt",
         ],
+        "git-worktree-push" => vec!["git-worktree-sync", "git-worktree-checkout"],
         // Config cluster
         "daft-doctor" => vec!["git-worktree-clone", "git-worktree-init"],
         "daft-release-notes" => vec![],

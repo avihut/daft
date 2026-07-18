@@ -29,6 +29,7 @@ daft_multicall_symlinks=(
   git-worktree-sync
   git-worktree-list
   git-worktree-merge
+  git-worktree-push
   git-daft
   # daft-* form for the noun-first commands.
   daft-remove
@@ -45,6 +46,7 @@ daft_multicall_symlinks=(
   gwtbd
   gwtfetch
   gwtsync
+  gwtpush
 )
 
 # Create every multicall symlink under <dir>, pointing at the relative
