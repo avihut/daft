@@ -314,6 +314,10 @@ fn is_plain_region_line(line: &str, indent: usize) -> bool {
 
 /// Walk up from a `- ` line to include a contiguous comment run directly above
 /// it (no intervening blank line, never crossing the `relations:` key line).
+///
+/// Only the second and later items call this; the first item never absorbs a
+/// leading run (see [`analyze`]) so a block-header comment isn't dragged out
+/// when its first entry is unlinked.
 fn leading_comment_start(lines: &[String], dash: usize, key_line: usize) -> usize {
     let mut start = dash;
     while start > key_line + 1 && is_comment_line(&lines[start - 1]) {
@@ -388,9 +392,22 @@ fn analyze(
         return Err(RelationsEditError::Unsupported(UNUSUAL_LIST));
     }
 
+    // The first item never absorbs a leading comment run: a comment between
+    // the `relations:` key and the first item heads the block (or is
+    // block-level guidance), so it must survive unlinking that item — the
+    // block, and its heading, remain for the other items. Second and later
+    // items do absorb the contiguous comment run directly above them, which
+    // describes that entry.
     let core_starts = dashes
         .iter()
-        .map(|&d| leading_comment_start(lines, d, key_line))
+        .enumerate()
+        .map(|(i, &d)| {
+            if i == 0 {
+                d
+            } else {
+                leading_comment_start(lines, d, key_line)
+            }
+        })
         .collect();
 
     Ok(Some(Block {
@@ -691,6 +708,27 @@ relations:
 ";
         let out = remove_relation(input, 0).unwrap();
         assert_eq!(out, "relations:\n  - url: b\n");
+    }
+
+    // 10b. Unlinking the *first* item keeps a block-header comment that sits
+    //      directly under the `relations:` key — it heads the block, not the
+    //      entry, so it must survive while the other entries remain. (A comment
+    //      above a later item is that item's, and goes with it — see test 7.)
+    #[test]
+    fn remove_first_item_keeps_block_header_comment() {
+        let input = "\
+relations:
+  # external service dependencies
+  - url: a
+  - url: b
+";
+        let out = remove_relation(input, 0).unwrap();
+        let expected = "\
+relations:
+  # external service dependencies
+  - url: b
+";
+        assert_eq!(out, expected);
     }
 
     // 11. Upsert rewrites only the target item.
