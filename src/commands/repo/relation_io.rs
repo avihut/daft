@@ -58,11 +58,15 @@ pub fn locate_manifest() -> Result<ManifestTarget> {
 /// Resolve a link/unlink target to a remote URL. Resolution order mirrors the
 /// completion order: a catalog repo name (or uuid/cataloged path), then an
 /// existing filesystem path to a git repo, then a bare remote URL.
-pub fn resolve_target_url(needle: &str) -> Result<String> {
+///
+/// `catalog` is a single read-only snapshot the caller opens once per command
+/// (`None` when the catalog is unavailable — resolution degrades to path/URL),
+/// shared with [`report_edge`] so one command makes one catalog open.
+pub fn resolve_target_url(catalog: Option<&Catalog>, needle: &str) -> Result<String> {
     // 1. Catalog: live or removed entry by name, uuid, or cataloged path.
     //    A removed entry is still a valid target — its remote URL is retained
     //    and the edge simply resolves as "not cloned".
-    if let Some(catalog) = Catalog::open_ro().ok().flatten()
+    if let Some(catalog) = catalog
         && let Some(row) = catalog.resolve(needle)?
     {
         return row.remote_url.ok_or_else(|| {
@@ -89,7 +93,7 @@ pub fn resolve_target_url(needle: &str) -> Result<String> {
         return Ok(needle.trim().to_string());
     }
 
-    Err(no_such_target(needle))
+    Err(no_such_target(catalog, needle))
 }
 
 /// The current repo's own `origin` URL, for the self-link guard. `None` when
@@ -125,7 +129,12 @@ pub fn write_manifest(target: &ManifestTarget, new_text: &str) -> Result<()> {
 
 /// Print the primary result line for an edge, mirroring `repo info`'s
 /// Relations rendering: `<verb>: <label> [kind] → <local path | not cloned>`.
-pub fn report_edge(output: &mut CliOutput, verb: &str, entry: &RelationEntry) {
+pub fn report_edge(
+    output: &mut CliOutput,
+    catalog: Option<&Catalog>,
+    verb: &str,
+    entry: &RelationEntry,
+) {
     let kind = entry
         .kind
         .as_deref()
@@ -134,7 +143,7 @@ pub fn report_edge(output: &mut CliOutput, verb: &str, entry: &RelationEntry) {
     output.result(&format!(
         "{verb}: {}{kind} → {}",
         entry.label(),
-        resolve_edge_target(entry)
+        resolve_edge_target(catalog, entry)
     ));
 }
 
@@ -170,13 +179,11 @@ pub fn post_write_hint(output: &mut CliOutput, root: &Path, key: &str, expect_pr
 
 /// Resolve an edge to a display target: the cloned repo's path when the URL
 /// matches a live catalog entry, else a "not cloned" hint with a clone command.
-fn resolve_edge_target(entry: &RelationEntry) -> String {
+fn resolve_edge_target(catalog: Option<&Catalog>, entry: &RelationEntry) -> String {
     let cwd = std::env::current_dir()
         .ok()
         .and_then(|cwd| std::fs::canonicalize(cwd).ok());
-    let rows = Catalog::open_ro()
-        .ok()
-        .flatten()
+    let rows = catalog
         .and_then(|catalog| catalog.list(false).ok())
         .unwrap_or_default();
     let resolved = resolve_relations(std::slice::from_ref(entry), &rows);
@@ -208,8 +215,8 @@ fn remote_url_at_path(path: &Path) -> Option<String> {
 
 /// Build the "no such target" error, with did-you-mean suggestions from live
 /// catalog names when the argument looked like a (mistyped) name.
-fn no_such_target(needle: &str) -> anyhow::Error {
-    if let Some(catalog) = Catalog::open_ro().ok().flatten()
+fn no_such_target(catalog: Option<&Catalog>, needle: &str) -> anyhow::Error {
+    if let Some(catalog) = catalog
         && let CatalogError::NotFound { suggestions, .. } = catalog.not_found(needle)
         && !suggestions.is_empty()
     {

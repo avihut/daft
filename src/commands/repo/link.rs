@@ -9,6 +9,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 
 use super::relation_io;
+use crate::catalog::Catalog;
 use crate::catalog::normalize::normalize_url;
 use crate::catalog::relations::RelationEntry;
 use crate::catalog::relations_edit;
@@ -70,8 +71,11 @@ pub fn run() -> Result<()> {
     let args = Args::parse_from(argv);
     let mut output = CliOutput::new(OutputConfig::default());
 
+    // One read-only catalog snapshot for the whole command: target resolution
+    // and the "→ path / not cloned" edge display both read it.
+    let catalog = Catalog::open_ro().ok().flatten();
     let target = relation_io::locate_manifest()?;
-    let url = relation_io::resolve_target_url(&args.target)?;
+    let url = relation_io::resolve_target_url(catalog.as_ref(), &args.target)?;
 
     if let Some(own) = relation_io::current_repo_url()
         && normalize_url(&own) == normalize_url(&url)
@@ -95,7 +99,12 @@ pub fn run() -> Result<()> {
         }
         Some(index) => {
             if args.name.is_none() && args.kind.is_none() {
-                relation_io::report_edge(&mut output, "Already linked", &current[index]);
+                relation_io::report_edge(
+                    &mut output,
+                    catalog.as_ref(),
+                    "Already linked",
+                    &current[index],
+                );
                 return Ok(());
             }
             // Upsert: keep the stored URL form, apply the provided fields.
@@ -106,12 +115,12 @@ pub fn run() -> Result<()> {
     };
 
     if new_text == target.text {
-        relation_io::report_edge(&mut output, "Already linked", &entry);
+        relation_io::report_edge(&mut output, catalog.as_ref(), "Already linked", &entry);
         return Ok(());
     }
 
     relation_io::write_manifest(&target, &new_text)?;
-    relation_io::report_edge(&mut output, verb, &entry);
+    relation_io::report_edge(&mut output, catalog.as_ref(), verb, &entry);
     relation_io::post_write_hint(&mut output, &target.root, &key, true);
     Ok(())
 }

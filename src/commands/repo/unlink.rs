@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 
 use super::relation_io;
+use crate::catalog::Catalog;
 use crate::catalog::normalize::normalize_url;
 use crate::catalog::relations_edit;
 use crate::output::{CliOutput, Output, OutputConfig};
@@ -55,7 +56,9 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let Some(index) = find_relation(&current, &args.target)? else {
+    // Single read-only catalog snapshot, shared by URL-form target resolution.
+    let catalog = Catalog::open_ro().ok().flatten();
+    let Some(index) = find_relation(catalog.as_ref(), &current, &args.target)? else {
         output.info(&format!(
             "no relation to '{}' — nothing to unlink",
             args.target
@@ -77,6 +80,7 @@ pub fn run() -> Result<()> {
 /// is ambiguous), else a match on the resolved remote URL. `Ok(None)` when
 /// nothing matches — the caller reports a friendly no-op.
 fn find_relation(
+    catalog: Option<&Catalog>,
     current: &[crate::catalog::relations::RelationEntry],
     needle: &str,
 ) -> Result<Option<usize>> {
@@ -104,7 +108,7 @@ fn find_relation(
 
     // No label match — resolve to a URL and match on the normalized key.
     // A target that doesn't resolve simply isn't linked here.
-    let Ok(url) = relation_io::resolve_target_url(needle) else {
+    let Ok(url) = relation_io::resolve_target_url(catalog, needle) else {
         return Ok(None);
     };
     let key = normalize_url(&url);
@@ -130,8 +134,8 @@ mod tests {
             entry("git@x:o/api.git", Some("client")),
             entry("git@x:o/lib.git", None), // label = "lib" (url tail)
         ];
-        assert_eq!(find_relation(&rels, "client").unwrap(), Some(0));
-        assert_eq!(find_relation(&rels, "lib").unwrap(), Some(1));
+        assert_eq!(find_relation(None, &rels, "client").unwrap(), Some(0));
+        assert_eq!(find_relation(None, &rels, "lib").unwrap(), Some(1));
     }
 
     #[test]
@@ -140,7 +144,7 @@ mod tests {
             entry("git@x:o/a.git", Some("dup")),
             entry("git@x:o/b.git", Some("dup")),
         ];
-        let err = find_relation(&rels, "dup").unwrap_err().to_string();
+        let err = find_relation(None, &rels, "dup").unwrap_err().to_string();
         assert!(err.contains("matches 2 relations"), "{err}");
         assert!(
             err.contains("git@x:o/a.git") && err.contains("git@x:o/b.git"),
