@@ -91,6 +91,11 @@ pub enum StageId {
     /// a timeline). Always carries the task name as a fixed label override;
     /// the tense table is a fallback only.
     Task,
+    // ── Push (worktree-correct pre-push) ─────────────────────────────────
+    /// Resolve the pushed branch to its owning worktree (`daft push`) — the
+    /// cwd the shared `pre-push` hook will run in, which is the command's
+    /// entire reason to exist (#600).
+    ResolveWorktree,
 }
 
 impl StageId {

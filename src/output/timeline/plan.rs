@@ -163,6 +163,12 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "task",
             skipped: "task not run",
         },
+        StageId::ResolveWorktree => StepLabels {
+            pending: "Resolve worktree",
+            active: "Resolving worktree",
+            done: "Resolved worktree",
+            skipped: "no worktree",
+        },
     }
 }
 
@@ -204,9 +210,10 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::DeleteRemote
         | StageId::CloneBare => (SubjectInk::Plain, SubjectInk::Remote),
         // Path subjects: worktree directories are manila.
-        StageId::CreateWorktree | StageId::CreateBaseWorktree | StageId::RemoveWorktree => {
-            (SubjectInk::Plain, SubjectInk::Path)
-        }
+        StageId::CreateWorktree
+        | StageId::CreateBaseWorktree
+        | StageId::RemoveWorktree
+        | StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
         // The resolve row's label IS the PR/MR identity ("PR #123"); its
@@ -275,6 +282,21 @@ mod tests {
         assert_eq!(
             subject_inks_for(StageId::DeleteLocalBranch).annotation,
             SubjectInk::Plain
+        );
+    }
+
+    #[test]
+    fn resolve_worktree_speaks_path() {
+        // `daft push` (#600): the resolved worktree is the row's whole story —
+        // its annotation is a directory, so it wears the manila path ink.
+        let l = labels_for(StageId::ResolveWorktree);
+        assert_eq!(l.pending, "Resolve worktree");
+        assert_eq!(l.active, "Resolving worktree");
+        assert_eq!(l.done, "Resolved worktree");
+        assert_eq!(l.skipped, "no worktree");
+        assert_eq!(
+            subject_inks_for(StageId::ResolveWorktree).annotation,
+            SubjectInk::Path
         );
     }
 }
