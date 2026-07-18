@@ -102,6 +102,14 @@ fn parse_url(input: &str) -> Option<ForgeTarget> {
             "merge_requests" => ForgeRefKind::GitlabMr,
             _ => continue,
         };
+        // The marker can't be the host segment: the repo path lives between the
+        // host and the marker, so the slice below needs `i >= 1`. A host
+        // literally named `pull`/`merge_requests` followed by a number (e.g.
+        // `https://pull/9/a/b/c`) would otherwise panic on the reversed range
+        // `&segments[1..0]`. Skip it and keep scanning for a real marker.
+        if i == 0 {
+            continue;
+        }
         // Repo path segments: after the host, up to the marker. GitLab places
         // a `/-/` separator before `merge_requests`; drop the trailing `-`.
         let mut repo_segs = &segments[1..i];
@@ -217,5 +225,15 @@ mod tests {
         assert_eq!(ForgeTarget::parse("https://github.com/o/r/pull/new"), None);
         assert_eq!(ForgeTarget::parse("https://example.com/pull/1"), None); // too shallow
         assert_eq!(ForgeTarget::parse("ftp://github.com/o/r/pull/1"), None); // wrong scheme
+    }
+
+    #[test]
+    fn marker_at_host_position_does_not_panic() {
+        // The host segment is literally the marker, followed by a number, with
+        // enough trailing segments to clear the length guard. The repo path
+        // (host+1 .. marker) is then empty — this must yield None, not panic on
+        // the reversed slice `&segments[1..0]`.
+        assert_eq!(ForgeTarget::parse("https://pull/9/a/b/c"), None);
+        assert_eq!(ForgeTarget::parse("https://merge_requests/9/a/b/c"), None);
     }
 }

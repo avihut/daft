@@ -104,7 +104,7 @@ pub fn resolve(
         repo_root,
         explicit_coords,
         tool,
-        hostname: config.hostname.as_deref(),
+        hostname: hostname_for(target, config),
     };
 
     let info = provider.fetch_info(target.number, &ctx)?;
@@ -122,6 +122,17 @@ pub fn resolve(
 
     let base_remote = find_base_remote(git, &info.base, default_remote);
     Ok(ResolvedRef { info, base_remote })
+}
+
+/// The forge host to talk to. A pasted PR/MR URL names its host authoritatively
+/// (GitHub Enterprise, self-hosted GitLab), so it wins over the configured
+/// default; a bare `pr:`/`mr:` prefix carries no host and falls back to the
+/// config (and, when that too is unset, the CLI's own default host).
+fn hostname_for<'a>(target: &'a ForgeTarget, config: &'a ForgeConfig) -> Option<&'a str> {
+    match &target.source {
+        TargetSource::Url { host, .. } => Some(host.as_str()),
+        TargetSource::Prefix { .. } => config.hostname.as_deref(),
+    }
 }
 
 /// Fetch the repo's PR/MR snapshot (open + recently merged) from its selected
@@ -299,6 +310,37 @@ pub(crate) fn split_repo_key(url: &str) -> Option<(String, String, String)> {
 mod tests {
     use super::*;
     use crate::forge::info::BaseRepo;
+
+    #[test]
+    fn hostname_prefers_the_pasted_url_over_config() {
+        let config = ForgeConfig {
+            hostname: Some("configured.example".to_string()),
+            ..Default::default()
+        };
+        // A pasted enterprise URL names its host authoritatively.
+        let url = ForgeTarget {
+            number: 9,
+            source: TargetSource::Url {
+                kind: ForgeRefKind::GithubPr,
+                host: "github.acme.com".to_string(),
+                owner: "team".to_string(),
+                repo: "repo".to_string(),
+            },
+        };
+        assert_eq!(hostname_for(&url, &config), Some("github.acme.com"));
+
+        // A bare prefix carries no host, so the configured default stands.
+        let prefix = ForgeTarget {
+            number: 9,
+            source: TargetSource::Prefix {
+                hint: ForgeRefKind::GithubPr,
+            },
+        };
+        assert_eq!(hostname_for(&prefix, &config), Some("configured.example"));
+
+        // No URL host and no config: the CLI's own default host (None) wins.
+        assert_eq!(hostname_for(&prefix, &ForgeConfig::default()), None);
+    }
 
     #[test]
     fn split_repo_key_handles_forms() {
