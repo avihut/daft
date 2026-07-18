@@ -12,8 +12,11 @@ Show a repository's catalog entry
 Shows a repository's catalog entry: name, status, location, remote, default
 branch, recorded worktree layout, its worktrees (branch and checkout path
 per line), and any daft.yml relations resolved against the catalog. The
-repository may be addressed by catalog name, path, or uuid; with no
-argument the repo containing the current directory is shown.
+repository may be addressed by catalog name, uuid, or a path. A path may be
+the repo root, a subdirectory, or any of its worktrees — daft resolves it to
+the repo that encloses it, so `git daft repo info .` shows the repo you are
+standing in. With no argument the repo containing the current directory is
+shown.
 
 Paths render relative to your working directory when that form is shorter
 (same rule as `git daft repo list`). Identity plumbing lives in structured
@@ -34,7 +37,7 @@ git daft-repo-info [OPTIONS] [REPO]
 
 | Argument | Description | Required |
 |----------|-------------|----------|
-| `<REPO>` | Catalog name, path, or uuid (default: the current repo) | No |
+| `<REPO>` | Catalog name, uuid, or a repo path — including . or a subdirectory (default: the current repo) | No |
 
 ## Options
 

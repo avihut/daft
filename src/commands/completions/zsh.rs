@@ -71,7 +71,11 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str(
             "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
         );
-        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
+        // The helper case-folds the prefix; a case-insensitive match spec keeps
+        // zsh from re-dropping the folded candidates.
+        output.push_str(
+            "        (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- \"${repos[@]}\"\n",
+        );
         output.push_str("        return\n");
         output.push_str("    fi\n");
         output.push('\n');
@@ -234,7 +238,11 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str(
             "        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n",
         );
-        output.push_str("        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n");
+        // The helper case-folds the prefix; a case-insensitive match spec keeps
+        // zsh from re-dropping the folded candidates.
+        output.push_str(
+            "        (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- \"${repos[@]}\"\n",
+        );
         output.push_str("    fi\n");
         output.push('\n');
     }
@@ -336,7 +344,7 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
 
     // Value completion for --repo flag (catalog repo names)
     let repo_flag_pre = if command_has_repo_flag(command_name) {
-        "    if [[ \"${words[$((CURRENT-1))]}\" == \"--repo\" ]]; then\n        local -a repos\n        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n        (( ${#repos} )) && compadd -- \"${repos[@]}\"\n        return\n    fi\n\n"
+        "    if [[ \"${words[$((CURRENT-1))]}\" == \"--repo\" ]]; then\n        local -a repos\n        repos=( ${(f)\"$(daft __complete repo-name \"$curword\" 2>/dev/null | cut -f1)\"} )\n        (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- \"${repos[@]}\"\n        return\n    fi\n\n"
     } else {
         ""
     };
@@ -464,11 +472,13 @@ __{func_name}_impl() {{
     done
 
     # -V preserves group insertion order: worktrees first, then local, then
-    # remote, then catalog repos (cross-repo navigation).
+    # remote, then catalog repos (cross-repo navigation). The catalog-repo
+    # group matches case-insensitively (a repo-name convenience); branch
+    # groups stay case-sensitive, since git refs are.
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
-    (( ${{#repo_names}} ))   && compadd -V repo -l -d repo_display -a repo_names
+    (( ${{#repo_names}} ))   && compadd -M 'm:{{[:lower:][:upper:]}}={{[:upper:][:lower:]}}' -V repo -l -d repo_display -a repo_names
 {path_post}}}
 
 _{func_name}() {{
@@ -776,7 +786,7 @@ _daft() {
     # repo: complete subcommands and arguments
     if (( CURRENT >= 3 )) && [[ "$words[2]" == "repo" ]]; then
         if (( CURRENT == 3 )); then
-            compadd add info install list remove
+            compadd add info install link list remove unlink
             return
         fi
         case "$words[3]" in
@@ -793,15 +803,33 @@ _daft() {
                     compadd -- --format --template --no-headers -h --help
                     return
                 fi
+                # Catalog repo names first, then directories (`repo info .`,
+                # a subdirectory, or any worktree resolves to its repo).
                 local -a repos
                 repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                (( ${#repos} )) && compadd -- "${repos[@]}"
+                (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
+                _files -/
                 return
                 ;;
             install)
                 if [[ "$curword" == -* ]]; then
                     compadd -- -q --quiet -v --verbose --git-exclude -h --help
                 fi
+                return
+                ;;
+            link)
+                local prev_word="${words[$((CURRENT-1))]}"
+                if [[ "$prev_word" == "--name" || "$prev_word" == "--kind" ]]; then
+                    return
+                fi
+                if [[ "$curword" == -* ]]; then
+                    compadd -- --name --kind -h --help
+                    return
+                fi
+                local -a repos
+                repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
+                (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
+                _files -/
                 return
                 ;;
             list)
@@ -847,7 +875,7 @@ _daft() {
                 if [[ "$prev_word" == "--repo" ]]; then
                     local -a repos
                     repos=( ${(f)"$(daft __complete repo-name "$curword" 2>/dev/null | cut -f1)"} )
-                    (( ${#repos} )) && compadd -- "${repos[@]}"
+                    (( ${#repos} )) && compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -- "${repos[@]}"
                     return
                 fi
                 if [[ "$curword" == -* ]]; then
@@ -855,6 +883,16 @@ _daft() {
                     return
                 fi
                 _files -/
+                return
+                ;;
+            unlink)
+                if [[ "$curword" == -* ]]; then
+                    compadd -- -h --help
+                    return
+                fi
+                local -a labels
+                labels=( ${(f)"$(daft __complete relation-label "$curword" 2>/dev/null)"} )
+                (( ${#labels} )) && compadd -- "${labels[@]}"
                 return
                 ;;
         esac

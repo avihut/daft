@@ -1,0 +1,39 @@
+name: Repo unlink missing edge is friendly
+description:
+  unlinking a relation that isn't declared is a friendly no-op (exit 0), not an
+  error, and never creates or rewrites daft.yml
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Unlink with no daft.yml at all is a friendly no-op
+    run: daft repo unlink anything 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "no relations"
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main/daft.yml"
+
+  - name: Unlink a not-present edge after one link is a friendly no-op
+    run: |
+      daft repo link git@github.com:acme/api.git >/dev/null 2>&1 &&
+      daft repo unlink git@github.com:acme/other.git 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "nothing to unlink"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "url: git@github.com:acme/api.git"

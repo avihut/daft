@@ -550,6 +550,70 @@ test_fig_shortcut_aliases() {
     fi
 }
 
+# Test: repo-name completion is case-insensitive — end to end. Both layers must
+# hold: the `__complete repo-name` helper case-folds the prefix, AND the sourced
+# bash wrapper fills COMPREPLY directly instead of re-filtering through a
+# case-sensitive `compgen -W` (which silently drops the folded matches). Runs in
+# a fully isolated state dir so it never writes the developer's real catalog.
+test_repo_name_completion_case_insensitive() {
+    run_test "Repo-name completion is case-insensitive (helper + sourced bash)"
+
+    # Everything runs in a subshell: the DAFT_*_DIR/PATH exports, the sourced
+    # completion function, and the temp catalog stay out of the harness.
+    local result
+    result=$(
+        set +eu
+        sb=$(mktemp -d "${TMPDIR:-/tmp}/daft-ci-complete.XXXXXX")
+        trap 'rm -rf "$sb"' EXIT
+        export DAFT_CONFIG_DIR="$sb/cfg" DAFT_DATA_DIR="$sb/data" DAFT_STATE_DIR="$sb/st"
+
+        # Never touch real state: if the binary ignores DAFT_*_DIR (a tagged
+        # release build), skip rather than pollute the real catalog.
+        if [[ "$("$DAFT_BIN" __dirs 2>/dev/null)" != *"$sb"* ]]; then
+            echo "SKIP: binary ignores DAFT_*_DIR (isolation unavailable)"
+            exit 0
+        fi
+
+        # The sourced wrapper calls a bare `daft`; point it at the binary
+        # under test, then register a lowercase-named repo.
+        mkdir -p "$sb/bin"; ln -sf "$DAFT_BIN" "$sb/bin/daft"; export PATH="$sb/bin:$PATH"
+        mkdir -p "$sb/apiservice"; cd "$sb/apiservice" || exit 1
+        git init -q
+        GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t.co \
+            GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t.co \
+            git commit -q --allow-empty -m init
+        daft repo add --name apiservice >/dev/null 2>&1
+
+        # Layer 1: the helper folds case (uppercase prefix → lowercase name).
+        helper=$(daft __complete repo-name AP 2>/dev/null | cut -f1)
+        [[ "$helper" == *apiservice* ]] || { echo "FAIL helper=[$helper]"; exit 0; }
+
+        # Layer 2: drive the sourced bash completion. `_init_completion` (from
+        # bash-completion) is stubbed minimally; drive() completes the last word.
+        _init_completion() {
+            cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+            words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
+        }
+        source <(daft completions bash 2>/dev/null)
+        drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
+
+        # An uppercase prefix surfaces the lowercase repo (the whole point)…
+        drive daft repo info AP;            match="${COMPREPLY[*]}"
+        # …and a genuine miss stays empty (no false positives from case-folding).
+        drive daft repo remove --repo ZZQQ; miss="${COMPREPLY[*]}"
+        if [[ "$match" == *apiservice* && -z "$miss" ]]; then
+            echo "PASS"
+        else
+            echo "FAIL match=[$match] miss=[$miss]"
+        fi
+    )
+    case "$result" in
+        PASS) pass_test ;;
+        SKIP*) echo "  ($result)"; pass_test ;;
+        *) fail_test "$result" ;;
+    esac
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -569,6 +633,7 @@ main() {
     test_zsh_completion_generation
     test_fish_completion_generation
     test_dynamic_branch_completion
+    test_repo_name_completion_case_insensitive
 
 
     # Test dynamic completion wiring

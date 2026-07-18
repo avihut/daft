@@ -284,7 +284,7 @@ fn prepare_out_of_repo_paths(args: &mut Vec<String>, command_name: &str) -> Resu
 
     let mut common_dir: Option<std::path::PathBuf> = None;
     for (path, original) in absolute_paths.iter().zip(args.iter()) {
-        let repo = gix::discover(path).map_err(|_| {
+        let canonical_common = crate::core::repo::git_common_dir_at(path).ok_or_else(|| {
             anyhow::anyhow!(
                 "'{}' is not inside a Git repository. \
                  Run `{}` inside a repository, or pass a worktree path.",
@@ -292,8 +292,6 @@ fn prepare_out_of_repo_paths(args: &mut Vec<String>, command_name: &str) -> Resu
                 command_name
             )
         })?;
-        let canonical_common = std::fs::canonicalize(repo.common_dir())
-            .unwrap_or_else(|_| repo.common_dir().to_path_buf());
         match common_dir {
             None => common_dir = Some(canonical_common),
             Some(ref existing) if existing == &canonical_common => {}

@@ -20,8 +20,11 @@ use crate::store::CatalogRepoRow;
 Shows a repository's catalog entry: name, status, location, remote, default
 branch, recorded worktree layout, its worktrees (branch and checkout path
 per line), and any daft.yml relations resolved against the catalog. The
-repository may be addressed by catalog name, path, or uuid; with no
-argument the repo containing the current directory is shown.
+repository may be addressed by catalog name, uuid, or a path. A path may be
+the repo root, a subdirectory, or any of its worktrees — daft resolves it to
+the repo that encloses it, so `git daft repo info .` shows the repo you are
+standing in. With no argument the repo containing the current directory is
+shown.
 
 Paths render relative to your working directory when that form is shorter
 (same rule as `git daft repo list`). Identity plumbing lives in structured
@@ -35,7 +38,7 @@ stay addressable and `git daft clone <name>` can restore them.
 pub struct Args {
     #[arg(
         value_name = "REPO",
-        help = "Catalog name, path, or uuid (default: the current repo)"
+        help = "Catalog name, uuid, or a repo path — including . or a subdirectory (default: the current repo)"
     )]
     needle: Option<String>,
 
@@ -64,8 +67,11 @@ pub fn run() -> Result<()> {
     };
 
     let row = match &args.needle {
+        // Resolve a name/uuid/path, and — uniquely for `info` — a path *inside*
+        // a repo (`.`, a subdirectory, a sibling worktree) via the enclosing
+        // repo, so `daft repo info .` works from anywhere in the tree.
         Some(needle) => catalog
-            .resolve(needle)?
+            .resolve_including_enclosing_repo(needle)?
             .ok_or_else(|| not_found_error(&catalog, needle))?,
         None => {
             let git_dir = crate::core::repo::get_git_common_dir()

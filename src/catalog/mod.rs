@@ -27,6 +27,7 @@ pub mod fleet;
 pub mod normalize;
 pub mod registration;
 pub mod relations;
+pub mod relations_edit;
 pub mod service;
 pub mod worktrees;
 

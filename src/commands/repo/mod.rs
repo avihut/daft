@@ -2,15 +2,19 @@
 //!
 //! Verbs: the catalog surface (`add`, `list`, `info`), `repo install`
 //! (canonical name for the daft.yml bootstrap, also reachable via the
-//! top-level `daft install` alias), and `repo remove`.
+//! top-level `daft install` alias), `repo remove`, and the relations-manifest
+//! editors (`link`, `unlink`).
 
 use anyhow::Result;
 
 pub mod add;
 pub mod info;
 pub mod install;
+pub mod link;
 pub mod list;
+pub mod relation_io;
 pub mod remove;
+pub mod unlink;
 
 /// Dispatch entry from the top-level main.
 pub fn run() -> Result<()> {
@@ -20,8 +24,10 @@ pub fn run() -> Result<()> {
         "add" => add::run(),
         "info" => info::run(),
         "install" => install::run(),
+        "link" => link::run(),
         "list" => list::run(),
         "remove" => remove::run(),
+        "unlink" => unlink::run(),
         "" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -45,6 +51,8 @@ fn print_help() {
     println!("  add       Register a repository in the repo catalog");
     println!("  info      Show a repository's catalog entry");
     println!("  install   Install a starter daft.yml in the current worktree");
+    println!("  link      Declare a relation from this repo to another");
     println!("  list      List repositories in the repo catalog");
     println!("  remove    Remove a repository, including all worktrees");
+    println!("  unlink    Remove a relation from this repo");
 }

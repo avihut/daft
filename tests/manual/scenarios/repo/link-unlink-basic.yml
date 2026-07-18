@@ -1,0 +1,68 @@
+name: Repo link/unlink basic
+description:
+  daft repo link declares a relation by catalog name, repo info resolves the
+  edge to the local clone, and daft repo unlink removes it
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+        - "$WORK_DIR/test-repo-b/main"
+
+  - name: Link B from A by catalog name
+    run: daft repo link test-repo-b --name b-client --kind consumer 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Linked: b-client [consumer]"
+      files_exist:
+        - "$WORK_DIR/test-repo-a/main/daft.yml"
+      file_contains:
+        - path: "$WORK_DIR/test-repo-a/main/daft.yml"
+          content: "name: b-client"
+        - path: "$WORK_DIR/test-repo-a/main/daft.yml"
+          content: "kind: consumer"
+
+  - name: The edge resolves to B's local clone (not "not cloned")
+    run: daft repo info 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Relations"
+        - "b-client [consumer]"
+      output_not_contains:
+        - "not cloned"
+
+  - name: Unlink by label removes the edge
+    run: daft repo unlink b-client 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Unlinked: b-client"
+      file_not_contains:
+        - path: "$WORK_DIR/test-repo-a/main/daft.yml"
+          content: "b-client"
+        - path: "$WORK_DIR/test-repo-a/main/daft.yml"
+          content: "relations:"
+
+  - name: repo info no longer shows a Relations section
+    run: daft repo info 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Relations"

@@ -432,18 +432,22 @@ complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcomm
 complete -c daft -n '__fish_seen_subcommand_from layout; and __fish_seen_subcommand_from default' -l reset -d 'Reset to built-in default'
 complete -c daft -n '__fish_seen_subcommand_from multi-remote; and not __fish_seen_subcommand_from enable disable status set-default move' -f -a 'enable disable status set-default move'
 # repo: subcommands
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'add' -d 'Register a repository in the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'info' -d "Show a repository's catalog entry"
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'list' -d 'List repositories in the repo catalog'
-complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install list remove' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'add' -d 'Register a repository in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'info' -d "Show a repository's catalog entry"
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'install' -d 'Install a starter daft.yml in the current worktree'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'link' -d 'Declare a relation from this repo to another'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'list' -d 'List repositories in the repo catalog'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'remove' -d 'Remove a repository, including all worktrees'
+complete -c daft -n '__fish_seen_subcommand_from repo; and not __fish_seen_subcommand_from add info install link list remove unlink' -f -a 'unlink' -d 'Remove a relation from this repo'
 # repo add: path completion + flags
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -l name -r -d 'Catalog name for the repo'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s q -l quiet -d 'Suppress progress reporting'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from add' -s v -l verbose -d 'Show detailed progress'
-# repo info: repo-name completion + flags
+# repo info: catalog-repo names then directory completion + flags
+# (`repo info .`, a subdirectory, or any worktree resolves to its repo)
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l format -r -d 'Output format'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from info' -l template -r -d 'Tera template string'
 # repo list: flags
@@ -471,6 +475,13 @@ complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s y -l force -d 'Skip the confirmation prompt'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -l dry-run -d 'Print what would be removed without touching anything'
 complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' -s v -l verbose -d 'Increase verbosity'
+# repo link: catalog-repo names then directory completion + flags
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from link' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from link' -a "(__fish_complete_directories (commandline -ct))"
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from link' -l name -r -d 'Friendly label for the edge'
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from link' -l kind -r -d 'Free-form relationship kind'
+# repo unlink: relation-label completion
+complete -c daft -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from unlink' -f -a "(daft __complete relation-label (commandline -ct) 2>/dev/null)"
 # skill: subcommands
 complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'install' -d 'Install or update the agent skill for Claude Code'
 complete -c daft -n '__fish_seen_subcommand_from skill; and not __fish_seen_subcommand_from install uninstall show' -f -a 'uninstall' -d 'Remove the installed agent skill'

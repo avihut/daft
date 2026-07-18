@@ -11,9 +11,12 @@ worktrees as a tree (branch and checkout path per line), and its resolved
 [relations](/graph/concepts), each mapped to its local clone or flagged as
 not cloned.
 
-The repository may be addressed by catalog name, path, or uuid; with no
-argument the repo containing the current directory is shown. Removed
-repositories resolve too.
+The repository may be addressed by catalog name, uuid, or a path. A path
+resolves to the repo that encloses it — the repo root, a subdirectory, or any
+of its worktrees all work — so `daft repo info .` shows the repo you are
+standing in, the same as passing no argument. A catalog name still wins over a
+like-named directory; the path form is the fallback. Removed repositories
+resolve too.
 
 Paths render relative to your working directory when that form is shorter
 (same rule as `daft repo list`). Identity plumbing — uuid, git common dir,
@@ -26,15 +29,17 @@ null` when the repo can't be opened).
 
     daft repo info [<repo>] [--format <fmt> | --template <tera>]
 
-| Argument / flag     | Description                                       |
-| ------------------- | ------------------------------------------------- |
-| `<repo>`            | Catalog name, path, or uuid (default: cwd repo).  |
-| `--format <fmt>`    | Structured output: json, yaml, toon, …            |
-| `--template <tera>` | Custom Tera template output.                      |
+| Argument / flag     | Description                                          |
+| ------------------- | --------------------------------------------------- |
+| `<repo>`            | Catalog name, uuid, or a repo path (default: cwd repo). |
+| `--format <fmt>`    | Structured output: json, yaml, toon, …              |
+| `--template <tera>` | Custom Tera template output.                         |
 
 ## Examples
 
     daft repo info
+    daft repo info .
+    daft repo info ../api-client
     daft repo info client
     daft repo info client --format json | jq .relations
 

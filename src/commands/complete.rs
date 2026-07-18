@@ -176,6 +176,11 @@ fn complete(
         // shared-files: complete declared shared file paths from daft.yml
         ("shared-files", _) => complete_shared_files(word),
 
+        // relation-label: labels of relations declared in the current
+        // worktree's daft.yml (for `daft repo unlink`). Manifest read only —
+        // no catalog open on the Tab path.
+        ("relation-label", _) => complete_relation_labels(word),
+
         // shared-worktrees: complete worktree directory names
         ("shared-worktrees", _) => complete_worktree_names(word),
 
@@ -637,6 +642,19 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     Ok(entries)
 }
 
+/// Case-insensitive prefix match for repo-name completion. Catalog names are
+/// validated to a restricted ASCII set (see `normalize::validate_catalog_name`),
+/// so an ASCII-case fold is exact. Users don't recall a repo's exact casing —
+/// `daft repo info AP<Tab>` should still surface `api`.
+///
+/// The shell layer must match case-insensitively too: a case-sensitive
+/// `compgen -W`/`compadd` re-filter drops these candidates again even though
+/// this helper returned them (see the completion scripts' repo-name arms).
+fn repo_name_matches(name: &str, prefix: &str) -> bool {
+    let (name, prefix) = (name.as_bytes(), prefix.as_bytes());
+    name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
 /// Live catalog repos matching `prefix`, excluding names in `exclude`
 /// (branches always shadow repo names in `daft go`; a shadowed repo is
 /// reachable via `--repo`). Hot-path contract: silent, never creates.
@@ -657,7 +675,7 @@ fn catalog_repo_entries(
         .ok()
         .and_then(|p| p.canonicalize().ok());
     rows.into_iter()
-        .filter(|row| row.name.starts_with(prefix) && !exclude.contains(&row.name))
+        .filter(|row| repo_name_matches(&row.name, prefix) && !exclude.contains(&row.name))
         .map(|row| CompletionEntry {
             description: crate::output::format::display_path(&row.path, cwd.as_deref()),
             name: row.name,
@@ -955,6 +973,28 @@ fn complete_shared_files(prefix: &str) -> Result<Vec<String>> {
         .collect();
     entries.sort();
     Ok(entries)
+}
+
+/// Complete relation labels for `daft repo unlink <TAB>`. Sources labels from
+/// the *same* file `unlink` edits — the located manifest — rather than the
+/// merged view (`current_repo_relations()`), which folds in `extends:` and
+/// daft.local.yml. Offering a label declared only in an overlay would suggest
+/// something `unlink` can't remove (it edits one physical daft.yml), so
+/// completion and the command must read the same source. Manifest read only,
+/// no catalog open — cheaper than the merged walk, too.
+fn complete_relation_labels(prefix: &str) -> Result<Vec<String>> {
+    let text = crate::commands::repo::relation_io::locate_manifest()
+        .map(|target| target.text)
+        .unwrap_or_default();
+    let entries = crate::catalog::relations_edit::parse_relations(&text).unwrap_or_default();
+    let mut labels: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.label().to_string())
+        .filter(|label| label.starts_with(prefix))
+        .collect();
+    labels.sort();
+    labels.dedup();
+    Ok(labels)
 }
 
 /// Complete worktree directory names.
@@ -1734,7 +1774,7 @@ fn complete_repo_names(word: &str) -> Vec<CompletionEntry> {
     };
     let mut seen = std::collections::BTreeSet::new();
     rows.iter()
-        .filter(|row| row.name.starts_with(word))
+        .filter(|row| repo_name_matches(&row.name, word))
         .filter(|row| seen.insert(row.name.clone()))
         .map(|row| CompletionEntry {
             name: row.name.clone(),
@@ -3049,5 +3089,19 @@ mod tests {
             "expected `3 invocations,` (plural), got {:?}",
             entries[0]
         );
+    }
+
+    #[test]
+    fn repo_name_matches_is_case_insensitive_prefix() {
+        // Fold both directions: an uppercase prefix matches a lowercase name
+        // and vice versa — the case the shells' default matching misses.
+        assert!(repo_name_matches("api", "AP"));
+        assert!(repo_name_matches("API", "ap"));
+        assert!(repo_name_matches("Api-Client", "api-c"));
+        // An empty prefix matches everything (bare `<Tab>`).
+        assert!(repo_name_matches("api", ""));
+        // A prefix longer than the name, or a genuine mismatch, does not.
+        assert!(!repo_name_matches("api", "apix"));
+        assert!(!repo_name_matches("api", "web"));
     }
 }

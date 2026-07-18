@@ -459,12 +459,20 @@ export default defineConfig({
                     link: "/reference/cli/daft-repo-install",
                   },
                   {
+                    text: "repo link",
+                    link: "/reference/cli/daft-repo-link",
+                  },
+                  {
                     text: "repo list",
                     link: "/reference/cli/daft-repo-list",
                   },
                   {
                     text: "repo remove",
                     link: "/reference/cli/daft-repo-remove",
+                  },
+                  {
+                    text: "repo unlink",
+                    link: "/reference/cli/daft-repo-unlink",
                   },
                 ],
               },

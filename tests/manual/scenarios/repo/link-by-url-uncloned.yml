@@ -1,0 +1,38 @@
+name: Repo link to an uncloned URL
+description:
+  linking a remote URL that isn't cloned is allowed by design — the edge is
+  written and resolves as "not cloned" until the repo is cloned
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repo
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Link a URL that isn't in the catalog
+    run: daft repo link https://github.com/acme/uncloned.git 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Linked: uncloned"
+        - "not cloned"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/daft.yml"
+          content: "url: https://github.com/acme/uncloned.git"
+
+  - name: repo info reports the edge as not cloned with a clone hint
+    run: daft repo info 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "uncloned"
+        - "not cloned"
+        - "clone https://github.com/acme/uncloned.git"

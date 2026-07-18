@@ -1,0 +1,30 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-daft-repo-unlink 1  "git-daft-repo-unlink 1.21.1" 
+.SH NAME
+git\-daft\-repo\-unlink \- Remove a relation from this repo
+.SH SYNOPSIS
+\fBgit\-daft\-repo\-unlink\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fITARGET\fR> 
+.SH DESCRIPTION
+.PP
+Removes a directed relation declared in the current worktree\*(Aqs daft.yml. The
+target is matched against existing entries first by friendly label, then by
+resolving it (catalog name, repo path, or remote URL) to a remote URL and
+matching on that — so `unlink` accepts the same forms as `link`, plus the label
+shown by `git daft repo info`.
+.PP
+Unlinking an edge that isn\*(Aqt there is a friendly no\-op, not an error. Only the
+`relations:` block is touched; the rest of daft.yml is left intact. Commit the
+result to share the change with your team.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fITARGET\fR>
+Relation label, catalog repo name, repo path, or remote URL to unlink
+.SH VERSION
+v1.21.1
