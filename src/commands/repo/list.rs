@@ -345,6 +345,12 @@ fn current_location() -> CurrentLocation {
     let cwd = std::env::current_dir()
         .ok()
         .and_then(|cwd| std::fs::canonicalize(cwd).ok());
+    // One `gix::discover` feeds both the common dir and the workdir below, so
+    // this stays inline rather than routing through `core::repo::git_common_dir_at`
+    // (which would re-discover and can't hand back the workdir). The `.ok()`
+    // here is deliberate too: unlike `git_common_dir_at`, a canonicalize
+    // failure yields `None` rather than a non-canonical fallback path — which
+    // would never match the canonical paths catalog rows store anyway.
     let discovered = cwd.as_ref().and_then(|cwd| gix::discover(cwd).ok());
     let git_common_dir = discovered
         .as_ref()
