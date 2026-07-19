@@ -62,7 +62,43 @@ test_integration_remote_repo_creation() {
     assert_directory_exists "test-clone" || return 1
     assert_git_repository "test-clone" || return 1
     assert_file_exists "test-clone/README.md" || return 1
-    
+
+    return 0
+}
+
+# Regression (#738): the framework's own leak guard must have teeth. The bash
+# suites isolate the repo catalog purely via the DAFT_*_DIR overrides, which
+# compile out of non-dev builds — a binary that ignores them writes the real
+# catalog (the `test-repo-push-*` orphans that motivated this). setup() now
+# runs assert_binary_honors_overrides; this proves it both rejects a
+# non-honoring binary and accepts the honoring dev binary.
+test_integration_state_guard_preflight() {
+    # Positive: the real binary honors the overrides setup() exported.
+    if ! assert_binary_honors_overrides "$RUST_BINARY_DIR/daft" "$TEMP_BASE_DIR" 2>/dev/null; then
+        log_error "preflight rejected the honoring dev binary (false positive)"
+        return 1
+    fi
+
+    # Negative: a stub daft that ignores DAFT_*_DIR (stands in for a
+    # release/tagged build or a system daft) must be rejected.
+    local stub_dir="$PWD/stub-bin"
+    mkdir -p "$stub_dir"
+    cat > "$stub_dir/daft" <<'STUB'
+#!/bin/sh
+if [ "$1" = "__dirs" ]; then
+  printf 'config\t/nonsandbox/config/daft\n'
+  printf 'data\t/nonsandbox/share/daft\n'
+  printf 'state\t/nonsandbox/state/daft\n'
+fi
+STUB
+    chmod +x "$stub_dir/daft"
+
+    if assert_binary_honors_overrides "$stub_dir/daft" "$TEMP_BASE_DIR" 2>/dev/null; then
+        log_error "preflight accepted a binary that ignores DAFT_*_DIR (guard has no teeth)"
+        return 1
+    fi
+
+    log_success "state-guard preflight rejects non-honoring binaries and accepts the dev binary"
     return 0
 }
 
@@ -301,6 +337,7 @@ run_all_integration_tests() {
     run_test "integration_framework_assertions" "test_integration_framework_assertions"
     run_test "integration_remote_repo_creation" "test_integration_remote_repo_creation"
     run_test "integration_binaries_availability" "test_integration_binaries_availability"
+    run_test "integration_state_guard_preflight" "test_integration_state_guard_preflight"
     
     # Command-specific tests
     run_clone_tests

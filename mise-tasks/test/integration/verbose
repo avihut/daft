@@ -5,4 +5,11 @@
 set -euo pipefail
 
 echo "Running integration tests with verbose output..."
-cd tests/integration && ./test_all.sh
+
+# Real-state tripwire (#697/#738): the framework self-guards in setup(), but
+# mirror the guarded default (_default) here too so the verbose path gets the
+# same snapshot/verify fingerprint — a leak that slips past the __dirs preflight
+# (e.g. a hard-coded real path) still fails the run.
+source "$(dirname "$0")/../_state_guard_lib.sh"
+assert_binary_honors_overrides "target/release/daft"
+with_state_guard bash tests/integration/test_all.sh

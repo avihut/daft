@@ -7,4 +7,9 @@ source "$(dirname "$0")/_release_bin_lib.sh"
 ensure_release_binaries
 
 entry="${1:?Usage: mise run test:integration:matrix <entry-name>}"
-cargo run --package xtask -- test-matrix --entry "$entry"
+
+# Real-state tripwire (#697/#738): mirror the guarded default so a single-entry
+# matrix run is protected too (it previously ran outside with_state_guard).
+source "$(dirname "$0")/../_state_guard_lib.sh"
+assert_binary_honors_overrides "target/release/daft"
+with_state_guard cargo run --package xtask -- test-matrix --entry "$entry"
