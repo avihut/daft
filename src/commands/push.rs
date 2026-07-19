@@ -15,7 +15,7 @@ use crate::{
         worktree::{
             branch_delete::display_path,
             ports::NoopStageRunner,
-            push::{HookVerdict, PushAction, push_with_hooks},
+            push::{PushAction, push_with_hooks},
         },
     },
     executor::{cli_presenter::CliPresenter, presenter::JobPresenter},
@@ -49,10 +49,14 @@ worktree's branch. This command resolves the branch to its worktree
 first and runs the push from there — that is the only thing it adds
 over `git push`.
 
-The push targets the `daft.remote` remote (default: origin). A branch
-with no upstream is pushed with `--set-upstream` so tracking gets
-configured. A branch with no checked-out worktree is pushed from the
-current directory, like plain `git push`.
+The push targets the branch's own upstream remote when it has one,
+falling back to the `daft.remote` remote (default: origin) otherwise —
+and a branch with no upstream is pushed with `--set-upstream` so
+tracking gets configured. A branch with no checked-out worktree is
+pushed from the current directory, like plain `git push`.
+
+Only local branches can be pushed: tags and other refs are rejected
+rather than handed to git as if they were branches.
 
 Single-branch only: git fires pre-push once with one working directory,
 so worktree-correct hook context is only well-defined for one branch.
@@ -94,6 +98,56 @@ pub fn run() -> Result<()> {
     run_push(&args, &settings, &git, &mut output)
 }
 
+/// Where the shared `pre-push` hook will run, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HookCwd {
+    /// The pushed branch's own worktree — the command's entire point.
+    Worktree(PathBuf),
+    /// No worktree is checked out on the branch. Push it by refname from the
+    /// invoking directory, exactly like plain `git push` — #600 calls this
+    /// out as a non-error, which is why the seam's cwd is an `Option`.
+    None,
+    /// A worktree is registered for the branch but its directory is gone.
+    /// `git worktree list` keeps reporting the entry (as `prunable`) until
+    /// someone prunes it, and pushing from a path that no longer exists
+    /// fails every git call with exit 128 — so fall back to the invoking
+    /// directory rather than breaking a push plain git would have made.
+    Stale(PathBuf),
+}
+
+/// Classify what `find_worktree_for_branch` recorded. The registered path is
+/// only usable if it is still a directory; `push_single_worktree` guards the
+/// batch path with the same `is_dir` check.
+fn classify_worktree(recorded: Option<PathBuf>) -> HookCwd {
+    match recorded {
+        Some(path) if path.is_dir() => HookCwd::Worktree(path),
+        Some(path) => HookCwd::Stale(path),
+        None => HookCwd::None,
+    }
+}
+
+/// The remote this push targets.
+///
+/// A branch's own upstream wins over `daft.remote`: `daft push` is plain
+/// `git push` plus worktree-correct hook cwd, so it must not republish a
+/// fork's branch to daft's default remote just because the branch happens to
+/// live in a daft-managed repo. `daft.remote` is the fallback for a branch
+/// that has no upstream yet — the case where git has no opinion either.
+fn select_remote(tracking_remote: Option<&str>, configured: &str) -> String {
+    tracking_remote.unwrap_or(configured).to_string()
+}
+
+/// The branch a `branch.<name>.merge` ref names, when it is not `<branch>`
+/// itself. `feat` tracking `origin/main` makes the implicit `feat:feat`
+/// refspec surprising — plain `git push` would refuse it under the default
+/// `push.default=simple` — so the plan says out loud where the push lands.
+fn divergent_upstream_branch(branch: &str, merge_ref: Option<&str>) -> Option<String> {
+    merge_ref
+        .and_then(|r| r.strip_prefix("refs/heads/"))
+        .filter(|tracked| *tracked != branch)
+        .map(str::to_string)
+}
+
 /// The push action for one resolved branch: a branch that already tracks a
 /// remote keeps a plain push; one without an upstream gets `--set-upstream`
 /// so tracking is configured as a side effect (mirrors checkout's autopush).
@@ -129,20 +183,39 @@ fn run_push(
         Some(branch) => branch.clone(),
         None => get_current_branch()?,
     };
-    let remote = settings.remote.clone();
+
+    // `daft push` pushes a *local branch* — that is what owns a worktree and
+    // what the hook guarantee is defined over. Without this check any ref
+    // that merely resolves goes straight to `git push`: `daft push v1.0.0`
+    // publishes the *tag*, exits 0, and reports a successful branch push
+    // while the worktree-correct hook context silently never applied.
+    if !git.show_ref_exists(&format!("refs/heads/{branch}"))? {
+        anyhow::bail!(
+            "No local branch named '{branch}'.\n\
+             `{}` pushes a local branch from its own worktree — to push a tag or any \
+             other ref, use `git push {} {branch}`.",
+            crate::daft_cmd("push"),
+            settings.remote,
+        );
+    }
 
     // The command's whole job: the pushed branch's worktree is the cwd the
-    // shared pre-push hook must run in. `None` (no checked-out worktree) is
-    // the ticket's explicit non-error: push by refname from the invoking
-    // directory, exactly like plain `git push`.
-    let worktree = git.find_worktree_for_branch(&branch)?;
+    // shared pre-push hook must run in.
+    let hook_cwd = classify_worktree(git.find_worktree_for_branch(&branch)?);
     let invoking_dir =
         std::env::current_dir().context("Could not determine the current directory")?;
-    let cwd: PathBuf = worktree.clone().unwrap_or_else(|| invoking_dir.clone());
+    let cwd: PathBuf = match &hook_cwd {
+        HookCwd::Worktree(path) => path.clone(),
+        HookCwd::None | HookCwd::Stale(_) => invoking_dir.clone(),
+    };
 
-    let has_upstream = git
-        .get_branch_tracking_remote_from(&branch, &cwd)?
-        .is_some();
+    let tracking_remote = git.get_branch_tracking_remote_from(&branch, &cwd)?;
+    let remote = select_remote(tracking_remote.as_deref(), &settings.remote);
+    let has_upstream = tracking_remote.is_some();
+    let divergent_upstream = divergent_upstream_branch(
+        &branch,
+        git.get_branch_merge_ref_from(&branch, &cwd)?.as_deref(),
+    );
     let verify = !args.no_verify;
     let hook_present = git.pre_push_hook_exists(&cwd);
 
@@ -173,6 +246,13 @@ fn run_push(
     let resolve_key = StepKey::new(StageId::ResolveWorktree);
     let push_key = StepKey::new(StageId::Push);
     let mut rows = vec![Row::Step(StepSpec::new(resolve_key.clone()))];
+    if let Some(tracked) = &divergent_upstream {
+        rows.push(Row::Note {
+            text: format!(
+                "'{branch}' tracks {remote}/{tracked} \u{2014} pushing to {remote}/{branch}"
+            ),
+        });
+    }
     if args.no_verify && hook_present {
         rows.push(Row::Note {
             text: "pre-push hooks skipped \u{2014} requested (--no-verify)".to_string(),
@@ -185,8 +265,8 @@ fn run_push(
         .commit_plan(PlanCommit::new(rows).with_header_annotation(format!("\u{2192} {remote}")));
 
     // Resolution already happened; the row records where the hook will run.
-    match &worktree {
-        Some(path) => {
+    match &hook_cwd {
+        HookCwd::Worktree(path) => {
             timeline.on_stage(
                 &resolve_key,
                 StageEvent::Completed {
@@ -194,7 +274,7 @@ fn run_push(
                 },
             );
         }
-        None => {
+        HookCwd::None => {
             timeline.on_stage(
                 &resolve_key,
                 StageEvent::SkippedAttention {
@@ -202,18 +282,43 @@ fn run_push(
                 },
             );
         }
+        HookCwd::Stale(path) => {
+            timeline.on_stage(
+                &resolve_key,
+                StageEvent::SkippedAttention {
+                    reason: format!(
+                        "worktree {} is gone \u{2014} pushing from the current directory",
+                        display_path(path)
+                    ),
+                },
+            );
+        }
     }
 
     // Legacy parity for the plain/hidden modes (the rail no-ops there): the
     // resolved cwd is the command's story, so plain output states it too.
-    if !interactive {
-        match &worktree {
-            Some(path) => output.info(&format!(
+    // Gated on the same predicate as the result lines below — keying this one
+    // on interactivity alone drops it from a redirected-stdout run that still
+    // records the push.
+    if !timeline.replaces_stdout_record() {
+        if let Some(tracked) = &divergent_upstream {
+            output.info(&format!(
+                "'{branch}' tracks '{remote}/{tracked}' \u{2014} pushing to '{remote}/{branch}'"
+            ));
+        }
+        match &hook_cwd {
+            HookCwd::Worktree(path) => output.info(&format!(
                 "Pushing '{branch}' to '{remote}' from '{}'",
                 path.display()
             )),
-            None => output.info(&format!(
+            HookCwd::None => output.info(&format!(
                 "'{branch}' has no checked-out worktree \u{2014} pushing from the current directory"
+            )),
+            HookCwd::Stale(path) => output.info(&format!(
+                "The worktree recorded for '{branch}' ({}) is gone \u{2014} pushing from the \
+                 current directory. Run `{}` to clear the stale entry.",
+                path.display(),
+                crate::daft_cmd("prune")
             )),
         }
     }
@@ -267,17 +372,14 @@ fn run_push(
             Ok(())
         }
         Some(msg) => {
-            // The rail detail must not blame the hook for a push it let
-            // through (HookVerdict::failure_cause draws the same line).
-            let detail = match outcome.hook {
-                HookVerdict::Rejected => "pre-push gate refused (see below)",
-                HookVerdict::Passed => "remote rejected (see below)",
-                _ => "failed (see below)",
-            };
+            // Attribution is the shared verdict's call, not this call site's
+            // (`rail_detail` and `failure_cause` draw the same line): daft
+            // cannot tell a gate refusal from an unreachable remote, nor a
+            // remote rejection from a lease git refused locally.
             timeline.on_stage(
                 &push_key,
                 StageEvent::Failed {
-                    detail: detail.to_string(),
+                    detail: outcome.hook.rail_detail().to_string(),
                 },
             );
             // Deferred hook output (the failure dump) drains below the
@@ -326,6 +428,60 @@ mod tests {
                 force_with_lease: false,
             }
         ));
+    }
+
+    #[test]
+    fn a_registered_worktree_whose_directory_is_gone_is_stale() {
+        // `git worktree list` keeps reporting an entry after someone deletes
+        // the directory (it shows as `prunable`). Using that path as the cwd
+        // fails every git call with exit 128 — a push plain git would have
+        // made — so it must classify as Stale, not Worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("feat");
+        std::fs::create_dir(&live).unwrap();
+        let gone = dir.path().join("deleted");
+
+        assert_eq!(
+            classify_worktree(Some(live.clone())),
+            HookCwd::Worktree(live)
+        );
+        assert_eq!(
+            classify_worktree(Some(gone.clone())),
+            HookCwd::Stale(gone),
+            "a recorded-but-missing directory must not become the push cwd"
+        );
+        assert_eq!(classify_worktree(None), HookCwd::None);
+    }
+
+    #[test]
+    fn the_branchs_own_upstream_outranks_daft_remote() {
+        // A fork's branch tracking `upstream` must not be republished to
+        // `daft.remote` just because daft defaults there; daft.remote is the
+        // fallback for a branch git has no opinion about.
+        assert_eq!(select_remote(Some("upstream"), "origin"), "upstream");
+        assert_eq!(select_remote(None, "origin"), "origin");
+    }
+
+    #[test]
+    fn a_differently_named_upstream_is_surfaced() {
+        // `feat` tracking `origin/main` makes the implicit feat:feat refspec
+        // surprising (plain `git push` refuses it under push.default=simple),
+        // so the plan says where the push actually lands.
+        assert_eq!(
+            divergent_upstream_branch("feat", Some("refs/heads/main")),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            divergent_upstream_branch("feat", Some("refs/heads/feat")),
+            None,
+            "the ordinary case is not worth a note"
+        );
+        assert_eq!(divergent_upstream_branch("feat", None), None);
+        assert_eq!(
+            divergent_upstream_branch("feat", Some("refs/tags/v1")),
+            None,
+            "only branch upstreams are compared by branch name"
+        );
     }
 
     #[test]

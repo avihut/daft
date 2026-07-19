@@ -24,10 +24,14 @@ worktree's branch. This command resolves the branch to its worktree
 first and runs the push from there — that is the only thing it adds
 over `git push`.
 
-The push targets the `daft.remote` remote (default: origin). A branch
-with no upstream is pushed with `--set-upstream` so tracking gets
-configured. A branch with no checked-out worktree is pushed from the
-current directory, like plain `git push`.
+The push targets the branch's own upstream remote when it has one,
+falling back to the `daft.remote` remote (default: origin) otherwise —
+and a branch with no upstream is pushed with `--set-upstream` so
+tracking gets configured. A branch with no checked-out worktree is
+pushed from the current directory, like plain `git push`.
+
+Only local branches can be pushed: tags and other refs are rejected
+rather than handed to git as if they were branches.
 
 Single-branch only: git fires pre-push once with one working directory,
 so worktree-correct hook context is only well-defined for one branch.

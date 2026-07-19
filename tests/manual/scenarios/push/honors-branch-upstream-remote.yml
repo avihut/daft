@@ -1,0 +1,77 @@
+name: push targets the branch's own upstream remote, not daft.remote
+description:
+  "`daft push` is plain `git push` plus worktree-correct hook cwd, so it must
+  not republish a branch to daft.remote just because that is daft's default —
+  the fork workflow (branch tracks `fork`, daft.remote is `origin`) would push
+  to the wrong remote and never record tracking. daft.remote stays the fallback
+  for a branch with no upstream."
+
+repos:
+  - name: push-fork-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_FORK_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-fork-repo/main"
+
+  - name: Create a second remote and register it
+    run: |
+      git init -q --bare $WORK_DIR/fork.git
+      git remote add fork $WORK_DIR/fork.git
+    cwd: "$WORK_DIR/push-fork-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Create a local-only branch with its own worktree
+    run: git-worktree-checkout -b fork-only --local
+    cwd: "$WORK_DIR/push-fork-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-fork-repo/fork-only"
+
+  - name: Commit, then point the branch's upstream at the fork
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "fork change" > fork.txt
+      git add fork.txt
+      git commit -m "Fork change"
+      git push -q -u fork fork-only
+    cwd: "$WORK_DIR/push-fork-repo/fork-only"
+    expect: { exit_code: 0 }
+
+  - name: A further commit to push
+    run: |
+      echo "second fork change" >> fork.txt
+      git add fork.txt
+      git commit -m "Second fork change"
+    cwd: "$WORK_DIR/push-fork-repo/fork-only"
+    expect: { exit_code: 0 }
+
+  - name: The push follows the branch's upstream, not daft.remote
+    run: daft push fork-only 2>&1
+    cwd: "$WORK_DIR/push-fork-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'fork-only' to 'fork'"
+
+  - name: The fork received both commits
+    run: |
+      git fetch -q fork 2>/dev/null
+      git rev-list --count fork/fork-only..fork-only
+    cwd: "$WORK_DIR/push-fork-repo/fork-only"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]
+
+  - name: origin never received the branch
+    run: git ls-remote --heads origin fork-only | grep -c "fork-only" || true
+    cwd: "$WORK_DIR/push-fork-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]

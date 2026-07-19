@@ -813,18 +813,13 @@ fn push_if_enabled(
                 let gated = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed);
                 if gated {
                     // The rail detail must not blame the hook for a push it
-                    // let through (`HookVerdict::failure_cause` draws the
-                    // same line): `Rejected` means the gate — or
-                    // pre-negotiation transport — refused; `Passed` means
-                    // the remote rejected it downstream.
-                    let detail = match outcome.hook {
-                        HookVerdict::Rejected => "pre-push gate refused (see below)",
-                        _ => "remote rejected (see below)",
-                    };
+                    // let through, nor the remote for one git refused
+                    // locally — `HookVerdict::rail_detail` owns that line
+                    // for every call site.
                     sink.on_stage(
                         &push_key,
                         StageEvent::Failed {
-                            detail: detail.to_string(),
+                            detail: outcome.hook.rail_detail().to_string(),
                         },
                     );
                     let hint = if outcome.hook.no_verify_might_help() {
@@ -963,6 +958,7 @@ mod tests {
     use crate::core::ProgressSink;
     use crate::core::settings::PushVerify;
     use crate::core::stage::{StageEvent, StageId, StepKey};
+    use crate::core::worktree::push::HookVerdict;
     use crate::executor::presenter::{JobPresenter, NullPresenter};
     use crate::git::GitCommand;
     use crate::utils::git_command_at;
@@ -1226,7 +1222,7 @@ mod tests {
     #[test]
     fn passed_hook_remote_rejection_does_not_blame_the_gate() {
         // `Passed` means the pre-push hook let the push through and the
-        // remote rejected it downstream — the rail detail must not read
+        // push was rejected downstream — the rail detail must not read
         // "pre-push gate refused" (push.rs's failure_cause tests guard the
         // same attribution line for the error text).
         let (dir, work) = repo_with_hook_and_remote();
@@ -1250,7 +1246,7 @@ mod tests {
         assert!(!push_set, "the remote must reject the push: {gate:?}");
         assert_eq!(
             push_failure_detail(&sink).as_deref(),
-            Some("remote rejected (see below)"),
+            Some(HookVerdict::Passed.rail_detail()),
             "a passed hook must not be blamed for the rejection: {:?}",
             sink.events
         );

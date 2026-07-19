@@ -576,6 +576,10 @@ export default defineConfig({
                         link: "/reference/cli/git-worktree-merge",
                       },
                       {
+                        text: "worktree-push",
+                        link: "/reference/cli/git-worktree-push",
+                      },
+                      {
                         text: "worktree-list",
                         link: "/reference/cli/git-worktree-list",
                       },

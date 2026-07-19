@@ -34,13 +34,21 @@ configuration (`.env`, mise, direnv) silently validates the wrong source.
 its worktree and runs the push from there, so the hook always sees the tree
 it is guarding. That is the only thing it adds over `git push`:
 
-- **Remote:** the push targets `daft.remote` (default: `origin`), the same
-  remote `daft sync` and `daft start` use.
+- **Remote:** the push targets the branch's own upstream remote when it has
+  one, so a fork's branch that tracks `upstream` is not republished to
+  `origin`. A branch with no upstream falls back to `daft.remote` (default:
+  `origin`), the same remote `daft sync` and `daft start` use.
 - **Upstream:** a branch with no upstream is pushed with `--set-upstream`,
-  so tracking gets configured as a side effect.
+  so tracking gets configured as a side effect. When a branch tracks a
+  differently-named ref (`feat` tracking `origin/main`), the run says so and
+  pushes `feat` to `origin/feat`.
+- **Branches only:** the argument must name a local branch. Tags and other
+  refs are rejected rather than passed to `git push` as if they were
+  branches — the worktree guarantee is defined over branches.
 - **No worktree:** a branch with no checked-out worktree is pushed by
   refname from the current directory — plain `git push` behavior, not an
-  error.
+  error. A worktree whose directory has been deleted but not yet pruned is
+  treated the same way, with a note pointing at `daft prune`.
 - **No argument:** pushes the current worktree's branch; resolution is a
   no-op and the command behaves like plain `git push`.
 - **Single-branch only:** git fires `pre-push` once with one working
@@ -92,10 +100,10 @@ daft push --force-with-lease feature-b
 
 ## Configuration
 
-| Key                        | Effect                                                          |
-| -------------------------- | --------------------------------------------------------------- |
-| `daft.remote`              | Remote the push targets (default `origin`).                     |
-| `daft.hooks.output.*`      | Hook output density (`verbose`, `quiet`, `tailLines`).          |
+| Key                   | Effect                                                              |
+| --------------------- | ------------------------------------------------------------------- |
+| `daft.remote`         | Fallback remote for a branch with no upstream (default `origin`).   |
+| `daft.hooks.output.*` | Hook output density (`verbose`, `quiet`, `tailLines`).              |
 
 ## Related
 

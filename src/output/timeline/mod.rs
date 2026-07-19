@@ -314,13 +314,17 @@ impl TimelineHandle {
             StageEvent::SkippedAttention { reason } => {
                 // Shared-file and fetch reasons are self-contained phrases
                 // (missing, conflict, "failed — …"); exec's orphan-target
-                // reason ("no worktree") likewise. The generic "skipped — "
-                // prefix would stutter on them.
+                // reason ("no worktree") and push's resolve fallback
+                // ("no worktree — pushing from the current directory")
+                // likewise. The generic "skipped — " prefix would stutter on
+                // them — and on push's it would also lie: resolution ran, and
+                // the push proceeds from the invoking directory.
                 let annotation = match key.id {
                     crate::core::stage::StageId::SharedFile
                     | crate::core::stage::StageId::Fetch
                     | crate::core::stage::StageId::Tracking
-                    | crate::core::stage::StageId::ExecCommand => reason,
+                    | crate::core::stage::StageId::ExecCommand
+                    | crate::core::stage::StageId::ResolveWorktree => reason,
                     _ => format!("skipped \u{2014} {reason}"),
                 };
                 core.resolve(

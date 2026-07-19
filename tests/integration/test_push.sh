@@ -138,6 +138,75 @@ test_push_branch_without_worktree_sets_upstream() {
     return 0
 }
 
+# Bare `daft push` (no BRANCH) resolves the current worktree's branch — the
+# documented default, and the only invocation where the resolved worktree IS
+# the invoking directory.
+test_push_no_argument_uses_current_branch() {
+    local remote_repo=$(create_test_remote "test-repo-push-noarg" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-push-noarg/main"
+
+    git-worktree-checkout feature/test-feature || return 1
+    cd "../feature/test-feature"
+
+    git config user.email "test@example.com"
+    git config user.name "Test User"
+    echo "noarg" > noarg.txt
+    git add noarg.txt
+    git commit -q -m "No-arg change" || return 1
+
+    # The hook must still run here, in the branch's own worktree.
+    local hooks_dir="$(pwd)/../../hooks-noarg"
+    mkdir -p "$hooks_dir"
+    printf '#!/bin/sh\npwd > %s/cwd\nexit 0\n' "$hooks_dir" > "$hooks_dir/pre-push"
+    chmod +x "$hooks_dir/pre-push"
+    git config core.hooksPath "$hooks_dir"
+
+    local output
+    output=$(daft push 2>&1) || {
+        log_error "bare daft push failed: $output"
+        return 1
+    }
+    if ! grep -q "Pushed 'feature/test-feature'" <<< "$output"; then
+        log_error "bare push did not report the inferred branch: $output"
+        return 1
+    fi
+    if ! grep -q "feature/test-feature" "$hooks_dir/cwd"; then
+        log_error "hook cwd was not the current worktree: $(cat "$hooks_dir/cwd")"
+        return 1
+    fi
+
+    return 0
+}
+
+# A ref that is not a local branch (a tag) must be refused, not handed to git
+# as if it were a branch — that would publish the tag and report success.
+test_push_rejects_non_branch_ref() {
+    local remote_repo=$(create_test_remote "test-repo-push-tag" "main")
+
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-push-tag/main"
+
+    git tag v9.9.9 || return 1
+
+    local output
+    if output=$(daft push v9.9.9 2>&1); then
+        log_error "pushing a tag name must fail, got: $output"
+        return 1
+    fi
+    if ! grep -q "No local branch named 'v9.9.9'" <<< "$output"; then
+        log_error "unexpected rejection message: $output"
+        return 1
+    fi
+    if git ls-remote --tags origin | grep -q "v9.9.9"; then
+        log_error "the tag was published to the remote"
+        return 1
+    fi
+
+    return 0
+}
+
 # Help output names the guarantee.
 test_push_help() {
     if ! daft push --help 2>&1 | grep -q "pushed branch's own worktree"; then
@@ -152,5 +221,7 @@ run_push_tests() {
     run_test "push_runs_hook_in_target_worktree" "test_push_runs_hook_in_target_worktree"
     run_test "push_failing_hook_blocks_and_no_verify_bypasses" "test_push_failing_hook_blocks_and_no_verify_bypasses"
     run_test "push_branch_without_worktree_sets_upstream" "test_push_branch_without_worktree_sets_upstream"
+    run_test "push_no_argument_uses_current_branch" "test_push_no_argument_uses_current_branch"
+    run_test "push_rejects_non_branch_ref" "test_push_rejects_non_branch_ref"
     run_test "push_help" "test_push_help"
 }

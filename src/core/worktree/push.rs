@@ -244,8 +244,26 @@ impl HookVerdict {
             HookVerdict::Rejected => {
                 "the repo's pre-push hook may have blocked it, or the remote was unreachable"
             }
-            HookVerdict::Passed => "the pre-push hook passed but the remote rejected the push",
+            // Not "the remote rejected it": a ref line is also emitted when
+            // git refuses locally — `--force-with-lease` on a stale lease
+            // prints `! …:… [rejected] (stale info)` and never asks the
+            // remote to update anything. All that is actually observable
+            // here is that the gate cleared and the push did not land.
+            HookVerdict::Passed => "the pre-push hook passed; the push itself was rejected",
             HookVerdict::Bypassed | HookVerdict::NoHook => "the push failed",
+        }
+    }
+
+    /// Terse detail for a failed push's rail row — the one-phrase form of
+    /// [`Self::failure_cause`], and the single source for it: hand-rolled
+    /// copies at each call site drifted into asserting what daft cannot
+    /// observe (`Rejected` blamed on the gate when the remote was merely
+    /// unreachable; `Passed` blamed on the remote when git refused locally).
+    pub fn rail_detail(self) -> &'static str {
+        match self {
+            HookVerdict::Rejected => "hook or transport refused (see below)",
+            HookVerdict::Passed => "push rejected (see below)",
+            HookVerdict::Bypassed | HookVerdict::NoHook => "failed (see below)",
         }
     }
 
@@ -1106,15 +1124,46 @@ mod tests {
     }
 
     #[test]
-    fn failure_cause_for_passed_blames_the_remote_not_the_hook() {
-        // A `Passed` push cleared the hook; a downstream failure is the remote's
-        // (non-fast-forward, perms). The message must not imply the hook rejected.
+    fn failure_cause_for_passed_does_not_blame_the_hook_or_assert_the_remote() {
+        // A `Passed` push cleared the hook, so the message must not imply the
+        // hook rejected — but it must not assert the *remote* did either:
+        // `--force-with-lease` on a stale lease emits a porcelain ref line
+        // (so it grades `Passed`) while git refuses it locally, never asking
+        // the remote to update the ref.
         let cause = HookVerdict::Passed.failure_cause();
         assert!(cause.contains("passed"), "states the hook passed");
         assert!(
-            cause.contains("remote rejected"),
-            "attributes the failure to the remote"
+            !cause.contains("remote rejected"),
+            "must not assert a remote rejection for a locally-refused push: {cause}"
         );
+    }
+
+    #[test]
+    fn rail_detail_matches_the_attribution_of_failure_cause() {
+        // The rail's one-phrase detail and the bail's cause must draw the
+        // same line — a terse row that asserts more than the sentence below
+        // it is how the hand-rolled copies drifted in the first place.
+        assert!(
+            !HookVerdict::Rejected.rail_detail().contains("gate refused"),
+            "a Rejected push is equally a transport failure: {}",
+            HookVerdict::Rejected.rail_detail()
+        );
+        assert!(
+            !HookVerdict::Passed.rail_detail().contains("remote"),
+            "a Passed push may have been refused locally: {}",
+            HookVerdict::Passed.rail_detail()
+        );
+        for verdict in [
+            HookVerdict::Rejected,
+            HookVerdict::Passed,
+            HookVerdict::Bypassed,
+            HookVerdict::NoHook,
+        ] {
+            assert!(
+                verdict.rail_detail().ends_with("(see below)"),
+                "every detail points at the dumped output: {verdict:?}"
+            );
+        }
     }
 
     #[test]

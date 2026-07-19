@@ -192,8 +192,11 @@ fn complete(
             &CONFIG_RENAME,
         )?)),
 
-        // git-worktree-push: single branch positional (worktree + local)
-        ("git-worktree-push", 1) => Ok(format_entries_as_strings(&complete_rich_branches(
+        // git-worktree-push: single branch positional (worktree + local).
+        // Position-agnostic like every other single-positional command: the
+        // shells pass the raw word index, which counts flags, so keying on 1
+        // would drop completions after `daft push --force-with-lease <TAB>`.
+        ("git-worktree-push", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
             &CONFIG_PUSH,
         )?)),
