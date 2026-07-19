@@ -37,20 +37,47 @@ pub(crate) const NOT_RUN: &str = "(not run)";
 use crate::core::stage::{PlanCommit, StageEvent, StepKey};
 use region::{FinalFace, RegionSetup, Resolution, TimelineCore, UnresolvedPolicy};
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// One invocation's verbosity, shared by every renderer that draws into the
+/// region and read at render time rather than snapshotted at construction.
+///
+/// Density is a *runtime* decision (#729): a `v` keypress mid-run flips the
+/// rail between terse and verbose, so the timeline core, `daft exec`'s row
+/// threads, the embedded hook renderer (rebuilt per phase, behind its own
+/// presenter lock) and the region's `Output` bridge must all consult one
+/// source instead of holding four independent copies.
+#[derive(Clone)]
+pub struct LiveVerbose(Arc<AtomicBool>);
+
+impl LiveVerbose {
+    pub(crate) fn new(on: bool) -> Self {
+        Self(Arc::new(AtomicBool::new(on)))
+    }
+
+    /// The density to render with *now*. `Relaxed` throughout: this flag
+    /// publishes no other memory — every reader repaints from state it
+    /// already owns — so ordering buys nothing.
+    pub(crate) fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set(&self, on: bool) {
+        self.0.store(on, Ordering::Relaxed);
+    }
+}
 
 /// Per-row output threads (`daft exec`): each worker's live output rides its
 /// plan row, and its captured log threads into the receipt. Set via
 /// [`Timeline::set_row_output`] before the region materializes; only meaningful
 /// alongside [`Timeline::set_ordered_receipts`].
+///
+/// Density is not a field here — verbose threading reads the timeline's shared
+/// [`LiveVerbose`], so a mid-run toggle reaches these rows too.
 #[derive(Clone, Copy)]
 pub struct RowOutputConfig {
-    /// Thread every row's full log into the receipt (grey under success) and
-    /// show a rolling live window while it runs. Off: only failed/cancelled
-    /// rows thread their captured output, and the live view is one latest-line
-    /// annotation per row.
-    pub verbose: bool,
     /// Rolling live-window height (`daft.hooks.output.tailLines`).
     pub tail_lines: usize,
     /// Byte budget for a row's buffered log (a chatty worker keeps only the
@@ -96,7 +123,15 @@ impl TimelineMode {
 
 struct Inner {
     header: String,
-    verbose: bool,
+    /// Rail density: whether job logs thread under their rows. Live — a `v`
+    /// keypress flips it mid-run (#729).
+    verbose: LiveVerbose,
+    /// The `-v` free-text detail gate. A separate, fixed concern: `-v` is
+    /// developer chatter, `daft.hooks.output.verbose` is job-log density, and
+    /// they have always been seeded independently. The live toggle owns
+    /// density only — pressing `v` asks for a job's output, not for debug
+    /// lines.
+    detail_verbose: bool,
     use_color: bool,
     /// Ordered receipts (`daft exec`): out-of-order completion still leaves a
     /// plan-ordered scrollback receipt. Set via
@@ -125,7 +160,8 @@ impl Inner {
     /// Snapshot the region knobs for a constructor call.
     fn region_setup(&self) -> RegionSetup {
         RegionSetup {
-            verbose: self.verbose,
+            verbose: self.verbose.clone(),
+            detail_verbose: self.detail_verbose,
             use_color: self.use_color,
             ordered: self.ordered,
             row_output: self.row_output,
@@ -236,6 +272,14 @@ impl TimelineHandle {
     /// Whether a live region currently owns the terminal.
     pub fn region_live(&self) -> bool {
         self.lock().core.is_some()
+    }
+
+    /// This invocation's shared density flag — handed to renderers that draw
+    /// into the region from behind their own locks (the per-phase hook
+    /// renderer, the `Output` bridge) so they read the live value instead of
+    /// snapshotting one.
+    pub fn verbose_flag(&self) -> LiveVerbose {
+        self.lock().verbose.clone()
     }
 
     /// Hold `lines` back until the rail closes; the timeline prints them
@@ -357,7 +401,8 @@ impl Timeline {
             handle: TimelineHandle {
                 inner: Arc::new(Mutex::new(Inner {
                     header: header.into(),
-                    verbose,
+                    verbose: LiveVerbose::new(verbose),
+                    detail_verbose: verbose,
                     use_color,
                     ordered: false,
                     row_output: None,
@@ -413,6 +458,19 @@ impl Timeline {
     /// region materializes. Pairs with [`Self::set_ordered_receipts`].
     pub fn set_row_output(&self, config: RowOutputConfig) {
         self.handle.lock().row_output = Some(config);
+    }
+
+    /// Seed the rail's job-log density from the resolved hook-output config
+    /// (`daft.hooks.output.verbose`, already folded with `-v`).
+    ///
+    /// Lifecycle commands seed the timeline's `-v` detail gate from the CLI
+    /// flag alone but render hook jobs at the *config's* density — two
+    /// independent decisions before #729 gave them one shared flag. This is
+    /// the second one. Unlike the other knobs it needs no
+    /// before-materialization ordering: density is read at render time, so
+    /// setting it any time before the hook phase draws is equivalent.
+    pub fn set_verbose_density(&self, verbose: bool) {
+        self.handle.lock().verbose.set(verbose);
     }
 
     /// Update the planning face's label in place ("Cloning repository" →
@@ -640,6 +698,12 @@ impl Timeline {
 
     pub fn handle(&self) -> TimelineHandle {
         self.handle.clone()
+    }
+
+    /// This invocation's shared density flag. See
+    /// [`TimelineHandle::verbose_flag`].
+    pub fn verbose_flag(&self) -> LiveVerbose {
+        self.handle.verbose_flag()
     }
 
     /// Test-only: route the region's draw calls into `target` (an
@@ -1172,17 +1236,11 @@ mod tests {
         );
     }
 
-    fn exec_verbose() -> RowOutputConfig {
+    /// `daft exec`-shaped row output. Density is the timeline's own (seed it
+    /// with [`Timeline::set_verbose_density`]), exactly as `run_rail` wires
+    /// it in production.
+    fn exec_row_output() -> RowOutputConfig {
         RowOutputConfig {
-            verbose: true,
-            tail_lines: 6,
-            buffer_cap: None,
-        }
-    }
-
-    fn exec_default() -> RowOutputConfig {
-        RowOutputConfig {
-            verbose: false,
             tail_lines: 6,
             buffer_cap: None,
         }
@@ -1192,7 +1250,8 @@ mod tests {
     fn verbose_row_threads_its_log_grey_under_success() {
         let (mut tl, term) = captured("Running mise clean in 1 worktree");
         tl.set_ordered_receipts(true);
-        tl.set_row_output(exec_verbose());
+        tl.set_verbose_density(true);
+        tl.set_row_output(exec_row_output());
         tl.commit_plan(PlanCommit::new(vec![exec_row("master")]));
         let k = exec_key("master");
         tl.on_stage(&k, StageEvent::Started);
@@ -1216,7 +1275,7 @@ mod tests {
     fn default_failure_threads_output_but_success_stays_compact() {
         let (mut tl, term) = captured("Running mise clean in 2 worktrees");
         tl.set_ordered_receipts(true);
-        tl.set_row_output(exec_default());
+        tl.set_row_output(exec_row_output());
         tl.commit_plan(PlanCommit::new(vec![exec_row("ok"), exec_row("bad")]));
         let ok = exec_key("ok");
         tl.on_stage(&ok, StageEvent::Started);
@@ -1252,7 +1311,7 @@ mod tests {
         // a `(no output)` thread line — that placeholder is verbose-only.
         let (mut tl, term) = captured("Running true in 1 worktree");
         tl.set_ordered_receipts(true);
-        tl.set_row_output(exec_default());
+        tl.set_row_output(exec_row_output());
         tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
         let k = exec_key("q");
         tl.on_stage(&k, StageEvent::Started);
@@ -1277,7 +1336,8 @@ mod tests {
     fn verbose_silent_row_marks_no_output() {
         let (mut tl, term) = captured("Running true in 1 worktree");
         tl.set_ordered_receipts(true);
-        tl.set_row_output(exec_verbose());
+        tl.set_verbose_density(true);
+        tl.set_row_output(exec_row_output());
         tl.commit_plan(PlanCommit::new(vec![exec_row("q")]));
         let k = exec_key("q");
         tl.on_stage(&k, StageEvent::Started);

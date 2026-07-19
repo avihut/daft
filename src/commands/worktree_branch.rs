@@ -514,6 +514,7 @@ fn run_branch_delete(
         format!("Removing {} branches", branches.len())
     };
     let mut timeline = Timeline::new(TimelineMode::auto(quiet), output.is_verbose(), header);
+    timeline.set_verbose_density(hook_output_config.verbose);
     let interactive = timeline.is_interactive();
 
     // Presenter for the pre-push hook run on remote-branch deletes. On the

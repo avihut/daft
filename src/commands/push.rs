@@ -230,6 +230,7 @@ fn run_push(
         output.is_verbose(),
         format!("Pushing {branch}"),
     );
+    timeline.set_verbose_density(hook_output_config.verbose);
     let interactive = timeline.is_interactive();
     let presenter: Option<Arc<dyn JobPresenter>> = if interactive {
         Some(CliPresenter::embedded_for_stage(

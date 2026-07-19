@@ -1703,6 +1703,7 @@ fn run_checkout(
         output.is_verbose(),
         format!("Opening {header_target}"),
     );
+    timeline.set_verbose_density(hook_output_config.verbose);
 
     timeline.open_planning("Resolving branch");
     let checkout_result = {
@@ -1846,6 +1847,7 @@ fn run_create_branch_core(
         output.is_verbose(),
         format!("Starting {}", args.branch_name),
     );
+    timeline.set_verbose_density(hook_output_config.verbose);
     let interactive = timeline.is_interactive();
 
     // Presenter for the pre-push hook run on the auto-upstream push. On the

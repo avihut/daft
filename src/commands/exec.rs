@@ -441,7 +441,6 @@ fn run_rail(
     let mut timeline = Timeline::new(TimelineMode::auto(false), hook_output.verbose, header);
     timeline.set_ordered_receipts(true);
     timeline.set_row_output(RowOutputConfig {
-        verbose: hook_output.verbose,
         tail_lines: hook_output.tail_lines as usize,
         buffer_cap: Some(core::OUTPUT_CAP_BYTES),
     });

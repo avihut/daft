@@ -13,9 +13,9 @@
 //! accounting); templates are never empty; rows are single-line (labels and
 //! annotations are pre-composed, annotations truncate via `{wide_msg}`).
 
-use super::RowOutputConfig;
 use super::render::{self, RowFace};
 use super::thread_block::{ThreadStyles, ThreadedJob};
+use super::{LiveVerbose, RowOutputConfig};
 use crate::core::stage::{PlanCommit, Row, StepKey, StepSpec};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -33,9 +33,10 @@ struct RowThread {
 }
 
 /// The per-invocation region knobs, bundled so the constructors stay lean.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct RegionSetup {
-    pub verbose: bool,
+    pub verbose: LiveVerbose,
+    pub detail_verbose: bool,
     pub use_color: bool,
     pub ordered: bool,
     pub row_output: Option<RowOutputConfig>,
@@ -57,6 +58,11 @@ pub struct HookEmbed {
     /// Whether the region renders ANSI (NO_COLOR tracks the rail, not the
     /// renderer's own stderr probe).
     pub use_color: bool,
+    /// The rail's live density, shared so the block renders at whatever
+    /// density is current when each line is drawn — the hook renderer is
+    /// rebuilt per phase behind the presenter's own lock, out of reach of
+    /// the timeline mutex a mid-run toggle holds.
+    pub verbose: LiveVerbose,
     /// The consumed row's plan label ("post-create hooks") when the step is
     /// a hook phase — the succinct renderer's section anchor. `None` for
     /// gate embeds (pre-push under an active Push/DeleteRemote row), whose
@@ -127,7 +133,13 @@ enum StepState {
 pub(super) struct TimelineCore {
     mp: MultiProgress,
     use_color: bool,
-    verbose: bool,
+    /// This invocation's live job-log density (`-v`,
+    /// `daft.hooks.output.verbose`, or a mid-run `v` keypress). Read at
+    /// render time — never snapshotted into a row or a renderer.
+    verbose: LiveVerbose,
+    /// The `-v` free-text detail gate ([`Self::detail`]) — fixed at
+    /// construction, deliberately outside the live toggle's reach.
+    detail_verbose: bool,
     /// Ordered receipts (`daft exec`): rows resolve out of completion order,
     /// but the scrollback receipt must stay in plan order. When set, `resolve`
     /// repaints the row's final face in place and defers persistence to
@@ -284,6 +296,7 @@ impl TimelineCore {
     fn scaffold(mp: MultiProgress, header: String, setup: RegionSetup, started: Instant) -> Self {
         let RegionSetup {
             verbose,
+            detail_verbose,
             use_color,
             ordered,
             row_output,
@@ -345,6 +358,7 @@ impl TimelineCore {
             mp,
             use_color,
             verbose,
+            detail_verbose,
             ordered,
             persisted_upto: 0,
             row_output,
@@ -657,7 +671,7 @@ impl TimelineCore {
                 // row inside a worktree group nests one tier (depth 1).
                 let styles = ThreadStyles::new(use_color, usize::from(in_group));
                 let mut job = ThreadedJob::new(cfg.buffer_cap, None);
-                if cfg.verbose {
+                if self.verbose.get() {
                     job.open(&self.mp, bar, &styles);
                 }
                 self.row_threads.insert(idx, RowThread { job, styles });
@@ -849,7 +863,7 @@ impl TimelineCore {
                 if let Some(thread) = self.row_threads.remove(&idx) {
                     thread.job.mark_resolved();
                     thread.job.remove_thread_bars(&self.mp);
-                    let verbose = self.row_output.is_some_and(|c| c.verbose);
+                    let verbose = self.row_output.is_some() && self.verbose.get();
                     if verbose {
                         lines.extend(thread.job.compose_log(&thread.styles, failed));
                         lines.push(thread.styles.thread_air());
@@ -1037,7 +1051,7 @@ impl TimelineCore {
             return;
         };
         thread.job.record(line);
-        if cfg.verbose {
+        if self.verbose.get() {
             thread
                 .job
                 .roll_window(&self.mp, &thread.styles, cfg.tail_lines, &bar);
@@ -1055,7 +1069,7 @@ impl TimelineCore {
 
     /// `-v` free-text detail under the active step (dim, transient).
     pub(super) fn detail(&mut self, text: &str) {
-        if !self.verbose {
+        if !self.detail_verbose {
             return;
         }
         let Some(active_bar) = self.active_bar() else {
@@ -1149,6 +1163,7 @@ impl TimelineCore {
             mp: self.mp.clone(),
             anchor,
             use_color: self.use_color,
+            verbose: self.verbose.clone(),
             section_label,
             in_group,
         })
