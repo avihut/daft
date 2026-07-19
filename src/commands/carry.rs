@@ -2,7 +2,7 @@ use crate::{
     WorktreeConfig,
     core::{OutputSink, worktree::carry},
     get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -73,10 +73,6 @@ pub fn run() -> Result<()> {
         targets: args.targets,
         copy: args.copy,
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     output.start_spinner("Carrying changes...");
     let exec_result = {

@@ -19,7 +19,7 @@ use crate::{
         },
     },
     executor::cli_presenter::CliPresenter,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     hints::{
         LayoutPromptResult, layout_prompt_applicable, maybe_prompt_layout_choice,
         maybe_show_shell_hint,
@@ -316,10 +316,6 @@ fn run_clone(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         checkout_upstream: settings.checkout_upstream,
         use_gitoxide: settings.use_gitoxide,
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     // Plan-execute rail timeline (#651): the rail opens the moment the
     // command starts. The header's repo name is pure URL parsing — the same

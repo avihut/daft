@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::{Once, OnceLock};
+use std::sync::OnceLock;
 
 mod branch;
 pub mod cancel;
@@ -15,21 +15,6 @@ mod stash;
 mod worktree;
 
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
-
-static GITOXIDE_NOTICE: Once = Once::new();
-
-/// Returns true (once per process) if the gitoxide experimental notice should be shown.
-/// Safe to call multiple times; only the first call returns true.
-pub fn should_show_gitoxide_notice(use_gitoxide: bool) -> bool {
-    if use_gitoxide {
-        let mut fired = false;
-        GITOXIDE_NOTICE.call_once(|| {
-            fired = true;
-        });
-        return fired;
-    }
-    false
-}
 
 // Per-thread count of `gix::discover()` calls (test-only probe).
 //
@@ -84,6 +69,10 @@ pub(crate) struct PushSupervision {
 
 pub struct GitCommand {
     pub(crate) quiet: bool,
+    /// Whether dispatched ops take the gix arm. Constructed `false`: the
+    /// settings resolver (`DaftSettings::use_gitoxide`, default on since
+    /// #733) is the sole opt-in source via `with_gitoxide`, so call sites
+    /// that never thread the setting stay on the subprocess backend.
     pub(crate) use_gitoxide: bool,
     pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
     /// Shared cancellation flag observed by the long-running subprocess
@@ -146,11 +135,6 @@ impl GitCommand {
             .is_some_and(cancel::CancelFlag::is_cancelled)
     }
 
-    /// Returns true (once per process) if the gitoxide notice should be shown.
-    pub fn take_gitoxide_notice(&self) -> bool {
-        should_show_gitoxide_notice(self.use_gitoxide)
-    }
-
     /// Lazily discover and open the git repository via gitoxide.
     /// Returns a thread-local Repository handle.
     pub(crate) fn gix_repo(&self) -> Result<gix::Repository> {
@@ -175,6 +159,51 @@ impl GitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Git env vars (set when tests run under a git hook) that would redirect
+    /// repo discovery to the host repo instead of a test's temp repo. The
+    /// `#[serial]` tests below strip them from the *process*; their git
+    /// subprocesses are scrubbed by `git_at` instead.
+    const GIT_ENV_VARS: &[&str] = &[
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+    ];
+
+    /// Seed a test repo by running `git` in `cwd`, asserting it succeeded.
+    ///
+    /// Goes through `crate::utils::git_command_at` — the helper CLAUDE.md's
+    /// Test Hygiene rule mandates — so subprocesses get the same eight
+    /// discovery vars stripped that production strips. A hand-rolled list
+    /// drifts from it silently; the one this replaced had already lost
+    /// `GIT_NAMESPACE`, which would have re-scoped every seeded ref when the
+    /// suite runs from a hook that exports it.
+    ///
+    /// `commit.gpgsign=false` keeps seeding working for developers who sign
+    /// commits globally and run `cargo test` / an IDE runner directly, where
+    /// the suite's `GIT_CONFIG_COUNT` scrub in `_state_guard_lib.sh` is
+    /// absent. Asserting the status turns a failed seed into "git commit
+    /// failed: <stderr>" instead of a bare missing-ref assertion later.
+    fn git_at(cwd: &std::path::Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(cwd)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     #[test]
     fn test_git_command_new() {
@@ -233,18 +262,8 @@ mod tests {
     fn shared_git_command_discovers_repo_once() {
         use crate::core::settings::{DaftSettings, load_hooks_config_with};
 
-        // Git env vars (set when tests run under a git hook) would redirect
-        // discovery to the host repo — strip them from process + subprocess so
-        // `gix::discover` resolves the temp repo below. Only safe under #[serial].
-        const GIT_ENV_VARS: &[&str] = &[
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_COMMON_DIR",
-            "GIT_CEILING_DIRECTORIES",
-        ];
+        // Strip discovery-redirecting env vars so `gix::discover` resolves
+        // the temp repo below. Only safe under #[serial].
         for var in GIT_ENV_VARS {
             unsafe {
                 std::env::remove_var(var);
@@ -291,6 +310,224 @@ mod tests {
         assert_eq!(
             separate, 3,
             "independent instances each discover (guards the probe)"
+        );
+    }
+
+    /// #733 opt-out: a command with `use_gitoxide` false must take the
+    /// subprocess arm for every dispatched op. Every gix arm goes through
+    /// `gix_repo()`, so the discover counter doubles as a "was any gix path
+    /// taken" probe: zero discoveries ⇒ zero gix paths.
+    #[test]
+    #[serial_test::serial]
+    fn gitoxide_opt_out_takes_no_gix_path() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        git_at(&path, &["init", "-b", "main"]);
+        git_at(&path, &["commit", "--allow-empty", "-m", "seed"]);
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&path).unwrap();
+
+        // Opt-out: dispatched ops must never reach gix.
+        reset_discover_count();
+        let git = GitCommand::new(true).with_gitoxide(false);
+        assert!(git.show_ref_exists("refs/heads/main").unwrap());
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert_eq!(discover_count(), 0, "opt-out command must take no gix path");
+
+        // Control: the same ops with gitoxide on discover exactly once —
+        // proves the probe observes these ops and the arms actually differ.
+        reset_discover_count();
+        let git = GitCommand::new(true).with_gitoxide(true);
+        assert!(git.show_ref_exists("refs/heads/main").unwrap());
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert_eq!(
+            discover_count(),
+            1,
+            "gix-backed command shares one discovery"
+        );
+    }
+
+    /// #733 remote-probe routing, pinned from a fresh bare clone (the state
+    /// daft's clone flow probes from). Each probe must reach the right
+    /// backend:
+    ///
+    /// 1. Single-ref existence (`ls_remote_branch_exists`) is CLI-always —
+    ///    it hands `refs/heads/<branch>` to the server for a one-ref answer,
+    ///    which gix can't express (its ref prefixes come from the remote's
+    ///    refspecs), so even a configured remote name takes no gix path.
+    /// 2. URL-shaped probes and `ls_remote_symref` are CLI too — the gix arm
+    ///    derives its ref-prefix filter from configured fetch refspecs, and
+    ///    an ad-hoc URL remote has none.
+    /// 3. Bulk listing (`list_remote_branches`) of a configured remote whose
+    ///    refspec covers `refs/heads/*` takes the gix network arm — a fresh
+    ///    bare clone has no local remote-tracking refs, so it must reach the
+    ///    server rather than read empty local refs and declare every branch
+    ///    missing (the multi-branch-clone regression).
+    #[test]
+    #[serial_test::serial]
+    fn fresh_bare_clone_remote_probes_pick_the_right_backend() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+
+        // A "remote" with a develop branch…
+        let src = base.join("src");
+        std::fs::create_dir(&src).unwrap();
+        git_at(&src, &["init", "-b", "main"]);
+        git_at(&src, &["commit", "--allow-empty", "-m", "seed"]);
+        git_at(&src, &["branch", "develop"]);
+
+        // …and a bare clone probing it, with origin's fetch refspec
+        // configured the way daft's own clone sets it up (bare clones have
+        // none by default).
+        let src_url = src.to_str().unwrap().to_owned();
+        git_at(
+            &base,
+            &["clone", "--quiet", "--bare", &src_url, "probe.git"],
+        );
+        let probe = base.join("probe.git");
+        git_at(
+            &probe,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&probe).unwrap();
+
+        let git = GitCommand::new(true).with_gitoxide(true);
+
+        // Existence probe is CLI even for a configured name: it must find the
+        // branch and take no gix path.
+        reset_discover_count();
+        assert!(git.ls_remote_branch_exists("origin", "develop").unwrap());
+        assert_eq!(
+            discover_count(),
+            0,
+            "single-ref existence must never take the gix arm"
+        );
+
+        // URL/path-shaped remote: also CLI, still finds the branch.
+        assert!(
+            git.ls_remote_branch_exists(&src_url, "develop").unwrap(),
+            "URL-shaped probe must find the branch via the CLI arm"
+        );
+
+        // Symref by URL (clone's default-branch detection) is CLI-only.
+        let symref = git.ls_remote_symref(&src_url).unwrap();
+        assert!(
+            symref.contains("refs/heads/main"),
+            "symref must expose remote HEAD, got: {symref}"
+        );
+
+        // Bulk listing of the configured remote takes the gix network arm and
+        // must reach the server — refs/remotes/origin/* is empty until the
+        // first fetch, so a local-ref answer would be "no branches" (the
+        // multi-branch-clone regression).
+        reset_discover_count();
+        let listed = git.list_remote_branches("origin").unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "fresh bare clone must list remote branches from the network, got {listed:?}"
+        );
+        assert_eq!(
+            discover_count(),
+            1,
+            "bulk listing of a covering-refspec remote uses the gix arm"
+        );
+    }
+
+    /// #733 review: the gix ls-remote gate must check that a remote's fetch
+    /// refspecs *cover* `refs/heads/`, not merely that it has some refspec.
+    ///
+    /// gix builds its protocol-v2 ref-prefix filter from those refspecs, so
+    /// a narrow single-branch refspec — what `git clone --single-branch` and
+    /// `--depth` leave behind, and a state `daft doctor` only warns about —
+    /// makes the server advertise that one branch and every other branch
+    /// read as absent from the remote. `daft prune` then treated a live
+    /// upstream as gone (deleting the worktree and local ref of a merged
+    /// branch) and `daft checkout <branch>` refused to create a worktree for
+    /// a branch that exists.
+    #[test]
+    #[serial_test::serial]
+    fn narrow_fetch_refspec_takes_the_cli_arm() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+
+        // A remote carrying two branches…
+        let src = base.join("src");
+        std::fs::create_dir(&src).unwrap();
+        git_at(&src, &["init", "-b", "main"]);
+        git_at(&src, &["commit", "--allow-empty", "-m", "seed"]);
+        git_at(&src, &["branch", "develop"]);
+
+        // …and a clone that only ever tracks `main`, the way
+        // `git clone --single-branch` configures it.
+        let src_url = src.to_str().unwrap().to_owned();
+        git_at(
+            &base,
+            &["clone", "--quiet", "--bare", &src_url, "probe.git"],
+        );
+        let probe = base.join("probe.git");
+        let set_refspec = |spec: &str| {
+            git_at(&probe, &["config", "remote.origin.fetch", spec]);
+        };
+        set_refspec("+refs/heads/main:refs/remotes/origin/main");
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&probe).unwrap();
+
+        // A narrow refspec must not engage gix: its ref map would hold only
+        // `main`, hiding `develop` behind a "not found on remote".
+        reset_discover_count();
+        let listed = GitCommand::new(true)
+            .with_gitoxide(true)
+            .list_remote_branches("origin")
+            .unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "a branch outside the fetch refspec must still be listed, got {listed:?}"
+        );
+
+        // Control: widen the refspec and gix takes over again — proving the
+        // gate discriminates on coverage rather than disabling the arm.
+        set_refspec("+refs/heads/*:refs/remotes/origin/*");
+        reset_discover_count();
+        let listed = GitCommand::new(true)
+            .with_gitoxide(true)
+            .list_remote_branches("origin")
+            .unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()) && listed.contains(&"main".to_string()),
+            "wildcard refspec must list every head, got {listed:?}"
+        );
+        assert_eq!(
+            discover_count(),
+            1,
+            "a heads-covering refspec keeps the gix arm"
         );
     }
 }

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run integration tests with the git-subprocess backend (gitoxide opt-out)"
+#MISE depends=["dev:setup"]
+set -euo pipefail
+
+source "$(dirname "$0")/_release_bin_lib.sh"
+ensure_release_binaries
+
+cargo run --package xtask -- test-matrix --entry subprocess

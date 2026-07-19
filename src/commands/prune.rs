@@ -16,7 +16,7 @@ use crate::{
         },
     },
     get_git_common_dir, get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
@@ -205,10 +205,6 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     output.start_spinner("Pruning stale branches...");
     let exec_result = {

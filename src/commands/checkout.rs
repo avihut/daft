@@ -10,7 +10,7 @@ use crate::{
         worktree::{checkout, checkout_branch, previous},
     },
     get_current_worktree_path, get_git_common_dir, get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     hints::maybe_show_shell_hint,
     hooks::{HookExecutor, TrustDatabase, yaml_config_loader},
     is_git_repository,
@@ -1693,10 +1693,6 @@ fn run_checkout(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
 
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
-
     // Plan-execute rail timeline (#651). The rail opens immediately with a
     // planning face; the core replaces it with the committed plan. The
     // early-exit paths (existing worktree, `go -`, fetch-off branch not
@@ -1843,10 +1839,6 @@ fn run_create_branch_core(
     let executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     // Plan-execute rail timeline (#651).
     let mut timeline = Timeline::new(

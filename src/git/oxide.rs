@@ -1,8 +1,8 @@
 //! Gitoxide-based implementations of git operations.
 //!
 //! Each function provides a native Rust alternative to a git subprocess call.
-//! These are called from `GitCommand` methods when `daft.experimental.gitoxide`
-//! is enabled.
+//! These are called from `GitCommand` methods unless `daft.gitoxide` is set
+//! to `false` (the opt-out; gitoxide is the stable default since #733).
 
 use anyhow::{Context, Result};
 use gix::Repository;
@@ -448,63 +448,29 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 // When no local repo exists (e.g. during clone), the callers in git.rs fall
 // through to the git CLI subprocess path instead.
 
-/// gitoxide equivalent of `git ls-remote --symref <remote_url> HEAD`
-///
-/// Returns output formatted like git's ls-remote --symref output:
-/// ```text
-/// ref: refs/heads/main\tHEAD
-/// <oid>\tHEAD
-/// ```
-pub fn ls_remote_symref(repo: &Repository, remote_url: &str) -> Result<String> {
-    let remote = repo
-        .remote_at(remote_url)
-        .context("Failed to create remote")?;
-
-    let connection = remote
-        .connect(Direction::Fetch)
-        .context("Failed to connect to remote")?;
-
-    let (ref_map, _outcome) = connection
-        .ref_map(gix::progress::Discard, Default::default())
-        .context("Failed to get ref map from remote")?;
-
-    let mut output = String::new();
-
-    for remote_ref in &ref_map.remote_refs {
-        match remote_ref {
-            gix::protocol::handshake::Ref::Symbolic {
-                full_ref_name,
-                target,
-                object,
-                ..
-            } if full_ref_name.as_bstr() == "HEAD" => {
-                output.push_str(&format!("ref: {target}\tHEAD\n"));
-                output.push_str(&format!("{object}\tHEAD\n"));
-            }
-            gix::protocol::handshake::Ref::Direct {
-                full_ref_name,
-                object,
-            } if full_ref_name.as_bstr() == "HEAD" => {
-                output.push_str(&format!("{object}\tHEAD\n"));
-            }
-            _ => {}
-        }
-    }
-
-    Ok(output)
-}
-
-/// gitoxide equivalent of `git ls-remote --heads <remote> [refs/heads/<branch>]`
+/// gitoxide equivalent of `git ls-remote --heads <remote>`
 ///
 /// Returns output formatted like git's ls-remote output:
 /// ```text
 /// <oid>\trefs/heads/branch-name
 /// ```
-pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) -> Result<String> {
-    // Try to find a configured remote first, then fall back to URL
+///
+/// Lists every head — there is no single-branch variant on purpose. gix
+/// takes its protocol-v2 ref prefixes from the remote's configured
+/// refspecs, so narrowing to one ref can only ever be a client-side filter
+/// over the full advertisement, i.e. the cost of the whole listing with
+/// none of the benefit. `GitCommand::ls_remote_branch_exists` uses the CLI
+/// for that instead.
+///
+/// `remote` must be a configured remote whose fetch refspecs cover
+/// `refs/heads/` — the dispatch (`GitCommand::gix_repo_for_remote`)
+/// guarantees it. An ad-hoc URL remote would produce an empty ref map (no
+/// refspecs → no ref prefixes) and a narrow refspec a partial one, which is
+/// exactly the trap that routes those probes to the CLI.
+pub fn ls_remote_heads(repo: &Repository, remote: &str) -> Result<String> {
     let remote_obj = match repo.try_find_remote(remote) {
         Some(Ok(r)) => r,
-        _ => repo.remote_at(remote).context("Failed to create remote")?,
+        _ => anyhow::bail!("remote '{remote}' is not configured (URL remotes take the CLI path)"),
     };
 
     let connection = remote_obj
@@ -516,8 +482,6 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) ->
         .context("Failed to get ref map from remote")?;
 
     let mut output = String::new();
-
-    let filter_ref = branch.map(|b| format!("refs/heads/{b}"));
 
     for remote_ref in &ref_map.remote_refs {
         let (name, oid) = match remote_ref {
@@ -543,62 +507,10 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) ->
             continue;
         }
 
-        if let Some(ref filter) = filter_ref
-            && name != *filter
-        {
-            continue;
-        }
-
         output.push_str(&format!("{oid}\t{name}\n"));
     }
 
     Ok(output)
-}
-
-/// gitoxide equivalent of `git ls-remote --heads <remote> refs/heads/<branch>`
-/// Returns true if the branch exists on the remote.
-pub fn ls_remote_branch_exists(repo: &Repository, remote_name: &str, branch: &str) -> Result<bool> {
-    let output = ls_remote_heads(repo, remote_name, Some(branch))?;
-    Ok(!output.trim().is_empty())
-}
-
-// --- Group 7: Local Remote-Tracking Refs ---
-
-/// Check if a branch exists in the already-fetched remote refs (no network).
-///
-/// After `git clone --bare`, remote refs are available locally under
-/// `refs/remotes/<remote>/`. This avoids a network round-trip compared to
-/// `ls_remote_branch_exists`.
-pub fn validate_branch_in_remotes(
-    repo: &Repository,
-    remote_name: &str,
-    branch: &str,
-) -> Result<bool> {
-    let ref_name = format!("refs/remotes/{remote_name}/{branch}");
-    Ok(repo.try_find_reference(&ref_name)?.is_some())
-}
-
-/// List all branches available in the local remote-tracking refs (no network).
-///
-/// Returns branch names without the `refs/remotes/<remote>/` prefix.
-pub fn list_remote_branches_local(repo: &Repository, remote_name: &str) -> Result<Vec<String>> {
-    let prefix = format!("refs/remotes/{remote_name}/");
-    let platform = repo.references()?;
-    let references = platform.prefixed(prefix.as_str())?;
-    let mut branches = Vec::new();
-
-    for reference_result in references {
-        let reference =
-            reference_result.map_err(|e| anyhow::anyhow!("Failed to read reference: {e}"))?;
-        let full_name = reference.name().as_bstr().to_string();
-        if let Some(branch_name) = full_name.strip_prefix(&prefix)
-            && branch_name != "HEAD"
-        {
-            branches.push(branch_name.to_string());
-        }
-    }
-
-    Ok(branches)
 }
 
 #[cfg(test)]
@@ -1234,82 +1146,5 @@ mod tests {
             !local_line.contains('['),
             "Branch without tracking should not have tracking info. Got: {local_line}"
         );
-    }
-
-    #[test]
-    #[serial]
-    fn test_validate_branch_in_remotes() {
-        let (dir, _repo) = create_test_repo();
-        let path = dir.path().canonicalize().unwrap();
-
-        git_cmd()
-            .args(["remote", "add", "origin", "https://example.com/repo.git"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["update-ref", "refs/remotes/origin/main", "refs/heads/main"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-        git_cmd()
-            .args([
-                "update-ref",
-                "refs/remotes/origin/develop",
-                "refs/heads/main",
-            ])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        let saved_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&path).unwrap();
-        let repo = gix::open(&path).unwrap();
-        if let Some(cwd) = saved_cwd {
-            let _ = std::env::set_current_dir(cwd);
-        }
-
-        assert!(validate_branch_in_remotes(&repo, "origin", "main").unwrap());
-        assert!(validate_branch_in_remotes(&repo, "origin", "develop").unwrap());
-        assert!(!validate_branch_in_remotes(&repo, "origin", "nonexistent").unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn test_list_remote_branches_local() {
-        let (dir, _repo) = create_test_repo();
-        let path = dir.path().canonicalize().unwrap();
-
-        git_cmd()
-            .args(["remote", "add", "origin", "https://example.com/repo.git"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-        git_cmd()
-            .args(["update-ref", "refs/remotes/origin/main", "refs/heads/main"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-        git_cmd()
-            .args([
-                "update-ref",
-                "refs/remotes/origin/develop",
-                "refs/heads/main",
-            ])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        let saved_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&path).unwrap();
-        let repo = gix::open(&path).unwrap();
-        if let Some(cwd) = saved_cwd {
-            let _ = std::env::set_current_dir(cwd);
-        }
-
-        let branches = list_remote_branches_local(&repo, "origin").unwrap();
-        assert!(branches.contains(&"main".to_string()));
-        assert!(branches.contains(&"develop".to_string()));
-        assert_eq!(branches.len(), 2);
     }
 }

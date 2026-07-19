@@ -66,7 +66,7 @@ mise run ci
 ## Testing
 
 daft has two test systems that run in CI for each matrix entry (default +
-gitoxide):
+subprocess):
 
 ### YAML manual tests (preferred for new tests)
 
@@ -165,7 +165,7 @@ Shell-based tests in `tests/integration/`. The master runner `test_all.sh`
 executes all suites.
 
 ```bash
-mise run test:integration              # Full matrix (default + gitoxide)
+mise run test:integration              # Full matrix (default + subprocess)
 cd tests/integration && bash test_clone.sh   # Run one suite directly
 ```
 

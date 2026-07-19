@@ -10,7 +10,7 @@ use crate::{
         worktree::fetch::{self, WorktreeFetchResult},
     },
     get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     is_git_repository,
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -182,10 +182,6 @@ fn run_in_current_repo(args: Args) -> Result<()> {
         quiet: args.quiet,
         remote_name: wt_config.remote_name.clone(),
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     output.start_spinner("Updating worktrees...");
     let exec_result = {

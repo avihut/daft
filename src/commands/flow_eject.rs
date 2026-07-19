@@ -1,7 +1,6 @@
 use crate::{
     core::{CommandBridge, worktree::flow_eject},
     get_git_common_dir,
-    git::should_show_gitoxide_notice,
     hooks::{HookExecutor, TrustDatabase},
     logging::init_logging,
     output::{CliOutput, Output, OutputConfig},
@@ -96,7 +95,10 @@ pub fn run() -> Result<()> {
 
     init_logging(args.verbose);
 
-    let settings = DaftSettings::load_global()?;
+    // Local-or-global so a repo-local `daft.gitoxide = false` opt-out is
+    // honored on this layout-mutating command (#733); still resolves from a
+    // parent directory if eject is ever run outside a repo.
+    let settings = DaftSettings::load_local_or_global()?;
 
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);
@@ -124,10 +126,6 @@ fn run_eject(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
     let executor = HookExecutor::new(hooks_config)?;
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     if !params.dry_run {
         output.start_spinner("Converting to traditional layout...");

@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Run integration tests with gitoxide backend"
-#MISE depends=["dev:setup"]
-set -euo pipefail
-
-source "$(dirname "$0")/_release_bin_lib.sh"
-ensure_release_binaries
-
-cargo run --package xtask -- test-matrix --entry gitoxide

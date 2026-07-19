@@ -549,7 +549,10 @@ fn cmd_transform(args: &TransformArgs, output: &mut dyn Output) -> Result<()> {
         anyhow::bail!("Not inside a Git repository. Run this command from within a repo.");
     }
 
-    let settings = DaftSettings::load_global()?;
+    // In-repo already (guarded above), so local-or-global resolves the repo
+    // and reads its config — honoring a repo-local `daft.gitoxide = false`
+    // opt-out on this layout-mutating command (#733).
+    let settings = DaftSettings::load_local_or_global()?;
     let global_config = GlobalConfig::load().unwrap_or_default();
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
 

@@ -21,13 +21,13 @@ git config --global daft.autocd false
 
 ## General Settings
 
-| Key                          | Default    | Description                                             |
-| ---------------------------- | ---------- | ------------------------------------------------------- |
-| `daft.autocd`                | `true`     | CD into new worktrees when using shell wrappers         |
-| `daft.remote`                | `"origin"` | Default remote name for all operations                  |
-| `daft.updateCheck`           | `true`     | Show notifications when a new daft version is available |
-| `daft.experimental.gitoxide` | `false`    | Use gitoxide for supported Git operations               |
-| `daft.go.autoStart`          | `false`    | Auto-create worktree when branch not found in `daft go` |
+| Key                 | Default    | Description                                                                               |
+| ------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| `daft.autocd`       | `true`     | CD into new worktrees when using shell wrappers                                           |
+| `daft.remote`       | `"origin"` | Default remote name for all operations                                                    |
+| `daft.updateCheck`  | `true`     | Show notifications when a new daft version is available                                   |
+| `daft.gitoxide`     | `true`     | Use gitoxide for supported Git operations; `false` opts out to the git-subprocess backend |
+| `daft.go.autoStart` | `false`    | Auto-create worktree when branch not found in `daft go`                                   |
 
 ## Layout Settings
 

@@ -1,0 +1,28 @@
+name: Clone prints no experimental notice
+description: >
+  #733 regression: gitoxide is the stable default backend, so a default run must
+  be silent about it — no "[experimental]" notice on clone or checkout.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone with the default backend
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "[experimental]"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Checkout with the default backend
+    run: git-worktree-checkout develop
+    cwd: "$WORK_DIR/test-repo"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "[experimental]"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"

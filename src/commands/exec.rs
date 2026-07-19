@@ -1,6 +1,6 @@
 use crate::{
     get_project_root,
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     is_git_repository,
     output::{CliOutput, Output, OutputConfig},
     settings::DaftSettings,
@@ -208,9 +208,6 @@ pub fn run() -> Result<()> {
     } else {
         let settings = DaftSettings::load()?;
         let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
-        if should_show_gitoxide_notice(settings.use_gitoxide) {
-            output.warning("[experimental] Using gitoxide backend for git operations");
-        }
         let snaps = core::collect_snapshot(&git)?;
 
         if args.repo.is_some() && args.targets.is_empty() && !args.all {

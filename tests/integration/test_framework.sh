@@ -156,7 +156,7 @@ setup() {
     export GIT_COMMITTER_EMAIL="test@example.com"
 
     # Isolate tests from user's global git config to prevent settings
-    # like daft.experimental.gitoxide from leaking into tests.
+    # like daft.gitoxide from leaking into tests.
     # When invoked via xtask test-matrix, GIT_CONFIG_GLOBAL is already set.
     if [[ -z "${GIT_CONFIG_GLOBAL:-}" ]]; then
         DAFT_TEST_GLOBAL_CONFIG="$TEMP_BASE_DIR/.gitconfig-test"
@@ -501,11 +501,6 @@ print_summary() {
         log_error "Some integration tests failed!"
         return 1
     fi
-}
-
-# Enable gitoxide for commands that use DaftSettings::load() (post-clone)
-enable_gitoxide() {
-    git config daft.experimental.gitoxide true
 }
 
 # Trap to ensure cleanup on exit
