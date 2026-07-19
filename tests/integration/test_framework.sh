@@ -98,6 +98,11 @@ cleanup() {
 # that honored DAFT_CONFIG_DIR but resolved data/state to the real dirs would
 # satisfy a whole-output match while still leaking the catalog and the jobs dir.
 assert_binary_honors_overrides() {
+    # Same escape hatch the mise-tasks lib documents ("DAFT_SKIP_STATE_GUARD=1
+    # disables both layers"). Without it here, the documented way to smoke-test
+    # a release/tagged build — whose DAFT_*_DIR overrides are compiled out by
+    # build.rs — aborts the suite in setup() before a single test runs.
+    [ "${DAFT_SKIP_STATE_GUARD:-}" = "1" ] && return 0
     local bin="$1" sandbox="$2"
     if [[ ! -x "$bin" ]]; then
         log_error "state-guard preflight: daft binary not found or not executable: $bin"

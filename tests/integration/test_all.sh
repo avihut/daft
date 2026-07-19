@@ -75,7 +75,7 @@ test_integration_remote_repo_creation() {
 # non-honoring binary and accepts the honoring dev binary.
 test_integration_state_guard_preflight() {
     # Positive: the real binary honors the overrides setup() exported.
-    if ! assert_binary_honors_overrides "$RUST_BINARY_DIR/daft" "$TEMP_BASE_DIR" 2>/dev/null; then
+    if ! assert_binary_honors_overrides "$RUST_BINARY_DIR/daft" "$TEMP_BASE_DIR" >/dev/null 2>&1; then
         log_error "preflight rejected the honoring dev binary (false positive)"
         return 1
     fi
@@ -94,7 +94,13 @@ fi
 STUB
     chmod +x "$stub_dir/daft"
 
-    if assert_binary_honors_overrides "$stub_dir/daft" "$TEMP_BASE_DIR" 2>/dev/null; then
+    # Both streams: the framework's log_* helpers all write to stdout, so
+    # suppressing only stderr would print this suite's loudest alarm —
+    # "Refusing to run: integration tests would touch your real ... dirs" —
+    # on a run where the guard is working exactly as designed. Anyone reading
+    # CI output, or grepping it for that string, would read a green run as a
+    # breach.
+    if assert_binary_honors_overrides "$stub_dir/daft" "$TEMP_BASE_DIR" >/dev/null 2>&1; then
         log_error "preflight accepted a binary that ignores DAFT_*_DIR (guard has no teeth)"
         return 1
     fi
