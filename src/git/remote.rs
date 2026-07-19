@@ -470,24 +470,51 @@ impl GitCommand {
     }
 
     /// The gix arm of the ls-remote family is only sound for a *configured*
-    /// remote that has fetch refspecs: gix derives its protocol-v2 ref-prefix
-    /// filter from the refspecs, so an ad-hoc URL remote (`remote_at`) or a
-    /// refspec-less bare-clone remote yields an empty ref map and every
-    /// branch looks missing. Clone probes branches by URL from inside the
-    /// fresh bare repo, which is exactly that trap (#733 graduation
-    /// regression: multi-branch clone created no worktrees). URL-shaped
-    /// remotes, no-repo contexts, and refspec-less remotes all take the git
-    /// CLI arm instead, which handles them uniformly.
+    /// remote whose fetch refspecs cover all of `refs/heads/`.
+    ///
+    /// gix derives its protocol-v2 ref-prefix filter from those refspecs, so
+    /// whatever they leave out never reaches the ref map and reads back as
+    /// "absent from the remote". Two shapes fail that way:
+    ///
+    /// - **No refspecs at all** — an ad-hoc URL remote (`remote_at`) or a
+    ///   fresh bare clone yields an *empty* ref map, so every branch looks
+    ///   missing. Clone probes branches by URL from inside the bare repo it
+    ///   just created, which is exactly that trap (#733 graduation
+    ///   regression: multi-branch clone created no worktrees).
+    /// - **A narrow refspec** — `+refs/heads/main:refs/remotes/origin/main`,
+    ///   what `git clone --single-branch`/`--depth` leaves behind and a
+    ///   state `daft doctor` only warns about, advertises just that one
+    ///   branch. Presence of *some* refspec is therefore not enough to trust
+    ///   the arm: `daft prune` read a live upstream as gone and deleted the
+    ///   worktree of a merged branch, and `daft checkout <branch>` refused
+    ///   to create a worktree for a branch that exists.
+    ///
+    /// Coverage is decided by `RefSpecRef::prefix()` — gix's own derivation
+    /// of the prefix it will send — so this gate cannot drift from what the
+    /// server is actually asked for. Anything it does not vouch for
+    /// (URL-shaped remotes, no-repo contexts, refspec-less or narrow
+    /// remotes, patterns with no Git-compatible prefix) takes the git CLI
+    /// arm, which handles them uniformly.
     fn gix_repo_for_remote(&self, remote: &str) -> Option<gix::Repository> {
         if !self.use_gitoxide {
             return None;
         }
         let repo = self.gix_repo().ok()?;
-        let usable = matches!(
-            repo.try_find_remote(remote),
-            Some(Ok(ref r)) if !r.refspecs(gix::remote::Direction::Fetch).is_empty()
-        );
-        usable.then_some(repo)
+        let covers_all_heads = match repo.try_find_remote(remote) {
+            Some(Ok(remote_obj)) => remote_obj
+                .refspecs(gix::remote::Direction::Fetch)
+                .iter()
+                .any(|spec| {
+                    // `refs/heads/*` → `refs/heads/` and `refs/*` → `refs/`
+                    // both cover every head; `refs/heads/main` (exact) and
+                    // `refs/heads/feat/*` do not.
+                    spec.to_ref()
+                        .prefix()
+                        .is_some_and(|prefix| b"refs/heads/".starts_with(prefix.as_ref()))
+                }),
+            _ => false,
+        };
+        covers_all_heads.then_some(repo)
     }
 
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {

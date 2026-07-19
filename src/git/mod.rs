@@ -162,8 +162,8 @@ mod tests {
 
     /// Git env vars (set when tests run under a git hook) that would redirect
     /// repo discovery to the host repo instead of a test's temp repo. The
-    /// `#[serial]` tests below strip them from the process and from every git
-    /// subprocess they spawn.
+    /// `#[serial]` tests below strip them from the *process*; their git
+    /// subprocesses are scrubbed by `git_at` instead.
     const GIT_ENV_VARS: &[&str] = &[
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -173,6 +173,37 @@ mod tests {
         "GIT_COMMON_DIR",
         "GIT_CEILING_DIRECTORIES",
     ];
+
+    /// Seed a test repo by running `git` in `cwd`, asserting it succeeded.
+    ///
+    /// Goes through `crate::utils::git_command_at` — the helper CLAUDE.md's
+    /// Test Hygiene rule mandates — so subprocesses get the same eight
+    /// discovery vars stripped that production strips. A hand-rolled list
+    /// drifts from it silently; the one this replaced had already lost
+    /// `GIT_NAMESPACE`, which would have re-scoped every seeded ref when the
+    /// suite runs from a hook that exports it.
+    ///
+    /// `commit.gpgsign=false` keeps seeding working for developers who sign
+    /// commits globally and run `cargo test` / an IDE runner directly, where
+    /// the suite's `GIT_CONFIG_COUNT` scrub in `_state_guard_lib.sh` is
+    /// absent. Asserting the status turns a failed seed into "git commit
+    /// failed: <stderr>" instead of a bare missing-ref assertion later.
+    fn git_at(cwd: &std::path::Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(cwd)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     #[test]
     fn test_git_command_new() {
@@ -297,22 +328,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().canonicalize().unwrap();
-        let git_in_repo = |args: &[&str]| {
-            let mut c = std::process::Command::new("git");
-            for var in GIT_ENV_VARS {
-                c.env_remove(var);
-            }
-            c.env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .args(args)
-                .current_dir(&path)
-                .output()
-                .unwrap()
-        };
-        git_in_repo(&["init", "-b", "main"]);
-        git_in_repo(&["commit", "--allow-empty", "-m", "seed"]);
+        git_at(&path, &["init", "-b", "main"]);
+        git_at(&path, &["commit", "--allow-empty", "-m", "seed"]);
 
         let _cwd_guard = CwdGuard::new();
         std::env::set_current_dir(&path).unwrap();
@@ -361,27 +378,6 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
-        let git_at = |cwd: &std::path::Path, args: &[&str]| {
-            let mut c = std::process::Command::new("git");
-            for var in GIT_ENV_VARS {
-                c.env_remove(var);
-            }
-            let out = c
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .args(["-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(cwd)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
 
         // A "remote" with a develop branch…
         let src = base.join("src");
@@ -438,6 +434,83 @@ mod tests {
         assert!(
             listed.contains(&"develop".to_string()),
             "unfetched bare clone must list remote branches from the network, got {listed:?}"
+        );
+    }
+
+    /// #733 review: the gix ls-remote gate must check that a remote's fetch
+    /// refspecs *cover* `refs/heads/`, not merely that it has some refspec.
+    ///
+    /// gix builds its protocol-v2 ref-prefix filter from those refspecs, so
+    /// a narrow single-branch refspec — what `git clone --single-branch` and
+    /// `--depth` leave behind, and a state `daft doctor` only warns about —
+    /// makes the server advertise that one branch and every other branch
+    /// read as absent from the remote. `daft prune` then treated a live
+    /// upstream as gone (deleting the worktree and local ref of a merged
+    /// branch) and `daft checkout <branch>` refused to create a worktree for
+    /// a branch that exists.
+    #[test]
+    #[serial_test::serial]
+    fn narrow_fetch_refspec_takes_the_cli_arm() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+
+        // A remote carrying two branches…
+        let src = base.join("src");
+        std::fs::create_dir(&src).unwrap();
+        git_at(&src, &["init", "-b", "main"]);
+        git_at(&src, &["commit", "--allow-empty", "-m", "seed"]);
+        git_at(&src, &["branch", "develop"]);
+
+        // …and a clone that only ever tracks `main`, the way
+        // `git clone --single-branch` configures it.
+        let src_url = src.to_str().unwrap().to_owned();
+        git_at(
+            &base,
+            &["clone", "--quiet", "--bare", &src_url, "probe.git"],
+        );
+        let probe = base.join("probe.git");
+        let set_refspec = |spec: &str| {
+            git_at(&probe, &["config", "remote.origin.fetch", spec]);
+        };
+        set_refspec("+refs/heads/main:refs/remotes/origin/main");
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&probe).unwrap();
+
+        // A narrow refspec must not engage gix: its ref map would hold only
+        // `main`, hiding `develop` behind a "not found on remote".
+        reset_discover_count();
+        let listed = GitCommand::new(true)
+            .with_gitoxide(true)
+            .list_remote_branches("origin")
+            .unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "a branch outside the fetch refspec must still be listed, got {listed:?}"
+        );
+
+        // Control: widen the refspec and gix takes over again — proving the
+        // gate discriminates on coverage rather than disabling the arm.
+        set_refspec("+refs/heads/*:refs/remotes/origin/*");
+        reset_discover_count();
+        let listed = GitCommand::new(true)
+            .with_gitoxide(true)
+            .list_remote_branches("origin")
+            .unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()) && listed.contains(&"main".to_string()),
+            "wildcard refspec must list every head, got {listed:?}"
+        );
+        assert_eq!(
+            discover_count(),
+            1,
+            "a heads-covering refspec keeps the gix arm"
         );
     }
 }
