@@ -28,6 +28,7 @@
 //! failure modes.
 
 use crate::git::GitCommand;
+use crate::git::op_state::OpKind;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -878,46 +879,11 @@ impl InProgressOp {
 
 /// Resolve the real `.git` directory for `worktree`.
 ///
-/// In the main worktree `.git` is itself a directory. In a linked worktree,
-/// `.git` is a file whose first line is `gitdir: <path>` pointing at the
-/// per-worktree git dir (e.g. `.git/worktrees/<name>`). Returns an error if
-/// the `.git` file is malformed or the resolved directory does not exist.
-///
-/// This is the canonical resolution used by both [`detect_in_progress`] and the
-/// intent-marker read/write paths so the marker location is always consistent
-/// with the detection path.
-pub fn resolve_worktree_git_dir(worktree: &Path) -> Result<PathBuf> {
-    let git_entry = worktree.join(".git");
-    let git_dir = if git_entry.is_file() {
-        let content = std::fs::read_to_string(&git_entry)
-            .with_context(|| format!("failed to read .git at {}", git_entry.display()))?;
-        let rel = content
-            .lines()
-            .next()
-            .and_then(|l| l.strip_prefix("gitdir: "))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "malformed .git file at {}: expected 'gitdir: <path>' on first line",
-                    git_entry.display()
-                )
-            })?
-            .trim();
-        let p = PathBuf::from(rel);
-        // Path::join replaces when its argument is absolute, so this is
-        // correct whether the pointer is absolute or relative.
-        if p.is_absolute() { p } else { worktree.join(p) }
-    } else {
-        git_entry
-    };
-
-    if !git_dir.is_dir() {
-        anyhow::bail!(
-            "target worktree at '{}' has no valid .git directory",
-            worktree.display()
-        );
-    }
-    Ok(git_dir)
-}
+/// Re-exported from the git layer, where it lives alongside the operation
+/// probe that shares it ([`crate::git::op_state`]). Kept here so the merge
+/// module's own callers — and the intent-marker read/write paths, whose
+/// location must stay consistent with the detection path — keep one import.
+pub use crate::git::op_state::resolve_worktree_git_dir;
 
 /// Check whether the index of `worktree` has staged (cached) changes.
 ///
@@ -945,35 +911,47 @@ pub fn has_staged_changes(worktree: &Path) -> Result<bool> {
 /// (e.g. `.git/worktrees/<name>`); in the main worktree, `.git` is itself
 /// a directory. Both shapes are handled.
 ///
-/// We intentionally check for directory/file *existence* rather than
-/// parsing contents — git populates these atomically and their presence
-/// alone is the signal git itself uses (see `git status` output).
+/// The state-file reads are shared with [`crate::git::op_state`], which every
+/// other consumer (the list's identity recovery, the hook conditions) uses
+/// too; this function adds the two things that are merge-preflight-specific:
+/// the `SQUASH_MSG` state, which needs a subprocess to confirm, and the
+/// mapping onto [`InProgressOp`].
 pub fn detect_in_progress(worktree: &Path) -> Result<Option<InProgressOp>> {
     let git_dir = resolve_worktree_git_dir(worktree)?;
+    let op = crate::git::op_state::probe_op_state_in_git_dir(&git_dir);
 
-    if git_dir.join("MERGE_HEAD").exists() {
+    if matches!(op.as_ref().map(|o| o.kind), Some(OpKind::Merge)) {
         return Ok(Some(InProgressOp::Merge));
     }
 
     // Squash-staged: `git merge --squash` writes SQUASH_MSG but NOT MERGE_HEAD.
     // Require staged changes to avoid false positives on a stale SQUASH_MSG
     // (e.g. a previous squash that was committed successfully but whose
-    // SQUASH_MSG somehow remained).
+    // SQUASH_MSG somehow remained). It ranks below a real merge and above a
+    // rebase — the probe knows nothing about it (no subprocesses there), so
+    // the ordering lives here.
     let squash_msg = git_dir.join("SQUASH_MSG");
     if squash_msg.exists() && has_staged_changes(worktree)? {
         return Ok(Some(InProgressOp::SquashStaged));
     }
 
-    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
-        return Ok(Some(InProgressOp::Rebase));
-    }
-    if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        return Ok(Some(InProgressOp::CherryPick));
-    }
-    if git_dir.join("BISECT_LOG").exists() {
-        return Ok(Some(InProgressOp::Bisect));
-    }
-    Ok(None)
+    Ok(op.and_then(|state| match state.kind {
+        OpKind::Merge => Some(InProgressOp::Merge),
+        // `git am` has always counted as a rebase here — it is the same
+        // "finish or abort before merging" situation, and the apply backend
+        // shares its directory.
+        OpKind::Rebase | OpKind::Am => Some(InProgressOp::Rebase),
+        OpKind::CherryPick => Some(InProgressOp::CherryPick),
+        OpKind::Bisect => Some(InProgressOp::Bisect),
+        // A revert has never blocked the merge preflight, and this refactor
+        // deliberately does not change that. The probe classifies it (the
+        // list surfaces it); here it only steps aside, so a concurrent
+        // bisect — which the probe reports after a revert — still registers.
+        OpKind::Revert => git_dir
+            .join("BISECT_LOG")
+            .exists()
+            .then_some(InProgressOp::Bisect),
+    }))
 }
 
 /// On-disk state of an in-progress merge or rebase, used to dispatch
@@ -991,14 +969,12 @@ pub enum InProgressState {
 /// This is a coarser variant of [`detect_in_progress`]: that one returns rich
 /// descriptions for bail messages; this one classifies for dispatch.
 pub fn detect_in_progress_state(path: &Path) -> Option<InProgressState> {
-    let git_dir = resolve_worktree_git_dir(path).ok()?;
-    if git_dir.join("MERGE_HEAD").exists() {
-        return Some(InProgressState::Merge);
+    match crate::git::op_state::probe_op_state(path)?.kind {
+        OpKind::Merge => Some(InProgressState::Merge),
+        OpKind::Rebase | OpKind::Am => Some(InProgressState::Rebase),
+        // The sequencer states have no `--continue`/`--abort` dispatch here.
+        OpKind::CherryPick | OpKind::Revert | OpKind::Bisect => None,
     }
-    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
-        return Some(InProgressState::Rebase);
-    }
-    None
 }
 
 /// Resolve each source ref to its full commit SHA via `git rev-parse`.

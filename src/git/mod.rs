@@ -5,6 +5,7 @@ mod branch;
 pub mod cancel;
 mod clone;
 mod config;
+pub mod op_state;
 pub(crate) mod oxide;
 #[cfg(unix)]
 pub(crate) mod process_tree;
