@@ -14,7 +14,56 @@ mod remote;
 mod stash;
 mod worktree;
 
+pub use refs::FirstParentCommit;
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
+
+/// First git release with `merge-tree --write-tree` (the in-memory three-way
+/// merge the squash probe needs).
+const MERGE_TREE_MIN_VERSION: (u64, u64) = (2, 38);
+
+static MERGE_TREE_CAPABLE: OnceLock<bool> = OnceLock::new();
+
+/// Whether the installed git can run `merge-tree --write-tree`, probed once
+/// per process.
+///
+/// This is daft's only runtime git-version gate. It exists because the
+/// context-insensitive squash probe is an *optional extra* on top of the
+/// patch-id checks: where git is too old the probe is skipped and detection
+/// falls back to its previous behavior, so an unknown or unparseable version
+/// must answer `false` rather than risk a confusing subcommand error.
+pub(crate) fn supports_merge_tree() -> bool {
+    *MERGE_TREE_CAPABLE.get_or_init(|| {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .is_some_and(|version| version_supports_merge_tree(&version))
+    })
+}
+
+/// Decide whether `git --version` output names a release at or past
+/// [`MERGE_TREE_MIN_VERSION`]. Distribution suffixes ride along after the
+/// numbers (`2.39.5 (Apple Git-154)`, `2.45.0.windows.1`) and are ignored;
+/// anything that does not parse answers `false`.
+fn version_supports_merge_tree(version_output: &str) -> bool {
+    let Some(rest) = version_output.trim().strip_prefix("git version ") else {
+        return false;
+    };
+    let mut numbers = rest
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .split('.');
+    let (Some(Ok(major)), Some(Ok(minor))) = (
+        numbers.next().map(str::parse::<u64>),
+        numbers.next().map(str::parse::<u64>),
+    ) else {
+        return false;
+    };
+    (major, minor) >= MERGE_TREE_MIN_VERSION
+}
 
 // Per-thread count of `gix::discover()` calls (test-only probe).
 //
@@ -225,6 +274,42 @@ mod tests {
         let git = GitCommand::new(true).with_gitoxide(false);
         assert!(git.quiet);
         assert!(!git.use_gitoxide);
+    }
+
+    #[test]
+    fn merge_tree_gate_accepts_2_38_and_newer() {
+        for version in [
+            "git version 2.38.0",
+            "git version 2.39.5 (Apple Git-154)",
+            "git version 2.45.0.windows.1",
+            "git version 3.0.0",
+            "git version 2.55.0\n",
+        ] {
+            assert!(
+                version_supports_merge_tree(version),
+                "{version} should be capable"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_tree_gate_rejects_older_and_unparseable() {
+        for version in [
+            "git version 2.37.9",
+            "git version 2.5.0",
+            "git version 1.9.1",
+            // Anything the parser can't read must fail closed: the probe is
+            // an optional extra, never worth a confusing subcommand error.
+            "git version banana",
+            "git version 2",
+            "",
+            "some other tool 9.9.9",
+        ] {
+            assert!(
+                !version_supports_merge_tree(version),
+                "{version} should not be capable"
+            );
+        }
     }
 
     /// Restores the working directory on drop — even on panic — so a failing

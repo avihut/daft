@@ -328,14 +328,161 @@ impl GitCommand {
 
         String::from_utf8(output.stdout).context("Failed to parse git cherry output")
     }
+
+    /// Walk `<base>..<target>` along first parents, yielding each commit with
+    /// its tree, its parents, and the paths it changed against its first
+    /// parent.
+    ///
+    /// Records are NUL-delimited: a path can never contain a NUL byte, so no
+    /// filename can forge a record boundary. Rename detection is off so the
+    /// path lists are plain set differences, directly comparable with
+    /// [`Self::diff_name_only`].
+    pub fn first_parent_commits(&self, base: &str, target: &str) -> Result<Vec<FirstParentCommit>> {
+        let output = Command::new("git")
+            .args([
+                "log",
+                "--first-parent",
+                "--diff-merges=first-parent",
+                "--no-renames",
+                "--format=%x00%H %T %P",
+                "--name-only",
+                &format!("{base}..{target}"),
+            ])
+            .output()
+            .context("Failed to execute git log command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git log failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8(output.stdout).context("Failed to parse git log output")?;
+        Ok(parse_first_parent_log(&stdout))
+    }
+
+    /// Three-way merge `branch` into `base_commit` in memory (no worktree, no
+    /// index), returning the resulting tree hash.
+    ///
+    /// `Ok(None)` covers every non-success exit. Git reports both a conflicted
+    /// merge (exit 1, conflicted tree on stdout) and a revision it refuses
+    /// (also exit 1, empty stdout) the same way, and for the squash probe both
+    /// mean the same thing: this candidate is not the branch's squash. The
+    /// probe only ever adds merged verdicts, so collapsing them fails toward
+    /// "not merged".
+    pub fn merge_tree_write_tree(&self, base_commit: &str, branch: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["merge-tree", "--write-tree", base_commit, branch])
+            .output()
+            .context("Failed to execute git merge-tree command")?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git merge-tree output")?;
+        Ok(stdout.lines().next().map(|line| line.trim().to_string()))
+    }
+
+    /// Paths that differ between two revisions, with rename detection off so
+    /// the result is comparable with [`Self::first_parent_commits`]' lists.
+    pub fn diff_name_only(&self, from: &str, to: &str) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["diff", "--name-only", "--no-renames", from, to])
+            .output()
+            .context("Failed to execute git diff command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git diff failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8(output.stdout).context("Failed to parse git diff output")?;
+        Ok(stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+}
+
+/// One commit on a first-parent walk: its hash, its tree, its parent hashes,
+/// and the paths it changed against its first parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstParentCommit {
+    pub commit: String,
+    pub tree: String,
+    pub parents: Vec<String>,
+    pub files: Vec<String>,
+}
+
+/// Parse the NUL-delimited `first_parent_commits` log. Pure, so the record
+/// shape unit-tests without a repository.
+///
+/// Each record is `<hash> <tree> <parents...>`, a blank line, then one path
+/// per line. Text before the first NUL (there is none in practice) is
+/// skipped, and a record whose header lacks both a hash and a tree is dropped
+/// rather than guessed at.
+fn parse_first_parent_log(stdout: &str) -> Vec<FirstParentCommit> {
+    stdout
+        .split('\0')
+        .skip(1)
+        .filter_map(|record| {
+            let mut lines = record.lines();
+            let mut header = lines.next()?.split_whitespace();
+            let commit = header.next()?.to_string();
+            let tree = header.next()?.to_string();
+            Some(FirstParentCommit {
+                commit,
+                tree,
+                parents: header.map(str::to_string).collect(),
+                files: lines
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::parse_first_parent_log;
     use crate::git::GitCommand;
     use crate::utils::git_command_at;
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
+
+    #[test]
+    fn parses_records_with_trees_parents_and_files() {
+        let log = "\0aaa111 ttt111 ppp111\n\nsrc/one.rs\nsrc/two.rs\n\0bbb222 ttt222 ppp222 ppp333\n\ndocs/x.md\n";
+        let commits = parse_first_parent_log(log);
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].commit, "aaa111");
+        assert_eq!(commits[0].tree, "ttt111");
+        assert_eq!(commits[0].parents, vec!["ppp111"]);
+        assert_eq!(commits[0].files, vec!["src/one.rs", "src/two.rs"]);
+        // A merge commit carries both parents; the walk still sees one record.
+        assert_eq!(commits[1].parents, vec!["ppp222", "ppp333"]);
+        assert_eq!(commits[1].files, vec!["docs/x.md"]);
+    }
+
+    #[test]
+    fn parses_root_commit_as_parentless() {
+        let commits = parse_first_parent_log("\0aaa111 ttt111\n\nfirst.txt\n");
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].parents.is_empty());
+    }
+
+    #[test]
+    fn parses_empty_log_and_file_less_commit() {
+        assert!(parse_first_parent_log("").is_empty());
+        // An empty commit has a header but no paths.
+        let commits = parse_first_parent_log("\0aaa111 ttt111 ppp111\n");
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].files.is_empty());
+    }
 
     fn git_in(dir: &Path, args: &[&str]) {
         let status = git_command_at(dir)
