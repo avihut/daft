@@ -338,4 +338,112 @@ mod tests {
             "gix-backed command shares one discovery"
         );
     }
+
+    /// #733 graduation regressions in the remote-probe family, pinned from a
+    /// fresh bare clone (the state daft's clone flow probes from):
+    ///
+    /// 1. URL-shaped ls-remote probes must take the subprocess arm — the gix
+    ///    arm derives its protocol-v2 ref-prefix filter from the configured
+    ///    remote's fetch refspecs, so an ad-hoc URL remote yields an empty
+    ///    ref map. A configured remote name with refspecs keeps gix.
+    /// 2. The local-ref arms (`list_remote_branches`,
+    ///    `validate_branches_exist`) must fall through to the network when
+    ///    `refs/remotes/<remote>/` is empty — a fresh bare clone has no
+    ///    remote-tracking refs, and answering from them declared every
+    ///    branch missing, so multi-branch clone created no worktrees.
+    #[test]
+    #[serial_test::serial]
+    fn fresh_bare_clone_remote_probes_fall_back_to_cli() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let git_at = |cwd: &std::path::Path, args: &[&str]| {
+            let mut c = std::process::Command::new("git");
+            for var in GIT_ENV_VARS {
+                c.env_remove(var);
+            }
+            let out = c
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // A "remote" with a develop branch…
+        let src = base.join("src");
+        std::fs::create_dir(&src).unwrap();
+        git_at(&src, &["init", "-b", "main"]);
+        git_at(&src, &["commit", "--allow-empty", "-m", "seed"]);
+        git_at(&src, &["branch", "develop"]);
+
+        // …and a bare clone probing it, with origin's fetch refspec
+        // configured the way daft's own clone sets it up (bare clones have
+        // none by default).
+        let src_url = src.to_str().unwrap().to_owned();
+        git_at(
+            &base,
+            &["clone", "--quiet", "--bare", &src_url, "probe.git"],
+        );
+        let probe = base.join("probe.git");
+        git_at(
+            &probe,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&probe).unwrap();
+
+        let git = GitCommand::new(true).with_gitoxide(true);
+
+        // Configured name with refspecs: the gix arm answers (and discovers).
+        reset_discover_count();
+        assert!(git.ls_remote_branch_exists("origin", "develop").unwrap());
+        assert_eq!(discover_count(), 1, "name-shaped probe stays on gix");
+
+        // URL/path-shaped remote: must bypass gix and still find the branch.
+        assert!(
+            git.ls_remote_branch_exists(&src_url, "develop").unwrap(),
+            "URL-shaped probe must find the branch via the CLI arm"
+        );
+
+        // Symref by URL (clone's default-branch detection) is CLI-only.
+        let symref = git.ls_remote_symref(&src_url).unwrap();
+        assert!(
+            symref.contains("refs/heads/main"),
+            "symref must expose remote HEAD, got: {symref}"
+        );
+
+        // Fresh bare clone: refs/remotes/origin/* is empty until the first
+        // fetch, so the local-ref gix arms must fall through to the network
+        // listing instead of declaring every branch missing (the
+        // multi-branch-clone regression).
+        let listed = git.list_remote_branches("origin").unwrap();
+        assert!(
+            listed.contains(&"develop".to_string()),
+            "unfetched bare clone must list remote branches via the CLI arm, got {listed:?}"
+        );
+        let validated = git
+            .validate_branches_exist("origin", &["develop".to_string()])
+            .unwrap();
+        assert_eq!(validated, vec![("develop".to_string(), true)]);
+    }
 }

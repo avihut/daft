@@ -469,13 +469,32 @@ impl GitCommand {
         Ok(())
     }
 
+    /// The gix arm of the ls-remote family is only sound for a *configured*
+    /// remote that has fetch refspecs: gix derives its protocol-v2 ref-prefix
+    /// filter from the refspecs, so an ad-hoc URL remote (`remote_at`) or a
+    /// refspec-less bare-clone remote yields an empty ref map and every
+    /// branch looks missing. Clone probes branches by URL from inside the
+    /// fresh bare repo, which is exactly that trap (#733 graduation
+    /// regression: multi-branch clone created no worktrees). URL-shaped
+    /// remotes, no-repo contexts, and refspec-less remotes all take the git
+    /// CLI arm instead, which handles them uniformly.
+    fn gix_repo_for_remote(&self, remote: &str) -> Option<gix::Repository> {
+        if !self.use_gitoxide {
+            return None;
+        }
+        let repo = self.gix_repo().ok()?;
+        let usable = matches!(
+            repo.try_find_remote(remote),
+            Some(Ok(ref r)) if !r.refspecs(gix::remote::Direction::Fetch).is_empty()
+        );
+        usable.then_some(repo)
+    }
+
     pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
-        if self.use_gitoxide
-            && let Ok(repo) = self.gix_repo()
-        {
+        if let Some(repo) = self.gix_repo_for_remote(remote) {
             return oxide::ls_remote_heads(&repo, remote, branch);
         }
-        // No local repo (e.g. during clone) — fall through to git CLI.
+        // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
         // Routed through output_with_cancel so a supervised caller (sync's
         // gone-branch identification) can tear a stalled network ls-remote
         // down on the first Ctrl+C; unsupervised callers (clone) pass no
@@ -498,14 +517,14 @@ impl GitCommand {
         String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")
     }
 
-    /// Execute git ls-remote with symref to get remote HEAD
+    /// Execute git ls-remote with symref to get remote HEAD.
+    ///
+    /// Always the git CLI: every caller passes a URL, never a configured
+    /// remote name, and the gix arm is unsound for ad-hoc URL remotes (see
+    /// `gix_repo_for_remote`) — its empty ref map made default-branch
+    /// detection fail and the empty-remote probe answer "empty" for
+    /// populated remotes.
     pub fn ls_remote_symref(&self, remote_url: &str) -> Result<String> {
-        if self.use_gitoxide
-            && let Ok(repo) = self.gix_repo()
-        {
-            return oxide::ls_remote_symref(&repo, remote_url);
-        }
-        // No local repo (e.g. during clone) — fall through to git CLI
         let output = Command::new("git")
             .args(["ls-remote", "--symref", remote_url, "HEAD"])
             .output()
@@ -521,12 +540,10 @@ impl GitCommand {
 
     /// Check if specific remote branch exists
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
-        if self.use_gitoxide
-            && let Ok(repo) = self.gix_repo()
-        {
+        if let Some(repo) = self.gix_repo_for_remote(remote_name) {
             return oxide::ls_remote_branch_exists(&repo, remote_name, branch);
         }
-        // No local repo (e.g. during clone) — fall through to git CLI.
+        // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
         // output_with_cancel so a supervised caller (sync gone-branch check)
         // can cancel a stalled network probe; unsupervised callers block.
         let mut cmd = Command::new("git");
@@ -683,7 +700,14 @@ impl GitCommand {
     }
 
     /// Validate which branches from a list exist on the remote.
-    /// Uses local refs when gitoxide is enabled (zero network), falls back to CLI.
+    ///
+    /// Uses local remote-tracking refs when gitoxide is enabled (zero
+    /// network) — but only when `refs/remotes/<remote>/` is populated. A
+    /// fresh bare clone has no remote-tracking refs yet (its remote heads
+    /// land on `refs/heads/*` until the first fetch), so answering from
+    /// local refs there declared every branch missing and multi-branch
+    /// clone created no worktrees (#733 graduation regression). Unfetched
+    /// repos fall through to the network probe the CLI arm performs.
     pub fn validate_branches_exist(
         &self,
         remote_name: &str,
@@ -691,6 +715,7 @@ impl GitCommand {
     ) -> Result<Vec<(String, bool)>> {
         if self.use_gitoxide
             && let Ok(repo) = self.gix_repo()
+            && oxide::has_remote_tracking_refs(&repo, remote_name)?
         {
             return branches
                 .iter()
@@ -709,13 +734,21 @@ impl GitCommand {
             .collect()
     }
 
-    /// List all branches on a remote using local refs.
-    /// Uses local refs when gitoxide is enabled (zero network), falls back to CLI.
+    /// List all branches on a remote.
+    ///
+    /// Uses local remote-tracking refs when gitoxide is enabled (zero
+    /// network); an empty `refs/remotes/<remote>/` namespace means an
+    /// unfetched (fresh bare-clone) repo, which falls through to the
+    /// network listing the CLI arm performs — see `validate_branches_exist`
+    /// for the #733 regression this guards.
     pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
         if self.use_gitoxide
             && let Ok(repo) = self.gix_repo()
         {
-            return oxide::list_remote_branches_local(&repo, remote_name);
+            let local = oxide::list_remote_branches_local(&repo, remote_name)?;
+            if !local.is_empty() {
+                return Ok(local);
+            }
         }
         let output = self.ls_remote_heads(remote_name, None)?;
         Ok(output

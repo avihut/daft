@@ -448,63 +448,21 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 // When no local repo exists (e.g. during clone), the callers in git.rs fall
 // through to the git CLI subprocess path instead.
 
-/// gitoxide equivalent of `git ls-remote --symref <remote_url> HEAD`
-///
-/// Returns output formatted like git's ls-remote --symref output:
-/// ```text
-/// ref: refs/heads/main\tHEAD
-/// <oid>\tHEAD
-/// ```
-pub fn ls_remote_symref(repo: &Repository, remote_url: &str) -> Result<String> {
-    let remote = repo
-        .remote_at(remote_url)
-        .context("Failed to create remote")?;
-
-    let connection = remote
-        .connect(Direction::Fetch)
-        .context("Failed to connect to remote")?;
-
-    let (ref_map, _outcome) = connection
-        .ref_map(gix::progress::Discard, Default::default())
-        .context("Failed to get ref map from remote")?;
-
-    let mut output = String::new();
-
-    for remote_ref in &ref_map.remote_refs {
-        match remote_ref {
-            gix::protocol::handshake::Ref::Symbolic {
-                full_ref_name,
-                target,
-                object,
-                ..
-            } if full_ref_name.as_bstr() == "HEAD" => {
-                output.push_str(&format!("ref: {target}\tHEAD\n"));
-                output.push_str(&format!("{object}\tHEAD\n"));
-            }
-            gix::protocol::handshake::Ref::Direct {
-                full_ref_name,
-                object,
-            } if full_ref_name.as_bstr() == "HEAD" => {
-                output.push_str(&format!("{object}\tHEAD\n"));
-            }
-            _ => {}
-        }
-    }
-
-    Ok(output)
-}
-
 /// gitoxide equivalent of `git ls-remote --heads <remote> [refs/heads/<branch>]`
 ///
 /// Returns output formatted like git's ls-remote output:
 /// ```text
 /// <oid>\trefs/heads/branch-name
 /// ```
+///
+/// `remote` must be a configured remote with fetch refspecs — the dispatch
+/// (`GitCommand::gix_repo_for_remote`) guarantees it. An ad-hoc URL remote
+/// would produce an empty ref map (no refspecs → no protocol-v2 ref
+/// prefixes), which is exactly the trap that routes URL probes to the CLI.
 pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) -> Result<String> {
-    // Try to find a configured remote first, then fall back to URL
     let remote_obj = match repo.try_find_remote(remote) {
         Some(Ok(r)) => r,
-        _ => repo.remote_at(remote).context("Failed to create remote")?,
+        _ => anyhow::bail!("remote '{remote}' is not configured (URL remotes take the CLI path)"),
     };
 
     let connection = remote_obj
@@ -564,11 +522,22 @@ pub fn ls_remote_branch_exists(repo: &Repository, remote_name: &str, branch: &st
 
 // --- Group 7: Local Remote-Tracking Refs ---
 
+/// Whether any `refs/remotes/<remote>/*` refs exist locally.
+///
+/// A fresh bare clone has none — its remote heads land on `refs/heads/*`
+/// until the first fetch through the configured refspec — so local-ref
+/// reads cannot answer remote-existence questions there and callers must
+/// fall through to a network probe (#733 graduation regression).
+pub fn has_remote_tracking_refs(repo: &Repository, remote_name: &str) -> Result<bool> {
+    Ok(!list_remote_branches_local(repo, remote_name)?.is_empty())
+}
+
 /// Check if a branch exists in the already-fetched remote refs (no network).
 ///
-/// After `git clone --bare`, remote refs are available locally under
-/// `refs/remotes/<remote>/`. This avoids a network round-trip compared to
-/// `ls_remote_branch_exists`.
+/// Remote-tracking refs live under `refs/remotes/<remote>/` once a fetch has
+/// run. This avoids a network round-trip compared to
+/// `ls_remote_branch_exists`; callers must first confirm the namespace is
+/// populated (`has_remote_tracking_refs`) or the answer is meaningless.
 pub fn validate_branch_in_remotes(
     repo: &Repository,
     remote_name: &str,
