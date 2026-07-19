@@ -690,6 +690,12 @@ fn run_tui(
     }
     let hooks_config = crate::core::settings::load_hooks_config()?;
     let shared_hooks_config = Arc::new(hooks_config.clone());
+    // One witness for the whole run: the workers share its single fetch, and
+    // the post-TUI deferred pass must judge on the same data the table showed.
+    let shared_merged_witness = crate::commands::forge_cache::merged_witness(
+        &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
+    );
+    let orch_merged_witness = Arc::clone(&shared_merged_witness);
 
     use crate::output::tui::Column;
 
@@ -1095,6 +1101,7 @@ fn run_tui(
                             shared_force,
                             &shared_hooks_config,
                             &tx_for_tasks,
+                            &orch_merged_witness,
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
@@ -1400,6 +1407,7 @@ fn run_tui(
         &worktree_map,
         force,
         &hooks_config,
+        &shared_merged_witness,
     );
 
     // ── Post-TUI: print hook summary ────────────────────────────────────
@@ -2199,6 +2207,7 @@ fn run_prune_phase(
     force: bool,
     cancel: &Arc<CancelFlag>,
 ) -> Result<prune::PruneResult> {
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
     let params = prune::PruneParams {
         force,
         use_gitoxide: settings.use_gitoxide,
@@ -2208,6 +2217,7 @@ fn run_prune_phase(
         // Sequential path: make the prune's `git fetch --prune` cancellable
         // like the update/rebase/push phases (#663).
         cancel: Some(Arc::clone(cancel)),
+        merged_witness: crate::commands::forge_cache::merged_witness(&git),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;

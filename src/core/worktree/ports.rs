@@ -6,6 +6,7 @@
 //! live with their implementing subsystem. This is the first port outside
 //! `src/coordinator/` and follows the same shape.
 
+use crate::core::worktree::forge_ref::ForgeBranchRef;
 use crate::executor::presenter::JobPresenter;
 use anyhow::Result;
 use std::path::Path;
@@ -69,6 +70,54 @@ pub trait StageRunner {
         refs: &[PushRef],
         presenter: Arc<dyn JobPresenter>,
     ) -> Result<StageOutcome>;
+}
+
+/// Port for asking the forge whether a branch's pull/merge request was
+/// merged (issue #737).
+///
+/// Exists because the git-side probes cannot see every merge. A squash whose
+/// content was altered on the way in — a conflict resolved by the merger,
+/// a maintainer's edit before the button — matches no patch and no tree, yet
+/// the forge watched it happen and is authoritative about it.
+///
+/// The signal is **positive-only**: it can conclude "merged", never "not
+/// merged". Anything short of proof — the forge unreachable, the PR still
+/// open, a field the platform did not supply — must answer `None` and leave
+/// the verdict to the git probes, which default to unmerged. Reporting
+/// "merged" is what authorizes deleting a branch, so an adapter that cannot
+/// prove the claim must not make it.
+pub trait ForgeMergedWitness: Send + Sync {
+    /// The PR/MR that merged `branch`, if the forge proves one did.
+    ///
+    /// Implementations must satisfy all of:
+    ///
+    /// - **Freshly fetched.** A cached state is a stale hint, not a witness.
+    /// - **`tip_oid` is the PR's head.** Branch names get reused; pinning the
+    ///   commit is what stops an old merged PR from vouching for whatever
+    ///   work later took its name.
+    /// - **`target_branch` is the PR's base.** A stacked PR merged into
+    ///   another feature branch, or one merged into a release line, is
+    ///   genuinely "merged" and still absent from the branch this caller
+    ///   asked about.
+    /// - **Nothing open shadows it.** An open PR on the same branch means
+    ///   the work continues regardless of what merged before.
+    fn merged_pr(&self, branch: &str, tip_oid: &str, target_branch: &str)
+    -> Option<ForgeBranchRef>;
+}
+
+/// The witness for repos with no forge, and for every test that has no
+/// business talking to one. Mirrors the `NoopStageRunner` pattern below.
+pub struct NoopForgeWitness;
+
+impl ForgeMergedWitness for NoopForgeWitness {
+    fn merged_pr(
+        &self,
+        _branch: &str,
+        _tip_oid: &str,
+        _target_branch: &str,
+    ) -> Option<ForgeBranchRef> {
+        None
+    }
 }
 
 /// The adapter used until #468 ships: daft manages no stages, so every push

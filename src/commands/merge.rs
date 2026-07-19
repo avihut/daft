@@ -1192,9 +1192,12 @@ pub fn run() -> Result<()> {
                     let bd_result = {
                         let executor = HookExecutor::new(hooks_config.clone())?;
                         let mut bridge = CommandBridge::new(&mut output, executor);
+                        // The merge cleanup sets `skip_merge_validation`, so
+                        // Check 4 never runs and no witness is consulted.
                         crate::core::worktree::branch_delete::execute(
                             &bd_params,
                             None,
+                            &crate::core::worktree::ports::NoopForgeWitness,
                             &mut bridge,
                         )?
                     };

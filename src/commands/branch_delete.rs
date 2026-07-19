@@ -1,6 +1,7 @@
 use crate::{
     CD_FILE_ENV,
     core::{CommandBridge, worktree::branch_delete},
+    git::GitCommand,
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
@@ -125,7 +126,10 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
     output.start_spinner("Deleting branches...");
     let exec_result = {
         let mut bridge = CommandBridge::new(output, executor);
-        branch_delete::execute(&params, None, &mut bridge)
+        let witness = crate::commands::forge_cache::merged_witness(
+            &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
+        );
+        branch_delete::execute(&params, None, witness.as_ref(), &mut bridge)
     };
     output.finish_spinner();
     let result = exec_result?;

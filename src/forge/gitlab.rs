@@ -135,6 +135,8 @@ fn parse_mr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             // Empty = synthesized rows render the plain branch name.
             head_repo_owner: String::new(),
             updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
+            head_oid: item.sha.filter(|sha| !sha.is_empty()),
+            base_branch: item.target_branch.filter(|name| !name.is_empty()),
         })
         .collect())
 }
@@ -157,6 +159,13 @@ struct GlabMrListItem {
     updated_at: Option<String>,
     #[serde(default)]
     author: GlabAuthor,
+    /// The source branch's commit — pins a merged MR to the work it carried
+    /// (#737). GitLab names it `sha`.
+    #[serde(default)]
+    sha: Option<String>,
+    /// The branch the MR targets.
+    #[serde(default)]
+    target_branch: Option<String>,
 }
 
 /// Percent-encode the `/` separators in a project path (`group/sub/repo` →
@@ -296,6 +305,7 @@ mod tests {
              "source_project_id": 1, "target_project_id": 1,
              "web_url": "https://gitlab.com/group/widget/-/merge_requests/45",
              "updated_at": "2026-07-18T09:30:00Z",
+             "sha": "deadbeef1234", "target_branch": "main",
              "author": {"username": "dev", "name": "Devon Developer"}},
             {"iid": 46, "title": "Fork work", "state": "opened",
              "source_branch": "fork-branch",
@@ -325,6 +335,17 @@ mod tests {
         assert_eq!(
             entries[0].updated_at.unwrap().to_rfc3339(),
             "2026-07-18T09:30:00+00:00"
+        );
+        // The merge witness's two pins (#737); absent on the second row, where
+        // the witness abstains rather than guess.
+        assert_eq!(entries[0].head_oid.as_deref(), Some("deadbeef1234"));
+        assert_eq!(entries[0].base_branch.as_deref(), Some("main"));
+        assert_eq!(
+            (
+                entries[1].head_oid.as_deref(),
+                entries[1].base_branch.as_deref()
+            ),
+            (None, None)
         );
         assert_eq!(
             (entries[1].head_repo_owner.as_str(), entries[1].updated_at),

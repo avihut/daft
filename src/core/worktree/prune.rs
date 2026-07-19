@@ -28,6 +28,15 @@ pub struct PruneParams {
     /// the phase's `git fetch --prune` is torn down on Ctrl+C instead of
     /// blocking to completion; `daft prune` and the DAG paths pass `None`.
     pub cancel: Option<std::sync::Arc<crate::git::cancel::CancelFlag>>,
+    /// Settles branches the git probes cannot place, by asking the forge
+    /// whether their PR merged (#737).
+    ///
+    /// Shared across the whole run — every DAG worker and the post-TUI
+    /// deferred pass hold the same one — so its listing is fetched at most
+    /// once and every branch is judged against identical data. A second
+    /// witness here would mean a second fetch, and a no-op one in the
+    /// deferred pass could reverse a verdict the table already showed.
+    pub merged_witness: std::sync::Arc<dyn crate::core::worktree::ports::ForgeMergedWitness>,
 }
 
 /// Detail of a single pruned branch.
@@ -320,9 +329,21 @@ pub fn prune_single_branch(
                 branch_name,
                 default_branch,
                 &ctx.remote_name,
+                params.merged_witness.as_ref(),
             ) {
-                Ok(true) => None,
-                Ok(false) => Some(format!(
+                Ok(verdict) if verdict.is_merged() => {
+                    // Name the PR when the forge is what proved it: nothing in
+                    // the branch's own history shows the merge, so an
+                    // unexplained deletion would look wrong.
+                    if let Some(via) = verdict.via() {
+                        sink.on_step(&format!(
+                            "Branch '{branch_name}' was merged via {}",
+                            via.short()
+                        ));
+                    }
+                    None
+                }
+                Ok(_) => Some(format!(
                     "Skipping {branch_name}: remote branch is gone but the local branch \
                      is not merged into {default_branch} (use --force to delete anyway)"
                 )),

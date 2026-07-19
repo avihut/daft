@@ -10,32 +10,74 @@
 //! `is_branch_merged_into` for mid-merge bookkeeping; it intentionally does
 //! NOT detect squash merges and must not be unified with this one.
 
+use crate::core::worktree::forge_ref::ForgeBranchRef;
+use crate::core::worktree::ports::ForgeMergedWitness;
 use crate::git::GitCommand;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 
+/// Whether a branch's work reached the target — and, when the forge is what
+/// proved it, which PR/MR did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergedVerdict {
+    NotMerged,
+    /// `via` names the PR/MR when the forge witnessed the merge; `None` when
+    /// git itself found the work on the target.
+    Merged {
+        via: Option<ForgeBranchRef>,
+    },
+}
+
+impl MergedVerdict {
+    pub fn is_merged(self) -> bool {
+        matches!(self, Self::Merged { .. })
+    }
+
+    /// The PR/MR that proved the merge, when one did.
+    pub fn via(self) -> Option<ForgeBranchRef> {
+        match self {
+            Self::Merged { via } => via,
+            Self::NotMerged => None,
+        }
+    }
+}
+
 /// Check whether a branch has been merged into the default branch.
 ///
-/// Checks against both the local default branch and its remote tracking
-/// branch (which may be ahead of local).
+/// Asks git first — locally, against both the default branch and its remote
+/// tracking branch, which may be ahead. Only if every probe comes up empty
+/// does it ask the forge, which is the authority on merges git cannot see
+/// (a squash whose content was altered on the way in) but costs a network
+/// round trip, so it goes last rather than first.
 pub fn is_branch_merged(
     git: &GitCommand,
     branch: &str,
     default_branch: &str,
     remote_name: &str,
-) -> Result<bool> {
+    witness: &dyn ForgeMergedWitness,
+) -> Result<MergedVerdict> {
     // Check against local default branch first
     if is_branch_merged_into(git, branch, default_branch)? {
-        return Ok(true);
+        return Ok(MergedVerdict::Merged { via: None });
     }
 
     // Also check against the remote tracking branch, which may be ahead of local
     let remote_ref = format!("{remote_name}/{default_branch}");
     if is_branch_merged_into(git, branch, &remote_ref)? {
-        return Ok(true);
+        return Ok(MergedVerdict::Merged { via: None });
     }
 
-    Ok(false)
+    // Failing to resolve the tip is not an error here: it only means there is
+    // nothing to pin a forge PR to, so the verdict stays unmerged.
+    let Ok(tip) = git.rev_parse(&format!("refs/heads/{branch}")) else {
+        return Ok(MergedVerdict::NotMerged);
+    };
+    match witness.merged_pr(branch, &tip, default_branch) {
+        Some(forge_ref) => Ok(MergedVerdict::Merged {
+            via: Some(forge_ref),
+        }),
+        None => Ok(MergedVerdict::NotMerged),
+    }
 }
 
 /// Check whether `branch` has been merged into `target`.
@@ -213,6 +255,8 @@ fn merge_tree_probe(git: &GitCommand, branch: &str, target: &str, capable: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::worktree::forge_ref::ForgeRefKind;
+    use crate::core::worktree::ports::NoopForgeWitness;
     use serial_test::serial;
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
@@ -504,6 +548,96 @@ mod tests {
         assert!(
             !merge_tree_probe(&git, "feat", "main", /* capable */ true).unwrap(),
             "a net-zero branch must not match an empty commit's tree"
+        );
+    }
+
+    /// A witness that vouches for one branch at one commit, and refuses
+    /// everything else — the shape a real forge answer takes.
+    struct FakeWitness {
+        branch: &'static str,
+        forge_ref: ForgeBranchRef,
+    }
+
+    impl crate::core::worktree::ports::ForgeMergedWitness for FakeWitness {
+        fn merged_pr(
+            &self,
+            branch: &str,
+            _tip_oid: &str,
+            _target_branch: &str,
+        ) -> Option<ForgeBranchRef> {
+            (branch == self.branch).then_some(self.forge_ref)
+        }
+    }
+
+    /// Run the full check, which probes the remote tracking branch as well as
+    /// the local one. Stamps `origin/main` at `main` first — these fixtures
+    /// have no remote, and without the ref the remote probe errors instead of
+    /// answering.
+    fn witnessed(path: &Path, branch: &str, witness: &dyn ForgeMergedWitness) -> MergedVerdict {
+        git_ok(path, &["update-ref", "refs/remotes/origin/main", "main"]);
+        let _guard = CwdGuard::new();
+        std::env::set_current_dir(path).unwrap();
+        let git = GitCommand::new(true);
+        is_branch_merged(&git, branch, "main", "origin", witness).unwrap()
+    }
+
+    /// The case no git probe can reach: the squash was edited on the way in,
+    /// so no patch and no tree match — but the forge watched it merge.
+    #[test]
+    #[serial]
+    fn forge_witness_settles_a_branch_git_cannot_place() {
+        let tmp = repo_with_context_drifted_squash();
+        std::fs::write(tmp.path().join("g.txt"), "g, but rewritten on main").unwrap();
+        git_ok(tmp.path(), &["commit", "-q", "-a", "--amend", "--no-edit"]);
+        let witness = FakeWitness {
+            branch: "feat",
+            forge_ref: ForgeBranchRef::new(ForgeRefKind::GithubPr, 731),
+        };
+
+        let verdict = witnessed(tmp.path(), "feat", &witness);
+
+        assert!(verdict.is_merged());
+        assert_eq!(
+            verdict.via().map(|r| r.number),
+            Some(731),
+            "the verdict must name the PR that proved it, so the deletion can be explained"
+        );
+    }
+
+    /// A witness that declines leaves the branch exactly where the git probes
+    /// left it: unmerged.
+    #[test]
+    #[serial]
+    fn a_declining_witness_leaves_the_branch_unmerged() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        git_ok(tmp.path(), &["checkout", "-q", "-b", "feat"]);
+        add_commit(tmp.path(), "feat", "a.txt", "a");
+        add_commit(tmp.path(), "main", "other.txt", "other");
+
+        let verdict = witnessed(tmp.path(), "feat", &NoopForgeWitness);
+
+        assert_eq!(verdict, MergedVerdict::NotMerged);
+    }
+
+    /// When git itself finds the work, the forge is never consulted and no PR
+    /// is named — naming one would imply the merge needed proving.
+    #[test]
+    #[serial]
+    fn git_proof_names_no_pr_and_skips_the_witness() {
+        let tmp = repo_with_context_drifted_squash();
+        // A witness that would vouch for this branch, if it were asked.
+        let witness = FakeWitness {
+            branch: "feat",
+            forge_ref: ForgeBranchRef::new(ForgeRefKind::GithubPr, 731),
+        };
+
+        let verdict = witnessed(tmp.path(), "feat", &witness);
+
+        assert_eq!(
+            verdict,
+            MergedVerdict::Merged { via: None },
+            "the merge-tree probe proves this one; the forge is not consulted"
         );
     }
 

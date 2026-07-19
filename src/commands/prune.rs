@@ -194,6 +194,7 @@ fn run_prune(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
     let params = prune::PruneParams {
         force,
         use_gitoxide: settings.use_gitoxide,
@@ -201,6 +202,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
         cancel: None,
+        merged_witness: crate::commands::forge_cache::merged_witness(&git),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -438,6 +440,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orch_settings = Arc::clone(&shared_settings);
     let shared_hooks_config = Arc::new(hooks_config.clone());
+    // One witness for the whole run: the workers share its single fetch, and
+    // the post-TUI deferred pass must judge on the same data the table showed.
+    let shared_merged_witness = crate::commands::forge_cache::merged_witness(
+        &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
+    );
+    let orch_merged_witness = Arc::clone(&shared_merged_witness);
 
     // Captures for the post-fetch refresh inside the orchestrator thread.
     let orch_base_branch = Arc::new(base_branch.clone());
@@ -523,6 +531,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_force,
                             &shared_hooks_config,
                             &tx_for_tasks,
+                            &orch_merged_witness,
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
@@ -653,6 +662,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         &worktree_map,
         args.force,
         &hooks_config,
+        &shared_merged_witness,
     );
 
     // ── Print hook summaries (warnings/failures) ──────────────────────────

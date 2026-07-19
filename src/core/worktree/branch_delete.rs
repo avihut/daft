@@ -3,7 +3,7 @@
 //! Deletes branches and their associated worktrees.
 
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
-use crate::core::worktree::ports::NoopStageRunner;
+use crate::core::worktree::ports::{ForgeMergedWitness, NoopStageRunner};
 use crate::core::worktree::push::{PushAction, push_with_hooks};
 use crate::core::{
     ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookRunner,
@@ -148,6 +148,10 @@ struct ValidatedBranch {
     /// surfaced as a timeline annotation. `None` when the check was skipped
     /// (--force, keep_local_branch, merge's own validation).
     merged_into: Option<String>,
+    /// The PR/MR that proved the merge, when the forge is what proved it
+    /// (#737). `None` when git found the work itself — the ordinary case,
+    /// where naming a PR would add noise rather than explain anything.
+    merged_via: Option<crate::core::worktree::forge_ref::ForgeBranchRef>,
     /// What to do with the worktree's untracked daft files before removal.
     daft_files: DaftFilePlan,
 }
@@ -183,9 +187,12 @@ enum ResolveResult {
 ///
 /// `presenter` reports the pre-push hook run on remote-branch deletes
 /// (#599); pass `None` to skip that reporting (the hook is still honored).
+/// `witness` lets Check 4 accept a branch the forge merged but git cannot
+/// place (#737); pass [`NoopForgeWitness`] to decide on git alone.
 pub fn execute(
     params: &BranchDeleteParams,
     presenter: Option<&Arc<dyn JobPresenter>>,
+    witness: &dyn ForgeMergedWitness,
     sink: &mut (impl ProgressSink + HookRunner + ConsolidationPrompter),
 ) -> Result<BranchDeleteResult> {
     let git = GitCommand::new(params.is_quiet).with_gitoxide(params.use_gitoxide);
@@ -230,6 +237,7 @@ pub fn execute(
         &worktree_map,
         current_wt_path.as_ref(),
         current_branch.as_deref(),
+        witness,
         sink,
     );
 
@@ -376,7 +384,13 @@ fn build_plan(
         if !params.remote_only && !params.keep_local_branch && !branch.worktree_only {
             let mut spec = StepSpec::new(key(StageId::DeleteLocalBranch));
             if let Some(ref target) = branch.merged_into {
-                spec = spec.with_annotation(format!("was merged into {target}"));
+                // Name the PR when the forge is what proved the merge: the
+                // branch's own history shows nothing, so the annotation is
+                // the only account of why deleting it is safe.
+                spec = spec.with_annotation(match branch.merged_via {
+                    Some(via) => format!("was merged into {target} via {}", via.short()),
+                    None => format!("was merged into {target}"),
+                });
             }
             rows.push(Row::Step(spec));
         }
@@ -554,6 +568,7 @@ fn validate_branches(
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
     current_branch: Option<&str>,
+    witness: &dyn ForgeMergedWitness,
     sink: &mut (impl ProgressSink + ConsolidationPrompter),
 ) -> (Vec<ValidatedBranch>, Vec<ValidationError>) {
     let force = params.force;
@@ -598,7 +613,9 @@ fn validate_branches(
                 remote_branch_name,
                 is_current_worktree: false,
                 worktree_only: false,
+                // Remote-only deletion skips the local merge checks entirely.
                 merged_into: None,
+                merged_via: None,
                 daft_files: DaftFilePlan::Nothing,
             });
             continue;
@@ -674,6 +691,7 @@ fn validate_branches(
                     // elsewhere.
                     worktree_only: true,
                     merged_into: None,
+                    merged_via: None,
                     daft_files: DaftFilePlan::Nothing,
                 });
                 continue;
@@ -707,13 +725,19 @@ fn validate_branches(
         // Check 4: Merged into default branch (skip with --force,
         // keep_local_branch, or the merge cleanup's own validation)
         let mut merged_into = None;
+        let mut merged_via = None;
         if !force && !keep_local_branch && !skip_merge_validation {
-            match is_branch_merged(ctx, branch) {
-                Ok(true) => {
-                    sink.on_step(&format!("Branch '{branch}' is merged into default branch"));
+            match is_branch_merged(ctx, branch, witness) {
+                Ok(verdict) if verdict.is_merged() => {
+                    merged_via = verdict.via();
+                    let how =
+                        merged_via.map_or_else(String::new, |r| format!(" (via {})", r.short()));
+                    sink.on_step(&format!(
+                        "Branch '{branch}' is merged into default branch{how}"
+                    ));
                     merged_into = Some(ctx.default_branch.clone());
                 }
-                Ok(false) => {
+                Ok(_) => {
                     errors.push(ValidationError {
                         branch: branch.clone(),
                         message: format!(
@@ -854,6 +878,7 @@ fn validate_branches(
             is_current_worktree: is_current,
             worktree_only: false,
             merged_into,
+            merged_via,
             daft_files,
         });
     }
@@ -970,8 +995,18 @@ fn plan_refined_files(
 /// Check whether a branch has been merged into the default branch.
 /// Delegates to the shared [`super::merged`] helpers (also used by prune's
 /// gone-but-unmerged guard).
-fn is_branch_merged(ctx: &BranchDeleteContext, branch: &str) -> Result<bool> {
-    super::merged::is_branch_merged(ctx.git, branch, &ctx.default_branch, &ctx.remote_name)
+fn is_branch_merged(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+    witness: &dyn ForgeMergedWitness,
+) -> Result<super::merged::MergedVerdict> {
+    super::merged::is_branch_merged(
+        ctx.git,
+        branch,
+        &ctx.default_branch,
+        &ctx.remote_name,
+        witness,
+    )
 }
 
 /// Compare local and remote SHAs to determine if the branch is in sync.
@@ -1560,6 +1595,7 @@ fn cleanup_empty_parent_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::worktree::ports::NoopForgeWitness;
 
     /// Plan fixture where every hook phase has discoverable work — the
     /// pre-gating shape, for tests exercising other row conditionals.
@@ -1580,6 +1616,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only: false,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         let params = BranchDeleteParams {
@@ -1618,6 +1655,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         let params = |delete_remote: bool| BranchDeleteParams {
@@ -1683,6 +1721,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only: false,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert_eq!(vb.name, "feature/test");
@@ -1701,6 +1740,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only: false,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_path.is_none());
@@ -1718,6 +1758,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only: true,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         assert!(vb.worktree_only);
@@ -1942,7 +1983,8 @@ mod tests {
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let result = execute(&params, None, &mut bridge).expect("keep_local_branch should succeed");
+        let result = execute(&params, None, &NoopForgeWitness, &mut bridge)
+            .expect("keep_local_branch should succeed");
 
         assert_eq!(result.deletions.len(), 1);
         assert!(
@@ -2010,7 +2052,7 @@ mod tests {
         let mut output = TestOutput::new();
         let executor = HookExecutor::new(HooksConfig::default()).unwrap();
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let result = execute(&params, None, &mut bridge).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),
@@ -2052,7 +2094,7 @@ mod tests {
             force_flag_label: "-f/--force".to_string(),
         };
         let mut sink = RecordingStageSink::default();
-        let result = execute(&params, None, &mut sink).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut sink).unwrap();
         assert!(result.validation_errors.is_empty());
 
         // Exactly one plan, committed before any deletion executed.
@@ -2116,6 +2158,7 @@ mod tests {
             is_current_worktree: false,
             worktree_only: false,
             merged_into: None,
+            merged_via: None,
             daft_files: DaftFilePlan::Nothing,
         };
         let params = BranchDeleteParams {
@@ -2243,7 +2286,7 @@ mod tests {
             inner: RecordingStageSink::default(),
             probes: RefCell::new(Vec::new()),
         };
-        let result = execute(&params, None, &mut sink).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut sink).unwrap();
         assert!(result.validation_errors.is_empty());
 
         // No discoverable hooks: the plan omits both hook rows...
@@ -2336,7 +2379,7 @@ mod tests {
         trust_db.set_trust_level(&canonical_git_dir, crate::hooks::TrustLevel::Allow);
         let executor = HookExecutor::with_trust_db(HooksConfig::default(), trust_db);
         let mut bridge = CommandBridge::new(&mut output, executor);
-        let bd_result = execute(&params, None, &mut bridge).unwrap();
+        let bd_result = execute(&params, None, &NoopForgeWitness, &mut bridge).unwrap();
         assert!(
             bd_result.validation_errors.is_empty(),
             "unexpected validation errors: {:?}",
@@ -2483,7 +2526,7 @@ mod tests {
             force_flag_label: "-D/--force".to_string(),
         };
         let mut bridge = ScriptedBridge::aborting();
-        let result = execute(&params, None, &mut bridge).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut bridge).unwrap();
 
         assert!(
             !result.validation_errors.is_empty(),
@@ -2573,7 +2616,7 @@ mod tests {
             force_flag_label: "-D/--force".to_string(),
         };
         let mut bridge = ScriptedBridge::aborting();
-        let result = execute(&params, None, &mut bridge).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),
@@ -2678,7 +2721,7 @@ mod tests {
             choice: crate::core::ConsolidationChoice::Consolidate,
             side: crate::core::ConflictSide::Abort,
         };
-        let result = execute(&params, None, &mut bridge).unwrap();
+        let result = execute(&params, None, &NoopForgeWitness, &mut bridge).unwrap();
 
         assert!(
             result.validation_errors.is_empty(),

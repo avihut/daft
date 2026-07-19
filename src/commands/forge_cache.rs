@@ -22,7 +22,8 @@
 //! `pr` column until a later refresh — or a successful `pr:` checkout —
 //! proves the forge reachable again.
 
-use crate::core::worktree::forge_ref::ForgeRefKind;
+use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+use crate::core::worktree::ports::{ForgeMergedWitness, NoopForgeWitness};
 use crate::forge::{PrListEntry, RemoteRefInfo};
 use crate::git::GitCommand;
 use crate::store::Pool;
@@ -474,27 +475,168 @@ pub fn run_refresh_forge() -> anyhow::Result<()> {
     nix::unistd::setsid().ok();
     let project_root = crate::core::repo::get_project_root()?;
     let repo_hash = crate::core::repo_identity::compute_repo_id()?;
+    refresh_snapshot(&project_root, &repo_hash).map(|_| ())
+}
+
+/// One listing, persisted as the new snapshot, with the outcome stamped as
+/// forge health. Shared by the detached refresh child and the foreground
+/// merge witness so health semantics can't drift between them.
+fn refresh_snapshot(
+    project_root: &std::path::Path,
+    repo_hash: &str,
+) -> anyhow::Result<Vec<PrListEntry>> {
     // Stamped before the fetch: the start stamp is the in-flight guard's
     // key, so a slow gh can't let a second `daft list` pile on a second
     // concurrent refresh (it attaches to this one instead).
-    record_refresh_started(&repo_hash);
+    record_refresh_started(repo_hash);
     let git = GitCommand::new(true);
     let config = crate::forge::ForgeConfig::load(&git);
-    match crate::forge::fetch_snapshot(&git, &project_root, &config) {
+    match crate::forge::fetch_snapshot(&git, project_root, &config) {
         Ok((kind, entries)) => {
             // Snapshot first, then the success stamp — the live table's poll
             // concludes on the stamp, so the data is always there when it
             // reloads the lookup.
-            persist_snapshot(&repo_hash, kind, &entries);
-            record_refresh_success(&repo_hash);
-            Ok(())
+            persist_snapshot(repo_hash, kind, &entries);
+            record_refresh_success(repo_hash);
+            Ok(entries)
         }
         Err(err) => {
             let deep = crate::forge::classify_unavailable(&err).map(|k| k.kind_str());
-            record_refresh_failure(&repo_hash, deep);
+            record_refresh_failure(repo_hash, deep);
             Err(err)
         }
     }
+}
+
+/// The [`ForgeMergedWitness`] for this run: a live one where a fresh listing
+/// is both possible and appropriate, otherwise the no-op.
+///
+/// Declines for repos that name no forge, and — like every other forge fetch —
+/// for agent and test invocations, which must never fan out network work.
+/// Declining costs nothing but a fallback to the git probes.
+pub fn merged_witness(git: &GitCommand) -> std::sync::Arc<dyn ForgeMergedWitness> {
+    if crate::should_skip_background_tasks(crate::cli::argv())
+        || !crate::forge::repo_forge_capable(git)
+    {
+        return std::sync::Arc::new(NoopForgeWitness);
+    }
+    let (Ok(project_root), Ok(repo_hash)) = (
+        crate::core::repo::get_project_root(),
+        crate::core::repo_identity::compute_repo_id(),
+    ) else {
+        return std::sync::Arc::new(NoopForgeWitness);
+    };
+    std::sync::Arc::new(LiveForgeWitness {
+        project_root,
+        repo_hash,
+        index: std::sync::OnceLock::new(),
+    })
+}
+
+/// Answers "did the forge merge this branch?" from a listing fetched during
+/// this run — never from the cache, which is a stale hint and cannot
+/// authorize deleting anything (#737).
+///
+/// The listing is fetched lazily and at most once. Most runs never fetch at
+/// all: the witness is consulted only for a branch whose upstream is gone and
+/// which every git probe already failed to place, which is rare.
+pub struct LiveForgeWitness {
+    project_root: std::path::PathBuf,
+    repo_hash: String,
+    index: std::sync::OnceLock<MergedPrIndex>,
+}
+
+impl ForgeMergedWitness for LiveForgeWitness {
+    fn merged_pr(
+        &self,
+        branch: &str,
+        tip_oid: &str,
+        target_branch: &str,
+    ) -> Option<ForgeBranchRef> {
+        // Concurrent DAG workers converge here: the first blocks on the
+        // listing, the rest wait on it rather than each firing their own.
+        self.index
+            .get_or_init(|| {
+                // A failed listing indexes as empty — the run falls back to
+                // the git probes, exactly as if the repo had no forge.
+                refresh_snapshot(&self.project_root, &self.repo_hash)
+                    .map_or_else(|_| MergedPrIndex::default(), |e| index_entries(&e))
+            })
+            .witness(branch, tip_oid, target_branch)
+    }
+}
+
+/// A merged PR/MR that could witness for its head branch.
+struct MergedPr {
+    forge_ref: ForgeBranchRef,
+    head_oid: String,
+    base_branch: String,
+}
+
+/// The run's listing, reduced to what the witness decides on.
+#[derive(Default)]
+struct MergedPrIndex {
+    /// Branches carrying an open PR. An open PR means the work continues, so
+    /// nothing that merged earlier can speak for the branch as it stands now.
+    shadowed: std::collections::HashSet<String>,
+    /// Merged PRs by head branch. More than one is ordinary — a branch reused
+    /// across several PRs — which is exactly why the head commit decides.
+    merged: std::collections::HashMap<String, Vec<MergedPr>>,
+}
+
+impl MergedPrIndex {
+    fn witness(&self, branch: &str, tip_oid: &str, target_branch: &str) -> Option<ForgeBranchRef> {
+        if self.shadowed.contains(branch) {
+            return None;
+        }
+        self.merged
+            .get(branch)?
+            .iter()
+            .find(|pr| pr.head_oid == tip_oid && pr.base_branch == target_branch)
+            .map(|pr| pr.forge_ref)
+    }
+}
+
+/// Reduce a listing to the witness index. Pure, so the rules that decide
+/// whether a branch may be deleted are testable without a forge.
+///
+/// Cross-repo rows are excluded for the same reason
+/// [`ForgePrsRepo::by_head_branch`] excludes them: a fork's branch must never
+/// speak for a local branch that happens to share its name. Closed-unmerged
+/// rows never witness at all.
+fn index_entries(entries: &[PrListEntry]) -> MergedPrIndex {
+    let mut index = MergedPrIndex::default();
+    for entry in entries {
+        if entry.is_cross_repo {
+            continue;
+        }
+        match entry.state.as_str() {
+            "open" => {
+                index.shadowed.insert(entry.head_branch.clone());
+            }
+            "merged" => {
+                // Without both pins the row proves nothing about *this*
+                // branch at *this* commit, so it is dropped rather than
+                // half-trusted.
+                let (Some(head_oid), Some(base_branch)) =
+                    (entry.head_oid.clone(), entry.base_branch.clone())
+                else {
+                    continue;
+                };
+                index
+                    .merged
+                    .entry(entry.head_branch.clone())
+                    .or_default()
+                    .push(MergedPr {
+                        forge_ref: ForgeBranchRef::new(entry.kind, entry.number),
+                        head_oid,
+                        base_branch,
+                    });
+            }
+            _ => {}
+        }
+    }
+    index
 }
 
 #[cfg(test)]
@@ -516,7 +658,137 @@ mod tests {
             author: "octocat".into(),
             head_repo_owner: String::new(),
             updated_at: None,
+            head_oid: None,
+            base_branch: None,
         }
+    }
+
+    /// A merged PR carrying both witness pins.
+    fn merged_entry(number: u32, head: &str, head_oid: &str, base: &str) -> PrListEntry {
+        PrListEntry {
+            state: "merged".into(),
+            head_oid: Some(head_oid.into()),
+            base_branch: Some(base.into()),
+            ..entry(number, head, None)
+        }
+    }
+
+    #[test]
+    fn witnesses_a_merged_pr_at_the_branch_tip() {
+        let index = index_entries(&[merged_entry(731, "feat/x", "abc123", "master")]);
+
+        let found = index.witness("feat/x", "abc123", "master");
+        assert_eq!(found.map(|r| r.number), Some(731));
+    }
+
+    /// Branch names get reused. A merged PR for an *earlier* branch of the
+    /// same name must not vouch for whatever work carries the name now —
+    /// which is the whole reason the witness pins the commit.
+    #[test]
+    fn refuses_when_the_tip_is_not_the_merged_pr_head() {
+        let index = index_entries(&[merged_entry(731, "feat/x", "abc123", "master")]);
+
+        assert!(index.witness("feat/x", "different-tip", "master").is_none());
+    }
+
+    /// A stacked PR merged into another feature branch, or a backport merged
+    /// into a release line, is genuinely merged — just not into the branch
+    /// the caller asked about.
+    #[test]
+    fn refuses_when_the_pr_merged_into_a_different_base() {
+        let index = index_entries(&[
+            merged_entry(731, "feat/stacked", "abc123", "feat/parent"),
+            merged_entry(732, "feat/backport", "def456", "release-2"),
+        ]);
+
+        assert!(index.witness("feat/stacked", "abc123", "master").is_none());
+        assert!(index.witness("feat/backport", "def456", "master").is_none());
+        // Against its own base it does witness.
+        assert!(
+            index
+                .witness("feat/stacked", "abc123", "feat/parent")
+                .is_some()
+        );
+    }
+
+    /// An open PR on the branch means the work continues, whatever merged
+    /// before it.
+    #[test]
+    fn an_open_pr_shadows_an_earlier_merged_one() {
+        let index = index_entries(&[
+            merged_entry(700, "feat/x", "abc123", "master"),
+            entry(731, "feat/x", None),
+        ]);
+
+        assert!(index.witness("feat/x", "abc123", "master").is_none());
+    }
+
+    /// A fork's branch must never speak for a local branch sharing its name
+    /// (the rule `ForgePrsRepo::by_head_branch` applies to the cache).
+    #[test]
+    fn ignores_cross_repo_rows() {
+        let mut fork = merged_entry(731, "patch-1", "abc123", "master");
+        fork.is_cross_repo = true;
+
+        assert!(
+            index_entries(&[fork])
+                .witness("patch-1", "abc123", "master")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ignores_closed_and_pinless_rows() {
+        let mut closed = merged_entry(4, "feat/abandoned", "abc123", "master");
+        closed.state = "closed".into();
+        // A platform that supplied no head commit (or no base) can't witness.
+        let mut pinless = merged_entry(5, "feat/pinless", "abc123", "master");
+        pinless.head_oid = None;
+        let mut baseless = merged_entry(6, "feat/baseless", "abc123", "master");
+        baseless.base_branch = None;
+
+        let index = index_entries(&[closed, pinless, baseless]);
+        assert!(
+            index
+                .witness("feat/abandoned", "abc123", "master")
+                .is_none()
+        );
+        assert!(index.witness("feat/pinless", "abc123", "master").is_none());
+        assert!(index.witness("feat/baseless", "abc123", "master").is_none());
+    }
+
+    /// A branch reused across several PRs indexes them all; the head commit
+    /// picks the one that actually carried this work.
+    #[test]
+    fn picks_the_merged_pr_matching_the_tip() {
+        let index = index_entries(&[
+            merged_entry(700, "feat/x", "old-tip", "master"),
+            merged_entry(731, "feat/x", "new-tip", "master"),
+        ]);
+
+        assert_eq!(
+            index
+                .witness("feat/x", "new-tip", "master")
+                .map(|r| r.number),
+            Some(731)
+        );
+        assert_eq!(
+            index
+                .witness("feat/x", "old-tip", "master")
+                .map(|r| r.number),
+            Some(700)
+        );
+    }
+
+    /// A failed listing indexes as empty, so the run falls back to the git
+    /// probes rather than concluding anything.
+    #[test]
+    fn an_empty_index_witnesses_nothing() {
+        assert!(
+            MergedPrIndex::default()
+                .witness("feat/x", "abc123", "master")
+                .is_none()
+        );
     }
 
     #[test]
