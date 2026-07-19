@@ -120,6 +120,92 @@ pub fn check_worktree_layout(ctx: &RepoContext) -> CheckResult {
     )
 }
 
+/// Check that every recorded worktree identity still matches reality.
+///
+/// Daft records what branch each worktree was created for, so `daft list` can
+/// still name a worktree whose HEAD is detached for a reason git does not
+/// record. A record that disagrees with the branch actually checked out —
+/// someone checked out a different branch into the worktree, or renamed one
+/// outside `daft rename` — is not wrong in a way that breaks anything today
+/// (live state always wins the name), but it means the fallback would name
+/// the wrong branch the moment that worktree detaches. Reconciling is a
+/// one-way update: the checkout is the truth, the record follows it.
+pub fn check_worktree_identity_drift(ctx: &RepoContext) -> CheckResult {
+    let records = crate::core::worktree::identity_store::read_identities(&ctx.git_common_dir);
+    if records.is_empty() {
+        return CheckResult::pass("Worktree identities", "no records to check");
+    }
+
+    let git = GitCommand::new(true);
+    let porcelain = match git.worktree_list_porcelain() {
+        Ok(output) => output,
+        Err(e) => {
+            return CheckResult::warning(
+                "Worktree identities",
+                &format!("could not list worktrees: {e}"),
+            );
+        }
+    };
+
+    // Only attached worktrees can disagree: a detached one is exactly the
+    // case the record exists to answer, not a contradiction of it.
+    let drifted: Vec<(PathBuf, String, String)> = parse_worktree_list_porcelain(&porcelain)
+        .into_iter()
+        .filter(|e| !e.is_bare)
+        .filter_map(|entry| {
+            let checked_out = entry.branch.clone()?;
+            let id = crate::core::worktree::identity_store::worktree_id_for(&entry.path)?;
+            let recorded = records.get(&id)?.branch.clone();
+            (recorded != checked_out).then_some((entry.path, checked_out, recorded))
+        })
+        .collect();
+
+    if drifted.is_empty() {
+        return CheckResult::pass(
+            "Worktree identities",
+            &format!("all {} record(s) match their checkout", records.len()),
+        );
+    }
+
+    let details: Vec<String> = drifted
+        .iter()
+        .map(|(path, checked_out, recorded)| {
+            format!(
+                "{}: checked out {checked_out}, recorded {recorded}",
+                path.display()
+            )
+        })
+        .collect();
+    let fix_targets = drifted.clone();
+    let dry_details = details.clone();
+
+    CheckResult::warning(
+        "Worktree identities",
+        &format!("{} worktree(s) drifted from their record", drifted.len()),
+    )
+    .with_details(details)
+    .with_suggestion("run with --fix to update the records to match what is checked out")
+    .with_fix(Box::new(move || {
+        let ctx_dir = crate::core::repo::get_git_common_dir().map_err(|e| e.to_string())?;
+        let store = crate::core::worktree::identity_store::IdentityStore::open(&ctx_dir)
+            .ok_or_else(|| "identity records unavailable".to_string())?;
+        for (path, checked_out, _) in &fix_targets {
+            store.record(path, checked_out);
+        }
+        Ok(())
+    }))
+    .with_dry_run_fix(Box::new(move || {
+        dry_details
+            .iter()
+            .map(|detail| FixAction {
+                description: String::from("Update record: ") + detail,
+                would_succeed: true,
+                failure_reason: None,
+            })
+            .collect()
+    }))
+}
+
 /// Check that all worktree paths exist on disk.
 pub fn check_worktree_consistency(_ctx: &RepoContext) -> CheckResult {
     let git = GitCommand::new(true);
