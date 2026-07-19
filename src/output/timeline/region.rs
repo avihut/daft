@@ -218,6 +218,9 @@ pub(super) struct TimelineCore {
     footer: ProgressBar,
     /// Stops the footer's elapsed ticker at teardown.
     footer_done: Arc<AtomicBool>,
+    /// Whether the stopwatch footer advertises the live `v` key — set once a
+    /// listener is actually watching.
+    keys_hint: Arc<AtomicBool>,
     /// Dim free-text sub-line under the active step (`-v` only).
     detail_bar: Option<ProgressBar>,
     /// Suppresses the TTY's `^C` echo for the region's lifetime — the echo
@@ -353,20 +356,32 @@ impl TimelineCore {
             render::footer(&footer_counter(started, use_color), use_color),
         );
         let footer_done = Arc::new(AtomicBool::new(false));
+        // Set once a key listener is watching (#729): the stopwatch line then
+        // also offers the key. It rides the footer rather than taking a line
+        // of its own, so it costs no region height and retires with the
+        // stopwatch — the hint never reaches scrollback.
+        let keys_hint = Arc::new(AtomicBool::new(false));
         #[cfg(not(test))]
         {
             let bar = footer.clone();
             let done = Arc::clone(&footer_done);
+            let hint = Arc::clone(&keys_hint);
+            let density = verbose.clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(Duration::from_millis(100));
                     if done.load(Ordering::SeqCst) {
                         break;
                     }
-                    bar.set_message(render::footer(
-                        &footer_counter(started, use_color),
-                        use_color,
-                    ));
+                    let mut line = render::footer(&footer_counter(started, use_color), use_color);
+                    if hint.load(Ordering::Relaxed) {
+                        line.push_str(&render::paint(
+                            crate::output::palette::DARK_GREY,
+                            key_hint(density.get()),
+                            use_color,
+                        ));
+                    }
+                    bar.set_message(line);
                 }
             });
         }
@@ -401,6 +416,7 @@ impl TimelineCore {
             row_threads: HashMap::new(),
             replayable: Vec::new(),
             retain_for_replay: false,
+            keys_hint,
             label_width: 0,
             slots: Vec::new(),
             header,
@@ -640,6 +656,12 @@ impl TimelineCore {
     /// [`Self::retain_for_replay`].
     pub(super) fn set_retain_for_replay(&mut self, on: bool) {
         self.retain_for_replay = on;
+    }
+
+    /// Advertise the live `v` key on the stopwatch footer. The next ticker
+    /// pass (≤100 ms) picks it up.
+    pub(super) fn set_keys_hint(&mut self, on: bool) {
+        self.keys_hint.store(on, Ordering::Relaxed);
     }
 
     /// The density flipped mid-run (a live `v`): note it, fold out whatever
@@ -1898,6 +1920,19 @@ fn line_style() -> ProgressStyle {
 /// The pending footer's stopwatch face: the command's elapsed so far, in the
 /// rail's grey. Zeroed under cfg(test) so the InMemoryTerm sequence
 /// assertions stay deterministic (no ticker repaints it there either).
+/// The live-key hint trailing the stopwatch, phrased as what the key will
+/// do next rather than what mode you are in — the label of a control, not a
+/// readout. Ctrl-C rides along because the two are the rail's whole
+/// interactive surface, and naming it here is also the promise that it still
+/// reaches the process (the listener keeps `ISIG` on).
+fn key_hint(verbose: bool) -> &'static str {
+    if verbose {
+        "   v quiet \u{b7} ^C cancel"
+    } else {
+        "   v verbose \u{b7} ^C cancel"
+    }
+}
+
 fn footer_counter(started: Instant, use_color: bool) -> String {
     #[cfg(test)]
     let elapsed = {
@@ -1979,5 +2014,18 @@ mod tests {
         }
         let plain = StepSpec::new(StepKey::new(StageId::Push));
         assert_eq!(display_label(&plain, StepPhase::Done), "Pushed");
+    }
+
+    #[test]
+    fn the_key_hint_names_what_the_key_does_next() {
+        // A control's label, not a mode readout: while terse it offers
+        // verbose, and while verbose it offers quiet.
+        assert!(key_hint(false).contains("v verbose"));
+        assert!(key_hint(true).contains("v quiet"));
+        // Ctrl-C is advertised in both — the listener keeps `ISIG` on, so
+        // the promise holds.
+        for hint in [key_hint(false), key_hint(true)] {
+            assert!(hint.contains("^C cancel"), "got: {hint}");
+        }
     }
 }

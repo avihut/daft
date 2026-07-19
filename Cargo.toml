@@ -158,7 +158,8 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system"] 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 # `fs` adds mkfifo/open for the governor's POSIX jobserver FIFO (#678).
-nix = { version = "0.31", features = ["signal", "term", "fs"] }
+# `poll` adds the rail key listener's cancellable /dev/tty read (#729).
+nix = { version = "0.31", features = ["signal", "term", "fs", "poll"] }
 
 [dev-dependencies]
 tempfile = "3.8"

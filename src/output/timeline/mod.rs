@@ -17,6 +17,7 @@
 //! `DAFT_TESTING` output contracts (and the whole YAML suite) unchanged.
 
 mod bridge;
+mod key_listener;
 mod plan;
 mod rail_hook;
 mod region;
@@ -268,6 +269,11 @@ impl TimelineHandle {
     /// prompt's own interrupt swap would deadblock the dispatcher. The
     /// prompt exit leaves the (already cleared) region alone.
     pub fn suspend_for_prompt<R>(&self, f: impl FnOnce() -> R) -> R {
+        // The prompt needs the terminal it can see and edit in: hand back
+        // cooked input and stand the rail's key listener down for the
+        // window, or the two would race for the same device and the user
+        // would type into a void. No-op when nothing is listening.
+        let _keys = crate::output::term_guard::suspend_key_input();
         let outer = crate::interrupt::swap_behavior(|| crate::prompt::exit_for_cancelled_prompt());
         let result = self.suspend(f);
         crate::interrupt::restore_behavior(outer);
@@ -412,6 +418,10 @@ pub struct Timeline {
     handle: TimelineHandle,
     mode: TimelineMode,
     started: Instant,
+    /// Watches the terminal for `v` once the plan commits (#729). Owned here
+    /// rather than by the region so teardown can join it *after* releasing
+    /// the timeline mutex the listener contends for.
+    keys: Option<key_listener::KeyListener>,
 }
 
 impl Timeline {
@@ -436,6 +446,7 @@ impl Timeline {
             },
             mode,
             started: Instant::now(),
+            keys: None,
         }
     }
 
@@ -543,12 +554,40 @@ impl Timeline {
                 installing_over_face,
                 "plan committed twice for one invocation"
             );
+            self.start_key_listener();
             return;
         }
         let mp = inner.make_multi_progress();
         let header = inner.header.clone();
         let setup = inner.region_setup();
         inner.core = Some(TimelineCore::new(mp, header, plan, setup, self.started));
+        drop(inner);
+        self.start_key_listener();
+    }
+
+    /// Watch the terminal for the live `v` toggle (#729), now that there are
+    /// plan rows to re-render.
+    ///
+    /// Not during the planning face: prompts run under it (clone's
+    /// consolidation), and putting the driver in unbuffered mode around a
+    /// prompt with nothing reading would swallow the user's typing. Not
+    /// under `cfg(test)` either — a wall-clock reader thread would make the
+    /// transcript assertions depend on timing, and there is no terminal to
+    /// read from anyway.
+    fn start_key_listener(&mut self) {
+        if self.keys.is_some() || !self.is_interactive() || cfg!(test) {
+            return;
+        }
+        self.keys = key_listener::KeyListener::spawn(self.handle.clone());
+        if self.keys.is_some() {
+            // Something can toggle now, so compact receipts start keeping
+            // their logs for a possible fold-out, and the footer offers the
+            // key.
+            self.set_retain_for_replay(true);
+            if let Some(core) = self.handle.lock().core.as_mut() {
+                core.set_keys_hint(true);
+            }
+        }
     }
 
     /// Collapse a still-planning region without a trace (no footer, no
@@ -673,6 +712,12 @@ impl Timeline {
     }
 
     fn teardown(&mut self, footer_text: &str, policy: UnresolvedPolicy) {
+        // Stop reading keys first, and with no lock held: the listener may be
+        // parked on the very mutex this function is about to take, inside
+        // `toggle_verbose`. Joining it from under that lock would deadlock.
+        if let Some(mut keys) = self.keys.take() {
+            keys.stop();
+        }
         let (core, deferred) = {
             let mut inner = self.handle.lock();
             (

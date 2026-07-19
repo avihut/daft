@@ -198,6 +198,13 @@ pub fn run_command_interactive(
     working_dir: &Path,
     cancel: Option<&crate::git::cancel::CancelFlag>,
 ) -> Result<CommandResult> {
+    // The child inherits stdin, so it owns the terminal for its lifetime.
+    // If a rail key listener is watching (#729), stand it down and hand the
+    // driver back to cooked, echoing input — otherwise the child would run
+    // with `ECHO`/`ICANON` off, showing nothing as the user types, while the
+    // listener raced it for the same bytes. No-op when nothing is listening.
+    let _keys = crate::output::term_guard::suspend_key_input();
+
     let mut command = Command::new("sh");
     command.args(["-c", cmd]);
     command.current_dir(working_dir);
