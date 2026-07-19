@@ -16,6 +16,9 @@ feel. These need a real terminal.
 - [ ] Rows that already finished compactly fold out once, under a repeat of
       their receipt line, headed by `verbose on — replaying N finished rows`
 - [ ] Toggling on/off/on does not replay the same log twice
+- [ ] Toggling repeatedly while rows are still running leaves no `verbose on` /
+      `verbose off` lines piling up in scrollback — only the footer hint and the
+      live rows change (a note appears only to head a fold-out replay)
 - [ ] Start with `-v` and press `v` — later receipts arrive compact; what
       already printed stays
 - [ ] Failed rows are not replayed (their output threaded when they failed)

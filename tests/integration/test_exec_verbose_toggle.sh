@@ -69,14 +69,17 @@ test_exec_v_toggles_verbose_midrun() {
     local out
     out=$(_toggle_clean "$log")
 
-    if ! grep -q "verbose on" <<<"$out"; then
-        log_error "no density note after pressing v"
-        return 1
-    fi
     # A *threaded* line wears the thread gutter; the same text as a row
     # annotation would prove nothing, since terse mode shows it there too.
     if ! grep -qE '^│ +first-line' <<<"$out"; then
         log_error "verbose did not thread a job's log into its receipt"
+        return 1
+    fi
+    # Every row was still running when v landed, so nothing had finished to
+    # fold out — the flip must leave no note in scrollback. A note per keypress
+    # used to pile up here (#729 field report); it now heads a replay only.
+    if grep -q "verbose on\|verbose off" <<<"$out"; then
+        log_error "a density note appeared for a flip with nothing to replay"
         return 1
     fi
     log_success "v flips the rail to verbose mid-run"
@@ -127,7 +130,10 @@ test_exec_ctrl_c_still_cancels_with_listener_active() {
     local out
     out=$(_toggle_clean "$log")
 
-    if ! grep -q "verbose on" <<<"$out"; then
+    # The toggle is confirmed by the footer hint flipping to `v quiet` (now
+    # offering the way back), not by a scrollback note — a mid-run flip with
+    # nothing finished writes none.
+    if ! grep -q "v quiet" <<<"$out"; then
         log_error "the toggle did not register before the interrupt"
         return 1
     fi

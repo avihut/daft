@@ -1498,8 +1498,10 @@ mod tests {
         assert_eq!(tl.toggle_verbose(), Some(false));
         assert_eq!(tl.toggle_verbose(), Some(true));
         tl.finish("Done in 0.1s");
-        // Exactly one fold-out: the second verbose-ward flip has nothing left
-        // to replay, and says so by dropping the count clause.
+        // Exactly one fold-out: the intervening `verbose off` and the second
+        // `verbose on` have nothing to replay, so they add no note — a flip
+        // that changes only the live region stays out of scrollback, and the
+        // footer hint alone carries it.
         assert_eq!(
             term.contents(),
             "\u{250c}  Running cargo test in 1 worktree\n\
@@ -1509,18 +1511,17 @@ mod tests {
              \u{2713}  a\n\
              \u{2502}    a-out\n\
              \u{2502}\n\
-             \u{25cb}  verbose off\n\
-             \u{25cb}  verbose on\n\
-             \u{2502}\n\
              \u{2514}  Done in 0.1s"
         );
     }
 
     #[test]
-    fn without_retention_a_toggle_still_notes_but_has_nothing_to_fold_out() {
+    fn without_retention_a_toggle_is_silent_but_still_flips_later_rows() {
         // The default: no key listener, so compact receipts drop their
         // buffers exactly as they always did and a toggle can only affect
-        // what comes next.
+        // what comes next. With nothing to fold out, the flip leaves no note
+        // in scrollback — only `b`, which runs after it, shows the new
+        // density.
         let (mut tl, term) = captured("Running cargo test in 2 worktrees");
         tl.set_ordered_receipts(true);
         tl.set_row_output(exec_row_output());
@@ -1534,7 +1535,6 @@ mod tests {
             "\u{250c}  Running cargo test in 2 worktrees\n\
              \u{2502}\n\
              \u{2713}  a\n\
-             \u{25cb}  verbose on\n\
              \u{2713}  b\n\
              \u{2502}    b-out\n\
              \u{2502}\n\
@@ -1554,7 +1554,7 @@ mod tests {
         run_row(&mut tl, "b", "b-out");
         tl.finish("Done in 0.1s");
         // `a`'s threaded receipt stays printed — nothing is retracted; `b`
-        // simply arrives compact.
+        // simply arrives compact. The flip itself leaves no note.
         assert_eq!(
             term.contents(),
             "\u{250c}  Running cargo test in 2 worktrees\n\
@@ -1562,7 +1562,6 @@ mod tests {
              \u{2713}  a\n\
              \u{2502}    a-out\n\
              \u{2502}\n\
-             \u{25cb}  verbose off\n\
              \u{2713}  b\n\
              \u{2502}\n\
              \u{2514}  Done in 0.1s"
@@ -1584,7 +1583,6 @@ mod tests {
             term.contents(),
             "\u{250c}  Running cargo test in 2 worktrees\n\
              \u{2502}\n\
-             \u{25cb}  verbose on\n\
              \u{2713}  a\n\
              \u{2502}    a-out\n\
              \u{2502}\n\
@@ -1615,8 +1613,6 @@ mod tests {
              \u{2502}\n\
              \u{2717}  bad  exit 1\n\
              \u{2502}    boom\n\
-             \u{2502}\n\
-             \u{25cb}  verbose on\n\
              \u{2502}\n\
              \u{2514}  Finished with failures in 0.1s"
         );

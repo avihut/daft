@@ -270,10 +270,14 @@ fold-out block below, headed by a repeat of the receipt line:
 │
 ```
 
-Each log folds out once, so toggling back and forth never repeats it. Failed
-rows are not replayed — their output already threaded when they failed. Turning
-verbose off collapses the live windows and leaves everything already printed
-alone.
+The `verbose on` note appears only when there are finished rows to fold out. A
+flip with nothing to replay — and every `verbose off` — changes the live rows
+alone and adds no line to scrollback, so repeated toggling never piles up notes;
+the footer hint (`v verbose` / `v quiet`) is what always shows the current
+setting. Each log folds out once, so toggling back and forth never repeats it.
+Failed rows are not replayed — their output already threaded when they failed.
+Turning verbose off collapses the live windows and leaves everything already
+printed alone.
 
 The hint and the toggle are terminal-only: with output redirected, in CI, or
 under `--quiet` there is no live region, no key listener, and no change to what

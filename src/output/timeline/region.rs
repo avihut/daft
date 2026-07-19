@@ -672,18 +672,19 @@ impl TimelineCore {
     /// alt-screen TUI — so a verbose-ward flip re-emits their logs *below*
     /// as a fold-out block instead.
     pub(super) fn on_density_toggled(&mut self, verbose: bool) {
-        let note = if verbose {
-            match self.replayable.len() {
-                0 => "verbose on".to_string(),
+        // A note earns a permanent scrollback line only when the flip adds
+        // content — a verbose-ward flip with finished rows to fold out below.
+        // A bare on/off flip changes the live region alone: windows open or
+        // collapse and the footer hint flips to match, so the current density
+        // is already visible without a note. Emitting one per keypress just
+        // piles up `verbose on`/`verbose off` lines (#729 field feedback).
+        if verbose && !self.replayable.is_empty() {
+            let note = match self.replayable.len() {
                 1 => "verbose on \u{2014} replaying 1 finished row".to_string(),
                 n => format!("verbose on \u{2014} replaying {n} finished rows"),
-            }
-        } else {
-            "verbose off".to_string()
-        };
-        let line = render::note(&note, self.use_color);
-        self.println_above(&line);
-        if verbose {
+            };
+            let line = render::note(&note, self.use_color);
+            self.println_above(&line);
             self.replay_folded_out();
         }
         self.repaint_live_density(verbose);
