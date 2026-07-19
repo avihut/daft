@@ -1,0 +1,96 @@
+name: Prune removes a squash-merged branch whose diff drifted
+description: >
+  A branch squash-merged after an unrelated change landed on the default branch
+  inside one of its hunks' context windows. The context lines differ, so every
+  patch-id check (git cherry and the #662 cumulative-diff probe) reports the
+  branch unmerged and prune skips it as gone-but-unmerged. The merge-tree probe
+  compares trees instead of patches and must see through the drift, pruning
+  without --force. Regression for issue #737, which stranded daft-725 after PR
+  #731 merged. Git-only: no forge involved.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Seed a numbered file both branches will edit
+    run: |
+      cd $WORK_DIR/test-repo/main
+      printf 'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n' > shared.txt
+      git add shared.txt
+      git commit -m "chore: seed shared file"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Create feature worktree
+    run: git-worktree-checkout -b feat/drifted
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feat/drifted"
+
+  - name: Commit two changes on feat/drifted and push
+    run: |
+      cd $WORK_DIR/test-repo/feat/drifted
+      sed -i.bak 's/^line 5$/line 5 CHANGED/' shared.txt && rm -f shared.txt.bak
+      git add shared.txt
+      git commit -m "feat: change line 5"
+      printf 'new file\n' > added.txt
+      git add added.txt
+      git commit -m "feat: add a file"
+      git push origin feat/drifted
+    expect:
+      exit_code: 0
+
+  - name: Land an unrelated change on main inside the branch's context window
+    run: |
+      cd $WORK_DIR/test-repo/main
+      sed -i.bak 's/^line 8$/line 8 DRIFT/' shared.txt && rm -f shared.txt.bak
+      git add shared.txt
+      git commit -m "fix: unrelated change three lines away"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Squash-merge feat/drifted into main (GitHub squash-merge style)
+    run: |
+      cd $WORK_DIR/test-repo/main
+      git merge --squash feat/drifted
+      git commit -m "feat: drifted feature (#737)"
+      git push origin main
+    expect:
+      exit_code: 0
+
+  - name: Delete the remote branch (merged upstream)
+    run: git -C $WORK_DIR/test-repo/main push origin --delete feat/drifted
+    expect:
+      exit_code: 0
+
+  - name: Prune removes the drifted squash-merged worktree without --force
+    run: git-worktree-prune 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "not merged"
+        - "--force"
+
+  - name: Worktree directory is gone
+    run: test ! -d $WORK_DIR/test-repo/feat/drifted
+    expect:
+      exit_code: 0
+
+  - name: Local branch ref is gone
+    run:
+      git -C $WORK_DIR/test-repo/main show-ref --verify refs/heads/feat/drifted
+    expect:
+      exit_code: 128

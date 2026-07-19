@@ -25,7 +25,12 @@ and finally deletes the local branches.
 A deleted remote branch does not by itself prove the work was merged, so each
 gone branch is verified against the default branch (regular or squash merge)
 before anything is deleted; gone-but-unmerged branches are kept with a
-warning. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
+warning. Squash merges are matched by content, not by patch text, so a squash
+still counts as merged when an intervening commit shifted the surrounding
+lines. A branch that no local check can place is checked against the forge as
+a last resort: it counts as merged only if a freshly fetched pull request
+reports merged, targets the default branch, and has the local branch's exact
+commit as its head. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
 were refined since daft seeded them are also kept, with a pointer at
 daft-file(1) merge for consolidation. --force overrides both: unmerged
 branches are deleted and refined daft files are discarded to
