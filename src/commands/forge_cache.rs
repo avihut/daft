@@ -21,9 +21,15 @@
 //! (missing tool, dead auth, lost repo access) silently hides the default
 //! `pr` column until a later refresh — or a successful `pr:` checkout —
 //! proves the forge reachable again.
+//!
+//! [`LiveForgeWitness`] is the one forge fetch here that is **not** a refresh
+//! trigger. It answers "did a PR merge this branch?" for prune/branch-delete
+//! and writes nothing at all — no snapshot, no health stamp. A merge check
+//! that marked the repo unhealthy would make the next `daft list` quietly
+//! drop its `pr` column, which is not a thing a read may do.
 
 use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
-use crate::core::worktree::ports::{ForgeMergedWitness, NoopForgeWitness};
+use crate::core::worktree::ports::{ForgeMergedWitness, ForgeWitness, NoopForgeWitness};
 use crate::forge::{PrListEntry, RemoteRefInfo};
 use crate::git::GitCommand;
 use crate::store::Pool;
@@ -478,9 +484,25 @@ pub fn run_refresh_forge() -> anyhow::Result<()> {
     refresh_snapshot(&project_root, &repo_hash).map(|_| ())
 }
 
+/// One listing, with nothing recorded anywhere. The shared fetch underneath
+/// [`refresh_snapshot`] and the merge witness, which must not write.
+fn fetch_listing(
+    project_root: &std::path::Path,
+) -> anyhow::Result<(ForgeRefKind, Vec<PrListEntry>)> {
+    let git = GitCommand::new(true);
+    let config = crate::forge::ForgeConfig::load(&git);
+    crate::forge::fetch_snapshot(&git, project_root, &config)
+}
+
 /// One listing, persisted as the new snapshot, with the outcome stamped as
-/// forge health. Shared by the detached refresh child and the foreground
-/// merge witness so health semantics can't drift between them.
+/// forge health. The detached refresh child's path — the command whose whole
+/// job is to refresh the cache.
+///
+/// The merge witness deliberately does NOT come through here: it is a read,
+/// and a read must not rewrite the cache or the health stamps. Stamping a
+/// failure from `prune` would make the *next* `daft list` silently drop its
+/// `pr` column, which is a spooky enough action at a distance when a refresh
+/// does it and indefensible when a merge check does.
 fn refresh_snapshot(
     project_root: &std::path::Path,
     repo_hash: &str,
@@ -489,9 +511,7 @@ fn refresh_snapshot(
     // key, so a slow gh can't let a second `daft list` pile on a second
     // concurrent refresh (it attaches to this one instead).
     record_refresh_started(repo_hash);
-    let git = GitCommand::new(true);
-    let config = crate::forge::ForgeConfig::load(&git);
-    match crate::forge::fetch_snapshot(&git, project_root, &config) {
+    match fetch_listing(project_root) {
         Ok((kind, entries)) => {
             // Snapshot first, then the success stamp — the live table's poll
             // concludes on the stamp, so the data is always there when it
@@ -520,17 +540,43 @@ pub fn merged_witness(git: &GitCommand) -> std::sync::Arc<dyn ForgeMergedWitness
     {
         return std::sync::Arc::new(NoopForgeWitness);
     }
-    let (Ok(project_root), Ok(repo_hash)) = (
-        crate::core::repo::get_project_root(),
-        crate::core::repo_identity::compute_repo_id(),
-    ) else {
+    let Ok(project_root) = crate::core::repo::get_project_root() else {
         return std::sync::Arc::new(NoopForgeWitness);
     };
     std::sync::Arc::new(LiveForgeWitness {
         project_root,
-        repo_hash,
-        index: std::sync::OnceLock::new(),
+        state: std::sync::Mutex::new(WitnessState::Unfetched),
     })
+}
+
+/// How long a merge check will wait on the forge before giving up and letting
+/// the git verdicts stand.
+///
+/// The witness runs inside sync/prune's worker DAG, where every worker that
+/// needs it converges on the same fetch — so an unreachable forge (VPN down,
+/// rate limited) would otherwise stall the live table indefinitely with no
+/// progress and nothing to cancel. A bounded wait turns "hung" into "slow
+/// once, then falls back".
+const WITNESS_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How many times a *transient* failure may be retried within one run.
+///
+/// A forge that is missing, unauthenticated, or inaccessible fails the same
+/// way forever, so it is recorded once and never retried. A network blip or
+/// rate limit might not, and a run that gave up run-wide on the first branch
+/// would keep every later merged branch — so those get one more chance, but
+/// only one: a flaky forge must not cost one round trip per branch.
+const WITNESS_MAX_ATTEMPTS: usize = 2;
+
+/// The witness's memo across a run.
+enum WitnessState {
+    /// No listing attempted yet.
+    Unfetched,
+    /// A listing (possibly empty, when the forge is permanently unavailable)
+    /// to answer every remaining branch from.
+    Ready(MergedPrIndex),
+    /// Transient failures so far. Retries until [`WITNESS_MAX_ATTEMPTS`].
+    Failed { attempts: usize },
 }
 
 /// Answers "did the forge merge this branch?" from a listing fetched during
@@ -542,27 +588,91 @@ pub fn merged_witness(git: &GitCommand) -> std::sync::Arc<dyn ForgeMergedWitness
 /// which every git probe already failed to place, which is rare.
 pub struct LiveForgeWitness {
     project_root: std::path::PathBuf,
-    repo_hash: String,
-    index: std::sync::OnceLock<MergedPrIndex>,
+    state: std::sync::Mutex<WitnessState>,
+}
+
+impl LiveForgeWitness {
+    /// The run's listing, fetched at most [`WITNESS_MAX_ATTEMPTS`] times.
+    ///
+    /// Concurrent DAG workers converge on the mutex: the first fetches, the
+    /// rest wait on it rather than each firing their own.
+    fn with_index<T>(&self, f: impl FnOnce(&MergedPrIndex) -> T) -> Option<T> {
+        let mut state = self.state.lock().ok()?;
+
+        if let WitnessState::Failed { attempts } = &*state
+            && *attempts >= WITNESS_MAX_ATTEMPTS
+        {
+            return None;
+        }
+
+        if matches!(
+            &*state,
+            WitnessState::Unfetched | WitnessState::Failed { .. }
+        ) {
+            *state = match bounded_listing(&self.project_root) {
+                Ok(entries) => WitnessState::Ready(index_entries(&entries)),
+                // Nothing here will get better within the run: no tool, no
+                // auth, no access — or a forge slow enough to outrun the
+                // wait, where retrying would only spend the timeout again.
+                // Settle on an empty index and stop paying for the answer.
+                Err(ListingError::TimedOut) => WitnessState::Ready(MergedPrIndex::default()),
+                Err(ListingError::Failed(err))
+                    if crate::forge::classify_unavailable(&err).is_some() =>
+                {
+                    WitnessState::Ready(MergedPrIndex::default())
+                }
+                // Transient and fast to discover — a rate limit, a network
+                // blip. Count it and let a later branch try again.
+                Err(ListingError::Failed(_)) => {
+                    let attempts = match &*state {
+                        WitnessState::Failed { attempts } => attempts + 1,
+                        _ => 1,
+                    };
+                    WitnessState::Failed { attempts }
+                }
+            };
+        }
+
+        match &*state {
+            WitnessState::Ready(index) => Some(f(index)),
+            _ => None,
+        }
+    }
+}
+
+/// Why a witness listing produced nothing. Kept apart from the error itself
+/// because the two deserve different answers: a fast failure may be worth
+/// another try, a timeout never is.
+enum ListingError {
+    /// The wait ran out before the forge answered.
+    TimedOut,
+    /// The forge answered, unhappily.
+    Failed(anyhow::Error),
+}
+
+/// One listing, abandoned if it outruns [`WITNESS_FETCH_TIMEOUT`].
+///
+/// The fetch runs on its own thread so the wait is bounded and the caller
+/// stays interruptible; a timed-out `gh` is left to finish and exit on its
+/// own rather than stranding the command behind it.
+fn bounded_listing(project_root: &std::path::Path) -> Result<Vec<PrListEntry>, ListingError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = project_root.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(fetch_listing(&root).map(|(_, entries)| entries));
+    });
+
+    match rx.recv_timeout(WITNESS_FETCH_TIMEOUT) {
+        Ok(Ok(entries)) => Ok(entries),
+        Ok(Err(err)) => Err(ListingError::Failed(err)),
+        Err(_) => Err(ListingError::TimedOut),
+    }
 }
 
 impl ForgeMergedWitness for LiveForgeWitness {
-    fn merged_pr(
-        &self,
-        branch: &str,
-        tip_oid: &str,
-        target_branch: &str,
-    ) -> Option<ForgeBranchRef> {
-        // Concurrent DAG workers converge here: the first blocks on the
-        // listing, the rest wait on it rather than each firing their own.
-        self.index
-            .get_or_init(|| {
-                // A failed listing indexes as empty — the run falls back to
-                // the git probes, exactly as if the repo had no forge.
-                refresh_snapshot(&self.project_root, &self.repo_hash)
-                    .map_or_else(|_| MergedPrIndex::default(), |e| index_entries(&e))
-            })
-            .witness(branch, tip_oid, target_branch)
+    fn witness(&self, branch: &str, tip_oid: &str, target_branch: &str) -> ForgeWitness {
+        self.with_index(|index| index.witness(branch, tip_oid, target_branch))
+            .unwrap_or(ForgeWitness::Unproven)
     }
 }
 
@@ -585,15 +695,36 @@ struct MergedPrIndex {
 }
 
 impl MergedPrIndex {
-    fn witness(&self, branch: &str, tip_oid: &str, target_branch: &str) -> Option<ForgeBranchRef> {
+    fn witness(&self, branch: &str, tip_oid: &str, target_branch: &str) -> ForgeWitness {
         if self.shadowed.contains(branch) {
-            return None;
+            return ForgeWitness::Unproven;
         }
-        self.merged
-            .get(branch)?
+        let Some(candidates) = self.merged.get(branch) else {
+            return ForgeWitness::Unproven;
+        };
+
+        // Only PRs against the branch we were asked about can speak for it —
+        // a stacked or release-line PR is merged somewhere else entirely.
+        let mut on_target = candidates
             .iter()
-            .find(|pr| pr.head_oid == tip_oid && pr.base_branch == target_branch)
-            .map(|pr| pr.forge_ref)
+            .filter(|pr| pr.base_branch == target_branch);
+
+        // An exact head match is the strongest answer, so prefer it over any
+        // PR that merely targeted the same base.
+        if let Some(exact) = on_target.clone().find(|pr| pr.head_oid == tip_oid) {
+            return ForgeWitness::MergedAtTip(exact.forge_ref);
+        }
+
+        // Otherwise a PR on this branch merged a head we do not hold (listing
+        // order decides which, when a reused name has several). Hand it back
+        // and let the caller ask git whether our tip is contained in it —
+        // being wrong here costs a fallback to unmerged, never a deletion.
+        on_target.next().map_or(ForgeWitness::Unproven, |pr| {
+            ForgeWitness::MergedAtOtherHead {
+                pr: pr.forge_ref,
+                head_oid: pr.head_oid.clone(),
+            }
+        })
     }
 }
 
@@ -673,27 +804,50 @@ mod tests {
         }
     }
 
+    /// The PR number behind an exact-tip witness, or `None` for any weaker
+    /// outcome.
+    fn at_tip(outcome: ForgeWitness) -> Option<u32> {
+        match outcome {
+            ForgeWitness::MergedAtTip(pr) => Some(pr.number),
+            _ => None,
+        }
+    }
+
+    fn is_unproven(outcome: ForgeWitness) -> bool {
+        outcome == ForgeWitness::Unproven
+    }
+
     #[test]
     fn witnesses_a_merged_pr_at_the_branch_tip() {
         let index = index_entries(&[merged_entry(731, "feat/x", "abc123", "master")]);
 
-        let found = index.witness("feat/x", "abc123", "master");
-        assert_eq!(found.map(|r| r.number), Some(731));
+        assert_eq!(
+            at_tip(index.witness("feat/x", "abc123", "master")),
+            Some(731)
+        );
     }
 
-    /// Branch names get reused. A merged PR for an *earlier* branch of the
-    /// same name must not vouch for whatever work carries the name now —
-    /// which is the whole reason the witness pins the commit.
+    /// A head the caller does not hold is reported, not swallowed: the PR
+    /// advanced remotely (a suggestion accepted in the web UI) and only git
+    /// can say whether the local tip is contained in it. Deciding here would
+    /// either strand the branch forever or vouch for a reused name.
     #[test]
-    fn refuses_when_the_tip_is_not_the_merged_pr_head() {
+    fn reports_a_merged_pr_whose_head_is_not_the_tip() {
         let index = index_entries(&[merged_entry(731, "feat/x", "abc123", "master")]);
 
-        assert!(index.witness("feat/x", "different-tip", "master").is_none());
+        assert_eq!(
+            index.witness("feat/x", "different-tip", "master"),
+            ForgeWitness::MergedAtOtherHead {
+                pr: index.merged["feat/x"][0].forge_ref,
+                head_oid: "abc123".into(),
+            }
+        );
     }
 
     /// A stacked PR merged into another feature branch, or a backport merged
     /// into a release line, is genuinely merged — just not into the branch
-    /// the caller asked about.
+    /// the caller asked about. Nothing about it is reportable here, not even
+    /// as a head mismatch.
     #[test]
     fn refuses_when_the_pr_merged_into_a_different_base() {
         let index = index_entries(&[
@@ -701,13 +855,20 @@ mod tests {
             merged_entry(732, "feat/backport", "def456", "release-2"),
         ]);
 
-        assert!(index.witness("feat/stacked", "abc123", "master").is_none());
-        assert!(index.witness("feat/backport", "def456", "master").is_none());
+        assert!(is_unproven(index.witness(
+            "feat/stacked",
+            "abc123",
+            "master"
+        )));
+        assert!(is_unproven(index.witness(
+            "feat/backport",
+            "def456",
+            "master"
+        )));
         // Against its own base it does witness.
-        assert!(
-            index
-                .witness("feat/stacked", "abc123", "feat/parent")
-                .is_some()
+        assert_eq!(
+            at_tip(index.witness("feat/stacked", "abc123", "feat/parent")),
+            Some(731)
         );
     }
 
@@ -720,7 +881,7 @@ mod tests {
             entry(731, "feat/x", None),
         ]);
 
-        assert!(index.witness("feat/x", "abc123", "master").is_none());
+        assert!(is_unproven(index.witness("feat/x", "abc123", "master")));
     }
 
     /// A fork's branch must never speak for a local branch sharing its name
@@ -730,11 +891,9 @@ mod tests {
         let mut fork = merged_entry(731, "patch-1", "abc123", "master");
         fork.is_cross_repo = true;
 
-        assert!(
-            index_entries(&[fork])
-                .witness("patch-1", "abc123", "master")
-                .is_none()
-        );
+        assert!(is_unproven(
+            index_entries(&[fork]).witness("patch-1", "abc123", "master")
+        ));
     }
 
     #[test]
@@ -748,13 +907,21 @@ mod tests {
         baseless.base_branch = None;
 
         let index = index_entries(&[closed, pinless, baseless]);
-        assert!(
-            index
-                .witness("feat/abandoned", "abc123", "master")
-                .is_none()
-        );
-        assert!(index.witness("feat/pinless", "abc123", "master").is_none());
-        assert!(index.witness("feat/baseless", "abc123", "master").is_none());
+        assert!(is_unproven(index.witness(
+            "feat/abandoned",
+            "abc123",
+            "master"
+        )));
+        assert!(is_unproven(index.witness(
+            "feat/pinless",
+            "abc123",
+            "master"
+        )));
+        assert!(is_unproven(index.witness(
+            "feat/baseless",
+            "abc123",
+            "master"
+        )));
     }
 
     /// A branch reused across several PRs indexes them all; the head commit
@@ -767,15 +934,11 @@ mod tests {
         ]);
 
         assert_eq!(
-            index
-                .witness("feat/x", "new-tip", "master")
-                .map(|r| r.number),
+            at_tip(index.witness("feat/x", "new-tip", "master")),
             Some(731)
         );
         assert_eq!(
-            index
-                .witness("feat/x", "old-tip", "master")
-                .map(|r| r.number),
+            at_tip(index.witness("feat/x", "old-tip", "master")),
             Some(700)
         );
     }
@@ -784,11 +947,9 @@ mod tests {
     /// probes rather than concluding anything.
     #[test]
     fn an_empty_index_witnesses_nothing() {
-        assert!(
-            MergedPrIndex::default()
-                .witness("feat/x", "abc123", "master")
-                .is_none()
-        );
+        assert!(is_unproven(
+            MergedPrIndex::default().witness("feat/x", "abc123", "master")
+        ));
     }
 
     #[test]
@@ -885,14 +1046,6 @@ mod tests {
         }
     }
 
-    /// Restore the original cwd when the test ends (pass or panic).
-    struct CwdRestore(std::path::PathBuf);
-    impl Drop for CwdRestore {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.0);
-        }
-    }
-
     /// Regression (caught by checkout/pr-cache.yml): the one-open gate+lookup
     /// read must not condition the lookup on forge capability. Capability only
     /// gates the *default* column — an explicit `+pr` in a repo whose remotes
@@ -917,8 +1070,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(init.status.success());
-        let _cwd = CwdRestore(std::env::current_dir().unwrap());
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let _cwd = crate::test_support::CwdGuard::enter(tmp.path());
 
         // Pin the capability probes to THIS repo. The shell-out arms of
         // remote_list/remote_get_url re-sample the process cwd on every call,

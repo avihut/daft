@@ -54,8 +54,10 @@ warning. Squash merges are matched by content, not by patch text, so a squash
 still counts as merged when an intervening commit shifted the surrounding
 lines. A branch that no local check can place is checked against the forge as
 a last resort: it counts as merged only if a freshly fetched pull request
-reports merged, targets the default branch, and has the local branch's exact
-commit as its head. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
+reports merged, targets the default branch, and merged a commit that contains
+the local branch tip. Only recent pull requests are visible to that check, so
+a branch abandoned long ago can still be reported unmerged; delete it with
+--force. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
 were refined since daft seeded them are also kept, with a pointer at
 daft-file(1) merge for consolidation. --force overrides both: unmerged
 branches are deleted and refined daft files are discarded to

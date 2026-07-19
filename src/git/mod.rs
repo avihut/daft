@@ -312,31 +312,7 @@ mod tests {
         }
     }
 
-    /// Restores the working directory on drop — even on panic — so a failing
-    /// assertion in a cwd-changing `#[serial]` test can't strand a sibling test
-    /// in a since-deleted tempdir. Mirrors the guard in the merge/branch-delete
-    /// tests (the codebase has no shared test-util home for it yet).
-    struct CwdGuard {
-        original: std::path::PathBuf,
-    }
-
-    impl CwdGuard {
-        fn new() -> Self {
-            Self {
-                original: std::env::current_dir().expect("cwd readable at test start"),
-            }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            // Best-effort: if the original cwd is gone, fall back to temp_dir so
-            // subsequent tests can at least read cwd.
-            if std::env::set_current_dir(&self.original).is_err() {
-                let _ = std::env::set_current_dir(std::env::temp_dir());
-            }
-        }
-    }
+    use crate::test_support::CwdGuard;
 
     /// #584 regression: a command that shares one `GitCommand` across its
     /// settings load, hooks-config load, and body must discover the repo
