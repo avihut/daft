@@ -141,6 +141,18 @@ pub fn probe_op_state(worktree: &Path) -> Option<OpState> {
     probe_op_state_in_git_dir(&git_dir)
 }
 
+/// The branch a worktree is operating on, when an in-progress operation
+/// records one and the porcelain does not.
+///
+/// This is the recovery `git worktree list --porcelain` cannot do for itself:
+/// mid-rebase it reports the worktree as detached, with no `branch` line,
+/// even though `refs/heads/<branch>` still exists and the worktree is still
+/// that branch's. Callers resolving a branch to its worktree consult this
+/// only after an attached match fails, so a real checkout always wins.
+pub fn recovered_branch(worktree: &Path) -> Option<String> {
+    probe_op_state(worktree)?.branch
+}
+
 /// [`probe_op_state`] against an already-resolved private git directory.
 ///
 /// Probe order follows git's own (`wt-status.c`): `MERGE_HEAD` first, then

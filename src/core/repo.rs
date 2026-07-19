@@ -219,10 +219,23 @@ pub(crate) fn find_worktree_for_branch(cwd: &Path, branch: &str) -> Option<PathB
         return None;
     }
     let porcelain = String::from_utf8_lossy(&porcelain.stdout);
-    crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
-        .into_iter()
+    let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
+
+    if let Some(w) = entries
+        .iter()
         .find(|w| !w.is_bare && w.branch.as_deref() == Some(branch))
-        .map(|w| w.path)
+    {
+        return Some(w.path.clone());
+    }
+
+    // A worktree mid-rebase reports no branch, so the match above misses it
+    // even though its content is the branch's. Ask the operation probe —
+    // strictly after every attached checkout has had its say.
+    entries
+        .iter()
+        .filter(|w| w.is_detached)
+        .find(|w| crate::git::op_state::recovered_branch(&w.path).as_deref() == Some(branch))
+        .map(|w| w.path.clone())
 }
 
 pub(crate) fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
@@ -573,5 +586,89 @@ mod tests {
         // Outside any repository → None.
         let outside = tempfile::tempdir().unwrap();
         assert_eq!(git_common_dir_at(outside.path()), None);
+    }
+
+    /// Stand up `main` plus a linked worktree on `feat/x`, then stop a rebase
+    /// of `feat/x` onto `main` on a conflict — the state in which git detaches
+    /// HEAD and the porcelain stops naming the branch. Returns (repo, worktree).
+    fn repo_with_conflicted_rebase(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        git(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f.txt"), "base\n").unwrap();
+        git(dir, &["add", "f.txt"]);
+        git(dir, &["commit", "-qm", "base"]);
+
+        git(dir, &["branch", "feat/x"]);
+        std::fs::write(dir.join("f.txt"), "main side\n").unwrap();
+        git(dir, &["commit", "-qam", "main change"]);
+
+        let worktree = dir.join("wt-feat");
+        git(
+            dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "feat/x",
+            ],
+        );
+        std::fs::write(worktree.join("f.txt"), "feat side\n").unwrap();
+        git(&worktree, &["commit", "-qam", "feat change"]);
+
+        // Expected to exit non-zero: it stops on the conflict, which is the
+        // whole point — so this one cannot use the asserting `git` helper.
+        let out = crate::utils::git_command_at(&worktree)
+            .args(["rebase", "main"])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git rebase");
+        assert!(!out.status.success(), "the rebase was supposed to conflict");
+
+        (dir.to_path_buf(), worktree)
+    }
+
+    /// Regression (#736): mid-rebase the porcelain reports no branch, so a
+    /// name-only match reported "no worktree for this branch" while the
+    /// branch's worktree sat right there — and callers went off and created
+    /// or resolved the wrong thing.
+    #[test]
+    fn finds_the_worktree_of_a_branch_being_rebased() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, worktree) = repo_with_conflicted_rebase(dir.path());
+
+        // Precondition: git really has detached HEAD, so this is not just
+        // testing the ordinary attached path.
+        let porcelain = crate::utils::git_command_at(&repo)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let porcelain = String::from_utf8_lossy(&porcelain.stdout);
+        assert!(
+            !porcelain.contains("branch refs/heads/feat/x"),
+            "expected git to report the rebasing worktree as detached, got:\n{porcelain}"
+        );
+
+        assert_eq!(
+            find_worktree_for_branch(&repo, "feat/x").map(|p| p.canonicalize().unwrap()),
+            Some(worktree.canonicalize().unwrap()),
+        );
+    }
+
+    #[test]
+    fn attached_worktrees_still_win_over_recovered_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, _worktree) = repo_with_conflicted_rebase(dir.path());
+
+        // `main` is attached; it must resolve to the main worktree, never to
+        // the detached one the probe also has an opinion about.
+        assert_eq!(
+            find_worktree_for_branch(&repo, "main").map(|p| p.canonicalize().unwrap()),
+            Some(repo.canonicalize().unwrap()),
+        );
+        // And an unrelated name still resolves to nothing.
+        assert_eq!(find_worktree_for_branch(&repo, "nope"), None);
     }
 }
