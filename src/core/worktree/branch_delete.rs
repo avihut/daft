@@ -1481,6 +1481,12 @@ fn delete_single_branch(
     {
         seeds.delete_seeds_for_branch(&branch.name);
     }
+    if result.worktree_removed
+        && let Some(store) =
+            crate::core::worktree::identity_store::IdentityStore::open(&ctx.git_dir)
+    {
+        store.forget_branch(&branch.name);
+    }
 
     result
 }

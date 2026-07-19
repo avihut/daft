@@ -249,6 +249,13 @@ pub fn execute(
         )
     })?;
 
+    // The worktree keeps its private-gitdir id across a move, so this updates
+    // the existing record in place rather than orphaning it under the old
+    // branch name. Best-effort.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+        store.record(&new_path, &params.new_branch);
+    }
+
     // Step 6b: Run setup hooks (pre-create + post-create) with new identity.
     run_setup_hooks(&move_params, sink);
 

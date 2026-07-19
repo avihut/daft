@@ -209,6 +209,28 @@ fn detect_branches(
     }
 }
 
+/// Record the intended branch of every worktree a clone just created.
+///
+/// Enumerates rather than threading the store through each creation helper:
+/// the worktrees are all attached at this point, so one enumeration observes
+/// exactly what needs recording. Best-effort — a clone must never fail
+/// because a display nicety could not be persisted.
+fn record_clone_identities(git: &GitCommand, git_dir: &Path) {
+    let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(git_dir) else {
+        return;
+    };
+    let Ok(porcelain) = git.worktree_list_porcelain() else {
+        return;
+    };
+    let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
+    store.record_all(
+        entries
+            .iter()
+            .filter(|e| !e.is_bare)
+            .filter_map(|e| Some((e.path.as_path(), e.branch.as_deref()?))),
+    );
+}
+
 fn create_single_worktree(
     git: &GitCommand,
     branch: &str,
@@ -362,6 +384,12 @@ pub fn setup_bare_worktrees(
                 progress,
             )?;
         }
+
+        // Record what every freshly-created worktree is for, in one pass now
+        // that they all exist — clone builds them through several helpers
+        // (single / orphan / all-branches), and they are attached at this
+        // point, which is the only state safe to record from. Best-effort.
+        record_clone_identities(&git, &bare_result.git_dir);
 
         progress.on_step(&format!(
             "Changing directory to worktree: './{}'",

@@ -22,6 +22,7 @@ pub mod flow_adopt;
 pub mod flow_eject;
 pub mod forge_ref;
 pub mod identity;
+pub mod identity_store;
 pub mod info_field;
 pub mod init;
 pub mod list;

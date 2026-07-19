@@ -949,6 +949,10 @@ fn remove_worktree(
     if let Some(seeds) = seeds.as_ref() {
         seeds.delete_seeds_for_branch(branch_name);
     }
+    // ...and its recorded identity, for the same reason.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&ctx.git_dir) {
+        store.forget_branch(branch_name);
+    }
 
     RemoveOutcome::Removed
 }

@@ -228,6 +228,11 @@ pub fn execute(
             existing_path.display()
         ));
         sink.on_step("Changing to existing worktree...");
+        // Observed attached to this branch — refresh the record opportunistically,
+        // which is also how worktrees daft did not create acquire one.
+        if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+            store.record(&existing_path, &params.branch_name);
+        }
         change_directory(&existing_path)?;
 
         return Ok(CheckoutResult {
@@ -614,6 +619,12 @@ pub fn execute(
             worktree_path.display()
         )
         .into());
+    }
+    // Remember what this worktree is for, while we still know. Git records
+    // nothing that survives a later detached checkout, so this is the only
+    // moment the association is available for free. Best-effort.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+        store.record(&worktree_path, &params.branch_name);
     }
     sink.on_stage(
         &StepKey::new(StageId::CreateWorktree),

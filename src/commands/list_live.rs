@@ -473,6 +473,18 @@ pub fn run_live(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Same identity refresh the blocking path does — attached and recovered
+    // rows only, never a detached reading.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_common_dir)
+    {
+        store.record_all(final_state.live.rows.iter().filter_map(|row| {
+            // Attached only — see the blocking path.
+            (row.info.identity_source
+                == Some(crate::core::worktree::identity::IdentitySource::Attached))
+            .then_some((row.info.path.as_deref()?, row.info.name.as_str()))
+        }));
+    }
+
     // On normal completion, workers have already finished and `join()` returns
     // immediately. On cancellation, workers may still be mid-`git` invocation
     // (the cancel flag is checked between clusters, not mid-command). Skip the

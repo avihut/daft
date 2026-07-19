@@ -578,6 +578,22 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Refresh the identity records from what was just observed. Only rows
+    // whose branch is attached or recovered are reported — never a detached
+    // reading, which would let a stale record overwrite the good one it
+    // exists to be the fallback for.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_common_dir)
+    {
+        store.record_all(infos.iter().filter_map(|i| {
+            // Attached only. A row whose name was *recovered* is right about
+            // its branch but is not what this record is a fallback for, and a
+            // row downgraded by the collision guard carries the placeholder
+            // name — recording either would write fiction over fact.
+            (i.identity_source == Some(crate::core::worktree::identity::IdentitySource::Attached))
+                .then_some((i.path.as_deref()?, i.name.as_str()))
+        }));
+    }
+
     // Kick the detached refresh whenever `pr` was in play at all — including
     // when the gate just hid the column: the probe is what detects a repaired
     // auth and silently restores it on a later run.

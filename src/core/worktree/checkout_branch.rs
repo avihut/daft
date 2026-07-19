@@ -240,6 +240,10 @@ pub fn execute(
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
+    // Remember what this worktree is for (see checkout.rs). Best-effort.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+        store.record(&worktree_path, &params.new_branch_name);
+    }
     sink.on_stage(
         &StepKey::new(StageId::CreateBranch),
         StageEvent::Completed { annotation: None },
