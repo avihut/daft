@@ -456,9 +456,19 @@ takes exactly one of two shapes.
    guessed positional repo only when ALL of these hold (`start` is the worked
    example, #725): the ambiguous arity is bounded to a single decidable case;
    anything meaningful in the current repository wins over a catalog match
-   (local-first — `start A B` with an existing local branch `A` fails fast
-   rather than silently retargeting); and the resolved destination is announced
-   before any work happens.
+   (local-first); the resolved destination is announced before any work happens;
+   and the catalog probe **fails closed** — a store error, a moved repo, or a
+   tombstoned entry is reported, never silently reinterpreted as the local
+   reading (that turns an outage into a wrong mutation).
+
+   Local-first means every slot the local reading uses, not just the first.
+   `start A B` reads locally as "new branch `A` based on `B`", so `A`'s absence
+   proves nothing — it is the branch being created. The signal is `B` resolving
+   to a commit here, and the current repo's own name counts as local too.
+   Probing only the leading name is the trap (#725 review): it let
+   `start api release-2` retarget another repo despite `release-2` being a
+   perfectly good local base.
+
 2. **Exec-shape (flags, fallback)** — `--repo <name>` (long-only) plus
    `--all-repos`, as in `update`/`exec`/`prune`. Positionals keep their local
    meaning; bare `--repo` targets the repo's default-branch worktree.

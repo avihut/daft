@@ -62,11 +62,13 @@ daft start client feat/x [base]        # NEW branch over there (announced first)
 Precedence is strict and predictable: an existing worktree, local branch, or
 remote branch in the current repo always beats a catalog repo of the same name;
 a catalog match beats `daft.go.autoStart` branch creation; `--start` forces
-creation. The same local-first rule guards `daft start <repo> <branch>` — an
-existing local branch keeps the local `<branch> <base>` reading, and the
-resolved destination is announced before any work. Tab completion offers repo
-names after your branches, `daft go <repo> <Tab>` completes the target repo's
-branches, and `daft start <Tab>` completes repo names for the leading slot.
+creation. The same local-first rule guards `daft start <repo> <branch>`: an
+existing local branch in the first slot keeps the local reading, a second name
+that resolves here is read as a base (so `daft start api release-2` stays
+local), naming your current repo stays local too, and the resolved destination
+is announced before any work. Tab completion offers repo names after your
+branches, `daft go <repo> <Tab>` completes the target repo's branches, and
+`daft start <Tab>` completes repo names for the leading slot.
 
 ## Fleet commands
 
