@@ -54,11 +54,12 @@ pub fn coordinator_set() -> MigrationSet {
             M::up(include_str!("migrations/006_forge_prs.sql")),
             M::up(include_str!("migrations/007_forge_health.sql")),
             M::up(include_str!("migrations/008_forge_pr_row_fields.sql")),
+            M::up(include_str!("migrations/009_worktree_identities.sql")),
         ]),
         // rusqlite_migration's version counter is `migrations.len() as u32`
         // after every migration is applied. Kept as i64 for consistency with
         // the on-disk `user_version` PRAGMA type.
-        current_version: 8,
+        current_version: 9,
     }
 }
 
@@ -310,6 +311,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn worktree_identities_table_exists_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'worktree_identities'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "worktree_identities");
     }
 
     #[test]

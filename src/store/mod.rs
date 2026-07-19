@@ -30,10 +30,10 @@ pub mod repos;
 pub use error::{Result, StoreError};
 pub use models::{
     CatalogRepoRow, InvocationRow, JobRow, RepoPolicyRow, RepoSizeRow, VisitorSeedRow,
-    WorktreeSizeRow,
+    WorktreeIdentityRow, WorktreeSizeRow,
 };
 pub use pool::Pool;
 pub use repos::{
     CatalogReposRepo, InvocationsRepo, JobsRepo, RepoPoliciesRepo, RepoSizesRepo, VisitorSeedsRepo,
-    WorktreeSizesRepo,
+    WorktreeIdentitiesRepo, WorktreeSizesRepo,
 };
