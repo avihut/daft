@@ -72,6 +72,17 @@ pub struct PrListEntry {
     /// The PR's last-activity timestamp — the Age cell on a synthesized row.
     /// `None` when the platform didn't supply one.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Commit the PR's head branch pointed at. Pins a merged PR to the exact
+    /// work it carried, so squash-merge detection can tell "this branch was
+    /// merged" from "a branch that once had this name was merged"
+    /// (`ForgeMergedWitness`, #737). `None` when the platform didn't supply
+    /// one — the witness then abstains rather than guess.
+    pub head_oid: Option<String>,
+    /// Branch the PR was opened against. A merged PR only proves the work
+    /// reached *its own* base: a stacked PR merges into another feature
+    /// branch, a backport into a release line. `None` when the platform
+    /// didn't supply one.
+    pub base_branch: Option<String>,
 }
 
 /// Parse a forge timestamp (RFC 3339, e.g. `2026-07-18T12:00:00Z`) into UTC.

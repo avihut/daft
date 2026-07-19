@@ -293,6 +293,8 @@ pub mod skill;
 pub mod store;
 pub mod styles;
 pub mod suggest;
+#[cfg(test)]
+pub mod test_support;
 pub mod trust_prune;
 pub mod update_check;
 pub mod utils;

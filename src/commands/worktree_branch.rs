@@ -555,7 +555,15 @@ fn run_branch_delete(
     let exec_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
-        branch_delete::execute(&params, push_presenter.as_ref(), &mut bridge)
+        let witness = crate::commands::forge_cache::merged_witness(
+            &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
+        );
+        branch_delete::execute(
+            &params,
+            push_presenter.as_ref(),
+            witness.as_ref(),
+            &mut bridge,
+        )
     };
     // A run that never committed a plan (validation errors, nothing to
     // delete) collapses the face here, before its legacy error/info lines

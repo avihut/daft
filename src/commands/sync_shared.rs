@@ -42,6 +42,7 @@ pub fn execute_prune_task(
     force: bool,
     hooks_config: &HooksConfig,
     tx: &std::sync::mpsc::Sender<DagEvent>,
+    merged_witness: &Arc<dyn crate::core::worktree::ports::ForgeMergedWitness>,
 ) -> (TaskStatus, TaskMessage) {
     let git = GitCommand::new(false).with_gitoxide(settings.use_gitoxide);
     let ctx = prune::PruneContext {
@@ -65,6 +66,7 @@ pub fn execute_prune_task(
         remote_name: remote_name.to_string(),
         prune_cd_target: settings.prune_cd_target,
         cancel: None,
+        merged_witness: Arc::clone(merged_witness),
     };
 
     let executor = match HookExecutor::new(hooks_config.clone()) {
@@ -156,6 +158,7 @@ pub fn handle_post_tui_deferred(
     worktree_map: &HashMap<String, (PathBuf, bool)>,
     force: bool,
     hooks_config: &HooksConfig,
+    merged_witness: &Arc<dyn crate::core::worktree::ports::ForgeMergedWitness>,
 ) {
     let deferred = deferred_branch.lock().unwrap().clone();
     if let Some(ref branch_name) = deferred {
@@ -181,6 +184,10 @@ pub fn handle_post_tui_deferred(
             remote_name: settings.remote.clone(),
             prune_cd_target: settings.prune_cd_target,
             cancel: None,
+            // The same witness the DAG workers used: a fresh one would refetch
+            // the listing, and a no-op one could reverse a verdict the table
+            // already showed the user.
+            merged_witness: Arc::clone(merged_witness),
         };
         // After TUI exits, we can use the full CLI output again
         let config = OutputConfig::with_autocd(false, false, settings.autocd);

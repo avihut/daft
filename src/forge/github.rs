@@ -84,8 +84,7 @@ fn run_pr_list(
         extra_env.push(("GH_HOST", host));
     }
 
-    let base_fields =
-        "number,title,state,headRefName,isCrossRepository,url,author,headRepositoryOwner,updatedAt";
+    let base_fields = "number,title,state,headRefName,isCrossRepository,url,author,headRepositoryOwner,updatedAt,headRefOid,baseRefName";
     let fields = if with_rollup {
         format!("{base_fields},statusCheckRollup")
     } else {
@@ -155,6 +154,8 @@ fn parse_pr_list(json: &[u8]) -> Result<Vec<PrListEntry>> {
             author: item.author.unwrap_or_default().display_name(),
             head_repo_owner: item.head_repository_owner.unwrap_or_default().login,
             updated_at: item.updated_at.as_deref().and_then(parse_forge_timestamp),
+            head_oid: item.head_ref_oid.filter(|oid| !oid.is_empty()),
+            base_branch: item.base_ref_name.filter(|name| !name.is_empty()),
         })
         .collect())
 }
@@ -218,6 +219,13 @@ struct GhPrListItem {
     updated_at: Option<String>,
     #[serde(rename = "statusCheckRollup", default)]
     status_check_rollup: Vec<GhCheckContext>,
+    /// The head branch's commit — pins a merged PR to the work it carried
+    /// (#737).
+    #[serde(rename = "headRefOid", default)]
+    head_ref_oid: Option<String>,
+    /// The branch the PR targets.
+    #[serde(rename = "baseRefName", default)]
+    base_ref_name: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -535,6 +543,7 @@ mod tests {
              "headRefName": "feat/x", "isCrossRepository": false,
              "url": "https://github.com/acme/widget/pull/7",
              "author": {"login": "octocat", "name": "The Octocat"},
+             "headRefOid": "abc123def456", "baseRefName": "master",
              "statusCheckRollup": [
                 {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"__typename": "StatusContext", "state": "SUCCESS"}
@@ -561,6 +570,12 @@ mod tests {
             entries[1].author, "contributor",
             "no display name (bots, spartan profiles) falls back to the login"
         );
+        // The merge witness's two pins (#737).
+        assert_eq!(entries[0].head_oid.as_deref(), Some("abc123def456"));
+        assert_eq!(entries[0].base_branch.as_deref(), Some("master"));
+        // Absent on the second row: the witness abstains rather than guess.
+        assert_eq!(entries[1].head_oid, None);
+        assert_eq!(entries[1].base_branch, None);
     }
 
     #[test]

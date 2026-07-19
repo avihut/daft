@@ -50,7 +50,14 @@ and finally deletes the local branches.
 A deleted remote branch does not by itself prove the work was merged, so each
 gone branch is verified against the default branch (regular or squash merge)
 before anything is deleted; gone-but-unmerged branches are kept with a
-warning. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
+warning. Squash merges are matched by content, not by patch text, so a squash
+still counts as merged when an intervening commit shifted the surrounding
+lines. A branch that no local check can place is checked against the forge as
+a last resort: it counts as merged only if a freshly fetched pull request
+reports merged, targets the default branch, and merged a commit that contains
+the local branch tip. Only recent pull requests are visible to that check, so
+a branch abandoned long ago can still be reported unmerged; delete it with
+--force. Worktrees whose untracked daft files (daft.yml / daft.local.yml)
 were refined since daft seeded them are also kept, with a pointer at
 daft-file(1) merge for consolidation. --force overrides both: unmerged
 branches are deleted and refined daft files are discarded to
@@ -194,6 +201,7 @@ fn run_prune(args: Args, settings: DaftSettings) -> Result<()> {
 }
 
 fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool) -> Result<()> {
+    let git = GitCommand::new(true).with_gitoxide(settings.use_gitoxide);
     let params = prune::PruneParams {
         force,
         use_gitoxide: settings.use_gitoxide,
@@ -201,6 +209,7 @@ fn run_prune_inner(output: &mut dyn Output, settings: &DaftSettings, force: bool
         remote_name: settings.remote.clone(),
         prune_cd_target: settings.prune_cd_target,
         cancel: None,
+        merged_witness: crate::commands::forge_cache::merged_witness(&git),
     };
 
     let hooks_config = crate::core::settings::load_hooks_config()?;
@@ -438,6 +447,12 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
 
     let orch_settings = Arc::clone(&shared_settings);
     let shared_hooks_config = Arc::new(hooks_config.clone());
+    // One witness for the whole run: the workers share its single fetch, and
+    // the post-TUI deferred pass must judge on the same data the table showed.
+    let shared_merged_witness = crate::commands::forge_cache::merged_witness(
+        &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
+    );
+    let orch_merged_witness = Arc::clone(&shared_merged_witness);
 
     // Captures for the post-fetch refresh inside the orchestrator thread.
     let orch_base_branch = Arc::new(base_branch.clone());
@@ -523,6 +538,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
                             shared_force,
                             &shared_hooks_config,
                             &tx_for_tasks,
+                            &orch_merged_witness,
                         );
                         if matches!(message, TaskMessage::Deferred) {
                             *deferred_branch_writer.lock().unwrap() = Some(branch_name.clone());
@@ -653,6 +669,7 @@ fn run_tui(args: Args, settings: DaftSettings) -> Result<()> {
         &worktree_map,
         args.force,
         &hooks_config,
+        &shared_merged_witness,
     );
 
     // ── Print hook summaries (warnings/failures) ──────────────────────────
