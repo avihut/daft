@@ -109,8 +109,8 @@ bench_compare() {
     else
         # Backend toggle: gitoxide default (key unset) vs subprocess opt-out
         # (key false), set in the isolated GIT_CONFIG_GLOBAL
-        local unset_backend="git config --file \"$GIT_CONFIG_GLOBAL\" --unset-all daft.experimental.gitoxide 2>/dev/null || [ \$? -eq 5 ]"
-        local set_subprocess="git config --file \"$GIT_CONFIG_GLOBAL\" daft.experimental.gitoxide false || exit 1"
+        local unset_backend="git config --file \"$GIT_CONFIG_GLOBAL\" --unset-all daft.gitoxide 2>/dev/null || [ \$? -eq 5 ]"
+        local set_subprocess="git config --file \"$GIT_CONFIG_GLOBAL\" daft.gitoxide false || exit 1"
 
         # Build per-command prepare: base cleanup + backend toggle
         local prep_daft=""

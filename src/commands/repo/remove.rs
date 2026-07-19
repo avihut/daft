@@ -96,14 +96,17 @@ pub fn run() -> Result<()> {
 pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     use crate::core::worktree::remove_repo::{enumerate_worktrees, resolve_repo};
 
-    // Load global config only. `daft repo remove` is the one daft command that
+    // Local-or-global: `daft repo remove` is the one daft command that
     // commonly runs from outside any repo (e.g. `daft repo remove ./old-repo`
-    // from a parent directory). `DaftSettings::load()` ultimately calls
-    // `git.config_get` which does `gix::discover(&cwd)` and fails outside a
-    // repo, so the local-config variant breaks the basic
-    // `daft repo remove <path>` invocation. The only setting we read here is
-    // `use_gitoxide`, which users typically configure globally anyway.
-    let settings = crate::core::settings::DaftSettings::load_global()?;
+    // from a parent directory), where a plain `DaftSettings::load()` would
+    // fail — its `config_get` bottoms out in `gix::discover(&cwd)`. But when
+    // it *is* run from inside a repo, that repo's local `daft.gitoxide = false`
+    // opt-out must win over a global default (#733): the removal walks and
+    // deletes worktrees on the chosen backend, so silently ignoring the
+    // opt-out is exactly the case a user disables gitoxide to avoid. The
+    // helper reads local config when there is a repo and falls back to global
+    // when there is not.
+    let settings = crate::core::settings::DaftSettings::load_local_or_global()?;
     let use_gitoxide = settings.use_gitoxide;
     // --repo addresses a cataloged repo by name (exec-shape grammar). The
     // missing-path-tolerant resolver lets `--keep-files --repo <name>` drop
@@ -119,9 +122,11 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     }
 
     // Honor user-configured hook settings (timeout, output verbosity,
-    // per-hook trust defaults). Loading from global mirrors the
-    // `load_global()` call above — same rationale, same failure-mode
-    // tolerance for cwd-outside-any-repo invocations.
+    // per-hook trust defaults). Deliberately global-only — unlike the
+    // backend setting above, hook trust defaults are security-sensitive and
+    // must not be swayed by the local config of whatever repo the cwd
+    // happens to sit in while removing a different one; global also keeps the
+    // cwd-outside-any-repo invocation working.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
 
     let target = match &catalog_row {

@@ -168,7 +168,7 @@ const MATRIX: &[MatrixEntry] = &[
     // proves the opt-out key genuinely forces it.
     MatrixEntry {
         name: "subprocess",
-        config: &[("daft.experimental.gitoxide", "false")],
+        config: &[("daft.gitoxide", "false")],
     },
 ];
 

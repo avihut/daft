@@ -130,7 +130,10 @@ pub fn run() -> Result<()> {
         anyhow::bail!("--trust-hooks and --skip-hooks all cannot be used together.");
     }
 
-    let settings = DaftSettings::load_global()?;
+    // Local-or-global so a repo-local `daft.gitoxide = false` opt-out is
+    // honored on this layout-mutating command (#733); still resolves from a
+    // parent directory if adopt is ever run outside a repo.
+    let settings = DaftSettings::load_local_or_global()?;
 
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, settings.autocd);
     let mut output = CliOutput::new(config);

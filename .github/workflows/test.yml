@@ -518,7 +518,7 @@ jobs:
         run: |
           CONFIG_FILE=$(mktemp)
           if [ "${{ matrix.entry }}" = "subprocess" ]; then
-            git config --file "$CONFIG_FILE" daft.experimental.gitoxide false
+            git config --file "$CONFIG_FILE" daft.gitoxide false
           fi
           echo "config_file=$CONFIG_FILE" >> "$GITHUB_OUTPUT"
 

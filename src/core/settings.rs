@@ -331,7 +331,7 @@ pub mod defaults {
     /// Default value for prune.cdTarget setting.
     pub const PRUNE_CD_TARGET: PruneCdTarget = PruneCdTarget::Root;
 
-    /// Default value for experimental.gitoxide setting. Stable default
+    /// Default value for the `daft.gitoxide` setting. Stable default
     /// (#733): gitoxide backs the supported operations out of the box, and
     /// the key is an opt-out — `false` forces the git-subprocess backend.
     pub const USE_GITOXIDE: bool = true;
@@ -544,11 +544,15 @@ pub mod keys {
     /// Config key for merge.requireCleanTarget setting.
     pub const MERGE_REQUIRE_CLEAN_TARGET: &str = "daft.merge.requireCleanTarget";
 
-    /// Experimental config keys.
-    pub mod experimental {
-        /// Config key for experimental.gitoxide setting.
-        pub const GITOXIDE: &str = "daft.experimental.gitoxide";
-    }
+    /// Config key for the gitoxide backend toggle.
+    ///
+    /// Graduated out of the `experimental.` namespace in #733: gitoxide is
+    /// the stable default, and this key is the opt-out (`false` forces the
+    /// git-subprocess backend). No read-fallback to the old
+    /// `daft.experimental.gitoxide` spelling — daft is effectively
+    /// pre-release, so the key is cut cleanly (see the no-back-compat
+    /// policy).
+    pub const GITOXIDE: &str = "daft.gitoxide";
 
     /// Hooks config keys.
     pub mod hooks {
@@ -637,8 +641,7 @@ pub struct DaftSettings {
     pub multi_remote_default: String,
 
     /// Use gitoxide for supported git operations. On by default;
-    /// `daft.experimental.gitoxide = false` opts out to the git-subprocess
-    /// backend.
+    /// `daft.gitoxide = false` opts out to the git-subprocess backend.
     pub use_gitoxide: bool,
 
     /// Automatically create worktree when branch not found in go command.
@@ -895,7 +898,7 @@ impl DaftSettings {
             settings.multi_remote_default = value;
         }
 
-        if let Some(value) = git.config_get(keys::experimental::GITOXIDE)? {
+        if let Some(value) = git.config_get(keys::GITOXIDE)? {
             settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
         }
 
@@ -1151,7 +1154,7 @@ impl DaftSettings {
             settings.multi_remote_default = value;
         }
 
-        if let Some(value) = git.config_get_global(keys::experimental::GITOXIDE)? {
+        if let Some(value) = git.config_get_global(keys::GITOXIDE)? {
             settings.use_gitoxide = parse_bool(&value, defaults::USE_GITOXIDE);
         }
 
@@ -1247,6 +1250,38 @@ impl DaftSettings {
         }
 
         Ok(settings)
+    }
+
+    /// Load settings, preferring repository-local config but tolerating being
+    /// run from outside a repository.
+    ///
+    /// [`load`](Self::load) reads local + global git config (local wins) but
+    /// fails when there is no repo to discover; [`load_global`](Self::load_global)
+    /// never fails but cannot see a repo-local override. A handful of
+    /// commands need both properties: they usually run inside a repo, yet
+    /// must survive being pointed at another one from a parent directory
+    /// (`daft repo remove ./old-repo`), so they resolve settings here.
+    ///
+    /// This matters since #733 flipped gitoxide on by default. While the
+    /// backend was opt-in, a global-only read was harmless — the only thing
+    /// it could miss was a repo-local opt-*in*, which just left the caller on
+    /// the safe subprocess default. With gitoxide the default, that same
+    /// global-only read silently ignores a repo-local `daft.gitoxide = false`
+    /// opt-*out*, and does so on exactly the layout-mutating commands
+    /// (`flow adopt`/`eject`, `layout transform`, `repo remove`) where a user
+    /// who hit a gix-specific problem would reach for it. Discovering the
+    /// repo first and reading its config restores the opt-out on those paths.
+    pub fn load_local_or_global() -> Result<Self> {
+        let git = GitCommand::new(true);
+        // The repo probe mirrors what `load` relies on internally: its
+        // `config_get` calls bottom out in `gix_repo()?`, so a successful
+        // discovery here is exactly the condition under which `load_with`
+        // will not fail — and the discovered handle is reused, not re-opened.
+        if git.gix_repo().is_ok() {
+            Self::load_with(&git)
+        } else {
+            Self::load_global()
+        }
     }
 }
 
@@ -1668,9 +1703,9 @@ mod tests {
         assert_eq!(settings.governor_memory_reserve, MemoryReserve::Auto);
     }
 
-    /// #733: `daft.experimental.gitoxide` is an opt-out — an explicit false
-    /// must override the stable-on default, and unparseable values must fall
-    /// back to on (the same fallback every bool setting uses).
+    /// #733: `daft.gitoxide` is an opt-out — an explicit false must override
+    /// the stable-on default, and unparseable values must fall back to on
+    /// (the same fallback every bool setting uses).
     #[test]
     fn gitoxide_opt_out_parse_semantics() {
         assert!(!parse_bool("false", defaults::USE_GITOXIDE));
@@ -1678,6 +1713,93 @@ mod tests {
         assert!(!parse_bool("0", defaults::USE_GITOXIDE));
         assert!(parse_bool("true", defaults::USE_GITOXIDE));
         assert!(parse_bool("not-a-bool", defaults::USE_GITOXIDE));
+    }
+
+    /// #733: a repo-local `daft.gitoxide = false` must beat a global `true`.
+    ///
+    /// The layout-mutating commands (`flow adopt`/`eject`, `layout
+    /// transform`, `repo remove`) resolve through `load_local_or_global`
+    /// exactly so a per-repo opt-out is honored now that gitoxide is the
+    /// default. The pre-#733 `load_global` read (the control below) sees only
+    /// the global `true` — the silent-opt-out-failure bug this method fixes.
+    /// Revert `load_local_or_global` to `load_global` and the first assert
+    /// flips.
+    #[test]
+    #[serial_test::serial]
+    fn local_or_global_lets_a_repo_local_opt_out_win() {
+        // Restore cwd + the git-config env vars on the way out, panic or not,
+        // so this #[serial] test never leaks into its neighbors.
+        struct Restore {
+            cwd: Option<std::path::PathBuf>,
+            global: Option<std::ffi::OsString>,
+            nosystem: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(cwd) = &self.cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                unsafe {
+                    restore_var("GIT_CONFIG_GLOBAL", self.global.take());
+                    restore_var("GIT_CONFIG_NOSYSTEM", self.nosystem.take());
+                }
+            }
+        }
+        unsafe fn restore_var(key: &str, prev: Option<std::ffi::OsString>) {
+            match prev {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        let _restore = Restore {
+            cwd: std::env::current_dir().ok(),
+            global: std::env::var_os("GIT_CONFIG_GLOBAL"),
+            nosystem: std::env::var_os("GIT_CONFIG_NOSYSTEM"),
+        };
+
+        // Isolate global + system git config into a temp file — never touch
+        // the developer's real config (CLAUDE.md Critical Rule #1). With
+        // GIT_CONFIG_GLOBAL set, gix resolves both its global scopes to this
+        // file, and GIT_CONFIG_NOSYSTEM drops the system scope.
+        let home = tempfile::tempdir().unwrap();
+        let global_cfg = home.path().join("gitconfig-global");
+        std::fs::write(&global_cfg, "[daft]\n\tgitoxide = true\n").unwrap();
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &global_cfg);
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
+
+        // A repo whose local config opts out of gitoxide.
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "daft.gitoxide", "false"]); // repo-local scope
+
+        std::env::set_current_dir(&repo_path).unwrap();
+
+        // Inside the repo, the repo-local opt-out wins over the global default…
+        assert!(
+            !DaftSettings::load_local_or_global().unwrap().use_gitoxide,
+            "repo-local daft.gitoxide=false must override the global default"
+        );
+        // …while a global-only read still sees `true`: the two loaders diverge
+        // on the same repo, which is the whole point of the local-aware one.
+        assert!(
+            DaftSettings::load_global().unwrap().use_gitoxide,
+            "control: global config reads true, so false above came from local"
+        );
     }
 
     #[test]

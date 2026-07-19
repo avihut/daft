@@ -1,8 +1,8 @@
 //! Gitoxide-based implementations of git operations.
 //!
 //! Each function provides a native Rust alternative to a git subprocess call.
-//! These are called from `GitCommand` methods when `daft.experimental.gitoxide`
-//! is enabled.
+//! These are called from `GitCommand` methods unless `daft.gitoxide` is set
+//! to `false` (the opt-out; gitoxide is the stable default since #733).
 
 use anyhow::{Context, Result};
 use gix::Repository;
