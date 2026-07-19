@@ -110,6 +110,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("        local -a column_values\n");
         output.push_str("        column_values=(\n");
         output.push_str("            'annotation:Annotation markers'\n");
+        if command_name == "git-worktree-list" {
+            output.push_str("            'status:Paused operation and conflicts'\n");
+        }
         output.push_str("            'branch:Branch name'\n");
         output.push_str("            'path:Worktree path'\n");
         output.push_str("            'size:Disk size of worktree'\n");
@@ -122,6 +125,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'hash:Commit hash'\n");
         output.push_str("            'last-commit:Last commit'\n");
         output.push_str("            '+annotation:Add annotation markers'\n");
+        if command_name == "git-worktree-list" {
+            output.push_str("            '+status:Add operation status'\n");
+        }
         output.push_str("            '+branch:Add branch name'\n");
         output.push_str("            '+path:Add worktree path'\n");
         output.push_str("            '+size:Add disk size of worktree'\n");
@@ -134,6 +140,9 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+hash:Add commit hash'\n");
         output.push_str("            '+last-commit:Add last commit'\n");
         output.push_str("            '-annotation:Remove annotation markers'\n");
+        if command_name == "git-worktree-list" {
+            output.push_str("            '-status:Remove operation status'\n");
+        }
         output.push_str("            '-branch:Remove branch name'\n");
         output.push_str("            '-path:Remove worktree path'\n");
         output.push_str("            '-size:Remove disk size of worktree'\n");

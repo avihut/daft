@@ -6,10 +6,15 @@ use crate::output::format::ColumnValues;
 /// Columns available in the worktree table, in canonical display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
-    /// Sync/prune status indicator.
+    /// Sync/prune per-task progress indicator (queued / running / done).
+    /// Pinned as the first column by those TUIs and not user-selectable —
+    /// distinct from [`Column::BranchStatus`], which reports git state.
     Status,
     /// Current/default branch annotation.
     Annotation,
+    /// Paused git operation and conflict state, in words. The opt-in
+    /// `daft list --columns +status` column.
+    BranchStatus,
     /// Branch name.
     Branch,
     /// Worktree path.
@@ -44,6 +49,7 @@ impl Column {
         match self {
             Self::Status => "Status",
             Self::Annotation => "",
+            Self::BranchStatus => "Status",
             Self::Branch => "Branch",
             Self::Path => "Path",
             Self::Size => "Size",
@@ -62,6 +68,7 @@ impl Column {
     pub fn from_list_column(lc: ListColumn) -> Self {
         match lc {
             ListColumn::Annotation => Column::Annotation,
+            ListColumn::Status => Column::BranchStatus,
             ListColumn::Branch => Column::Branch,
             ListColumn::Path => Column::Path,
             ListColumn::Size => Column::Size,
@@ -83,6 +90,7 @@ impl Column {
         match self {
             Self::Status => None,
             Self::Annotation => Some(ListColumn::Annotation),
+            Self::BranchStatus => Some(ListColumn::Status),
             Self::Branch => Some(ListColumn::Branch),
             Self::Path => Some(ListColumn::Path),
             Self::Size => Some(ListColumn::Size),
@@ -187,6 +195,7 @@ pub(super) fn column_content_width(
             // Exactly the slots this run materialized — the annotation cell
             // is painted from the same value, so the two cannot disagree.
             Column::Annotation => annotation_slots.width() as u16,
+            Column::BranchStatus => v.status.chars().count() as u16,
             Column::Branch => v.branch.len() as u16,
             Column::Path => v.path.len() as u16,
             Column::Size => v.size.len() as u16,

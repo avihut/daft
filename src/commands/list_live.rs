@@ -498,6 +498,9 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
             ListColumn::Size => FieldSet::SIZE,
             ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
             ListColumn::Changes => FieldSet::CHANGES,
+            // The operation is known at seed; the conflict/resolved qualifier
+            // rides the same counts the Changes cell uses.
+            ListColumn::Status => FieldSet::CHANGES,
             ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             ListColumn::Age => FieldSet::BRANCH_AGE,
             ListColumn::Owner => FieldSet::OWNER,

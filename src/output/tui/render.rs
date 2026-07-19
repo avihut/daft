@@ -750,6 +750,17 @@ fn render_cell(
     match col {
         Column::Status => render_status_cell(wt, tick),
         Column::Annotation => render_annotation_cell(&wt.info, annotation_slots),
+        Column::BranchStatus => {
+            if vals.status.is_empty() {
+                Cell::from("")
+            } else {
+                // Same attention colour as the operation glyph next to it.
+                Cell::from(Span::styled(
+                    vals.status.clone(),
+                    Style::default().fg(Color::Yellow),
+                ))
+            }
+        }
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
         Column::Size => {
@@ -1097,6 +1108,7 @@ fn format_job_line(
 /// Extract the plain-text content for a column from pre-computed values.
 fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
     match col {
+        Column::BranchStatus => vals.status.clone(),
         Column::Branch => vals.branch.clone(),
         Column::Path => vals.path.clone(),
         Column::Size => vals.size.clone(),

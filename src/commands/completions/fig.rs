@@ -246,6 +246,8 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
             let args = if has_columns && long == "--columns" {
                 let column_defs = [
                     ("annotation", "Annotation markers"),
+                    // list-only; filtered out below for sync/prune.
+                    ("status", "Paused operation and conflicts"),
                     ("branch", "Branch name"),
                     ("path", "Worktree path"),
                     ("size", "Disk size of worktree"),
@@ -259,7 +261,10 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("last-commit", "Last commit"),
                 ];
                 let mut suggestions: Vec<FigSuggestion> = Vec::new();
-                for (name, description) in &column_defs {
+                for (name, description) in column_defs
+                    .iter()
+                    .filter(|(name, _)| *name != "status" || command_name == "git-worktree-list")
+                {
                     suggestions.push(FigSuggestion {
                         name: name.to_string(),
                         description: description.to_string(),

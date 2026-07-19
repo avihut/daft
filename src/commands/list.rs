@@ -171,7 +171,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit"
     )]
     pub(crate) columns: Option<String>,
 
@@ -200,6 +200,8 @@ pub struct Args {
 struct TableRow {
     /// Annotation column: current marker (">") and/or default branch indicator ("✦").
     annotation: String,
+    /// Paused operation and conflict state in words (e.g. "rebasing · 2 conflicts").
+    status: String,
     /// Branch name.
     name: String,
     /// Relative path from current directory.
@@ -1299,6 +1301,9 @@ fn print_table(
             if use_color && is_non_worktree {
                 TableRow {
                     annotation,
+                    // Non-worktree rows never carry an operation, so this is
+                    // empty; dimmed for consistency if that ever changes.
+                    status: styles::dim(&vals.status),
                     name: styles::dim(&vals.branch),
                     path: styles::dim(&vals.path),
                     size: if vals.size.is_empty() {
@@ -1355,6 +1360,12 @@ fn print_table(
             } else {
                 TableRow {
                     annotation,
+                    status: if vals.status.is_empty() || !use_color {
+                        vals.status.clone()
+                    } else {
+                        // Same attention colour as the annotation glyph.
+                        styles::yellow(&vals.status)
+                    },
                     name: vals.branch.clone(),
                     path: vals.path.clone(),
                     size: vals.size.clone(),
@@ -1379,6 +1390,7 @@ fn print_table(
         .filter(|c| **c != ListColumn::Annotation)
         .map(|c| {
             let label = match c {
+                ListColumn::Status => "Status",
                 ListColumn::Branch => "Branch",
                 ListColumn::Path => "Path",
                 ListColumn::Size => "Size",
@@ -1441,6 +1453,7 @@ fn print_table(
         let data_cols: Vec<&str> = col_headers
             .iter()
             .map(|(_, c)| match c {
+                ListColumn::Status => row.status.as_str(),
                 ListColumn::Branch => row.name.as_str(),
                 ListColumn::Path => row.path.as_str(),
                 ListColumn::Size => row.size.as_str(),

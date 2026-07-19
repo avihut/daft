@@ -349,6 +349,9 @@ pub fn tilde_path(path: &str) -> String {
 /// Pre-computed plain-text column values for a single worktree row.
 /// No ANSI codes — renderers apply their own styling.
 pub struct ColumnValues {
+    /// Paused operation and conflict state in words, for the `status` column.
+    /// Empty when there is nothing to report.
+    pub status: String,
     pub branch: String,
     pub path: String,
     pub size: String,
@@ -435,11 +438,44 @@ pub fn format_human_size(bytes: u64) -> String {
     }
 }
 
+/// The `status` column's text: the paused operation, qualified by how far
+/// through it the user is.
+///
+/// The qualifier is the part the other columns cannot express. A conflict
+/// count already shows as `!N` under Changes, but its *absence* is ambiguous
+/// — an operation with nothing conflicted might be untouched or might be
+/// resolved and waiting for `--continue`. Saying "resolved" is the whole
+/// reason this column spells things out.
+pub fn format_worktree_status(info: &WorktreeInfo) -> String {
+    let Some(op) = info.op else {
+        return String::new();
+    };
+    let label = op.label();
+
+    if info.conflicted > 0 {
+        let noun = if info.conflicted == 1 {
+            "conflict"
+        } else {
+            "conflicts"
+        };
+        return format!("{label} · {} {noun}", info.conflicted);
+    }
+
+    // Nothing conflicted, but the operation is still open and the index holds
+    // resolutions: the user has done the work and needs to continue.
+    if info.staged > 0 {
+        return format!("{label} · resolved");
+    }
+
+    label.to_string()
+}
+
 /// Compute plain-text column values for a single `WorktreeInfo`.
 ///
 /// Respects `ctx.stat`: Summary mode uses commit/file counts, Lines mode
 /// uses line-level insertion/deletion counts for Base, Changes, and Remote.
 pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> ColumnValues {
+    let status = format_worktree_status(info);
     let branch = info.name.clone();
 
     let path = info
@@ -522,6 +558,7 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
     };
 
     ColumnValues {
+        status,
         branch,
         path,
         size,
@@ -960,5 +997,83 @@ mod tests {
         // ANSI bytes preserved at the start; trailing spaces appended after RESET.
         assert!(padded.starts_with("\x1b[31mfailed!\x1b[0m"));
         assert!(padded.ends_with("   "));
+    }
+    // ── status column text ──────────────────────────────────────────────────
+
+    fn status_of(
+        op: Option<crate::git::op_state::OpKind>,
+        conflicted: usize,
+        staged: usize,
+    ) -> String {
+        let mut info = WorktreeInfo::empty("feat/x");
+        info.op = op;
+        info.conflicted = conflicted;
+        info.staged = staged;
+        format_worktree_status(&info)
+    }
+
+    #[test]
+    fn a_worktree_with_no_operation_has_no_status() {
+        assert_eq!(status_of(None, 0, 0), "");
+        // Ordinary uncommitted work is not a status either.
+        assert_eq!(status_of(None, 0, 3), "");
+    }
+
+    #[test]
+    fn an_operation_reports_its_conflict_count() {
+        use crate::git::op_state::OpKind;
+        assert_eq!(
+            status_of(Some(OpKind::Rebase), 2, 0),
+            "rebasing · 2 conflicts"
+        );
+        assert_eq!(status_of(Some(OpKind::Merge), 1, 0), "merging · 1 conflict");
+    }
+
+    /// The state no other column can express: nothing is conflicted any more,
+    /// but the operation is still open and the resolutions are staged. `!N`
+    /// renders as nothing here, so without these words the row looks idle.
+    #[test]
+    fn a_resolved_but_unfinished_operation_says_so() {
+        use crate::git::op_state::OpKind;
+        assert_eq!(status_of(Some(OpKind::Rebase), 0, 2), "rebasing · resolved");
+    }
+
+    #[test]
+    fn an_untouched_operation_is_just_the_operation() {
+        use crate::git::op_state::OpKind;
+        assert_eq!(status_of(Some(OpKind::Bisect), 0, 0), "bisecting");
+        assert_eq!(status_of(Some(OpKind::CherryPick), 0, 0), "cherry-picking");
+    }
+
+    /// Conflicts outrank the resolved qualifier: if anything is still
+    /// unmerged the user is not ready to continue, whatever else is staged.
+    #[test]
+    fn outstanding_conflicts_outrank_staged_resolutions() {
+        use crate::git::op_state::OpKind;
+        assert_eq!(
+            status_of(Some(OpKind::Rebase), 1, 5),
+            "rebasing · 1 conflict"
+        );
+    }
+
+    #[test]
+    fn the_status_value_reaches_the_column_values() {
+        use crate::git::op_state::OpKind;
+        let mut info = WorktreeInfo::empty("feat/x");
+        info.op = Some(OpKind::Rebase);
+        info.conflicted = 2;
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: None,
+            colors: false,
+        };
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.status, "rebasing · 2 conflicts");
+        // The branch cell stays pure identity — no badge appended.
+        assert_eq!(vals.branch, "feat/x");
+        assert_eq!(vals.changes, "!2");
     }
 }
