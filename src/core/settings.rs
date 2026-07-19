@@ -1715,6 +1715,36 @@ mod tests {
         assert!(parse_bool("not-a-bool", defaults::USE_GITOXIDE));
     }
 
+    /// #733 grep-gate: the shell-side halves of the backend matrix must spell
+    /// the key the same way the resolver reads it.
+    ///
+    /// CI's `subprocess` entry and the bench harness write the key from shell
+    /// literals, which no compiler checks (the xtask matrix references
+    /// [`keys::GITOXIDE`] directly and so cannot drift). If a future rename
+    /// misses them, they would keep writing the *old* key while daft reads the
+    /// new one: the opt-out silently becomes a no-op, both matrix entries run
+    /// gitoxide, and the whole suite stays green with zero subprocess
+    /// coverage. Failing here makes that rename loud instead.
+    #[test]
+    fn backend_matrix_shell_literals_match_the_key() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for rel in [
+            ".github/workflows/test.yml",
+            "benches/bench_framework.sh",
+            "tests/integration/test_framework.sh",
+        ] {
+            let path = root.join(rel);
+            let content =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {rel}: {e}"));
+            assert!(
+                content.contains(keys::GITOXIDE),
+                "{rel} does not mention {} — a key rename left the shell side \
+                 behind, so the subprocess matrix entry would be a silent no-op",
+                keys::GITOXIDE
+            );
+        }
+    }
+
     /// #733: a repo-local `daft.gitoxide = false` must beat a global `true`.
     ///
     /// The layout-mutating commands (`flow adopt`/`eject`, `layout

@@ -168,7 +168,11 @@ const MATRIX: &[MatrixEntry] = &[
     // proves the opt-out key genuinely forces it.
     MatrixEntry {
         name: "subprocess",
-        config: &[("daft.gitoxide", "false")],
+        // The constant, not a literal: if the key is ever renamed again, a
+        // stale literal here would still be *written* while daft read the new
+        // name, so the entry would quietly run gitoxide and the whole matrix
+        // would stay green with zero subprocess coverage.
+        config: &[(daft::settings::keys::GITOXIDE, "false")],
     },
 ];
 
