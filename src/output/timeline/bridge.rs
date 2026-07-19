@@ -35,6 +35,10 @@ pub fn error_line(msg: &str) -> String {
 pub struct RegionOutput {
     handle: TimelineHandle,
     quiet: bool,
+    /// `-v` free-text chatter, not the rail's job-log density: this is the
+    /// `Output` contract's verbosity, and the live `v` toggle (#729)
+    /// deliberately leaves it alone — pressing `v` asks for job output, not
+    /// for debug lines.
     verbose: bool,
 }
 

@@ -21,7 +21,7 @@
 
 use super::render::{self, HookJobFace};
 use super::thread_block::{ThreadStyles, ThreadedJob};
-use super::{HookEmbed, TimelineHandle};
+use super::{HookEmbed, LiveVerbose, TimelineHandle};
 use crate::output::hook_progress::{JobOutcome, JobResultEntry, format_duration};
 use crate::output::palette::{DARK_GREY, GREY};
 use crate::settings::HookOutputConfig;
@@ -63,9 +63,11 @@ pub struct RailHookRenderer {
     handle: TimelineHandle,
     use_color: bool,
     quiet: bool,
-    /// `-v` / `daft.hooks.output.verbose`: thread each job's log under its
-    /// row instead of the succinct latest-line annotation.
-    verbose: bool,
+    /// `-v` / `daft.hooks.output.verbose` / a live `v` keypress: thread each
+    /// job's log under its row instead of the succinct latest-line
+    /// annotation. Shared with the rail, so it is read per line drawn — the
+    /// renderer outlives no phase, but a toggle can land mid-phase.
+    verbose: LiveVerbose,
     /// Live-thread window size (`tailLines`); the receipt is never windowed.
     tail_lines: usize,
     /// `timerDelay` before a silent job's spinner gains an elapsed suffix.
@@ -121,7 +123,7 @@ impl RailHookRenderer {
             handle,
             use_color: embed.use_color,
             quiet: config.quiet,
-            verbose: config.verbose,
+            verbose: embed.verbose,
             tail_lines: config.tail_lines as usize,
             timer_delay: Duration::from_secs(u64::from(config.timer_delay_secs)),
             section_label: embed.section_label,
@@ -148,7 +150,7 @@ impl RailHookRenderer {
             Some(label) => label.clone(),
             None => format!("{hook_name} hooks"),
         };
-        let annotation = self.verbose.then(|| {
+        let annotation = self.verbose.get().then(|| {
             if label == hook_name {
                 format!("daft v{}", crate::VERSION)
             } else {
@@ -189,7 +191,7 @@ impl RailHookRenderer {
         // Verbose: open the job's thread with the `❯ <command>` provenance
         // line and the bottom air. Quiet keeps its "suppress hook output"
         // contract — threads vanish entirely.
-        if self.verbose && !self.quiet {
+        if self.verbose.get() && !self.quiet {
             thread.open(&self.mp, &bar, &self.thread_styles);
         }
 
@@ -203,7 +205,7 @@ impl RailHookRenderer {
         self.refresh_bar(name);
         if let Some(state) = self.jobs.get(name) {
             state.bar.enable_steady_tick(Duration::from_millis(80));
-            if self.verbose {
+            if self.verbose.get() {
                 // Ticking promoter: a job still silent past `timerDelay` shows
                 // a dim elapsed counter in its annotation slot until output or
                 // resolution. The message always travels the `{wide_msg}`
@@ -231,7 +233,19 @@ impl RailHookRenderer {
         if self.quiet {
             return;
         }
-        if self.verbose {
+        let verbose = self.verbose.get();
+        // Self-heal a density that changed under a running job (a live `v`,
+        // #729). The toggle runs on the timeline's lock and cannot reach into
+        // this renderer — it lives behind the presenter's — so each job
+        // reconciles its own thread the next time it has a line to draw.
+        if verbose != state.thread.is_open() {
+            if verbose {
+                state.thread.open(&self.mp, &state.bar, &self.thread_styles);
+            } else {
+                state.thread.close(&self.mp);
+            }
+        }
+        if verbose {
             // The thread carries the liveness — the annotation slot keeps the
             // job's description instead of racing the newest tail line. Output
             // un-promotes: the elapsed counter answers "is this silent job
@@ -291,7 +305,7 @@ impl RailHookRenderer {
         let output = state
             .map(|s| s.thread.output().to_vec())
             .unwrap_or_default();
-        if !self.verbose && !self.quiet && !output.is_empty() {
+        if !self.verbose.get() && !self.quiet && !output.is_empty() {
             let head = if self.use_color {
                 format!(
                     "{}error:{} hook job '{name}' failed:",
@@ -388,7 +402,7 @@ impl RailHookRenderer {
     /// rail end (always with the total; the 1s threshold is for row
     /// durations, not the relocated "done in").
     pub fn print_summary(&self, total_duration: Duration) {
-        if !self.verbose || self.finished.is_empty() {
+        if !self.verbose.get() || self.finished.is_empty() {
             return;
         }
         let note = render::section_close(
@@ -420,7 +434,7 @@ impl RailHookRenderer {
             .iter()
             .any(|name| msg.starts_with(&format!("Job '{name}' failed")));
         if redundant {
-            if self.verbose {
+            if self.verbose.get() {
                 let suffix = msg.strip_prefix("Job ").unwrap_or(msg);
                 let line = if self.use_color {
                     format!("{}error:{} hook job {suffix}", styles::RED, styles::RESET)
@@ -453,7 +467,7 @@ impl RailHookRenderer {
     /// closed with one empty thread line so consecutive blocks don't fuse.
     /// Quiet suppresses the whole thread.
     fn persist_log(&self, thread: Option<&ThreadedJob>, failed: bool) {
-        if !self.verbose || self.quiet {
+        if !self.verbose.get() || self.quiet {
             return;
         }
         let Some(thread) = thread else {
@@ -557,11 +571,16 @@ mod tests {
         let anchor = mp.add(ProgressBar::new_spinner());
         anchor.set_style(ProgressStyle::with_template("{msg}").unwrap());
         let tl = Timeline::new(TimelineMode::Interactive { color: false }, false, "t");
+        // The rail carries the density; the embed hands it to the renderer —
+        // the same wiring every lifecycle command performs with its resolved
+        // hook-output config.
+        tl.set_verbose_density(config.verbose);
         let handle = tl.handle();
         let embed = HookEmbed {
             mp,
             anchor,
             use_color,
+            verbose: tl.verbose_flag(),
             section_label: section_label.map(String::from),
             in_group: false,
         };

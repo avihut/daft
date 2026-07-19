@@ -62,7 +62,7 @@ git worktree-exec [OPTIONS] [TARGETS] [CMD]
 | `--sequential` | Run worktrees one at a time and stop on first failure |  |
 | `--keep-going` | Run worktrees one at a time and continue through failures |  |
 | `--refresh-aliases` | Re-capture user shell aliases instead of using the cached snapshot |  |
-| `-v, --verbose` | Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target pass-through runs) |  |
+| `-v, --verbose` | Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target pass-through runs). On a terminal, press `v` during a run to toggle threading either way |  |
 
 ## Global Options
 

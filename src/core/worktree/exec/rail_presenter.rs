@@ -182,7 +182,6 @@ mod tests {
         tl.set_test_draw_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
         tl.set_ordered_receipts(true);
         tl.set_row_output(RowOutputConfig {
-            verbose: false,
             tail_lines: 6,
             buffer_cap: None,
         });
@@ -260,7 +259,6 @@ mod tests {
         tl.set_test_draw_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
         tl.set_ordered_receipts(true);
         tl.set_row_output(RowOutputConfig {
-            verbose: false,
             tail_lines: 6,
             buffer_cap: None,
         });
@@ -319,7 +317,6 @@ mod tests {
         tl.set_test_draw_target(ProgressDrawTarget::term_like(Box::new(term.clone())));
         tl.set_ordered_receipts(true);
         tl.set_row_output(RowOutputConfig {
-            verbose: false,
             tail_lines: 6,
             buffer_cap: None,
         });

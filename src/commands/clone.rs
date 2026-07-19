@@ -1707,6 +1707,10 @@ fn run_post_clone_hook(
     // that ignored the user's hooks.output config here); `-v` opts into the
     // full hook block on the rail (#651).
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
+    // Clone resolves its hook-output config here rather than at command
+    // start (cwd-tolerance, above), so the rail learns its job-log density
+    // now — before the block draws, which is all the live flag requires.
+    timeline.set_verbose_density(hook_output_config.verbose);
     let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );
@@ -1773,6 +1777,7 @@ fn run_post_create_hook(
     // see the comment there.
     let hooks_config = crate::core::settings::load_hooks_config_global()?;
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
+    timeline.set_verbose_density(hook_output_config.verbose);
     let mut executor = HookExecutor::new(hooks_config)?.with_job_filter(
         crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
     );

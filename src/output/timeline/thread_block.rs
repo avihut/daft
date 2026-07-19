@@ -163,6 +163,13 @@ impl ThreadedJob {
         row_bar: &ProgressBar,
         styles: &ThreadStyles,
     ) {
+        // Idempotent: a density toggle can ask an already-open thread to
+        // open again, and re-running the body would orphan the live bars it
+        // overwrites (they stay in the `MultiProgress`, drawn forever) and
+        // stack a second trailer.
+        if self.is_open() {
+            return;
+        }
         self.cmd_bar = self.command_preview.as_deref().map(|cmd| {
             let pb = mp.insert_after(row_bar, ProgressBar::new_spinner());
             pb.set_style(styles.thread.clone());
@@ -291,6 +298,27 @@ impl ThreadedJob {
         self.resolved.store(true, Ordering::SeqCst);
     }
 
+    /// Whether the live thread block is currently up.
+    pub(super) fn is_open(&self) -> bool {
+        self.trailer.is_some()
+    }
+
+    /// Take the live thread down *and forget its bars* — the inverse of
+    /// [`Self::open`], for a row that keeps running at a lower density (the
+    /// `v` toggle flipping back to terse).
+    ///
+    /// Distinct from [`Self::remove_thread_bars`], which detaches the bars on
+    /// the way to a receipt and never reopens. Here the handles must go too:
+    /// a detached bar still counts toward `tail_bars.len()`, so the next
+    /// [`Self::roll_window`] would think its window was already grown and
+    /// write every line into bars that draw nothing.
+    pub(super) fn close(&mut self, mp: &MultiProgress) {
+        self.remove_thread_bars(mp);
+        self.cmd_bar = None;
+        self.tail_bars.clear();
+        self.trailer = None;
+    }
+
     /// Remove the live thread bars (never the row bar — the caller owns that).
     /// `mp.remove`, never `finish_and_clear` (the zombie-line lesson):
     /// receipts replace them via `mp.println`.
@@ -406,6 +434,58 @@ mod tests {
         let mut job = ThreadedJob::new(Some(4), None);
         job.record("a-very-long-single-line");
         assert_eq!(job.output(), &["a-very-long-single-line".to_string()]);
+    }
+
+    #[test]
+    fn closing_forgets_its_bars_so_the_window_can_reopen() {
+        // The density toggle's off→on cycle. `remove_thread_bars` alone
+        // detaches the bars but keeps the handles, so a reopened window would
+        // believe it had already grown to `tail_lines` and write every line
+        // into bars that draw nothing.
+        let mp = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let row = mp.add(ProgressBar::new_spinner());
+        let styles = ThreadStyles::new(false, 0);
+        let mut job = ThreadedJob::new(None, None);
+        job.record("one");
+        job.record("two");
+
+        job.open(&mp, &row, &styles);
+        job.roll_window(&mp, &styles, 4, &row);
+        assert!(job.is_open());
+        assert_eq!(job.tail_len(), 1);
+
+        job.close(&mp);
+        assert!(!job.is_open(), "close must forget the trailer");
+        assert_eq!(job.tail_len(), 0, "close must forget the tail bars");
+
+        // Reopening rebuilds the window from live bars, and it repaints the
+        // *buffered* tail — the toggle reveals what the row already printed,
+        // not just what it prints next.
+        job.open(&mp, &row, &styles);
+        job.roll_window(&mp, &styles, 4, &row);
+        job.roll_window(&mp, &styles, 4, &row);
+        assert_eq!(job.tail_len(), 2);
+        assert_eq!(
+            job.tail_messages(),
+            vec!["one".to_string(), "two".to_string()]
+        );
+    }
+
+    #[test]
+    fn opening_an_already_open_thread_is_a_no_op() {
+        let mp = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let row = mp.add(ProgressBar::new_spinner());
+        let styles = ThreadStyles::new(false, 0);
+        let mut job = ThreadedJob::new(None, Some("cargo test".to_string()));
+        job.open(&mp, &row, &styles);
+        let first = job.cmd_bar_message();
+        job.open(&mp, &row, &styles);
+        assert!(job.has_cmd_bar());
+        assert_eq!(
+            job.cmd_bar_message(),
+            first,
+            "a second open must not orphan the first provenance bar"
+        );
     }
 
     #[test]
