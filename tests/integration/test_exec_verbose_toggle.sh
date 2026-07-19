@@ -21,7 +21,17 @@ TOGGLE_PTY_RUN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pty_run.py"
 # standing in for are suppressed individually instead: no orphaned
 # update-check / trust-prune / log-clean daemons.
 _toggle_daft() {
+    # TERM is load-bearing here, and CI is where its absence bites. daft's own
+    # color gate (colors_enabled_stderr) is TERM-agnostic under a PTY, so it
+    # still picks the Interactive rail and spawns the key listener — but
+    # indicatif hides its entire draw target when TERM is unset or `dumb`, as
+    # it is on a bare GitHub runner. The region then paints nothing, the `v`
+    # toggle has no visible effect, and the mid-run/interrupt assertions fail
+    # even though the listener ran. Pin a color-capable TERM so the rail
+    # actually renders under the PTY regardless of the runner's ambient value.
+    # (Locally TERM is already xterm-*, which is why this only failed in CI.)
     env -u DAFT_TESTING \
+        TERM=xterm-256color \
         DAFT_NO_UPDATE_CHECK=1 \
         DAFT_NO_TRUST_PRUNE=1 \
         DAFT_NO_LOG_CLEAN=1 \
