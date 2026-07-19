@@ -1,6 +1,7 @@
 use super::{
     allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
     extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
+    value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -278,12 +279,40 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
 
     // daft-go and daft-start complete later positions against the repo named
     // at position 1; pass it via env — the __complete protocol only carries
-    // the current word.
+    // the current word. `$__first` is the first *positional*, not words[1],
+    // so a leading flag can't masquerade as the repo name.
     let env_prefix = match command_name {
-        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="${words[1]}" "#,
-        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="${words[1]}" "#,
+        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="$__first" "#,
+        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="$__first" "#,
         _ => "",
     };
+
+    // Positional slots are counted, not taken from $cword: flags and their
+    // values sit in `words` too, so `daft start -q <TAB>` is still slot 1.
+    let value_flags = value_taking_flags(&cmd).join(" ");
+    let position_pre = format!(
+        r#"    local -a __posargs=()
+    local __i=1 __w
+    while [[ $__i -lt $cword ]]; do
+        __w="${{words[$__i]}}"
+        case "$__w" in
+            --) ;;
+            -*)
+                case " {value_flags} " in
+                    *" ${{__w%%=*}} "*)
+                        [[ "$__w" == *=* ]] || __i=$((__i + 1))
+                        ;;
+                esac
+                ;;
+            *) __posargs+=("$__w") ;;
+        esac
+        __i=$((__i + 1))
+    done
+    local __position=$(( ${{#__posargs[@]}} + 1 ))
+    local __first="${{__posargs[0]:-}}"
+
+"#
+    );
 
     // Rich commands that also carry --skip-hooks (checkout, go, start)
     // complete its selector vocabulary when the previous word is the flag.
@@ -314,8 +343,8 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
         return 0
     fi
 
-{path_pre}    local raw
-    raw=$({env_prefix}daft __complete {command_name} "$cur" --position "$cword"{fetch_flag} 2>/dev/null | cut -f1)
+{path_pre}{position_pre}    local raw
+    raw=$({env_prefix}daft __complete {command_name} "$cur" --position "$__position"{fetch_flag} 2>/dev/null | cut -f1)
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true

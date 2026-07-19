@@ -1,6 +1,7 @@
 use super::{
     VERB_ALIAS_GROUPS, allows_path_completion, command_has_repo_positional, emit_formats_for,
     get_command_for_name, get_flag_descriptions, uses_fetch_on_miss, uses_rich_completions,
+    value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -201,7 +202,61 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
 
 /// Generate complete daft fish completions including verb alias flag completions.
 pub(super) fn generate_daft_fish_completions() -> String {
-    let mut output = DAFT_FISH_COMPLETIONS.to_string();
+    // Value-taking flags across the position-aware verbs, so the umbrella's
+    // slot counting skips a flag's value instead of counting it as a
+    // positional. Derived from clap so it can't drift from the Args structs.
+    let mut vflags: Vec<String> = ["daft-go", "daft-start"]
+        .iter()
+        .filter_map(|c| get_command_for_name(c))
+        .flat_map(|cmd| value_taking_flags(&cmd))
+        .collect();
+    vflags.sort();
+    vflags.dedup();
+
+    let mut output = format!(
+        r#"# Positional-slot helpers for verbs whose completion is slot-aware.
+# Slots are counted (flags and their values are not slots), so a leading
+# `--repo x` or `-q` cannot shift `daft start`'s positions.
+function __daft_verb_posargs
+    set -l toks (commandline -opc)
+    set -l vflags {}
+    set -l out
+    set -l skip 0
+    for i in (seq 3 (count $toks))
+        set -l w $toks[$i]
+        if test $skip -eq 1
+            set skip 0
+            continue
+        end
+        if test "$w" = '--'
+            continue
+        end
+        if string match -qr '^-' -- $w
+            if contains -- (string split -m1 '=' -- $w)[1] $vflags
+                if not string match -q '*=*' -- $w
+                    set skip 1
+                end
+            end
+            continue
+        end
+        set out $out $w
+    end
+    printf '%s\n' $out
+end
+
+function __daft_verb_position
+    math (count (__daft_verb_posargs)) + 1
+end
+
+function __daft_verb_first
+    set -l a (__daft_verb_posargs)
+    test (count $a) -ge 1; and echo $a[1]; or echo ''
+end
+
+"#,
+        vflags.join(" ")
+    );
+    output.push_str(DAFT_FISH_COMPLETIONS);
     output.push('\n');
     output.push_str(&generate_verb_alias_flag_completions());
     output
@@ -268,6 +323,62 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
     let is_git_command = command_name.starts_with("git-");
 
     let mut output = String::new();
+
+    // Positional-slot helpers. The dynamic source is position-aware (daft-go
+    // and daft-start answer differently per slot), and flags plus their
+    // values sit in the token list too — so slots are counted, never taken
+    // from the raw token index.
+    let func_name = command_name.replace('-', "_");
+    let value_flags = value_taking_flags(&cmd).join(" ");
+    output.push_str(&format!(
+        r#"# Positional-slot helpers (flags and their values are not slots)
+function __{func_name}_posargs
+    set -l toks (commandline -opc)
+    set -l vflags {value_flags}
+    set -l out
+    set -l skip 0
+    for i in (seq 2 (count $toks))
+        set -l w $toks[$i]
+        if test $skip -eq 1
+            set skip 0
+            continue
+        end
+        if test "$w" = '--'
+            continue
+        end
+        if string match -qr '^-' -- $w
+            if contains -- (string split -m1 '=' -- $w)[1] $vflags
+                if not string match -q '*=*' -- $w
+                    set skip 1
+                end
+            end
+            continue
+        end
+        set out $out $w
+    end
+    printf '%s\n' $out
+end
+
+function __{func_name}_position
+    math (count (__{func_name}_posargs)) + 1
+end
+
+function __{func_name}_first
+    set -l a (__{func_name}_posargs)
+    test (count $a) -ge 1; and echo $a[1]; or echo ''
+end
+
+"#
+    ));
+
+    // daft-go and daft-start resolve later slots against the repo named in
+    // slot 1; the __complete protocol only carries the current word.
+    let env_prefix = match command_name {
+        "daft-go" => format!("env DAFT_COMPLETE_GO_FIRST=(__{func_name}_first) "),
+        "daft-start" => format!("env DAFT_COMPLETE_START_FIRST=(__{func_name}_first) "),
+        _ => String::new(),
+    };
+
     // Dynamic branch completion with grouped output
     output.push_str("# Dynamic branch name completion\n");
     // Worktree lines: name[*?]\tworktree\tage\tauthor\tpath (5 fields)
@@ -278,12 +389,12 @@ fn generate_fish_rich_completion(command_name: &str) -> Result<String> {
     // Strip *? from name for completion value — these are invalid in git branch names.
     let awk_body = "{{c=$1; sub(/[*?]+$/,\\\"\\\",c); s=substr($1,length(c)+1); if (NF>=5) printf \\\"%s\\t%s %s · %s · %s\\n\\\",c,s,$3,$4,$5; else if (NF>=4) printf \\\"%s\\t%s %s · %s\\n\\\",c,s,$3,$4; else printf \\\"%s\\t%s\\n\\\",c,$3}}";
     output.push_str(&format!(
-        "complete -c {command_name} -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
+        "complete -c {command_name} -f -a \"({env_prefix}daft __complete {command_name} (commandline -ct) --position (__{func_name}_position){fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
     ));
     // Git subcommand invocation (git worktree-checkout) — only for git-* commands
     if is_git_command {
         output.push_str(&format!(
-            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"(daft __complete {command_name} (commandline -ct) --position 1{fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
+            "complete -c git -n '__fish_seen_subcommand_from {git_subcommand}' -f -a \"({env_prefix}daft __complete {command_name} (commandline -ct) --position (__{func_name}_position){fetch_flag} 2>/dev/null | awk -F'\\t' '{awk_body}')\"\n",
         ));
     }
     // Path-accepting commands (daft-remove, daft-rename) also offer directory
@@ -390,8 +501,8 @@ complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files 
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
 complete -c daft -n '__fish_use_subcommand' -a 'skill' -d 'Manage the daft agent skill'
 complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config files'
-complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
-complete -c daft -n '__fish_seen_subcommand_from go; and test (count (commandline -opc)) -eq 3' -f -a "(env DAFT_COMPLETE_GO_FIRST=(commandline -opc)[3] daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 1' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 2' -f -a "(env DAFT_COMPLETE_GO_FIRST=(__daft_verb_first) daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
 # --repo flag values complete to catalog repo names
 complete -c daft -n '__fish_seen_subcommand_from go list update exec prune start' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
 # list's optional positional is a cataloged repo (sugar for --repo); the
@@ -399,9 +510,9 @@ complete -c daft -n '__fish_seen_subcommand_from go list update exec prune start
 complete -c daft -n '__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
 # start position 1 is a new branch or a cataloged repo (#725); positions 2-3
 # complete against the repo named at position 1 via DAFT_COMPLETE_START_FIRST
-complete -c daft -n '__fish_seen_subcommand_from start; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete daft-start (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
-complete -c daft -n '__fish_seen_subcommand_from start; and test (count (commandline -opc)) -eq 3' -f -a "(env DAFT_COMPLETE_START_FIRST=(commandline -opc)[3] daft __complete daft-start (commandline -ct) --position 2 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
-complete -c daft -n '__fish_seen_subcommand_from start; and test (count (commandline -opc)) -eq 4' -f -a "(env DAFT_COMPLETE_START_FIRST=(commandline -opc)[3] daft __complete daft-start (commandline -ct) --position 3 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from start; and test (__daft_verb_position) -eq 1' -f -a "(daft __complete daft-start (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from start; and test (__daft_verb_position) -eq 2' -f -a "(env DAFT_COMPLETE_START_FIRST=(__daft_verb_first) daft __complete daft-start (commandline -ct) --position 2 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from start; and test (__daft_verb_position) -eq 3' -f -a "(env DAFT_COMPLETE_START_FIRST=(__daft_verb_first) daft __complete daft-start (commandline -ct) --position 3 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"

@@ -758,35 +758,71 @@ test_start_repo_positional_completion() {
         fi
 
         mkdir -p "$sb/bin"; ln -sf "$DAFT_BIN" "$sb/bin/daft"; export PATH="$sb/bin:$PATH"
-        mkdir -p "$sb/apiservice"; cd "$sb/apiservice" || exit 1
-        git init -q
-        GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t.co \
-            GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t.co \
-            git commit -q --allow-empty -m init
-        daft repo add --name apiservice >/dev/null 2>&1
+        export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t.co \
+               GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t.co
+        # Two repos: the cross-repo slot only exists relative to ANOTHER
+        # repo. Naming the repo you are standing in is a redundant
+        # qualifier, so its slot 2 stays an ordinary base slot.
+        for r in apiservice webclient; do
+            mkdir -p "$sb/$r"; (cd "$sb/$r" && git init -q \
+                && git commit -q --allow-empty -m init \
+                && daft repo add --name "$r" >/dev/null 2>&1)
+        done
+        cd "$sb/apiservice" || exit 1
 
-        # Layer 1: the helper — position 1 surfaces the repo, position 2
-        # after that repo is a new-branch slot and stays empty.
-        pos1=$(daft __complete daft-start api --position 1 2>/dev/null | cut -f1)
-        [[ "$pos1" == *apiservice* ]] || { echo "FAIL pos1=[$pos1]"; exit 0; }
-        pos2=$(DAFT_COMPLETE_START_FIRST=apiservice daft __complete daft-start '' --position 2 2>/dev/null)
+        # Layer 1: the helper — position 1 surfaces catalog repos, and the
+        # slot after ANOTHER repo is a new-branch slot that stays empty.
+        pos1=$(daft __complete daft-start web --position 1 2>/dev/null | cut -f1)
+        [[ "$pos1" == *webclient* ]] || { echo "FAIL pos1=[$pos1]"; exit 0; }
+        pos2=$(DAFT_COMPLETE_START_FIRST=webclient daft __complete daft-start '' --position 2 2>/dev/null)
         [[ -z "$pos2" ]] || { echo "FAIL pos2=[$pos2]"; exit 0; }
+        # …but the CURRENT repo's name is not a cross-repo target, so that
+        # slot still completes bases (regression guard for the local-first
+        # rule, #725 review).
+        own=$(DAFT_COMPLETE_START_FIRST=apiservice daft __complete daft-start '' --position 2 2>/dev/null)
+        [[ -n "$own" ]] || { echo "FAIL own-repo slot 2 was empty"; exit 0; }
 
         # Layer 2: the sourced bash umbrella drives the same wiring.
-        _init_completion() {
-            cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
-            words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
-        }
-        source <(daft completions bash 2>/dev/null)
-        drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
-
-        drive daft start api;           match="${COMPREPLY[*]}"
-        drive daft start apiservice ""; second="${COMPREPLY[*]}"
-        if [[ "$match" == *apiservice* && -z "$second" ]]; then
-            echo "PASS"
-        else
-            echo "FAIL match=[$match] second=[$second]"
+        #
+        # The emitted payload uses `mapfile` (bash 4+), so it must be sourced
+        # by a bash that clears that floor — /bin/bash is 3.2 on macOS and
+        # would silently leave `_daft` undefined, failing as an empty
+        # COMPREPLY rather than a version problem. Probe for `mapfile`
+        # instead of trusting `command -v bash`, which finds 3.2 first on a
+        # stock mac even with Homebrew's 5.x installed.
+        drive_bash=""
+        for candidate in "$(command -v bash)" /opt/homebrew/bin/bash \
+                         /usr/local/bin/bash /bin/bash; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'type mapfile' >/dev/null 2>&1; then
+                drive_bash="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$drive_bash" ]]; then
+            echo "SKIP: no bash 4+ available for the sourced-wrapper layer"
+            exit 0
         fi
+        # env (PATH with the daft symlink, DAFT_*_DIR sandbox) and cwd are
+        # inherited by the child bash.
+        "$drive_bash" <<'DRIVE_EOS'
+_init_completion() {
+    cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
+}
+source <(daft completions bash 2>/dev/null)
+drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
+
+drive daft start web;          match="${COMPREPLY[*]}"
+drive daft start webclient ""; second="${COMPREPLY[*]}"
+# A flag before the positionals must not shift the slot: this is still slot
+# 1 (repo names / a new branch), so it must not offer existing branches.
+drive daft start -q web;       flagged="${COMPREPLY[*]}"
+if [[ "$match" == *webclient* && -z "$second" && "$flagged" == *webclient* ]]; then
+    echo "PASS"
+else
+    echo "FAIL match=[$match] second=[$second] flagged=[$flagged]"
+fi
+DRIVE_EOS
     )
     case "$result" in
         PASS) pass_test ;;

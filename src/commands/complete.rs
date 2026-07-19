@@ -150,22 +150,26 @@ fn complete(
         // shell passes position 1 via DAFT_COMPLETE_START_FIRST.
         ("daft-start", 2) => {
             let first = std::env::var("DAFT_COMPLETE_START_FIRST").unwrap_or_default();
-            if start_first_is_cross_repo(&first) {
-                Ok(vec![])
-            } else {
-                Ok(format_entries_as_strings(&complete_rich_branches(
-                    word,
-                    &CONFIG_CHECKOUT,
-                )?))
+            match start_second_slot(&first) {
+                StartSecondSlot::NewBranchInRepo | StartSecondSlot::Blocked => Ok(vec![]),
+                StartSecondSlot::LocalBase => Ok(format_entries_as_strings(
+                    &complete_rich_branches(word, &CONFIG_CHECKOUT)?,
+                )),
             }
         }
 
         // daft-start position 3: base branches inside the target repo of the
         // three-name form (empty when position 1 isn't a live repo — the
-        // local form has no third argument).
+        // local form has no third argument). Forge-free, unlike `go <repo>`'s
+        // branch slot: this is a base, and the create-family guard rejects
+        // basing a new branch on a PR/MR ref.
         ("daft-start", 3) => {
             let first = std::env::var("DAFT_COMPLETE_START_FIRST").unwrap_or_default();
-            Ok(format_entries_as_strings(&complete_go_second(&first, word)))
+            let entries: Vec<_> = complete_go_second(&first, word)
+                .into_iter()
+                .filter(|e| e.group != CompletionGroup::Forge)
+                .collect();
+            Ok(format_entries_as_strings(&entries))
         }
 
         // daft-start: nothing beyond position 3
@@ -754,20 +758,39 @@ fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings:
     }
 }
 
-/// Would `daft start <first> …` read cross-repo? Mirrors the decode guess
-/// (`decode_start_grammar`): an existing local branch keeps the local
-/// reading; otherwise a live catalog repo goes cross. Silent, hot-path.
-fn start_first_is_cross_repo(first: &str) -> bool {
-    if first.is_empty() || crate::commands::checkout::local_branch_exists(first) {
-        return false;
+/// What the slot after `daft start <first>` means — the completion mirror of
+/// `decode_start_grammar`, including its collision outcome.
+enum StartSecondSlot {
+    /// `first` names a live repo elsewhere: the slot is a NEW branch there.
+    NewBranchInRepo,
+    /// `first` is shadowed by a local branch: every reading of
+    /// `start <first> <second>` is rejected, so suggesting anything would
+    /// steer into a guaranteed failure.
+    Blocked,
+    /// Ordinary local `<branch> <base>`: the slot is a base.
+    LocalBase,
+}
+
+/// Classify the slot after `first`. Silent and hot-path: this runs on every
+/// Tab keypress, so the catalog read (SQLite) is consulted before any `git`
+/// fork — only a catalog hit can change the answer, which keeps the common
+/// `daft start feat/x <TAB>` free of a subprocess here.
+fn start_second_slot(first: &str) -> StartSecondSlot {
+    if first.is_empty() {
+        return StartSecondSlot::LocalBase;
     }
-    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
-        return false;
-    };
-    matches!(
-        catalog.resolve_live_name(first),
-        Ok(Some(row)) if std::path::Path::new(&row.path).is_dir()
-    )
+    match crate::commands::checkout::probe_start_repo(first) {
+        Ok(crate::commands::checkout::StartRepoProbe::Live) => {
+            if crate::commands::checkout::local_branch_exists(first) {
+                StartSecondSlot::Blocked
+            } else {
+                StartSecondSlot::NewBranchInRepo
+            }
+        }
+        // Unknown, stale, tombstoned, the current repo, or an unreadable
+        // catalog: none of these make the slot a cross-repo branch name.
+        _ => StartSecondSlot::LocalBase,
+    }
 }
 
 /// Position-2 completion for `daft go <repo> <branch>`: branches of the
