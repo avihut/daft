@@ -1,0 +1,101 @@
+name: Recorded identity, fallback and drift
+description: >
+  Daft records what branch a worktree was created for. When the worktree is
+  later detached with nothing to explain it, the record still names the row;
+  when a different branch is checked out into it, the live checkout wins and the
+  disagreement is reported as drift.
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init --layout contained identity-drift
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/identity-drift/master"
+
+  - name: Create an initial commit
+    run: |
+      cd $WORK_DIR/identity-drift/master
+      echo "content" > README.md
+      git add README.md
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Create a worktree for feat/z through daft, so its identity is recorded
+    run: daft start feat/z 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/identity-drift/feat/z"
+
+  - name: Detach that worktree with nothing to explain it
+    run: |
+      cd $WORK_DIR/identity-drift/feat/z
+      git checkout --detach HEAD
+    expect:
+      exit_code: 0
+
+  - name: The record still names the row, and reports the detached SHA
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/z"
+        - "detached @"
+      output_not_contains:
+        # The name came back from the record; the placeholder must not appear.
+        - "(detached)"
+
+  - name: Structured output marks the identity as persisted
+    run: NO_COLOR=1 git-worktree-list --format json 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"identity_source": "persisted"'
+        # Named, but the detachment is still unexplained — so still a sandbox.
+        - '"is_sandbox": true'
+
+  - name: Check out a different branch into that worktree
+    run: |
+      cd $WORK_DIR/identity-drift/feat/z
+      git checkout -b hotfix/urgent
+    expect:
+      exit_code: 0
+
+  - name: The live checkout wins the name and the row reports drift
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "hotfix/urgent"
+        - "drifted"
+
+  - name: Doctor reports the same disagreement
+    run: NO_COLOR=1 daft doctor 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      output_contains:
+        - "Worktree identities"
+        - "drifted from their record"
+
+  - name: Doctor --fix reconciles the record to the checkout
+    run: NO_COLOR=1 daft doctor --fix 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      output_contains:
+        - "Worktree identities"
+
+  - name: Drift is gone once the record matches
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/identity-drift/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "hotfix/urgent"
+      output_not_contains:
+        - "drifted"

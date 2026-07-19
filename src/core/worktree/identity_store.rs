@@ -91,10 +91,15 @@ impl IdentityStore {
         }
     }
 
-    /// Record several observations in one transaction — the shape the list
-    /// and sync paths need, where every attached worktree is refreshed at
-    /// once.
-    pub fn record_all<'a>(&self, observations: impl IntoIterator<Item = (&'a Path, &'a str)>) {
+    /// Note several worktrees observed attached to their branches, in one
+    /// transaction — the shape the list paths need.
+    ///
+    /// Non-destructive: a worktree with no record gets one, and an existing
+    /// record has its path and timestamp refreshed but keeps its branch. An
+    /// observation is evidence of what is checked out *now*, which is not the
+    /// same claim as what the worktree is *for* — conflating them would let a
+    /// listing quietly redefine intent and erase drift before it was reported.
+    pub fn observe_all<'a>(&self, observations: impl IntoIterator<Item = (&'a Path, &'a str)>) {
         let now = chrono::Utc::now();
         let rows: Vec<WorktreeIdentityRow> = observations
             .into_iter()
@@ -113,7 +118,7 @@ impl IdentityStore {
         }
         if let Err(e) = self.write(|conn| {
             for row in &rows {
-                WorktreeIdentitiesRepo::upsert(conn, row)?;
+                WorktreeIdentitiesRepo::observe(conn, row)?;
             }
             Ok(())
         }) {
@@ -254,7 +259,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn record_all_writes_every_observation() {
+    fn observe_all_writes_every_observation() {
         let _guard = crate::store::paths::IsolatedStateDir::new();
         let (_tmp, common, wt_a) = linked_worktree("wt-a");
         // A second worktree under the same common dir.
@@ -269,7 +274,7 @@ mod tests {
         .unwrap();
 
         let store = IdentityStore::open(&common).unwrap();
-        store.record_all([(wt_a.as_path(), "feat/a"), (wt_b.as_path(), "feat/b")]);
+        store.observe_all([(wt_a.as_path(), "feat/a"), (wt_b.as_path(), "feat/b")]);
 
         let found = read_identities(&common);
         assert_eq!(found["wt-a"].branch, "feat/a");

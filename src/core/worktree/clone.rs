@@ -223,12 +223,13 @@ fn record_clone_identities(git: &GitCommand, git_dir: &Path) {
         return;
     };
     let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
-    store.record_all(
-        entries
-            .iter()
-            .filter(|e| !e.is_bare)
-            .filter_map(|e| Some((e.path.as_path(), e.branch.as_deref()?))),
-    );
+    // Creation, not observation: a clone defines what each worktree is for,
+    // so these are deliberate writes.
+    for entry in entries.iter().filter(|e| !e.is_bare) {
+        if let Some(branch) = entry.branch.as_deref() {
+            store.record(&entry.path, branch);
+        }
+    }
 }
 
 fn create_single_worktree(

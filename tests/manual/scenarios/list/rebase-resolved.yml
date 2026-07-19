@@ -1,0 +1,94 @@
+name: Rebase resolved but not yet continued
+description: >
+  Once conflicts are resolved and staged, the conflict count renders as nothing
+  — so only the status column can distinguish "resolved, awaiting --continue"
+  from an untouched operation. That is the state the column exists for.
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init --layout contained rebase-resolved
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rebase-resolved/master"
+
+  - name: Create an initial commit
+    run: |
+      cd $WORK_DIR/rebase-resolved/master
+      echo "base" > conflict.txt
+      git add conflict.txt
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Diverge master and feat/y on the same file
+    run: |
+      cd $WORK_DIR/rebase-resolved/master
+      git branch feat/y
+      echo "master side" > conflict.txt
+      git commit -am "master change"
+      cd $WORK_DIR/rebase-resolved
+      git worktree add feat-wt feat/y
+      cd feat-wt
+      echo "feature side" > conflict.txt
+      git commit -am "feature change"
+    expect:
+      exit_code: 0
+
+  - name: Start a rebase that stops on the conflict (non-zero expected)
+    run: |
+      cd $WORK_DIR/rebase-resolved/feat-wt
+      git rebase master
+    expect:
+      exit_code: 1
+
+  - name: While conflicted, the count is visible
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/rebase-resolved/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "rebasing"
+        - "1 conflict"
+
+  - name: Resolve the conflict and stage it, without continuing
+    run: |
+      cd $WORK_DIR/rebase-resolved/feat-wt
+      echo "resolved content" > conflict.txt
+      git add conflict.txt
+    expect:
+      exit_code: 0
+
+  - name: The status column reports resolved, awaiting continue
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/rebase-resolved/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/y"
+        - "rebasing"
+        - "resolved"
+      output_not_contains:
+        # Nothing is conflicted any more — which is exactly why the word
+        # "resolved" has to carry this state.
+        - "conflict"
+        - "(detached)"
+
+  - name: Finishing the rebase clears the status
+    run: |
+      cd $WORK_DIR/rebase-resolved/feat-wt
+      GIT_EDITOR=true git rebase --continue
+    expect:
+      exit_code: 0
+
+  - name: The row is ordinary again
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/rebase-resolved/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/y"
+      output_not_contains:
+        - "rebasing"
+        - "resolved"
+        - "(detached)"

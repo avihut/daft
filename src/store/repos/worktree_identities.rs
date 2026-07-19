@@ -31,6 +31,37 @@ impl WorktreeIdentitiesRepo {
         Ok(())
     }
 
+    /// Record an *observation* of a worktree attached to a branch.
+    ///
+    /// Fills in a worktree that has no record yet — which is how worktrees
+    /// daft did not create acquire one — and refreshes the path and timestamp
+    /// of one that does. It deliberately never rewrites `branch`: the record
+    /// holds what the worktree is *for*, and seeing a different branch checked
+    /// out is the definition of drift, not a correction of it. Silently
+    /// adopting the new branch would erase the disagreement before anyone
+    /// could be told about it.
+    ///
+    /// [`Self::upsert`] is the deliberate path — creation, `daft rename`, and
+    /// `daft doctor --fix` — where the caller means to redefine the intent.
+    pub fn observe(conn: &Connection, row: &WorktreeIdentityRow) -> Result<()> {
+        conn.execute(
+            "INSERT INTO worktree_identities
+                 (repo_hash, worktree_id, branch, worktree_path, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(repo_hash, worktree_id) DO UPDATE SET
+                 worktree_path = excluded.worktree_path,
+                 updated_at    = excluded.updated_at",
+            params![
+                row.repo_hash,
+                row.worktree_id,
+                row.branch,
+                row.worktree_path,
+                row.updated_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn get(
         conn: &Connection,
         repo_hash: &str,
@@ -222,6 +253,47 @@ mod tests {
             .map(|r| r.worktree_id)
             .collect();
         assert_eq!(remaining, vec!["wt-b"]);
+    }
+
+    /// Observation fills in what is missing and refreshes the path, but the
+    /// recorded branch is intent — only a deliberate write redefines it.
+    /// Without this, drift would erase itself on the next `daft list`.
+    #[test]
+    fn observation_never_rewrites_the_recorded_branch() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::upsert(&conn, &sample("wt-a", "feat/x")).unwrap();
+
+        let mut observed = sample("wt-a", "hotfix/urgent");
+        observed.worktree_path = "/tmp/wt/moved".into();
+        WorktreeIdentitiesRepo::observe(&conn, &observed).unwrap();
+
+        let row = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.branch, "feat/x", "intent survives an observation");
+        assert_eq!(row.worktree_path, "/tmp/wt/moved", "but the path refreshes");
+
+        // A deliberate write is what changes intent.
+        WorktreeIdentitiesRepo::upsert(&conn, &observed).unwrap();
+        assert_eq!(
+            WorktreeIdentitiesRepo::get(&conn, "repo", "wt-a")
+                .unwrap()
+                .unwrap()
+                .branch,
+            "hotfix/urgent"
+        );
+    }
+
+    #[test]
+    fn observation_records_a_worktree_that_has_none() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::observe(&conn, &sample("wt-new", "feat/new")).unwrap();
+        assert_eq!(
+            WorktreeIdentitiesRepo::get(&conn, "repo", "wt-new")
+                .unwrap()
+                .map(|r| r.branch),
+            Some("feat/new".to_string())
+        );
     }
 
     /// Removal paths know the branch, not the private-gitdir id: git has

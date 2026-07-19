@@ -480,7 +480,7 @@ pub fn run_live(args: Args) -> Result<()> {
     // rows only, never a detached reading.
     if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_common_dir)
     {
-        store.record_all(final_state.live.rows.iter().filter_map(|row| {
+        store.observe_all(final_state.live.rows.iter().filter_map(|row| {
             // Attached only — see the blocking path.
             (row.info.identity_source
                 == Some(crate::core::worktree::identity::IdentitySource::Attached))
