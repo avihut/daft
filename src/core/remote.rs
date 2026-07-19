@@ -154,7 +154,7 @@ pub fn get_default_branch_local(
 pub fn get_remote_branches(remote_name: &str, use_gitoxide: bool) -> Result<Vec<String>> {
     let git = GitCommand::new(false).with_gitoxide(use_gitoxide);
     let output_str = git
-        .ls_remote_heads(remote_name, None)
+        .ls_remote_heads(remote_name)
         .context("Failed to get remote branches")?;
 
     let mut branches = Vec::new();

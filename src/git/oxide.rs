@@ -448,18 +448,26 @@ pub fn remote_get_url(repo: &Repository, remote_name: &str) -> Result<String> {
 // When no local repo exists (e.g. during clone), the callers in git.rs fall
 // through to the git CLI subprocess path instead.
 
-/// gitoxide equivalent of `git ls-remote --heads <remote> [refs/heads/<branch>]`
+/// gitoxide equivalent of `git ls-remote --heads <remote>`
 ///
 /// Returns output formatted like git's ls-remote output:
 /// ```text
 /// <oid>\trefs/heads/branch-name
 /// ```
 ///
-/// `remote` must be a configured remote with fetch refspecs — the dispatch
-/// (`GitCommand::gix_repo_for_remote`) guarantees it. An ad-hoc URL remote
-/// would produce an empty ref map (no refspecs → no protocol-v2 ref
-/// prefixes), which is exactly the trap that routes URL probes to the CLI.
-pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) -> Result<String> {
+/// Lists every head — there is no single-branch variant on purpose. gix
+/// takes its protocol-v2 ref prefixes from the remote's configured
+/// refspecs, so narrowing to one ref can only ever be a client-side filter
+/// over the full advertisement, i.e. the cost of the whole listing with
+/// none of the benefit. `GitCommand::ls_remote_branch_exists` uses the CLI
+/// for that instead.
+///
+/// `remote` must be a configured remote whose fetch refspecs cover
+/// `refs/heads/` — the dispatch (`GitCommand::gix_repo_for_remote`)
+/// guarantees it. An ad-hoc URL remote would produce an empty ref map (no
+/// refspecs → no ref prefixes) and a narrow refspec a partial one, which is
+/// exactly the trap that routes those probes to the CLI.
+pub fn ls_remote_heads(repo: &Repository, remote: &str) -> Result<String> {
     let remote_obj = match repo.try_find_remote(remote) {
         Some(Ok(r)) => r,
         _ => anyhow::bail!("remote '{remote}' is not configured (URL remotes take the CLI path)"),
@@ -474,8 +482,6 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) ->
         .context("Failed to get ref map from remote")?;
 
     let mut output = String::new();
-
-    let filter_ref = branch.map(|b| format!("refs/heads/{b}"));
 
     for remote_ref in &ref_map.remote_refs {
         let (name, oid) = match remote_ref {
@@ -501,23 +507,10 @@ pub fn ls_remote_heads(repo: &Repository, remote: &str, branch: Option<&str>) ->
             continue;
         }
 
-        if let Some(ref filter) = filter_ref
-            && name != *filter
-        {
-            continue;
-        }
-
         output.push_str(&format!("{oid}\t{name}\n"));
     }
 
     Ok(output)
-}
-
-/// gitoxide equivalent of `git ls-remote --heads <remote> refs/heads/<branch>`
-/// Returns true if the branch exists on the remote.
-pub fn ls_remote_branch_exists(repo: &Repository, remote_name: &str, branch: &str) -> Result<bool> {
-    let output = ls_remote_heads(repo, remote_name, Some(branch))?;
-    Ok(!output.trim().is_empty())
 }
 
 #[cfg(test)]

@@ -356,20 +356,25 @@ mod tests {
         );
     }
 
-    /// #733 graduation regressions in the remote-probe family, pinned from a
-    /// fresh bare clone (the state daft's clone flow probes from):
+    /// #733 remote-probe routing, pinned from a fresh bare clone (the state
+    /// daft's clone flow probes from). Each probe must reach the right
+    /// backend:
     ///
-    /// 1. URL-shaped ls-remote probes must take the subprocess arm — the gix
-    ///    arm derives its protocol-v2 ref-prefix filter from the configured
-    ///    remote's fetch refspecs, so an ad-hoc URL remote yields an empty
-    ///    ref map. A configured remote name with refspecs keeps gix.
-    /// 2. `list_remote_branches` must answer from the network — a fresh bare
-    ///    clone has no `refs/remotes/<remote>/` refs, and the local-ref arm
-    ///    that once served it declared every branch missing, so multi-branch
-    ///    clone created no worktrees.
+    /// 1. Single-ref existence (`ls_remote_branch_exists`) is CLI-always —
+    ///    it hands `refs/heads/<branch>` to the server for a one-ref answer,
+    ///    which gix can't express (its ref prefixes come from the remote's
+    ///    refspecs), so even a configured remote name takes no gix path.
+    /// 2. URL-shaped probes and `ls_remote_symref` are CLI too — the gix arm
+    ///    derives its ref-prefix filter from configured fetch refspecs, and
+    ///    an ad-hoc URL remote has none.
+    /// 3. Bulk listing (`list_remote_branches`) of a configured remote whose
+    ///    refspec covers `refs/heads/*` takes the gix network arm — a fresh
+    ///    bare clone has no local remote-tracking refs, so it must reach the
+    ///    server rather than read empty local refs and declare every branch
+    ///    missing (the multi-branch-clone regression).
     #[test]
     #[serial_test::serial]
-    fn fresh_bare_clone_remote_probes_fall_back_to_cli() {
+    fn fresh_bare_clone_remote_probes_pick_the_right_backend() {
         for var in GIT_ENV_VARS {
             unsafe {
                 std::env::remove_var(var);
@@ -409,12 +414,17 @@ mod tests {
 
         let git = GitCommand::new(true).with_gitoxide(true);
 
-        // Configured name with refspecs: the gix arm answers (and discovers).
+        // Existence probe is CLI even for a configured name: it must find the
+        // branch and take no gix path.
         reset_discover_count();
         assert!(git.ls_remote_branch_exists("origin", "develop").unwrap());
-        assert_eq!(discover_count(), 1, "name-shaped probe stays on gix");
+        assert_eq!(
+            discover_count(),
+            0,
+            "single-ref existence must never take the gix arm"
+        );
 
-        // URL/path-shaped remote: must bypass gix and still find the branch.
+        // URL/path-shaped remote: also CLI, still finds the branch.
         assert!(
             git.ls_remote_branch_exists(&src_url, "develop").unwrap(),
             "URL-shaped probe must find the branch via the CLI arm"
@@ -427,13 +437,20 @@ mod tests {
             "symref must expose remote HEAD, got: {symref}"
         );
 
-        // Fresh bare clone: refs/remotes/origin/* is empty until the first
-        // fetch, so the listing must come from the network instead of
-        // declaring every branch missing (the multi-branch-clone regression).
+        // Bulk listing of the configured remote takes the gix network arm and
+        // must reach the server — refs/remotes/origin/* is empty until the
+        // first fetch, so a local-ref answer would be "no branches" (the
+        // multi-branch-clone regression).
+        reset_discover_count();
         let listed = git.list_remote_branches("origin").unwrap();
         assert!(
             listed.contains(&"develop".to_string()),
-            "unfetched bare clone must list remote branches from the network, got {listed:?}"
+            "fresh bare clone must list remote branches from the network, got {listed:?}"
+        );
+        assert_eq!(
+            discover_count(),
+            1,
+            "bulk listing of a covering-refspec remote uses the gix arm"
         );
     }
 

@@ -517,9 +517,14 @@ impl GitCommand {
         covers_all_heads.then_some(repo)
     }
 
-    pub fn ls_remote_heads(&self, remote: &str, branch: Option<&str>) -> Result<String> {
+    /// Every head on a remote, in `<oid>\t<ref>` lines.
+    ///
+    /// Bulk listing is where the gix arm pays off: one connection, the whole
+    /// advertisement, no subprocess. Single-ref existence deliberately does
+    /// *not* route here — see `ls_remote_branch_exists`.
+    pub fn ls_remote_heads(&self, remote: &str) -> Result<String> {
         if let Some(repo) = self.gix_repo_for_remote(remote) {
-            return oxide::ls_remote_heads(&repo, remote, branch);
+            return oxide::ls_remote_heads(&repo, remote);
         }
         // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
         // Routed through output_with_cancel so a supervised caller (sync's
@@ -528,10 +533,6 @@ impl GitCommand {
         // flag and get a classic blocking run.
         let mut cmd = Command::new("git");
         cmd.args(["ls-remote", "--heads", remote]);
-
-        if let Some(branch) = branch {
-            cmd.arg(format!("refs/heads/{branch}"));
-        }
 
         let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
             .context("Failed to execute git ls-remote command")?;
@@ -546,14 +547,16 @@ impl GitCommand {
 
     /// Execute git ls-remote with symref to get remote HEAD.
     ///
-    /// Always the git CLI: every caller passes a URL, never a configured
-    /// remote name, and the gix arm is unsound for ad-hoc URL remotes (see
-    /// `gix_repo_for_remote`) — its empty ref map made default-branch
-    /// detection fail and the empty-remote probe answer "empty" for
-    /// populated remotes.
-    pub fn ls_remote_symref(&self, remote_url: &str) -> Result<String> {
+    /// `remote` may be a URL or a configured remote name — the git CLI
+    /// resolves both. It is CLI-always because the gix arm was unsound for
+    /// the URL callers (`get_default_branch` probes an unconfigured URL, so
+    /// gix's empty ref map made default-branch detection fail), and the CLI
+    /// serves the remote-name callers (`get_default_branch_local`'s fallback,
+    /// `get_default_branch_from_remote_head`) equally well, so there is no
+    /// call site that would benefit from a gix arm here.
+    pub fn ls_remote_symref(&self, remote: &str) -> Result<String> {
         let output = Command::new("git")
-            .args(["ls-remote", "--symref", remote_url, "HEAD"])
+            .args(["ls-remote", "--symref", remote, "HEAD"])
             .output()
             .context("Failed to execute git ls-remote command")?;
 
@@ -565,12 +568,18 @@ impl GitCommand {
         String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")
     }
 
-    /// Check if specific remote branch exists
+    /// Whether one specific branch exists on a remote.
+    ///
+    /// Always the git CLI, which passes `refs/heads/<branch>` to the server
+    /// and gets a one-ref answer back. gix cannot express that: its ref
+    /// prefixes come from the remote's configured refspecs, and
+    /// `ref_map`'s `extra_refspecs` only *add* prefixes, so the gix arm
+    /// downloads the full advertisement and filters it client-side. Callers
+    /// ask this in a loop — `prune` probes every branch that has a worktree
+    /// — so on a large monorepo that turns N cheap single-ref queries into
+    /// N full ref advertisements. Bulk listing still uses gix via
+    /// `ls_remote_heads`, where fetching every head is the point.
     pub fn ls_remote_branch_exists(&self, remote_name: &str, branch: &str) -> Result<bool> {
-        if let Some(repo) = self.gix_repo_for_remote(remote_name) {
-            return oxide::ls_remote_branch_exists(&repo, remote_name, branch);
-        }
-        // URL-shaped remote or no usable repo (e.g. during clone) — git CLI.
         // output_with_cancel so a supervised caller (sync gone-branch check)
         // can cancel a stalled network probe; unsupervised callers block.
         let mut cmd = Command::new("git");
@@ -736,7 +745,7 @@ impl GitCommand {
     /// made multi-branch clone create no worktrees (#733 graduation
     /// regression).
     pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
-        let output = self.ls_remote_heads(remote_name, None)?;
+        let output = self.ls_remote_heads(remote_name)?;
         Ok(output
             .lines()
             .filter_map(|line| {
