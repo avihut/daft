@@ -67,6 +67,11 @@ impl LiveVerbose {
     pub(crate) fn set(&self, on: bool) {
         self.0.store(on, Ordering::Relaxed);
     }
+
+    /// Flip, returning the new density.
+    pub(crate) fn toggle(&self) -> bool {
+        !self.0.fetch_xor(true, Ordering::Relaxed)
+    }
 }
 
 /// Per-row output threads (`daft exec`): each worker's live output rides its
@@ -282,6 +287,23 @@ impl TimelineHandle {
         self.lock().verbose.clone()
     }
 
+    /// Flip the rail's job-log density mid-run — the live `v` key (#729).
+    /// Returns the new density, or `None` when no region is live to show it
+    /// (the flag stays put: density must not drift while nothing renders).
+    ///
+    /// Called from the key-listener thread, so it takes the same lock every
+    /// worker thread already funnels through: the flip, the fold-out replay
+    /// and the live repaint are one atomic step against any concurrent row
+    /// event.
+    pub fn toggle_verbose(&self) -> Option<bool> {
+        let mut inner = self.lock();
+        let flag = inner.verbose.clone();
+        let core = inner.core.as_mut()?;
+        let on = flag.toggle();
+        core.on_density_toggled(on);
+        Some(on)
+    }
+
     /// Hold `lines` back until the rail closes; the timeline prints them
     /// after the footer (blank-line separated). No-op semantics match the
     /// rest of the handle: with no region the lines still drain at teardown,
@@ -471,6 +493,21 @@ impl Timeline {
     /// setting it any time before the hook phase draws is equivalent.
     pub fn set_verbose_density(&self, verbose: bool) {
         self.handle.lock().verbose.set(verbose);
+    }
+
+    /// Keep compact receipts' captured logs so a later `v` can fold them out
+    /// (#729). Off by default: retention is only worth its memory when
+    /// something can actually toggle, so the key listener turns it on once it
+    /// is watching. Requires a live region.
+    pub fn set_retain_for_replay(&self, on: bool) {
+        if let Some(core) = self.handle.lock().core.as_mut() {
+            core.set_retain_for_replay(on);
+        }
+    }
+
+    /// Flip the rail's density mid-run. See [`TimelineHandle::toggle_verbose`].
+    pub fn toggle_verbose(&self) -> Option<bool> {
+        self.handle.toggle_verbose()
     }
 
     /// Update the planning face's label in place ("Cloning repository" →
@@ -1352,6 +1389,203 @@ mod tests {
              \u{2502}\n\
              \u{2514}  Done in 0.1s"
         );
+    }
+
+    // ── live density toggle (#729) ───────────────────────────────────────
+    //
+    // A `v` keypress flips density mid-run. Scrollback is append-only, so a
+    // verbose-ward flip cannot rewrite the compact receipts already printed
+    // — it re-emits their captured logs below as a fold-out block instead.
+    // These drive the toggle directly; the key listener that calls it is
+    // TTY-only and out of scope here.
+
+    /// A terse run with retention on, so finished compact rows keep their
+    /// logs (production turns this on only when a key listener exists).
+    fn toggleable(header: &str, rows: &[&str]) -> (Timeline, indicatif::InMemoryTerm) {
+        let (mut tl, term) = captured(header);
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_row_output());
+        tl.commit_plan(PlanCommit::new(
+            rows.iter().map(|label| exec_row(label)).collect(),
+        ));
+        tl.set_retain_for_replay(true);
+        (tl, term)
+    }
+
+    fn run_row(tl: &mut Timeline, label: &str, output: &str) {
+        let key = exec_key(label);
+        tl.on_stage(&key, StageEvent::Started);
+        tl.handle().push_row_output(&key, output);
+        tl.on_stage(&key, StageEvent::Completed { annotation: None });
+    }
+
+    #[test]
+    fn toggling_verbose_folds_out_finished_rows_and_threads_later_ones() {
+        let (mut tl, term) = toggleable("Running cargo test in 2 worktrees", &["a", "b"]);
+        run_row(&mut tl, "a", "a-out");
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        run_row(&mut tl, "b", "b-out");
+        tl.finish("Done in 0.1s");
+        // `a`'s compact receipt stays frozen where it printed; its log folds
+        // out below under a repeat of the same receipt line. `b`, which
+        // resolved after the flip, threads inline like any verbose row.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 2 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{25cb}  verbose on \u{2014} replaying 1 finished row\n\
+             \u{2713}  a\n\
+             \u{2502}    a-out\n\
+             \u{2502}\n\
+             \u{2713}  b\n\
+             \u{2502}    b-out\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn replay_is_consumed_so_flipping_back_and_forth_never_repeats_a_log() {
+        let (mut tl, term) = toggleable("Running cargo test in 1 worktree", &["a"]);
+        run_row(&mut tl, "a", "a-out");
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        assert_eq!(tl.toggle_verbose(), Some(false));
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        tl.finish("Done in 0.1s");
+        // Exactly one fold-out: the second verbose-ward flip has nothing left
+        // to replay, and says so by dropping the count clause.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 1 worktree\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{25cb}  verbose on \u{2014} replaying 1 finished row\n\
+             \u{2713}  a\n\
+             \u{2502}    a-out\n\
+             \u{2502}\n\
+             \u{25cb}  verbose off\n\
+             \u{25cb}  verbose on\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn without_retention_a_toggle_still_notes_but_has_nothing_to_fold_out() {
+        // The default: no key listener, so compact receipts drop their
+        // buffers exactly as they always did and a toggle can only affect
+        // what comes next.
+        let (mut tl, term) = captured("Running cargo test in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_row_output());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("a"), exec_row("b")]));
+        run_row(&mut tl, "a", "a-out");
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        run_row(&mut tl, "b", "b-out");
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 2 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{25cb}  verbose on\n\
+             \u{2713}  b\n\
+             \u{2502}    b-out\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn toggling_back_to_terse_stops_threading_later_receipts() {
+        let (mut tl, term) = captured("Running cargo test in 2 worktrees");
+        tl.set_ordered_receipts(true);
+        tl.set_verbose_density(true);
+        tl.set_row_output(exec_row_output());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("a"), exec_row("b")]));
+        run_row(&mut tl, "a", "a-out");
+        assert_eq!(tl.toggle_verbose(), Some(false));
+        run_row(&mut tl, "b", "b-out");
+        tl.finish("Done in 0.1s");
+        // `a`'s threaded receipt stays printed — nothing is retracted; `b`
+        // simply arrives compact.
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 2 worktrees\n\
+             \u{2502}\n\
+             \u{2713}  a\n\
+             \u{2502}    a-out\n\
+             \u{2502}\n\
+             \u{25cb}  verbose off\n\
+             \u{2713}  b\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn a_row_waiting_on_the_ordered_drain_adopts_the_density_it_prints_at() {
+        // `b` finishes first but cannot print until `a` does. It resolved
+        // terse; by the time it actually reaches scrollback the user has
+        // asked for verbose, so it threads. Append-only is intact — the line
+        // had not been printed yet.
+        let (mut tl, term) = toggleable("Running cargo test in 2 worktrees", &["a", "b"]);
+        run_row(&mut tl, "b", "b-out");
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        run_row(&mut tl, "a", "a-out");
+        tl.finish("Done in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 2 worktrees\n\
+             \u{2502}\n\
+             \u{25cb}  verbose on\n\
+             \u{2713}  a\n\
+             \u{2502}    a-out\n\
+             \u{2502}\n\
+             \u{2713}  b\n\
+             \u{2502}    b-out\n\
+             \u{2502}\n\
+             \u{2514}  Done in 0.1s"
+        );
+    }
+
+    #[test]
+    fn a_failed_row_never_queues_for_replay_its_evidence_already_showed() {
+        let (mut tl, term) = toggleable("Running cargo test in 1 worktree", &["bad"]);
+        let key = exec_key("bad");
+        tl.on_stage(&key, StageEvent::Started);
+        tl.handle().push_row_output(&key, "boom");
+        tl.on_stage(
+            &key,
+            StageEvent::Failed {
+                detail: "exit 1".into(),
+            },
+        );
+        assert_eq!(tl.toggle_verbose(), Some(true));
+        tl.finish("Finished with failures in 0.1s");
+        assert_eq!(
+            term.contents(),
+            "\u{250c}  Running cargo test in 1 worktree\n\
+             \u{2502}\n\
+             \u{2717}  bad  exit 1\n\
+             \u{2502}    boom\n\
+             \u{2502}\n\
+             \u{25cb}  verbose on\n\
+             \u{2502}\n\
+             \u{2514}  Finished with failures in 0.1s"
+        );
+    }
+
+    #[test]
+    fn toggle_is_inert_without_a_live_region() {
+        // Plain and Hidden have no region to repaint and no scrollback of
+        // their own; the density must not drift where nothing renders.
+        for mode in [TimelineMode::Plain, TimelineMode::Hidden] {
+            let tl = Timeline::new(mode, false, "Opening feat/x");
+            assert_eq!(tl.toggle_verbose(), None);
+            assert!(!tl.verbose_flag().get(), "density stayed put in {mode:?}");
+        }
     }
 
     // ── planning face (the region opens before the plan) ─────────────────

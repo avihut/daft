@@ -233,7 +233,19 @@ impl RailHookRenderer {
         if self.quiet {
             return;
         }
-        if self.verbose.get() {
+        let verbose = self.verbose.get();
+        // Self-heal a density that changed under a running job (a live `v`,
+        // #729). The toggle runs on the timeline's lock and cannot reach into
+        // this renderer — it lives behind the presenter's — so each job
+        // reconciles its own thread the next time it has a line to draw.
+        if verbose != state.thread.is_open() {
+            if verbose {
+                state.thread.open(&self.mp, &state.bar, &self.thread_styles);
+            } else {
+                state.thread.close(&self.mp);
+            }
+        }
+        if verbose {
             // The thread carries the liveness — the annotation slot keeps the
             // job's description instead of racing the newest tail line. Output
             // un-promotes: the elapsed counter answers "is this silent job

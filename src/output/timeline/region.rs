@@ -32,6 +32,16 @@ struct RowThread {
     styles: ThreadStyles,
 }
 
+/// A receipt already in scrollback whose captured log was *not* printed with
+/// it (a compact success), kept so a later `v` can fold it out below.
+struct ReplayEntry {
+    /// The receipt line exactly as it was persisted, reprinted to head the
+    /// fold-out block so the log is unambiguously attributed.
+    row_line: String,
+    job: ThreadedJob,
+    styles: ThreadStyles,
+}
+
 /// The per-invocation region knobs, bundled so the constructors stay lean.
 #[derive(Clone)]
 pub(super) struct RegionSetup {
@@ -119,12 +129,28 @@ enum StepState {
         started: Instant,
     },
     /// Ordered mode only: resolved with a final face, repainted onto the live
-    /// bar in plan position, awaiting the prefix drain into scrollback. `lines`
-    /// is the composed receipt block — the row line, then any output-thread
-    /// lines (failed/cancelled rows always thread; every row threads under
-    /// verbose). Eager mode persists immediately and never uses this.
+    /// bar in plan position, awaiting the prefix drain into scrollback. Eager
+    /// mode persists immediately and never uses this.
+    ///
+    /// The row line is fixed at resolve, but the *block* is composed at
+    /// persist ([`TimelineCore::persist_recorded_at`]): a row can sit here for
+    /// seconds behind a slower predecessor, and a `v` pressed in that window
+    /// should thread its log. Nothing visible is rewritten — the block simply
+    /// has not been printed yet.
     Recorded {
-        lines: Vec<String>,
+        row_line: String,
+        /// Failed/cancelled rows thread their captured output at any density
+        /// (evidence), and never queue for replay.
+        failed: bool,
+        /// The row's output thread, parked with its buffer intact. Boxed so
+        /// one waiting row's buffer does not set the size of every `Slot`.
+        ///
+        /// This holds a resolved row's buffer until the drain reaches it,
+        /// where the terse path used to free it at resolve. The window is
+        /// short (only while earlier rows are still running) and bounded by
+        /// the same per-row `buffer_cap` the verbose path has always carried
+        /// for the same rows — worth one composition path over two.
+        thread: Option<Box<RowThread>>,
     },
     /// Persisted, silently removed, or replaced by an embedded hook block.
     Resolved,
@@ -159,6 +185,15 @@ pub(super) struct TimelineCore {
     /// Live output threads keyed by slot index (exec rows). A side table so
     /// the `Slot::Step` variant and its match sites are unchanged.
     row_threads: HashMap<usize, RowThread>,
+    /// Compact receipts whose captured log is still foldable-out, oldest
+    /// first. Drained by a verbose-ward toggle; entries are consumed, so
+    /// flipping back and forth never prints one row's log twice.
+    replayable: Vec<ReplayEntry>,
+    /// Whether compact receipts park their buffers here at all. Off unless
+    /// something can actually toggle (a key listener) — otherwise a terse
+    /// hundred-worktree `daft exec` would hold a hundred capped buffers for
+    /// a fold-out that can never be asked for.
+    retain_for_replay: bool,
     label_width: usize,
     slots: Vec<Slot>,
     /// Seeded header text, retained until the plan lands (the plan may
@@ -364,6 +399,8 @@ impl TimelineCore {
             row_output,
             suppress_footer_spacer: false,
             row_threads: HashMap::new(),
+            replayable: Vec::new(),
+            retain_for_replay: false,
             label_width: 0,
             slots: Vec::new(),
             header,
@@ -592,6 +629,120 @@ impl TimelineCore {
     pub(super) fn println_above(&mut self, line: &str) {
         self.mp.println(line).ok();
         self.last_persisted_was_spacer = false;
+        // Whatever the last receipt ended with, this line ends the region's
+        // scrollback now — so the footer owes its `│` separator again. Left
+        // set, a warning (or a density note) landing after a threaded exec
+        // receipt would swallow it and butt the footer against the text.
+        self.suppress_footer_spacer = false;
+    }
+
+    /// Keep compact receipts' captured logs foldable-out. See
+    /// [`Self::retain_for_replay`].
+    pub(super) fn set_retain_for_replay(&mut self, on: bool) {
+        self.retain_for_replay = on;
+    }
+
+    /// The density flipped mid-run (a live `v`): note it, fold out whatever
+    /// the terse run left buffered, and repaint the rows still running.
+    ///
+    /// Receipts already in scrollback are never rewritten — the rail is
+    /// append-only, which is the whole difference between it and an
+    /// alt-screen TUI — so a verbose-ward flip re-emits their logs *below*
+    /// as a fold-out block instead.
+    pub(super) fn on_density_toggled(&mut self, verbose: bool) {
+        let note = if verbose {
+            match self.replayable.len() {
+                0 => "verbose on".to_string(),
+                1 => "verbose on \u{2014} replaying 1 finished row".to_string(),
+                n => format!("verbose on \u{2014} replaying {n} finished rows"),
+            }
+        } else {
+            "verbose off".to_string()
+        };
+        let line = render::note(&note, self.use_color);
+        self.println_above(&line);
+        if verbose {
+            self.replay_folded_out();
+        }
+        self.repaint_live_density(verbose);
+    }
+
+    /// Re-emit each parked compact receipt with its full log. Entries are
+    /// consumed: toggling off and on again re-folds nothing.
+    fn replay_folded_out(&mut self) {
+        let entries = std::mem::take(&mut self.replayable);
+        if entries.is_empty() {
+            return;
+        }
+        for entry in entries {
+            self.mp.println(entry.row_line).ok();
+            for line in entry.job.compose_log(&entry.styles, false) {
+                self.mp.println(line).ok();
+            }
+            self.mp.println(entry.styles.thread_air()).ok();
+        }
+        self.last_persisted_was_spacer = false;
+        self.suppress_footer_spacer = true;
+    }
+
+    /// Repaint every still-active row at the new density: verbose opens each
+    /// row's window (pre-filled from the buffer it has been keeping all
+    /// along, so the flip reveals history rather than starting from the next
+    /// line); terse takes the windows down and puts the latest line back on
+    /// the row's own annotation.
+    fn repaint_live_density(&mut self, verbose: bool) {
+        let Some(cfg) = self.row_output else {
+            return;
+        };
+        let use_color = self.use_color;
+        let label_width = self.label_width;
+        let indices: Vec<usize> = self.row_threads.keys().copied().collect();
+        for idx in indices {
+            let Some(Slot::Step {
+                spec, bar, state, ..
+            }) = self.slots.get(idx)
+            else {
+                continue;
+            };
+            if !matches!(state, StepState::Active { .. }) {
+                continue;
+            }
+            let Some(bar) = bar.clone() else {
+                continue;
+            };
+            let label = display_label(spec, StepPhase::Active);
+            let inks = super::plan::subject_inks_for(spec.key.id);
+            let annotation = spec.annotation.clone();
+            let Some(thread) = self.row_threads.get_mut(&idx) else {
+                continue;
+            };
+            let message = if verbose {
+                thread.job.open(&self.mp, &bar, &thread.styles);
+                thread
+                    .job
+                    .roll_window(&self.mp, &thread.styles, cfg.tail_lines, &bar);
+                // Output moved below the row; the annotation slot reverts to
+                // the row's own (usually empty for an exec row).
+                render::active_message(&label, annotation.as_deref(), label_width, inks, use_color)
+            } else {
+                thread.job.close(&self.mp);
+                let latest = thread.job.output().last().map(|line| {
+                    render::paint(
+                        crate::output::palette::DARK_GREY,
+                        line.trim_end(),
+                        use_color,
+                    )
+                });
+                render::active_message(
+                    &label,
+                    latest.as_deref().or(annotation.as_deref()),
+                    label_width,
+                    inks,
+                    use_color,
+                )
+            };
+            bar.set_message(message);
+        }
     }
 
     /// Clear the region, run `f` (e.g. a stdout write that must not land
@@ -854,32 +1005,32 @@ impl TimelineCore {
                     in_group,
                     use_color,
                 );
-                // Compose the receipt block: the row line, then the output
-                // thread. The live window bars leave now; the log rejoins as
-                // scrollback at drain. Verbose threads every row (grey under
-                // success, `(no output)` placeholder included); default only
-                // threads a failure/cancel that actually printed something.
-                let mut lines = vec![row_line.clone()];
-                if let Some(thread) = self.row_threads.remove(&idx) {
+                // The row stops moving now — its live window bars leave and
+                // its promoter is retired — but the receipt block is NOT
+                // composed here. The buffer is parked with the row and read
+                // at persist, so a density toggle landing while this row
+                // waits its turn in the ordered drain still reaches it.
+                let thread = self.row_threads.remove(&idx).map(|mut thread| {
                     thread.job.mark_resolved();
-                    thread.job.remove_thread_bars(&self.mp);
-                    let verbose = self.row_output.is_some() && self.verbose.get();
-                    if verbose {
-                        lines.extend(thread.job.compose_log(&thread.styles, failed));
-                        lines.push(thread.styles.thread_air());
-                    } else if failed && !thread.job.output().is_empty() {
-                        lines.extend(thread.job.compose_log(&thread.styles, true));
-                        lines.push(thread.styles.thread_air());
-                    }
-                }
+                    // `close`, not `remove_thread_bars`: this row will never
+                    // reopen, so drop the bar handles with the bars — a
+                    // parked replay entry should hold its log, not a fistful
+                    // of detached `ProgressBar`s.
+                    thread.job.close(&self.mp);
+                    Box::new(thread)
+                });
                 // Repaint the live bar in place with the final face (drop the
                 // spinner style so the composed line isn't double-glyphed).
                 if let Some(b) = bar.as_ref() {
                     b.disable_steady_tick();
                     b.set_style(line_style());
-                    b.set_message(row_line);
+                    b.set_message(row_line.clone());
                 }
-                *state = StepState::Recorded { lines };
+                *state = StepState::Recorded {
+                    row_line,
+                    failed,
+                    thread,
+                };
             }
         }
         self.drain_ordered_prefix();
@@ -935,25 +1086,53 @@ impl TimelineCore {
         self.persisted_upto = pending_group.unwrap_or(i);
     }
 
-    /// Persist a `Recorded` row's stored block: remove its (final-faced) live
-    /// bar and print the identical row line (and any output-thread lines) into
-    /// scrollback.
+    /// Persist a `Recorded` row: remove its (final-faced) live bar, compose
+    /// the receipt block *at the current density*, and print it.
+    ///
+    /// Verbose threads every row (grey under success, `(no output)`
+    /// placeholder included); terse threads only a failure/cancel that
+    /// actually printed something, and parks the rest for a possible
+    /// fold-out.
     fn persist_recorded_at(&mut self, idx: usize) {
-        let lines = {
+        let (row_line, failed, thread) = {
             let Slot::Step { bar, state, .. } = &mut self.slots[idx] else {
                 return;
             };
-            let StepState::Recorded { lines } = state else {
+            let StepState::Recorded {
+                row_line,
+                failed,
+                thread,
+            } = state
+            else {
                 return;
             };
-            let lines = std::mem::take(lines);
+            let recorded = (std::mem::take(row_line), *failed, thread.take());
             if let Some(taken) = bar.take() {
                 taken.disable_steady_tick();
                 self.mp.remove(&taken);
             }
             *state = StepState::Resolved;
-            lines
+            recorded
         };
+        let mut lines = vec![row_line.clone()];
+        let mut park: Option<ReplayEntry> = None;
+        if let Some(thread) = thread {
+            let thread = *thread;
+            let has_output = !thread.job.output().is_empty();
+            if self.verbose.get() || (failed && has_output) {
+                lines.extend(thread.job.compose_log(&thread.styles, failed));
+                lines.push(thread.styles.thread_air());
+            } else if self.retain_for_replay && has_output {
+                // Compact, and the log never reached the terminal: keep it
+                // foldable-out. (A failure with output threaded above, so it
+                // never lands here — its evidence is already shown.)
+                park = Some(ReplayEntry {
+                    row_line,
+                    job: thread.job,
+                    styles: thread.styles,
+                });
+            }
+        }
         // A threaded block (row line + log + `│` air) ends spacer-like; a bare
         // row line does not. The footer reads this to avoid doubling the
         // separator; group/note spacing keeps the standard bookkeeping.
@@ -961,6 +1140,7 @@ impl TimelineCore {
         for line in lines {
             self.mp.println(line).ok();
         }
+        self.replayable.extend(park);
         self.last_persisted_was_spacer = false;
         self.suppress_footer_spacer = ends_with_air;
     }
