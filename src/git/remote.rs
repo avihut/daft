@@ -699,57 +699,16 @@ impl GitCommand {
             .map(|s| s.trim().to_string())
     }
 
-    /// Validate which branches from a list exist on the remote.
-    ///
-    /// Uses local remote-tracking refs when gitoxide is enabled (zero
-    /// network) — but only when `refs/remotes/<remote>/` is populated. A
-    /// fresh bare clone has no remote-tracking refs yet (its remote heads
-    /// land on `refs/heads/*` until the first fetch), so answering from
-    /// local refs there declared every branch missing and multi-branch
-    /// clone created no worktrees (#733 graduation regression). Unfetched
-    /// repos fall through to the network probe the CLI arm performs.
-    pub fn validate_branches_exist(
-        &self,
-        remote_name: &str,
-        branches: &[String],
-    ) -> Result<Vec<(String, bool)>> {
-        if self.use_gitoxide
-            && let Ok(repo) = self.gix_repo()
-            && oxide::has_remote_tracking_refs(&repo, remote_name)?
-        {
-            return branches
-                .iter()
-                .map(|b| {
-                    oxide::validate_branch_in_remotes(&repo, remote_name, b)
-                        .map(|exists| (b.clone(), exists))
-                })
-                .collect();
-        }
-        branches
-            .iter()
-            .map(|b| {
-                self.ls_remote_branch_exists(remote_name, b)
-                    .map(|exists| (b.clone(), exists))
-            })
-            .collect()
-    }
-
     /// List all branches on a remote.
     ///
-    /// Uses local remote-tracking refs when gitoxide is enabled (zero
-    /// network); an empty `refs/remotes/<remote>/` namespace means an
-    /// unfetched (fresh bare-clone) repo, which falls through to the
-    /// network listing the CLI arm performs — see `validate_branches_exist`
-    /// for the #733 regression this guards.
+    /// Always a network listing. Its one caller (`daft clone`) probes from
+    /// the bare repo it just created, where `refs/remotes/<remote>/` is
+    /// still empty — a fresh clone's remote heads land on `refs/heads/*`
+    /// until the first fetch — so a local-ref shortcut could only ever
+    /// answer "no branches" there. Reading local refs is precisely what
+    /// made multi-branch clone create no worktrees (#733 graduation
+    /// regression).
     pub fn list_remote_branches(&self, remote_name: &str) -> Result<Vec<String>> {
-        if self.use_gitoxide
-            && let Ok(repo) = self.gix_repo()
-        {
-            let local = oxide::list_remote_branches_local(&repo, remote_name)?;
-            if !local.is_empty() {
-                return Ok(local);
-            }
-        }
         let output = self.ls_remote_heads(remote_name, None)?;
         Ok(output
             .lines()

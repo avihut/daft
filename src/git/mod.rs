@@ -346,11 +346,10 @@ mod tests {
     ///    arm derives its protocol-v2 ref-prefix filter from the configured
     ///    remote's fetch refspecs, so an ad-hoc URL remote yields an empty
     ///    ref map. A configured remote name with refspecs keeps gix.
-    /// 2. The local-ref arms (`list_remote_branches`,
-    ///    `validate_branches_exist`) must fall through to the network when
-    ///    `refs/remotes/<remote>/` is empty — a fresh bare clone has no
-    ///    remote-tracking refs, and answering from them declared every
-    ///    branch missing, so multi-branch clone created no worktrees.
+    /// 2. `list_remote_branches` must answer from the network — a fresh bare
+    ///    clone has no `refs/remotes/<remote>/` refs, and the local-ref arm
+    ///    that once served it declared every branch missing, so multi-branch
+    ///    clone created no worktrees.
     #[test]
     #[serial_test::serial]
     fn fresh_bare_clone_remote_probes_fall_back_to_cli() {
@@ -433,17 +432,12 @@ mod tests {
         );
 
         // Fresh bare clone: refs/remotes/origin/* is empty until the first
-        // fetch, so the local-ref gix arms must fall through to the network
-        // listing instead of declaring every branch missing (the
-        // multi-branch-clone regression).
+        // fetch, so the listing must come from the network instead of
+        // declaring every branch missing (the multi-branch-clone regression).
         let listed = git.list_remote_branches("origin").unwrap();
         assert!(
             listed.contains(&"develop".to_string()),
-            "unfetched bare clone must list remote branches via the CLI arm, got {listed:?}"
+            "unfetched bare clone must list remote branches from the network, got {listed:?}"
         );
-        let validated = git
-            .validate_branches_exist("origin", &["develop".to_string()])
-            .unwrap();
-        assert_eq!(validated, vec![("develop".to_string(), true)]);
     }
 }
