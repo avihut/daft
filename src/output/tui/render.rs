@@ -180,16 +180,17 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .collect()
         })
     } else {
-        // Phased commands: render the user's columns (already resolved by
+        // Phased commands: render the caller's columns (already resolved by
         // ColumnSelection::parse — replace mode is the user's list verbatim,
         // modifier mode is defaults +/- the user's adjustments) or fall back
         // to ALL_COLUMNS. No width-based dropping: fit_widths_to_available
         // shrinks Branch/Path/LastCommit for narrow terminals, then accepts
         // overflow rather than removing data columns. See #494.
         //
-        // Asymmetry preserved: the no-flag fallback is ALL_COLUMNS (includes
-        // Hash), while modifier mode's base set comes from
-        // ListColumn::tui_defaults() (no Hash). A follow-up may reconcile.
+        // Sync and prune always pass Some (they resolve tui_defaults() and
+        // apply the pr visibility gate at the command layer), so the
+        // ALL_COLUMNS fallback now serves only clone and repo remove — the
+        // one place the old no-flag-includes-Hash asymmetry survives.
         let columns = state
             .live
             .cfg

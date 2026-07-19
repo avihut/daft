@@ -196,7 +196,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit"
     )]
     columns: Option<String>,
 
@@ -573,12 +573,10 @@ fn run_tui(
     let stat = args.stat.unwrap_or(settings.sync_stat);
 
     // ── Pre-TUI: collect worktree info (no fetch needed) ───────────────
-    let base_branch = get_default_branch_local(
-        &get_git_common_dir()?,
-        &settings.remote,
-        settings.use_gitoxide,
-    )
-    .unwrap_or_else(|_| "master".to_string());
+    let git_common_dir = get_git_common_dir()?;
+    let base_branch =
+        get_default_branch_local(&git_common_dir, &settings.remote, settings.use_gitoxide)
+            .unwrap_or_else(|_| "master".to_string());
 
     let current_path = crate::core::repo::get_current_worktree_path()
         .ok()
@@ -594,16 +592,36 @@ fn run_tui(
             })
             .transpose()?
     };
-    let has_size = {
-        use crate::core::columns::{ColumnSelection, CommandKind, ListColumn};
-        let from_columns = args
-            .columns
-            .as_deref()
-            .or(settings.sync_columns.as_deref())
-            .and_then(|input| ColumnSelection::parse(input, CommandKind::Sync).ok())
-            .is_some_and(|r| r.columns.contains(&ListColumn::Size));
-        from_columns || sort_spec.as_ref().is_some_and(|s| s.needs_size())
+    // Resolve columns once: defaults follow list's shape (pr included), and
+    // the same silent visibility gate as `daft list` drops a default-sourced
+    // pr for repos with no forge or a persistently broken one — reading the
+    // PR-cache lookup for the table's decorations in the same store open.
+    let (table_columns, columns_explicit, forge_lookup) = {
+        use crate::core::columns::{ColumnSelection, CommandKind, ListColumn, ResolvedColumns};
+        let columns_input = args.columns.as_deref().or(settings.sync_columns.as_deref());
+        let resolved = match columns_input {
+            Some(input) => ColumnSelection::parse(input, CommandKind::Sync)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            None => ResolvedColumns::defaults(ListColumn::tui_defaults()),
+        };
+        let (effective, gate) = crate::commands::list::gate_pr_column(
+            &resolved.columns,
+            columns_input,
+            &git,
+            &git_common_dir,
+        );
+        let lookup = effective
+            .contains(&ListColumn::Pr)
+            .then(|| gate.and_then(|g| g.lookup))
+            .flatten();
+        (effective, resolved.explicit, lookup)
     };
+    let has_size = {
+        use crate::core::columns::ListColumn;
+        table_columns.contains(&ListColumn::Size)
+            || sort_spec.as_ref().is_some_and(|s| s.needs_size())
+    };
+    let has_pr = table_columns.contains(&crate::core::columns::ListColumn::Pr);
     let compute_mtime = sort_spec.as_ref().is_some_and(|s| s.needs_mtime());
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     // Synchronous seed: compute everything EXCEPT the heavy cells (size,
@@ -616,7 +634,7 @@ fn run_tui(
         Stat::Summary, // Force Summary for the seed; line stats stream below.
         false,         // has_size = false: stream the size cluster instead
         false,         // compute_mtime = false: stream the mtime cluster
-        false,         // compute_forge_ref = false: no PR column in sync
+        has_pr,        // inbound `pr:N` tracking refs for the PR column
         settings.ownership_strategy,
         user_email.as_deref(),
         &settings.remote,
@@ -677,23 +695,17 @@ fn run_tui(
     let hooks_config = crate::core::settings::load_hooks_config()?;
     let shared_hooks_config = Arc::new(hooks_config.clone());
 
-    use crate::core::columns::{ColumnSelection, CommandKind};
     use crate::output::tui::Column;
 
-    let columns_input = args.columns.or_else(|| settings.sync_columns.clone());
-    let (tui_columns, columns_explicit) = match columns_input {
-        Some(ref input) => {
-            let resolved = ColumnSelection::parse(input, CommandKind::Sync)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let tui_cols: Vec<Column> = resolved
-                .columns
-                .iter()
-                .map(|c| Column::from_list_column(*c))
-                .collect();
-            (Some(tui_cols), resolved.explicit)
-        }
-        None => (None, false),
-    };
+    // The gated column set resolved above, in TUI form. Always Some: the
+    // defaults were already resolved (and pr-gated) at the ListColumn level,
+    // so the TUI's own ALL_COLUMNS fallback never applies to sync.
+    let tui_columns: Option<Vec<Column>> = Some(
+        table_columns
+            .iter()
+            .map(|c| Column::from_list_column(*c))
+            .collect(),
+    );
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| project_root.clone());
 
@@ -1317,6 +1329,7 @@ fn run_tui(
             pin_default_branch: true,
             partition_by_owner: false, // External unowned_start_index drives the partition.
             seeded_fields,
+            forge_prs: forge_lookup,
         },
         unowned_start_index,
     )

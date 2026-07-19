@@ -4,6 +4,49 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
+# PTY wrapper for the PR-column test — columns only render on the TUI path.
+PRUNE_PTY_RUN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pty_run.py"
+
+# The PR column is default on the prune TUI (#127), decorated from the
+# forge-PR cache. The full gate arc (removal, auth-death hiding) is covered
+# on sync — prune shares the same resolution code path.
+test_prune_pr_column_default() {
+    local remote_repo=$(create_test_remote "test-repo-prune-prcol" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-prune-prcol"
+    git-worktree-checkout -b feature-x || return 1
+
+    (cd main && git remote add forge https://github.com/acme/widget.git) || return 1
+    local bin="$TEMP_BASE_DIR/prune-prcol-bin"
+    mkdir -p "$bin"
+    cat > "$bin/gh" <<'GH'
+#!/usr/bin/env bash
+state=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "--state" ]; then state="$a"; fi
+  prev="$a"
+done
+if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
+  printf '%s' '[{"number": 5, "title": "Add feature five", "state": "OPEN", "headRefName": "feature-x", "isCrossRepository": false, "url": "https://github.com/acme/widget/pull/5", "author": {"login": "octocat"}, "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then printf '[]'; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 3
+GH
+    chmod +x "$bin/gh"
+    (cd main && PATH="$bin:$PATH" daft __refresh-forge) || return 1
+
+    local log="$TEMP_BASE_DIR/prune-prcol.log"
+    (cd main && PATH="$bin:$PATH" python3 "$PRUNE_PTY_RUN" "$log" git-worktree-prune) || return 1
+    if ! grep -q "#5" "$log"; then
+        log_error "default prune TUI must decorate feature-x with its PR (#5)"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test basic prune functionality
 test_prune_basic() {
     local remote_repo=$(create_test_remote "test-repo-prune-basic" "main")
@@ -1157,6 +1200,7 @@ run_prune_tests() {
     log "Running git-worktree-prune integration tests..."
     
     run_test "prune_basic" "test_prune_basic"
+    run_test "prune_pr_column_default" "test_prune_pr_column_default"
     run_test "prune_no_deletion" "test_prune_no_deletion"
     run_test "prune_multiple_deletions" "test_prune_multiple_deletions"
     run_test "prune_from_subdirectory" "test_prune_from_subdirectory"

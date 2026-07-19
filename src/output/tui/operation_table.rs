@@ -44,6 +44,10 @@ pub struct TableConfig {
     pub partition_by_owner: bool,
     /// Forwarded to [`super::LiveTableConfig::seeded_fields`]. See its doc for semantics.
     pub seeded_fields: FieldSet,
+    /// Forge-PR cache decorations for the PR column, when the caller selected
+    /// it (post-set into `LiveTableConfig`, the same pattern `daft list` uses).
+    /// Sync/prune serve the cache snapshot as-is — no mid-run refresh swap.
+    pub forge_prs: Option<crate::core::worktree::forge_ref::ForgePrLookup>,
 }
 
 /// Result returned after the TUI completes.
@@ -130,7 +134,7 @@ impl OperationTable {
     /// Internally this constructs a [`TuiState`], wires it into a
     /// [`TuiRenderer`], and drives it until all tasks complete.
     pub fn run(self) -> anyhow::Result<CompletedTable> {
-        let state = TuiState::new(
+        let mut state = TuiState::new(
             self.phases,
             self.worktree_infos,
             self.project_root,
@@ -145,6 +149,9 @@ impl OperationTable {
             self.config.partition_by_owner,
             self.config.seeded_fields,
         );
+        // Post-set like `unowned_start_index`: TuiState::new stays untouched
+        // for callers without forge data.
+        state.live.cfg.forge_prs = self.config.forge_prs;
 
         let mut renderer =
             TuiRenderer::new(state, self.receiver).with_extra_rows(self.config.extra_rows);
@@ -182,6 +189,7 @@ mod tests {
             pin_default_branch: true,
             partition_by_owner: true,
             seeded_fields: FieldSet::EMPTY,
+            forge_prs: None,
         };
         assert_eq!(cfg_silent.verbosity, 0);
 
@@ -194,6 +202,7 @@ mod tests {
             pin_default_branch: true,
             partition_by_owner: true,
             seeded_fields: FieldSet::EMPTY,
+            forge_prs: None,
         };
         assert!(cfg_verbose.verbosity >= 1);
     }

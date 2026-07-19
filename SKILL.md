@@ -819,32 +819,34 @@ the job's `output.log`.
 
 **Column selection (`--columns`)** on `list`/`sync`/`prune`: default columns
 `annotation`, `branch`, `path`, `base`, `changes`, `remote`, `age`, `owner`,
-`last-commit`; optional `size` (adds a total footer) and `hash`. On `list` only,
+`last-commit`; optional `size` (adds a total footer) and `hash`. On all three,
 `pr` is also a default (`#N`/`!N` for PR/MR checkouts and for local branches
 with an open or merged PR) — but only in repos with a GitHub/GitLab remote, and
 daft silently drops it while the forge integration is broken in a way needing
 user action (gh/glab missing or unauthenticated; it returns after a successful
 refresh — do not treat the column's absence as an error). `--columns +pr` forces
 it regardless. While the `pr` column shows, `daft list` also adds a row for
-every open PR the table doesn't already represent: PR-bearing local branches
+every open PR the table doesn't already represent (`sync`/`prune` show the
+column on their worktree rows without adding rows): PR-bearing local branches
 appear without `-b` (`"kind": "branch"` in json), and PRs with no local presence
 — colleagues' branches, fork PRs — appear as rows built from forge data
 (`"kind": "pr"`; fork rows named `owner:branch`; the PR title in the
-commit-subject field). Merged/closed PRs decorate rows but never add one, and
-any row with a PR reports the PR author as its owner. Expect these extra rows
-when parsing default list output — filter by `kind`, or pass `--columns -pr`,
-which removes the rows and the column as one unit, for a worktrees-only listing.
-In piped/`NO_COLOR` output — what agents read — the PR's cached fate trails as a
-glyph: `✓`/`✗`/`●` CI pass/fail/running, `◆` merged, `○` closed; in a color
-terminal the number's color carries the same states instead (green/red/yellow,
-purple merged, dim closed). The cache refreshes in the background via
-`daft update`/`daft sync` and on listing with the column; prefer `--format json`
-(`pr_state`, `ci_status`, `pr_url` fields — present in the default schema even
-when the table hides the column) over parsing glyphs. Two modes — replace
-(`--columns branch,path,age`: exactly those, in order) and modifier
-(`--columns +size,-age`: adjust defaults; auto-detected when every entry starts
-with `+`/`-`). The `status` column is always pinned on `sync`/`prune`.
-Persistent defaults: `git config daft.<cmd>.columns`.
+commit-subject field). Merged/closed PRs decorate rows but never add one. Branch
+and PR rows report the PR author as their owner; worktree rows keep the locally
+deduced owner (name and email). Expect these extra rows when parsing default
+list output — filter by `kind`, or pass `--columns -pr`, which removes the rows
+and the column as one unit, for a worktrees-only listing. In piped/`NO_COLOR`
+output — what agents read — the PR's cached fate trails as a glyph: `✓`/`✗`/`●`
+CI pass/fail/running, `◆` merged, `○` closed; in a color terminal the number's
+color carries the same states instead (green/red/yellow, purple merged, dim
+closed). The cache refreshes in the background via `daft update`/`daft sync` and
+on listing with the column; prefer `--format json` (`pr_state`, `ci_status`,
+`pr_url` fields — present in the default schema even when the table hides the
+column) over parsing glyphs. Two modes — replace (`--columns branch,path,age`:
+exactly those, in order) and modifier (`--columns +size,-age`: adjust defaults;
+auto-detected when every entry starts with `+`/`-`). The `status` column is
+always pinned on `sync`/`prune`. Persistent defaults:
+`git config daft.<cmd>.columns`.
 
 **Sorting (`--sort`)** on `list`/`sync`/`prune`: columns `branch`, `path`,
 `size`, `age`, `owner`, `hash`, `activity`, `commit`; prefix `+` ascending

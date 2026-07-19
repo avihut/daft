@@ -757,6 +757,7 @@ fn run_tui(
             // table renders blanks for unset cells instead of perpetual
             // loaders.
             seeded_fields: crate::core::worktree::info_field::FieldSet::ALL,
+            forge_prs: None,
         },
         None,
     );

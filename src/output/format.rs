@@ -472,13 +472,15 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         None => info.forge_ref.map(PrDecoration::bare),
     };
 
-    // Owner cell: rows with a PR show the PR's author — the forge's answer
-    // to "whose PR" beats the branch-history heuristic, and it's present at
-    // seed (identity) where the deduced owner streams in later. Undecorated
-    // rows keep the deduced owner.
-    let owner = decoration
-        .as_ref()
-        .and_then(|d| d.author.clone())
+    // Owner cell: branch and synthesized rows with a PR show the PR's author
+    // — the forge's answer to "whose PR" beats the branch-history heuristic,
+    // and it's present at seed (identity) where the deduced owner streams in
+    // later. Worktree rows are exempt (mirroring `pr_rows::apply_pr_owners`):
+    // they describe the local checkout, whose deduced identity is the richer
+    // answer. Undecorated rows keep the deduced owner.
+    let owner = (info.kind != crate::core::worktree::list::EntryKind::Worktree)
+        .then(|| decoration.as_ref().and_then(|d| d.author.clone()))
+        .flatten()
         .or_else(|| info.owner.as_ref().map(|o| o.name.clone()))
         .unwrap_or_default();
     let (pr, pr_status, pr_url) = match decoration {
@@ -619,6 +621,51 @@ mod tests {
         // No match anywhere: empty cell.
         let info = WorktreeInfo::empty("plain-branch");
         assert_eq!(compute_column_values(&info, &ctx).pr, "");
+    }
+
+    #[test]
+    fn owner_cell_prefers_pr_author_except_for_worktree_rows() {
+        use crate::core::ownership::BranchOwner;
+        use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::{EntryKind, WorktreeInfo};
+
+        let mut lookup = ForgePrLookup::default();
+        let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, 5);
+        lookup.by_branch.insert(
+            "feature-x".into(),
+            PrDecoration {
+                author: Some("dan".into()),
+                ..PrDecoration::bare(r)
+            },
+        );
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: Some(&lookup),
+            colors: true,
+        };
+        let deduced = BranchOwner {
+            name: "History Name".into(),
+            email: "h@x".into(),
+            is_current_user: true,
+        };
+
+        // A branch row with a PR shows the PR's author.
+        let mut branch_row = WorktreeInfo::empty("feature-x");
+        branch_row.kind = EntryKind::LocalBranch;
+        branch_row.owner = Some(deduced.clone());
+        assert_eq!(compute_column_values(&branch_row, &ctx).owner, "dan");
+
+        // The same PR on a worktree row decorates the pr cell only — the
+        // local checkout keeps its deduced identity (mirrors
+        // `pr_rows::apply_pr_owners`).
+        let mut worktree_row = WorktreeInfo::empty("feature-x");
+        worktree_row.owner = Some(deduced);
+        let vals = compute_column_values(&worktree_row, &ctx);
+        assert_eq!(vals.owner, "History Name");
+        assert_eq!(vals.pr, "#5", "the pr cell still decorates");
     }
 
     #[test]

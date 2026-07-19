@@ -209,8 +209,10 @@ impl ListColumn {
     /// The default column set for sync and prune commands.
     /// (Status is pinned separately by TUI code, not included here.)
     /// Size is excluded — it must be explicitly added via `--columns +size`.
-    /// Pr too: sync/prune don't wire the forge cache or its visibility gate,
-    /// and their tables are busy enough without a mostly-empty column.
+    /// Pr is included with the same contract as [`Self::list_defaults`]: the
+    /// command layer silently drops it when the repo names no forge or the
+    /// forge integration is persistently broken
+    /// (`commands::list::gate_pr_column`).
     pub fn tui_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
@@ -219,6 +221,7 @@ impl ListColumn {
             ListColumn::Base,
             ListColumn::Changes,
             ListColumn::Remote,
+            ListColumn::Pr,
             ListColumn::Age,
             ListColumn::Owner,
             ListColumn::LastCommit,
@@ -375,9 +378,9 @@ impl ColumnSelection {
 
     /// Reject tokens that name a real column the command can't honor — a clean
     /// error beats silently rendering a dead column. `status` is always the
-    /// fixed first column (uncontrollable); `pr` needs the forge cache and
-    /// `FORGE_REF` streaming that only `daft list` wires, so sync/prune/clone
-    /// would render it permanently blank.
+    /// fixed first column (uncontrollable); `pr` needs the forge cache, which
+    /// clone can't have (the repo it is cloning has no per-repo store yet),
+    /// so clone would render it permanently blank.
     fn check_unsupported_token(name: &str, command: CommandKind) -> Result<(), String> {
         let token = name.trim().to_lowercase();
         match (token.as_str(), command) {
@@ -386,13 +389,12 @@ impl ColumnSelection {
                      it is always shown as the first column"
                     .to_string())
             }
-            ("pr", CommandKind::Sync | CommandKind::Prune | CommandKind::Clone) => {
-                Err("'pr' column is only available on `daft list`\n  \
-                     sync, prune, and clone don't load forge data"
-                    .to_string())
-            }
-            // List (or any other token) falls through to the FromStr check,
-            // which accepts `pr`/`status` where valid or reports unknown column.
+            ("pr", CommandKind::Clone) => Err("'pr' column is not available on `daft clone`\n  \
+                     the repository has no forge-PR cache until after it is cloned"
+                .to_string()),
+            // List/sync/prune (or any other token) fall through to the FromStr
+            // check, which accepts `pr`/`status` where valid or reports an
+            // unknown column.
             _ => Ok(()),
         }
     }
@@ -793,10 +795,12 @@ mod tests {
     }
 
     #[test]
-    fn list_defaults_offer_pr_but_tui_defaults_do_not() {
+    fn list_and_tui_defaults_offer_pr_but_clone_does_not() {
+        // list, sync, and prune all wire the forge cache with the same silent
+        // visibility gate; clone has no repo store to read yet.
         assert!(ListColumn::list_defaults().contains(&ListColumn::Pr));
-        // sync/prune don't wire the forge cache or its visibility gate.
-        assert!(!ListColumn::tui_defaults().contains(&ListColumn::Pr));
+        assert!(ListColumn::tui_defaults().contains(&ListColumn::Pr));
+        assert!(!ListColumn::clone_defaults().contains(&ListColumn::Pr));
     }
 
     #[test]
@@ -898,24 +902,24 @@ mod tests {
     }
 
     #[test]
-    fn test_pr_on_sync_and_prune_errors() {
-        // sync/prune don't wire the forge cache, so `+pr` would render a
-        // permanently-blank column — reject it cleanly instead (finding [8]).
-        let sync = ColumnSelection::parse("+pr", CommandKind::Sync).unwrap_err();
-        assert!(
-            sync.contains("only available on `daft list`"),
-            "Got: {sync}"
-        );
-        let prune = ColumnSelection::parse("pr,branch", CommandKind::Prune).unwrap_err();
-        assert!(
-            prune.contains("only available on `daft list`"),
-            "Got: {prune}"
-        );
+    fn test_pr_default_on_sync_and_prune_but_not_clone() {
+        // sync/prune wire the forge cache exactly like list: pr is in their
+        // defaults (health-gated by the command layer) and `+pr`/`pr` parse.
+        assert!(ListColumn::tui_defaults().contains(&ListColumn::Pr));
+        let sync = ColumnSelection::parse("+pr", CommandKind::Sync).unwrap();
+        assert!(sync.columns.contains(&ListColumn::Pr));
+        let prune = ColumnSelection::parse("pr,branch", CommandKind::Prune).unwrap();
+        assert!(prune.columns.contains(&ListColumn::Pr));
+        // Removing it works the same as on list.
+        let removed = ColumnSelection::parse("-pr", CommandKind::Sync).unwrap();
+        assert!(!removed.columns.contains(&ListColumn::Pr));
+        // Clone has no repo store yet — reject cleanly.
         let clone = ColumnSelection::parse("+pr", CommandKind::Clone).unwrap_err();
         assert!(
-            clone.contains("only available on `daft list`"),
+            clone.contains("not available on `daft clone`"),
             "Got: {clone}"
         );
+        assert!(!ListColumn::clone_defaults().contains(&ListColumn::Pr));
     }
 
     #[test]

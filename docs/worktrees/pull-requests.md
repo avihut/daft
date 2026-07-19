@@ -72,12 +72,14 @@ working state, not just your worktrees: the `pr` column is on by default, and
   — two contributors' `patch-1`s, a fork's `main` versus yours.
 - Merged and closed PRs decorate existing rows (the purple "this branch is done"
   signal) but never add one.
-- Wherever a row has a PR, the Owner column shows the **PR author's name** — the
-  forge profile's full name, falling back to the login for profiles without one
-  — rather than an owner deduced from commit history. The forge's answer is
-  canonical, and for foreign rows there is no local history to deduce from.
-  (Fork rows' `owner:branch` prefix stays the login: that's the fork's
-  namespace, not a person.)
+- On branch rows and foreign-PR rows, the Owner column shows the **PR author's
+  name** — the forge profile's full name, falling back to the login for profiles
+  without one — rather than an owner deduced from commit history. The forge's
+  answer is canonical there, and for foreign rows there is no local history to
+  deduce from. (Fork rows' `owner:branch` prefix stays the login: that's the
+  fork's namespace, not a person.) Worktree rows are the exception: they
+  describe your local checkout, so they keep the deduced owner — real name, real
+  email in structured output — and the PR decorates only the `pr` cell.
 
 The open-PR rows and the `pr` column are one unit, governed by the same silent
 rules, so the list never nags:
@@ -103,6 +105,14 @@ git config -- daft.list.columns -pr
 
 `--branches` remains a superset — it shows _all_ local branches, PR-bearing or
 not — and structured output marks the foreign-PR rows with `"kind": "pr"`.
+
+The `pr` column is also on by default in the `daft sync` and `daft prune`
+tables, decorated from the same cache and governed by the same silent rules —
+seeing each worktree's PR fate right where you decide what to update or prune is
+the point. `--columns -pr` (or `daft.sync.columns` / `daft.prune.columns`)
+removes it there the same way. Unlike `daft list`, sync and prune render the
+column without the open-PR rows: their tables list the worktrees the operation
+acts on.
 
 In a color terminal, the number's color is the PR's fate: green/red/yellow for
 CI passing/failing/running, purple for merged — the "this worktree is done,

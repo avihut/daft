@@ -4,6 +4,79 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/test_framework.sh"
 
+# The PR-column test drives the *TUI* path (columns only render there), so
+# daft runs under a DSR-answering PTY (pty_run.py; bare script(1) leaves
+# crossterm's cursor query unanswered).
+SYNC_PTY_RUN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pty_run.py"
+
+# The PR column is default on the sync TUI (#127), with the same silent
+# visibility gate as `daft list`: decorated from the forge-PR cache while
+# healthy, removable with `--columns -pr`, and silently hidden once a
+# refresh dies an auth death.
+test_sync_pr_column_default_gated() {
+    local remote_repo=$(create_test_remote "test-repo-sync-prcol" "main")
+    git-worktree-clone --layout contained "$remote_repo" || return 1
+    cd "test-repo-sync-prcol"
+    git-worktree-checkout -b feature-x || return 1
+
+    # A GitHub-shaped remote makes the repo forge-capable; a fake gh seeds
+    # the cache with PR #5 heading feature-x. Loud failure on unexpected calls.
+    (cd main && git remote add forge https://github.com/acme/widget.git) || return 1
+    local bin="$TEMP_BASE_DIR/sync-prcol-bin"
+    mkdir -p "$bin"
+    cat > "$bin/gh" <<'GH'
+#!/usr/bin/env bash
+state=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "--state" ]; then state="$a"; fi
+  prev="$a"
+done
+if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
+  printf '%s' '[{"number": 5, "title": "Add feature five", "state": "OPEN", "headRefName": "feature-x", "isCrossRepository": false, "url": "https://github.com/acme/widget/pull/5", "author": {"login": "octocat"}, "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then printf '[]'; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 3
+GH
+    chmod +x "$bin/gh"
+    (cd main && PATH="$bin:$PATH" daft __refresh-forge) || return 1
+
+    # Default: the PR column decorates feature-x from the cache.
+    local log="$TEMP_BASE_DIR/sync-prcol.log"
+    (cd main && PATH="$bin:$PATH" python3 "$SYNC_PTY_RUN" "$log" git-worktree-sync) || return 1
+    if ! grep -q "#5" "$log"; then
+        log_error "default sync TUI must decorate feature-x with its PR (#5)"
+        return 1
+    fi
+
+    # --columns -pr removes the column and its cells together.
+    local log2="$TEMP_BASE_DIR/sync-prcol-minus.log"
+    (cd main && PATH="$bin:$PATH" python3 "$SYNC_PTY_RUN" "$log2" git-worktree-sync --columns=-pr) || return 1
+    if grep -q "#5" "$log2"; then
+        log_error "--columns -pr must drop the PR cells from the sync TUI"
+        return 1
+    fi
+
+    # An auth-dead refresh flips persisted health: the default-sourced
+    # column silently hides on the next run.
+    cat > "$bin/gh" <<'GH'
+#!/usr/bin/env bash
+echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+exit 4
+GH
+    chmod +x "$bin/gh"
+    (cd main && PATH="$bin:$PATH" daft __refresh-forge)
+    local log3="$TEMP_BASE_DIR/sync-prcol-unhealthy.log"
+    (cd main && PATH="$bin:$PATH" python3 "$SYNC_PTY_RUN" "$log3" git-worktree-sync) || return 1
+    if grep -q "#5" "$log3"; then
+        log_error "an unhealthy forge must silently hide the default PR column"
+        return 1
+    fi
+
+    return 0
+}
+
 # Test basic sync functionality (prune + update all)
 test_sync_basic() {
     local remote_repo=$(create_test_remote "test-repo-sync-basic" "main")
@@ -457,6 +530,7 @@ run_sync_tests() {
     log "Running git-worktree-sync integration tests..."
 
     run_test "sync_basic" "test_sync_basic"
+    run_test "sync_pr_column_default_gated" "test_sync_pr_column_default_gated"
     run_test "sync_nothing_to_prune" "test_sync_nothing_to_prune"
     run_test "sync_verbose" "test_sync_verbose"
     run_test "sync_force" "test_sync_force"

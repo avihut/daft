@@ -23,8 +23,10 @@ pub enum Column {
     Remote,
     /// Local changes (staged/unstaged/untracked).
     Changes,
-    /// PR/MR number this branch tracks (`#123` / `!45`). Opt-in via
-    /// `--columns +pr`; not in `ALL_COLUMNS`.
+    /// PR/MR number this branch tracks (`#123` / `!45`). Default on
+    /// list/sync/prune via their `ListColumn` defaults (health-gated at the
+    /// command layer); not in `ALL_COLUMNS`, which only clone and repo
+    /// remove fall back to.
     Pr,
     /// Branch age.
     Age,
