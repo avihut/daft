@@ -601,8 +601,8 @@ fn render_git_daft() -> Result<()> {
 
     println!();
     println!("short aliases (daft <verb>)");
-    println!("   go <branch>          Check out an existing branch worktree");
-    println!("   start <branch>       Create a new branch worktree (-b)");
+    println!("   go <branch>            Check out an existing branch worktree");
+    println!("   start [repo] <branch>  Create a new branch worktree (-b)");
     println!(
         "   clone, init, carry, merge, update, list, prune, rename, sync, remove, adopt, eject"
     );

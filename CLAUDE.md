@@ -449,21 +449,40 @@ Structure commands repo-aware: anything that can act on another cataloged repo
 takes exactly one of two shapes.
 
 1. **Go-shape (positional, preferred)** — `daft go <repo> [<branch>]`,
-   `daft list [<repo>]`. Only when the slot is free (previously an error — never
-   reinterpret an existing positional; `update`/`exec` targets are variadic
-   worktree selectors) and the command is read-only, so a wrong guess is
-   harmless. Mutating verbs never take a positional repo.
+   `daft list [<repo>]`, `daft start <repo> <branch> [base]`. Only when the slot
+   is free (previously an error — never reinterpret an existing positional;
+   `update`/`exec` targets are variadic worktree selectors). Read-only commands
+   may guess freely — a wrong guess is harmless. A mutating verb may take a
+   guessed positional repo only when ALL of these hold (`start` is the worked
+   example, #725): the ambiguous arity is bounded to a single decidable case;
+   anything meaningful in the current repository wins over a catalog match
+   (local-first); the resolved destination is announced before any work happens;
+   and the catalog probe **fails closed** — a store error, a moved repo, or a
+   tombstoned entry is reported, never silently reinterpreted as the local
+   reading (that turns an outage into a wrong mutation).
+
+   Local-first means every slot the local reading uses, not just the first.
+   `start A B` reads locally as "new branch `A` based on `B`", so `A`'s absence
+   proves nothing — it is the branch being created. The signal is `B` resolving
+   to a commit here, and the current repo's own name counts as local too.
+   Probing only the leading name is the trap (#725 review): it let
+   `start api release-2` retarget another repo despite `release-2` being a
+   perfectly good local base.
+
 2. **Exec-shape (flags, fallback)** — `--repo <name>` (long-only) plus
    `--all-repos`, as in `update`/`exec`/`prune`. Positionals keep their local
    meaning; bare `--repo` targets the repo's default-branch worktree.
 
 Either way: `--repo` stays the canonical spelling (the positional is sugar,
-clap-exclusive with it); resolve through `catalog::resolve_repo_arg` /
+exclusive with it); resolve through `catalog::resolve_repo_arg` /
 `fleet::for_each_repo` — never hand-rolled lookups; positional resolution is
-repo-only outside `go` (hard error on a miss); wire completions via
+repo-only outside the `go`/`start` guesses (hard error on a miss; the guessed
+two-name `start` form falls back to local instead); wire completions via
 `command_has_repo_flag` / `command_has_repo_positional`
-(`src/commands/completions/mod.rs`); fleet forms work from outside any repo and
-never prompt interactively.
+(`src/commands/completions/mod.rs`) for list-style completion, or position-aware
+`__complete` arms for rich commands (`go`, `start` —
+`src/commands/complete.rs`); fleet forms work from outside any repo and never
+prompt interactively.
 
 ## Adding a New Command
 

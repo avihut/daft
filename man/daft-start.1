@@ -4,7 +4,7 @@
 .SH NAME
 daft start \- Create a new branch and worktree
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-\-with\-related\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fINEW_BRANCH_NAME\fR> [\fIBASE_BRANCH_NAME\fR] 
+\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -18,19 +18,41 @@ repo\*(Aqs pre\-push hook runs only when that push introduces new commits; a
 ref\-only push of already\-pushed commits skips it (configurable via
 daft.checkout.pushVerify: auto, always, or never).
 .PP
-With \-\-with\-related, the same branch is also created in every repo this
-repo\*(Aqs daft.yml `relations:` manifest points at — the entry point for a
-coordinated cross\-repo change (pair with `daft exec \-\-related`). Each
-related repo bases the branch on its own default branch; carry and \-x stay
-in the current repo; hooks run in a related repo only when it is explicitly
-trusted. All related repos must be cloned locally first, and the final
-working directory is the current repo\*(Aqs new worktree.
+`daft start` can also create the branch in another repository from the repo
+catalog: `daft start <repo> <branch> [base]`, or explicitly with
+`\-\-repo <repo>`. Anything meaningful in the current repository wins over a
+catalog match. With two names that means, in order: an existing local branch
+in the first slot keeps the local reading (and fails fast as "already
+exists"); a second name that resolves here is a base, keeping the ordinary
+`<branch> <base>` form; naming the repo you are standing in is a redundant
+qualifier that stays local; and only then does a live cataloged repo select
+cross\-repo creation. Three names are always `<repo> <branch> <base>`. A repo
+that is cataloged but moved or removed is reported, never silently read as a
+branch name. The resolved destination is announced before any work happens;
+without a base the branch is based on the target repo\*(Aqs default branch, the
+target repo\*(Aqs hooks run only if it is trusted, and the shell lands in the new
+worktree there. Carry (`\-c`) cannot cross repositories; `\-x` runs in the
+target worktree.
 .PP
-This command can be run from anywhere within the repository.
+With \-\-with\-related, the same branch is also created in every repo the
+primary repo\*(Aqs daft.yml `relations:` manifest points at — the entry point
+for a coordinated cross\-repo change (pair with `daft exec \-\-related`). The
+primary repo is the current one, or the named repo when combined with a
+catalog target (the fan\-out is rooted there). Each related repo bases the
+branch on its own default branch; carry and \-x stay in the primary repo;
+hooks run in a related repo only when it is explicitly trusted. All related
+repos must be cloned locally first, and the final working directory is the
+primary repo\*(Aqs new worktree.
+.PP
+This command can be run from anywhere within the repository, or from
+outside any repository when a catalog target is named.
 .PP
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See daft\-hooks(1) for hook management.
 .SH OPTIONS
+.TP
+\fB\-\-repo\fR \fI<REPO>\fR
+Create the branch in a repository from the catalog (for repo names shadowed by local branches)
 .TP
 \fB\-\-with\-related\fR
 Also create the branch in every related repo (relations manifest), each based on its own default branch
@@ -74,10 +96,13 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-<\fINEW_BRANCH_NAME\fR>
-Name for the new branch
+<\fIBRANCH_NAME\fR>
+Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`
 .TP
-[\fIBASE_BRANCH_NAME\fR]
-Branch to use as the base; defaults to the current branch
+[\fIBASE_OR_BRANCH\fR]
+Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`
+.TP
+[\fIBASE\fR]
+Base branch inside `<repo>` (three\-name form); must exist there
 .SH VERSION
 v1.22.0

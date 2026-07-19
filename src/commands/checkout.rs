@@ -308,25 +308,63 @@ repo's pre-push hook runs only when that push introduces new commits; a
 ref-only push of already-pushed commits skips it (configurable via
 daft.checkout.pushVerify: auto, always, or never).
 
-With --with-related, the same branch is also created in every repo this
-repo's daft.yml `relations:` manifest points at — the entry point for a
-coordinated cross-repo change (pair with `daft exec --related`). Each
-related repo bases the branch on its own default branch; carry and -x stay
-in the current repo; hooks run in a related repo only when it is explicitly
-trusted. All related repos must be cloned locally first, and the final
-working directory is the current repo's new worktree.
+`daft start` can also create the branch in another repository from the repo
+catalog: `daft start <repo> <branch> [base]`, or explicitly with
+`--repo <repo>`. Anything meaningful in the current repository wins over a
+catalog match. With two names that means, in order: an existing local branch
+in the first slot keeps the local reading (and fails fast as "already
+exists"); a second name that resolves here is a base, keeping the ordinary
+`<branch> <base>` form; naming the repo you are standing in is a redundant
+qualifier that stays local; and only then does a live cataloged repo select
+cross-repo creation. Three names are always `<repo> <branch> <base>`. A repo
+that is cataloged but moved or removed is reported, never silently read as a
+branch name. The resolved destination is announced before any work happens;
+without a base the branch is based on the target repo's default branch, the
+target repo's hooks run only if it is trusted, and the shell lands in the new
+worktree there. Carry (`-c`) cannot cross repositories; `-x` runs in the
+target worktree.
 
-This command can be run from anywhere within the repository.
+With --with-related, the same branch is also created in every repo the
+primary repo's daft.yml `relations:` manifest points at — the entry point
+for a coordinated cross-repo change (pair with `daft exec --related`). The
+primary repo is the current one, or the named repo when combined with a
+catalog target (the fan-out is rooted there). Each related repo bases the
+branch on its own default branch; carry and -x stay in the primary repo;
+hooks run in a related repo only when it is explicitly trusted. All related
+repos must be cloned locally first, and the final working directory is the
+primary repo's new worktree.
+
+This command can be run from anywhere within the repository, or from
+outside any repository when a catalog target is named.
 
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See daft-hooks(1) for hook management.
 "#)]
 pub struct StartArgs {
-    #[arg(help = "Name for the new branch")]
-    new_branch_name: String,
+    #[arg(
+        value_name = "BRANCH_NAME",
+        help = "Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`"
+    )]
+    first: String,
 
-    #[arg(help = "Branch to use as the base; defaults to the current branch")]
-    base_branch_name: Option<String>,
+    #[arg(
+        value_name = "BASE_OR_BRANCH",
+        help = "Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`"
+    )]
+    second: Option<String>,
+
+    #[arg(
+        value_name = "BASE",
+        help = "Base branch inside `<repo>` (three-name form); must exist there"
+    )]
+    third: Option<String>,
+
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        help = "Create the branch in a repository from the catalog (for repo names shadowed by local branches)"
+    )]
+    repo: Option<String>,
 
     #[arg(
         long = "with-related",
@@ -390,6 +428,30 @@ pub struct StartArgs {
         help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
     )]
     skip_hooks: Vec<String>,
+}
+
+impl StartArgs {
+    /// The internal `Args` for creating `branch` from `base` with this
+    /// invocation's flags.
+    fn to_create_args(&self, branch: String, base: Option<String>) -> Args {
+        Args {
+            branch_name: branch,
+            base_branch_name: base,
+            create_branch: true,
+            start: false,
+            carry: self.carry,
+            no_carry: self.no_carry,
+            remote: self.remote.clone(),
+            no_cd: self.no_cd,
+            exec: self.exec.clone(),
+            quiet: self.quiet,
+            verbose: self.verbose,
+            at: self.at.clone(),
+            local: self.local,
+            no_verify: self.no_verify,
+            skip_hooks: self.skip_hooks.clone(),
+        }
+    }
 }
 
 /// Entry point for `git-worktree-checkout`.
@@ -549,28 +611,391 @@ pub fn run_start() -> Result<()> {
     raw[0] = "daft start".to_string();
     let start_args = StartArgs::parse_from(raw);
 
-    if start_args.with_related {
-        return run_start_with_related(start_args);
+    let routing = decode_start_grammar(
+        start_args.first.clone(),
+        start_args.second.clone(),
+        start_args.third.clone(),
+        start_args.repo.clone(),
+        local_branch_exists,
+        local_base_ref_exists,
+        probe_start_repo,
+    )?;
+
+    match routing {
+        StartRouting::Local { branch, base } => {
+            if start_args.with_related {
+                let source_worktree = get_current_worktree_path().ok();
+                return run_start_with_related(start_args, branch, base, source_worktree);
+            }
+            let args = start_args.to_create_args(branch, base);
+            run_with_args(args, GoRouting::local_only())
+        }
+        StartRouting::LocalCollision {
+            branch,
+            second,
+            also_live_repo,
+        } => {
+            let mut msg = format!("branch '{branch}' already exists in this repository");
+            if also_live_repo {
+                msg.push_str(&format!(
+                    "\n  note: '{branch}' is also a cataloged repo — to create branch \
+                     '{second}' there, use `{}`",
+                    crate::daft_cmd(&format!("start --repo {branch} {second}"))
+                ));
+            } else {
+                msg.push_str(&format!(
+                    "\n  tip: `{}` opens its worktree",
+                    crate::daft_cmd(&format!("go {branch}"))
+                ));
+            }
+            Err(anyhow::anyhow!(msg))
+        }
+        StartRouting::Cross {
+            repo,
+            branch,
+            base,
+            guessed,
+        } => run_start_cross(start_args, repo, branch, base, guessed),
+    }
+}
+
+/// How a `daft start` invocation routes after grammar decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StartRouting {
+    /// `daft start <branch> [base]` in the current repository.
+    Local {
+        branch: String,
+        base: Option<String>,
+    },
+    /// The two-name form preferred the local reading, but the branch already
+    /// exists here — fail fast instead of guessing across repos.
+    LocalCollision {
+        branch: String,
+        second: String,
+        also_live_repo: bool,
+    },
+    /// Create the branch in another cataloged repository.
+    Cross {
+        repo: String,
+        branch: String,
+        base: Option<String>,
+        guessed: bool,
+    },
+}
+
+/// What the catalog knows about a name in the two-name guess.
+///
+/// Keeping these apart is what stops a guessed `daft start` from degrading
+/// into a local branch when the catalog cannot answer: a store failure
+/// propagates as an error, and a moved or tombstoned entry routes to the
+/// loud resolver so the user gets `daft go`'s diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartRepoProbe {
+    /// A live entry whose recorded path is still a directory.
+    Live,
+    /// A live entry whose recorded path has vanished.
+    Stale,
+    /// A tombstoned entry (`daft repo remove`).
+    Removed,
+    /// A live entry that IS the repository the cwd sits in.
+    Current,
+    /// No catalog entry matches this name.
+    Unknown,
+}
+
+/// Decode `daft start`'s argument grammar.
+///
+/// The grammar, in precedence order:
+///   * `start --repo R <branch> [base]` — explicit cross-repo creation
+///     (disambiguates repos shadowed by branch names; script-safe).
+///   * `start <repo> <branch> <base>` — three names have no local meaning
+///     (local start takes at most two), so this form is cross-repo by
+///     definition; the repo must resolve (hard error on a miss).
+///   * `start <A> <B>` — the only guessed arity, decided local-first:
+///     an existing local branch `A` keeps the local reading (failing fast
+///     as "already exists"); a resolvable base `B` means the ordinary
+///     `<branch> <base>` form; naming the current repo is a redundant
+///     qualifier; only then does a live catalog repo `A` mean "create `B`
+///     in `A`".
+///   * `start <branch>` — always local; a lone repo name is never a start
+///     target (there is no branch to create).
+fn decode_start_grammar(
+    first: String,
+    second: Option<String>,
+    third: Option<String>,
+    repo: Option<String>,
+    is_local_branch: impl Fn(&str) -> bool,
+    is_base_ref: impl Fn(&str) -> bool,
+    probe_repo: impl Fn(&str) -> Result<StartRepoProbe>,
+) -> Result<StartRouting> {
+    if let Some(repo) = repo {
+        if let Some(third) = third {
+            anyhow::bail!(
+                "--repo already names the target repo: unexpected argument '{third}' \
+                 (usage: `daft start --repo <repo> <branch> [base]`)"
+            );
+        }
+        if first == "-" || second.as_deref() == Some("-") {
+            anyhow::bail!("Cannot use '-' with --repo");
+        }
+        return Ok(StartRouting::Cross {
+            repo,
+            branch: first,
+            base: second,
+            guessed: false,
+        });
     }
 
-    let args = Args {
-        branch_name: start_args.new_branch_name,
-        base_branch_name: start_args.base_branch_name,
-        create_branch: true,
-        start: false,
-        carry: start_args.carry,
-        no_carry: start_args.no_carry,
-        remote: start_args.remote,
-        no_cd: start_args.no_cd,
-        exec: start_args.exec,
-        quiet: start_args.quiet,
-        verbose: start_args.verbose,
-        at: start_args.at,
-        local: start_args.local,
-        no_verify: start_args.no_verify,
-        skip_hooks: start_args.skip_hooks,
+    if first == "-" || second.as_deref() == Some("-") || third.as_deref() == Some("-") {
+        anyhow::bail!(
+            "'-' is not a branch name here — `daft go -` switches to the previous worktree"
+        );
+    }
+
+    let Some(second) = second else {
+        return Ok(StartRouting::Local {
+            branch: first,
+            base: None,
+        });
     };
-    run_with_args(args, GoRouting::local_only())
+
+    if let Some(third) = third {
+        return Ok(StartRouting::Cross {
+            repo: first,
+            branch: second,
+            base: Some(third),
+            guessed: false,
+        });
+    }
+
+    if is_local_branch(&first) {
+        let also_live_repo = probe_repo(&first)? == StartRepoProbe::Live;
+        return Ok(StartRouting::LocalCollision {
+            branch: first,
+            second,
+            also_live_repo,
+        });
+    }
+
+    // Local-first, and `second` is where the local signal actually lives:
+    // `first` is a branch being *created*, so its absence proves nothing.
+    // A resolvable `second` means this is the ordinary `<branch> <base>`
+    // form, which a repo-shaped `first` must not hijack.
+    if is_base_ref(&second) {
+        return Ok(StartRouting::Local {
+            branch: first,
+            base: Some(second),
+        });
+    }
+
+    match probe_repo(&first)? {
+        // Naming the repo you are standing in is a redundant qualifier, not
+        // a cross-repo hop — keep local semantics (base = current branch).
+        StartRepoProbe::Current => Ok(StartRouting::Local {
+            branch: second,
+            base: None,
+        }),
+        StartRepoProbe::Live => Ok(StartRouting::Cross {
+            repo: first,
+            branch: second,
+            base: None,
+            guessed: true,
+        }),
+        // Moved or tombstoned: the user clearly named a repo (nothing here
+        // reads as a base), so route through the loud resolver rather than
+        // inventing a local branch named after it.
+        StartRepoProbe::Stale | StartRepoProbe::Removed => Ok(StartRouting::Cross {
+            repo: first,
+            branch: second,
+            base: None,
+            guessed: false,
+        }),
+        StartRepoProbe::Unknown => Ok(StartRouting::Local {
+            branch: first,
+            base: Some(second),
+        }),
+    }
+}
+
+/// Silent probe for the two-name guess: does `refs/heads/<name>` exist in
+/// the repository the cwd sits in? False outside any repository. Runs
+/// through `git_command_at` so an inherited `GIT_DIR` (hook context) cannot
+/// retarget the check. Also used by tab completion to mirror the guess.
+pub(crate) fn local_branch_exists(name: &str) -> bool {
+    let Ok(cwd) = get_current_directory() else {
+        return false;
+    };
+    git_command_at(&cwd)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Does `name` resolve to a commit in the repository the cwd sits in — i.e.
+/// could it be the *base* of a local `daft start <branch> <base>`? Broader
+/// than [`local_branch_exists`] on purpose: remote-tracking refs, tags and
+/// commit-ish spellings are all legitimate bases. False outside any
+/// repository. Also used by tab completion to mirror the guess.
+pub(crate) fn local_base_ref_exists(name: &str) -> bool {
+    let Ok(cwd) = get_current_directory() else {
+        return false;
+    };
+    git_command_at(&cwd)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{name}^{{commit}}"),
+        ])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// The canonical git common dir of the repository the cwd sits in — the
+/// identity the catalog keys on. `None` outside any repository.
+fn current_repo_git_common_dir() -> Option<String> {
+    let cwd = get_current_directory().ok()?.canonicalize().ok()?;
+    crate::core::repo::git_common_dir_at(&cwd).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Catalog probe for the two-name guess. Errors propagate: a store failure
+/// must not read as "not a cataloged repo" and quietly become a local
+/// mutation. Matches live names only, so a path-shaped needle never steers
+/// the guess — paths and uuids stay exclusive to the explicit forms.
+pub(crate) fn probe_start_repo(name: &str) -> Result<StartRepoProbe> {
+    let Some(catalog) = crate::catalog::Catalog::open_ro()? else {
+        return Ok(StartRepoProbe::Unknown);
+    };
+    let Some(row) = catalog.resolve_live_name(name)? else {
+        // Not live under that name: surface a tombstone rather than letting
+        // it read as an ordinary branch name.
+        return Ok(match catalog.resolve(name)? {
+            Some(row) if row.removed_at.is_some() => StartRepoProbe::Removed,
+            _ => StartRepoProbe::Unknown,
+        });
+    };
+    if current_repo_git_common_dir().is_some_and(|dir| dir == row.git_common_dir) {
+        return Ok(StartRepoProbe::Current);
+    }
+    if std::path::Path::new(&row.path).is_dir() {
+        Ok(StartRepoProbe::Live)
+    } else {
+        Ok(StartRepoProbe::Stale)
+    }
+}
+
+/// Create `branch` in another cataloged repository (`daft start <repo>
+/// <branch> [base]` and the `--repo` spelling). The destination is
+/// announced before any work so a wrong guess is visible immediately.
+fn run_start_cross(
+    mut start_args: StartArgs,
+    repo_needle: String,
+    branch: String,
+    base: Option<String>,
+    guessed: bool,
+) -> Result<()> {
+    init_logging(start_args.verbose);
+
+    if start_args.carry {
+        anyhow::bail!(
+            "-c/--carry cannot cross repositories: uncommitted changes here cannot be \
+             applied to a worktree in '{repo_needle}'"
+        );
+    }
+    // Belt and braces for config-level carry too — a dirty tree never crosses.
+    start_args.no_carry = true;
+
+    let inside_repo = is_git_repository()?;
+    if inside_repo {
+        crate::catalog::touch_current_repo();
+    }
+    let original_dir = get_current_directory()?;
+    // Capture the source worktree BEFORE the cross-repo chdir, so the target
+    // repo's `daft go -` can hop back across repos (best-effort).
+    let source_worktree = if inside_repo {
+        get_current_worktree_path().ok()
+    } else {
+        None
+    };
+
+    let row = if guessed {
+        // The decode probe saw this repo moments ago; a miss here is a race.
+        lookup_live_repo(&repo_needle).ok_or_else(|| {
+            anyhow::anyhow!("repository '{repo_needle}' is no longer in the catalog")
+        })?
+    } else {
+        let note = start_args.repo.is_none().then(start_three_arg_note);
+        resolve_cross_target(&repo_needle, note)?
+    };
+
+    // Validate the recorded path before anything user-visible happens, so a
+    // moved repo reports the actionable catalog error on every route — the
+    // `--with-related` arm returns before `go_to_repo`'s identical guard.
+    let repo_root = std::path::Path::new(&row.path);
+    if !repo_root.is_dir() {
+        anyhow::bail!(
+            "catalog entry '{}' points at '{}', which no longer exists\n  \
+             tip: if the repo moved, run `{}` from its new location; \
+             if it's gone, `{}` re-clones it",
+            row.name,
+            row.path,
+            crate::daft_cmd("repo add"),
+            crate::daft_cmd(&format!("clone {}", row.name))
+        );
+    }
+
+    let base = match base {
+        Some(base) => base,
+        None => repo_default_branch(&row).ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not determine the default branch of '{}'; pass a base: `{}`",
+                row.name,
+                crate::daft_cmd(&format!("start {} {} <base>", row.name, branch))
+            )
+        })?,
+    };
+
+    // Announce the resolved destination before any work happens — a guessed
+    // mutating target must be impossible to miss (`-q` opts out).
+    let mut announce = CliOutput::new(OutputConfig::with_autocd(
+        start_args.quiet,
+        start_args.verbose,
+        false,
+    ));
+    announce.result(&format!(
+        "Creating branch '{}' in '{}' ({}) — based on '{}'",
+        branch, row.name, row.path, base
+    ));
+
+    if start_args.with_related {
+        // Root the fan-out in the target repo: enter a worktree there and run
+        // the ordinary --with-related flow against ITS relations manifest.
+        // Prefer the default branch's worktree — the manifest is read from
+        // whatever is checked out, so an arbitrary feature worktree could
+        // carry a stale `relations:` block.
+        let worktree = repo_default_branch(&row)
+            .and_then(|default| crate::core::repo::find_worktree_for_branch(repo_root, &default))
+            .or_else(|| crate::core::repo::find_representative_worktree(repo_root));
+        let Some(worktree) = worktree else {
+            anyhow::bail!("'{}' has no worktrees to base the new branch on", row.name);
+        };
+        change_directory(&worktree)?;
+        let result = run_start_with_related(start_args, branch, Some(base), source_worktree);
+        if result.is_err() {
+            change_directory(&original_dir).ok();
+        }
+        return result;
+    }
+
+    let args = start_args.to_create_args(branch, Some(base));
+    go_to_repo(&row, None, args, original_dir, source_worktree)
 }
 
 fn run_with_args(args: Args, routing: GoRouting) -> Result<()> {
@@ -616,7 +1041,7 @@ fn run_with_args(args: Args, routing: GoRouting) -> Result<()> {
     // Explicit cross-repo target (`--repo` or the two-positional form):
     // loud resolution, then run inside the target repo.
     if let Some(cross) = &routing.cross {
-        let row = resolve_cross_target(&cross.repo, cross.positional)?;
+        let row = resolve_cross_target(&cross.repo, cross.positional.then(go_two_arg_note))?;
         return go_to_repo(
             &row,
             cross.branch.clone(),
@@ -646,10 +1071,33 @@ fn run_with_args(args: Args, routing: GoRouting) -> Result<()> {
     )
 }
 
-/// Resolve an explicit cross-repo needle against the catalog, loudly.
+/// Miss note for the bare `daft go <repo> <branch>` form. Built at runtime
+/// so the executable renders the way the user invoked it (`git daft …` for
+/// the git-style entry points).
+fn go_two_arg_note() -> String {
+    format!(
+        "two arguments mean `{}`; to create a branch use `{}` or `{}`",
+        crate::daft_cmd("go <repo> <branch>"),
+        crate::daft_cmd("go -b <branch> [base]"),
+        crate::daft_cmd("start")
+    )
+}
+
+/// Miss note for the `daft start <repo> <branch> <base>` form.
+fn start_three_arg_note() -> String {
+    format!(
+        "three arguments mean `{}`; for a local branch use `{}`",
+        crate::daft_cmd("start <repo> <branch> [base]"),
+        crate::daft_cmd("start <branch> [base]")
+    )
+}
+
+/// Resolve an explicit cross-repo needle against the catalog, loudly. A
+/// `positional_note` is appended on a miss to explain the positional form
+/// that routed here (`None` for the `--repo` spellings).
 fn resolve_cross_target(
     needle: &str,
-    positional_form: bool,
+    positional_note: Option<String>,
 ) -> Result<crate::store::CatalogRepoRow> {
     let Some(catalog) = crate::catalog::Catalog::open_ro()? else {
         anyhow::bail!(
@@ -672,11 +1120,8 @@ fn resolve_cross_target(
             {
                 msg.push_str(&format!("\n  did you mean: {}", suggestions.join(", ")));
             }
-            if positional_form {
-                anyhow::bail!(
-                    "{msg}\n  note: two arguments mean `daft go <repo> <branch>`; to create \
-                     a branch use `daft go -b <branch> [base]` or `daft start`"
-                );
+            if let Some(note) = positional_note {
+                anyhow::bail!("{msg}\n  note: {note}");
             }
             anyhow::bail!(
                 "{msg}\n  tip: `{}` shows known repos; `{}` registers the current one",
@@ -693,26 +1138,28 @@ fn lookup_live_repo(name: &str) -> Option<crate::store::CatalogRepoRow> {
     catalog.resolve_live_name(name).ok().flatten()
 }
 
-/// The branch `daft go <repo>` lands on: the catalog's recorded default
-/// branch, refreshed from the repo's local `origin/HEAD` when unknown
-/// (write-back is best-effort). Assumes cwd is already the target repo.
+/// A cataloged repo's default branch: the catalog's recorded value,
+/// refreshed from the repo's local `origin/HEAD` when unknown (write-back
+/// is best-effort).
+fn repo_default_branch(row: &crate::store::CatalogRepoRow) -> Option<String> {
+    let discovered = row.default_branch.is_none();
+    let branch = crate::catalog::effective_default_branch(row)?;
+    // Write back only what the catalog didn't already know.
+    if discovered && let Ok(catalog) = crate::catalog::Catalog::open_rw() {
+        let _ = catalog.refresh_default_branch(&row.uuid, &branch);
+    }
+    Some(branch)
+}
+
+/// The branch `daft go <repo>` lands on. Assumes cwd is already the target repo.
 fn resolve_repo_default_branch(row: &crate::store::CatalogRepoRow) -> Result<String> {
-    if let Some(branch) = &row.default_branch {
-        return Ok(branch.clone());
-    }
-    if let Some(branch) =
-        crate::core::remote::local_default_branch(std::path::Path::new(&row.path), "origin")
-    {
-        if let Ok(catalog) = crate::catalog::Catalog::open_rw() {
-            let _ = catalog.refresh_default_branch(&row.uuid, &branch);
-        }
-        return Ok(branch);
-    }
-    anyhow::bail!(
-        "could not determine the default branch of '{}'; pass a branch: `{}`",
-        row.name,
-        crate::daft_cmd(&format!("go {} <branch>", row.name))
-    )
+    repo_default_branch(row).ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not determine the default branch of '{}'; pass a branch: `{}`",
+            row.name,
+            crate::daft_cmd(&format!("go {} <branch>", row.name))
+        )
+    })
 }
 
 /// Enter `row`'s repository and open `branch` there (the repo's default
@@ -1473,12 +1920,19 @@ fn run_create_branch_core(
     Ok(result)
 }
 
-/// `daft start <branch> --with-related`: create the branch here, then in
-/// every repo the relations manifest points at. Resolution is all-upfront
-/// (a missing clone aborts before anything is created); per-repo creation
-/// failures are collected and reported, not cascaded. The final cd target
-/// is the current repo's new worktree.
-fn run_start_with_related(start_args: StartArgs) -> Result<()> {
+/// `daft start <branch> --with-related`: create `branch` in the primary
+/// repo (the cwd's — `run_start_cross` roots a catalog target by entering
+/// it first), then in every repo the primary's relations manifest points
+/// at. Resolution is all-upfront (a missing clone aborts before anything is
+/// created); per-repo creation failures are collected and reported, not
+/// cascaded. The final cd target is the primary repo's new worktree.
+/// `source_worktree` is the caller's pre-hop worktree for `daft go -`.
+fn run_start_with_related(
+    start_args: StartArgs,
+    branch: String,
+    base: Option<String>,
+    source_worktree: Option<PathBuf>,
+) -> Result<()> {
     init_logging(start_args.verbose);
 
     if !is_git_repository()? {
@@ -1514,26 +1968,9 @@ fn run_start_with_related(start_args: StartArgs) -> Result<()> {
         }
     }
 
-    let args = Args {
-        branch_name: start_args.new_branch_name,
-        base_branch_name: start_args.base_branch_name,
-        create_branch: true,
-        start: false,
-        carry: start_args.carry,
-        no_carry: start_args.no_carry,
-        remote: start_args.remote,
-        no_cd: start_args.no_cd,
-        exec: start_args.exec,
-        quiet: start_args.quiet,
-        verbose: start_args.verbose,
-        at: start_args.at,
-        local: start_args.local,
-        no_verify: start_args.no_verify,
-        skip_hooks: start_args.skip_hooks,
-    };
+    let args = start_args.to_create_args(branch, base);
 
     let original_dir = get_current_directory()?;
-    let source_worktree = get_current_worktree_path().ok();
 
     // 1) Current repo first — its failure aborts the whole fan-out.
     let git = GitCommand::new(args.quiet);
@@ -1732,6 +2169,353 @@ mod skip_hooks_parse_tests {
         assert_eq!(
             a.skip_hooks,
             vec!["all".to_string(), "tag:heavy".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod start_grammar_tests {
+    use super::*;
+
+    /// Parse a `daft start` argv and decode it against fake catalogs.
+    fn decode(argv: &[&str], live_repos: &[&str], local_branches: &[&str]) -> Result<StartRouting> {
+        decode_full(argv, live_repos, local_branches, &[], &[])
+    }
+
+    /// As [`decode`], but with explicit base-refs (what `second` resolves to
+    /// in the current repo) and per-name catalog probe overrides.
+    fn decode_full(
+        argv: &[&str],
+        live_repos: &[&str],
+        local_branches: &[&str],
+        base_refs: &[&str],
+        probe_overrides: &[(&str, StartRepoProbe)],
+    ) -> Result<StartRouting> {
+        let mut full = vec!["daft start"];
+        full.extend_from_slice(argv);
+        let a = StartArgs::try_parse_from(full).expect("argv should parse");
+        decode_start_grammar(
+            a.first,
+            a.second,
+            a.third,
+            a.repo,
+            |name| local_branches.contains(&name),
+            |name| base_refs.contains(&name),
+            |name| {
+                if let Some((_, probe)) = probe_overrides.iter().find(|(n, _)| *n == name) {
+                    return Ok(*probe);
+                }
+                Ok(if live_repos.contains(&name) {
+                    StartRepoProbe::Live
+                } else {
+                    StartRepoProbe::Unknown
+                })
+            },
+        )
+    }
+
+    #[test]
+    fn single_positional_is_local() {
+        let routing = decode(&["feat/x"], &[], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "feat/x".into(),
+                base: None
+            }
+        );
+    }
+
+    #[test]
+    fn single_positional_stays_local_even_for_a_live_repo() {
+        // A lone repo name can never be a start target — there is no branch.
+        let routing = decode(&["api"], &["api"], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "api".into(),
+                base: None
+            }
+        );
+    }
+
+    #[test]
+    fn two_positionals_guess_cross_for_a_live_repo() {
+        let routing = decode(&["api", "feat/x"], &["api"], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: None,
+                guessed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn two_positionals_stay_local_when_first_is_not_a_repo() {
+        let routing = decode(&["feat/x", "develop"], &["api"], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "feat/x".into(),
+                base: Some("develop".into())
+            }
+        );
+    }
+
+    #[test]
+    fn local_branch_beats_catalog_match() {
+        // Local meaning always wins over the catalog: fail fast, never
+        // silently retarget another repo.
+        let routing = decode(&["api", "feat/x"], &["api"], &["api"]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::LocalCollision {
+                branch: "api".into(),
+                second: "feat/x".into(),
+                also_live_repo: true,
+            }
+        );
+    }
+
+    #[test]
+    fn local_branch_collision_without_a_repo_match() {
+        let routing = decode(&["api", "feat/x"], &[], &["api"]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::LocalCollision {
+                branch: "api".into(),
+                second: "feat/x".into(),
+                also_live_repo: false,
+            }
+        );
+    }
+
+    #[test]
+    fn three_positionals_are_cross_without_consulting_probes() {
+        let routing = decode(&["api", "feat/x", "main"], &[], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: Some("main".into()),
+                guessed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn repo_flag_forces_cross() {
+        // Even a name shadowed by a local branch stays cross with --repo.
+        let routing = decode(&["--repo", "api", "feat/x"], &[], &["api"]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: None,
+                guessed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn repo_flag_with_base() {
+        let routing = decode(&["--repo", "api", "feat/x", "main"], &[], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: Some("main".into()),
+                guessed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn repo_flag_rejects_a_third_positional() {
+        let err = decode(&["--repo", "api", "feat/x", "main", "extra"], &[], &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--repo already names the target repo")
+        );
+    }
+
+    #[test]
+    fn dash_is_rejected_everywhere() {
+        assert!(decode(&["-"], &[], &[]).is_err());
+        assert!(decode(&["api", "-"], &["api"], &[]).is_err());
+        assert!(decode(&["feat/x", "main", "-"], &[], &[]).is_err());
+        assert!(decode(&["--repo", "api", "-"], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn repo_flag_requires_a_branch_positional() {
+        assert!(StartArgs::try_parse_from(["daft start", "--repo", "api"]).is_err());
+    }
+
+    // --- local-first regressions (#725 review) -------------------------
+
+    #[test]
+    fn a_resolvable_base_keeps_the_local_reading_over_a_live_repo() {
+        // `start api release-2` with a real local `release-2`: the base is
+        // the signal that this is the ordinary `<branch> <base>` form.
+        // `first` is a branch being created, so probing only it can't tell.
+        let routing =
+            decode_full(&["api", "release-2"], &["api"], &[], &["release-2"], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "api".into(),
+                base: Some("release-2".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_new_branch_name_in_second_still_guesses_cross() {
+        // The feature's actual use: `feat/login` is not a ref here, so the
+        // live repo wins and the branch is created over there.
+        let routing = decode_full(&["api", "feat/login"], &["api"], &[], &["main"], &[]).unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/login".into(),
+                base: None,
+                guessed: true
+            }
+        );
+    }
+
+    #[test]
+    fn naming_the_current_repo_is_a_redundant_qualifier() {
+        // `start apiservice hotfix` from inside apiservice must create
+        // `hotfix` HERE on local base rules — not hop cross-repo and swap
+        // the base to the default branch.
+        let routing = decode_full(
+            &["apiservice", "hotfix"],
+            &[],
+            &[],
+            &[],
+            &[("apiservice", StartRepoProbe::Current)],
+        )
+        .unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "hotfix".into(),
+                base: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_stale_catalog_path_routes_to_the_loud_resolver() {
+        // Never silently become a local branch named after the repo:
+        // guessed=false sends this through resolve_cross_target/go_to_repo,
+        // which report the moved-repo error `daft go` gives.
+        let routing = decode_full(
+            &["api", "feat/x"],
+            &[],
+            &[],
+            &[],
+            &[("api", StartRepoProbe::Stale)],
+        )
+        .unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: None,
+                guessed: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_tombstoned_repo_routes_to_the_loud_resolver() {
+        let routing = decode_full(
+            &["api", "feat/x"],
+            &[],
+            &[],
+            &[],
+            &[("api", StartRepoProbe::Removed)],
+        )
+        .unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Cross {
+                repo: "api".into(),
+                branch: "feat/x".into(),
+                base: None,
+                guessed: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_tombstoned_name_with_a_real_base_stays_local() {
+        // Removing repo `api` must not make `start api main` stop working
+        // as an ordinary local branch named `api` based on `main`.
+        let routing = decode_full(
+            &["api", "main"],
+            &[],
+            &[],
+            &["main"],
+            &[("api", StartRepoProbe::Removed)],
+        )
+        .unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::Local {
+                branch: "api".into(),
+                base: Some("main".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_catalog_failure_propagates_instead_of_falling_back_to_local() {
+        // A store outage must not be indistinguishable from "not a repo" —
+        // that turned a cross-repo start into a local mutation, silently.
+        let err = decode_start_grammar(
+            "api".into(),
+            Some("feat/x".into()),
+            None,
+            None,
+            |_| false,
+            |_| false,
+            |_| anyhow::bail!("catalog is locked"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("catalog is locked"));
+    }
+
+    #[test]
+    fn collision_hint_only_claims_a_repo_that_is_elsewhere() {
+        // `also_live_repo` drives a `--repo <name>` hint; the current repo
+        // must not trigger it (the branch is already right here).
+        let routing = decode_full(
+            &["api", "feat/x"],
+            &[],
+            &["api"],
+            &[],
+            &[("api", StartRepoProbe::Current)],
+        )
+        .unwrap();
+        assert_eq!(
+            routing,
+            StartRouting::LocalCollision {
+                branch: "api".into(),
+                second: "feat/x".into(),
+                also_live_repo: false
+            }
         );
     }
 }

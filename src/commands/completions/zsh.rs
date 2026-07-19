@@ -1,6 +1,7 @@
 use super::{
     allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
     extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
+    value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -12,8 +13,6 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     }
 
     let mut output = String::new();
-    // daft-start still uses simple branch-prefix patterns (not rich).
-    let has_branches = command_name == "daft-start";
 
     let func_name = command_name.replace('-', "_");
 
@@ -26,21 +25,6 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
     output.push_str("    curword=\"${words[$CURRENT]}\"\n");
     output.push_str("    cword=$((CURRENT - 1))\n");
     output.push('\n');
-
-    if has_branches {
-        output.push_str("    # Branch completions for non-flag words\n");
-        output.push_str("    if [[ $curword != -* ]]; then\n");
-        output.push_str("        local -a branches\n");
-        output.push_str(&format!(
-            "        branches=($(daft __complete \"{}\" \"$curword\" --position \"$cword\" 2>/dev/null))\n",
-            command_name
-        ));
-        output.push_str("        if [[ ${#branches[@]} -gt 0 ]]; then\n");
-        output.push_str("            compadd -a branches\n");
-        output.push_str("        fi\n");
-        output.push_str("    fi\n");
-        output.push('\n');
-    }
 
     // Value completion for -b / --branch flag (clone only)
     let has_branch_completions = command_name == "git-worktree-clone";
@@ -337,9 +321,12 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     } else {
         ""
     };
-    // Rich commands that also carry --skip-hooks (checkout, go) complete its
-    // selector vocabulary when the previous word is the flag.
-    let skip_hooks_pre = if matches!(command_name, "git-worktree-checkout" | "daft-go") {
+    // Rich commands that also carry --skip-hooks (checkout, go, start)
+    // complete its selector vocabulary when the previous word is the flag.
+    let skip_hooks_pre = if matches!(
+        command_name,
+        "git-worktree-checkout" | "daft-go" | "daft-start"
+    ) {
         "    if [[ \"${words[$((CURRENT-1))]}\" == \"--skip-hooks\" ]]; then\n        local -a selectors\n        selectors=(\"${(@f)$(daft __complete skip-hooks-value \"$curword\" 2>/dev/null | sed 's/\\t/:/')}\")\n        _describe 'skip-hooks selector' selectors\n        return\n    fi\n\n"
     } else {
         ""
@@ -352,21 +339,47 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
         ""
     };
 
-    // daft-go position 2 completes branches of the repo named at position 1;
-    // the __complete protocol only carries the current word, so pass the
-    // first positional via env.
-    let env_prefix = if command_name == "daft-go" {
-        r#"DAFT_COMPLETE_GO_FIRST="$words[2]" "#
-    } else {
-        ""
+    // daft-go and daft-start complete later positions against the repo named
+    // at position 1; the __complete protocol only carries the current word,
+    // so pass the first positional via env.
+    // `$__first` is the first *positional*, not words[2], so a leading flag
+    // can't masquerade as the repo name.
+    let env_prefix = match command_name {
+        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="$__first" "#,
+        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="$__first" "#,
+        _ => "",
     };
+
+    // Positional slots are counted, not derived from $CURRENT: flags and
+    // their values sit in `words` too, so `daft start -q <TAB>` is slot 1.
+    let value_flags = value_taking_flags(&cmd).join(" ");
+    let position_pre = format!(
+        r#"    local -a __posargs
+    local __i=2 __w
+    while (( __i < CURRENT )); do
+        __w="${{words[$__i]}}"
+        case "$__w" in
+            --) ;;
+            -*)
+                if [[ " {value_flags} " == *" ${{__w%%=*}} "* && "$__w" != *=* ]]; then
+                    __i=$((__i + 1))
+                fi
+                ;;
+            *) __posargs+=("$__w") ;;
+        esac
+        __i=$((__i + 1))
+    done
+    local __position=$(( ${{#__posargs}} + 1 ))
+    local __first="${{__posargs[1]:-}}"
+
+"#
+    );
 
     let mut output = format!(
         r#"#compdef {command_name}
 
 __{func_name}_impl() {{
     local curword="${{words[$CURRENT]}}"
-    local cword=$((CURRENT - 1))
 
 {repo_flag_pre}{skip_hooks_pre}    if [[ "$curword" == -* ]]; then
         local -a flags
@@ -376,14 +389,14 @@ __{func_name}_impl() {{
         return
     fi
 
-{path_pre}    local -a raw
+{path_pre}{position_pre}    local -a raw
     local -a wt_names wt_raw_names wt_ages wt_authors wt_paths
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
     local -a repo_names repo_paths
     local -a forge_names forge_stats forge_owners forge_titles
     local -a forge_tok_names forge_tok_descs
-    raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
+    raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$__position"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath

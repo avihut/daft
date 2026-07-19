@@ -104,7 +104,26 @@ fn wrap_esm(filename: &str, spec: &impl Serialize) -> Result<String> {
 }
 
 /// Build a FigGenerator for dynamic branch completion
-fn build_fig_generator(command_name: &str, position: usize) -> FigGenerator {
+/// Slots whose candidates are resolved against the repo named in slot 1.
+///
+/// Fig's generator is a static argv — it cannot compute a value from the
+/// tokens typed so far, so it can't pass `DAFT_COMPLETE_{GO,START}_FIRST`
+/// the way the shell snippets do. Without that context these slots would
+/// answer for the wrong repository (`daft start <repo> <TAB>` returning the
+/// CURRENT repo's branches for a branch that must not exist in the target),
+/// so they get no generator at all rather than a confidently wrong one.
+fn fig_slot_needs_first_positional(command_name: &str, position: usize) -> bool {
+    match command_name {
+        "daft-go" => position == 2,
+        "daft-start" => position >= 2,
+        _ => false,
+    }
+}
+
+fn build_fig_generator(command_name: &str, position: usize) -> Option<FigGenerator> {
+    if fig_slot_needs_first_positional(command_name, position) {
+        return None;
+    }
     let mut script = vec![
         "daft".into(),
         "__complete".into(),
@@ -115,10 +134,10 @@ fn build_fig_generator(command_name: &str, position: usize) -> FigGenerator {
         script.push("--position".into());
         script.push(position.to_string());
     }
-    FigGenerator {
+    Some(FigGenerator {
         script,
         split_on: "\n".to_string(),
-    }
+    })
 }
 
 /// Generator for a positional cataloged-repo name (`daft list [<repo>]`).
@@ -180,7 +199,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
     let cmd =
         get_command_for_name(command_name).context(format!("Unknown command: {command_name}"))?;
 
-    let has_branches = uses_rich_completions(command_name) || command_name == "daft-start";
+    let has_branches = uses_rich_completions(command_name);
 
     let about = cmd.get_about().map(|a| a.to_string());
 
@@ -199,7 +218,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     Some(help.clone())
                 },
                 generators: if has_branches {
-                    Some(build_fig_generator(command_name, *index))
+                    build_fig_generator(command_name, *index)
                 } else if command_has_repo_positional(command_name) && *index == 1 {
                     Some(repo_name_generator())
                 } else {
@@ -1442,6 +1461,38 @@ mod tests {
         assert!(
             !spec.contains("generators"),
             "prune spec should not have generators"
+        );
+    }
+
+    /// `daft start [<repo>] <branch> [base]` (#725) — every positional gets
+    /// a dynamic generator through the rich pipeline.
+    #[test]
+    fn fig_start_completes_slot_one_and_omits_first_dependent_slots() {
+        let spec = generate_fig_completion_string("daft-start").unwrap();
+        // Slot 1 (catalog repo names) needs no context, so it is generated.
+        assert!(
+            spec.contains("__complete") && spec.contains("\"daft-start\""),
+            "start spec must generate slot-1 completions dynamically"
+        );
+        // Slots 2+ resolve against the repo named in slot 1, which Fig's
+        // static argv cannot carry. Emitting them anyway made slot 2 answer
+        // with the CURRENT repo's branches — worse than staying silent.
+        assert!(
+            !spec.contains("--position"),
+            "slots that need DAFT_COMPLETE_START_FIRST must have no generator, \
+             got a spec carrying --position:\n{spec}"
+        );
+    }
+
+    #[test]
+    fn fig_go_omits_the_slot_that_needs_the_first_positional() {
+        let spec = generate_fig_completion_string("daft-go").unwrap();
+        assert!(
+            !spec.contains("--position\", \"2")
+                && !spec.contains("--position\",\"2")
+                && !spec.contains("\"2\""),
+            "daft-go slot 2 resolves against slot 1's repo and must not be \
+             generated without it:\n{spec}"
         );
     }
 

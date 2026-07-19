@@ -96,6 +96,7 @@ pub(super) fn uses_rich_completions(command_name: &str) -> bool {
     matches!(
         command_name,
         "daft-go"
+            | "daft-start"
             | "git-worktree-checkout"
             | "daft-remove"
             | "daft-rename"
@@ -117,6 +118,7 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
     matches!(
         command_name,
         "daft-go"
+            | "daft-start"
             | "git-worktree-list"
             | "git-worktree-fetch"
             | "git-worktree-exec"
@@ -144,6 +146,30 @@ pub(super) fn allows_path_completion(command_name: &str) -> bool {
 
 /// Extract flag strings from a clap Command for shell completions
 /// Returns a tuple of (short_and_long_flags, short_flags, long_flags)
+/// Flags that consume a following word as their value.
+///
+/// Shell completions need this to count *positional* slots: without it a
+/// `--repo api` or `-x cmd` before the positionals shifts every slot by one
+/// and the position-aware `__complete` arms answer for the wrong argument.
+pub(super) fn value_taking_flags(cmd: &Command) -> Vec<String> {
+    let mut out = Vec::new();
+    for arg in cmd.get_arguments() {
+        if !matches!(
+            arg.get_action(),
+            clap::ArgAction::Set | clap::ArgAction::Append
+        ) {
+            continue;
+        }
+        if let Some(short) = arg.get_short() {
+            out.push(format!("-{short}"));
+        }
+        if let Some(long) = arg.get_long() {
+            out.push(format!("--{long}"));
+        }
+    }
+    out
+}
+
 pub(super) fn extract_flags(cmd: &Command) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut all_flags = Vec::new();
     let mut short_flags = Vec::new();
@@ -987,6 +1013,78 @@ mod tests {
         );
     }
 
+    /// `daft start <repo> <branch>` (#725): position 1 completes catalog
+    /// repo names through the rich pipeline, and positions 2-3 consult the
+    /// first word via DAFT_COMPLETE_START_FIRST in every shell.
+    #[test]
+    fn start_completions_are_rich_and_repo_aware_in_all_shells() {
+        let zsh = zsh::generate_zsh_completion_string("daft-start").expect("zsh gen");
+        assert!(
+            zsh.contains("compadd -M 'm:{[:lower:][:upper:]}={[:upper:][:lower:]}' -V repo"),
+            "zsh must render the catalog repo group for daft-start"
+        );
+        // The first *positional*, not a raw word index: a flag before the
+        // positionals must not shift the slot (#725 review).
+        assert!(
+            zsh.contains(r#"DAFT_COMPLETE_START_FIRST="$__first""#),
+            "zsh must pass the first positional for start's later positions"
+        );
+        assert!(
+            zsh.contains(r#"--position "$__position""#) && !zsh.contains(r#"--position "$cword""#),
+            "zsh must count positional slots, not reuse the raw word index"
+        );
+
+        let bash = bash::generate_bash_completion_string("daft-start").expect("bash gen");
+        assert!(
+            bash.contains(r#"DAFT_COMPLETE_START_FIRST="$__first""#),
+            "bash must pass the first positional for start's later positions"
+        );
+        assert!(
+            bash.contains(r#"--position "$__position""#)
+                && !bash.contains(r#"--position "$cword""#),
+            "bash must count positional slots, not reuse $cword"
+        );
+        // The counter has to know which flags consume the next word, or
+        // `--repo api <TAB>` counts `api` as a positional.
+        assert!(
+            bash.contains("--repo") && bash.contains("__posargs"),
+            "bash slot counter must skip value-taking flags"
+        );
+
+        // Per-command fish must handle 3-field repo lines; the umbrella
+        // gates each position by token count and threads the env var.
+        let repo_branch = "else printf \\\"%s\\t%s\\n\\\",c,$3";
+        let fish = fish::generate_fish_completion_string("daft-start").expect("fish gen");
+        assert!(
+            fish.contains(repo_branch),
+            "fish per-command awk must handle 3-field repo lines for daft-start"
+        );
+        assert!(
+            fish.contains("__daft_start_position") && !fish.contains("--position 1{"),
+            "fish per-command generator must be slot-aware, not hardcoded to 1"
+        );
+        let umbrella = fish::generate_daft_fish_completions();
+        assert!(
+            umbrella.contains(
+                "__fish_seen_subcommand_from start; and test (__daft_verb_position) -eq 1"
+            ),
+            "fish umbrella must gate start slot 1 on the counted position"
+        );
+        assert!(
+            umbrella.contains("DAFT_COMPLETE_START_FIRST=(__daft_verb_first)"),
+            "fish umbrella must pass start's first positional to later slots"
+        );
+        assert!(
+            !umbrella.contains("DAFT_COMPLETE_START_FIRST=(commandline -opc)[3]"),
+            "fish umbrella must not index tokens raw — a leading flag shifts them"
+        );
+        assert!(
+            umbrella
+                .contains("'__fish_seen_subcommand_from go list update exec prune start' -l repo"),
+            "fish umbrella --repo values must include start"
+        );
+    }
+
     #[test]
     fn zsh_daft_go_passes_fetch_on_miss_flag() {
         let script =
@@ -1023,7 +1121,7 @@ mod tests {
             "daft-go",                 // rich
             "git-worktree-clone",      // non-rich
             "git-worktree-flow-adopt", // non-rich
-            "daft-start",              // non-rich
+            "daft-start",              // rich
         ] {
             let bash = bash::generate_bash_completion_string(cmd).expect("bash gen");
             assert!(

@@ -33,6 +33,7 @@ single-repo work:
 ```bash
 daft go client                 # jump to another repo's default-branch worktree
 daft go client feat/login      # open a specific branch there
+daft start client feat/login   # create a new branch over there
 daft start feat/login --with-related   # open the same branch across related repos
 daft exec --related -- pnpm test       # run a command across that branch everywhere
 daft list client               # another repo's worktrees without leaving this one
