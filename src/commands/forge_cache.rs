@@ -648,7 +648,17 @@ mod tests {
         let _cwd = CwdRestore(std::env::current_dir().unwrap());
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let gate = forge_gate_and_lookup(&GitCommand::new(true), Some(repo.into()));
+        // Pin the capability probes to THIS repo. The shell-out arms of
+        // remote_list/remote_get_url re-sample the process cwd on every call,
+        // so a stray cwd restore from elsewhere in the process (a leaked
+        // thread, an unwinding guard — #[serial] can't exclude those) landing
+        // in a github-remoted worktree flipped `capable` to true mid-gate and
+        // flaked this test. The gitoxide arms instead read the gix_repo()
+        // snapshot; warming it here makes every probe below cwd-independent.
+        let git = GitCommand::new(true).with_gitoxide(true);
+        git.gix_repo().expect("gix discovery pins the tempdir repo");
+
+        let gate = forge_gate_and_lookup(&git, Some(repo.into()));
         assert!(!gate.capable, "a remoteless repo names no forge");
         let lookup = gate
             .lookup
