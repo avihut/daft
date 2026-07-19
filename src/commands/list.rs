@@ -1232,7 +1232,13 @@ fn print_table(
             } else {
                 (
                     format_ahead_behind(info.ahead, info.behind, use_color),
-                    format_head_status(info.staged, info.unstaged, info.untracked, use_color),
+                    format_head_status(
+                        info.conflicted,
+                        info.staged,
+                        info.unstaged,
+                        info.untracked,
+                        use_color,
+                    ),
                     format_remote_status(info.remote_ahead, info.remote_behind, use_color),
                 )
             };
@@ -1666,6 +1672,7 @@ mod tests {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
@@ -1725,6 +1732,7 @@ mod tests {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,

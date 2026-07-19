@@ -40,12 +40,25 @@ pub fn format_ahead_behind(ahead: Option<usize>, behind: Option<usize>, use_colo
 
 /// Format head status indicators: `+` staged, `-` unstaged, `?` untracked.
 pub fn format_head_status(
+    conflicted: usize,
     staged: usize,
     unstaged: usize,
     untracked: usize,
     use_color: bool,
 ) -> String {
     let mut parts = Vec::new();
+
+    // Conflicts lead: they are the one state in this cell that blocks the
+    // user rather than merely describing work, and bold red separates them
+    // from the plain red of unstaged changes.
+    if conflicted > 0 {
+        let text = format!("!{conflicted}");
+        if use_color {
+            parts.push(styles::bold_red(&text));
+        } else {
+            parts.push(text);
+        }
+    }
 
     if staged > 0 {
         let text = format!("+{staged}");
@@ -381,6 +394,12 @@ pub fn format_head_status_lines(info: &WorktreeInfo) -> String {
     let ins = info.staged_lines_inserted.unwrap_or(0) + info.unstaged_lines_inserted.unwrap_or(0);
     let del = info.staged_lines_deleted.unwrap_or(0) + info.unstaged_lines_deleted.unwrap_or(0);
     let mut parts = Vec::new();
+    // A conflict count is a file count, not a line count — but it stays in
+    // this cell in `--stat lines` too. Choosing a stat mode should not make
+    // "these files need a decision" disappear.
+    if info.conflicted > 0 {
+        parts.push(format!("!{}", info.conflicted));
+    }
     if ins > 0 {
         parts.push(format!("+{ins}"));
     }
@@ -440,7 +459,13 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
     } else {
         (
             format_ahead_behind(info.ahead, info.behind, false),
-            format_head_status(info.staged, info.unstaged, info.untracked, false),
+            format_head_status(
+                info.conflicted,
+                info.staged,
+                info.unstaged,
+                info.untracked,
+                false,
+            ),
             format_remote_status(info.remote_ahead, info.remote_behind, false),
         )
     };

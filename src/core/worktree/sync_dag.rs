@@ -515,6 +515,7 @@ pub enum WorktreeInfoPatch {
         staged: usize,
         unstaged: usize,
         untracked: usize,
+        conflicted: usize,
     },
     LastCommit {
         timestamp: Option<i64>,
