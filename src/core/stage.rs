@@ -84,11 +84,20 @@ pub enum StageId {
     /// multi-command pipeline), so it always carries a fixed label override
     /// and the tense table is a fallback only.
     ExecCommand,
+
+    // ── Run (user tasks) ─────────────────────────────────────────────────
+    /// A `daft run` task rendering as a rail section — multi-job tasks only
+    /// (a single-job invocation passes the terminal through and never plans
+    /// a timeline). Always carries the task name as a fixed label override;
+    /// the tense table is a fallback only.
+    Task,
 }
 
 impl StageId {
     /// True for stages that render as an embedded hook block when they run
     /// (the plan row is replaced by the hook renderer's own output).
+    /// [`Self::Task`] qualifies: a `daft run` task expands into the same
+    /// rail-native job section as a lifecycle hook phase.
     pub fn is_hook_phase(self) -> bool {
         matches!(
             self,
@@ -97,6 +106,7 @@ impl StageId {
                 | Self::PreRemoveHooks
                 | Self::PostRemoveHooks
                 | Self::PostCloneHooks
+                | Self::Task
         )
     }
 

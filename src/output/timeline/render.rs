@@ -45,6 +45,10 @@ pub(super) enum HookJobFace {
     Failed,
     /// `↓` — yellow glyph and name; the reason stays plain.
     SkippedAttention,
+    /// `⊘` — yellow glyph and name; the `cancelled` annotation stays plain
+    /// (the spine's [`FinalFace::Cancelled`] vocabulary, for `daft run`
+    /// task jobs interrupted mid-run).
+    Cancelled,
     /// `↻` — blue glyph and name, fixed dim `background` annotation.
     Background,
 }
@@ -297,6 +301,7 @@ pub(super) fn hook_job_row(
             format!("{glyph}  {name_part}")
         }
         HookJobFace::SkippedAttention => flooded(YELLOW, "\u{2193}", None, annotation),
+        HookJobFace::Cancelled => flooded(YELLOW, "\u{2298}", None, annotation),
         HookJobFace::Background => flooded(
             BLUE,
             "\u{21bb}",

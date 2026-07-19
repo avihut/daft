@@ -10,6 +10,7 @@ use super::log_sink::LogSink;
 use super::presenter::JobPresenter;
 use super::{ExecutionMode, JobResult, JobSpec, NodeStatus};
 use crate::coordinator::log_record::OutputKind;
+use crate::git::cancel::CancelFlag;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +34,25 @@ pub fn run_jobs(
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
 ) -> Result<Vec<JobResult>> {
+    run_jobs_with_cancel(jobs, mode, presenter, sink, None)
+}
+
+/// Like [`run_jobs`], but observes a two-stage cancellation flag.
+///
+/// When `cancel` is `Some`, a raised flag tears down in-flight jobs (SIGTERM
+/// then SIGKILL via the process-group cascade in `command.rs`) and short-
+/// circuits not-yet-started jobs to [`NodeStatus::Cancelled`] — like the
+/// interrupted job itself — so the whole run aggregates to a non-success exit
+/// 130 rather than a false success. `cancel: None` is behaviorally identical
+/// to [`run_jobs`] — no flag is polled — so hook and coordinator callers are
+/// unaffected.
+pub fn run_jobs_with_cancel(
+    jobs: &[JobSpec],
+    mode: ExecutionMode,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
+) -> Result<Vec<JobResult>> {
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -40,12 +60,12 @@ pub fn run_jobs(
     let has_deps = jobs.iter().any(|j| !j.needs.is_empty());
 
     if has_deps {
-        run_with_dag(jobs, mode, presenter, sink)
+        run_with_dag(jobs, mode, presenter, sink, cancel)
     } else {
         match mode {
-            ExecutionMode::Parallel => run_parallel_flat(jobs, presenter, sink),
-            ExecutionMode::Sequential => run_sequential(jobs, presenter, false, sink),
-            ExecutionMode::Piped => run_sequential(jobs, presenter, true, sink),
+            ExecutionMode::Parallel => run_parallel_flat(jobs, presenter, sink, cancel),
+            ExecutionMode::Sequential => run_sequential(jobs, presenter, false, sink, cancel),
+            ExecutionMode::Piped => run_sequential(jobs, presenter, true, sink, cancel),
         }
     }
 }
@@ -64,17 +84,33 @@ fn run_sequential(
     presenter: &Arc<dyn JobPresenter>,
     stop_on_failure: bool,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(jobs.len());
 
     for (i, job) in jobs.iter().enumerate() {
+        // A cancellation raised before this job starts short-circuits it and
+        // every remaining job. They surface as Cancelled (not Skipped) so the
+        // aggregate reads as an interruption (exit 130), never a false success.
+        if is_cancelled(cancel) {
+            skip_remaining(
+                &jobs[i..],
+                "cancelled",
+                NodeStatus::Cancelled,
+                presenter,
+                sink,
+                &mut results,
+            );
+            return Ok(results);
+        }
+
         presenter.on_job_start(&job.name, job.description.as_deref(), Some(&job.command));
         if let Some(s) = sink {
             s.on_job_start(job);
         }
         let start = Instant::now();
 
-        let cr = execute_single_job(job, presenter, sink)?;
+        let cr = execute_single_job(job, presenter, sink, cancel)?;
         let duration = start.elapsed();
         let result = command_to_job_result(&job.name, &cr, duration);
 
@@ -82,36 +118,70 @@ fn run_sequential(
         if let Some(s) = sink {
             s.on_job_complete(job, &result);
         }
-        let failed = result.status == NodeStatus::Failed;
+        let status = result.status;
         results.push(result);
 
-        if failed && stop_on_failure {
-            // Mark remaining jobs as Skipped.
-            for remaining in &jobs[i + 1..] {
-                presenter.on_job_skipped(
-                    &remaining.name,
-                    "previous job failed",
-                    Duration::ZERO,
-                    false,
-                    None,
-                );
-                if let Some(s) = sink {
-                    s.on_job_runner_skipped(remaining, "previous job failed");
-                }
-                results.push(JobResult {
-                    name: remaining.name.clone(),
-                    status: NodeStatus::Skipped,
-                    duration: Duration::ZERO,
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                });
-            }
+        // A user cancellation halts the sequence regardless of mode — even
+        // Sequential (continue-on-failure), since the user asked to stop.
+        if status == NodeStatus::Cancelled {
+            skip_remaining(
+                &jobs[i + 1..],
+                "cancelled",
+                NodeStatus::Cancelled,
+                presenter,
+                sink,
+                &mut results,
+            );
+            return Ok(results);
+        }
+        if status == NodeStatus::Failed && stop_on_failure {
+            skip_remaining(
+                &jobs[i + 1..],
+                "previous job failed",
+                NodeStatus::Skipped,
+                presenter,
+                sink,
+                &mut results,
+            );
             return Ok(results);
         }
     }
 
     Ok(results)
+}
+
+/// Mark a run of not-executed jobs with the given reason and terminal status,
+/// emitting presenter and sink events and appending results. The `status`
+/// distinguishes a benign skip (`Skipped` — a prior job failed) from a
+/// cancellation (`Cancelled`), which must aggregate to a non-success exit 130
+/// rather than read as a false success.
+fn skip_remaining(
+    jobs: &[JobSpec],
+    reason: &str,
+    status: NodeStatus,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    results: &mut Vec<JobResult>,
+) {
+    for remaining in jobs {
+        presenter.on_job_skipped(&remaining.name, reason, Duration::ZERO, false, None);
+        if let Some(s) = sink {
+            s.on_job_runner_skipped(remaining, reason);
+        }
+        results.push(JobResult {
+            name: remaining.name.clone(),
+            status,
+            duration: Duration::ZERO,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+}
+
+/// Whether a cancellation flag (if any) has been raised.
+fn is_cancelled(cancel: Option<&CancelFlag>) -> bool {
+    cancel.is_some_and(|c| c.is_cancelled())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -123,10 +193,11 @@ fn run_parallel_flat(
     jobs: &[JobSpec],
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs.iter().map(|j| (j.name.clone(), vec![])).collect();
     let graph = DagGraph::new(nodes)?;
-    run_dag_execution(jobs, &graph, presenter, sink)
+    run_dag_execution(jobs, &graph, presenter, sink, cancel)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -139,6 +210,7 @@ fn run_with_dag(
     mode: ExecutionMode,
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs
         .iter()
@@ -147,8 +219,15 @@ fn run_with_dag(
     let graph = DagGraph::new(nodes)?;
 
     match mode {
-        ExecutionMode::Parallel => run_dag_execution(jobs, &graph, presenter, sink),
-        _ => run_dag_sequential_exec(jobs, &graph, presenter, mode == ExecutionMode::Piped, sink),
+        ExecutionMode::Parallel => run_dag_execution(jobs, &graph, presenter, sink, cancel),
+        _ => run_dag_sequential_exec(
+            jobs,
+            &graph,
+            presenter,
+            mode == ExecutionMode::Piped,
+            sink,
+            cancel,
+        ),
     }
 }
 
@@ -158,6 +237,7 @@ fn run_dag_execution(
     graph: &DagGraph,
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
     let job_map = build_job_map(jobs);
     let max_workers = std::thread::available_parallelism()
@@ -178,13 +258,25 @@ fn run_dag_execution(
                 return NodeStatus::Failed;
             };
 
+            // A cancellation raised before this node is scheduled short-
+            // circuits it (Cancelled, not Skipped, so the run aggregates to
+            // exit 130) and drains the scheduler quickly instead of launching
+            // fresh work into a torn-down session.
+            if is_cancelled(cancel) {
+                presenter.on_job_skipped(name, "cancelled", Duration::ZERO, false, None);
+                if let Some(ref s) = sink_for_closure {
+                    s.on_job_runner_skipped(job, "cancelled");
+                }
+                return NodeStatus::Cancelled;
+            }
+
             presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
             if let Some(ref s) = sink_for_closure {
                 s.on_job_start(job);
             }
             let start = Instant::now();
 
-            let cr = execute_single_job(job, presenter, sink_for_closure.as_ref());
+            let cr = execute_single_job(job, presenter, sink_for_closure.as_ref(), cancel);
             let duration = start.elapsed();
 
             match cr {
@@ -243,6 +335,7 @@ fn run_dag_sequential_exec(
     presenter: &Arc<dyn JobPresenter>,
     _stop_on_failure: bool,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
     let job_map = build_job_map(jobs);
 
@@ -258,13 +351,22 @@ fn run_dag_sequential_exec(
             return NodeStatus::Failed;
         };
 
+        // Cancelled (not Skipped) so an interrupted run aggregates to exit 130.
+        if is_cancelled(cancel) {
+            presenter.on_job_skipped(name, "cancelled", Duration::ZERO, false, None);
+            if let Some(ref s) = sink_for_closure {
+                s.on_job_runner_skipped(job, "cancelled");
+            }
+            return NodeStatus::Cancelled;
+        }
+
         presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
         if let Some(ref s) = sink_for_closure {
             s.on_job_start(job);
         }
         let start = Instant::now();
 
-        let cr = execute_single_job(job, presenter, sink_for_closure.as_ref());
+        let cr = execute_single_job(job, presenter, sink_for_closure.as_ref(), cancel);
         let duration = start.elapsed();
 
         match cr {
@@ -338,9 +440,10 @@ fn execute_single_job(
     job: &JobSpec,
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
 ) -> Result<CommandResult> {
     if job.interactive {
-        run_command_interactive(&job.command, &job.env, &job.working_dir)
+        run_command_interactive(&job.command, &job.env, &job.working_dir, cancel)
     } else {
         let (tx, rx) = mpsc::channel::<(OutputKind, String)>();
 
@@ -368,6 +471,7 @@ fn execute_single_job(
             job.timeout,
             Some(tx),
             None,
+            cancel,
         );
 
         // Wait for the reader to drain all output before returning.
@@ -379,13 +483,16 @@ fn execute_single_job(
 
 /// Convert a `CommandResult` to a `JobResult`.
 fn command_to_job_result(name: &str, cr: &CommandResult, duration: Duration) -> JobResult {
+    let status = if cr.cancelled {
+        NodeStatus::Cancelled
+    } else if cr.success {
+        NodeStatus::Succeeded
+    } else {
+        NodeStatus::Failed
+    };
     JobResult {
         name: name.to_string(),
-        status: if cr.success {
-            NodeStatus::Succeeded
-        } else {
-            NodeStatus::Failed
-        },
+        status,
         duration,
         exit_code: cr.exit_code,
         stdout: cr.stdout.clone(),
@@ -409,6 +516,9 @@ fn report_completion(job: &JobSpec, result: &JobResult, presenter: &Arc<dyn JobP
             if let Some(ref fail_text) = job.fail_text {
                 presenter.on_message(fail_text);
             }
+        }
+        NodeStatus::Cancelled => {
+            presenter.on_job_cancelled(&job.name, result.duration);
         }
         _ => {}
     }
@@ -597,7 +707,7 @@ mod tests {
             name: name.into(),
             command: command.into(),
             working_dir: tmp_dir(),
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }
     }
@@ -608,7 +718,7 @@ mod tests {
             command: command.into(),
             working_dir: tmp_dir(),
             needs: needs.into_iter().map(String::from).collect(),
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }
     }
@@ -942,7 +1052,7 @@ mod tests {
             command: "exit 1".into(),
             working_dir: tmp_dir(),
             fail_text: Some("Try running: npm install".into()),
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }];
         run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
@@ -986,7 +1096,7 @@ mod tests {
             command: "echo ok".into(),
             working_dir: tmp_dir(),
             description: Some("Install dependencies".into()),
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }];
         run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
@@ -1027,7 +1137,7 @@ mod tests {
             command: "echo $MY_TEST_VAR".into(),
             working_dir: tmp_dir(),
             env,
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }];
         let results = run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
@@ -1046,7 +1156,7 @@ mod tests {
             command: "true".into(),
             working_dir: tmp_dir(),
             interactive: true,
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }];
         let results = run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
@@ -1065,7 +1175,7 @@ mod tests {
             command: "exit 3".into(),
             working_dir: tmp_dir(),
             interactive: true,
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             ..Default::default()
         }];
         let results = run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
@@ -1083,6 +1193,7 @@ mod tests {
             exit_code: Some(0),
             stdout: "out".into(),
             stderr: String::new(),
+            cancelled: false,
         };
         let result = command_to_job_result("test", &cr, Duration::from_secs(1));
         assert_eq!(result.name, "test");
@@ -1098,11 +1209,149 @@ mod tests {
             exit_code: Some(42),
             stdout: String::new(),
             stderr: "error\n".into(),
+            cancelled: false,
         };
         let result = command_to_job_result("test", &cr, Duration::from_millis(500));
         assert_eq!(result.status, NodeStatus::Failed);
         assert_eq!(result.exit_code, Some(42));
         assert_eq!(result.stderr, "error\n");
+    }
+
+    #[test]
+    fn command_to_job_result_cancelled() {
+        let cr = CommandResult {
+            success: false,
+            exit_code: Some(130),
+            stdout: String::new(),
+            stderr: String::new(),
+            cancelled: true,
+        };
+        let result = command_to_job_result("test", &cr, Duration::from_millis(500));
+        assert_eq!(result.status, NodeStatus::Cancelled);
+        assert_eq!(result.exit_code, Some(130));
+    }
+
+    // ── Cancellation ───────────────────────────────────────────────────
+
+    #[test]
+    fn pre_raised_cancel_cancels_all_sequential_jobs() {
+        // Regression: a Ctrl+C that lands before the first job spawns must not
+        // read as a false success. The short-circuited jobs surface as
+        // Cancelled (not Skipped), so the aggregate resolves to exit 130 — a
+        // `Skipped` verdict here would let `job_results_to_hook_result` report
+        // success and exit 0.
+        let recorder = RecordingPresenter::new();
+        let presenter: Arc<dyn JobPresenter> = recorder.clone();
+        let cancel = CancelFlag::new();
+        cancel.escalate(); // level 1 before anything runs
+
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job("b", "echo b"),
+            make_job("c", "echo c"),
+        ];
+        let results = run_jobs_with_cancel(
+            &jobs,
+            ExecutionMode::Sequential,
+            &presenter,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.status == NodeStatus::Cancelled));
+        let events = recorder.events();
+        // No job ever started; each was reported with the cancelled reason.
+        assert!(events.iter().all(|e| !e.starts_with("job_start:")));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.as_str() == "job_skipped:a:cancelled"
+                    || e.as_str() == "job_skipped:b:cancelled"
+                    || e.as_str() == "job_skipped:c:cancelled")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn pre_raised_cancel_cancels_all_parallel_jobs() {
+        // Covers the parallel DAG closure (run_dag_execution): a pre-raised
+        // cancel short-circuits every no-dep node to Cancelled (not Skipped),
+        // so a Parallel task interrupted before it starts aggregates to exit
+        // 130 rather than a false success.
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let cancel = CancelFlag::new();
+        cancel.escalate(); // level 1 before anything runs
+
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job("b", "echo b"),
+            make_job("c", "echo c"),
+        ];
+        let results = run_jobs_with_cancel(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|r| r.status == NodeStatus::Cancelled),
+            "every no-dep parallel node must short-circuit to Cancelled: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pre_raised_cancel_cancels_the_dag_frontier_with_needs() {
+        // Covers the sequential DAG closure (run_dag_sequential_exec): a needs
+        // chain routes through the DAG scheduler, where a pre-raised cancel
+        // short-circuits the frontier node to Cancelled and cascades dependents
+        // to DepFailed. What matters is a Cancelled reaches the aggregate (exit
+        // 130) and nothing reads as a benign Skipped false success.
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let cancel = CancelFlag::new();
+        cancel.escalate(); // level 1 before anything runs
+
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job_with_needs("b", "echo b", vec!["a"]),
+            make_job_with_needs("c", "echo c", vec!["b"]),
+        ];
+        let results = run_jobs_with_cancel(
+            &jobs,
+            ExecutionMode::Sequential,
+            &presenter,
+            None,
+            Some(&cancel),
+        )
+        .unwrap();
+
+        assert!(
+            results.iter().any(|r| r.status == NodeStatus::Cancelled),
+            "the DAG frontier must short-circuit to Cancelled: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+        assert!(
+            results.iter().all(|r| r.status != NodeStatus::Skipped),
+            "a cancel-induced skip must not read as a benign Skipped: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cancel_none_runs_all_jobs_normally() {
+        // The delegating no-cancel path must be behavior-identical.
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let jobs = vec![make_job("a", "true"), make_job("b", "true")];
+        let results = run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.status == NodeStatus::Succeeded));
     }
 
     // ── Routing logic ──────────────────────────────────────────────────

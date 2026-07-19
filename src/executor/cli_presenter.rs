@@ -198,6 +198,16 @@ impl CliPresenter {
         })
     }
 
+    /// Create a presenter that renders nothing (`daft run`'s single-job
+    /// passthrough: the job owns the terminal, daft adds no chrome).
+    pub fn hidden(config: &HookOutputConfig) -> Arc<Self> {
+        Arc::new(Self {
+            renderer: Mutex::new(PresenterState::Ready(EmbedRenderer::Block(
+                HookRenderer::new_hidden(config),
+            ))),
+        })
+    }
+
     /// Create a presenter that renders the hook block inside a plan-execute
     /// timeline (#651). Lazy: each `on_phase_start` expands the `key` step's
     /// rail row into the block (via `begin_hook_embed`) and builds the

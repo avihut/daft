@@ -1385,6 +1385,10 @@ pub struct HookOutputConfig {
     /// (`✓ name (dur)` / `✗ name (dur)`) and drop the inline output dump.
     /// Hooks leave this false; `daft exec` sets it true.
     pub compact_finalization: bool,
+    /// Brand label shown in the progress header box. Lifecycle hooks use the
+    /// default `"daft hooks"`; `daft run` sets `"daft run"` so a task doesn't
+    /// mislabel itself as a hook.
+    pub banner: &'static str,
 }
 
 impl Default for HookOutputConfig {
@@ -1395,6 +1399,7 @@ impl Default for HookOutputConfig {
             tail_lines: 6,
             verbose: false,
             compact_finalization: false,
+            banner: "daft hooks",
         }
     }
 }

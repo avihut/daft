@@ -155,6 +155,14 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Ran command",
             skipped: "not run",
         },
+        // Fallback only: task rows always carry the task name as a fixed
+        // label override (noun label in every tense, like the hook phases).
+        StageId::Task => StepLabels {
+            pending: "task",
+            active: "task",
+            done: "task",
+            skipped: "task not run",
+        },
     }
 }
 
@@ -211,6 +219,7 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::DeleteLocalBranch
         | StageId::Install
         | StageId::ExecCommand
+        | StageId::Task
         | StageId::PreCreateHooks
         | StageId::PostCreateHooks
         | StageId::PreRemoveHooks

@@ -116,6 +116,22 @@ pub struct HookExecutionContext<'a> {
     /// Top-level `log:` section from the YAML config — propagated into each
     /// job's effective `LogConfig`.
     pub repo_log: Option<&'a LogConfig>,
+
+    /// Default timeout stamped on every job spec. Lifecycle hooks pass
+    /// `Some(JobSpec::DEFAULT_TIMEOUT)`; `daft run` tasks pass `None` so an
+    /// attended long-running process (dev server) is never force-killed by the
+    /// hook execution timeout.
+    pub default_job_timeout: Option<std::time::Duration>,
+
+    /// Two-stage cancellation flag observed by the foreground runner. `None`
+    /// (all hook callers) means no flag is polled — behavior-identical to
+    /// before. `daft run` passes `Some` so Ctrl+C tears down task processes.
+    pub cancel: Option<&'a crate::git::cancel::CancelFlag>,
+
+    /// Overrides the LogStore invocation `trigger_command` label (e.g.
+    /// `"run dev"`). `None` keeps the hook default (the `hooks run <name>`
+    /// special case, else the bare hook name).
+    pub trigger_label: Option<String>,
 }
 
 /// Execute a YAML-defined hook.
@@ -139,6 +155,9 @@ pub fn execute_yaml_hook(
         filter: &filter,
         presenter: &presenter,
         repo_log: None,
+        default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+        cancel: None,
+        trigger_label: None,
     };
     execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)
 }
@@ -209,10 +228,10 @@ pub fn execute_yaml_hook_with_rc(
         &state_base,
     )?);
 
-    let trigger_command = if ctx.command == "hooks-run" {
-        format!("hooks run {}", hook_name)
-    } else {
-        hook_name.to_string()
+    let trigger_command = match cfg.trigger_label {
+        Some(ref label) => label.clone(),
+        None if ctx.command == "hooks-run" => format!("hooks run {}", hook_name),
+        None => hook_name.to_string(),
     };
 
     let inv_meta = crate::coordinator::log_store::InvocationMeta {
@@ -387,6 +406,7 @@ pub fn execute_yaml_hook_with_rc(
         rc,
         hook_background: hook_def.background,
         repo_log,
+        default_timeout: cfg.default_job_timeout,
     };
     let (specs, mut skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
@@ -572,12 +592,36 @@ pub fn execute_yaml_hook_with_rc(
 
     let hook_start = std::time::Instant::now();
 
-    // Execute foreground jobs via the generic runner
-    let fg_results =
-        crate::executor::runner::run_jobs(&fg_specs, exec_mode, presenter, Some(&fg_sink))?;
+    // Execute foreground jobs via the generic runner (cancel-aware for tasks;
+    // `cfg.cancel` is None for every hook caller, so behavior is unchanged).
+    let fg_results = crate::executor::runner::run_jobs_with_cancel(
+        &fg_specs,
+        exec_mode,
+        presenter,
+        Some(&fg_sink),
+        cfg.cancel,
+    )?;
 
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
+        presenter.on_phase_complete(hook_start.elapsed());
+        return job_results_to_hook_result(&fg_results);
+    }
+
+    // If a cancellation was raised during the foreground phase, never dispatch
+    // the background jobs — a Ctrl+C'd `daft run` must not leave a detached
+    // coordinator spawning fresh work. Render them as skipped and return.
+    if cfg.cancel.is_some_and(|c| c.is_cancelled()) {
+        for spec in &bg_specs {
+            presenter.on_job_skipped(
+                &spec.name,
+                "cancelled",
+                std::time::Duration::ZERO,
+                false,
+                None,
+            );
+            fg_sink.on_job_runner_skipped(spec, "cancelled");
+        }
         presenter.on_phase_complete(hook_start.elapsed());
         return job_results_to_hook_result(&fg_results);
     }
@@ -607,8 +651,14 @@ pub fn execute_yaml_hook_with_rc(
 
     // If DAFT_NO_BACKGROUND_JOBS is set, run background jobs inline as foreground.
     if std::env::var("DAFT_NO_BACKGROUND_JOBS").is_ok() {
-        let bg_results =
-            run_bg_inline_with_prefailed(&bg_specs, &prefailed_bg, exec_mode, presenter, &fg_sink)?;
+        let bg_results = run_bg_inline_with_prefailed(
+            &bg_specs,
+            &prefailed_bg,
+            exec_mode,
+            presenter,
+            &fg_sink,
+            cfg.cancel,
+        )?;
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
@@ -658,8 +708,14 @@ pub fn execute_yaml_hook_with_rc(
     // Fall back to running background jobs inline.
     #[cfg(not(unix))]
     {
-        let bg_results =
-            run_bg_inline_with_prefailed(&bg_specs, &prefailed_bg, exec_mode, presenter, &fg_sink)?;
+        let bg_results = run_bg_inline_with_prefailed(
+            &bg_specs,
+            &prefailed_bg,
+            exec_mode,
+            presenter,
+            &fg_sink,
+            cfg.cancel,
+        )?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
         return job_results_to_hook_result(&all_results);
@@ -695,9 +751,16 @@ fn run_bg_inline_with_prefailed(
     exec_mode: crate::executor::ExecutionMode,
     presenter: &Arc<dyn JobPresenter>,
     sink: &Arc<dyn crate::executor::log_sink::LogSink>,
+    cancel: Option<&crate::git::cancel::CancelFlag>,
 ) -> Result<Vec<crate::executor::JobResult>> {
     if prefailed_bg.is_empty() {
-        return crate::executor::runner::run_jobs(bg_specs, exec_mode, presenter, Some(sink));
+        return crate::executor::runner::run_jobs_with_cancel(
+            bg_specs,
+            exec_mode,
+            presenter,
+            Some(sink),
+            cancel,
+        );
     }
 
     let skip_set = expand_prefailed_closure(bg_specs, prefailed_bg);
@@ -706,7 +769,13 @@ fn run_bg_inline_with_prefailed(
         .cloned()
         .partition(|s| skip_set.contains(s.name.as_str()));
 
-    let mut results = crate::executor::runner::run_jobs(&to_run, exec_mode, presenter, Some(sink))?;
+    let mut results = crate::executor::runner::run_jobs_with_cancel(
+        &to_run,
+        exec_mode,
+        presenter,
+        Some(sink),
+        cancel,
+    )?;
     for spec in skipped_specs {
         presenter.on_job_skipped(
             &spec.name,
@@ -774,19 +843,33 @@ fn job_results_to_hook_result(results: &[crate::executor::JobResult]) -> Result<
         return Ok(HookResult::success());
     }
 
-    // Find the first failure
+    // Find the first failure — a real failure's exit code is more
+    // informative than a cancellation's, so it wins when both exist.
     let first_failure = results
         .iter()
         .find(|r| r.status == crate::executor::NodeStatus::Failed);
-
-    match first_failure {
-        Some(failed) => Ok(HookResult::failed(
+    if let Some(failed) = first_failure {
+        return Ok(HookResult::failed(
             failed.exit_code.unwrap_or(-1),
             failed.stdout.clone(),
             failed.stderr.clone(),
-        )),
-        None => Ok(HookResult::success()),
+        ));
     }
+
+    // A cancelled run (Ctrl+C on a `daft run` task) must not read as
+    // success: resolve 130 (128 + SIGINT) so the exit code propagates.
+    let first_cancelled = results
+        .iter()
+        .find(|r| r.status == crate::executor::NodeStatus::Cancelled);
+    if let Some(cancelled) = first_cancelled {
+        return Ok(HookResult::failed(
+            cancelled.exit_code.unwrap_or(130),
+            cancelled.stdout.clone(),
+            cancelled.stderr.clone(),
+        ));
+    }
+
+    Ok(HookResult::success())
 }
 
 /// Filter jobs to those whose effective tracking set intersects with the
@@ -893,6 +976,52 @@ mod tests {
     use crate::output::TestOutput;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn job_result(
+        status: crate::executor::NodeStatus,
+        exit_code: Option<i32>,
+    ) -> crate::executor::JobResult {
+        crate::executor::JobResult {
+            name: "j".into(),
+            status,
+            duration: std::time::Duration::from_secs(1),
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn cancelled_results_resolve_130_not_success() {
+        // Regression: a Ctrl+C'd `daft run` task whose jobs all resolved
+        // `Cancelled` (no `Failed` in sight) must not aggregate to success —
+        // the command's exit code is how scripts and prompts see the cancel.
+        let results = [job_result(
+            crate::executor::NodeStatus::Cancelled,
+            Some(130),
+        )];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(130));
+    }
+
+    #[test]
+    fn cancelled_without_exit_code_defaults_to_130() {
+        let results = [job_result(crate::executor::NodeStatus::Cancelled, None)];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert_eq!(hr.exit_code, Some(130));
+    }
+
+    #[test]
+    fn failure_outranks_cancellation_in_aggregation() {
+        let results = [
+            job_result(crate::executor::NodeStatus::Cancelled, Some(130)),
+            job_result(crate::executor::NodeStatus::Failed, Some(7)),
+        ];
+        let hr = job_results_to_hook_result(&results).unwrap();
+        assert!(!hr.success);
+        assert_eq!(hr.exit_code, Some(7));
+    }
 
     /// Build a `HookContext` whose `git_dir` is a real temp directory and
     /// whose `state_dir` is the same temp directory.
@@ -1915,6 +2044,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -1943,6 +2075,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -1977,6 +2112,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         let result =
             execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
@@ -2012,6 +2150,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         // Must NOT error (contrast with the include path's bail!).
         let result =
@@ -2044,6 +2185,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         // hook_name == the selected hook type ⇒ the whole hook is skipped, but
         // it is NOT a silent drop: every job renders as skipped with the same
@@ -2095,6 +2239,9 @@ mod tests {
             filter: &filter,
             presenter: &presenter,
             repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         let result =
             execute_yaml_hook_with_rc("worktree-pre-create", &hook_def, &ctx, &mut output, &cfg)
@@ -2109,6 +2256,50 @@ mod tests {
             "a hook-type selector for a different fire must not warn, got: {:?}",
             output.warnings()
         );
+    }
+
+    #[test]
+    fn trigger_label_overrides_invocation_trigger_command() {
+        // A task invocation carries `trigger_label: Some("run <name>")`, which
+        // must land verbatim in the recorded InvocationMeta.trigger_command
+        // (the hook default `hooks run <name>` / bare name is bypassed).
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter::default();
+
+        let hook_def = HookDef {
+            jobs: Some(vec![JobDef {
+                name: Some("web".to_string()),
+                run: Some(RunCommand::Simple("true".to_string())),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: None,
+            cancel: None,
+            trigger_label: Some("run dev".to_string()),
+        };
+        execute_yaml_hook_with_rc("dev", &hook_def, &ctx, &mut output, &cfg).unwrap();
+
+        let repo_hash =
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&ctx.git_dir).unwrap();
+        let store =
+            crate::coordinator::log_store::LogStore::for_repo_in(&repo_hash, dir.path()).unwrap();
+        let invs = store.list_invocations().unwrap();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].trigger_command, "run dev");
+        // The task name is recorded in the hook_type slot of the record.
+        assert_eq!(invs[0].hook_type, "dev");
     }
 }
 

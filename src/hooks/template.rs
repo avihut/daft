@@ -11,6 +11,7 @@ use super::environment::HookContext;
 /// - `{worktree_path}` — target worktree path
 /// - `{worktree_branch}` — target branch name
 /// - `{worktree_root}` — project root directory
+/// - `{worktree_slug}` — sanitized worktree name, safe for docker/DNS use
 /// - `{branch}` — alias for `{worktree_branch}`
 /// - `{job_name}` — name of the current job (if provided)
 /// - `{source_worktree}` — source worktree path
@@ -25,6 +26,11 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
     result = result.replace("{worktree_path}", &ctx.worktree_path.to_string_lossy());
     result = result.replace("{worktree_branch}", &ctx.branch_name);
     result = result.replace("{worktree_root}", &ctx.project_root.to_string_lossy());
+    // Compute the slug lazily only when referenced — cheap either way, but
+    // avoids a filesystem-path allocation for the common no-slug command.
+    if result.contains("{worktree_slug}") {
+        result = result.replace("{worktree_slug}", &worktree_slug(ctx));
+    }
     result = result.replace("{branch}", &ctx.branch_name);
     result = result.replace("{source_worktree}", &ctx.source_worktree.to_string_lossy());
     result = result.replace("{git_dir}", &ctx.git_dir.to_string_lossy());
@@ -57,6 +63,59 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
     result = result.replace("{old_branch}", old_branch);
 
     result
+}
+
+/// Sanitized slug for the worktree, safe to embed in docker compose project
+/// names, DB schema names, DNS labels, and temp-dir names.
+///
+/// The raw name is the worktree path relative to the project root when the
+/// worktree lives under it (so a nested worktree like `feature/new` slugs to
+/// `feature-new`), otherwise the final path component. It is then lowercased,
+/// every run of non-`[a-z0-9]` characters collapses to a single `-`, leading
+/// and trailing `-` are trimmed, and the result is capped at 63 characters
+/// (the DNS-label limit). An empty result falls back to `"worktree"`.
+pub fn worktree_slug(ctx: &HookContext) -> String {
+    let raw = ctx
+        .worktree_path
+        .strip_prefix(&ctx.project_root)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            ctx.worktree_path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    slugify(&raw)
+}
+
+/// Lowercase, collapse non-alphanumeric runs to single `-`, trim `-`, cap at
+/// 63 chars. Empty input (or input that reduces to nothing) yields
+/// `"worktree"`.
+fn slugify(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_dash = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !out.is_empty() && !prev_dash {
+            // Collapse any run of separators/other chars into one dash.
+            // Leading separators are suppressed (out is still empty).
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    // Cap at the DNS-label length, then trim any trailing dash the cap or the
+    // collapse may have left.
+    out.truncate(63);
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "worktree".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +183,55 @@ mod tests {
     }
 
     #[test]
+    fn test_worktree_slug_nested_relative_path() {
+        // make_ctx: worktree /project/feature/new under root /project.
+        let ctx = make_ctx();
+        assert_eq!(worktree_slug(&ctx), "feature-new");
+    }
+
+    #[test]
+    fn test_worktree_slug_template_substitution() {
+        let ctx = make_ctx();
+        assert_eq!(
+            substitute("api-{worktree_slug}", &ctx, None),
+            "api-feature-new"
+        );
+    }
+
+    #[test]
+    fn test_worktree_slug_outside_root_uses_basename() {
+        let ctx = HookContext::new(
+            HookType::PostCreate,
+            "checkout",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/main",
+            "/elsewhere/My-WT",
+            "feature/x",
+        );
+        assert_eq!(worktree_slug(&ctx), "my-wt");
+    }
+
+    #[test]
+    fn test_slugify_cases() {
+        assert_eq!(slugify("Feature/New"), "feature-new");
+        assert_eq!(slugify("API_Server 2"), "api-server-2");
+        assert_eq!(slugify("feat/ABC-123"), "feat-abc-123");
+        // Pure-separator and empty inputs fall back.
+        assert_eq!(slugify("---"), "worktree");
+        assert_eq!(slugify(""), "worktree");
+        assert_eq!(slugify("!!!@@@"), "worktree");
+        // Unicode reduces to the fallback (no ascii-alphanumerics).
+        assert_eq!(slugify("日本語"), "worktree");
+        // 63-char DNS-label cap.
+        assert_eq!(slugify(&"a".repeat(100)).len(), 63);
+        // A trailing dash left by the cap is trimmed.
+        let capped = format!("{}-tail", "a".repeat(62));
+        assert_eq!(slugify(&capped), "a".repeat(62));
+    }
+
+    #[test]
     fn test_old_template_vars_during_move() {
         use std::path::PathBuf;
         let ctx = HookContext {
@@ -146,6 +254,7 @@ mod tests {
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let result = substitute(
             "from {old_worktree_path} to {worktree_path} branch {old_branch}",
@@ -181,6 +290,7 @@ mod tests {
             changed_attributes: None,
             extra_env: std::collections::BTreeMap::new(),
             state_dir: None,
+            task_name: None,
         };
         let result = substitute("old={old_worktree_path} branch={old_branch}", &ctx, None);
         assert_eq!(result, "old= branch=");

@@ -312,10 +312,12 @@ Default fail modes:
 
 Hooks can also be configured through a `daft.yml` file for richer features
 including multiple jobs, execution modes, job dependencies, and conditional
-execution.
+execution. The same file's top-level `tasks:` section defines named,
+user-invoked task groups run with [`daft run`](/reference/cli/daft-run) — the
+_serve on demand_ counterpart to lifecycle hooks.
 
 See the [Hooks guide](/hooks/yaml-reference) for the complete `daft.yml`
-reference.
+reference, including the [Tasks](/hooks/yaml-reference#tasks) section.
 
 ## Examples
 

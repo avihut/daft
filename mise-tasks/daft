@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Build via the dev chain, then run the daft binary (args pass through)"
+#MISE depends=["dev"]
+set -euo pipefail
+
+# Replace the task shell so signals (e.g. Ctrl+C from `daft run`) reach daft
+# directly instead of an intermediate bash.
+exec target/release/daft "$@"

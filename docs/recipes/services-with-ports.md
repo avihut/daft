@@ -225,16 +225,25 @@ already doing).
 ### Native processes (no containers)
 
 Sometimes a heavy stack is overkill. A single Go service in dev mode is fine
-running directly. Allocate a port, start the process as a backgrounded job:
+running directly. But a foreground dev server is a _serve on demand_ concern,
+not provisioning — put it in a `tasks:` block and start it with
+[`daft run`](/reference/cli/daft-run) rather than backgrounding it from a hook:
 
 ```yaml
-- name: dev-server
-  run: ./bin/myserver --port "$PORT_APP"
-  background: true
-  needs: [install-deps, allocate-ports]
+tasks:
+  run:
+    jobs:
+      - name: dev-server
+        run: ./bin/myserver --port "$PORT_APP"
 ```
 
-The pre-remove hook should kill the process — covered in
+`daft run` streams the server's output live and stops it on Ctrl+C — no PID
+file, no pre-remove kill hook, and no server booting in every worktree you only
+ever read. (The `$PORT_APP` allocation still comes from a provisioning hook; see
+[Per-worktree ports (#388)](https://github.com/avihut/daft/issues/388) for
+generating collision-free ports.) If you truly need the process to outlive the
+command, keep the backgrounded-hook approach and kill it from the pre-remove
+hook — covered in
 [Cleanup on remove → native processes by PID file](/recipes/cleanup-on-remove#native-processes-by-pid-file).
 
 ### Multi-file compose

@@ -31,6 +31,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         log,
         relations,
         hooks,
+        tasks,
     } = overlay;
 
     let mut merged = base;
@@ -84,6 +85,18 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
                 .insert(name, merge_hook_defs(base_hook, overlay_hook));
         } else {
             merged.hooks.insert(name, overlay_hook);
+        }
+    }
+
+    // Tasks: same merge-by-name semantics as hooks (they share HookDef and the
+    // `daft-local.yml` overlay is exactly how machine-local tasks are layered).
+    for (name, overlay_task) in tasks {
+        if let Some(base_task) = merged.tasks.remove(&name) {
+            merged
+                .tasks
+                .insert(name, merge_hook_defs(base_task, overlay_task));
+        } else {
+            merged.tasks.insert(name, overlay_task);
         }
     }
 
@@ -256,6 +269,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: b_log,
         relations: b_relations,
         hooks: b_hooks,
+        tasks: b_tasks,
     } = base;
     let YamlConfig {
         min_version: o_min_version,
@@ -271,6 +285,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: o_log,
         relations: o_relations,
         hooks: o_hooks,
+        tasks: o_tasks,
     } = ours;
     let YamlConfig {
         min_version: t_min_version,
@@ -286,6 +301,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         log: t_log,
         relations: t_relations,
         hooks: t_hooks,
+        tasks: t_tasks,
     } = theirs;
 
     let merged = YamlConfig {
@@ -325,7 +341,8 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
             t_relations,
             &mut tally,
         ),
-        hooks: merge3_hooks(b_hooks, o_hooks, t_hooks, &mut tally),
+        hooks: merge3_hook_maps("hooks", b_hooks, o_hooks, t_hooks, &mut tally),
+        tasks: merge3_hook_maps("tasks", b_tasks, o_tasks, t_tasks, &mut tally),
     };
 
     Merge3Outcome {
@@ -414,7 +431,11 @@ fn merge3_log(
     }
 }
 
-fn merge3_hooks(
+/// Three-way merge of a `name -> HookDef` map. Used for both the `hooks:` and
+/// `tasks:` sections (they share `HookDef`); `prefix` namespaces the conflict/
+/// adoption paths reported to the user (`hooks.<name>` vs `tasks.<name>`).
+fn merge3_hook_maps(
+    prefix: &str,
     base: &std::collections::HashMap<String, HookDef>,
     ours: &std::collections::HashMap<String, HookDef>,
     theirs: &std::collections::HashMap<String, HookDef>,
@@ -431,7 +452,7 @@ fn merge3_hooks(
         .collect();
 
     for name in keys {
-        let key = format!("hooks.{name}");
+        let key = format!("{prefix}.{name}");
         let b = base.get(name);
         let o = ours.get(name);
         let t = theirs.get(name);
@@ -805,6 +826,18 @@ mod tests {
                 ..Default::default()
             },
         );
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            "run".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("dev".to_string()),
+                    run: Some(RunCommand::Simple("echo serve".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
         let full = YamlConfig {
             min_version: Some("1.0.0".to_string()),
             colors: Some(false),
@@ -826,12 +859,77 @@ mod tests {
                 kind: Some("consumer".to_string()),
             }]),
             hooks,
+            tasks,
         };
 
         let merged = merge_configs(YamlConfig::default(), full.clone());
         assert_eq!(
             merged, full,
             "merging a full overlay onto an empty base must preserve every field"
+        );
+    }
+
+    #[test]
+    fn merge_configs_merges_tasks_by_name() {
+        // Same-named task merges at the job level (overlay's same-named job
+        // wins — this is how `daft-local.yml` layers machine-local tasks); a
+        // task only in the overlay is added wholesale.
+        let mut base_tasks = HashMap::new();
+        base_tasks.insert(
+            "run".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("web".to_string()),
+                    run: Some(RunCommand::Simple("pnpm dev".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        let base = YamlConfig {
+            tasks: base_tasks,
+            ..Default::default()
+        };
+
+        let mut overlay_tasks = HashMap::new();
+        overlay_tasks.insert(
+            "run".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("web".to_string()),
+                    run: Some(RunCommand::Simple("pnpm dev --host 0.0.0.0".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        overlay_tasks.insert(
+            "seed".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("seed".to_string()),
+                    run: Some(RunCommand::Simple("./seed.sh".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
+        let overlay = YamlConfig {
+            tasks: overlay_tasks,
+            ..Default::default()
+        };
+
+        let merged = merge_configs(base, overlay);
+
+        let run_jobs = merged.tasks.get("run").unwrap().jobs.as_ref().unwrap();
+        assert_eq!(run_jobs.len(), 1);
+        assert!(matches!(
+            run_jobs[0].run,
+            Some(RunCommand::Simple(ref s)) if s == "pnpm dev --host 0.0.0.0"
+        ));
+        assert!(
+            merged.tasks.contains_key("seed"),
+            "overlay-only task must be added"
         );
     }
 
@@ -1173,6 +1271,18 @@ mod tests {
                 ..Default::default()
             },
         );
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            "run".to_string(),
+            HookDef {
+                jobs: Some(vec![JobDef {
+                    name: Some("dev".to_string()),
+                    run: Some(RunCommand::Simple("echo serve".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        );
         let full = YamlConfig {
             min_version: Some("1.0.0".to_string()),
             colors: Some(false),
@@ -1194,6 +1304,7 @@ mod tests {
                 kind: Some("consumer".to_string()),
             }]),
             hooks,
+            tasks,
         };
 
         let out = merge3(&YamlConfig::default(), &YamlConfig::default(), &full);

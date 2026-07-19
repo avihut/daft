@@ -705,7 +705,7 @@ where
 pub(crate) fn build_command(spec: &CommandSpec, alias_cache: Option<&AliasCache>) -> Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     let cmd_string = match spec {
-        CommandSpec::Argv(parts) => quote_argv(parts),
+        CommandSpec::Argv(parts) => crate::utils::quote_argv(parts),
         CommandSpec::Shell(s) => s.clone(),
     };
 
@@ -757,21 +757,6 @@ fn debug_log_command(shell: &str, mode: &str, cmd: &Command) {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     eprintln!("[daft-exec-debug] mode={mode} shell={shell} args={args:?}");
-}
-
-/// Shell-quote each argv element (POSIX) and join with spaces so the
-/// result can be handed to `$SHELL -c` while preserving the original
-/// argument boundaries.
-fn quote_argv(parts: &[String]) -> String {
-    parts
-        .iter()
-        .map(|p| {
-            shlex::try_quote(p)
-                .map(|c| c.into_owned())
-                .unwrap_or_else(|_| p.clone())
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Run the pipeline across all targets in the requested mode. Returns the

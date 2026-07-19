@@ -23,6 +23,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_sync_cancel.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_sync_governor.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_unknown_command.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_exec.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/test_run.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_list.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_worktree_exec.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/test_visitor_propagation.sh"
@@ -319,6 +320,7 @@ run_all_integration_tests() {
     run_sync_governor_tests
     run_unknown_command_tests
     run_exec_tests
+    run_run_tests
     run_list_tests
     run_worktree_exec_tests
 

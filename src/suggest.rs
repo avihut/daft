@@ -27,6 +27,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "remove",
     "rename",
     "repo",
+    "run",
     "shared",
     "shell-init",
     "skill",

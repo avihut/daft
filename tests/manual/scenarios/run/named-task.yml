@@ -1,0 +1,57 @@
+name: daft run <name> executes a named task
+description:
+  "`daft run seed-db` runs the named task; `--list` enumerates the tasks defined
+  in daft.yml."
+
+repos:
+  - name: run-named
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run named"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: echo serve > .serve
+        seed-db:
+          jobs:
+            - name: seed
+              run: echo seeded > .seeded
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_NAMED
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/run-named/main"
+    expect:
+      exit_code: 0
+
+  - name: daft run --list enumerates the tasks
+    run: daft run --list 2>&1
+    cwd: "$WORK_DIR/run-named/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Available tasks"
+        - "run"
+        - "seed-db"
+
+  - name: daft run seed-db runs only that task
+    run: daft run seed-db 2>&1
+    cwd: "$WORK_DIR/run-named/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-named/main/.seeded"
+      files_not_exist:
+        - "$WORK_DIR/run-named/main/.serve"

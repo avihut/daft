@@ -90,6 +90,17 @@ pub struct YamlConfig {
 
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
+
+    /// User-invoked task definitions, keyed by task name (`daft run <name>`).
+    ///
+    /// A task shares the hook-body schema (jobs, parallel/piped/follow,
+    /// needs, env, root, skip/only, tags, interactive, background) but is
+    /// triggered explicitly rather than by a lifecycle event. The reserved
+    /// name `run` is what bare `daft run` executes. Kept as a sibling of
+    /// `hooks` — not a custom hook name — so unknown-hook-name validation
+    /// stays strict. See #708.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tasks: HashMap<String, HookDef>,
 }
 
 /// Output setting: either a list of hook names or false to suppress.
@@ -504,6 +515,79 @@ hooks:
             Some(RunCommand::Simple(s)) => assert_eq!(s, "echo \"hello\""),
             other => panic!("Expected Simple, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_tasks_section_parses_full_job_schema() {
+        // A task shares the hook body schema: parallel, and per-job env,
+        // root, and needs all deserialize the same way.
+        let yaml = r#"
+tasks:
+  run:
+    parallel: true
+    jobs:
+      - name: backend
+        run: docker compose up
+        env:
+          COMPOSE_PROJECT_NAME: "api-{worktree_slug}"
+      - name: web
+        run: pnpm dev
+        root: frontend
+        needs: [backend]
+  seed-db:
+    jobs:
+      - name: seed
+        run: ./scripts/seed.sh
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.tasks.len(), 2);
+        assert!(config.hooks.is_empty());
+
+        let run = &config.tasks["run"];
+        assert_eq!(run.parallel, Some(true));
+        let jobs = run.jobs.as_ref().unwrap();
+        assert_eq!(jobs.len(), 2);
+
+        let backend = &jobs[0];
+        assert_eq!(backend.name.as_deref(), Some("backend"));
+        assert_eq!(
+            backend.env.as_ref().unwrap().get("COMPOSE_PROJECT_NAME"),
+            Some(&"api-{worktree_slug}".to_string())
+        );
+
+        let web = &jobs[1];
+        assert_eq!(web.root.as_deref(), Some("frontend"));
+        assert_eq!(web.needs.as_deref(), Some(&["backend".to_string()][..]));
+
+        assert!(config.tasks.contains_key("seed-db"));
+    }
+
+    #[test]
+    fn test_empty_tasks_not_serialized() {
+        // A config without tasks must not emit `tasks: {}` litter.
+        let config = YamlConfig {
+            hooks: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "worktree-post-create".to_string(),
+                    HookDef {
+                        jobs: Some(vec![JobDef {
+                            name: Some("setup".to_string()),
+                            run: Some(RunCommand::Simple("pnpm install".to_string())),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    },
+                );
+                m
+            },
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(
+            !yaml.contains("tasks:"),
+            "empty tasks must be omitted from serialized output:\n{yaml}"
+        );
     }
 
     #[test]

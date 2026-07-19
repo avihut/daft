@@ -90,11 +90,14 @@ pub struct JobSpec {
     pub interactive: bool,
     /// Text to display on failure (e.g., a hint for the user).
     pub fail_text: Option<String>,
-    /// Maximum time the job is allowed to run, in seconds. Custom adapter
-    /// because `Duration` has no built-in serde and we don't want to pull
-    /// in `humantime_serde` solely for the coordinator-payload tempfile.
-    #[serde(with = "duration_secs")]
-    pub timeout: Duration,
+    /// Maximum time the job is allowed to run, in seconds. `None` means the
+    /// job runs until it exits or is cancelled — used by `daft run` tasks,
+    /// which are attended long-running processes (dev servers). Hooks stamp
+    /// `Some(DEFAULT_TIMEOUT)`. Custom adapter because `Duration` has no
+    /// built-in serde and we don't want to pull in `humantime_serde` solely
+    /// for the coordinator-payload tempfile.
+    #[serde(default, with = "opt_duration_secs")]
+    pub timeout: Option<Duration>,
     /// Whether this job should run in the background.
     pub background: bool,
     /// Output behavior for background execution.
@@ -108,16 +111,22 @@ pub struct JobSpec {
     pub tags: Vec<String>,
 }
 
-/// `Duration <-> u64 seconds` serde adapter for `JobSpec.timeout`.
-mod duration_secs {
+/// `Option<Duration> <-> u64 seconds | null` serde adapter for
+/// `JobSpec.timeout`. `Some(d)` serializes as the whole seconds; `None`
+/// serializes as `null`. A missing field deserializes to `None` via the
+/// `#[serde(default)]` on the field. Custom adapter because `Duration` has
+/// no built-in serde and we don't want to pull in `humantime_serde` solely
+/// for the coordinator-payload tempfile. Old coordinator payloads carrying a
+/// bare `"timeout": 300` still parse as `Some(300s)`.
+mod opt_duration_secs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
 
-    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        d.as_secs().serialize(s)
+    pub fn serialize<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        d.map(|d| d.as_secs()).serialize(s)
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
-        Ok(Duration::from_secs(u64::deserialize(d)?))
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        Ok(Option::<u64>::deserialize(d)?.map(Duration::from_secs))
     }
 }
 
@@ -137,7 +146,7 @@ impl Default for JobSpec {
             needs: Vec::new(),
             interactive: false,
             fail_text: None,
-            timeout: JobSpec::DEFAULT_TIMEOUT,
+            timeout: Some(JobSpec::DEFAULT_TIMEOUT),
             background: false,
             background_output: None,
             log_config: None,
@@ -177,6 +186,10 @@ pub enum NodeStatus {
     Succeeded,
     /// Completed with a non-zero exit code.
     Failed,
+    /// Interrupted by a user cancellation (two-stage Ctrl+C). Distinct from
+    /// `Failed` so the presenter can render it as cancelled rather than a
+    /// genuine failure; cascades to dependents exactly like `Failed`.
+    Cancelled,
     /// Skipped (e.g., due to a condition).
     Skipped,
     /// Skipped because a dependency failed.
@@ -188,7 +201,7 @@ impl NodeStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Skipped | Self::DepFailed
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Skipped | Self::DepFailed
         )
     }
 }
@@ -226,7 +239,7 @@ mod tests {
         assert!(!spec.interactive);
         assert!(spec.fail_text.is_none());
         assert!(spec.description.is_none());
-        assert_eq!(spec.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert_eq!(spec.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
         assert!(!spec.background);
         assert!(spec.background_output.is_none());
         assert!(spec.log_config.is_none());
@@ -251,7 +264,7 @@ mod tests {
             needs: vec!["fetch".into()],
             interactive: true,
             fail_text: Some("install failed".into()),
-            timeout: Duration::from_secs(60),
+            timeout: Some(Duration::from_secs(60)),
             background: false,
             background_output: None,
             log_config: None,
@@ -266,10 +279,45 @@ mod tests {
         assert_eq!(spec.needs, vec!["fetch"]);
         assert!(spec.interactive);
         assert_eq!(spec.fail_text.as_deref(), Some("install failed"));
-        assert_eq!(spec.timeout, Duration::from_secs(60));
+        assert_eq!(spec.timeout, Some(Duration::from_secs(60)));
         assert!(!spec.background);
         assert!(spec.background_output.is_none());
         assert!(spec.log_config.is_none());
+    }
+
+    #[test]
+    fn job_spec_timeout_serde_round_trips_some_and_none() {
+        let some = JobSpec {
+            name: "hook".into(),
+            timeout: Some(Duration::from_secs(300)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&some).unwrap();
+        assert!(json.contains("\"timeout\":300"), "got: {json}");
+        let back: JobSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.timeout, Some(Duration::from_secs(300)));
+
+        let none = JobSpec {
+            name: "task".into(),
+            timeout: None,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&none).unwrap();
+        assert!(json.contains("\"timeout\":null"), "got: {json}");
+        let back: JobSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.timeout, None);
+    }
+
+    #[test]
+    fn job_spec_deserializes_legacy_bare_timeout() {
+        // A coordinator payload written before `timeout` became optional
+        // carries a bare number; it must still parse as `Some(secs)`.
+        let legacy = r#"{"name":"j","command":"true","working_dir":"/tmp","env":{},
+            "description":null,"needs":[],"interactive":false,"fail_text":null,
+            "timeout":120,"background":false,"background_output":null,
+            "log_config":null,"tags":[]}"#;
+        let spec: JobSpec = serde_json::from_str(legacy).unwrap();
+        assert_eq!(spec.timeout, Some(Duration::from_secs(120)));
     }
 
     // ── ExecutionMode ───────────────────────────────────────────────────

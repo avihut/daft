@@ -1,0 +1,95 @@
+name: Words after daft run forward to the task as arguments
+description:
+  "The first word runs as a task when one matches; otherwise every word is
+  forwarded to the reserved `run` task. Forwarded words are shell-escaped,
+  appended to the single job's command verbatim (flags included), and a leading
+  `--` forces forwarding past the name match. Multi-job resolutions reject
+  arguments with a narrowing hint."
+
+repos:
+  - name: run-args
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run args"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: echo-args
+              run: printf 'RUNARG:%s\n'
+        greet:
+          jobs:
+            - name: greeter
+              run: printf 'GREETARG:%s\n'
+        stack:
+          jobs:
+            - name: api
+              run: echo api
+            - name: web
+              run: echo web
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_ARGS
+    expect:
+      exit_code: 0
+
+  - name: An unmatched first word forwards to the reserved run task
+    run: daft run hello 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "RUNARG:hello"
+      output_not_contains:
+        - "GREETARG"
+
+  - name: A first word naming a task wins over argument fallback
+    run: daft run greet hello 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GREETARG:hello"
+      output_not_contains:
+        - "RUNARG:"
+
+  - name: A leading -- forces words to the reserved task
+    run: daft run -- greet 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "RUNARG:greet"
+      output_not_contains:
+        - "GREETARG:"
+
+  - name: Shell quoting preserves argument boundaries
+    run: daft run greet 'two words' 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GREETARG:two words"
+
+  - name: Flag-looking words after the task name pass through verbatim
+    run: daft run greet --version 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "GREETARG:--version"
+
+  - name: Arguments to a multi-job task error with a narrowing hint
+    run: daft run stack hello 2>&1
+    cwd: "$WORK_DIR/run-args/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "resolves to 2 jobs"
+        - "--job"

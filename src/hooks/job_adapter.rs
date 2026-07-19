@@ -230,7 +230,7 @@ pub fn compute_skip_cascade(jobs: &[JobDef], skip: &SkipSelectors) -> SkipCascad
 /// Tests pass `&JobAdapterContext::default()` since they exercise spec
 /// translation in isolation; production wraps the relevant hook-level
 /// values from `execute_yaml_hook_with_rc`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct JobAdapterContext<'a> {
     /// Path to an RC file whose `source` command is prepended to every job
     /// command — opt-in shell setup like `~/.bashrc`.
@@ -241,6 +241,23 @@ pub struct JobAdapterContext<'a> {
     /// Top-level `log:` config from `daft.yml`, merged into each job's
     /// `log_config` so cleanup policies inherit repo-wide defaults.
     pub repo_log: Option<&'a LogConfig>,
+    /// Default timeout stamped on each produced [`JobSpec`]. Lifecycle hooks
+    /// use `Some(JobSpec::DEFAULT_TIMEOUT)` (the `Default`); `daft run` tasks
+    /// pass `None` so long-running processes aren't force-killed.
+    pub default_timeout: Option<std::time::Duration>,
+}
+
+impl Default for JobAdapterContext<'_> {
+    fn default() -> Self {
+        // Preserve the historical hook default so the many
+        // `&JobAdapterContext::default()` test callers keep 300s timeouts.
+        Self {
+            rc: None,
+            hook_background: None,
+            repo_log: None,
+            default_timeout: Some(JobSpec::DEFAULT_TIMEOUT),
+        }
+    }
 }
 
 /// Convert YAML job definitions into format-agnostic [`JobSpec`] values.
@@ -270,6 +287,7 @@ pub fn yaml_jobs_to_specs(
     let rc = adapter.rc;
     let hook_background = adapter.hook_background;
     let repo_log = adapter.repo_log;
+    let default_timeout = adapter.default_timeout;
     let mut kept: Vec<JobSpec> = Vec::new();
     let mut skipped: Vec<SkippedJob> = Vec::new();
 
@@ -330,7 +348,16 @@ pub fn yaml_jobs_to_specs(
 
         let mut env = hook_env.clone();
         if let Some(ref job_env) = job.env {
-            env.extend(job_env.clone());
+            // Substitute template variables in user-authored env *values* (keys
+            // are left verbatim). The computed hook env — DAFT_* plus
+            // ctx.extra_env — was merged above and is never substituted. This
+            // is the single surface that gives both lifecycle hooks and `daft
+            // run` tasks env-value templating (e.g. `api-{worktree_slug}`) (#708).
+            env.extend(
+                job_env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), super::template::substitute(v, ctx, Some(&name)))),
+            );
         }
 
         let wd = if let Some(ref root) = job.root {
@@ -348,7 +375,7 @@ pub fn yaml_jobs_to_specs(
             needs: job.needs.clone().unwrap_or_default(),
             interactive: job.interactive == Some(true),
             fail_text: job.fail_text.clone(),
-            timeout: JobSpec::DEFAULT_TIMEOUT,
+            timeout: default_timeout,
             background: declared_background,
             background_output: job.background_output.clone(),
             log_config: merge_job_log(job.log.clone(), repo_log),
@@ -472,7 +499,7 @@ mod tests {
         assert_eq!(s.fail_text.as_deref(), Some("install failed"));
         assert_eq!(s.env.get("MY_VAR").unwrap(), "hello");
         assert_eq!(s.working_dir, PathBuf::from("/project"));
-        assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
     }
 
     #[test]
@@ -603,6 +630,63 @@ mod tests {
         assert_eq!(env.get("SHARED").unwrap(), "from-job", "job env should win");
         assert_eq!(env.get("HOOK_ONLY").unwrap(), "yes");
         assert_eq!(env.get("JOB_ONLY").unwrap(), "yes");
+    }
+
+    #[test]
+    fn job_env_values_are_template_substituted() {
+        let ctx = make_ctx(); // branch feature/new, worktree /project/feature/new
+        let hook_env = HashMap::new();
+
+        let mut job_env = HashMap::new();
+        job_env.insert("COMPOSE_PROJECT_NAME".into(), "api-{worktree_slug}".into());
+        job_env.insert("ON_BRANCH".into(), "{branch}".into());
+        job_env.insert("LITERAL".into(), "no-templates-here".into());
+
+        let jobs = vec![JobDef {
+            name: Some("backend".into()),
+            run: Some(RunCommand::Simple("docker compose up".into())),
+            env: Some(job_env),
+            ..Default::default()
+        }];
+
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            &JobAdapterContext::default(),
+        );
+
+        let env = &specs[0].env;
+        assert_eq!(env.get("COMPOSE_PROJECT_NAME").unwrap(), "api-feature-new");
+        assert_eq!(env.get("ON_BRANCH").unwrap(), "feature/new");
+        assert_eq!(env.get("LITERAL").unwrap(), "no-templates-here");
+    }
+
+    #[test]
+    fn computed_hook_env_values_are_not_substituted() {
+        // The computed hook env (DAFT_* + extra_env) is merged verbatim; a
+        // brace-bearing value must not be reinterpreted as a template.
+        let ctx = make_ctx();
+        let mut hook_env = HashMap::new();
+        hook_env.insert("SOME_COMPUTED".into(), "{branch}".into());
+
+        let jobs = vec![JobDef {
+            name: Some("j".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            ..Default::default()
+        }];
+        let (specs, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &hook_env,
+            ".daft",
+            Path::new("/project"),
+            &JobAdapterContext::default(),
+        );
+
+        assert_eq!(specs[0].env.get("SOME_COMPUTED").unwrap(), "{branch}");
     }
 
     #[test]
@@ -991,7 +1075,7 @@ mod tests {
         assert!(s.needs.is_empty());
         assert!(s.fail_text.is_none());
         assert!(s.description.is_none());
-        assert_eq!(s.timeout, JobSpec::DEFAULT_TIMEOUT);
+        assert_eq!(s.timeout, Some(JobSpec::DEFAULT_TIMEOUT));
     }
 
     // ── repo-level log merge ─────────────────────────────────────────────

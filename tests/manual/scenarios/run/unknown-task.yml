@@ -1,0 +1,51 @@
+name: daft run with an unknown task errors and lists the available tasks
+description:
+  "A first word naming no task falls through to the reserved `run` task — so
+  when no `run` task exists to receive it, the invocation fails with an error
+  naming both the miss and the fallback, plus the available tasks."
+
+repos:
+  - name: run-unknown
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run unknown"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        seed-db:
+          jobs:
+            - name: seed
+              run: "true"
+        build:
+          jobs:
+            - name: build
+              run: "true"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_UNKNOWN
+    expect:
+      exit_code: 0
+
+  - name: An unknown task name errors with the available list
+    run: daft run nope 2>&1
+    cwd: "$WORK_DIR/run-unknown/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "unknown task: 'nope'"
+        - "no 'run' task defined to receive it as an argument"
+        - "Available tasks: build, seed-db"
+
+  - name: A bare run without the reserved task explains the convention
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-unknown/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no 'run' task defined in daft.yml"
+        - "Available tasks: build, seed-db"

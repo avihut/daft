@@ -159,9 +159,13 @@ impl HookProgressRenderer {
     }
 
     pub fn print_header(&self, hook_name: &str, target: Option<&str>) {
-        for line in
-            super::formatting::format_header_lines(hook_name, target, self.use_color, self.welded)
-        {
+        for line in super::formatting::format_header_lines(
+            self.config.banner,
+            hook_name,
+            target,
+            self.use_color,
+            self.welded,
+        ) {
             self.mp.println(line).ok();
         }
     }

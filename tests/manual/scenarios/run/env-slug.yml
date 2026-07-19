@@ -1,0 +1,50 @@
+name: "{worktree_slug} expands in task env values"
+description:
+  "Template substitution now applies to job `env:` values, and the new
+  `{worktree_slug}` variable yields a lowercased, `[a-z0-9-]`-sanitized slug of
+  the worktree — safe for docker compose project names and DB schema names."
+
+repos:
+  - name: run-slug
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run slug"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: slug
+              # Record the expanded value, then prove it is a sanitized slug by
+              # writing .sane only when it matches the [a-z0-9-] shape.
+              run: 'printf "%s" "$MARKER" > .marker; grep -qxE "api-[a-z0-9][a-z0-9-]*" .marker && echo ok > .sane'
+              env:
+                MARKER: "api-{worktree_slug}"
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_SLUG
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/run-slug/main"
+    expect:
+      exit_code: 0
+
+  # DAFT_TESTING hides the live renderer, so assert on the files the job wrote.
+  - name: The env value expands to a sanitized slug
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-slug/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/run-slug/main/.sane"
+      file_contains:
+        - path: "$WORK_DIR/run-slug/main/.marker"
+          content: "api-"

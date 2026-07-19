@@ -100,6 +100,20 @@ pub(super) fn cmd_install(hooks: &[String], output: &mut dyn Output) -> Result<(
             ));
         }
 
+        // Commented starter for the serve-on-demand half: long-running
+        // processes (dev servers, compose stacks) go in tasks, run on demand
+        // with `daft run`, not in lifecycle hooks.
+        content.push_str(
+            "\n# Tasks: named, user-invoked job groups — run with `daft run [<name>]`.\n\
+             # Use these for long-running processes (dev servers, compose stacks,\n\
+             # watchers); keep finite setup in the hooks above.\n\
+             # tasks:\n\
+             #   run:              # bare `daft run` executes this\n\
+             #     jobs:\n\
+             #       - name: dev\n\
+             #         run: echo \"TODO: start your dev server\"\n",
+        );
+
         std::fs::write(&config_path, &content)
             .with_context(|| format!("Failed to write {}", config_path.display()))?;
 

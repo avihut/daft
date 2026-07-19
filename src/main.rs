@@ -224,6 +224,7 @@ fn main() -> Result<()> {
                     "adopt" => commands::flow_adopt::run(),
                     "eject" => commands::flow_eject::run(),
                     "exec" => commands::exec::run(),
+                    "run" => commands::run::run(),
                     "file" => commands::file::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),

@@ -422,6 +422,11 @@ impl HookExecutor {
             filter: &self.job_filter,
             presenter,
             repo_log: yaml_config.log.as_ref(),
+            // Lifecycle hooks keep the 300s job timeout and are never
+            // cancel-flag-driven; the trigger label follows the hook default.
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
         };
         let result =
             yaml_executor::execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)?;

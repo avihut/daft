@@ -1,0 +1,54 @@
+name: Single-job tasks pass the terminal through
+description:
+  "A task resolving to exactly one foreground job inherits daft's stdio — its
+  raw output reaches the terminal with no wrapping interface (visible even under
+  DAFT_TESTING, which hides the job renderers), and its exit code propagates
+  verbatim."
+
+repos:
+  - name: run-passthrough
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# passthrough"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      tasks:
+        run:
+          jobs:
+            - name: serve
+              run: |
+                echo PASSTHROUGH-MARKER
+                echo passthrough-ran > .ran
+        fail:
+          jobs:
+            - name: boom
+              run: exit 7
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RUN_PASSTHROUGH
+    expect:
+      exit_code: 0
+
+  # The renderers are hidden under DAFT_TESTING, so the marker appearing in
+  # the output proves the job inherited stdio (passthrough) rather than
+  # streaming through a renderer.
+  - name: Single-job run streams the job's raw output
+    run: daft run 2>&1
+    cwd: "$WORK_DIR/run-passthrough/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PASSTHROUGH-MARKER"
+      files_exist:
+        - "$WORK_DIR/run-passthrough/main/.ran"
+
+  - name: Passthrough propagates the job's exit code verbatim
+    run: daft run fail 2>&1
+    cwd: "$WORK_DIR/run-passthrough/main"
+    expect:
+      exit_code: 7

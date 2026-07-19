@@ -191,7 +191,14 @@ impl DagGraph {
                                         }
                                     }
                                 }
-                            } else if result_status == NodeStatus::Failed {
+                            } else if matches!(
+                                result_status,
+                                NodeStatus::Failed | NodeStatus::Cancelled
+                            ) {
+                                // A cancelled node cascades to its dependents
+                                // exactly like a failed one — without this,
+                                // dependents stay Pending forever and never
+                                // get counted toward `done`.
                                 let count =
                                     cascade_dep_failed(&mut s.status, &self.dependents, task_idx);
                                 s.done += count;
@@ -243,7 +250,7 @@ impl DagGraph {
                         }
                     }
                 }
-            } else if result_status == NodeStatus::Failed {
+            } else if matches!(result_status, NodeStatus::Failed | NodeStatus::Cancelled) {
                 cascade_dep_failed(&mut status, &self.dependents, idx);
                 // Enqueue dep-failed nodes so we can pop-and-skip them,
                 // ensuring the loop terminates even when dependents
@@ -708,6 +715,60 @@ mod tests {
         );
 
         assert_eq!(results[0], NodeStatus::Failed);
+        assert_eq!(results[1], NodeStatus::DepFailed);
+        assert_eq!(results[2], NodeStatus::DepFailed);
+    }
+
+    #[test]
+    fn parallel_cancelled_cascades_and_terminates() {
+        // Regression guard: a Cancelled node must cascade to its dependents
+        // exactly like Failed. Without the `| Cancelled` arm in run_parallel,
+        // B and C stay Pending, are never counted toward `done`, and (because
+        // a worker only returns when `active == 0`) the scheduler still exits
+        // but leaves them Pending — so the assertions below fail. This test
+        // fails if that arm is reverted.
+        let dag = DagGraph::new(vec![
+            ("A".into(), vec![]),
+            ("B".into(), vec!["A".into()]),
+            ("C".into(), vec!["B".into()]),
+        ])
+        .unwrap();
+
+        let results = dag.run_parallel(
+            |_, name| {
+                if name == "A" {
+                    NodeStatus::Cancelled
+                } else {
+                    NodeStatus::Succeeded
+                }
+            },
+            4,
+        );
+
+        assert_eq!(results[0], NodeStatus::Cancelled);
+        assert_eq!(results[1], NodeStatus::DepFailed);
+        assert_eq!(results[2], NodeStatus::DepFailed);
+    }
+
+    #[test]
+    fn sequential_cancelled_cascades() {
+        // Same guard for the sequential scheduler's `| Cancelled` cascade arm.
+        let dag = DagGraph::new(vec![
+            ("A".into(), vec![]),
+            ("B".into(), vec!["A".into()]),
+            ("C".into(), vec!["B".into()]),
+        ])
+        .unwrap();
+
+        let results = dag.run_sequential(|_, name| {
+            if name == "A" {
+                NodeStatus::Cancelled
+            } else {
+                NodeStatus::Succeeded
+            }
+        });
+
+        assert_eq!(results[0], NodeStatus::Cancelled);
         assert_eq!(results[1], NodeStatus::DepFailed);
         assert_eq!(results[2], NodeStatus::DepFailed);
     }

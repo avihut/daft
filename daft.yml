@@ -57,5 +57,19 @@ hooks:
         description: Remove the sandbox for this worktree
         run: mise run sandbox:clean
 
+tasks:
+  run:
+    jobs:
+      - name: daft
+        description: Build via the mise dev chain, then run the daft binary
+        # The trailing -- keeps mise transparent to forwarded words: without
+        # it, mise intercepts --help as task help instead of passing it on.
+        run: mise run daft --
+  docs:
+    jobs:
+      - name: docs
+        description: VitePress docs dev server at localhost:5173
+        run: mise run docs:site
+
 relations:
   - url: git@github.com:avihut/web-turf
