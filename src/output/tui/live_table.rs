@@ -44,6 +44,11 @@ pub struct LiveTableConfig {
     /// the bit set but no seed value render as "final empty" rather than
     /// shimmering.
     pub seeded_fields: FieldSet,
+    /// Annotation sub-positions this run renders, computed once from the
+    /// seeded rows and then held fixed. Column widths are recomputed every
+    /// frame, so deriving this from current row state would reflow the whole
+    /// table the moment an operation appeared or ended.
+    pub annotation_slots: crate::output::annotation::AnnotationSlots,
     /// Forge-PR cache decorations for the PR column (outbound PR numbers +
     /// CI states). Loaded once by `daft list` before the TUI starts and
     /// post-set after `TuiState::new` (like `unowned_start_index`); `None`
@@ -380,6 +385,7 @@ mod tests {
             project_root: PathBuf::from("/tmp"),
             cwd: PathBuf::from("/tmp"),
             seeded_fields: FieldSet::EMPTY,
+            annotation_slots: Default::default(),
             forge_prs: None,
             forge_prs_loading: false,
         }

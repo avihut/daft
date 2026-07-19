@@ -1,3 +1,5 @@
+use crate::output::annotation::{AnnotationGlyph, AnnotationSlots};
+
 use super::columns::{
     ALL_COLUMNS, Column, column_content_width, fit_widths_to_available, truncate_with_ellipsis,
 };
@@ -244,7 +246,14 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             } else {
                 0
             };
-            column_content_width(*col, &state.live.rows, &row_vals, sort_ref, extra)
+            column_content_width(
+                *col,
+                &state.live.rows,
+                &row_vals,
+                sort_ref,
+                extra,
+                state.live.cfg.annotation_slots,
+            )
         })
         .collect();
     let assigned_widths = fit_widths_to_available(&columns, &natural_widths, table_area.width);
@@ -381,6 +390,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                             state.tick,
                             state.live.cfg.stat,
                             assigned_widths[i],
+                            state.live.cfg.annotation_slots,
                             |fs| state.live.is_cell_loading(row_idx, fs),
                             |fs| state.live.is_cell_unloaded(row_idx, fs),
                             |fs| state.live.is_cell_stale(row_idx, fs),
@@ -402,6 +412,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                         state.tick,
                         state.live.cfg.stat,
                         assigned_widths[i],
+                        state.live.cfg.annotation_slots,
                         |fs| state.live.is_cell_loading(row_idx, fs),
                         |fs| state.live.is_cell_unloaded(row_idx, fs),
                         |fs| state.live.is_cell_stale(row_idx, fs),
@@ -731,13 +742,14 @@ fn render_cell(
     tick: usize,
     stat: Stat,
     width: u16,
+    annotation_slots: AnnotationSlots,
     is_cell_loading: impl Fn(FieldSet) -> bool,
     is_cell_unloaded: impl Fn(FieldSet) -> bool,
     is_cell_stale: impl Fn(FieldSet) -> bool,
 ) -> Cell<'static> {
     match col {
         Column::Status => render_status_cell(wt, tick),
-        Column::Annotation => render_annotation_cell(&wt.info),
+        Column::Annotation => render_annotation_cell(&wt.info, annotation_slots),
         Column::Branch => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
         Column::Size => {
@@ -1157,39 +1169,33 @@ fn format_pruned_overlay(
     Line::from(Span::styled(text, style))
 }
 
-/// Render the annotation cell (current worktree indicator and default branch marker).
+/// Render the annotation cell.
 ///
-/// Matches `list` column layout: two fixed sub-positions `[> ][✦]` so that
-/// the `>` and `✦` markers stay in separate visual columns.
-fn render_annotation_cell(info: &WorktreeInfo) -> Cell<'static> {
+/// Slot layout comes from [`AnnotationSlots`], shared with the plain table so
+/// the two renderers cannot disagree about which sub-positions exist. This
+/// only maps each glyph to a ratatui style and pads unfilled slots, keeping
+/// markers in vertical columns down the table.
+fn render_annotation_cell(info: &WorktreeInfo, slots: AnnotationSlots) -> Cell<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Sub-position 1: current worktree marker
-    if info.is_current {
-        spans.push(Span::styled(
-            styles::CURRENT_WORKTREE_SYMBOL,
-            Style::default().fg(Color::Cyan),
-        ));
-    } else {
-        spans.push(Span::raw(" "));
-    }
-
-    // Spacer between the two sub-positions
-    spans.push(Span::raw(" "));
-
-    // Sub-position 2: default branch marker (bright purple) or sandbox marker (dim)
-    if info.is_default_branch {
-        spans.push(Span::styled(
-            styles::DEFAULT_BRANCH_SYMBOL,
-            Style::default().fg(Color::LightMagenta),
-        ));
-    } else if info.is_sandbox {
-        spans.push(Span::styled(
-            styles::SANDBOX_SYMBOL,
-            Style::default().fg(Color::DarkGray),
-        ));
-    } else {
-        spans.push(Span::raw(" "));
+    for (i, glyph) in slots.glyphs(info).into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        match glyph {
+            None => spans.push(Span::raw(" ")),
+            Some(glyph) => {
+                let color = match glyph {
+                    AnnotationGlyph::Current => Color::Cyan,
+                    AnnotationGlyph::DefaultBranch => Color::LightMagenta,
+                    AnnotationGlyph::Sandbox => Color::DarkGray,
+                    // Operations share the attention colour with the status
+                    // column, and with the plain renderer's yellow.
+                    AnnotationGlyph::Operation(_) => Color::Yellow,
+                };
+                spans.push(Span::styled(glyph.symbol(), Style::default().fg(color)));
+            }
+        }
     }
 
     Cell::from(Line::from(spans))
@@ -1456,6 +1462,7 @@ mod tests {
                         0,
                         Stat::Lines,
                         10,
+                        Default::default(),
                         |_fs| false, // not loading (cancelled implies collection_complete)
                         |_fs| true,  // is_cell_unloaded → true
                         |_fs| false, // not stale
@@ -1507,6 +1514,7 @@ mod tests {
                     0,
                     Stat::Lines,
                     10,
+                    Default::default(),
                     |_fs| false, // not loading
                     |_fs| false, // not unloaded — received
                     |_fs| false, // not stale
@@ -1562,6 +1570,7 @@ mod tests {
                     0,
                     Stat::Summary,
                     10,
+                    Default::default(),
                     |_fs| false, // not loading
                     |_fs| false, // not unloaded
                     |_fs| true,  // stale → dim
@@ -1793,6 +1802,100 @@ mod tests {
         assert!(
             !full_buffer.contains("15.0 ") && !full_buffer.contains("15.0\n"),
             "TOTAL must not render as truncated \"15.0\" — got buffer:\n{full_buffer}"
+        );
+    }
+    /// The annotation cell and the annotation column's width are computed
+    /// from the same slot set, so a glyph can never render into space the
+    /// layout did not reserve (or leave a ragged gap where it did).
+    #[test]
+    fn annotation_cell_width_matches_the_slot_layout() {
+        use crate::git::op_state::OpKind;
+
+        let mut current = WorktreeInfo::empty("here");
+        current.is_current = true;
+        let mut default = WorktreeInfo::empty("main");
+        default.is_default_branch = true;
+        let mut rebasing = WorktreeInfo::empty("feat/x");
+        rebasing.op = Some(OpKind::Rebase);
+
+        // Every combination of rows that can occur, from "nothing to say" up
+        // to all three slots in play.
+        let cases: Vec<Vec<WorktreeInfo>> = vec![
+            vec![WorktreeInfo::empty("plain")],
+            vec![current.clone()],
+            vec![rebasing.clone()],
+            vec![current.clone(), default.clone()],
+            vec![current.clone(), default.clone(), rebasing.clone()],
+        ];
+
+        for rows in cases {
+            let slots = AnnotationSlots::for_rows(&rows);
+            let expected = slots.width();
+
+            for info in &rows {
+                let backend = TestBackend::new(16, 1);
+                let mut terminal = Terminal::new(backend).unwrap();
+                let cell = render_annotation_cell(info, slots);
+                terminal
+                    .draw(|frame| {
+                        let table =
+                            Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(16)]);
+                        frame.render_widget(table, frame.area());
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let rendered: String = (0..16).map(|x| buffer[(x, 0)].symbol()).collect();
+
+                assert_eq!(
+                    rendered.trim_end().chars().count(),
+                    expected.min(rendered.trim_end().chars().count()),
+                    "row {:?} rendered {rendered:?}, wider than the {expected}-wide column",
+                    info.name
+                );
+                assert!(
+                    rendered.chars().count() >= expected,
+                    "row {:?} rendered {rendered:?}, narrower than {expected}",
+                    info.name
+                );
+            }
+        }
+    }
+
+    /// A rebasing worktree paints its operation glyph, and a plain row in the
+    /// same run pads the slot instead of shifting the columns after it.
+    #[test]
+    fn the_operation_glyph_reaches_the_annotation_cell() {
+        use crate::git::op_state::OpKind;
+
+        let mut rebasing = WorktreeInfo::empty("feat/x");
+        rebasing.op = Some(OpKind::Rebase);
+        let plain = WorktreeInfo::empty("main");
+        let rows = vec![rebasing.clone(), plain.clone()];
+        let slots = AnnotationSlots::for_rows(&rows);
+
+        let draw = |info: &WorktreeInfo| {
+            let backend = TestBackend::new(8, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let cell = render_annotation_cell(info, slots);
+            terminal
+                .draw(|frame| {
+                    let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(8)]);
+                    frame.render_widget(table, frame.area());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..8)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect::<String>()
+        };
+
+        assert!(
+            draw(&rebasing).contains(OpKind::Rebase.symbol()),
+            "the rebase glyph must render"
+        );
+        assert!(
+            draw(&plain).trim().is_empty(),
+            "a row with no operation leaves its slot blank, not shifted"
         );
     }
 }

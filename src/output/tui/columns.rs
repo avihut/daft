@@ -163,6 +163,7 @@ pub(super) fn column_content_width(
     vals: &[ColumnValues],
     sort_spec: Option<&SortSpec>,
     extra_width: u16,
+    annotation_slots: crate::output::annotation::AnnotationSlots,
 ) -> u16 {
     // Account for sort indicator (" ↓" / " ↑" = 2 visible chars) in header width.
     let sort_extra: u16 = col
@@ -183,7 +184,9 @@ pub(super) fn column_content_width(
         .map(|(wt, v)| match col {
             // Pre-allocate for the longest possible status to avoid layout jumps.
             Column::Status => status_display_width(&wt.status).max(STATUS_MAX_WIDTH),
-            Column::Annotation => 3,
+            // Exactly the slots this run materialized — the annotation cell
+            // is painted from the same value, so the two cannot disagree.
+            Column::Annotation => annotation_slots.width() as u16,
             Column::Branch => v.branch.len() as u16,
             Column::Path => v.path.len() as u16,
             Column::Size => v.size.len() as u16,
@@ -313,7 +316,14 @@ mod tests {
     /// and the TOTAL cell got truncated.
     #[test]
     fn column_content_width_honors_extra_width_when_wider() {
-        let w = column_content_width(Column::Size, &[], &[], None, /* extra_width */ 6);
+        let w = column_content_width(
+            Column::Size,
+            &[],
+            &[],
+            None,
+            /* extra_width */ 6,
+            Default::default(),
+        );
         assert_eq!(
             w, 6,
             "extra_width must dominate when wider than header/data"
@@ -323,7 +333,7 @@ mod tests {
     #[test]
     fn column_content_width_ignores_extra_width_when_narrower() {
         // "Size" header is 4 chars; extra_width=2 should not shrink the column.
-        let w = column_content_width(Column::Size, &[], &[], None, 2);
+        let w = column_content_width(Column::Size, &[], &[], None, 2, Default::default());
         assert_eq!(w, 4, "extra_width must not shrink below header width");
     }
 
@@ -331,7 +341,7 @@ mod tests {
     fn column_content_width_status_keeps_minimum_with_extra_width() {
         // Status has a hard floor (STATUS_MAX_WIDTH); extra_width below it
         // shouldn't shrink the column.
-        let w = column_content_width(Column::Status, &[], &[], None, 3);
+        let w = column_content_width(Column::Status, &[], &[], None, 3, Default::default());
         assert_eq!(w, STATUS_MAX_WIDTH);
     }
 

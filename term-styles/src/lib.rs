@@ -102,6 +102,27 @@ pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{2726}";
 /// Symbol for sandbox (detached HEAD) worktrees.
 pub const SANDBOX_SYMBOL: &str = "\u{25cb}";
 
+/// Symbols for a git operation paused in a worktree, shown in the annotation
+/// column's state slot. One glyph per operation, so the shape alone says which
+/// — the `status` column spells it out for anyone who wants words.
+///
+/// A worktree can only be in one of these at a time, and each is a state the
+/// user has to finish or abort, so they share a slot and a color.
+pub mod op_symbols {
+    /// Rebase — a cycle, for commits being replayed.
+    pub const REBASE: &str = "\u{27f2}";
+    /// `git am` — a mailbox apply.
+    pub const AM: &str = "\u{2709}";
+    /// Merge — two histories joining.
+    pub const MERGE: &str = "\u{21c4}";
+    /// Cherry-pick — a commit lifted onto this branch.
+    pub const CHERRY_PICK: &str = "\u{2937}";
+    /// Revert — an undo.
+    pub const REVERT: &str = "\u{238c}";
+    /// Bisect — a search halving the range.
+    pub const BISECT: &str = "\u{25d0}";
+}
+
 /// Wraps text in bold styling.
 pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")

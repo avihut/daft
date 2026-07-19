@@ -1080,6 +1080,42 @@ impl Peaker for PriorityMaxExcept {
     }
 }
 
+/// Paint one row's annotation cell for the plain table.
+///
+/// Slot layout comes from [`AnnotationSlots`]; this only applies ANSI colour
+/// and pads unfilled slots so glyphs line up vertically down the column.
+fn render_annotation(
+    slots: crate::output::annotation::AnnotationSlots,
+    info: &crate::core::worktree::list::WorktreeInfo,
+    use_color: bool,
+) -> String {
+    use crate::output::annotation::AnnotationGlyph;
+
+    let mut out = String::new();
+    for (i, glyph) in slots.glyphs(info).into_iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let Some(glyph) = glyph else {
+            out.push(' ');
+            continue;
+        };
+        let symbol = glyph.symbol();
+        if !use_color {
+            out.push_str(symbol);
+            continue;
+        }
+        out.push_str(&match glyph {
+            AnnotationGlyph::Current => styles::cyan(symbol),
+            AnnotationGlyph::DefaultBranch => styles::bright_purple(symbol),
+            AnnotationGlyph::Sandbox => styles::dim(symbol),
+            // Operations share the attention colour with the status column.
+            AnnotationGlyph::Operation(_) => styles::yellow(symbol),
+        });
+    }
+    out
+}
+
 fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
@@ -1131,9 +1167,9 @@ fn print_table(
     let now = Utc::now().timestamp();
 
     // Determine which annotation types exist across all rows
-    let has_any_current = infos.iter().any(|i| i.is_current);
-    let has_any_default = infos.iter().any(|i| i.is_default_branch);
-    let has_any_sandbox = infos.iter().any(|i| i.is_sandbox);
+    // Which annotation sub-positions this run needs (shared with the live
+    // renderer so the two lay the column out identically).
+    let slots = crate::output::annotation::AnnotationSlots::for_rows(infos);
 
     let col_ctx = ColumnContext {
         project_root,
@@ -1161,50 +1197,7 @@ fn print_table(
         .iter()
         .zip(col_vals.iter())
         .map(|(info, vals)| {
-            // Build annotation: ">" first (cyan), then "✦" (bright purple),
-            // then "○" (dim) for sandbox
-            let mut annotation = String::new();
-            if has_any_current {
-                if info.is_current {
-                    if use_color {
-                        annotation.push_str(&styles::cyan(styles::CURRENT_WORKTREE_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::CURRENT_WORKTREE_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-                if has_any_default || has_any_sandbox {
-                    annotation.push(' ');
-                }
-            }
-            if has_any_default {
-                if info.is_default_branch {
-                    if use_color {
-                        annotation.push_str(&styles::bright_purple(styles::DEFAULT_BRANCH_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
-                    }
-                } else if info.is_sandbox {
-                    if use_color {
-                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::SANDBOX_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-            } else if has_any_sandbox {
-                if info.is_sandbox {
-                    if use_color {
-                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::SANDBOX_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-            }
+            let annotation = render_annotation(slots, info, use_color);
 
             // Stat::Lines mode overrides base/changes/remote with line-level counts
             let (base, head, remote) = if stat == Stat::Lines {
@@ -1403,8 +1396,7 @@ fn print_table(
         })
         .collect();
 
-    let show_annotations = selected_columns.contains(&ListColumn::Annotation)
-        && (has_any_current || has_any_default || has_any_sandbox);
+    let show_annotations = selected_columns.contains(&ListColumn::Annotation) && !slots.is_empty();
 
     // Format a header cell: dim+underline for label, sort arrow with
     // brightness gradient based on sort priority rank.

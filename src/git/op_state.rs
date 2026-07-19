@@ -69,6 +69,20 @@ impl OpKind {
             Self::Bisect => "bisect",
         }
     }
+
+    /// The annotation-column glyph for this operation. Shared by both
+    /// renderers so the plain table and the live TUI cannot drift.
+    pub fn symbol(self) -> &'static str {
+        use term_styles::op_symbols as sym;
+        match self {
+            Self::Rebase => sym::REBASE,
+            Self::Am => sym::AM,
+            Self::Merge => sym::MERGE,
+            Self::CherryPick => sym::CHERRY_PICK,
+            Self::Revert => sym::REVERT,
+            Self::Bisect => sym::BISECT,
+        }
+    }
 }
 
 /// An in-progress operation, plus the branch git recorded it against.

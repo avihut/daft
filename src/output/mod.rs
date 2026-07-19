@@ -17,6 +17,7 @@
 //! }
 //! ```
 
+pub mod annotation;
 mod buffering;
 mod cli;
 pub mod deferred_warn;
