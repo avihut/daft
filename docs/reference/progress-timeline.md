@@ -207,7 +207,8 @@ with one row per command):
   success, a rolling window while it runs — using the same
   `daft.hooks.output.tailLines` window the hook rail uses. A worker's full
   output reaches scrollback only once the rows ahead of it in the plan drain;
-  its `✓`/`✗`/`⊘` outcome is never delayed. Nothing prints below the footer.
+  its `✓`/`✗`/`⊘` outcome is never delayed. Nothing prints below the footer. You
+  can also press `v` mid-run to switch either way — see [Live keys](#live-keys).
 - A **single explicit-target** run (`daft exec feat/auth -- claude`, or a bare
   `--repo`) inherits stdio directly and renders no rail, so interactive programs
   work unchanged. A fan-out — `--all`, a glob, `--all-repos`, `--related`, or
@@ -241,8 +242,50 @@ shows a dim `held: memory` (or `held: capped` / `held: frozen` / `held: retry`)
 instead of running immediately, and a post-run summary line reports the total
 ("2 pushes throttled 14s to preserve memory headroom").
 
+## Live keys
+
+While the rail is on screen, the stopwatch footer offers what you can press:
+
+```
+└  4.2s   v verbose · ^C cancel
+```
+
+**`v` toggles verbose output for the run in progress.** Start terse and press
+`v` when a job starts looking interesting, or start with `-v` and press `v` to
+quiet it back down — verbosity is a decision you make while watching, not one
+you commit to before the run starts.
+
+The toggle takes effect immediately for rows still running and for every receipt
+printed from then on. Rows that already finished are a different matter: the
+rail is append-only, so their receipts stay exactly where they printed. Turning
+verbose on re-emits the logs of finished rows that printed compactly as a
+fold-out block below, headed by a repeat of the receipt line:
+
+```
+✓  feat/auth
+○  verbose on — replaying 1 finished row
+✓  feat/auth
+│    cargo test --lib
+│    test result: ok. 214 passed
+│
+```
+
+Each log folds out once, so toggling back and forth never repeats it. Failed
+rows are not replayed — their output already threaded when they failed. Turning
+verbose off collapses the live windows and leaves everything already printed
+alone.
+
+The hint and the toggle are terminal-only: with output redirected, in CI, or
+under `--quiet` there is no live region, no key listener, and no change to what
+daft prints. The toggle also does not change the captured-output dump
+`daft exec` writes to a redirected stdout — that follows the `-v` flag you
+passed, so a script's output does not depend on what you pressed. Only
+`daft exec`'s rows replay; hook-job rows (worktree create/remove, `daft run`)
+follow the new density from the next line they print onward.
+
 Pressing `Ctrl-C` mid-run collapses the live remainder of the rail and exits
 with status 130; everything already completed stays in your scrollback. A
 `daft exec` run interrupts cooperatively instead: the first `Ctrl-C` stops the
 running commands (SIGTERM), a second forces them (SIGKILL), and the rail closes
-as a `Cancelled` receipt.
+as a `Cancelled` receipt. This is unchanged by the key listener: `Ctrl-C`
+reaches daft as a real signal, not as a keystroke.

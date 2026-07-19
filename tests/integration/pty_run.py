@@ -8,7 +8,13 @@ This wrapper plays the terminal's role: it sets a sane window size, drains
 the master into a log file, answers every DSR query with a synthetic
 "row 1, col 1" report, and exits with the command's status.
 
-Usage: pty_run.py <log-file> <command> [args...]
+It can also type: --send-after PATTERN:BYTES writes BYTES to the pty the
+first time PATTERN appears in the output. Repeat the flag to script a
+sequence (two Ctrl-Cs for a two-stage cancel, say); each trigger fires at
+most once, in the order its pattern appears. BYTES accepts Python escapes,
+so \\x03 is Ctrl-C.
+
+Usage: pty_run.py [--send-after PATTERN:BYTES]... <log-file> <command> [args...]
 """
 
 import fcntl
@@ -21,16 +27,54 @@ import sys
 import termios
 
 
+def parse_args(argv):
+    """Split leading flags from the log path and command."""
+    triggers = []
+    ctty = False
+    while argv and argv[0] in ("--send-after", "--ctty"):
+        if argv[0] == "--ctty":
+            ctty = True
+            argv = argv[1:]
+            continue
+        spec = argv[1]
+        pattern, _, payload = spec.partition(":")
+        triggers.append(
+            [
+                pattern.encode(),
+                payload.encode().decode("unicode_escape").encode("latin-1"),
+            ]
+        )
+        argv = argv[2:]
+    return triggers, ctty, argv[0], argv[1:]
+
+
 def main():
-    log_path, *cmd = sys.argv[1:]
+    triggers, ctty, log_path, cmd = parse_args(sys.argv[1:])
     master, slave = pty.openpty()
     # ratatui needs a non-zero viewport; 24x80 matches a classic terminal.
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
-    proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    # --ctty: make the child a session leader owning this pty, so writing
+    # \x03 to the master actually raises SIGINT in it. Without it the pty has
+    # no foreground process group and the interrupt goes nowhere. Opt-in,
+    # because a new session also detaches the child from the caller's job
+    # control — only interrupt tests want that.
+    def become_session_leader():
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        close_fds=True,
+        preexec_fn=become_session_leader if ctty else None,
+    )
     os.close(slave)
 
     tail = b""
+    seen = b""
     with open(log_path, "wb") as log:
         while True:
             try:
@@ -55,6 +99,18 @@ def main():
                     except OSError:
                         pass
                     tail = b""
+                # Fire any scripted input whose cue has now appeared. The
+                # first pending trigger only, so a sequence stays ordered
+                # even when one chunk satisfies several cues.
+                if triggers:
+                    seen += chunk
+                    if triggers[0][0] in seen:
+                        try:
+                            os.write(master, triggers[0][1])
+                        except OSError:
+                            pass
+                        triggers.pop(0)
+                        seen = b""
             elif proc.poll() is not None:
                 # Command exited and the pty went quiet: drain and stop.
                 while True:

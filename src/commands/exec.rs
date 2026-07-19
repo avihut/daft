@@ -120,7 +120,7 @@ pub struct Args {
     #[arg(
         short = 'v',
         long = "verbose",
-        help = "Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target pass-through runs)"
+        help = "Thread each worktree's full output into the rail and dump captured output for successful worktrees too (no-op for single-target pass-through runs). On a terminal, press `v` during a run to toggle threading either way"
     )]
     pub verbose: bool,
 
