@@ -131,6 +131,8 @@ pub struct WorktreeInfo {
     /// How this row's branch name was established. `None` for rows that are
     /// not worktrees (their name comes straight from the ref).
     pub identity_source: Option<super::identity::IdentitySource>,
+    /// The recorded intended branch disagrees with what is checked out.
+    pub drifted: bool,
     /// The PR/MR this branch tracks (from `branch.<name>.merge`), or `None`.
     /// Local config only — no network.
     pub forge_ref: Option<super::forge_ref::ForgeBranchRef>,
@@ -172,6 +174,7 @@ impl WorktreeInfo {
             is_sandbox: false,
             op: None,
             identity_source: None,
+            drifted: false,
             forge_ref: None,
         }
     }
@@ -210,6 +213,7 @@ impl WorktreeInfo {
             is_sandbox: false,
             op: None,
             identity_source: None,
+            drifted: false,
             forge_ref: None,
         }
     }
@@ -835,7 +839,12 @@ pub fn collect_worktree_info(
     // Recover identity for worktrees git reports as detached because an
     // operation is replaying commits in them, and note what that operation
     // is. Bare entries resolve to `None` and are skipped.
-    let identities = super::identity::resolve_identities(&entries);
+    // Persisted records are a pure read: absent store, absent records, and
+    // the resolution falls through to live state exactly as before.
+    let records = crate::core::repo::get_git_common_dir()
+        .map(|dir| super::identity_store::read_identities(&dir))
+        .unwrap_or_default();
+    let identities = super::identity::resolve_identities_with(&entries, &records);
     let mut infos = Vec::new();
 
     for (entry, identity) in entries.into_iter().zip(identities) {
@@ -979,6 +988,7 @@ pub fn collect_worktree_info(
             is_sandbox: identity.is_sandbox,
             op: identity.op,
             identity_source: Some(identity.source),
+            drifted: identity.drifted,
             forge_ref,
         });
     }
@@ -1125,6 +1135,7 @@ pub fn collect_branch_info(
                 is_sandbox: false,
                 op: None,
                 identity_source: None,
+                drifted: false,
                 forge_ref: None,
             });
         }
@@ -1214,6 +1225,7 @@ pub fn collect_branch_info(
                 is_sandbox: false,
                 op: None,
                 identity_source: None,
+                drifted: false,
                 forge_ref: None,
             });
         }

@@ -1201,9 +1201,9 @@ fn render_annotation_cell(info: &WorktreeInfo, slots: AnnotationSlots) -> Cell<'
                     AnnotationGlyph::Current => Color::Cyan,
                     AnnotationGlyph::DefaultBranch => Color::LightMagenta,
                     AnnotationGlyph::Sandbox => Color::DarkGray,
-                    // Operations share the attention colour with the status
-                    // column, and with the plain renderer's yellow.
-                    AnnotationGlyph::Operation(_) => Color::Yellow,
+                    // Operations and drift share the attention colour with
+                    // the status column, and with the plain renderer's yellow.
+                    AnnotationGlyph::Operation(_) | AnnotationGlyph::Drift => Color::Yellow,
                 };
                 spans.push(Span::styled(glyph.symbol(), Style::default().fg(color)));
             }

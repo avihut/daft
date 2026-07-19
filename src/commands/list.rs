@@ -1127,8 +1127,9 @@ fn render_annotation(
             AnnotationGlyph::Current => styles::cyan(symbol),
             AnnotationGlyph::DefaultBranch => styles::bright_purple(symbol),
             AnnotationGlyph::Sandbox => styles::dim(symbol),
-            // Operations share the attention colour with the status column.
-            AnnotationGlyph::Operation(_) => styles::yellow(symbol),
+            // Operations and drift share the attention colour with the
+            // status column.
+            AnnotationGlyph::Operation(_) | AnnotationGlyph::Drift => styles::yellow(symbol),
         });
     }
     out
@@ -1796,6 +1797,7 @@ mod tests {
             is_sandbox: false,
             op: None,
             identity_source: None,
+            drifted: false,
             forge_ref: None,
         };
         let infos = [info("main", true), info("feat", false)];
@@ -1858,6 +1860,7 @@ mod tests {
             is_sandbox: false,
             op: None,
             identity_source: None,
+            drifted: false,
             forge_ref: None,
         };
         let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];

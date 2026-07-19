@@ -27,6 +27,8 @@ pub enum AnnotationGlyph {
     Sandbox,
     /// A paused git operation.
     Operation(OpKind),
+    /// The recorded intended branch disagrees with the checked-out branch.
+    Drift,
 }
 
 impl AnnotationGlyph {
@@ -37,6 +39,7 @@ impl AnnotationGlyph {
             Self::DefaultBranch => styles::DEFAULT_BRANCH_SYMBOL,
             Self::Sandbox => styles::SANDBOX_SYMBOL,
             Self::Operation(op) => op.symbol(),
+            Self::Drift => styles::DRIFT_SYMBOL,
         }
     }
 }
@@ -63,7 +66,7 @@ impl AnnotationSlots {
         Self {
             current: infos.iter().any(|i| i.is_current),
             identity: infos.iter().any(|i| i.is_default_branch || i.is_sandbox),
-            state: infos.iter().any(|i| i.op.is_some()),
+            state: infos.iter().any(|i| i.op.is_some() || i.drifted),
         }
     }
 
@@ -107,7 +110,12 @@ impl AnnotationSlots {
             });
         }
         if self.state {
-            out.push(info.op.map(AnnotationGlyph::Operation));
+            // An operation outranks drift: it is the transient, actionable
+            // state, and drift keeps until the operation concludes.
+            out.push(match info.op {
+                Some(op) => Some(AnnotationGlyph::Operation(op)),
+                None => info.drifted.then_some(AnnotationGlyph::Drift),
+            });
         }
         out
     }

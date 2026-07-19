@@ -102,6 +102,10 @@ pub const DEFAULT_BRANCH_SYMBOL: &str = "\u{2726}";
 /// Symbol for sandbox (detached HEAD) worktrees.
 pub const SANDBOX_SYMBOL: &str = "\u{25cb}";
 
+/// Symbol for a worktree whose recorded branch disagrees with what is
+/// checked out — a record that has fallen behind reality.
+pub const DRIFT_SYMBOL: &str = "\u{26a0}";
+
 /// Symbols for a git operation paused in a worktree, shown in the annotation
 /// column's state slot. One glyph per operation, so the shape alone says which
 /// — the `status` column spells it out for anyone who wants words.

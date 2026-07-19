@@ -448,6 +448,19 @@ pub fn format_human_size(bytes: u64) -> String {
 /// reason this column spells things out.
 pub fn format_worktree_status(info: &WorktreeInfo) -> String {
     let Some(op) = info.op else {
+        // No operation: report the two states the record can surface.
+        // Drift first — a record disagreeing with a live checkout is a
+        // problem to fix, where a named detached checkout is merely a fact.
+        if info.drifted {
+            return "drifted".to_string();
+        }
+        if info.identity_source == Some(crate::core::worktree::identity::IdentitySource::Persisted)
+        {
+            return match &info.last_commit_hash {
+                Some(hash) => String::from("detached @ ") + hash,
+                None => "detached".to_string(),
+            };
+        }
         return String::new();
     };
     let label = op.label();

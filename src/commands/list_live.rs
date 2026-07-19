@@ -89,7 +89,10 @@ pub fn run_live(args: Args) -> Result<()> {
     let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
     // Same recovery the blocking path does, at seed time so the Branch cell
     // — which is never streamed — is right in the very first frame.
-    let identities = crate::core::worktree::identity::resolve_identities(&entries);
+    let identities = crate::core::worktree::identity::resolve_identities_with(
+        &entries,
+        &crate::core::worktree::identity_store::read_identities(&git_common_dir),
+    );
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut targets: Vec<list_stream::CollectorTarget> = Vec::new();
     let mut worktree_branches: HashSet<String> = HashSet::new();
