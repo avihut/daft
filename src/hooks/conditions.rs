@@ -8,6 +8,7 @@ use super::yaml_config::{
     JobDef, OnlyCondition, OnlyRule, OnlyRuleStructured, SkipCondition, SkipRule,
     SkipRuleStructured, TargetOs,
 };
+use crate::git::op_state::{OpKind, probe_op_state};
 use std::path::Path;
 
 /// Information about why a job was skipped.
@@ -269,32 +270,19 @@ fn is_env_truthy(var: &str) -> bool {
 
 /// Check if git is currently in a merge state.
 fn is_in_merge(worktree: &Path) -> bool {
-    let git_dir = worktree.join(".git");
-    // MERGE_HEAD exists during a merge
-    git_dir.join("MERGE_HEAD").exists()
-        || std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "MERGE_HEAD"])
-            .current_dir(worktree)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    matches!(probe_op_state(worktree), Some(state) if state.kind == OpKind::Merge)
 }
 
 /// Check if git is currently in a rebase state.
+///
+/// `git am` counts, as it always has here: it shares the apply backend's
+/// directory, and a hook that wants to stay out of a rebase's way wants to
+/// stay out of an am's way too.
 fn is_in_rebase(worktree: &Path) -> bool {
-    let git_dir = worktree.join(".git");
-    git_dir.join("rebase-merge").exists()
-        || git_dir.join("rebase-apply").exists()
-        || std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "REBASE_HEAD"])
-            .current_dir(worktree)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    matches!(
+        probe_op_state(worktree),
+        Some(state) if matches!(state.kind, OpKind::Rebase | OpKind::Am)
+    )
 }
 
 /// Get the current branch/ref name.
@@ -558,5 +546,63 @@ mod tests {
         );
         let cond = SkipCondition::Platform(map);
         assert!(should_skip(&cond, Path::new(".")).is_none());
+    }
+
+    /// Build a linked worktree — `.git` is a *file* pointing at the private
+    /// gitdir, which is daft's default layout — and return (tempdir, worktree
+    /// path, private gitdir).
+    fn linked_worktree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("repo/.git/worktrees/wt-a");
+        std::fs::create_dir_all(&private).unwrap();
+        let worktree = tmp.path().join("wt-a");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", private.display()),
+        )
+        .unwrap();
+        (tmp, worktree, private)
+    }
+
+    /// Regression: the merge/rebase conditions used to join `<worktree>/.git`
+    /// as a directory, so in a linked worktree — every daft worktree — the
+    /// state files were invisible and the conditions silently read "no
+    /// operation in progress".
+    #[test]
+    fn detects_merge_in_a_linked_worktree() {
+        let (_tmp, worktree, private) = linked_worktree();
+        std::fs::write(private.join("MERGE_HEAD"), "deadbeef\n").unwrap();
+
+        let cond = SkipCondition::Rules(vec![SkipRule::Named("merge".to_string())]);
+        assert!(
+            should_skip(&cond, &worktree).is_some(),
+            "a paused merge in a linked worktree must satisfy `skip: [merge]`"
+        );
+    }
+
+    #[test]
+    fn detects_rebase_in_a_linked_worktree() {
+        let (_tmp, worktree, private) = linked_worktree();
+        std::fs::create_dir_all(private.join("rebase-merge")).unwrap();
+
+        let cond = SkipCondition::Rules(vec![SkipRule::Named("rebase".to_string())]);
+        assert!(
+            should_skip(&cond, &worktree).is_some(),
+            "a paused rebase in a linked worktree must satisfy `skip: [rebase]`"
+        );
+    }
+
+    #[test]
+    fn idle_linked_worktree_matches_no_operation_condition() {
+        let (_tmp, worktree, _private) = linked_worktree();
+
+        for name in ["merge", "rebase"] {
+            let cond = SkipCondition::Rules(vec![SkipRule::Named(name.to_string())]);
+            assert!(
+                should_skip(&cond, &worktree).is_none(),
+                "an idle worktree must not satisfy `skip: [{name}]`"
+            );
+        }
     }
 }
