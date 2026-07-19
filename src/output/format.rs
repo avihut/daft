@@ -3,6 +3,7 @@
 //! These formatters produce plain or ANSI-colored strings used by both the
 //! `tabled`-based CLI table (`list.rs`) and the ratatui TUI table (`tui.rs`).
 
+use crate::core::worktree::forge_ref::{ForgePrLookup, PrDecoration, PrStatus};
 use crate::core::worktree::list::{Stat, WorktreeInfo};
 use crate::styles;
 use pathdiff::diff_paths;
@@ -109,42 +110,95 @@ pub fn format_remote_status(
     parts.join(" ")
 }
 
-/// Strip ANSI CSI escape sequences from a string.
+/// State machine shared by [`strip_ansi`] / [`visible_width`]: feed chars,
+/// get back whether each is visible. Handles CSI-style sequences (`ESC [ … m`,
+/// terminated by an ASCII letter) and OSC sequences (`ESC ] … BEL` or
+/// `ESC ] … ESC \`) — the latter is what OSC 8 terminal hyperlinks use, whose
+/// URL payload would otherwise leak into width math at the first letter.
+#[derive(Default)]
+struct AnsiScanner {
+    state: AnsiState,
+}
+
+#[derive(Default, PartialEq)]
+enum AnsiState {
+    #[default]
+    Text,
+    /// Saw ESC; the next char picks the sequence family.
+    Escape,
+    /// Inside a CSI-style sequence; ends at an ASCII letter.
+    Csi,
+    /// Inside an OSC payload; ends at BEL or the ST (`ESC \`) terminator.
+    Osc,
+    /// Saw ESC inside an OSC payload; the next char completes the ST.
+    OscEscape,
+}
+
+impl AnsiScanner {
+    /// Advance over `c`; `true` means the char is visible text.
+    fn visible(&mut self, c: char) -> bool {
+        use AnsiState::*;
+        match self.state {
+            Text => {
+                if c == '\x1b' {
+                    self.state = Escape;
+                    false
+                } else {
+                    true
+                }
+            }
+            Escape => {
+                self.state = if c == ']' { Osc } else { Csi };
+                false
+            }
+            Csi => {
+                if c.is_ascii_alphabetic() {
+                    self.state = Text;
+                }
+                false
+            }
+            Osc => {
+                match c {
+                    '\x07' => self.state = Text,
+                    '\x1b' => self.state = OscEscape,
+                    _ => {}
+                }
+                false
+            }
+            OscEscape => {
+                self.state = Text;
+                false
+            }
+        }
+    }
+}
+
+/// Strip ANSI escape sequences (CSI styling and OSC payloads, including OSC 8
+/// hyperlinks) from a string.
 ///
 /// Used for measuring the *visible* width of a styled string — width-based
 /// layout code must not count escape bytes.
 pub fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut in_escape = false;
+    let mut scanner = AnsiScanner::default();
     for c in s.chars() {
-        if in_escape {
-            if c.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-        } else if c == '\x1b' {
-            in_escape = true;
-        } else {
+        if scanner.visible(c) {
             result.push(c);
         }
     }
     result
 }
 
-/// Count the *visible* width of a string in chars, ignoring ANSI CSI escapes.
+/// Count the *visible* width of a string in chars, ignoring ANSI escapes
+/// (CSI styling and OSC payloads, including OSC 8 hyperlinks).
 ///
 /// Equivalent to `strip_ansi(s).chars().count()` but walks the string in a
 /// single pass without allocating.
 pub fn visible_width(s: &str) -> usize {
     let mut count = 0usize;
-    let mut in_escape = false;
+    let mut scanner = AnsiScanner::default();
     for c in s.chars() {
-        if in_escape {
-            if c.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-        } else if c == '\x1b' {
-            in_escape = true;
-        } else {
+        if scanner.visible(c) {
             count += 1;
         }
     }
@@ -288,6 +342,13 @@ pub struct ColumnValues {
     pub base: String,
     pub changes: String,
     pub remote: String,
+    pub pr: String,
+    /// Status behind the `pr` cell — color-capable renderers color the number
+    /// by it (the glyph is already in `pr` when the context has no colors).
+    pub pr_status: Option<PrStatus>,
+    /// Web URL for the cell's PR — plain-print renderers wrap the cell in an
+    /// OSC 8 terminal hyperlink.
+    pub pr_url: Option<String>,
     pub branch_age: String,
     pub last_commit_age: String,
     pub last_commit_subject: String,
@@ -303,6 +364,15 @@ pub struct ColumnContext<'a> {
     pub cwd: &'a Path,
     pub now: i64,
     pub stat: Stat,
+    /// Forge-PR cache decorations for the PR column (outbound PR numbers +
+    /// statuses). `None` when the column isn't selected or no cache exists —
+    /// the cell then falls back to config-recorded refs only.
+    pub forge_prs: Option<&'a ForgePrLookup>,
+    /// Whether the consuming renderer applies color. Colored renderers carry
+    /// the PR status in the number's color alone; colorless ones get the
+    /// status glyph appended to the cell text (`#723 ✓`) so the signal
+    /// survives `NO_COLOR` and pipes.
+    pub colors: bool,
 }
 
 /// Format head status using line-level counts: combined staged+unstaged
@@ -391,13 +461,40 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 
     let last_commit_subject = info.last_commit_subject.clone();
 
-    let owner = info
-        .owner
-        .as_ref()
-        .map(|o| o.name.clone())
-        .unwrap_or_default();
-
     let hash = info.last_commit_hash.clone().unwrap_or_default();
+
+    // PR cell: config-recorded ref (inbound checkout), else an outbound match
+    // from the forge cache. In a colored context the number alone is the text
+    // (color carries the status); colorless contexts get the status glyph
+    // appended (`#723 ✓`) so the signal never exists as color alone.
+    let decoration = match ctx.forge_prs {
+        Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
+        None => info.forge_ref.map(PrDecoration::bare),
+    };
+
+    // Owner cell: branch and synthesized rows with a PR show the PR's author
+    // — the forge's answer to "whose PR" beats the branch-history heuristic,
+    // and it's present at seed (identity) where the deduced owner streams in
+    // later. Worktree rows are exempt (mirroring `pr_rows::apply_pr_owners`):
+    // they describe the local checkout, whose deduced identity is the richer
+    // answer. Undecorated rows keep the deduced owner.
+    let owner = (info.kind != crate::core::worktree::list::EntryKind::Worktree)
+        .then(|| decoration.as_ref().and_then(|d| d.author.clone()))
+        .flatten()
+        .or_else(|| info.owner.as_ref().map(|o| o.name.clone()))
+        .unwrap_or_default();
+    let (pr, pr_status, pr_url) = match decoration {
+        Some(d) => {
+            let text = match d.status.map(PrStatus::glyph) {
+                Some(glyph) if !ctx.colors && !glyph.is_empty() => {
+                    format!("{} {}", d.r.short(), glyph)
+                }
+                _ => d.r.short(),
+            };
+            (text, d.status, d.url)
+        }
+        None => (String::new(), None, None),
+    };
 
     ColumnValues {
         branch,
@@ -406,6 +503,9 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
         base,
         changes,
         remote,
+        pr,
+        pr_status,
+        pr_url,
         branch_age,
         last_commit_age,
         last_commit_subject,
@@ -419,6 +519,180 @@ pub fn compute_column_values(info: &WorktreeInfo, ctx: &ColumnContext) -> Column
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_column_value_reflects_the_tracked_ref() {
+        use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::WorktreeInfo;
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: None,
+            colors: false,
+        };
+        let mut info = WorktreeInfo::empty("feat");
+
+        info.forge_ref = Some(ForgeBranchRef::new(ForgeRefKind::GithubPr, 123));
+        assert_eq!(compute_column_values(&info, &ctx).pr, "#123");
+
+        info.forge_ref = Some(ForgeBranchRef::new(ForgeRefKind::GitlabMr, 45));
+        assert_eq!(compute_column_values(&info, &ctx).pr, "!45");
+
+        info.forge_ref = None;
+        assert_eq!(compute_column_values(&info, &ctx).pr, "");
+    }
+
+    fn forge_test_lookup() -> ForgePrLookup {
+        use crate::core::worktree::forge_ref::{CiStatus, ForgeBranchRef, ForgeRefKind};
+
+        let inbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
+        let outbound = ForgeBranchRef::new(ForgeRefKind::GithubPr, 723);
+        let mut lookup = ForgePrLookup::default();
+        lookup.by_ref.insert(
+            inbound,
+            PrDecoration {
+                r: inbound,
+                status: Some(PrStatus::Ci(CiStatus::Fail)),
+                url: Some("https://github.com/acme/widget/pull/7".into()),
+                author: None,
+            },
+        );
+        lookup.by_branch.insert(
+            "daft-127/feat".into(),
+            PrDecoration {
+                r: outbound,
+                status: Some(PrStatus::Ci(CiStatus::Pass)),
+                url: Some("https://github.com/acme/widget/pull/723".into()),
+                author: None,
+            },
+        );
+        lookup.by_branch.insert(
+            "feat/done".into(),
+            PrDecoration {
+                r: ForgeBranchRef::new(ForgeRefKind::GithubPr, 6),
+                status: Some(PrStatus::Merged),
+                url: None,
+                author: None,
+            },
+        );
+        lookup
+    }
+
+    #[test]
+    fn pr_column_appends_glyphs_when_colorless() {
+        use crate::core::worktree::forge_ref::{CiStatus, ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::WorktreeInfo;
+
+        let lookup = forge_test_lookup();
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: Some(&lookup),
+            colors: false,
+        };
+
+        // Outbound: a plain local branch gains its open PR + CI glyph.
+        let info = WorktreeInfo::empty("daft-127/feat");
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.pr, "#723 \u{2713}");
+        assert_eq!(vals.pr_status, Some(PrStatus::Ci(CiStatus::Pass)));
+        assert_eq!(
+            vals.pr_url.as_deref(),
+            Some("https://github.com/acme/widget/pull/723")
+        );
+
+        // A merged PR marks its branch with the merged glyph.
+        let info = WorktreeInfo::empty("feat/done");
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.pr, "#6 \u{25c6}");
+        assert_eq!(vals.pr_status, Some(PrStatus::Merged));
+
+        // Inbound: the config ref is authoritative, cache only adds status.
+        let mut info = WorktreeInfo::empty("contributor-feature");
+        info.forge_ref = Some(ForgeBranchRef::new(ForgeRefKind::GithubPr, 7));
+        let vals = compute_column_values(&info, &ctx);
+        assert_eq!(vals.pr, "#7 \u{2717}");
+        assert_eq!(vals.pr_status, Some(PrStatus::Ci(CiStatus::Fail)));
+
+        // No match anywhere: empty cell.
+        let info = WorktreeInfo::empty("plain-branch");
+        assert_eq!(compute_column_values(&info, &ctx).pr, "");
+    }
+
+    #[test]
+    fn owner_cell_prefers_pr_author_except_for_worktree_rows() {
+        use crate::core::ownership::BranchOwner;
+        use crate::core::worktree::forge_ref::{ForgeBranchRef, ForgeRefKind};
+        use crate::core::worktree::list::{EntryKind, WorktreeInfo};
+
+        let mut lookup = ForgePrLookup::default();
+        let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, 5);
+        lookup.by_branch.insert(
+            "feature-x".into(),
+            PrDecoration {
+                author: Some("dan".into()),
+                ..PrDecoration::bare(r)
+            },
+        );
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: Some(&lookup),
+            colors: true,
+        };
+        let deduced = BranchOwner {
+            name: "History Name".into(),
+            email: "h@x".into(),
+            is_current_user: true,
+        };
+
+        // A branch row with a PR shows the PR's author.
+        let mut branch_row = WorktreeInfo::empty("feature-x");
+        branch_row.kind = EntryKind::LocalBranch;
+        branch_row.owner = Some(deduced.clone());
+        assert_eq!(compute_column_values(&branch_row, &ctx).owner, "dan");
+
+        // The same PR on a worktree row decorates the pr cell only — the
+        // local checkout keeps its deduced identity (mirrors
+        // `pr_rows::apply_pr_owners`).
+        let mut worktree_row = WorktreeInfo::empty("feature-x");
+        worktree_row.owner = Some(deduced);
+        let vals = compute_column_values(&worktree_row, &ctx);
+        assert_eq!(vals.owner, "History Name");
+        assert_eq!(vals.pr, "#5", "the pr cell still decorates");
+    }
+
+    #[test]
+    fn pr_column_is_bare_number_when_colored() {
+        use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
+        use crate::core::worktree::list::WorktreeInfo;
+
+        let lookup = forge_test_lookup();
+        let ctx = ColumnContext {
+            project_root: Path::new("/"),
+            cwd: Path::new("/"),
+            now: 0,
+            stat: Stat::Summary,
+            forge_prs: Some(&lookup),
+            colors: true,
+        };
+
+        // Color carries the status: the text is the number alone, the status
+        // rides in `pr_status` for the renderer's ink.
+        let vals = compute_column_values(&WorktreeInfo::empty("daft-127/feat"), &ctx);
+        assert_eq!(vals.pr, "#723");
+        assert_eq!(vals.pr_status, Some(PrStatus::Ci(CiStatus::Pass)));
+
+        let vals = compute_column_values(&WorktreeInfo::empty("feat/done"), &ctx);
+        assert_eq!(vals.pr, "#6");
+        assert_eq!(vals.pr_status, Some(PrStatus::Merged));
+    }
 
     /// Regression: repo list showed absolute paths where `daft list`
     /// relativizes. Display paths prefer the cwd-relative form (same helper
@@ -572,6 +846,25 @@ mod tests {
         assert_eq!(strip_ansi("\x1b[38;5;208mwarn\x1b[0m"), "warn");
         assert_eq!(strip_ansi("plain"), "plain");
         assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc8_hyperlinks() {
+        // ST-terminated (ESC \) — what term_styles::hyperlink emits. The URL
+        // payload is full of letters that must not leak into the visible text.
+        let linked = "\x1b]8;;https://github.com/acme/widget/pull/723\x1b\\#723\x1b]8;;\x1b\\";
+        assert_eq!(strip_ansi(linked), "#723");
+        assert_eq!(visible_width(linked), 4);
+
+        // BEL-terminated variant.
+        let bel = "\x1b]8;;https://a.com\x07link\x1b]8;;\x07";
+        assert_eq!(strip_ansi(bel), "link");
+        assert_eq!(visible_width(bel), 4);
+
+        // A styled link: color inside the hyperlink wrapper.
+        let styled = "\x1b]8;;https://a.com\x1b\\\x1b[32m#5\x1b[0m\x1b]8;;\x1b\\";
+        assert_eq!(strip_ansi(styled), "#5");
+        assert_eq!(visible_width(styled), 2);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::{
         repo::{get_current_worktree_path, get_git_common_dir, get_project_root},
         sort::SortSpec,
         worktree::{
+            forge_ref::ForgePrLookup,
             info_field::FieldSet,
             list::{EntryKind, Stat, WorktreeInfo, collect_branch_info},
             list_stream,
@@ -52,7 +53,15 @@ pub fn run_live(args: Args) -> Result<()> {
         }
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
-    let selected_columns = resolved.columns.clone();
+    // The forge gate may silently drop the default-sourced `pr` column (no
+    // forge remote, or a persisted deep failure). Reused below for the
+    // refresh spawn and the live seed state, so health is read once.
+    let (selected_columns, forge_gate) = crate::commands::list::gate_pr_column(
+        &resolved.columns,
+        columns_input.as_deref(),
+        &git,
+        &git_common_dir,
+    );
     let columns_explicit = resolved.explicit;
     let sort_input = args.sort.clone().or(settings.list_sort.clone());
     let sort_spec = match sort_input {
@@ -127,6 +136,7 @@ pub fn run_live(args: Args) -> Result<()> {
             show_local,
             show_remote,
             &worktree_branches,
+            None,
             &project_root,
             settings.ownership_strategy,
             user_email.as_deref(),
@@ -141,6 +151,100 @@ pub fn run_live(args: Args) -> Result<()> {
             });
             worktree_infos.push(info);
         }
+    }
+
+    // Forge-PR cache. The gate decided column visibility; here it decides
+    // display freshness. Every interactive list re-verifies (a refresh is
+    // spawned, or attached to when one is already running), so the seed
+    // states for the PR cells are:
+    // - refresh in flight, no snapshot ever taken → loading skeleton until
+    //   the refresh concludes (the size-column treatment);
+    // - refresh in flight, snapshot exists → decorations stripped to bare
+    //   identity: a possibly-stale fate must not render as current, so
+    //   numbers show immediately and statuses arrive with the refresh
+    //   (`ForgePrsRefreshed`) — or not at all this run;
+    // - no refresh in flight (agent/test invocations, or the spawn itself
+    //   failed) → the cache renders as-is.
+    let mut forge_refresh_pending = false;
+    let mut forge_loading = false;
+    let mut forge_repo_hash: Option<String> = None;
+    let mut forge_lookup: Option<ForgePrLookup> = None;
+    let mut forge_finished_baseline = None;
+    if let Some(gate) = &forge_gate {
+        // Probe even when the gate hid the column: the refresh is what
+        // detects a repaired auth and restores the column on a later run.
+        // Decorations are only loaded when the column survived.
+        let spawned = crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+        forge_refresh_pending = spawned || gate.refresh_in_flight();
+        forge_repo_hash = gate.repo_hash.clone();
+        forge_finished_baseline = gate.health.as_ref().and_then(|h| h.finished_at);
+        if fields.contains(FieldSet::FORGE_REF) {
+            // Reuse the lookup read alongside the health gate (one store open);
+            // the mid-run refresh reload below re-reads fresh.
+            let lookup = gate.lookup.clone();
+            (forge_lookup, forge_loading) = match (forge_refresh_pending, gate.ever_succeeded()) {
+                (true, false) => (None, true),
+                (true, true) => (lookup.map(ForgePrLookup::identity_only), false),
+                (false, _) => (lookup, false),
+            };
+        }
+    }
+
+    // Default open-PR rows: every open PR not already represented by a row
+    // gets one — a PR-bearing local branch surfaced (a streamed target, like
+    // a `--branches` row), or a display-only row synthesized from the cache.
+    // They ride the pr column's effective (gated) visibility, and the seed
+    // honors the same freshness states: identity now, fates with the
+    // refresh. On a cold cache (no identities yet) rows land when the first
+    // refresh concludes, via the same reconcile that recolors the cells.
+    // The context and the seeded-row names feed that reconcile: the refresh
+    // poll re-plans against the fresh snapshot and diffs it with the seed.
+    let mut pr_row_ctx: Option<crate::commands::list::PrRowContext> = None;
+    let mut seeded_pr_rows: HashSet<String> = HashSet::new();
+    if selected_columns.contains(&crate::core::columns::ListColumn::Pr) {
+        let ctx = crate::commands::list::pr_row_context(&git);
+        if let Some(lookup) = &forge_lookup {
+            let pr_rows = crate::commands::list::collect_pr_rows(
+                &git,
+                lookup,
+                &ctx,
+                &worktree_branches,
+                show_local,
+                &base_branch,
+                stat,
+                &project_root,
+                settings.ownership_strategy,
+                user_email.as_deref(),
+                &settings.remote,
+            )?;
+            for info in pr_rows {
+                if info.kind != EntryKind::ForgePr {
+                    targets.push(list_stream::CollectorTarget {
+                        branch_name: info.name.clone(),
+                        path: info.path.clone(),
+                        kind: info.kind,
+                        is_detached: false,
+                    });
+                }
+                seeded_pr_rows.insert(info.name.clone());
+                worktree_infos.push(info);
+            }
+            if show_remote {
+                // A synthesized PR row subsumes its branch's `-r` remote
+                // row — one row per branch, and the PR row is the richer.
+                let synthesized: HashSet<String> = worktree_infos
+                    .iter()
+                    .filter(|i| i.kind == EntryKind::ForgePr)
+                    .map(|i| i.name.clone())
+                    .collect();
+                let subsumed = |name: &str, kind: EntryKind| {
+                    crate::core::worktree::pr_rows::remote_row_subsumed(name, kind, &synthesized)
+                };
+                worktree_infos.retain(|i| !subsumed(&i.name, i.kind));
+                targets.retain(|t| !subsumed(&t.branch_name, t.kind));
+            }
+        }
+        pr_row_ctx = Some(ctx);
     }
 
     // Short-circuit when the merged set is empty: skip TUI bringup and
@@ -183,6 +287,9 @@ pub fn run_live(args: Args) -> Result<()> {
         .collect();
 
     let (tx, rx) = mpsc::channel::<DagEvent>();
+    // Cloned before the collector consumes `tx`; feeds the forge-refresh
+    // poll thread spawned after TUI state exists.
+    let forge_poll_tx = tx.clone();
 
     // Spawn the streaming collector. Cells stream into LiveTable as they
     // arrive.
@@ -206,7 +313,7 @@ pub fn run_live(args: Args) -> Result<()> {
         tx,
     );
 
-    let state = TuiState::new(
+    let mut state = TuiState::new(
         Vec::new(), // no phases
         worktree_infos,
         project_root.clone(),
@@ -225,6 +332,63 @@ pub fn run_live(args: Args) -> Result<()> {
         // and transitions when its patch lands.
         !fields,
     );
+    // Post-set like `unowned_start_index`: TuiState::new stays untouched for
+    // the one caller that decorates.
+    state.live.cfg.forge_prs = forge_lookup;
+    state.live.cfg.forge_prs_loading = forge_loading;
+
+    // Watch the detached refresh conclude while the table is live: poll the
+    // store's health stamp (cheap reader-pool read, no network — the render
+    // layer never touches the store itself) and deliver the verdict through
+    // the same event channel the collectors use. A concluded success reloads
+    // the lookup (fresh statuses swap in); a failure or the deadline sends
+    // `None`, settling skeletons and leaving identity-only cells statusless
+    // for this run. The `()` channel feeds the completion barrier below.
+    let mut forge_done_rx: Option<mpsc::Receiver<()>> = None;
+    if forge_refresh_pending
+        && fields.contains(FieldSet::FORGE_REF)
+        && let Some(hash) = forge_repo_hash
+        && let Some(pr_ctx) = pr_row_ctx
+    {
+        let baseline = forge_finished_baseline;
+        let forge_tx = forge_poll_tx;
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        forge_done_rx = Some(done_rx);
+        let poll_worktree_branches = worktree_branches.clone();
+        let poll_seeded = seeded_pr_rows.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let outcome = loop {
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if let Some(h) = crate::commands::forge_cache::read_health(&hash)
+                    && h.finished_at.is_some()
+                    && h.finished_at != baseline
+                {
+                    // Concluded. This attempt succeeded iff it stamped its
+                    // snapshot (success writes finished == succeeded). The
+                    // fresh lookup ships with the row-set reconcile, planned
+                    // against the same branch/ref universe the seed used.
+                    break (h.succeeded_at == h.finished_at).then(|| {
+                        crate::core::worktree::pr_rows::reconcile_pr_rows(
+                            crate::commands::forge_cache::load_lookup(&hash),
+                            &poll_worktree_branches,
+                            &pr_ctx.local_branches,
+                            &pr_ctx.branch_refs,
+                            show_local,
+                            &poll_seeded,
+                        )
+                    });
+                }
+            };
+            // Event before the barrier signal: the shared channel then
+            // guarantees the verdict lands before the completion sentinel.
+            let _ = forge_tx.send(DagEvent::ForgePrsRefreshed(outcome));
+            let _ = done_tx.send(());
+        });
+    }
 
     // Single source of truth for cancellation: the renderer's Ctrl-C handler
     // flips the same flag the collector workers observe between cluster calls.
@@ -243,10 +407,28 @@ pub fn run_live(args: Args) -> Result<()> {
     });
 
     // The renderer waits for `WorktreeInfoCollectionDone`, which the collector
-    // handle emits on `join()`. Joining must happen on a separate thread so the
-    // sentinel fires while the renderer is still listening on the channel.
+    // handle emits after all workers join. Joining must happen on a separate
+    // thread so the sentinel fires while the renderer is still listening on
+    // the channel. When a forge refresh is in flight, the sentinel
+    // additionally waits — bounded, cancel-aware — for the refresh verdict,
+    // so fresh PR statuses land in the final frame instead of on the next
+    // run; the poll thread always signals (verdict, deadline, or death), and
+    // sends its event *before* the signal, so the shared channel orders the
+    // verdict ahead of the sentinel.
+    let barrier_cancel = std::sync::Arc::clone(&cancel);
     let join_thread = std::thread::spawn(move || {
-        collector_handle.join();
+        collector_handle.join_after(move || {
+            let Some(done_rx) = forge_done_rx else { return };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+            while std::time::Instant::now() < deadline
+                && !barrier_cancel.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                match done_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        });
     });
 
     // Enable raw mode so crossterm's event loop receives Ctrl-C as a key event
@@ -314,6 +496,7 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
             ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             ListColumn::Age => FieldSet::BRANCH_AGE,
             ListColumn::Owner => FieldSet::OWNER,
+            ListColumn::Pr => FieldSet::FORGE_REF,
             ListColumn::Hash | ListColumn::LastCommit => FieldSet::LAST_COMMIT,
         };
     }

@@ -58,6 +58,24 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
+The pr column shows the pull/merge request each row relates to (#123 for a
+GitHub PR, !45 for a GitLab MR). It is on by default in repositories with a
+GitHub or GitLab remote and disappears silently — persisting across runs —
+when the forge integration is broken in a way that needs your intervention
+(gh/glab missing or unauthenticated); it returns automatically once a
+background refresh succeeds again. Repositories with no forge remote never
+show it. Add --columns +pr to force the column regardless, or -pr to drop it.
+
+While the pr column is shown, every open PR in the repository gets a row, not
+just the ones your worktrees represent: a local branch with an open PR is
+listed without --branches, and a PR with no local presence at all (a
+colleague's branch, any fork PR) appears as a dimmed row built from the forge
+data — fork PRs render owner:branch. Merged and closed PRs decorate existing
+rows but never add one. Rows with a PR show the PR author in the Owner
+column. The open-PR rows and the pr column are one unit: --columns -pr (or
+the silent gate above) removes both, so prefer just your worktrees per-repo
+with `git config -- daft.list.columns -pr`.
+
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
   Sort by branch descending:  --sort -branch
@@ -95,7 +113,7 @@ git worktree-list [OPTIONS] [REPO]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--merging` | Only show worktrees with an in-progress merge |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit |  |
 | `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
 | `--repo <REPO>` | List another cataloged repository's worktrees |  |
 | `--all-repos` | List every cataloged repository's worktrees |  |

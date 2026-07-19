@@ -132,6 +132,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            'base:Ahead/behind base branch'\n");
         output.push_str("            'changes:Local changes'\n");
         output.push_str("            'remote:Ahead/behind remote'\n");
+        output.push_str("            'pr:Pull/merge request'\n");
         output.push_str("            'age:Branch age'\n");
         output.push_str("            'owner:Branch owner'\n");
         output.push_str("            'hash:Commit hash'\n");
@@ -143,6 +144,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+base:Add ahead/behind base branch'\n");
         output.push_str("            '+changes:Add local changes'\n");
         output.push_str("            '+remote:Add ahead/behind remote'\n");
+        output.push_str("            '+pr:Add pull/merge request'\n");
         output.push_str("            '+age:Add branch age'\n");
         output.push_str("            '+owner:Add branch owner'\n");
         output.push_str("            '+hash:Add commit hash'\n");
@@ -154,6 +156,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '-base:Remove ahead/behind base branch'\n");
         output.push_str("            '-changes:Remove local changes'\n");
         output.push_str("            '-remote:Remove ahead/behind remote'\n");
+        output.push_str("            '-pr:Remove pull/merge request'\n");
         output.push_str("            '-age:Remove branch age'\n");
         output.push_str("            '-owner:Remove branch owner'\n");
         output.push_str("            '-hash:Remove commit hash'\n");
@@ -378,12 +381,19 @@ __{func_name}_impl() {{
     local -a local_names local_ages local_authors
     local -a remote_names remote_ages remote_authors
     local -a repo_names repo_paths
+    local -a forge_names forge_stats forge_owners forge_titles
+    local -a forge_tok_names forge_tok_descs
     raw=(${{(f)"$({env_prefix}daft __complete {command_name} "$curword" --position "$cword"{fetch_flag} 2>/dev/null)"}})
 
     # First pass: collect names and descriptions per group.
     # Worktree lines have 5 fields: name\tworktree\tage\tauthor\tpath
     # Local/remote lines have 4 fields: name\tgroup\tage\tauthor
     # Catalog repo lines have 3 fields: name\trepo\tpath
+    # Forge PR lines have 5 fields: name\tforge\tstatus\towner\ttitle —
+    # status/owner pad in the age/author slots so PR rows align like branch
+    # rows. The bare pr:/mr: syntax tokens are 3-field (name\tforge\thelp) and
+    # go in their own group so they can complete without a trailing space
+    # (the user keeps typing the number after the colon).
     # Worktree names may have *? dirty indicators — strip for completion
     # value, keep for display. (* and ? are invalid in git branch names.)
     local line name rest group desc max_len=0 len clean_name
@@ -436,14 +446,32 @@ __{func_name}_impl() {{
                 # desc is the repo's display path
                 repo_paths+=("$desc")
                 ;;
+            forge)
+                if [[ "$name" == "pr:" || "$name" == "mr:" ]]; then
+                    forge_tok_names+=("$name")
+                    forge_tok_descs+=("$desc")
+                else
+                    forge_names+=("$name")
+                    # desc is "status\towner\ttitle"
+                    forge_stats+=("${{desc%%$'\t'*}}")
+                    local forge_rest="${{desc#*$'\t'}}"
+                    forge_owners+=("${{forge_rest%%$'\t'*}}")
+                    forge_titles+=("${{forge_rest#*$'\t'}}")
+                    age_len=${{#${{desc%%$'\t'*}}}}
+                    (( age_len > max_age_len )) && max_age_len=$age_len
+                    auth_len=${{#${{forge_rest%%$'\t'*}}}}
+                    (( auth_len > max_auth_len )) && max_auth_len=$auth_len
+                fi
+                ;;
         esac
     done
 
     # Second pass: build padded display strings.
     # Worktrees: four columns (name, age, author, path) — uses raw name with indicators.
     # Local/remote: three columns (name, age, author).
-    # Catalog repos: two columns (name, path).
-    local -a wt_display local_display remote_display repo_display
+    # Forge PRs: four columns (name, status, owner, title).
+    # Catalog repos and forge syntax tokens: two columns (name, description).
+    local -a wt_display local_display remote_display repo_display forge_display forge_tok_display
     local i pad apad authpad
     (( max_len += 2 ))
     (( max_age_len += 2 ))
@@ -470,15 +498,29 @@ __{func_name}_impl() {{
         pad=$(( max_len - ${{#repo_names[$i]}} ))
         repo_display+=("${{repo_names[$i]}}${{(l:$pad:: :)}}  ${{repo_paths[$i]}}")
     done
+    for (( i=1; i<=${{#forge_names}}; i++ )); do
+        pad=$(( max_len - ${{#forge_names[$i]}} ))
+        apad=$(( max_age_len - ${{#forge_stats[$i]}} ))
+        authpad=$(( max_auth_len - ${{#forge_owners[$i]}} ))
+        forge_display+=("${{forge_names[$i]}}${{(l:$pad:: :)}}  ${{forge_stats[$i]}}${{(l:$apad:: :)}}  ${{forge_owners[$i]}}${{(l:$authpad:: :)}}  ${{forge_titles[$i]}}")
+    done
+    for (( i=1; i<=${{#forge_tok_names}}; i++ )); do
+        pad=$(( max_len - ${{#forge_tok_names[$i]}} ))
+        forge_tok_display+=("${{forge_tok_names[$i]}}${{(l:$pad:: :)}}  ${{forge_tok_descs[$i]}}")
+    done
 
     # -V preserves group insertion order: worktrees first, then local, then
-    # remote, then catalog repos (cross-repo navigation). The catalog-repo
-    # group matches case-insensitively (a repo-name convenience); branch
-    # groups stay case-sensitive, since git refs are.
+    # remote, then catalog repos (cross-repo navigation), then forge PR/MR
+    # targets. The catalog-repo group matches case-insensitively (a repo-name
+    # convenience); branch groups stay case-sensitive, since git refs are. The
+    # pr:/mr: syntax tokens complete suffix-free (-S '') so the accepted token
+    # stays glued to the number the user types next.
     (( ${{#wt_names}} ))     && compadd -V worktree -l -d wt_display -a wt_names
     (( ${{#local_names}} ))  && compadd -V local -l -d local_display -a local_names
     (( ${{#remote_names}} )) && compadd -V remote -l -d remote_display -a remote_names
     (( ${{#repo_names}} ))   && compadd -M 'm:{{[:lower:][:upper:]}}={{[:upper:][:lower:]}}' -V repo -l -d repo_display -a repo_names
+    (( ${{#forge_names}} ))  && compadd -V forge -l -d forge_display -a forge_names
+    (( ${{#forge_tok_names}} )) && compadd -V forge-syntax -S '' -l -d forge_tok_display -a forge_tok_names
 {path_post}}}
 
 _{func_name}() {{

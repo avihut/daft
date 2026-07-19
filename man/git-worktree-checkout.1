@@ -27,6 +27,14 @@ remote, a new branch and worktree are created automatically, as if \*(Aqdaft sta
 had been called. This can also be enabled permanently with the daft.go.autoStart
 git config option.
 .PP
+Pass a pull/merge request instead of a branch to check it out into a
+worktree: `pr:123`, `mr:45`, or a pasted PR/MR URL. daft resolves it through
+the `gh`/`glab` CLI (which supply the auth — daft stores no tokens), creates
+a worktree on the PR/MR\*(Aqs source branch, and configures it to pull from the
+PR/MR head. Fork PRs work without adding a remote. The platform is detected
+from the repository\*(Aqs remote; `pr:`/`mr:` are interchangeable aliases. Set
+`daft.forge.platform` (github/gitlab) to disambiguate a mixed\-remote repo.
+.PP
 Use \*(Aq\-\*(Aq as the branch name to switch to the previous worktree, similar to
 \*(Aqcd \-\*(Aq. Repeated \*(Aqdaft go \-\*(Aq toggles between the two most recent worktrees.
 Cannot be combined with \-b/\-\-create\-branch.
@@ -85,7 +93,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 <\fIBRANCH_NAME\fR>
-Name of the branch to check out (or create with \-b); use \*(Aq\-\*(Aq for previous worktree
+Branch to check out (or create with \-b), a pull/merge request (pr:123, mr:45, or a PR/MR URL), or \*(Aq\-\*(Aq for the previous worktree
 .TP
 [\fIBASE_BRANCH_NAME\fR]
 Branch to use as the base for the new branch (only with \-b); defaults to the current branch

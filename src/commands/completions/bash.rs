@@ -110,7 +110,7 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     if has_columns {
         output.push_str("    # Column name completion for --columns\n");
         output.push_str("    if [[ \"$prev\" == \"--columns\" ]]; then\n");
-        output.push_str("        local columns=\"annotation branch path size base changes remote age owner hash last-commit\"\n");
+        output.push_str("        local columns=\"annotation branch path size base changes remote pr age owner hash last-commit\"\n");
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $columns; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");
@@ -221,6 +221,24 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     let flags_joined = all_flags.join(" ");
 
     let func_name = command_name.replace('-', "_");
+    // checkout/go complete pr:<n>/mr:<n> forge targets; bash's COMP_WORDBREAKS
+    // splits words at ':', so keep it in $cur (-n :) and strip the colon
+    // prefix from COMPREPLY afterwards (__ltrim_colon_completions) — the
+    // standard bash-completion idiom for colon-bearing candidates. When the
+    // sole surviving candidate is a bare pr:/mr: syntax token, suppress the
+    // trailing space so the accepted token stays glued to the number the
+    // user types next.
+    let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
+    let init_completion = if takes_forge_targets {
+        "_init_completion -n : || return"
+    } else {
+        "_init_completion || return"
+    };
+    let ltrim_post = if takes_forge_targets {
+        "        declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n        if [[ ${#COMPREPLY[@]} -eq 1 && ( \"${COMPREPLY[0]}\" == \"pr:\" || \"${COMPREPLY[0]}\" == \"mr:\" ) ]]; then\n            compopt -o nospace 2>/dev/null || true\n        fi\n"
+    } else {
+        ""
+    };
     let fetch_flag = if uses_fetch_on_miss(command_name) {
         " --fetch-on-miss"
     } else {
@@ -303,7 +321,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     let mut output = format!(
         r#"_{func_name}() {{
     local cur prev words cword
-    _init_completion || return
+    {init_completion}
 
 {repo_flag_pre}{skip_hooks_pre}    if [[ "$cur" == -* ]]; then
         local flags="{flags_joined}"
@@ -316,7 +334,7 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     if [[ -n "$raw" ]]; then
         COMPREPLY=( $(compgen -W "$raw" -- "$cur") )
         compopt -o nosort 2>/dev/null || true
-    fi
+{ltrim_post}    fi
 {path_post}    if [[ ${{#COMPREPLY[@]}} -gt 0 ]]; then
         return 0
     fi

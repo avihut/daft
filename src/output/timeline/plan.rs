@@ -29,6 +29,14 @@ pub struct StepLabels {
 /// The tense table.
 pub fn labels_for(id: StageId) -> StepLabels {
     match id {
+        // Rendered only as a fallback: the resolve row carries the PR/MR
+        // identity ("PR #123") as a fixed label override in every phase.
+        StageId::ResolveRef => StepLabels {
+            pending: "Resolve reference",
+            active: "Resolving reference",
+            done: "Resolved reference",
+            skipped: "not resolved",
+        },
         StageId::Fetch => StepLabels {
             pending: "Fetch remote",
             active: "Fetching remote",
@@ -193,6 +201,9 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         }
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
+        // The resolve row's label IS the PR/MR identity ("PR #123"); its
+        // annotation is the free-text title. Both plain.
+        StageId::ResolveRef => (SubjectInk::Plain, SubjectInk::Plain),
         // Everything else speaks daft's own vocabulary. Exec rows carry a
         // fixed label (worktree or command) and a plain annotation
         // (`exit N`, `cancelled`, latest output line) — no identity ink.

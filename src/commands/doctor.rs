@@ -110,6 +110,7 @@ pub fn run() -> Result<()> {
 fn collect_categories(all_repos: bool) -> Vec<CheckCategory> {
     let mut categories = vec![
         run_installation_checks(),
+        crate::doctor::forge_checks::run_forge_checks(),
         crate::doctor::catalog_checks::run_catalog_checks(),
     ];
 

@@ -6,6 +6,8 @@
 //! stays a pure data-access layer.
 
 pub mod catalog_repo;
+pub mod forge_health;
+pub mod forge_pr;
 pub mod governor_event;
 pub mod hook_profile;
 pub mod invocation;
@@ -16,6 +18,8 @@ pub mod visitor_seed;
 pub mod worktree_size;
 
 pub use catalog_repo::CatalogRepoRow;
+pub use forge_health::ForgeHealthRow;
+pub use forge_pr::ForgePrRow;
 pub use governor_event::GovernorEventRow;
 pub use hook_profile::HookProfileRow;
 pub use invocation::InvocationRow;

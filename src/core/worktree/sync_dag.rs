@@ -531,6 +531,7 @@ pub enum WorktreeInfoPatch {
     RemoteLines(Option<(usize, usize)>),
     Size(Option<u64>),
     Mtime(Option<i64>),
+    ForgeRef(Option<super::forge_ref::ForgeBranchRef>),
 }
 
 /// Why a patch was emitted. `LiveTable` uses this to suppress stale
@@ -669,6 +670,16 @@ pub enum DagEvent {
         patch: WorktreeInfoPatch,
         source: PatchSource,
     },
+
+    /// The background forge refresh concluded while the table is live.
+    /// `Some` carries the fresh PR-column lookup plus the row-set reconcile
+    /// (statuses become authoritative, new open PRs' rows insert, closed
+    /// PRs' rows drop — one repaint); `None` means it concluded without
+    /// fresh data — failed or timed out — so loading skeletons settle and
+    /// any identity-only cells stay statusless for this run. Emitted by
+    /// `daft list`'s cache poll (command layer — renderers never read the
+    /// store), not by collectors.
+    ForgePrsRefreshed(Option<super::pr_rows::ForgePrRowsRefresh>),
 
     /// The initial `source=Collector` run completed. Subset re-runs
     /// (`PostFetch`, `PostTask`) do not emit this — they end silently.

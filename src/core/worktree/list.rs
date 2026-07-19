@@ -40,6 +40,23 @@ pub enum EntryKind {
     LocalBranch,
     /// Remote tracking branch without a local branch or worktree.
     RemoteBranch,
+    /// An open PR with no local presence, synthesized from the forge-PR
+    /// cache (`daft list` shows every open PR by default).
+    ForgePr,
+}
+
+impl EntryKind {
+    /// Display-section order: worktrees first, then local branches, then
+    /// remote branches, then foreign open PRs — most local to least. Every
+    /// list sort composes this before the user's sort key.
+    pub fn section_order(self) -> u8 {
+        match self {
+            EntryKind::Worktree => 0,
+            EntryKind::LocalBranch => 1,
+            EntryKind::RemoteBranch => 2,
+            EntryKind::ForgePr => 3,
+        }
+    }
 }
 
 /// Enriched information about a single worktree or branch.
@@ -102,6 +119,9 @@ pub struct WorktreeInfo {
     pub working_tree_mtime: Option<i64>,
     /// Whether this is a detached HEAD sandbox (no branch).
     pub is_sandbox: bool,
+    /// The PR/MR this branch tracks (from `branch.<name>.merge`), or `None`.
+    /// Local config only — no network.
+    pub forge_ref: Option<super::forge_ref::ForgeBranchRef>,
 }
 
 impl WorktreeInfo {
@@ -137,6 +157,7 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         }
     }
 
@@ -171,6 +192,7 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         }
     }
 
@@ -314,6 +336,10 @@ impl WorktreeInfo {
             P::Mtime(v) => {
                 self.working_tree_mtime = *v;
                 FieldSet::MTIME
+            }
+            P::ForgeRef(v) => {
+                self.forge_ref = *v;
+                FieldSet::FORGE_REF
             }
         }
     }
@@ -595,6 +621,26 @@ pub(crate) fn get_upstream_ahead_behind(
     }
 }
 
+/// The PR/MR a branch tracks, read from its `branch.<name>.merge` config
+/// (`refs/pull/N/head` / `refs/merge-requests/N/head`, written by a `pr:`/`mr:`
+/// checkout). Local config only — no network. `None` for ordinary branches.
+pub(crate) fn get_forge_branch_ref(
+    branch: &str,
+    worktree_path: &Path,
+) -> Option<super::forge_ref::ForgeBranchRef> {
+    let key = format!("branch.{branch}.merge");
+    let output = Command::new("git")
+        .args(["config", "--get", &key])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let merge = String::from_utf8(output.stdout).ok()?;
+    super::forge_ref::ForgeBranchRef::parse_merge_ref(merge.trim())
+}
+
 /// Parse `git diff --numstat` output and return (total_insertions, total_deletions).
 ///
 /// Each line has the format: `insertions\tdeletions\tfilename`.
@@ -730,6 +776,7 @@ pub fn collect_worktree_info(
     stat: Stat,
     compute_size: bool,
     compute_mtime: bool,
+    compute_forge_ref: bool,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
     remote_name: &str,
@@ -870,6 +917,15 @@ pub fn collect_worktree_info(
             None
         };
 
+        let forge_ref = if compute_forge_ref && !entry.is_detached {
+            entry
+                .branch
+                .as_deref()
+                .and_then(|b| get_forge_branch_ref(b, &entry.path))
+        } else {
+            None
+        };
+
         infos.push(WorktreeInfo {
             kind: EntryKind::Worktree,
             name: branch_display,
@@ -899,6 +955,7 @@ pub fn collect_worktree_info(
             size_bytes: None,
             working_tree_mtime,
             is_sandbox: entry.is_detached,
+            forge_ref,
         });
     }
 
@@ -927,6 +984,11 @@ pub fn collect_worktree_info(
 /// Enumerates local and/or remote branches, filters out those already represented
 /// by a worktree, and enriches each with ahead/behind, commit info, and optionally
 /// line-level stats.
+///
+/// `only_local` restricts the local arm to the named branches — the default
+/// open-PR rows surface a handful of PR-bearing branches, and enriching every
+/// local branch (several git calls each) just to discard most would tax every
+/// bare `daft list`. `None` enriches all (the `--branches` path).
 #[allow(clippy::too_many_arguments)]
 pub fn collect_branch_info(
     git: &GitCommand,
@@ -935,6 +997,7 @@ pub fn collect_branch_info(
     include_local: bool,
     include_remote: bool,
     worktree_branches: &HashSet<String>,
+    only_local: Option<&HashSet<String>>,
     cwd: &Path,
     ownership_strategy: OwnershipStrategy,
     user_email: Option<&str>,
@@ -952,6 +1015,11 @@ pub fn collect_branch_info(
         for branch in output.lines() {
             let branch = branch.trim();
             if branch.is_empty() || worktree_branches.contains(branch) {
+                continue;
+            }
+            if let Some(only) = only_local
+                && !only.contains(branch)
+            {
                 continue;
             }
             local_branch_names.insert(branch.to_string());
@@ -1030,6 +1098,7 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                forge_ref: None,
             });
         }
     }
@@ -1115,6 +1184,7 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                forge_ref: None,
             });
         }
     }

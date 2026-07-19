@@ -80,11 +80,13 @@ fn complete(
     fetch_on_miss: bool,
 ) -> Result<Vec<String>> {
     match (command, position) {
-        // git-worktree-checkout: rich grouped completions (same as daft-go)
-        ("git-worktree-checkout", 1) => Ok(format_entries_as_strings(&complete_rich_branches(
-            word,
-            &CONFIG_CHECKOUT,
-        )?)),
+        // git-worktree-checkout: rich grouped completions (same as daft-go),
+        // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
+        ("git-worktree-checkout", 1) => {
+            let mut entries = complete_rich_branches(word, &CONFIG_CHECKOUT)?;
+            entries.extend(complete_forge_targets(word, None));
+            Ok(format_entries_as_strings(&entries))
+        }
 
         // git-worktree-clone: repository URL (no dynamic completion for now)
         ("git-worktree-clone", 1) => Ok(vec![]),
@@ -116,14 +118,20 @@ fn complete(
             &CONFIG_BRANCH,
         )?)),
 
-        // daft-go: grouped worktree/local/remote completions with fetch-on-miss
-        ("daft-go", 1) => {
-            let entries = complete_daft_go(word, fetch_on_miss)?;
-            Ok(format_entries_as_strings(&entries))
-        }
+        // daft-go: grouped worktree/local/remote completions with fetch-on-miss,
+        // plus forge PR/MR targets (pr:/mr: tokens and cached PR numbers).
+        // Forge targets are folded in by complete_daft_go itself — appending
+        // them here would hide them from the fetch-on-miss decision, and the
+        // fetch would fire (spinner scribbling over the command line) for
+        // words like `p` that already complete to `pr:`.
+        ("daft-go", 1) => Ok(format_entries_as_strings(&complete_daft_go(
+            word,
+            fetch_on_miss,
+        )?)),
 
         // daft-go position 2: branches of the catalog repo named at
-        // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST).
+        // position 1 (the shell passes it via DAFT_COMPLETE_GO_FIRST),
+        // plus that repo's forge pr:/mr: targets.
         ("daft-go", 2) => {
             let first = std::env::var("DAFT_COMPLETE_GO_FIRST").unwrap_or_default();
             Ok(format_entries_as_strings(&complete_go_second(&first, word)))
@@ -461,9 +469,11 @@ fn current_worktree_branch(repo: &gix::Repository) -> Option<String> {
 }
 
 /// Top-level completion helper for `daft go`. Collects real git data,
-/// applies grouping rules, and returns the ordered candidate list.
-/// When `fetch_on_miss` is true and the prefix has no local matches,
-/// runs `git fetch` with a spinner and re-resolves.
+/// catalog repos, and forge `pr:`/`mr:` targets, applies grouping rules,
+/// and returns the ordered candidate list. When `fetch_on_miss` is true,
+/// the prefix matched nothing at all, and a fetch could still surface a
+/// matching branch (a word containing `:` never gains one), runs
+/// `git fetch` with a spinner and re-resolves.
 pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<CompletionEntry>> {
     use std::time::Instant;
 
@@ -476,8 +486,12 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
     let repo = match discover_repo() {
         Ok(repo) => repo,
         // Outside any git repo, `daft go` is a pure catalog jump — offer
-        // live repo names instead of nothing.
-        Err(_) => return Ok(catalog_repo_entries(prefix, &Default::default())),
+        // live repo names (plus the forge syntax tokens) instead of nothing.
+        Err(_) => {
+            let mut entries = catalog_repo_entries(prefix, &Default::default());
+            append_forge_group(&mut entries, prefix, timings);
+            return Ok(entries);
+        }
     };
     let d_discover = t.elapsed();
 
@@ -574,10 +588,12 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
 
     let mut entries = collect(&repo, timings);
     append_catalog_group(&mut entries, prefix);
+    append_forge_group(&mut entries, prefix, timings);
 
-    // A catalog-repo match counts as a hit: no point fetching refs when the
-    // word already names another repo.
-    if !entries.is_empty() || !fetch_on_miss || !go_fetch_on_miss || prefix.is_empty() {
+    // A catalog-repo or forge match counts as a hit: no point fetching refs
+    // when the word already names another repo or a pr:/mr: target — the
+    // spinner would scribble over the command line for nothing.
+    if !fetch_on_miss || !go_fetch_on_miss || !fetch_could_surface_match(prefix, &entries) {
         if timings {
             eprintln!(
                 "[timings] total            : {:>7.1}ms",
@@ -631,6 +647,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
 
     let mut entries = collect(&repo, timings);
     append_catalog_group(&mut entries, prefix);
+    append_forge_group(&mut entries, prefix, timings);
 
     if timings {
         eprintln!(
@@ -691,10 +708,29 @@ fn append_catalog_group(entries: &mut Vec<CompletionEntry>, prefix: &str) {
     entries.extend(catalog_repo_entries(prefix, &existing));
 }
 
+/// Append the forge `pr:`/`mr:` group to a `daft go` completion list.
+/// Folded in before the fetch-on-miss decision so a forge candidate counts
+/// as a hit like any other — otherwise `daft go p<Tab>` would fetch (and
+/// spin) despite having `pr:` to offer.
+fn append_forge_group(entries: &mut Vec<CompletionEntry>, prefix: &str, timings: bool) {
+    let t = std::time::Instant::now();
+    entries.extend(complete_forge_targets(prefix, None));
+    if timings {
+        eprintln!(
+            "[timings] forge            : {:>7.1}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 /// Position-2 completion for `daft go <repo> <branch>`: branches of the
-/// repo named by `DAFT_COMPLETE_GO_FIRST` (set by the shell snippets).
-/// Empty when the first word isn't a live catalog repo — position 2 then
-/// means a base branch for `-b`, which keeps its default completion.
+/// repo named by `DAFT_COMPLETE_GO_FIRST` (set by the shell snippets), plus
+/// that repo's forge `pr:`/`mr:` targets — the branch slot accepts them
+/// (`daft go api pr:9` opens api's PR 9), so Tab offers the *target* repo's
+/// candidates, not the caller's. Empty when the first word isn't a live
+/// catalog repo — position 2 then means a base branch for `-b`, which keeps
+/// its default completion (and stays forge-free: the create-family guard
+/// rejects basing a new branch on a PR ref).
 fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
     if first_word.is_empty() {
         return Vec::new();
@@ -709,6 +745,18 @@ fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
     if !root.is_dir() {
         return Vec::new();
     }
+    let mut entries = go_second_branches(root, &row.name, prefix);
+    entries.extend(complete_forge_targets(prefix, Some(root)));
+    entries
+}
+
+/// The branch half of [`complete_go_second`]: local + remote branch names of
+/// the repo at `root`, deduped, described by the repo's catalog name.
+fn go_second_branches(
+    root: &std::path::Path,
+    repo_name: &str,
+    prefix: &str,
+) -> Vec<CompletionEntry> {
     let Ok(out) = crate::utils::git_command_at(root)
         .args([
             "for-each-ref",
@@ -744,7 +792,7 @@ fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
         .map(|name| CompletionEntry {
             name,
             group: CompletionGroup::Local,
-            description: row.name.clone(),
+            description: repo_name.to_string(),
         })
         .collect()
 }
@@ -1795,6 +1843,15 @@ fn format_entries_as_strings(entries: &[CompletionEntry]) -> Vec<String> {
         .collect()
 }
 
+/// Whether the fetch-on-miss fallback could possibly help: the word matched
+/// no candidate of any kind, and a fetch could still surface a matching
+/// branch. A word containing `:` never gains one — colon is illegal in git
+/// refnames — so `pr:`/`mr:` targets and pasted URLs stay pure local
+/// lookups no matter how stale the remote refs are.
+fn fetch_could_surface_match(prefix: &str, entries: &[CompletionEntry]) -> bool {
+    entries.is_empty() && !prefix.is_empty() && !prefix.contains(':')
+}
+
 /// Return `true` if the cooldown marker is missing or older than
 /// `cooldown`. Used to decide whether the fetch-on-miss path should run.
 fn should_run_fetch(marker: &std::path::Path, cooldown: std::time::Duration) -> bool {
@@ -1829,6 +1886,144 @@ fn touch_fetch_marker(marker: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Forge PR/MR targets for the checkout/go branch slots. NEVER invokes
+/// `gh`/`glab` — this runs on every Tab keypress, and the hard rule is that
+/// the completion path stays local: the literal syntax tokens, the repo's
+/// `branch.<name>.merge` config, and the forge-PR cache are the only sources.
+/// Best-effort throughout: any failure yields fewer entries, never an error
+/// (noise on the Tab path leaks into the shell).
+///
+/// `repo_root` picks the repo the candidates come from: `None` is the repo
+/// the cwd sits in (position 1), `Some(root)` a catalog repo addressed
+/// cross-repo — `daft go <repo> pr:<Tab>` completes against the *target*
+/// repo's cache and branch config, not the caller's.
+fn complete_forge_targets(word: &str, repo_root: Option<&std::path::Path>) -> Vec<CompletionEntry> {
+    let mut entries = Vec::new();
+
+    // Literal syntax tokens while the user could still be typing one.
+    for (token, description) in [
+        (
+            "pr:",
+            "check out a GitHub pull request by number (a pasted PR/MR URL works too)",
+        ),
+        ("mr:", "check out a GitLab merge request by number"),
+    ] {
+        if token.starts_with(word) && word.len() < token.len() {
+            entries.push(CompletionEntry {
+                name: token.to_string(),
+                group: CompletionGroup::Forge,
+                description: description.to_string(),
+            });
+        }
+    }
+    if !(word.starts_with("pr:") || word.starts_with("mr:")) {
+        return entries;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+
+    // One bulk cache read serves both sections below: open rows become
+    // candidates, and any row supplies status/owner metadata for a PR the
+    // user has checked out locally. The cross-repo hash derives from the
+    // target's live git dir (not the catalog row's recorded uuid) so it
+    // matches what `__refresh-forge` keyed the cache with, even if the repo
+    // was re-created since it was cataloged.
+    let repo_hash = match repo_root {
+        None => crate::core::repo_identity::compute_repo_id().ok(),
+        Some(root) => crate::core::repo::git_common_dir_at(root).and_then(|common| {
+            crate::core::repo_identity::compute_repo_id_from_common_dir(&common).ok()
+        }),
+    };
+    let rows = repo_hash
+        .map(|repo_hash| crate::commands::forge_cache::read_prs(&repo_hash))
+        .unwrap_or_default();
+
+    // Cache-backed candidates: the open PRs/MRs from the last refresh. Open
+    // only — an open PR's head branch is alive by definition, while a
+    // merged/closed PR's branch has usually been deleted on the forge, so it
+    // is no longer a useful `go` target (and the Tab path must not ask the
+    // forge whether it survived). The description carries two more
+    // tab-separated columns — the status glyph as of the last refresh and the
+    // PR author — which zsh/fish render alongside the title. Stored titles and
+    // authors are sanitized at the persistence boundary, so they are safe for
+    // the completion stream.
+    for row in &rows {
+        if row.state != "open" {
+            continue;
+        }
+        let name = format!("{}:{}", row.kind, row.number);
+        if !name.starts_with(word) || !seen.insert(name.clone()) {
+            continue;
+        }
+        entries.push(CompletionEntry {
+            name,
+            group: CompletionGroup::Forge,
+            description: format!("{}\t{}\t{}", row_status_glyph(row), row.author, row.title),
+        });
+    }
+
+    // Config-backed candidates: PRs already checked out locally
+    // (`branch.<name>.merge = refs/pull/N/head`) that the loop above didn't
+    // offer — a cold cache, or a PR that merged/closed since checkout. The
+    // local branch demonstrably exists, so `go` remains a navigation target
+    // regardless of the PR's forge state. One git config read; status/owner
+    // columns fill from the cache row when the snapshot still has one.
+    let config_dir = match repo_root {
+        None => std::env::current_dir().ok(),
+        Some(root) => Some(root.to_path_buf()),
+    };
+    if let Some(dir) = config_dir
+        && let Ok(output) = crate::utils::git_command_at(&dir)
+            .args(["config", "--get-regexp", r"^branch\..*\.merge$"])
+            .output()
+        && output.status.success()
+    {
+        // One shared parser with the list PR-rows path (pr_rows), so completion
+        // and `daft list` never disagree about which local branches track a PR.
+        // HashMap iteration order is unstable — sort for deterministic
+        // completion output (by kind, then number).
+        let mut checked_out: Vec<_> = crate::core::worktree::pr_rows::parse_branch_forge_refs(
+            &String::from_utf8_lossy(&output.stdout),
+        )
+        .into_iter()
+        .collect();
+        checked_out.sort_by(|a, b| {
+            a.1.kind
+                .tag()
+                .cmp(b.1.kind.tag())
+                .then(a.1.number.cmp(&b.1.number))
+        });
+        for (branch, forge_ref) in checked_out {
+            let name = format!("{}:{}", forge_ref.kind.tag(), forge_ref.number);
+            if !name.starts_with(word) || !seen.insert(name.clone()) {
+                continue;
+            }
+            let cached = rows
+                .iter()
+                .find(|r| r.kind == forge_ref.kind.tag() && r.number == forge_ref.number);
+            let (glyph, owner) =
+                cached.map_or(("", ""), |r| (row_status_glyph(r), r.author.as_str()));
+            entries.push(CompletionEntry {
+                name,
+                group: CompletionGroup::Forge,
+                description: format!("{glyph}\t{owner}\tchecked out: {branch}"),
+            });
+        }
+    }
+
+    entries
+}
+
+/// The colorless status glyph for a cached PR row — the same vocabulary the
+/// list column falls back to when colors are off (`✓`/`✗`/`●` CI, `◆` merged,
+/// `○` closed, empty for open-without-CI). Completion display strings can't
+/// carry color, so the glyph is the status column.
+fn row_status_glyph(row: &crate::store::models::ForgePrRow) -> &'static str {
+    use crate::core::worktree::forge_ref::{CiStatus, PrStatus};
+    let ci = row.ci_status.as_deref().and_then(CiStatus::parse);
+    PrStatus::from_state_and_ci(&row.state, ci).glyph()
+}
+
 /// Which group a completion entry belongs to, used for visual separation
 /// in shells that support per-item tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1841,6 +2036,8 @@ pub(crate) enum CompletionGroup {
     Remote,
     /// A repository from the repo catalog (cross-repo navigation).
     Repo,
+    /// A forge PR/MR target (`pr:`/`mr:` tokens and cached PR numbers).
+    Forge,
 }
 
 impl CompletionGroup {
@@ -1850,6 +2047,7 @@ impl CompletionGroup {
             CompletionGroup::Local => "local",
             CompletionGroup::Remote => "remote",
             CompletionGroup::Repo => "repo",
+            CompletionGroup::Forge => "forge",
         }
     }
 }
@@ -2115,6 +2313,97 @@ pub(crate) fn format_rich_completions(entries: &[CompletionEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forge_tokens_offered_while_typing_the_prefix() {
+        // Empty word and partial prefixes offer the literal syntax tokens.
+        for word in ["", "p", "pr"] {
+            let names: Vec<String> = complete_forge_targets(word, None)
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+            assert!(names.contains(&"pr:".to_string()), "word {word:?}");
+        }
+        let names: Vec<String> = complete_forge_targets("m", None)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["mr:"]);
+        // An ordinary branch-name prefix gets no forge noise.
+        assert!(complete_forge_targets("feat", None).is_empty());
+    }
+
+    #[test]
+    fn forge_entries_use_the_forge_group() {
+        for entry in complete_forge_targets("", None) {
+            assert_eq!(entry.group.as_str(), "forge");
+        }
+    }
+
+    /// A cross-repo root that no longer exists (or was never a repo) yields
+    /// no candidates and no error — and, with a `pr:`-prefixed word, provably
+    /// never falls back to the cwd repo's cache or config.
+    #[test]
+    fn forge_targets_at_a_dead_root_yield_nothing() {
+        let dead = std::path::Path::new("/nonexistent/daft-completion-test");
+        assert!(complete_forge_targets("pr:", Some(dead)).is_empty());
+        // The literal tokens still offer while typing the prefix — they
+        // don't depend on the repo existing.
+        let names: Vec<String> = complete_forge_targets("p", Some(dead))
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["pr:"]);
+    }
+
+    #[test]
+    fn fetch_on_miss_only_fires_when_a_fetch_could_help() {
+        let no_candidates: Vec<CompletionEntry> = Vec::new();
+        let forge_token = vec![CompletionEntry {
+            name: "pr:".to_string(),
+            group: CompletionGroup::Forge,
+            description: String::new(),
+        }];
+        // A genuine branch-word miss still fetches.
+        assert!(fetch_could_surface_match("fea", &no_candidates));
+        // Any candidate is a hit — here the pr: syntax token that
+        // `daft go p<Tab>` completes to. Fetching would only draw the
+        // spinner over the user's command line.
+        assert!(!fetch_could_surface_match("p", &forge_token));
+        // `:` is illegal in refnames: no fetch can make a branch match
+        // pr:99, even with an empty forge cache.
+        assert!(!fetch_could_surface_match("pr:99", &no_candidates));
+        // Bare <Tab> never fetches.
+        assert!(!fetch_could_surface_match("", &no_candidates));
+    }
+
+    /// The forge completion's status column speaks the list column's
+    /// colorless glyph vocabulary — and stays empty for an open PR without
+    /// CI, so the column doesn't invent a state the forge never reported.
+    #[test]
+    fn forge_completion_status_glyphs_match_the_list_column() {
+        let row = |state: &str, ci: Option<&str>| crate::store::models::ForgePrRow {
+            repo_hash: "hash".into(),
+            kind: "pr".into(),
+            number: 7,
+            title: "t".into(),
+            state: state.into(),
+            head_branch: "b".into(),
+            is_cross_repo: false,
+            ci_status: ci.map(str::to_string),
+            url: String::new(),
+            author: "alice".into(),
+            head_repo_owner: String::new(),
+            updated_at: None,
+            fetched_at: chrono::Utc::now(),
+        };
+        assert_eq!(row_status_glyph(&row("open", Some("pass"))), "✓");
+        assert_eq!(row_status_glyph(&row("open", Some("fail"))), "✗");
+        assert_eq!(row_status_glyph(&row("open", Some("pending"))), "●");
+        assert_eq!(row_status_glyph(&row("open", None)), "");
+        assert_eq!(row_status_glyph(&row("merged", None)), "◆");
+        assert_eq!(row_status_glyph(&row("closed", None)), "○");
+    }
 
     #[test]
     fn test_suggest_new_branch_names() {

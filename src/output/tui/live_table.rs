@@ -8,6 +8,7 @@ use crate::{
     core::{
         sort::SortSpec,
         worktree::{
+            forge_ref::ForgePrLookup,
             info_field::FieldSet,
             list::{EntryKind, Stat, WorktreeInfo},
             sync_dag::{DagEvent, PatchSourceLog},
@@ -43,6 +44,19 @@ pub struct LiveTableConfig {
     /// the bit set but no seed value render as "final empty" rather than
     /// shimmering.
     pub seeded_fields: FieldSet,
+    /// Forge-PR cache decorations for the PR column (outbound PR numbers +
+    /// CI states). Loaded once by `daft list` before the TUI starts and
+    /// post-set after `TuiState::new` (like `unowned_start_index`); `None`
+    /// for commands that don't decorate. While a refresh is in flight the
+    /// seed is stripped to identity (`ForgePrLookup::identity_only`) —
+    /// statuses only render once `ForgePrsRefreshed` delivers fresh data.
+    pub forge_prs: Option<ForgePrLookup>,
+    /// True while no PR snapshot has *ever* been taken and a refresh is in
+    /// flight: PR cells without a value render the loading skeleton until
+    /// `ForgePrsRefreshed` concludes the refresh (with or without data).
+    /// Unlike per-cell patch state this survives collection completing —
+    /// the refresh is out-of-band — but cancel clears it like any shimmer.
+    pub forge_prs_loading: bool,
 }
 
 pub struct LiveTable {
@@ -76,8 +90,20 @@ impl LiveTable {
         // Pre-seed `received_patches` with bits for fields not arriving via
         // the streaming collector. This stops the loading shimmer for cells
         // the collector won't emit a patch for (e.g. `info.owner = None` for
-        // the default branch row in `daft prune` / `daft sync`).
-        let received_patches = vec![cfg.seeded_fields; seed.len()];
+        // the default branch row in `daft prune` / `daft sync`). Synthesized
+        // open-PR rows are seed-final by definition — everything they show
+        // came from the forge cache and no collector targets them — so every
+        // cell is marked received (blank means blank, not loading).
+        let received_patches = seed
+            .iter()
+            .map(|info| {
+                if info.kind == EntryKind::ForgePr {
+                    FieldSet::ALL
+                } else {
+                    cfg.seeded_fields
+                }
+            })
+            .collect();
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         // A cell is stale when the caller pre-populated its value (only SIZE
         // today, from the size cache) AND that field is still streamed by the
@@ -113,6 +139,29 @@ impl LiveTable {
 
     pub fn apply_event(&mut self, event: &DagEvent) {
         match event {
+            DagEvent::ForgePrsRefreshed(outcome) => {
+                // The next frame recomputes column values against the fresh
+                // lookup — no per-row patching needed, the PR cell derives
+                // from cfg at render time — and the row-set reconcile lands
+                // in the same repaint: rows for PRs that closed drop, rows
+                // for PRs the seed didn't know insert. A `None` outcome
+                // (refresh failed or timed out) settles the loading skeleton
+                // but keeps any identity-only seed statusless: the status
+                // never loaded, so it must not appear.
+                if let Some(refresh) = outcome {
+                    self.cfg.forge_prs = Some(refresh.lookup.clone());
+                    for name in &refresh.drop_rows {
+                        self.remove_row(name);
+                    }
+                    for info in &refresh.add_rows {
+                        if self.find_row_idx(&info.name).is_none() {
+                            self.push_row(info.clone());
+                        }
+                    }
+                    self.pending_resort = true;
+                }
+                self.cfg.forge_prs_loading = false;
+            }
             DagEvent::WorktreeInfoUpdated {
                 branch_name,
                 patch,
@@ -174,6 +223,17 @@ impl LiveTable {
         self.rows.iter().position(|r| r.info.name == branch)
     }
 
+    /// Remove a row by name, keeping `received_patches` and `stale_fields`
+    /// in lockstep. Used by the forge reconcile to drop PR-sourced rows
+    /// whose PR is no longer open.
+    fn remove_row(&mut self, branch: &str) {
+        if let Some(idx) = self.find_row_idx(branch) {
+            self.rows.remove(idx);
+            self.received_patches.remove(idx);
+            self.stale_fields.remove(idx);
+        }
+    }
+
     fn resort_and_repartition(&mut self) {
         let pin = self.cfg.pin_default_branch;
         let sort_spec = self.cfg.sort_spec.clone();
@@ -189,12 +249,11 @@ impl LiveTable {
                     return c;
                 }
             }
-            let kind = |k: &EntryKind| match k {
-                EntryKind::Worktree => 0,
-                EntryKind::LocalBranch => 1,
-                EntryKind::RemoteBranch => 2,
-            };
-            let c = kind(&ra.info.kind).cmp(&kind(&rb.info.kind));
+            let c = ra
+                .info
+                .kind
+                .section_order()
+                .cmp(&rb.info.kind.section_order());
             if c != std::cmp::Ordering::Equal {
                 return c;
             }
@@ -231,8 +290,15 @@ impl LiveTable {
     }
 
     /// True when the cell for `field` on `row_idx` should render the
-    /// loading glyph. Only meaningful while !collection_complete.
+    /// loading glyph. Per-row patch state is only meaningful while
+    /// !collection_complete; the repo-level PR first-load skeleton
+    /// (`forge_prs_loading`) is out-of-band — the forge refresh outlives
+    /// the collectors — and is cleared by its own conclusion event or by
+    /// cancel.
     pub fn is_cell_loading(&self, row_idx: usize, field: FieldSet) -> bool {
+        if field.contains(FieldSet::FORGE_REF) && self.cfg.forge_prs_loading && !self.cancelled {
+            return true;
+        }
         !self.collection_complete && !self.received_patches[row_idx].contains(field)
     }
 
@@ -265,8 +331,15 @@ impl LiveTable {
     /// indefinitely. Callers that need rows treated as seed-final
     /// should extend this API rather than rely on the default.
     pub fn push_row(&mut self, info: WorktreeInfo) {
+        // Synthesized open-PR rows are seed-final wherever they enter (see
+        // `new`); other dynamic rows start all-loading as documented above.
+        let received = if info.kind == EntryKind::ForgePr {
+            FieldSet::ALL
+        } else {
+            FieldSet::EMPTY
+        };
         self.rows.push(WorktreeRow::idle(info));
-        self.received_patches.push(FieldSet::EMPTY);
+        self.received_patches.push(received);
         // Dynamically-discovered rows carry no cache seed, so no field is
         // stale — keep the vector length in lockstep with `received_patches`.
         self.stale_fields.push(FieldSet::EMPTY);
@@ -287,6 +360,7 @@ fn patch_field_claim(patch: &crate::core::worktree::sync_dag::WorktreeInfoPatch)
         P::RemoteLines(_) => FieldSet::REMOTE_LINES,
         P::Size(_) => FieldSet::SIZE,
         P::Mtime(_) => FieldSet::MTIME,
+        P::ForgeRef(_) => FieldSet::FORGE_REF,
     }
 }
 
@@ -306,6 +380,8 @@ mod tests {
             project_root: PathBuf::from("/tmp"),
             cwd: PathBuf::from("/tmp"),
             seeded_fields: FieldSet::EMPTY,
+            forge_prs: None,
+            forge_prs_loading: false,
         }
     }
 
@@ -325,6 +401,106 @@ mod tests {
         assert!(!t.collection_complete);
         t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
         assert!(t.collection_complete);
+    }
+
+    #[test]
+    fn forge_refresh_event_swaps_the_pr_lookup_mid_run() {
+        use crate::core::worktree::forge_ref::{
+            ForgeBranchRef, ForgePrLookup, ForgeRefKind, PrDecoration, PrStatus,
+        };
+        use crate::core::worktree::pr_rows::ForgePrRowsRefresh;
+
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        assert!(t.cfg.forge_prs.is_none(), "cold cache: no lookup at start");
+
+        let mut fresh = ForgePrLookup::default();
+        let r = ForgeBranchRef::new(ForgeRefKind::GithubPr, 7);
+        fresh.by_branch.insert(
+            "feat/x".into(),
+            PrDecoration {
+                r,
+                status: Some(PrStatus::Merged),
+                url: None,
+                author: None,
+            },
+        );
+        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(ForgePrRowsRefresh {
+            lookup: fresh.clone(),
+            add_rows: vec![],
+            drop_rows: vec![],
+        })));
+
+        assert_eq!(t.cfg.forge_prs, Some(fresh));
+    }
+
+    /// The refresh's row-set reconcile lands in the same repaint as the
+    /// fresh statuses: rows for PRs the seed didn't know insert (seed-final,
+    /// no shimmer), rows whose PR closed drop — with the bookkeeping vectors
+    /// staying in lockstep.
+    #[test]
+    fn forge_refresh_reconciles_the_pr_row_set() {
+        use crate::core::worktree::forge_ref::ForgePrLookup;
+        use crate::core::worktree::list::EntryKind;
+        use crate::core::worktree::pr_rows::ForgePrRowsRefresh;
+
+        let mut stale_pr = info("alice:patch-1");
+        stale_pr.kind = EntryKind::ForgePr;
+        let mut t = LiveTable::new(vec![info("feat/x"), stale_pr], cfg());
+        assert_eq!(t.rows.len(), 2);
+
+        let mut fresh_row = info("bob:fix-panic");
+        fresh_row.kind = EntryKind::ForgePr;
+        t.apply_event(&DagEvent::ForgePrsRefreshed(Some(ForgePrRowsRefresh {
+            lookup: ForgePrLookup::default(),
+            add_rows: vec![fresh_row],
+            drop_rows: vec!["alice:patch-1".into()],
+        })));
+        t.tick();
+
+        let names: Vec<&str> = t.rows.iter().map(|r| r.info.name.as_str()).collect();
+        assert_eq!(names, vec!["feat/x", "bob:fix-panic"]);
+        assert_eq!(t.received_patches.len(), 2, "vectors stay in lockstep");
+        assert_eq!(t.stale_fields.len(), 2);
+        let idx = t.rows.iter().position(|r| r.info.name == "bob:fix-panic");
+        assert!(
+            !t.is_cell_loading(idx.unwrap(), FieldSet::SIZE),
+            "an inserted PR row is seed-final — blank, never shimmer"
+        );
+    }
+
+    /// First load in a repo that never had a snapshot: PR cells skeleton
+    /// until the refresh concludes — with data (statuses land) or without
+    /// (cells settle empty; a failed refresh must not strand the shimmer).
+    #[test]
+    fn forge_first_load_skeleton_settles_on_conclusion() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_loading = true;
+        // Out-of-band skeleton: survives per-row patches AND collection
+        // completing (the refresh outlives the collectors).
+        t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
+        assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
+        assert!(
+            !t.is_cell_loading(0, FieldSet::SIZE),
+            "only the PR cell rides the repo-level flag"
+        );
+
+        t.apply_event(&DagEvent::ForgePrsRefreshed(None));
+        assert!(
+            !t.is_cell_loading(0, FieldSet::FORGE_REF),
+            "a concluded-without-data refresh settles the skeleton"
+        );
+        assert!(t.cfg.forge_prs.is_none(), "no data means no decorations");
+    }
+
+    /// Cancel must clear the PR skeleton like any other shimmer — the final
+    /// frame renders blanks, not perpetual loading bars.
+    #[test]
+    fn forge_first_load_skeleton_clears_on_cancel() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        t.cfg.forge_prs_loading = true;
+        assert!(t.is_cell_loading(0, FieldSet::FORGE_REF));
+        t.mark_cancelled();
+        assert!(!t.is_cell_loading(0, FieldSet::FORGE_REF));
     }
 
     #[test]

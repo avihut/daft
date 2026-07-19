@@ -25,6 +25,11 @@ use std::time::Duration;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StageId {
     // ── Creation (go / start) ────────────────────────────────────────────
+    /// Resolve a forge PR/MR reference (`pr:123` / `mr:45` / a PR URL) to its
+    /// source branch via `gh`/`glab`. Rendered pre-completed — resolution runs
+    /// under the planning face (it determines the plan), and this row is its
+    /// receipt.
+    ResolveRef,
     /// Fetch from the remote before resolving branches (`daft.checkout.fetch`).
     Fetch,
     /// Ensure remote-tracking refs exist for every remote branch (the

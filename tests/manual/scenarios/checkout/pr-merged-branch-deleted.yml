@@ -1,0 +1,76 @@
+name: Checkout a merged PR whose source branch was deleted
+description: >
+  A merged (or closed) same-repo PR usually loses its source branch to the
+  forge's delete-on-merge cleanup, but its head ref (`refs/pull/N/head`) still
+  holds the commits. `daft go pr:N` must not fail on the missing branch: it
+  falls back to the fork mechanics — fetch the head ref into its tracking ref,
+  create the branch from there, point `git pull` at the head ref — and warns
+  that the PR is merged. A fake `gh` on PATH stands in for the real CLI (no
+  network); it fails loudly on any unexpected call.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and seed the PR head ref on origin (no branch left)
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      # The merged-and-cleaned-up shape: the commits survive only under
+      # refs/pull/6/head on the base repo — no branch anywhere names them.
+      git checkout -q -b tmp-pr-seed
+      echo "merged work" > merged-work.txt
+      git add merged-work.txt
+      git commit -q -m "feat: merged work"
+      git push -q origin HEAD:refs/pull/6/head
+      git checkout -q main
+      git branch -qD tmp-pr-seed
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Check out pr:6 — the deleted branch falls back to the head ref
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      if [ "$*" = "repo set-default --view" ]; then echo "acme/widget"; exit 0; fi
+      if [ "$1" = "api" ] && [ "$2" = "repos/acme/widget/pulls/6" ]; then
+        printf '%s' '{"title":"Merged work","state":"closed","merged":true,"draft":false,"user":{"login":"octocat"},"html_url":"https://github.com/acme/widget/pull/6","head":{"ref":"feature-merged","repo":{"name":"widget","owner":{"login":"acme"}}},"base":{"ref":"main","repo":{"name":"widget","owner":{"login":"acme"}}}}'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-checkout pr:6
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # The state note still surfaces — the checkout proceeds with a warning.
+        - "PR #6 is merged"
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature-merged"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/feature-merged"
+          branch: feature-merged
+      files_exist:
+        - "$WORK_DIR/test-repo/feature-merged/merged-work.txt"
+
+  - name: The branch pulls from the PR head ref
+    run: |
+      set -e
+      echo "remote=$(git config --get branch.feature-merged.remote)"
+      echo "merge=$(git config --get branch.feature-merged.merge)"
+    cwd: "$WORK_DIR/test-repo/feature-merged"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "remote=origin"
+        - "merge=refs/pull/6/head"

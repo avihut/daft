@@ -757,6 +757,7 @@ fn run_tui(
             // table renders blanks for unset cells instead of perpetual
             // loaders.
             seeded_fields: crate::core::worktree::info_field::FieldSet::ALL,
+            forge_prs: None,
         },
         None,
     );
@@ -850,44 +851,35 @@ fn print_hook_summary(entries: &[HookSummary]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     fn make_repo_with_worktree(tmp: &std::path::Path) -> std::path::PathBuf {
-        Command::new("git")
-            .arg("init")
-            .arg("-q")
-            .arg(tmp)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        // Route through utils::git_command_at, which scrubs the inherited GIT_*
+        // env so a concurrent (serial) GIT_DIR-regression test can't retarget
+        // these fixture commands at the wrong repo — the Test Hygiene rule in
+        // CLAUDE.md. Assert every step so a setup failure surfaces here, not as
+        // a confusing empty HEAD downstream (rev-parse returning "" once flaked
+        // build_tui_rows_populates_head_commit_metadata).
+        let git = |args: &[&str]| {
+            let ok = crate::utils::git_command_at(tmp)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "fixture setup: git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
         std::fs::write(tmp.join("README"), b"hi").unwrap();
-        Command::new("git")
-            .current_dir(tmp)
-            .args(["add", "."])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        Command::new("git")
-            .current_dir(tmp)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t.com")
-            .args(["commit", "-q", "-m", "init"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
         let wt = tmp.join("wt-feat");
-        Command::new("git")
-            .current_dir(tmp)
-            .args(["worktree", "add", wt.to_str().unwrap(), "-b", "feat"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        git(&["worktree", "add", wt.to_str().unwrap(), "-b", "feat"]);
         wt
     }
 
@@ -1085,8 +1077,10 @@ mod tests {
 
         // Capture the actual abbreviated SHA and message for the worktree's
         // HEAD; SHA is unstable across timestamps/authors so we read it back.
-        let sha_out = Command::new("git")
-            .current_dir(&wt)
+        // git_command_at (scrubbed) so an inherited GIT_DIR can't retarget this
+        // read at another repo — it must see the same HEAD that build_tui_rows'
+        // (scrubbed) production reader does, or the comparison below is bogus.
+        let sha_out = crate::utils::git_command_at(&wt)
             .args(["rev-parse", "--short", "HEAD"])
             .output()
             .unwrap();

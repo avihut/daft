@@ -1,0 +1,62 @@
+name: Checkout a fork pull request configures PR tracking
+description: >
+  A cross-repo (fork) PR: the head lives at the base repo's refs/pull/N/head,
+  not a normal branch. daft fetches that ref, creates the source branch from it,
+  and configures branch.<name>.merge = refs/pull/N/head so `git pull` updates
+  from the PR head. A fake `gh` returns cross-repo metadata; the pull ref is
+  seeded on the fixture remote with update-ref.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Seed refs/pull/2/head on the remote and check out pr:2 (a fork)
+    run: |
+      set -e
+      git -C "$REMOTE_TEST_REPO" update-ref refs/pull/2/head refs/heads/develop
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      if [ "$*" = "repo set-default --view" ]; then echo "acme/widget"; exit 0; fi
+      if [ "$1" = "api" ] && [ "$2" = "repos/acme/widget/pulls/2" ]; then
+        printf '%s' '{"title":"Fork work","state":"open","draft":false,"user":{"login":"contributor"},"html_url":"https://github.com/acme/widget/pull/2","head":{"ref":"contributor-feature","repo":{"name":"widget","owner":{"login":"contributor"}}},"base":{"ref":"main","repo":{"name":"widget","owner":{"login":"acme"}}}}'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-checkout pr:2
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/contributor-feature"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/contributor-feature"
+          branch: contributor-feature
+
+  - name: The branch is configured to pull from the PR head
+    run: git config --get branch.contributor-feature.merge
+    cwd: "$WORK_DIR/test-repo/contributor-feature"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "refs/pull/2/head"
+
+  - name: daft list surfaces the PR number in the +pr column
+    run: git-worktree-list --columns +pr
+    cwd: "$WORK_DIR/test-repo/contributor-feature"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "#2"

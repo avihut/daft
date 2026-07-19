@@ -8,7 +8,6 @@ use super::yaml_config::{HookDef, JobDef, YamlConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Where the main config file was found, which determines where
 /// per-hook and local config files are located.
@@ -297,12 +296,11 @@ pub fn parse_yaml_config_str(yaml: &str) -> Result<YamlConfig> {
 /// Read a file from a git ref using `git show <ref>:<path>`.
 ///
 /// Returns `Some(content)` if the file exists on the given ref, `None` if it
-/// does not (git exits non-zero). Runs git with `-C <git_dir>` so it works
-/// without being inside a worktree.
+/// does not (git exits non-zero). Runs through `git_command_at` so `-C
+/// <git_dir>` stays authoritative even inside a git hook, where an inherited
+/// `GIT_DIR` would otherwise retarget the read at the hook-calling repo.
 fn git_show_file(git_dir: &Path, ref_name: &str, file_path: &str) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(git_dir)
+    let output = crate::utils::git_command_at(git_dir)
         .args(["show", &format!("{ref_name}:{file_path}")])
         .stderr(std::process::Stdio::null())
         .output()
@@ -333,10 +331,9 @@ fn detect_default_branch(git_dir: &Path) -> Option<String> {
         }
     }
 
-    // Fallback: ask git to resolve the symbolic ref
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(git_dir)
+    // Fallback: ask git to resolve the symbolic ref (scrubbed like
+    // `git_show_file`, for the same in-hook `GIT_DIR` reason).
+    let output = crate::utils::git_command_at(git_dir)
         .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
         .stderr(std::process::Stdio::null())
         .output()
@@ -831,6 +828,31 @@ hooks:
 
     // ── Tests for git_show_file ──────────────────────────────────────
 
+    /// Run one fixture git step through `git_command_at` (Test Hygiene: `-C`
+    /// stays authoritative even while a concurrent `#[serial]` test holds an
+    /// inherited `GIT_DIR` in the process env) and fail loudly instead of
+    /// letting a silently broken step surface later as a mystery `Ok(None)`.
+    fn fixture_git(dir: &Path, args: &[&str]) {
+        let out = crate::utils::git_command_at(dir)
+            // A machine-global commit.gpgsign=true would make every fixture
+            // commit hit the gpg agent — slow, and flaky under parallel load.
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            // Identity via per-command env, immune to ambient/global config.
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "fixture `git {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// Helper: create a bare git repo with a committed file.
     fn create_test_repo_with_file(
         dir: &Path,
@@ -839,38 +861,17 @@ hooks:
         content: &str,
     ) -> PathBuf {
         let repo_dir = dir.join("repo.git");
+        let repo = repo_dir.to_str().unwrap();
 
-        // Init a bare repo
-        Command::new("git")
-            .args(["init", "--bare"])
-            .arg(&repo_dir)
-            .output()
-            .unwrap();
+        // Pin the initial branch explicitly so the fixture never depends on
+        // the machine's `init.defaultBranch`.
+        fixture_git(dir, &["init", "--bare", "--initial-branch", branch, repo]);
 
         // Create a temporary worktree to make commits
         let work_dir = dir.join("work");
         fs::create_dir_all(&work_dir).unwrap();
-
-        Command::new("git")
-            .arg("clone")
-            .arg(&repo_dir)
-            .arg(&work_dir)
-            .output()
-            .unwrap();
-
-        // Configure local identity for the commit
-        Command::new("git")
-            .arg("-C")
-            .arg(&work_dir)
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(&work_dir)
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
+        fixture_git(dir, &["clone", repo, work_dir.to_str().unwrap()]);
+        fixture_git(&work_dir, &["checkout", "-B", branch]);
 
         // Create the file and commit
         let file_path = work_dir.join(file_name);
@@ -878,45 +879,9 @@ hooks:
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(&file_path, content).unwrap();
-
-        Command::new("git")
-            .arg("-C")
-            .arg(&work_dir)
-            .args(["add", "."])
-            .output()
-            .unwrap();
-
-        Command::new("git")
-            .arg("-C")
-            .arg(&work_dir)
-            .args(["commit", "-m", "initial"])
-            .output()
-            .unwrap();
-
-        // Create the requested branch if not default
-        if branch != "master" && branch != "main" {
-            Command::new("git")
-                .arg("-C")
-                .arg(&work_dir)
-                .args(["checkout", "-b", branch])
-                .output()
-                .unwrap();
-
-            Command::new("git")
-                .arg("-C")
-                .arg(&work_dir)
-                .args(["push", "origin", branch])
-                .output()
-                .unwrap();
-        } else {
-            // Push the default branch
-            Command::new("git")
-                .arg("-C")
-                .arg(&work_dir)
-                .args(["push", "origin", "HEAD"])
-                .output()
-                .unwrap();
-        }
+        fixture_git(&work_dir, &["add", "."]);
+        fixture_git(&work_dir, &["commit", "-m", "initial"]);
+        fixture_git(&work_dir, &["push", "origin", branch]);
 
         repo_dir
     }
@@ -1041,23 +1006,7 @@ hooks:
     #[test]
     fn test_classify_main_config_visitor_untracked() {
         let dir = tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .arg(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
+        fixture_git(dir.path(), &["init"]);
         write_file(dir.path(), "daft.yml", "hooks: {}");
         // daft.yml exists in worktree but is NOT tracked → visitor
         assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);
@@ -1066,36 +1015,10 @@ hooks:
     #[test]
     fn test_classify_main_config_tracked() {
         let dir = tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .arg(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
+        fixture_git(dir.path(), &["init"]);
         write_file(dir.path(), "daft.yml", "hooks: {}");
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["add", "daft.yml"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["commit", "-m", "add"])
-            .output()
-            .unwrap();
+        fixture_git(dir.path(), &["add", "daft.yml"]);
+        fixture_git(dir.path(), &["commit", "-m", "add"]);
 
         assert_eq!(classify_main_config(dir.path()), ConfigStatus::Tracked);
     }
@@ -1112,36 +1035,10 @@ hooks:
     #[test]
     fn test_classify_main_config_ignored_is_visitor() {
         let dir = tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .arg(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
+        fixture_git(dir.path(), &["init"]);
         write_file(dir.path(), ".gitignore", "daft.yml\n");
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["add", ".gitignore"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["commit", "-m", "add gitignore"])
-            .output()
-            .unwrap();
+        fixture_git(dir.path(), &["add", ".gitignore"]);
+        fixture_git(dir.path(), &["commit", "-m", "add gitignore"]);
         write_file(dir.path(), "daft.yml", "hooks: {}");
         // Ignored daft.yml: ls-files --error-unmatch fails → Visitor.
         assert_eq!(classify_main_config(dir.path()), ConfigStatus::Visitor);

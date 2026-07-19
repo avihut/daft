@@ -85,6 +85,24 @@ The size column is not shown by default. Add it with --columns +size to see the
 disk size of each worktree folder in human-readable format (e.g. 42K, 1.3M, 2.5G).
 A summary row at the bottom shows the total size across all worktrees.
 
+The pr column shows the pull/merge request each row relates to (#123 for a
+GitHub PR, !45 for a GitLab MR). It is on by default in repositories with a
+GitHub or GitLab remote and disappears silently — persisting across runs —
+when the forge integration is broken in a way that needs your intervention
+(gh/glab missing or unauthenticated); it returns automatically once a
+background refresh succeeds again. Repositories with no forge remote never
+show it. Add --columns +pr to force the column regardless, or -pr to drop it.
+
+While the pr column is shown, every open PR in the repository gets a row, not
+just the ones your worktrees represent: a local branch with an open PR is
+listed without --branches, and a PR with no local presence at all (a
+colleague's branch, any fork PR) appears as a dimmed row built from the forge
+data — fork PRs render owner:branch. Merged and closed PRs decorate existing
+rows but never add one. Rows with a PR show the PR author in the Owner
+column. The open-PR rows and the pr column are one unit: --columns -pr (or
+the silent gate above) removes both, so prefer just your worktrees per-repo
+with `git config -- daft.list.columns -pr`.
+
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
   Sort by branch descending:  --sort -branch
@@ -153,7 +171,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit"
     )]
     pub(crate) columns: Option<String>,
 
@@ -194,6 +212,8 @@ struct TableRow {
     head: String,
     /// Ahead/behind remote tracking branch (e.g. "⇡1 ⇣2").
     remote: String,
+    /// PR/MR number this branch tracks (e.g. "#123" / "!45").
+    pr: String,
     /// Branch age since creation (shorthand).
     branch_age: String,
     /// Branch owner (git author email).
@@ -277,6 +297,135 @@ pub(crate) fn resolve_base_branch(
         .unwrap_or_else(|_| "master".to_string())
 }
 
+/// Apply the forge-visibility gate to a resolved column set: the
+/// default-sourced `pr` column silently drops when the repo names no forge,
+/// or when the last background refresh hit a deep failure (gh/glab missing,
+/// dead auth, lost repo access) — and silently returns once a refresh
+/// succeeds again; both verdicts persist in the repo's coordinator store.
+/// A `pr` the user *named* (replace-mode `--columns`/`daft.list.columns`, or
+/// a `+pr` modifier) always stays: config-recorded refs render without any
+/// forge. Returns the effective columns plus the gate whenever `pr` was in
+/// play at all — callers reuse it for the refresh spawn and the live table's
+/// seed state, so health is read once per invocation.
+pub(crate) fn gate_pr_column(
+    columns: &[ListColumn],
+    columns_input: Option<&str>,
+    git: &GitCommand,
+    git_common_dir: &std::path::Path,
+) -> (
+    Vec<ListColumn>,
+    Option<crate::commands::forge_cache::ForgeGate>,
+) {
+    if !columns.contains(&ListColumn::Pr) {
+        return (columns.to_vec(), None);
+    }
+    let repo_hash =
+        crate::core::repo_identity::compute_repo_id_from_common_dir(git_common_dir).ok();
+    // One store open for both the health gate and the PR-cache lookup the
+    // render needs (`gate.lookup`), instead of a second open at row-decoration
+    // time.
+    let gate = crate::commands::forge_cache::forge_gate_and_lookup(git, repo_hash);
+    let mut effective = columns.to_vec();
+    if !columns_input.is_some_and(pr_explicitly_selected) && !gate.column_visible() {
+        effective.retain(|c| *c != ListColumn::Pr);
+    }
+    (effective, Some(gate))
+}
+
+/// Whether a `--columns`/`daft.list.columns` spec names the `pr` column
+/// itself (replace-mode token or `+pr` modifier) — as opposed to inheriting
+/// it from the defaults, which is what the visibility gate may override.
+fn pr_explicitly_selected(input: &str) -> bool {
+    input
+        .split(',')
+        .map(str::trim)
+        .any(|t| t.eq_ignore_ascii_case("pr") || t.eq_ignore_ascii_case("+pr"))
+}
+
+/// The branch/ref universe the open-PR row plan is computed against — read
+/// once per list, and captured by the live path's refresh poll so the
+/// mid-run reconcile plans against the same universe the seed did.
+#[derive(Clone)]
+pub(crate) struct PrRowContext {
+    pub local_branches: HashSet<String>,
+    pub branch_refs:
+        std::collections::HashMap<String, crate::core::worktree::forge_ref::ForgeBranchRef>,
+}
+
+pub(crate) fn pr_row_context(git: &GitCommand) -> PrRowContext {
+    let local_branches: HashSet<String> = git
+        .for_each_ref("%(refname:short)", "refs/heads/")
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .collect();
+    let branch_refs = crate::core::worktree::pr_rows::parse_branch_forge_refs(
+        &git.branch_merge_refs().unwrap_or_default(),
+    );
+    PrRowContext {
+        local_branches,
+        branch_refs,
+    }
+}
+
+/// The default open-PR rows for both list paths: local branches surfaced
+/// because an open PR heads there (enriched exactly like `--branches` rows,
+/// with their tracking ref attached for `by_ref` decoration), plus rows
+/// synthesized from the cache for PRs with no local presence. The caller
+/// merges these into the row set, applies `apply_pr_owners`, and re-sorts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_pr_rows(
+    git: &GitCommand,
+    lookup: &crate::core::worktree::forge_ref::ForgePrLookup,
+    ctx: &PrRowContext,
+    worktree_branches: &HashSet<String>,
+    show_local: bool,
+    base_branch: &str,
+    stat: Stat,
+    project_root: &std::path::Path,
+    ownership_strategy: crate::core::ownership::OwnershipStrategy,
+    user_email: Option<&str>,
+    remote_name: &str,
+) -> Result<Vec<crate::core::worktree::list::WorktreeInfo>> {
+    use crate::core::worktree::pr_rows;
+
+    let plan = pr_rows::plan_pr_rows(
+        lookup,
+        worktree_branches,
+        &ctx.local_branches,
+        &ctx.branch_refs,
+        show_local,
+    );
+
+    let mut rows = Vec::new();
+    if !plan.surface_local.is_empty() {
+        let only: HashSet<String> = plan.surface_local.iter().cloned().collect();
+        let mut surfaced = collect_branch_info(
+            git,
+            base_branch,
+            stat,
+            true,
+            false,
+            worktree_branches,
+            Some(&only),
+            project_root,
+            ownership_strategy,
+            user_email,
+            remote_name,
+        )?;
+        for info in &mut surfaced {
+            // Fork-tracking branches decorate through `by_ref`; the branch
+            // enrichment doesn't read tracking config, so attach it here.
+            info.forge_ref = ctx.branch_refs.get(&info.name).copied();
+        }
+        rows.extend(surfaced);
+    }
+    rows.extend(plan.synthesized);
+    Ok(rows)
+}
+
 fn run_blocking(args: Args) -> Result<()> {
     // Construct the body `GitCommand` first and load settings through it so the
     // repo is discovered once and reused for the command body (#584).
@@ -294,7 +443,6 @@ fn run_blocking(args: Args) -> Result<()> {
         }
         None => ResolvedColumns::defaults(ListColumn::list_defaults()),
     };
-    let selected_columns = &resolved.columns;
     let sort_input = args.sort.or(settings.list_sort);
     let sort_spec = match sort_input {
         Some(ref input) => SortSpec::parse(input)
@@ -302,9 +450,25 @@ fn run_blocking(args: Args) -> Result<()> {
             .with_stat(stat),
         None => SortSpec::default_sort().with_stat(stat),
     };
-    let has_size = selected_columns.contains(&ListColumn::Size) || sort_spec.needs_size();
     let compute_mtime = sort_spec.needs_mtime();
     let git = git.with_gitoxide(settings.use_gitoxide);
+    // The forge gate may silently drop a default-sourced `pr` column from the
+    // printed table. Structured emit keeps the ungated set instead: its
+    // schema must stay stable across repos and health states, so `pr_*`
+    // fields simply carry nulls where the table would hide the column.
+    let (table_columns, forge_gate) = gate_pr_column(
+        &resolved.columns,
+        columns_input.as_deref(),
+        &git,
+        &git_common_dir,
+    );
+    let emit_columns = &resolved.columns;
+    let has_size = resolved.columns.contains(&ListColumn::Size) || sort_spec.needs_size();
+    let has_pr = if args.emit.is_structured() {
+        emit_columns.contains(&ListColumn::Pr)
+    } else {
+        table_columns.contains(&ListColumn::Pr)
+    };
     let user_email: Option<String> = git.config_get("user.email").ok().flatten();
     let current_path = get_current_worktree_path()
         .ok()
@@ -333,6 +497,7 @@ fn run_blocking(args: Args) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            has_pr,
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
@@ -348,6 +513,7 @@ fn run_blocking(args: Args) -> Result<()> {
                 show_local,
                 show_remote,
                 &worktree_branches,
+                None,
                 &project_root,
                 settings.ownership_strategy,
                 user_email.as_deref(),
@@ -356,13 +522,9 @@ fn run_blocking(args: Args) -> Result<()> {
             let mut merged = result;
             merged.extend(branch_infos);
             merged.sort_by(|a, b| {
-                let kind_order = |k: &EntryKind| match k {
-                    EntryKind::Worktree => 0,
-                    EntryKind::LocalBranch => 1,
-                    EntryKind::RemoteBranch => 2,
-                };
-                kind_order(&a.kind)
-                    .cmp(&kind_order(&b.kind))
+                a.kind
+                    .section_order()
+                    .cmp(&b.kind.section_order())
                     .then_with(|| sort_spec.compare(a, b))
             });
             output.finish_spinner();
@@ -381,6 +543,7 @@ fn run_blocking(args: Args) -> Result<()> {
             stat,
             has_size,
             compute_mtime,
+            has_pr,
             settings.ownership_strategy,
             user_email.as_deref(),
             &settings.remote,
@@ -409,6 +572,69 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Kick the detached refresh whenever `pr` was in play at all — including
+    // when the gate just hid the column: the probe is what detects a repaired
+    // auth and silently restores it on a later run.
+    if let Some(gate) = &forge_gate {
+        crate::commands::forge_cache::spawn_background_refresh_gated(gate);
+    }
+    // Forge-PR decoration for the cells actually rendered. The blocking path
+    // prints once, so it serves the cache snapshot as-is; the no-stale-status
+    // display contract lives in the live table, which can update mid-run.
+    let forge_lookup = if has_pr {
+        // Reuse the lookup read alongside the health gate (one store open).
+        forge_gate.as_ref().and_then(|g| g.lookup.clone())
+    } else {
+        None
+    };
+
+    // Default open-PR rows ride the pr column's visibility: every open PR the
+    // table doesn't already represent gets a row — a local branch surfaced, or
+    // a row synthesized from the cache. `has_pr` keys off the same set the
+    // output uses: the health-gated `table_columns` for the printed table (so
+    // `--columns -pr` or the silent gate removes column and rows together), the
+    // ungated `emit_columns` for structured output (so the row set — like the
+    // schema — stays stable across forge health).
+    if has_pr && let Some(lookup) = &forge_lookup {
+        let worktree_branches: HashSet<String> = infos
+            .iter()
+            .filter(|i| i.kind == EntryKind::Worktree)
+            .map(|i| i.name.clone())
+            .collect();
+        let ctx = pr_row_context(&git);
+        let pr_rows = collect_pr_rows(
+            &git,
+            lookup,
+            &ctx,
+            &worktree_branches,
+            show_local,
+            &base_branch,
+            stat,
+            &project_root,
+            settings.ownership_strategy,
+            user_email.as_deref(),
+            &settings.remote,
+        )?;
+        infos.extend(pr_rows);
+        if show_remote {
+            let synthesized: HashSet<String> = infos
+                .iter()
+                .filter(|i| i.kind == EntryKind::ForgePr)
+                .map(|i| i.name.clone())
+                .collect();
+            infos.retain(|i| {
+                !crate::core::worktree::pr_rows::remote_row_subsumed(&i.name, i.kind, &synthesized)
+            });
+        }
+        crate::core::worktree::pr_rows::apply_pr_owners(&mut infos, lookup);
+        infos.sort_by(|a, b| {
+            a.kind
+                .section_order()
+                .cmp(&b.kind.section_order())
+                .then_with(|| sort_spec.compare(a, b))
+        });
+    }
+
     if args.merging {
         infos.retain(|info| {
             info.path.as_ref().is_some_and(|p| {
@@ -423,7 +649,15 @@ fn run_blocking(args: Args) -> Result<()> {
     let now = Utc::now().timestamp();
 
     if args.emit.is_structured() {
-        let table = build_emit_table(&infos, &project_root, &cwd, stat, selected_columns, now);
+        let table = build_emit_table(
+            &infos,
+            &project_root,
+            &cwd,
+            stat,
+            emit_columns,
+            now,
+            forge_lookup.as_ref(),
+        );
         return emit::emit_and_handle(
             "git-worktree-list",
             EmitPayload::Tabular(table),
@@ -438,8 +672,9 @@ fn run_blocking(args: Args) -> Result<()> {
         &project_root,
         &cwd,
         stat,
-        selected_columns,
+        &table_columns,
         &sort_spec,
+        forge_lookup.as_ref(),
     );
     Ok(())
 }
@@ -456,6 +691,7 @@ struct EmitColumns {
     changes_lines: bool,
     remote: bool,
     remote_lines: bool,
+    pr: bool,
     age: bool,
     owner: bool,
     hash: bool,
@@ -477,6 +713,8 @@ impl EmitColumns {
             changes_lines: has(ListColumn::Changes) && has_lines,
             remote: has(ListColumn::Remote),
             remote_lines: has(ListColumn::Remote) && has_lines,
+            // Opt-in like size/hash (explicit selection only, never in defaults).
+            pr: selected.contains(&ListColumn::Pr),
             age: has(ListColumn::Age),
             owner: has(ListColumn::Owner),
             hash: selected.contains(&ListColumn::Hash),
@@ -529,6 +767,13 @@ impl EmitColumns {
             h.push("remote_lines_inserted".into());
             h.push("remote_lines_deleted".into());
         }
+        if self.pr {
+            h.push("pr_kind".into());
+            h.push("pr_number".into());
+            h.push("pr_state".into());
+            h.push("ci_status".into());
+            h.push("pr_url".into());
+        }
         if self.age {
             h.push("branch_age".into());
         }
@@ -554,6 +799,7 @@ fn build_emit_table(
     stat: Stat,
     selected_columns: &[ListColumn],
     now: i64,
+    forge_lookup: Option<&crate::core::worktree::forge_ref::ForgePrLookup>,
 ) -> Table {
     let is_default_columns = selected_columns == ListColumn::list_defaults();
     let cols = EmitColumns::compute(is_default_columns, selected_columns, stat);
@@ -568,6 +814,7 @@ fn build_emit_table(
                 EntryKind::Worktree => "worktree",
                 EntryKind::LocalBranch => "branch",
                 EntryKind::RemoteBranch => "remote",
+                EntryKind::ForgePr => "pr",
             };
             row.push(Cell::str(kind_str));
             row.push(Cell::str(&info.name));
@@ -673,6 +920,40 @@ fn build_emit_table(
                     .map(|v| Cell::Int(v as i64))
                     .unwrap_or(Cell::null()),
             );
+        }
+        if cols.pr {
+            use crate::core::worktree::forge_ref::{PrDecoration, PrStatus};
+            let decoration = match forge_lookup {
+                Some(lookup) => lookup.decorate(&info.name, info.forge_ref),
+                None => info.forge_ref.map(PrDecoration::bare),
+            };
+            match decoration {
+                Some(d) => {
+                    row.push(Cell::str(d.r.kind.tag()));
+                    row.push(Cell::Int(d.r.number as i64));
+                    row.push(match d.status {
+                        Some(PrStatus::Merged) => Cell::str("merged"),
+                        Some(PrStatus::Closed) => Cell::str("closed"),
+                        Some(PrStatus::Open | PrStatus::Ci(_)) => Cell::str("open"),
+                        // Config-recorded ref with no cache row: the PR's
+                        // current state is unknown, not "open".
+                        None => Cell::null(),
+                    });
+                    row.push(match d.status {
+                        Some(PrStatus::Ci(ci)) => Cell::str(ci.as_str()),
+                        _ => Cell::null(),
+                    });
+                    row.push(match d.url {
+                        Some(url) => Cell::str(url),
+                        None => Cell::null(),
+                    });
+                }
+                None => {
+                    for _ in 0..5 {
+                        row.push(Cell::null());
+                    }
+                }
+            }
         }
         if cols.age {
             let branch_age = info
@@ -783,6 +1064,7 @@ fn print_table(
     stat: Stat,
     selected_columns: &[ListColumn],
     sort_spec: &SortSpec,
+    forge_lookup: Option<&crate::core::worktree::forge_ref::ForgePrLookup>,
 ) {
     if infos.is_empty() {
         let _ = crate::commands::list_empty::print(
@@ -835,6 +1117,8 @@ fn print_table(
         cwd,
         now,
         stat,
+        forge_prs: forge_lookup,
+        colors: use_color,
     };
 
     // Pre-compute plain column values for alignment and reuse
@@ -966,6 +1250,29 @@ fn print_table(
                 format!("{commit_age}{pad} {}", vals.last_commit_subject)
             };
 
+            // PR cell: in color mode the status rides in the number's color
+            // (green/red/yellow CI, purple merged, dim closed) and the cell
+            // links to the PR via OSC 8; colorless mode already carries the
+            // status as a glyph in the text.
+            let pr = if vals.pr.is_empty() || !use_color {
+                vals.pr.clone()
+            } else {
+                use crate::core::worktree::forge_ref::{PrStatus, PrStatusColor};
+                // Same status→slot mapping as the live renderer (semantic_color).
+                let colored = match vals.pr_status.and_then(PrStatus::semantic_color) {
+                    Some(PrStatusColor::Pass) => styles::green(&vals.pr),
+                    Some(PrStatusColor::Fail) => styles::red(&vals.pr),
+                    Some(PrStatusColor::Pending) => styles::yellow(&vals.pr),
+                    Some(PrStatusColor::Merged) => styles::bright_purple(&vals.pr),
+                    Some(PrStatusColor::Closed) => styles::dim(&vals.pr),
+                    None => vals.pr.clone(),
+                };
+                match &vals.pr_url {
+                    Some(url) => styles::hyperlink(&colored, url),
+                    None => colored,
+                }
+            };
+
             let is_non_worktree = info.kind != EntryKind::Worktree;
             if use_color && is_non_worktree {
                 TableRow {
@@ -991,6 +1298,16 @@ fn print_table(
                         remote
                     } else {
                         styles::dim(&strip_ansi(&remote))
+                    },
+                    pr: if vals.pr.is_empty() {
+                        vals.pr.clone()
+                    } else {
+                        // Row-level de-emphasis wins over status color for
+                        // non-worktree rows, but the link is orthogonal.
+                        match &vals.pr_url {
+                            Some(url) => styles::hyperlink(&styles::dim(&vals.pr), url),
+                            None => styles::dim(&vals.pr),
+                        }
                     },
                     branch_age: if branch_age.is_empty() {
                         branch_age
@@ -1022,6 +1339,7 @@ fn print_table(
                     base,
                     head,
                     remote,
+                    pr,
                     branch_age,
                     owner: vals.owner.clone(),
                     hash: vals.hash.clone(),
@@ -1045,6 +1363,7 @@ fn print_table(
                 ListColumn::Base => "Base",
                 ListColumn::Changes => "Changes",
                 ListColumn::Remote => "Remote",
+                ListColumn::Pr => "PR",
                 ListColumn::Age => "Age",
                 ListColumn::Owner => "Owner",
                 ListColumn::Hash => "Hash",
@@ -1107,6 +1426,7 @@ fn print_table(
                 ListColumn::Base => row.base.as_str(),
                 ListColumn::Changes => row.head.as_str(),
                 ListColumn::Remote => row.remote.as_str(),
+                ListColumn::Pr => row.pr.as_str(),
                 ListColumn::Age => row.branch_age.as_str(),
                 ListColumn::Owner => row.owner.as_str(),
                 ListColumn::Hash => row.hash.as_str(),
@@ -1284,6 +1604,22 @@ mod tests {
         assert_eq!(resolve_base_branch(gcd, &origin), "wrongdefault");
     }
 
+    /// The visibility gate only overrides a *default-sourced* `pr` column —
+    /// naming it (replace mode or `+pr`, CLI or config) must always win.
+    #[test]
+    fn pr_explicit_selection_detection() {
+        assert!(pr_explicitly_selected("pr"));
+        assert!(pr_explicitly_selected("branch,pr,age"));
+        assert!(pr_explicitly_selected("+pr"));
+        assert!(pr_explicitly_selected("+size, +PR"));
+        // Removing it, or naming other columns, is not asking for it.
+        assert!(!pr_explicitly_selected("-pr"));
+        assert!(!pr_explicitly_selected("+size"));
+        assert!(!pr_explicitly_selected("branch,path"));
+        // Token match, not substring match.
+        assert!(!pr_explicitly_selected("prune"));
+    }
+
     #[test]
     fn build_emit_table_headers_match_default_columns() {
         let selected = ListColumn::list_defaults();
@@ -1294,6 +1630,7 @@ mod tests {
             Stat::Summary,
             selected,
             0,
+            None,
         );
         // Default columns include: kind, name, is_current, is_default_branch,
         // is_sandbox, path, ahead, behind, staged, unstaged, untracked,
@@ -1347,6 +1684,7 @@ mod tests {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         };
         let infos = [info("main", true), info("feat", false)];
         let rendered = "  Branch  Path\n  main    /tmp/proj\n  feat    /tmp/proj";
@@ -1405,6 +1743,7 @@ mod tests {
             size_bytes: Some(1024),
             working_tree_mtime: None,
             is_sandbox: false,
+            forge_ref: None,
         };
         let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];
         let table = build_emit_table(
@@ -1414,6 +1753,7 @@ mod tests {
             Stat::Summary,
             selected,
             0,
+            None,
         );
         assert!(table.headers.contains(&"size_bytes".to_string()));
         // One data row + one TOTAL row.

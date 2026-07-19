@@ -154,6 +154,8 @@ pub enum ListColumn {
     Changes,
     /// Ahead/behind remote tracking branch.
     Remote,
+    /// PR/MR number this branch tracks (`#123` / `!45`).
+    Pr,
     /// Branch age since creation.
     Age,
     /// Branch owner (from git author email).
@@ -175,6 +177,7 @@ impl ListColumn {
             ListColumn::Base,
             ListColumn::Changes,
             ListColumn::Remote,
+            ListColumn::Pr,
             ListColumn::Age,
             ListColumn::Owner,
             ListColumn::Hash,
@@ -184,6 +187,10 @@ impl ListColumn {
 
     /// The default column set for the list command.
     /// Size is excluded — it must be explicitly added via `--columns +size`.
+    /// Pr is included, but the command layer silently drops it when the repo
+    /// names no forge or the forge integration is persistently broken
+    /// (`commands::list::gate_pr_column`) — the default only *offers* the
+    /// column; visibility is the repo's call.
     pub fn list_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
@@ -192,6 +199,7 @@ impl ListColumn {
             ListColumn::Base,
             ListColumn::Changes,
             ListColumn::Remote,
+            ListColumn::Pr,
             ListColumn::Age,
             ListColumn::Owner,
             ListColumn::LastCommit,
@@ -201,8 +209,23 @@ impl ListColumn {
     /// The default column set for sync and prune commands.
     /// (Status is pinned separately by TUI code, not included here.)
     /// Size is excluded — it must be explicitly added via `--columns +size`.
+    /// Pr is included with the same contract as [`Self::list_defaults`]: the
+    /// command layer silently drops it when the repo names no forge or the
+    /// forge integration is persistently broken
+    /// (`commands::list::gate_pr_column`).
     pub fn tui_defaults() -> &'static [ListColumn] {
-        Self::list_defaults()
+        &[
+            ListColumn::Annotation,
+            ListColumn::Branch,
+            ListColumn::Path,
+            ListColumn::Base,
+            ListColumn::Changes,
+            ListColumn::Remote,
+            ListColumn::Pr,
+            ListColumn::Age,
+            ListColumn::Owner,
+            ListColumn::LastCommit,
+        ]
     }
 
     pub fn clone_defaults() -> &'static [ListColumn] {
@@ -225,10 +248,11 @@ impl ListColumn {
             Self::Base => 5,
             Self::Changes => 6,
             Self::Remote => 7,
-            Self::Age => 8,
-            Self::Owner => 9,
-            Self::Hash => 10,
-            Self::LastCommit => 11,
+            Self::Pr => 8,
+            Self::Age => 9,
+            Self::Owner => 10,
+            Self::Hash => 11,
+            Self::LastCommit => 12,
         }
     }
 
@@ -242,6 +266,7 @@ impl ListColumn {
             Self::Base => "base",
             Self::Remote => "remote",
             Self::Changes => "changes",
+            Self::Pr => "pr",
             Self::Age => "age",
             Self::Owner => "owner",
             Self::Hash => "hash",
@@ -277,6 +302,7 @@ impl FromStr for ListColumn {
             "base" => Ok(Self::Base),
             "remote" => Ok(Self::Remote),
             "changes" => Ok(Self::Changes),
+            "pr" => Ok(Self::Pr),
             "age" => Ok(Self::Age),
             "owner" => Ok(Self::Owner),
             "hash" => Ok(Self::Hash),
@@ -345,25 +371,32 @@ impl ColumnSelection {
                 replace: "--columns branch,path,age",
                 modifier: "--columns -annotation,-remote",
             },
-            |name| Self::check_status_token(name, command),
+            |name| Self::check_unsupported_token(name, command),
         )?;
         Ok(ResolvedColumns { columns, explicit })
     }
 
-    fn check_status_token(name: &str, command: CommandKind) -> Result<(), String> {
-        if name.trim().to_lowercase() == "status" {
-            match command {
-                CommandKind::List => {
-                    // Falls through to unknown column error via FromStr
-                }
-                CommandKind::Sync | CommandKind::Prune | CommandKind::Clone => {
-                    return Err("'status' column cannot be controlled on this command\n  \
-                         it is always shown as the first column"
-                        .to_string());
-                }
+    /// Reject tokens that name a real column the command can't honor — a clean
+    /// error beats silently rendering a dead column. `status` is always the
+    /// fixed first column (uncontrollable); `pr` needs the forge cache, which
+    /// clone can't have (the repo it is cloning has no per-repo store yet),
+    /// so clone would render it permanently blank.
+    fn check_unsupported_token(name: &str, command: CommandKind) -> Result<(), String> {
+        let token = name.trim().to_lowercase();
+        match (token.as_str(), command) {
+            ("status", CommandKind::Sync | CommandKind::Prune | CommandKind::Clone) => {
+                Err("'status' column cannot be controlled on this command\n  \
+                     it is always shown as the first column"
+                    .to_string())
             }
+            ("pr", CommandKind::Clone) => Err("'pr' column is not available on `daft clone`\n  \
+                     the repository has no forge-PR cache until after it is cloned"
+                .to_string()),
+            // List/sync/prune (or any other token) fall through to the FromStr
+            // check, which accepts `pr`/`status` where valid or reports an
+            // unknown column.
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -762,6 +795,15 @@ mod tests {
     }
 
     #[test]
+    fn list_and_tui_defaults_offer_pr_but_clone_does_not() {
+        // list, sync, and prune all wire the forge cache with the same silent
+        // visibility gate; clone has no repo store to read yet.
+        assert!(ListColumn::list_defaults().contains(&ListColumn::Pr));
+        assert!(ListColumn::tui_defaults().contains(&ListColumn::Pr));
+        assert!(!ListColumn::clone_defaults().contains(&ListColumn::Pr));
+    }
+
+    #[test]
     fn test_modifier_add_size() {
         let resolved = ColumnSelection::parse("+size", CommandKind::List).unwrap();
         assert!(resolved.columns.contains(&ListColumn::Size));
@@ -857,6 +899,34 @@ mod tests {
     fn test_status_on_list_unknown() {
         let err = ColumnSelection::parse("status,branch", CommandKind::List).unwrap_err();
         assert!(err.contains("unknown column 'status'"), "Got: {err}");
+    }
+
+    #[test]
+    fn test_pr_default_on_sync_and_prune_but_not_clone() {
+        // sync/prune wire the forge cache exactly like list: pr is in their
+        // defaults (health-gated by the command layer) and `+pr`/`pr` parse.
+        assert!(ListColumn::tui_defaults().contains(&ListColumn::Pr));
+        let sync = ColumnSelection::parse("+pr", CommandKind::Sync).unwrap();
+        assert!(sync.columns.contains(&ListColumn::Pr));
+        let prune = ColumnSelection::parse("pr,branch", CommandKind::Prune).unwrap();
+        assert!(prune.columns.contains(&ListColumn::Pr));
+        // Removing it works the same as on list.
+        let removed = ColumnSelection::parse("-pr", CommandKind::Sync).unwrap();
+        assert!(!removed.columns.contains(&ListColumn::Pr));
+        // Clone has no repo store yet — reject cleanly.
+        let clone = ColumnSelection::parse("+pr", CommandKind::Clone).unwrap_err();
+        assert!(
+            clone.contains("not available on `daft clone`"),
+            "Got: {clone}"
+        );
+        assert!(!ListColumn::clone_defaults().contains(&ListColumn::Pr));
+    }
+
+    #[test]
+    fn test_pr_on_list_is_accepted() {
+        // The guard must not regress the legitimate `daft list --columns +pr`.
+        let resolved = ColumnSelection::parse("+pr", CommandKind::List).unwrap();
+        assert!(resolved.columns.contains(&ListColumn::Pr));
     }
 
     #[test]

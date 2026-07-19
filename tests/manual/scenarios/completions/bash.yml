@@ -101,3 +101,14 @@ steps:
     run: daft completions bash --command=git-worktree-flow-eject 2>&1
     expect:
       exit_code: 0
+
+  # Forge pr:/mr: targets: colon-wordbreak handling plus the token glue —
+  # a lone bare `pr:`/`mr:` candidate must complete without a trailing
+  # space so the PR number lands in the same word.
+  - name: Bash checkout completion handles forge target tokens
+    run: daft completions bash --command=git-worktree-checkout 2>&1
+    expect:
+      exit_code: 0
+      output_contains:
+        - "__ltrim_colon_completions"
+        - "compopt -o nospace"

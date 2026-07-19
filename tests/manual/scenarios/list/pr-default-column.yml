@@ -1,0 +1,143 @@
+name: PR column is default in forge repos and silently health-gated
+description: >
+  The default PR column's visibility contract: a repo with no forge remote never
+  shows the column; adding a GitHub remote makes it appear by default
+  (optimistic, before any refresh); a refresh that dies an auth death flips the
+  persisted forge health and the column silently disappears from the next list
+  on — while `--columns +pr` still forces it and structured output keeps its
+  stable schema; a later successful refresh restores the column, decorated from
+  the fresh snapshot. Every state change is asserted through `daft __dump-store
+  forge-health`.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a branch with a PR upstream
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git-worktree-checkout -b feature-x
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature-x"
+
+  - name: No forge remote means no PR column in the defaults
+    run: git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch"
+      output_not_contains:
+        - "PR"
+
+  - name: A GitHub remote makes the column appear by default
+    run: |
+      set -e
+      git remote add forge https://github.com/acme/widget.git
+      git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PR"
+
+  - name: An auth-dead refresh records a deep failure
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+      exit 4
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+      daft __dump-store forge-health
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"healthy":false'
+        - '"error_kind":"unauthenticated"'
+
+  - name: The column is silently gone from the next default list
+    run: git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Branch"
+      output_not_contains:
+        - "PR"
+
+  - name: Structured output keeps its stable schema while hidden
+    run: git-worktree-list --format json
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"pr_number"'
+
+  - name: Explicitly asking for +pr overrides the gate
+    run: git-worktree-list --columns +pr
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PR"
+
+  - name: A successful refresh persistently restores the column
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      state=""
+      prev=""
+      for a in "$@"; do
+        if [ "$prev" = "--state" ]; then state="$a"; fi
+        prev="$a"
+      done
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
+        printf '%s' '[
+          {"number": 5, "title": "Add feature five", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/5",
+           "author": {"login": "octocat"},
+           "statusCheckRollup": [
+             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
+           ]}
+        ]'
+        exit 0
+      fi
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then
+        printf '%s' '[]'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+      daft __dump-store forge-health
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"healthy":true'
+
+  - name: The restored column decorates from the fresh snapshot
+    run: git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "PR"
+        - "#5 ✓"

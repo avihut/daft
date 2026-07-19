@@ -284,6 +284,7 @@ pub fn remove_bare_directory(target: &RepoTarget) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::process::{Command, Stdio};
 
     fn init_repo(dir: &Path) {
@@ -343,7 +344,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_repo_handles_relative_path_from_parent() {
+        // Serial: this test mutates the process-global cwd (set_current_dir
+        // below) to exercise relative-path resolution. Without joining the
+        // global serial group it races any concurrent cwd-reading test — e.g.
+        // checkout::timeline_tests, whose execute() reads cwd — flaking them
+        // under a parallel run. Restoring cwd on the happy path is not enough;
+        // the corruption is during the window, not after.
         // CI regression: under DAFT_USE_GITOXIDE=1, `daft repo remove
         // <relative-path>` from the parent dir failed with
         // "could not canonicalize <rel>/<rel>/.git" — gitoxide's

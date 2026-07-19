@@ -404,6 +404,21 @@ pub mod keys {
     /// Config key for remote setting.
     pub const REMOTE: &str = "daft.remote";
 
+    /// Config key forcing the forge platform for ambiguous remotes
+    /// (`github` / `gitlab`). Auth stays in `gh`/`glab`; this is the only
+    /// forge knob daft itself needs beyond the CLI-tool overrides below.
+    pub const FORGE_PLATFORM: &str = "daft.forge.platform";
+
+    /// Config key overriding the `gh` binary (Enterprise wrappers).
+    pub const FORGE_GITHUB_CLI: &str = "daft.forge.githubCli";
+
+    /// Config key overriding the `glab` binary.
+    pub const FORGE_GITLAB_CLI: &str = "daft.forge.gitlabCli";
+
+    /// Config key for a self-hosted / Enterprise forge hostname
+    /// (passed to the CLI as `--hostname`).
+    pub const FORGE_HOSTNAME: &str = "daft.forge.hostname";
+
     /// Config key for checkoutBranch.carry setting.
     pub const CHECKOUT_BRANCH_CARRY: &str = "daft.checkoutBranch.carry";
 

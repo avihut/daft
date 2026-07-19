@@ -1,0 +1,210 @@
+name: Forge-PR cache decorates list and completion
+description: >
+  The forge-PR cache round trip: `daft __refresh-forge` snapshots the (faked) gh
+  CLI's open + merged PR listings into the per-repo store, `daft list --columns
+  +pr` then decorates a plain local branch with its outbound PR number and CI
+  glyph (`#5 ✓`), marks a branch whose PR merged (`#3 ◆`), and `pr:` tab
+  completion offers the cached open numbers with titles — merged/closed PRs
+  complete only when checked out locally (the branch exists here even if the
+  forge-side one was deleted). A cross-repo (fork) PR with the same head-branch
+  name must NOT decorate the local branch. Structured output carries
+  pr_state/ci_status/pr_url fields. The fake `gh` fails loudly on any unexpected
+  call. Forge words never trigger `daft go`'s fetch-on-miss network fallback — a
+  forge candidate counts as a hit, and a `:`-bearing word can never match a
+  branch — while a genuine branch miss still fetches (asserted via the cooldown
+  marker file).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create local branches with PRs upstream
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git-worktree-checkout -b feature-x
+      git-worktree-checkout -b feature-done
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature-x"
+        - "$WORK_DIR/test-repo/feature-done"
+
+  - name: Refresh the forge-PR cache through a fake gh listing
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      state=""
+      prev=""
+      for a in "$@"; do
+        if [ "$prev" = "--state" ]; then state="$a"; fi
+        prev="$a"
+      done
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
+        printf '%s' '[
+          {"number": 5, "title": "Add feature five", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/5",
+           "author": {"login": "octocat", "name": "The Octocat"},
+           "statusCheckRollup": [
+             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
+           ]},
+          {"number": 6, "title": "Fork collision", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": true,
+           "url": "https://github.com/acme/widget/pull/6",
+           "author": {"login": "contributor"},
+           "statusCheckRollup": []}
+        ]'
+        exit 0
+      fi
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then
+        printf '%s' '[
+          {"number": 3, "title": "Landed work", "state": "MERGED",
+           "headRefName": "feature-done", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/3",
+           "author": {"login": "octocat", "name": "The Octocat"}}
+        ]'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+
+  - name: The snapshot landed in the per-repo store
+    run: daft __dump-store forge-prs
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"number":5'
+        - '"ci_status":"pass"'
+        - '"head_branch":"feature-x"'
+        - '"number":3'
+        - '"state":"merged"'
+
+  - name: daft list decorates open and merged branches with their fates
+    run: git-worktree-list --columns +pr
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "#5 ✓"
+        - "#3 ◆"
+
+  - name: Structured output carries the PR state, CI, and URL fields
+    run: git-worktree-list --columns +pr --format json
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"pr_state"'
+        - '"pr_url"'
+        - '"https://github.com/acme/widget/pull/5"'
+        - '"merged"'
+
+  - name:
+      Tab completion offers open PRs only — a merged PR's branch is likely gone
+    run: daft __complete git-worktree-checkout "pr:" --position 1
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Owner and last-fetched CI status ride along as extra columns:
+        # name\tforge\tstatus\towner\ttitle. Owner is the profile's full
+        # name; a profile without one (pr:6) falls back to the login.
+        - "pr:5"
+        - "✓\tThe Octocat\tAdd feature five"
+        - "pr:6"
+        - "contributor\tFork collision"
+      output_not_contains:
+        - "pr:3"
+
+  - name:
+      A merged PR checked out locally still completes — its branch exists here
+    run: |
+      set -e
+      # The exact branch shape `daft go pr:N` writes for a PR checkout.
+      git branch review-3
+      git config branch.review-3.remote origin
+      git config branch.review-3.merge refs/pull/3/head
+      daft __complete git-worktree-checkout "pr:" --position 1
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Status/owner columns fill from the cache row: merged glyph + author.
+        - "pr:3"
+        - "◆\tThe Octocat\tchecked out: review-3"
+
+  - name: Forge words never trigger the fetch-on-miss network fallback
+    run: |
+      set -e
+      # Shim gh stays on PATH: any forge call from the Tab path would hit its
+      # loud unexpected-args failure. No branch here starts with "p", so each
+      # word below is a miss for the branch groups — but `p` completes to the
+      # pr: token and `pr:` to cached numbers, and pr:99 contains a colon no
+      # branch can ever match. None may fetch: the fetch's spinner draws over
+      # the user's command line, and its cooldown marker must stay absent.
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __complete daft-go "p" --position 1 --fetch-on-miss | grep -q "pr:"
+      daft __complete daft-go "pr:" --position 1 --fetch-on-miss | grep -q "pr:5"
+      daft __complete daft-go "pr:99" --position 1 --fetch-on-miss
+      test ! -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      echo "NO-FETCH-RAN"
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "NO-FETCH-RAN"
+
+  - name: Position 2 offers the target repo's PRs from anywhere
+    run: |
+      set -e
+      # `daft go test-repo <word>` — the branch slot of a cross-repo go also
+      # accepts pr:/mr: targets, so Tab completes them against the *target*
+      # repo's cache (cwd here is the sandbox root, outside any repo; the
+      # catalog names the repo). The shim stays on PATH so any accidental
+      # forge call fails loudly. Status/owner columns ride along as at
+      # position 1.
+      export PATH="$WORK_DIR/bin:$PATH"
+      export DAFT_COMPLETE_GO_FIRST=test-repo
+      daft __complete daft-go "p" --position 2 | grep -q "^pr:"
+      daft __complete daft-go "pr:" --position 2 | grep -q "pr:5"
+      daft __complete daft-go "pr:" --position 2 | grep -q "Add feature five"
+      # Branch and forge candidates share the slot.
+      daft __complete daft-go "" --position 2 | grep -q "develop"
+      # Position 2 has no fetch-on-miss: a miss must not create the marker.
+      daft __complete daft-go "zzz-no-such-branch" --position 2
+      test ! -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      # A first word that isn't a cataloged repo keeps the slot forge-free —
+      # it's the base slot of `daft go -b <new> <base>`, and a base can't be
+      # a PR ref.
+      ! DAFT_COMPLETE_GO_FIRST=zzz-not-a-repo daft __complete daft-go "p" --position 2 | grep -q "pr:"
+      echo "POS2-FORGE-OK"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "POS2-FORGE-OK"
+
+  - name: A genuine branch miss still fetches — the marker proves it ran
+    run: |
+      set -e
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __complete daft-go "zzz-no-such-branch" --position 1 --fetch-on-miss
+      test -e "$WORK_DIR/test-repo/.git/daft_complete_last_fetch"
+      echo "FETCH-MARKER-PRESENT"
+    cwd: "$WORK_DIR/test-repo/feature-x"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "FETCH-MARKER-PRESENT"

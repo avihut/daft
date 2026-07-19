@@ -128,6 +128,10 @@ fn main() -> Result<()> {
                         let _ = daft::log_clean::run_clean_logs();
                         return Ok(());
                     }
+                    "__refresh-forge" => {
+                        let _ = commands::forge_cache::run_refresh_forge();
+                        return Ok(());
+                    }
                     "__dump-store" => {
                         if let Err(e) = commands::dump_store::run() {
                             eprintln!("daft __dump-store: {e:#}");

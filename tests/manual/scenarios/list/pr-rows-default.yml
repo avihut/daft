@@ -1,0 +1,267 @@
+name: Open PRs appear as default list rows
+description: >
+  Bare `daft list` in a forge-capable repo surfaces every open PR as a row: a
+  PR-bearing local branch shows without `--branches`, a PR with no local
+  presence gets a row synthesized from the cache (fork PRs render `owner:branch`
+  so per-fork names can't read as local), and merged PRs decorate existing rows
+  but never spawn one. Owner cells show the PR author. The rows ride the pr
+  column's effective visibility — `--columns -pr` removes column and rows as one
+  unit — and structured output marks synthesized rows kind "pr".
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, one worktree with a PR, one PR-bearing local branch
+    run: |
+      set -e
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git-worktree-checkout -b feature-x
+      git branch local-pr-branch
+      # A remote-only branch matching PR 7's head, for the -r subsume check.
+      git push -q origin main:renovate/bump
+      git fetch -q origin
+      git remote add forge https://github.com/acme/widget.git
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/feature-x"
+
+  - name: Populate the forge cache from a canned listing
+    run: |
+      set -e
+      mkdir -p "$WORK_DIR/bin"
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      state=""
+      prev=""
+      for a in "$@"; do
+        if [ "$prev" = "--state" ]; then state="$a"; fi
+        prev="$a"
+      done
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "open" ]; then
+        printf '%s' '[
+          {"number": 5, "title": "Feature five", "state": "OPEN",
+           "headRefName": "feature-x", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/5",
+           "author": {"login": "dan"},
+           "headRepositoryOwner": {"login": "acme"},
+           "updatedAt": "2026-07-18T09:00:00Z",
+           "statusCheckRollup": [
+             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
+           ]},
+          {"number": 6, "title": "Local branch work", "state": "OPEN",
+           "headRefName": "local-pr-branch", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/6",
+           "author": {"login": "carol", "name": "Carol Danvers"},
+           "headRepositoryOwner": {"login": "acme"},
+           "updatedAt": "2026-07-18T08:00:00Z"},
+          {"number": 9, "title": "Fix panic on empty input", "state": "OPEN",
+           "headRefName": "patch-1", "isCrossRepository": true,
+           "url": "https://github.com/acme/widget/pull/9",
+           "author": {"login": "alice", "name": "Alice Liddell"},
+           "headRepositoryOwner": {"login": "alice"},
+           "updatedAt": "2026-07-18T07:00:00Z",
+           "statusCheckRollup": [
+             {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}
+           ]},
+          {"number": 7, "title": "Bump tokio", "state": "OPEN",
+           "headRefName": "renovate/bump", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/7",
+           "author": {"login": "renovate"},
+           "headRepositoryOwner": {"login": "acme"},
+           "updatedAt": "2026-07-18T06:00:00Z"}
+        ]'
+        exit 0
+      fi
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$state" = "merged" ]; then
+        printf '%s' '[
+          {"number": 3, "title": "Old landed thing", "state": "MERGED",
+           "headRefName": "old-thing", "isCrossRepository": false,
+           "url": "https://github.com/acme/widget/pull/3",
+           "author": {"login": "bob"}}
+        ]'
+        exit 0
+      fi
+      echo "unexpected gh call: $*" >&2
+      exit 3
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+      daft __dump-store forge-health
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"healthy":true'
+
+  - name: Bare list shows every open PR as a row
+    run: git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        # Worktree row decorated in place — no extra row for its PR.
+        - "feature-x"
+        - "#5 ✓"
+        # PR-bearing local branch surfaces without --branches, owner = the
+        # author's full name (prefix-matched: the cell may truncate).
+        - "local-pr-branch"
+        - "#6"
+        - "Carol"
+        # Fork PR synthesizes with the owner:branch prefix.
+        - "alice:patch-1"
+        - "#9 ✗"
+        # Open PR with no local presence synthesizes from cache data.
+        - "renovate/bump"
+        - "#7"
+        - "Bump tokio"
+      output_not_contains:
+        # Merged PRs decorate existing rows but never spawn one.
+        - "old-thing"
+
+  - name: Removing the pr column removes the rows with it
+    run: git-worktree-list --columns=-pr
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"
+      output_not_contains:
+        - "PR"
+        - "alice:patch-1"
+        - "local-pr-branch"
+        - "renovate/bump"
+
+  - name: Structured rows carry their kind and PR-author owners
+    run: |
+      set -e
+      git-worktree-list --format json > "$WORK_DIR/list.json"
+      python3 - "$WORK_DIR/list.json" <<'PY'
+      import json, sys
+      rows = json.load(open(sys.argv[1]))
+      by = {r["name"]: r for r in rows}
+      assert sorted(r["name"] for r in rows if r["kind"] == "pr") == [
+          "alice:patch-1",
+          "renovate/bump",
+      ], by.keys()
+      assert by["local-pr-branch"]["kind"] == "branch"
+      assert by["local-pr-branch"]["owner_name"] == "Carol Danvers"
+      assert by["local-pr-branch"]["pr_number"] == 6
+      # The worktree row's PR decorates the pr cells only: the row describes
+      # the local checkout, so the deduced git identity (real email) must
+      # survive — the PR author ("dan") never clobbers a worktree's owner.
+      assert by["feature-x"]["kind"] == "worktree"
+      assert by["feature-x"]["pr_number"] == 5
+      assert by["feature-x"]["owner_name"] != "dan"
+      assert by["feature-x"]["owner_email"] == "test@daft.test"
+      # Owner is the author's full name; the row NAME keeps the fork
+      # namespace login (owner:branch) — a namespace, not a person.
+      assert by["alice:patch-1"]["owner_name"] == "Alice Liddell"
+      assert by["alice:patch-1"]["ci_status"] == "fail"
+      assert by["renovate/bump"]["last_commit_subject"] == "Bump tokio"
+      assert "old-thing" not in by
+      print("JSON-OK")
+      PY
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "JSON-OK"
+
+  - name: --branches stays a superset with one row per branch
+    run: |
+      set -e
+      git-worktree-list -b --format json > "$WORK_DIR/list-b.json"
+      python3 - "$WORK_DIR/list-b.json" <<'PY'
+      import json, sys
+      rows = json.load(open(sys.argv[1]))
+      names = [r["name"] for r in rows]
+      assert len(names) == len(set(names)), names
+      by = {r["name"]: r for r in rows}
+      assert by["local-pr-branch"]["kind"] == "branch"
+      assert by["alice:patch-1"]["kind"] == "pr"
+      print("SUPERSET-OK")
+      PY
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "SUPERSET-OK"
+
+  - name: A synthesized row subsumes its remote row under -r
+    run: |
+      set -e
+      git-worktree-list -r --format json > "$WORK_DIR/list-r.json"
+      python3 - "$WORK_DIR/list-r.json" <<'PY'
+      import json, sys
+      rows = json.load(open(sys.argv[1]))
+      by = {r["name"]: r for r in rows}
+      assert by["renovate/bump"]["kind"] == "pr", by.keys()
+      assert "origin/renovate/bump" not in by, "one row per branch: the PR row wins"
+      print("SUBSUME-OK")
+      PY
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "SUBSUME-OK"
+
+  - name: An auth-dead refresh flips health but keeps the stale snapshot
+    run: |
+      set -e
+      cat > "$WORK_DIR/bin/gh" <<'GH'
+      #!/usr/bin/env bash
+      echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+      exit 4
+      GH
+      chmod +x "$WORK_DIR/bin/gh"
+      export PATH="$WORK_DIR/bin:$PATH"
+      daft __refresh-forge
+      daft __dump-store forge-health
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"healthy":false'
+
+  - name: Structured rows survive the silent gate on the stale cache
+    run: |
+      set -e
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-list --format json > "$WORK_DIR/list-unhealthy.json"
+      python3 - "$WORK_DIR/list-unhealthy.json" <<'PY'
+      import json, sys
+      rows = json.load(open(sys.argv[1]))
+      by = {r["name"]: r for r in rows}
+      # The structured row set is keyed to the ungated column selection, not
+      # the health-gated table: like the pr_* headers, the synthesized and
+      # surfaced PR rows must not vanish when a refresh dies.
+      assert by["alice:patch-1"]["kind"] == "pr", by.keys()
+      assert by["renovate/bump"]["kind"] == "pr"
+      assert by["local-pr-branch"]["pr_number"] == 6
+      print("STALE-JSON-OK")
+      PY
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "STALE-JSON-OK"
+
+  - name: The printed table hides the column and its rows together
+    run: |
+      export PATH="$WORK_DIR/bin:$PATH"
+      git-worktree-list
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feature-x"
+      output_not_contains:
+        - "PR"
+        - "alice:patch-1"
+        - "renovate/bump"
+        - "local-pr-branch"

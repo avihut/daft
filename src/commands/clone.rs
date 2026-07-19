@@ -1542,6 +1542,7 @@ fn create_satellite_worktrees_tui(
             // the populated fields via `list_stream::spawn` (see
             // `stream_post_setup_info`). Nothing is finalized at seed time.
             seeded_fields: FieldSet::EMPTY,
+            forge_prs: None,
         },
         None,
     );

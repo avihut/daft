@@ -3,6 +3,7 @@ use super::columns::{
 };
 use super::state::{FinalStatus, PhaseStatus, TuiState, WorktreeStatus};
 use crate::core::sort::SortSpec;
+use crate::core::worktree::forge_ref::{PrStatus, PrStatusColor};
 use crate::core::worktree::info_field::FieldSet;
 use crate::core::worktree::list::{EntryKind, Stat, WorktreeInfo};
 use crate::output::format::{self, ColumnContext, ColumnValues, format_human_size};
@@ -117,6 +118,10 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
         cwd: &state.live.cfg.cwd,
         now,
         stat: state.live.cfg.stat,
+        forge_prs: state.live.cfg.forge_prs.as_ref(),
+        // The TUI always styles cells, so the PR status rides in color and
+        // the cell text stays the bare number.
+        colors: true,
     };
 
     // Pre-compute all column values for sizing and reuse.
@@ -175,16 +180,17 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                 .collect()
         })
     } else {
-        // Phased commands: render the user's columns (already resolved by
+        // Phased commands: render the caller's columns (already resolved by
         // ColumnSelection::parse — replace mode is the user's list verbatim,
         // modifier mode is defaults +/- the user's adjustments) or fall back
         // to ALL_COLUMNS. No width-based dropping: fit_widths_to_available
         // shrinks Branch/Path/LastCommit for narrow terminals, then accepts
         // overflow rather than removing data columns. See #494.
         //
-        // Asymmetry preserved: the no-flag fallback is ALL_COLUMNS (includes
-        // Hash), while modifier mode's base set comes from
-        // ListColumn::tui_defaults() (no Hash). A follow-up may reconcile.
+        // Sync and prune always pass Some (they resolve tui_defaults() and
+        // apply the pr visibility gate at the command layer), so the
+        // ALL_COLUMNS fallback now serves only clone and repo remove — the
+        // one place the old no-flag-includes-Hash asymmetry survives.
         let columns = state
             .live
             .cfg
@@ -797,6 +803,36 @@ fn render_cell(
                 }
             }
         }
+        Column::Pr => {
+            if vals.pr.is_empty() {
+                if is_cell_unloaded(FieldSet::FORGE_REF) {
+                    not_loaded_cell(width)
+                } else if is_cell_loading(FieldSet::FORGE_REF) {
+                    loading_shimmer_cell(width, tick)
+                } else {
+                    Cell::from(vals.pr.clone())
+                }
+            } else {
+                // Color carries the status here (a ratatui buffer can't hold
+                // the colorless glyph fallback's escape-free sibling — plain
+                // renderers append `✓`/`✗`/`●`/`◆`/`○` instead). LightMagenta
+                // matches the ✦ default-branch purple. The status→slot mapping
+                // is shared with the blocking renderer via `semantic_color`.
+                let cell = Cell::from(vals.pr.clone());
+                match vals.pr_status.and_then(PrStatus::semantic_color) {
+                    Some(PrStatusColor::Pass) => cell.style(Style::default().fg(Color::Green)),
+                    Some(PrStatusColor::Fail) => cell.style(Style::default().fg(Color::Red)),
+                    Some(PrStatusColor::Pending) => cell.style(Style::default().fg(Color::Yellow)),
+                    Some(PrStatusColor::Merged) => {
+                        cell.style(Style::default().fg(Color::LightMagenta))
+                    }
+                    Some(PrStatusColor::Closed) => {
+                        cell.style(Style::default().add_modifier(Modifier::DIM))
+                    }
+                    None => cell,
+                }
+            }
+        }
         Column::Owner => {
             if vals.owner.is_empty() {
                 if is_cell_unloaded(FieldSet::OWNER) {
@@ -1392,6 +1428,8 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Lines,
+            forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1453,6 +1491,8 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Lines,
+            forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 
@@ -1506,6 +1546,8 @@ mod tests {
             cwd: &PathBuf::from("/tmp"),
             now: 0,
             stat: Stat::Summary,
+            forge_prs: None,
+            colors: true,
         };
         let vals = compute_column_values(&info, &ctx);
 
