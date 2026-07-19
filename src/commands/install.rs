@@ -222,6 +222,9 @@ mod tests {
     /// Run git in `dir` with a fixed identity (no global config — Rule #1).
     fn git_at(dir: &Path, args: &[&str]) {
         let out = git_command_at(dir)
+            // A machine-global commit.gpgsign=true would make every fixture
+            // commit hit the gpg agent — slow, and flaky under parallel load.
+            .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
