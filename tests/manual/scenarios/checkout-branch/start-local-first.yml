@@ -1,0 +1,100 @@
+name: Start local-first rules
+description:
+  The two-name guess never overrides a meaningful local reading — a resolvable
+  base keeps `<branch> <base>` even when the first name is a cataloged repo,
+  naming the repo you are standing in is a redundant qualifier that keeps local
+  base semantics, and a cataloged repo whose directory vanished reports the
+  catalog error instead of quietly creating a local branch named after it
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+    expect:
+      exit_code: 0
+
+  # A brand-new name in the second slot is not a base, so the live repo wins
+  # and the branch is created over there — the feature still works.
+  - name: A new branch name in the second slot still guesses cross-repo
+    run: daft start test-repo-b feat-cross 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feat-cross"
+      output_contains:
+        - "Creating branch 'feat-cross' in 'test-repo-b'"
+
+  # A stale catalog path must report the actionable catalog error, matching
+  # `daft go` — never degrade into a local branch named after the repo.
+  # Runs before any local `test-repo-b` branch exists, so the guess (not the
+  # collision guard) is what is under test.
+  - name: A moved repo reports the catalog error instead of going local
+    run:
+      mv "$WORK_DIR/test-repo-b" "$WORK_DIR/test-repo-b-moved" && daft start
+      test-repo-b feat-stale 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "which no longer exists"
+
+  - name: No stray local branch was created for the moved repo
+    run:
+      test ! -d "$WORK_DIR/test-repo-a/test-repo-b" && mv
+      "$WORK_DIR/test-repo-b-moved" "$WORK_DIR/test-repo-b"
+    expect:
+      exit_code: 0
+
+  # `develop` exists locally, so `start test-repo-b develop` is the ordinary
+  # `<branch> <base>` form: create branch `test-repo-b` based on `develop`.
+  # Before the fix the repo name hijacked it and created `develop` over there.
+  - name: A resolvable base keeps the local reading over a live repo
+    run: daft start test-repo-b develop 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/test-repo-b"
+      output_not_contains:
+        - "Creating branch 'develop' in 'test-repo-b'"
+
+  - name: Nothing was created in the other repo
+    run: test ! -d "$WORK_DIR/test-repo-b/develop"
+    expect:
+      exit_code: 0
+
+  # Naming your own repo must not hop cross-repo and swap the base to the
+  # default branch — it is a redundant qualifier, so local rules apply.
+  - name: Open a non-default branch to stand on
+    run: daft go develop 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/develop"
+
+  - name:
+      Naming the current repo creates the branch here, off the current branch
+    run: daft start test-repo-a feat-here 2>&1
+    cwd: "$WORK_DIR/test-repo-a/develop"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/feat-here"
+      output_not_contains:
+        - "Creating branch 'feat-here' in 'test-repo-a'"
+
+  - name: It was based on the current branch, not the default branch
+    run:
+      git -C "$WORK_DIR/test-repo-a/feat-here" merge-base --is-ancestor
+      origin/develop HEAD
+    expect:
+      exit_code: 0

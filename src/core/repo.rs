@@ -203,6 +203,28 @@ fn rev_parse_path(cwd: &Path, arg: &str) -> Option<PathBuf> {
 /// Local-only by design: `daft doctor`/`install` must stay fast and work
 /// offline, so this never reaches for the network the way
 /// [`crate::core::remote::get_default_branch_local`]'s ls-remote fallback can.
+/// The worktree checked out on `branch`, if the repo at `cwd` has one.
+///
+/// Used when a caller needs a *specific* worktree's committed content —
+/// notably reading another repo's `daft.yml` relations manifest, where
+/// whichever worktree [`find_representative_worktree`] happens to return
+/// could be carrying a stale copy.
+pub(crate) fn find_worktree_for_branch(cwd: &Path, branch: &str) -> Option<PathBuf> {
+    let porcelain = crate::utils::git_command_at(cwd)
+        .args(["worktree", "list", "--porcelain"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !porcelain.status.success() {
+        return None;
+    }
+    let porcelain = String::from_utf8_lossy(&porcelain.stdout);
+    crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain)
+        .into_iter()
+        .find(|w| !w.is_bare && w.branch.as_deref() == Some(branch))
+        .map(|w| w.path)
+}
+
 pub(crate) fn find_representative_worktree(cwd: &Path) -> Option<PathBuf> {
     let porcelain = crate::utils::git_command_at(cwd)
         .args(["worktree", "list", "--porcelain"])

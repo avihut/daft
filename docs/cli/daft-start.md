@@ -44,14 +44,34 @@ mirroring `daft go <repo> <branch>`. How the names are read:
 | Form | Meaning |
 | --- | --- |
 | `daft start A` | Always local: new branch `A` (a lone repo name is never a target) |
-| `daft start A B` | Local branch `A` wins if it exists (fails fast as "already exists"); otherwise cataloged repo `A` → create `B` there; otherwise local `A` based on `B` |
+| `daft start A B` | Decided local-first, in order — see below |
 | `daft start A B C` | Always cross-repo: branch `B` in repo `A`, based on `C` (a catalog miss is a hard error) |
 | `daft start --repo A B [C]` | Explicit cross-repo — for repo names shadowed by local branches, and for scripts |
 
+Two names is the only ambiguous arity. It resolves in this order, and the
+first rule that matches wins:
+
+1. **`A` is an existing local branch** — the local reading is kept and fails
+   fast as "already exists" (with a `--repo` hint when `A` is also cataloged).
+2. **`B` resolves to a commit here** (branch, remote-tracking ref, tag, SHA) —
+   this is the ordinary `<branch> <base>` form. A repo-shaped `A` does not
+   hijack it: `daft start api release-2` creates local branch `api` off
+   `release-2`.
+3. **`A` names the repo you are standing in** — a redundant qualifier, not a
+   hop: the branch is created here on the usual local base (the current
+   branch), and `-c` is not refused.
+4. **`A` is a live cataloged repo** — create `B` over there.
+5. Otherwise local: branch `A` based on `B`.
+
 Anything meaningful in the current repository wins over a catalog match, so a
-new branch name that happens to equal a repo name never silently retargets;
-the unambiguous local-with-base spelling is `daft go -b <branch> [base]`. The
-guess matches names only — paths (and UUIDs) work in the explicit forms.
+new branch name that happens to equal a repo name never silently retargets.
+The escape when you really do want a cross-repo branch whose name collides
+with a local ref is `--repo`. The guess matches names only — paths (and
+UUIDs) work in the explicit forms.
+
+A repo that is cataloged but whose directory moved, or that was removed with
+`daft repo remove`, is reported the same way `daft go` reports it — it is
+never quietly reinterpreted as a local branch name.
 
 Cross-repo semantics:
 
@@ -82,7 +102,7 @@ repos *api's* manifest declares, and the shell lands in api's new worktree.
 | Argument | Description | Required |
 |----------|-------------|----------|
 | `<BRANCH_NAME>` | Name of the new branch — or a cataloged repo to create it in, when two or more names are given | Yes |
-| `[BASE_OR_BRANCH]` | Base branch (defaults to the current branch) — or the new branch inside the repo | No |
+| `[BASE_OR_BRANCH]` | Base branch (defaults to the current branch) — or, when it names no ref here, the new branch inside the repo | No |
 | `[BASE]` | Base branch inside the repo (three-name form); must exist there | No |
 
 ## Options

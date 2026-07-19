@@ -21,12 +21,16 @@ daft.checkout.pushVerify: auto, always, or never).
 `daft start` can also create the branch in another repository from the repo
 catalog: `daft start <repo> <branch> [base]`, or explicitly with
 `\-\-repo <repo>`. Anything meaningful in the current repository wins over a
-catalog match: with two names, an existing local branch keeps the local
-`<branch> <base>` reading, and only otherwise does a live cataloged repo
-select cross\-repo creation. Three names are always `<repo> <branch> <base>`.
-The resolved destination is announced before any work happens; without a
-base the branch is based on the target repo\*(Aqs default branch, the target
-repo\*(Aqs hooks run only if it is trusted, and the shell lands in the new
+catalog match. With two names that means, in order: an existing local branch
+in the first slot keeps the local reading (and fails fast as "already
+exists"); a second name that resolves here is a base, keeping the ordinary
+`<branch> <base>` form; naming the repo you are standing in is a redundant
+qualifier that stays local; and only then does a live cataloged repo select
+cross\-repo creation. Three names are always `<repo> <branch> <base>`. A repo
+that is cataloged but moved or removed is reported, never silently read as a
+branch name. The resolved destination is announced before any work happens;
+without a base the branch is based on the target repo\*(Aqs default branch, the
+target repo\*(Aqs hooks run only if it is trusted, and the shell lands in the new
 worktree there. Carry (`\-c`) cannot cross repositories; `\-x` runs in the
 target worktree.
 .PP
@@ -96,7 +100,7 @@ Print version
 Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`
 .TP
 [\fIBASE_OR_BRANCH\fR]
-Base branch (defaults to the current branch); or the new branch inside `<repo>`
+Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`
 .TP
 [\fIBASE\fR]
 Base branch inside `<repo>` (three\-name form); must exist there
