@@ -6,7 +6,7 @@ use crate::{
         layout::resolver::{LayoutResolutionContext, resolve_layout},
         worktree::init,
     },
-    git::{GitCommand, should_show_gitoxide_notice},
+    git::GitCommand,
     hints::{LayoutPromptResult, maybe_prompt_layout_choice, maybe_show_shell_hint},
     hooks::TrustDatabase,
     logging::init_logging,
@@ -170,10 +170,6 @@ pub fn run_with_output(args: &Args, output: &mut dyn Output) -> Result<()> {
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     output.start_spinner("Initializing repository...");
     let exec_result = {

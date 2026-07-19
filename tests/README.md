@@ -32,7 +32,7 @@ mise run test
 # Unit tests only
 mise run test:unit
 
-# Bash integration tests (full matrix: default + gitoxide)
+# Bash integration tests (full matrix: default + subprocess)
 mise run test:integration
 
 # YAML manual tests (all 252 scenarios, automatic — default)
@@ -225,7 +225,7 @@ dirs_exist:
 ## CI Integration
 
 The GitHub Actions workflow runs both test systems for each matrix entry
-(default + gitoxide config):
+(default + subprocess config):
 
 1. Bash: `test_all.sh` with `GIT_CONFIG_GLOBAL`
 2. YAML: `xtask manual-test` with same config

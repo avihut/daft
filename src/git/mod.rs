@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::{Once, OnceLock};
+use std::sync::OnceLock;
 
 mod branch;
 pub mod cancel;
@@ -15,21 +15,6 @@ mod stash;
 mod worktree;
 
 pub use remote::{PushIo, PushOptions, PushOutputTee, PushStream};
-
-static GITOXIDE_NOTICE: Once = Once::new();
-
-/// Returns true (once per process) if the gitoxide experimental notice should be shown.
-/// Safe to call multiple times; only the first call returns true.
-pub fn should_show_gitoxide_notice(use_gitoxide: bool) -> bool {
-    if use_gitoxide {
-        let mut fired = false;
-        GITOXIDE_NOTICE.call_once(|| {
-            fired = true;
-        });
-        return fired;
-    }
-    false
-}
 
 // Per-thread count of `gix::discover()` calls (test-only probe).
 //
@@ -84,6 +69,10 @@ pub(crate) struct PushSupervision {
 
 pub struct GitCommand {
     pub(crate) quiet: bool,
+    /// Whether dispatched ops take the gix arm. Constructed `false`: the
+    /// settings resolver (`DaftSettings::use_gitoxide`, default on since
+    /// #733) is the sole opt-in source via `with_gitoxide`, so call sites
+    /// that never thread the setting stay on the subprocess backend.
     pub(crate) use_gitoxide: bool,
     pub(crate) gix_repo: OnceLock<gix::ThreadSafeRepository>,
     /// Shared cancellation flag observed by the long-running subprocess
@@ -146,11 +135,6 @@ impl GitCommand {
             .is_some_and(cancel::CancelFlag::is_cancelled)
     }
 
-    /// Returns true (once per process) if the gitoxide notice should be shown.
-    pub fn take_gitoxide_notice(&self) -> bool {
-        should_show_gitoxide_notice(self.use_gitoxide)
-    }
-
     /// Lazily discover and open the git repository via gitoxide.
     /// Returns a thread-local Repository handle.
     pub(crate) fn gix_repo(&self) -> Result<gix::Repository> {
@@ -175,6 +159,20 @@ impl GitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Git env vars (set when tests run under a git hook) that would redirect
+    /// repo discovery to the host repo instead of a test's temp repo. The
+    /// `#[serial]` tests below strip them from the process and from every git
+    /// subprocess they spawn.
+    const GIT_ENV_VARS: &[&str] = &[
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+    ];
 
     #[test]
     fn test_git_command_new() {
@@ -233,18 +231,8 @@ mod tests {
     fn shared_git_command_discovers_repo_once() {
         use crate::core::settings::{DaftSettings, load_hooks_config_with};
 
-        // Git env vars (set when tests run under a git hook) would redirect
-        // discovery to the host repo — strip them from process + subprocess so
-        // `gix::discover` resolves the temp repo below. Only safe under #[serial].
-        const GIT_ENV_VARS: &[&str] = &[
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_COMMON_DIR",
-            "GIT_CEILING_DIRECTORIES",
-        ];
+        // Strip discovery-redirecting env vars so `gix::discover` resolves
+        // the temp repo below. Only safe under #[serial].
         for var in GIT_ENV_VARS {
             unsafe {
                 std::env::remove_var(var);
@@ -291,6 +279,63 @@ mod tests {
         assert_eq!(
             separate, 3,
             "independent instances each discover (guards the probe)"
+        );
+    }
+
+    /// #733 opt-out: a command with `use_gitoxide` false must take the
+    /// subprocess arm for every dispatched op. Every gix arm goes through
+    /// `gix_repo()`, so the discover counter doubles as a "was any gix path
+    /// taken" probe: zero discoveries ⇒ zero gix paths.
+    #[test]
+    #[serial_test::serial]
+    fn gitoxide_opt_out_takes_no_gix_path() {
+        for var in GIT_ENV_VARS {
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        let git_in_repo = |args: &[&str]| {
+            let mut c = std::process::Command::new("git");
+            for var in GIT_ENV_VARS {
+                c.env_remove(var);
+            }
+            c.env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .args(args)
+                .current_dir(&path)
+                .output()
+                .unwrap()
+        };
+        git_in_repo(&["init", "-b", "main"]);
+        git_in_repo(&["commit", "--allow-empty", "-m", "seed"]);
+
+        let _cwd_guard = CwdGuard::new();
+        std::env::set_current_dir(&path).unwrap();
+
+        // Opt-out: dispatched ops must never reach gix.
+        reset_discover_count();
+        let git = GitCommand::new(true).with_gitoxide(false);
+        assert!(git.show_ref_exists("refs/heads/main").unwrap());
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert_eq!(discover_count(), 0, "opt-out command must take no gix path");
+
+        // Control: the same ops with gitoxide on discover exactly once —
+        // proves the probe observes these ops and the arms actually differ.
+        reset_discover_count();
+        let git = GitCommand::new(true).with_gitoxide(true);
+        assert!(git.show_ref_exists("refs/heads/main").unwrap());
+        assert_eq!(git.symbolic_ref_short_head().unwrap(), "main");
+        assert!(git.rev_parse_is_inside_work_tree().unwrap());
+        assert_eq!(
+            discover_count(),
+            1,
+            "gix-backed command shares one discovery"
         );
     }
 }

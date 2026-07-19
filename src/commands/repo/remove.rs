@@ -105,10 +105,6 @@ pub(crate) fn run_with_args(args: &Args) -> Result<()> {
     // `use_gitoxide`, which users typically configure globally anyway.
     let settings = crate::core::settings::DaftSettings::load_global()?;
     let use_gitoxide = settings.use_gitoxide;
-    if crate::git::should_show_gitoxide_notice(use_gitoxide) {
-        eprintln!("[experimental] Using gitoxide backend for git operations");
-    }
-
     // --repo addresses a cataloged repo by name (exec-shape grammar). The
     // missing-path-tolerant resolver lets `--keep-files --repo <name>` drop
     // a stale entry whose directory is already gone; the full-removal path

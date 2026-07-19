@@ -5,7 +5,6 @@ use crate::{
         worktree::{branch_delete, rename},
     },
     git::GitCommand,
-    git::should_show_gitoxide_notice,
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
@@ -506,10 +505,6 @@ fn run_branch_delete(
     let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
     let executor = HookExecutor::new(hooks_config)?;
 
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
-
     // Plan-execute rail timeline (#651). This header is a seed built from
     // raw args; the core replaces it at plan commit with the resolved
     // targets (`daft remove .` → `Removing <branch>`, count as validated).
@@ -671,10 +666,6 @@ fn run_rename_inner(
         multi_remote_default: settings.multi_remote_default.clone(),
         no_verify,
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     let mut hooks_config = crate::core::settings::load_hooks_config()?;
     if verbose {

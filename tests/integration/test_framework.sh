@@ -503,10 +503,5 @@ print_summary() {
     fi
 }
 
-# Enable gitoxide for commands that use DaftSettings::load() (post-clone)
-enable_gitoxide() {
-    git config daft.experimental.gitoxide true
-}
-
 # Trap to ensure cleanup on exit
 trap cleanup EXIT

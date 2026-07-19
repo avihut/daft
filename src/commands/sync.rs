@@ -27,7 +27,7 @@ use crate::{
         },
     },
     get_git_common_dir, get_project_root,
-    git::{GitCommand, cancel::CancelFlag, should_show_gitoxide_notice},
+    git::{GitCommand, cancel::CancelFlag},
     hooks::HookExecutor,
     is_git_repository,
     logging::init_logging,
@@ -395,10 +395,6 @@ fn run_sequential(args: Args, settings: DaftSettings, cancel: &Arc<CancelFlag>) 
 
     if args.force_deprecated {
         output.warning("--force is deprecated, use --prune-dirty (or -f) instead");
-    }
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
     }
 
     let force = args.force();

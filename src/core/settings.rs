@@ -331,8 +331,10 @@ pub mod defaults {
     /// Default value for prune.cdTarget setting.
     pub const PRUNE_CD_TARGET: PruneCdTarget = PruneCdTarget::Root;
 
-    /// Default value for experimental.gitoxide setting.
-    pub const USE_GITOXIDE: bool = false;
+    /// Default value for experimental.gitoxide setting. Stable default
+    /// (#733): gitoxide backs the supported operations out of the box, and
+    /// the key is an opt-out — `false` forces the git-subprocess backend.
+    pub const USE_GITOXIDE: bool = true;
 
     /// Default value for go.autoStart setting.
     pub const GO_AUTO_START: bool = false;
@@ -634,7 +636,9 @@ pub struct DaftSettings {
     /// Default remote for multi-remote mode.
     pub multi_remote_default: String,
 
-    /// Use gitoxide for supported git operations.
+    /// Use gitoxide for supported git operations. On by default;
+    /// `daft.experimental.gitoxide = false` opts out to the git-subprocess
+    /// backend.
     pub use_gitoxide: bool,
 
     /// Automatically create worktree when branch not found in go command.
@@ -1651,7 +1655,7 @@ mod tests {
         assert_eq!(settings.update_args, "--ff-only");
         assert!(!settings.multi_remote_enabled);
         assert_eq!(settings.multi_remote_default, "origin");
-        assert!(!settings.use_gitoxide);
+        assert!(settings.use_gitoxide);
         assert!(!settings.go_auto_start);
         assert_eq!(settings.list_stat, Stat::Summary);
         assert!(!settings.branch_delete_remote);
@@ -1662,6 +1666,18 @@ mod tests {
         assert_eq!(settings.governor_mode, GovernorMode::Auto);
         assert_eq!(settings.governor_jobs, GovernorJobs::Auto);
         assert_eq!(settings.governor_memory_reserve, MemoryReserve::Auto);
+    }
+
+    /// #733: `daft.experimental.gitoxide` is an opt-out — an explicit false
+    /// must override the stable-on default, and unparseable values must fall
+    /// back to on (the same fallback every bool setting uses).
+    #[test]
+    fn gitoxide_opt_out_parse_semantics() {
+        assert!(!parse_bool("false", defaults::USE_GITOXIDE));
+        assert!(!parse_bool("no", defaults::USE_GITOXIDE));
+        assert!(!parse_bool("0", defaults::USE_GITOXIDE));
+        assert!(parse_bool("true", defaults::USE_GITOXIDE));
+        assert!(parse_bool("not-a-bool", defaults::USE_GITOXIDE));
     }
 
     #[test]

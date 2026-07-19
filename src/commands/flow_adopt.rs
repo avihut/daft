@@ -2,7 +2,6 @@ use crate::{
     core::{CommandBridge, worktree::flow_adopt},
     executor::cli_presenter::CliPresenter,
     get_git_common_dir,
-    git::should_show_gitoxide_notice,
     hooks::{
         HookContext, HookExecutor, HookType, TrustDatabase, TrustLevel, get_remote_url_for_git_dir,
     },
@@ -152,10 +151,6 @@ fn run_adopt(args: &Args, settings: &DaftSettings, output: &mut dyn Output) -> R
         dry_run: args.dry_run,
         use_gitoxide: settings.use_gitoxide,
     };
-
-    if should_show_gitoxide_notice(settings.use_gitoxide) {
-        output.warning("[experimental] Using gitoxide backend for git operations");
-    }
 
     if !params.dry_run {
         output.start_spinner("Converting to worktree layout...");

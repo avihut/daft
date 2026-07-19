@@ -163,9 +163,12 @@ const MATRIX: &[MatrixEntry] = &[
         name: "default",
         config: &[],
     },
+    // #733: gitoxide is the stable default, so "default" exercises the gix
+    // paths; this entry keeps the git-subprocess backend fully covered and
+    // proves the opt-out key genuinely forces it.
     MatrixEntry {
-        name: "gitoxide",
-        config: &[("daft.experimental.gitoxide", "true")],
+        name: "subprocess",
+        config: &[("daft.experimental.gitoxide", "false")],
     },
 ];
 
