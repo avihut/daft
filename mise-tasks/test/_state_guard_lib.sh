@@ -23,6 +23,31 @@
 #
 # File is intentionally non-executable so mise hides it from `mise tasks ls`.
 
+# ── Git config isolation ─────────────────────────────────────────────────────
+# The suite's fixtures shell out to real `git` to build throwaway repos, and
+# any ambient global/system git config leaks straight into them. The one that
+# bites: a developer whose global `commit.gpgsign = true` makes every fixture
+# commit reach the gpg agent, which chokes under the suite's concurrency and
+# flakes the pre-push hook — a fixture whose HEAD commit silently failed leaves
+# a repo with no commit, and a later `git rev-parse HEAD` comes back empty
+# (e.g. repo::remove::build_tui_rows_populates_head_commit_metadata). Per-helper
+# `-c commit.gpgsign=false` is whack-a-mole across ~15 fixtures and the flake
+# just hops to the next unhardened one; neutralize signing for every git
+# subprocess this run spawns instead, so the fix is total, not statistical.
+#
+# GIT_CONFIG_COUNT injects config at higher precedence than any config file, so
+# it overrides the developer's global `true`. Surgical on purpose: overriding
+# only *.gpgsign leaves their git identity (user.name/email) intact, so the
+# fixtures that rely on an inherited global identity keep working — unlike
+# GIT_CONFIG_GLOBAL=/dev/null, which would strip it and break them. Appends to
+# any pre-existing GIT_CONFIG_COUNT rather than clobbering it.
+_gc="${GIT_CONFIG_COUNT:-0}"
+export "GIT_CONFIG_KEY_${_gc}=commit.gpgsign" "GIT_CONFIG_VALUE_${_gc}=false"
+_gc=$((_gc + 1))
+export "GIT_CONFIG_KEY_${_gc}=tag.gpgsign" "GIT_CONFIG_VALUE_${_gc}=false"
+export GIT_CONFIG_COUNT=$((_gc + 1))
+unset _gc
+
 # Invoke the xtask guard. Centralized so the snapshot and verify calls stay in
 # lockstep (same package, same quieting).
 _state_guard_xtask() {
