@@ -121,7 +121,16 @@ pub struct WorktreeInfo {
     /// Most recent mtime of changed/untracked files (None if clean or not computed).
     pub working_tree_mtime: Option<i64>,
     /// Whether this is a detached HEAD sandbox (no branch).
+    ///
+    /// Narrower than "HEAD is detached": a worktree paused mid-operation is
+    /// not a sandbox. See [`super::identity`].
     pub is_sandbox: bool,
+    /// The git operation paused in this worktree, if any. Present for
+    /// attached worktrees too — a merge never detaches HEAD.
+    pub op: Option<crate::git::op_state::OpKind>,
+    /// How this row's branch name was established. `None` for rows that are
+    /// not worktrees (their name comes straight from the ref).
+    pub identity_source: Option<super::identity::IdentitySource>,
     /// The PR/MR this branch tracks (from `branch.<name>.merge`), or `None`.
     /// Local config only — no network.
     pub forge_ref: Option<super::forge_ref::ForgeBranchRef>,
@@ -161,6 +170,8 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
             forge_ref: None,
         }
     }
@@ -197,6 +208,8 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
             forge_ref: None,
         }
     }
@@ -819,19 +832,22 @@ pub fn collect_worktree_info(
         .context("Failed to list worktrees")?;
 
     let entries = super::porcelain::parse_worktree_list_porcelain(&porcelain_output);
+    // Recover identity for worktrees git reports as detached because an
+    // operation is replaying commits in them, and note what that operation
+    // is. Bare entries resolve to `None` and are skipped.
+    let identities = super::identity::resolve_identities(&entries);
     let mut infos = Vec::new();
 
-    for entry in entries {
-        // Skip bare entries (the bare repo root)
-        if entry.is_bare {
+    for (entry, identity) in entries.into_iter().zip(identities) {
+        let Some(identity) = identity else {
             continue;
-        }
-
-        let branch_display = if entry.is_detached {
-            "(detached)".to_string()
-        } else {
-            entry.branch.clone().unwrap_or_default()
         };
+
+        let branch_display = identity.name.clone();
+        // Everything branch-keyed below reads the *resolved* branch, not the
+        // porcelain's: mid-rebase `refs/heads/<branch>` still exists and
+        // still points at the pre-rebase tip, so these queries stay valid.
+        let branch = identity.branch.clone();
 
         // Canonicalize for comparison (ignore errors, fall back to raw path)
         let canonical_entry = entry
@@ -841,17 +857,12 @@ pub fn collect_worktree_info(
         let is_current = current_worktree_path == Some(canonical_entry.as_path());
 
         // Ahead/behind relative to base branch
-        let (ahead, behind) = if !entry.is_detached {
-            if let Some(branch) = &entry.branch {
-                match get_ahead_behind(base_branch, branch, &entry.path) {
-                    Some((a, b)) => (Some(a), Some(b)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let (ahead, behind) = match branch
+            .as_deref()
+            .and_then(|b| get_ahead_behind(base_branch, b, &entry.path))
+        {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
         };
 
         // Count staged, unstaged, untracked and conflicted files
@@ -864,62 +875,44 @@ pub fn collect_worktree_info(
         );
 
         // Ahead/behind relative to upstream tracking branch
-        let (remote_ahead, remote_behind) = if !entry.is_detached {
-            if let Some(branch) = &entry.branch {
-                match get_upstream_ahead_behind(branch, &entry.path) {
-                    Some((a, b)) => (Some(a), Some(b)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let (remote_ahead, remote_behind) = match branch
+            .as_deref()
+            .and_then(|b| get_upstream_ahead_behind(b, &entry.path))
+        {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
         };
 
         // Last commit info
         let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
             get_commit_metadata(&entry.path, git);
 
-        let owner = if !entry.is_detached {
+        let owner = branch.as_deref().and_then(|b| {
             ownership::resolve_owner_with_fallbacks(
                 base_branch,
-                &branch_display,
+                b,
                 &entry.path,
                 ownership_strategy,
                 user_email,
                 Some(remote_name),
             )
-        } else {
-            None
-        };
+        });
 
-        // Branch creation timestamp (only for non-detached worktrees)
-        let branch_creation_timestamp = if !entry.is_detached {
-            entry
-                .branch
-                .as_deref()
-                .and_then(|b| get_branch_creation_timestamp(b, &entry.path))
-        } else {
-            None
-        };
+        let branch_creation_timestamp = branch
+            .as_deref()
+            .and_then(|b| get_branch_creation_timestamp(b, &entry.path));
 
         // Whether this is the default (base) branch
-        let is_default_branch = entry.branch.as_deref().is_some_and(|b| b == base_branch);
+        let is_default_branch = branch.as_deref().is_some_and(|b| b == base_branch);
 
         // Line-level diff counts (only when stat is Lines)
-        let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines && !entry.is_detached
+        let (base_lines_inserted, base_lines_deleted) = match (stat == Stat::Lines)
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_base_line_counts(base_branch, b, &entry.path))
         {
-            if let Some(branch) = &entry.branch {
-                match get_base_line_counts(base_branch, branch, &entry.path) {
-                    Some((ins, del)) => (Some(ins), Some(del)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+            Some((ins, del)) => (Some(ins), Some(del)),
+            None => (None, None),
         };
 
         let (
@@ -934,19 +927,14 @@ pub fn collect_worktree_info(
             (None, None, None, None)
         };
 
-        let (remote_lines_inserted, remote_lines_deleted) =
-            if stat == Stat::Lines && !entry.is_detached {
-                if let Some(branch) = &entry.branch {
-                    match get_remote_line_counts(branch, &entry.path) {
-                        Some((ins, del)) => (Some(ins), Some(del)),
-                        None => (None, None),
-                    }
-                } else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
-            };
+        let (remote_lines_inserted, remote_lines_deleted) = match (stat == Stat::Lines)
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_remote_line_counts(b, &entry.path))
+        {
+            Some((ins, del)) => (Some(ins), Some(del)),
+            None => (None, None),
+        };
 
         let working_tree_mtime = if compute_mtime && !changed.paths.is_empty() {
             max_mtime_of_files(&entry.path, &changed.paths)
@@ -954,14 +942,10 @@ pub fn collect_worktree_info(
             None
         };
 
-        let forge_ref = if compute_forge_ref && !entry.is_detached {
-            entry
-                .branch
-                .as_deref()
-                .and_then(|b| get_forge_branch_ref(b, &entry.path))
-        } else {
-            None
-        };
+        let forge_ref = compute_forge_ref
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_forge_branch_ref(b, &entry.path));
 
         infos.push(WorktreeInfo {
             kind: EntryKind::Worktree,
@@ -992,7 +976,9 @@ pub fn collect_worktree_info(
             owner,
             size_bytes: None,
             working_tree_mtime,
-            is_sandbox: entry.is_detached,
+            is_sandbox: identity.is_sandbox,
+            op: identity.op,
+            identity_source: Some(identity.source),
             forge_ref,
         });
     }
@@ -1137,6 +1123,8 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                op: None,
+                identity_source: None,
                 forge_ref: None,
             });
         }
@@ -1224,6 +1212,8 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                op: None,
+                identity_source: None,
                 forge_ref: None,
             });
         }

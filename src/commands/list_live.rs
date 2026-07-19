@@ -87,31 +87,32 @@ pub fn run_live(args: Args) -> Result<()> {
         .worktree_list_porcelain()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
+    // Same recovery the blocking path does, at seed time so the Branch cell
+    // — which is never streamed — is right in the very first frame.
+    let identities = crate::core::worktree::identity::resolve_identities(&entries);
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut targets: Vec<list_stream::CollectorTarget> = Vec::new();
     let mut worktree_branches: HashSet<String> = HashSet::new();
 
-    for entry in entries {
-        if entry.is_bare {
+    for (entry, identity) in entries.into_iter().zip(identities) {
+        let Some(identity) = identity else {
             continue;
-        }
-        let branch_display = if entry.is_detached {
-            "(detached)".to_string()
-        } else {
-            entry.branch.clone().unwrap_or_default()
         };
+        let branch_display = identity.name.clone();
         let canonical = entry
             .path
             .canonicalize()
             .unwrap_or_else(|_| entry.path.clone());
         let is_current = current_path.as_deref() == Some(canonical.as_path());
-        let is_default_branch = entry.branch.as_deref() == Some(base_branch.as_str());
+        let is_default_branch = identity.branch.as_deref() == Some(base_branch.as_str());
 
         let mut info = WorktreeInfo::empty(&branch_display);
         info.path = Some(entry.path.clone());
         info.is_current = is_current;
         info.is_default_branch = is_default_branch;
-        info.is_sandbox = entry.is_detached;
+        info.is_sandbox = identity.is_sandbox;
+        info.op = identity.op;
+        info.identity_source = Some(identity.source);
         info.kind = EntryKind::Worktree;
         worktree_infos.push(info);
 
@@ -119,11 +120,15 @@ pub fn run_live(args: Args) -> Result<()> {
             branch_name: branch_display.clone(),
             path: Some(entry.path.clone()),
             kind: EntryKind::Worktree,
-            is_detached: entry.is_detached,
+            // "has no branch to query", not "HEAD is detached" — a recovered
+            // worktree has a real ref, so its branch-keyed cells must stream.
+            is_detached: identity.branch.is_none(),
         });
 
-        if !branch_display.is_empty() && !entry.is_detached {
-            worktree_branches.insert(branch_display);
+        // Recovered branches join the dedup set too, or `--branches` would
+        // list the branch a second time as a worktree-less local branch.
+        if let Some(branch) = identity.branch {
+            worktree_branches.insert(branch);
         }
     }
 

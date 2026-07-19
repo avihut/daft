@@ -284,6 +284,10 @@ fn should_use_live(args: &Args) -> bool {
     !args.emit.is_structured()
         && std::env::var_os("DAFT_NO_LIVE").is_none()
         && std::io::stdout().is_terminal()
+        // `--merging` is a display filter the live renderer does not apply, so
+        // on a TTY it used to be silently ignored and every worktree was
+        // listed. Route the filtered view at the renderer that honors it.
+        && !args.merging
 }
 
 /// Resolve the base branch to compare against, honoring `daft.remote` (not a
@@ -636,14 +640,21 @@ fn run_blocking(args: Args) -> Result<()> {
     }
 
     if args.merging {
-        infos.retain(|info| {
-            info.path.as_ref().is_some_and(|p| {
-                matches!(
-                    crate::core::worktree::merge::detect_in_progress(p),
-                    Ok(Some(crate::core::worktree::merge::InProgressOp::Merge))
-                )
-            })
-        });
+        // Reads the operation each row was already enriched with, rather than
+        // re-probing every worktree. Still merge-specific: `--merging` means
+        // merges, not "any operation" — a rebase has its own signals now (the
+        // annotation glyph and the status column).
+        infos.retain(|info| info.op == Some(crate::git::op_state::OpKind::Merge));
+
+        // A filter that matched nothing is not an empty repository. Falling
+        // through to the table's empty branch would print the new-user
+        // onboarding block ("No worktrees yet", `daft go <branch>`) to
+        // someone who has worktrees and just asked which of them are
+        // mid-merge.
+        if infos.is_empty() && !args.emit.is_structured() {
+            println!("No worktrees have a merge in progress.");
+            return Ok(());
+        }
     }
 
     let now = Utc::now().timestamp();
@@ -732,6 +743,8 @@ impl EmitColumns {
             h.push("is_current".into());
             h.push("is_default_branch".into());
             h.push("is_sandbox".into());
+            h.push("operation".into());
+            h.push("identity_source".into());
         }
         if self.path {
             h.push("path".into());
@@ -752,6 +765,7 @@ impl EmitColumns {
             h.push("staged".into());
             h.push("unstaged".into());
             h.push("untracked".into());
+            h.push("conflicted".into());
         }
         if self.changes_lines {
             h.push("staged_lines_inserted".into());
@@ -823,6 +837,14 @@ fn build_emit_table(
             row.push(Cell::bool(info.is_current));
             row.push(Cell::bool(info.is_default_branch));
             row.push(Cell::bool(info.is_sandbox));
+            match info.op {
+                Some(op) => row.push(Cell::str(op.as_str())),
+                None => row.push(Cell::null()),
+            }
+            match info.identity_source {
+                Some(src) => row.push(Cell::str(src.as_str())),
+                None => row.push(Cell::null()),
+            }
         }
         if cols.path {
             let rel_path = info
@@ -874,6 +896,7 @@ fn build_emit_table(
             row.push(Cell::Int(info.staged as i64));
             row.push(Cell::Int(info.unstaged as i64));
             row.push(Cell::Int(info.untracked as i64));
+            row.push(Cell::Int(info.conflicted as i64));
         }
         if cols.changes_lines {
             row.push(
@@ -1655,6 +1678,65 @@ mod tests {
         assert_eq!(table.rows.len(), 0);
     }
 
+    /// The identity/operation fields ride the columns they belong to and are
+    /// present under the default column set.
+    #[test]
+    fn build_emit_table_carries_identity_and_conflict_fields() {
+        let table = build_emit_table(
+            &[],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            ListColumn::list_defaults(),
+            0,
+            None,
+        );
+        for field in ["operation", "identity_source", "conflicted"] {
+            assert!(
+                table.headers.contains(&field.to_string()),
+                "default structured output must carry `{field}`"
+            );
+        }
+    }
+
+    /// Every emitted row must have exactly one cell per header — the two
+    /// halves are written in separate `if` chains, so a field added to one
+    /// and not the other silently shears the whole table.
+    #[test]
+    fn emit_rows_line_up_with_headers_for_a_recovered_worktree() {
+        let mut info = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        info.path = Some(std::path::PathBuf::from("/tmp/proj/feat"));
+        info.op = Some(crate::git::op_state::OpKind::Rebase);
+        info.identity_source = Some(crate::core::worktree::identity::IdentitySource::Recovered);
+        info.conflicted = 2;
+
+        for stat in [Stat::Summary, Stat::Lines] {
+            let table = build_emit_table(
+                std::slice::from_ref(&info),
+                std::path::Path::new("/tmp/proj"),
+                std::path::Path::new("/tmp/proj"),
+                stat,
+                ListColumn::list_defaults(),
+                0,
+                None,
+            );
+            assert_eq!(table.rows.len(), 1);
+            assert_eq!(
+                table.rows[0].len(),
+                table.headers.len(),
+                "row/header width mismatch in {stat:?} mode"
+            );
+
+            let at = |name: &str| {
+                let idx = table.headers.iter().position(|h| h == name).unwrap();
+                format!("{:?}", table.rows[0][idx])
+            };
+            assert!(at("operation").contains("rebase"));
+            assert!(at("identity_source").contains("recovered"));
+            assert!(at("conflicted").contains('2'));
+        }
+    }
+
     /// Full parity with the live table: the blocking renderer paints the
     /// current worktree's line with the shared row background; header,
     /// other rows, and the no-color path stay untouched.
@@ -1691,6 +1773,8 @@ mod tests {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
             forge_ref: None,
         };
         let infos = [info("main", true), info("feat", false)];
@@ -1751,6 +1835,8 @@ mod tests {
             size_bytes: Some(1024),
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
             forge_ref: None,
         };
         let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];
