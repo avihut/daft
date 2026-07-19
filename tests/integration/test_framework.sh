@@ -82,6 +82,56 @@ cleanup() {
     fi
 }
 
+# Preflight guard (#697/#738): assert the daft binary at $1 resolves its
+# config/data/state dirs under the sandbox root $2 — i.e. it actually honors the
+# DAFT_*_DIR overrides setup() exports. Those overrides are dev-build gated
+# (build.rs `daft_dev_build`); a DAFT_BUILD_RELEASE build, a stale binary, or a
+# system `daft` on PATH silently ignores them, and setup() only *exports* the
+# sandbox dirs — it cannot force a non-honoring binary to use them. Without this
+# check, git-worktree-clone registers its temp repos into the developer's real
+# repo catalog (the #738 leak). Mirrors the built-in preflight in
+# test_completions.sh and assert_binary_honors_overrides in the mise state-guard
+# lib; the framework needs its own copy because test:integration:{verbose,matrix}
+# and direct ./test_all.sh runs invoke it outside `with_state_guard`.
+#
+# Checked per key, not as one substring match over the whole output: a build
+# that honored DAFT_CONFIG_DIR but resolved data/state to the real dirs would
+# satisfy a whole-output match while still leaking the catalog and the jobs dir.
+assert_binary_honors_overrides() {
+    local bin="$1" sandbox="$2"
+    if [[ ! -x "$bin" ]]; then
+        log_error "state-guard preflight: daft binary not found or not executable: $bin"
+        return 1
+    fi
+
+    local dirs
+    dirs="$("$bin" __dirs 2>/dev/null)" || {
+        log_error "state-guard preflight: '$bin __dirs' failed (binary too old to have __dirs, or broken)"
+        return 1
+    }
+
+    local key resolved kupper ok=0
+    for key in config data state; do
+        resolved="$(printf '%s\n' "$dirs" | awk -F '\t' -v k="$key" '$1 == k { print $2 }')"
+        case "$resolved" in
+            "$sandbox"/*) ;;
+            *)
+                # Uppercase via tr (not ${key^^}) to stay portable across bash 3.2.
+                kupper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+                log_error "state-guard preflight: $bin ignores DAFT_${kupper}_DIR (resolved: ${resolved:-<none>})"
+                ok=1
+                ;;
+        esac
+    done
+
+    if [[ "$ok" != "0" ]]; then
+        log_error "Refusing to run: integration tests would touch your real config/state/data dirs."
+        log_error "The binary is not a daft_dev_build (a release/tagged build, or a system daft on PATH). Rebuild the dev binary. See #697/#738."
+        return 1
+    fi
+    return 0
+}
+
 # Setup function
 setup() {
     log "Setting up Rust integration test environment..."
@@ -154,6 +204,13 @@ setup() {
     # developer's real ~/.claude. Dev-build gated, like the DAFT_*_DIR trio.
     export DAFT_SKILLS_DIR="$TEMP_BASE_DIR/dskills"
     mkdir -p "$DAFT_SKILLS_DIR"
+
+    # Fail closed if the binary under test ignores the DAFT_*_DIR overrides just
+    # exported — otherwise clone/init would leak temp repos into the real
+    # catalog (#738). Belt to the `with_state_guard` suspenders: this fires even
+    # on the unguarded launch paths (test:integration:{verbose,matrix}, a direct
+    # ./test_all.sh) that never see the mise-level guard.
+    assert_binary_honors_overrides "$RUST_BINARY_DIR/daft" "$TEMP_BASE_DIR" || exit 1
 
     # Verify all binaries are available
     local binary_names=("git-worktree-clone" "git-worktree-checkout" "git-worktree-init" "git-worktree-prune")
