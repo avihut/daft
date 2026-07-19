@@ -29,6 +29,7 @@ pub mod list_live;
 pub mod merge;
 pub mod multi_remote;
 pub mod prune;
+pub mod push;
 pub mod release_notes;
 pub mod repo;
 pub mod run;

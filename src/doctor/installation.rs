@@ -23,6 +23,7 @@ const EXPECTED_SYMLINKS: &[&str] = &[
     "git-worktree-list",
     "git-worktree-merge",
     "git-worktree-sync",
+    "git-worktree-push",
     "git-daft",
     "daft-go",
     "daft-start",
@@ -669,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_expected_symlinks_count() {
-        assert_eq!(EXPECTED_SYMLINKS.len(), 18);
+        assert_eq!(EXPECTED_SYMLINKS.len(), 19);
     }
 
     #[test]

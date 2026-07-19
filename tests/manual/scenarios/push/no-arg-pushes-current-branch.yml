@@ -1,0 +1,65 @@
+name: bare push resolves the current worktree's branch
+description:
+  "The documented default and most common invocation: `daft push` with no BRANCH
+  takes a distinct path (get_current_branch), and is the only case where the
+  resolved worktree IS the invoking directory. The hook must still run there,
+  and the run must report the branch it inferred."
+
+repos:
+  - name: push-noarg-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_NOARG_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-noarg-repo/main"
+
+  - name: Checkout the feature branch into its own worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-noarg-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-noarg-repo/feature/test-feature"
+
+  - name: Commit a change on the feature branch
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "no-arg change" > noarg.txt
+      git add noarg.txt
+      git commit -m "No-arg change"
+    cwd: "$WORK_DIR/push-noarg-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Install a cwd-recording pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\npwd >> %s/hook-cwd\nexit 0\n' "$WORK_DIR" > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/push-noarg-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Push with no BRANCH argument from the feature worktree
+    run: daft push 2>&1
+    cwd: "$WORK_DIR/push-noarg-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feature/test-feature' to 'origin'"
+      file_contains:
+        - path: "$WORK_DIR/hook-cwd"
+          content: "push-noarg-repo/feature/test-feature"
+
+  - name: The push landed on the remote
+    run: |
+      git fetch origin 2>/dev/null
+      git rev-list --count origin/feature/test-feature..feature/test-feature
+    cwd: "$WORK_DIR/push-noarg-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]

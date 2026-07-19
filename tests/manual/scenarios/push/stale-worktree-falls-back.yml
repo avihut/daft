@@ -1,0 +1,67 @@
+name: push survives a registered worktree whose directory is gone
+description:
+  "Deleting a worktree directory without pruning leaves the entry in `git
+  worktree list` (marked prunable). Using that dead path as the push cwd fails
+  every git call with exit 128 — breaking a push plain git would have made — so
+  the run falls back to the invoking directory and names the stale entry."
+
+repos:
+  - name: push-stale-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_STALE_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-stale-repo/main"
+
+  - name: Checkout the feature branch into its own worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-stale-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-stale-repo/feature/test-feature"
+
+  - name: Commit a change on the feature branch
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "stale change" > stale.txt
+      git add stale.txt
+      git commit -m "Stale change"
+    cwd: "$WORK_DIR/push-stale-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Delete the worktree directory WITHOUT pruning
+    run: rm -rf $WORK_DIR/push-stale-repo/feature/test-feature
+    cwd: "$WORK_DIR/push-stale-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: git still reports the now-dead worktree entry
+    run:
+      git worktree list --porcelain | grep -c "^worktree .*feature/test-feature"
+      || true
+    cwd: "$WORK_DIR/push-stale-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["1"]
+
+  - name:
+      The push succeeds from the invoking directory and names the stale entry
+    run: daft push feature/test-feature 2>&1
+    cwd: "$WORK_DIR/push-stale-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "is gone"
+        - "Pushed 'feature/test-feature' to 'origin'"
+
+  - name: The branch reached the remote
+    run: git ls-remote --heads origin feature/test-feature
+    cwd: "$WORK_DIR/push-stale-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["feature/test-feature"]

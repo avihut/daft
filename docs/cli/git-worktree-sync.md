@@ -87,4 +87,5 @@ git worktree-sync [OPTIONS]
 
 - [git-worktree-prune](./git-worktree-prune.md)
 - [git-worktree-fetch](./git-worktree-fetch.md)
+- [git-worktree-push](./git-worktree-push.md)
 

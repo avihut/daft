@@ -1,0 +1,80 @@
+name: push runs the pre-push hook in the pushed branch's worktree
+description:
+  "The command's single guarantee (#600): pushing branch B from worktree A runs
+  the shared pre-push hook (core.hooksPath, the lefthook/husky mechanism) with
+  cwd = B's worktree, not A's. A probe hook records its working directory; a
+  second push of an up-to-date branch reports the no-op."
+
+repos:
+  - name: push-cwd-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_CWD_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-cwd-repo/main"
+
+  - name: Checkout the feature branch into its own worktree
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-cwd-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-cwd-repo/feature/test-feature"
+
+  - name: Commit a change on the feature branch
+    run: |
+      git config user.email "me@example.com"
+      git config user.name "Me Testuser"
+      echo "pushable change" > change.txt
+      git add change.txt
+      git commit -m "Pushable change"
+    cwd: "$WORK_DIR/push-cwd-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Install a cwd-recording pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\npwd >> %s/hook-cwd\nexit 0\n' "$WORK_DIR" > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/push-cwd-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Push the feature branch FROM main's worktree
+    run: daft push feature/test-feature 2>&1
+    cwd: "$WORK_DIR/push-cwd-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushing 'feature/test-feature' to 'origin' from"
+        - "Pushed 'feature/test-feature' to 'origin'"
+      file_contains:
+        - path: "$WORK_DIR/hook-cwd"
+          content: "push-cwd-repo/feature/test-feature"
+
+  - name: The hook did not run in the invoking worktree
+    run: grep -c "push-cwd-repo/main" $WORK_DIR/hook-cwd || true
+    expect:
+      exit_code: 0
+      output_contains: ["0"]
+
+  - name: The push landed on the remote
+    run: |
+      git fetch origin 2>/dev/null
+      git rev-list --count origin/feature/test-feature..feature/test-feature
+    cwd: "$WORK_DIR/push-cwd-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]
+
+  - name: Pushing again reports up to date
+    run: daft push feature/test-feature 2>&1
+    cwd: "$WORK_DIR/push-cwd-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'feature/test-feature' is already up to date on 'origin'"

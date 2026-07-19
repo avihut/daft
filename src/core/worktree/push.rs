@@ -118,8 +118,14 @@ impl PushResult {
 /// the matching `GitCommand` primitive.
 #[derive(Debug, Clone, Copy)]
 pub enum PushAction<'a> {
-    /// `git push --set-upstream <remote> <branch>`
-    SetUpstream { remote: &'a str, branch: &'a str },
+    /// `git push --set-upstream <remote> <branch>` (optionally
+    /// `--force-with-lease` — `daft push --force-with-lease` on a branch
+    /// with no upstream yet must not silently drop the flag)
+    SetUpstream {
+        remote: &'a str,
+        branch: &'a str,
+        force_with_lease: bool,
+    },
     /// `git push <remote> <branch>` (optionally `--force-with-lease`)
     Sync {
         remote: &'a str,
@@ -154,8 +160,19 @@ impl PushAction<'_> {
     /// Human preview of the underlying git command (verbose job display).
     fn preview(&self) -> String {
         match self {
-            PushAction::SetUpstream { remote, branch } => {
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease: false,
+            } => {
                 format!("git push --set-upstream {remote} {branch}")
+            }
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease: true,
+            } => {
+                format!("git push --set-upstream --force-with-lease {remote} {branch}")
             }
             PushAction::Sync {
                 remote,
@@ -175,9 +192,11 @@ impl PushAction<'_> {
 
     fn run(&self, git: &GitCommand, cwd: &Path, opts: &PushOptions) -> Result<PushIo> {
         match *self {
-            PushAction::SetUpstream { remote, branch } => {
-                git.push_set_upstream_from(remote, branch, cwd, opts)
-            }
+            PushAction::SetUpstream {
+                remote,
+                branch,
+                force_with_lease,
+            } => git.push_set_upstream_from(remote, branch, cwd, force_with_lease, opts),
             PushAction::Sync {
                 remote,
                 branch,
@@ -225,8 +244,26 @@ impl HookVerdict {
             HookVerdict::Rejected => {
                 "the repo's pre-push hook may have blocked it, or the remote was unreachable"
             }
-            HookVerdict::Passed => "the pre-push hook passed but the remote rejected the push",
+            // Not "the remote rejected it": a ref line is also emitted when
+            // git refuses locally — `--force-with-lease` on a stale lease
+            // prints `! …:… [rejected] (stale info)` and never asks the
+            // remote to update anything. All that is actually observable
+            // here is that the gate cleared and the push did not land.
+            HookVerdict::Passed => "the pre-push hook passed; the push itself was rejected",
             HookVerdict::Bypassed | HookVerdict::NoHook => "the push failed",
+        }
+    }
+
+    /// Terse detail for a failed push's rail row — the one-phrase form of
+    /// [`Self::failure_cause`], and the single source for it: hand-rolled
+    /// copies at each call site drifted into asserting what daft cannot
+    /// observe (`Rejected` blamed on the gate when the remote was merely
+    /// unreachable; `Passed` blamed on the remote when git refused locally).
+    pub fn rail_detail(self) -> &'static str {
+        match self {
+            HookVerdict::Rejected => "hook or transport refused (see below)",
+            HookVerdict::Passed => "push rejected (see below)",
+            HookVerdict::Bypassed | HookVerdict::NoHook => "failed (see below)",
         }
     }
 
@@ -1087,15 +1124,46 @@ mod tests {
     }
 
     #[test]
-    fn failure_cause_for_passed_blames_the_remote_not_the_hook() {
-        // A `Passed` push cleared the hook; a downstream failure is the remote's
-        // (non-fast-forward, perms). The message must not imply the hook rejected.
+    fn failure_cause_for_passed_does_not_blame_the_hook_or_assert_the_remote() {
+        // A `Passed` push cleared the hook, so the message must not imply the
+        // hook rejected — but it must not assert the *remote* did either:
+        // `--force-with-lease` on a stale lease emits a porcelain ref line
+        // (so it grades `Passed`) while git refuses it locally, never asking
+        // the remote to update the ref.
         let cause = HookVerdict::Passed.failure_cause();
         assert!(cause.contains("passed"), "states the hook passed");
         assert!(
-            cause.contains("remote rejected"),
-            "attributes the failure to the remote"
+            !cause.contains("remote rejected"),
+            "must not assert a remote rejection for a locally-refused push: {cause}"
         );
+    }
+
+    #[test]
+    fn rail_detail_matches_the_attribution_of_failure_cause() {
+        // The rail's one-phrase detail and the bail's cause must draw the
+        // same line — a terse row that asserts more than the sentence below
+        // it is how the hand-rolled copies drifted in the first place.
+        assert!(
+            !HookVerdict::Rejected.rail_detail().contains("gate refused"),
+            "a Rejected push is equally a transport failure: {}",
+            HookVerdict::Rejected.rail_detail()
+        );
+        assert!(
+            !HookVerdict::Passed.rail_detail().contains("remote"),
+            "a Passed push may have been refused locally: {}",
+            HookVerdict::Passed.rail_detail()
+        );
+        for verdict in [
+            HookVerdict::Rejected,
+            HookVerdict::Passed,
+            HookVerdict::Bypassed,
+            HookVerdict::NoHook,
+        ] {
+            assert!(
+                verdict.rail_detail().ends_with("(see below)"),
+                "every detail points at the dumped output: {verdict:?}"
+            );
+        }
     }
 
     #[test]
@@ -1480,6 +1548,59 @@ mod tests {
         assert!(outcome.success(), "failure: {:?}", outcome.failure);
         assert_eq!(outcome.hook, HookVerdict::Passed);
         assert!(remote_has_branch(&repo, "main"));
+    }
+
+    #[test]
+    fn set_upstream_preview_reflects_force_with_lease() {
+        let plain = PushAction::SetUpstream {
+            remote: "origin",
+            branch: "main",
+            force_with_lease: false,
+        };
+        assert_eq!(plain.preview(), "git push --set-upstream origin main");
+        let forced = PushAction::SetUpstream {
+            remote: "origin",
+            branch: "main",
+            force_with_lease: true,
+        };
+        assert_eq!(
+            forced.preview(),
+            "git push --set-upstream --force-with-lease origin main"
+        );
+    }
+
+    #[test]
+    fn set_upstream_with_force_with_lease_pushes_and_sets_upstream() {
+        // `daft push --force-with-lease` on a branch with no upstream routes
+        // through SetUpstream and must not drop the lease flag (#600). On a
+        // ref the remote doesn't have yet the lease is trivially satisfied,
+        // so the push lands and tracking gets configured.
+        let repo = test_repo();
+        let git = GitCommand::new(false);
+
+        let outcome = push_with_hooks(
+            &git,
+            PushAction::SetUpstream {
+                remote: "origin",
+                branch: "main",
+                force_with_lease: true,
+            },
+            &repo.work,
+            true,
+            &NoopStageRunner,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(outcome.success(), "failure: {:?}", outcome.failure);
+        assert!(remote_has_branch(&repo, "main"));
+        let tracking = git_in(&repo.work, &["config", "branch.main.remote"]);
+        assert_eq!(
+            String::from_utf8_lossy(&tracking.stdout).trim(),
+            "origin",
+            "--set-upstream must still configure tracking"
+        );
     }
 
     #[test]

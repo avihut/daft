@@ -144,6 +144,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         command: "git-worktree-merge",
         style: ShortcutStyle::Git,
     },
+    Shortcut {
+        alias: "gwtpush",
+        command: "git-worktree-push",
+        style: ShortcutStyle::Git,
+    },
     // Shell style (2 shortcuts)
     Shortcut {
         alias: "gwco",
@@ -211,6 +216,7 @@ mod tests {
         assert_eq!(resolve("gwtbd"), "git-worktree-branch");
         assert_eq!(resolve("gwtinit"), "git-worktree-init");
         assert_eq!(resolve("gwtsync"), "git-worktree-sync");
+        assert_eq!(resolve("gwtpush"), "git-worktree-push");
         assert_eq!(resolve("gwtm"), "git-worktree-merge");
     }
 
@@ -260,6 +266,7 @@ mod tests {
             "git-worktree-fetch",
             "git-worktree-merge",
             "git-worktree-sync",
+            "git-worktree-push",
         ];
 
         for shortcut in SHORTCUTS {
@@ -284,7 +291,7 @@ mod tests {
     #[test]
     fn test_shortcuts_for_style() {
         let git_shortcuts = shortcuts_for_style(ShortcutStyle::Git);
-        assert_eq!(git_shortcuts.len(), 11);
+        assert_eq!(git_shortcuts.len(), 12);
 
         let shell_shortcuts = shortcuts_for_style(ShortcutStyle::Shell);
         assert_eq!(shell_shortcuts.len(), 2);

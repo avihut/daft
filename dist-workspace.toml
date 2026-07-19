@@ -42,6 +42,7 @@ daft = [
     "git-worktree-flow-eject",
     "git-worktree-list",
     "git-worktree-sync",
+    "git-worktree-push",
     "git-daft",
     "daft-go",
     "daft-start",

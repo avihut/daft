@@ -415,12 +415,18 @@ fn build_plan(
 
 /// Path annotation for a worktree row: relative to the current directory
 /// when that is shorter to read, absolute otherwise.
+///
+/// The path *being* the current directory relativizes to the empty string,
+/// which renderers drop as "no annotation" — so the row would lose the very
+/// path it exists to show (`daft push` from the branch's own worktree is the
+/// common case). Render the relative spelling for "here" instead.
 pub(crate) fn display_path(path: &Path) -> String {
     std::env::current_dir()
         .ok()
         .and_then(|cwd| pathdiff::diff_paths(path, &cwd))
         .filter(|rel| rel.components().count() <= path.components().count())
         .map(|rel| rel.display().to_string())
+        .map(|rel| if rel.is_empty() { ".".to_string() } else { rel })
         .unwrap_or_else(|| path.display().to_string())
 }
 

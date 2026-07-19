@@ -1,0 +1,46 @@
+name: push refuses a ref that is not a local branch
+description:
+  "The worktree guarantee is defined over branches. Without a local-branch check
+  any resolvable ref reaches `git push` verbatim — a tag name publishes the TAG
+  and exits 0, reported as a successful branch push while the hook ran in the
+  invoking directory. The tag must stay off the remote."
+
+repos:
+  - name: push-tag-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_TAG_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-tag-repo/main"
+
+  - name: Create a tag that is not a branch
+    run: git tag v9.9.9
+    cwd: "$WORK_DIR/push-tag-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Pushing the tag name is refused
+    run: daft push v9.9.9 2>&1
+    cwd: "$WORK_DIR/push-tag-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "No local branch named 'v9.9.9'"
+
+  - name: The tag was NOT published to the remote
+    run: git ls-remote --tags origin | grep -c "v9.9.9" || true
+    cwd: "$WORK_DIR/push-tag-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]
+
+  - name: A name that is neither branch nor tag is refused the same way
+    run: daft push no-such-branch 2>&1
+    cwd: "$WORK_DIR/push-tag-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "No local branch named 'no-such-branch'"

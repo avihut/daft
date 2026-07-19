@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
-    install, layout, list, merge, multi_remote, prune, release_notes, repo, run, shared,
+    install, layout, list, merge, multi_remote, prune, push, release_notes, repo, run, shared,
     shell_init, shortcuts, skill, sync, worktree_branch,
 };
 use crate::styles;
@@ -90,6 +90,10 @@ fn get_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "sync",
                     command: sync::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "push",
+                    command: push::Args::command(),
                 },
             ],
         },
@@ -321,6 +325,10 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
                 CommandEntry {
                     display_name: "sync",
                     command: sync::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-push",
+                    command: push::Args::command(),
                 },
                 CommandEntry {
                     display_name: "worktree-flow-eject",

@@ -1,0 +1,25 @@
+name: push is single-branch — a second positional is rejected
+description:
+  "git fires pre-push once with one cwd, so worktree-correct hook context is
+  only well-defined for a single branch. The clap surface enforces it: a second
+  positional is a parse error."
+
+repos:
+  - name: push-multi-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_MULTI_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-multi-repo/main"
+
+  - name: Two branches in one invocation is a parse error
+    run: daft push main develop 2>&1
+    cwd: "$WORK_DIR/push-multi-repo/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "unexpected argument"

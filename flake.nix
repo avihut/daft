@@ -69,6 +69,7 @@
                   git-worktree-fetch \
                   git-worktree-flow-adopt \
                   git-worktree-flow-eject \
+                  git-worktree-push \
                   git-daft \
                   daft-go \
                   daft-start \

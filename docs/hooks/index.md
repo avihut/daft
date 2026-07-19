@@ -56,8 +56,10 @@ site is the automatic upstream push on branch creation: it consults the hook
 only when it would publish commits the remote does not already have, so
 branching off a fully-pushed base skips it (tunable via
 `daft.checkout.pushVerify`). Pass `--no-verify` to any pushing command to skip
-it for one invocation. See [Git Hooks](/reference/configuration#git-hooks) for
-the details.
+it for one invocation. And because the shared hook always runs in the pushed
+branch's own worktree under [daft push](/reference/cli/daft-push), that command
+is the way to push another worktree's branch without the hook validating the
+wrong tree. See [Git Hooks](/reference/configuration#git-hooks) for the details.
 
 ## Where to next
 

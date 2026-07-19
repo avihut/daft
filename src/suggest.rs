@@ -23,6 +23,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "merge",
     "multi-remote",
     "prune",
+    "push",
     "release-notes",
     "remove",
     "rename",
@@ -46,6 +47,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-list",
     "worktree-merge",
     "worktree-prune",
+    "worktree-push",
     "worktree-shared",
     "worktree-sync",
 ];

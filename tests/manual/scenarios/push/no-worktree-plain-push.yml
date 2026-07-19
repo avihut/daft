@@ -1,0 +1,46 @@
+name: push of a branch with no worktree is a plain push, not an error
+description:
+  "A branch with no checked-out worktree can still be pushed by refname: daft
+  push notes the fallback, pushes from the invoking directory (plain git push
+  behavior), and — since the branch has no upstream — configures tracking via
+  --set-upstream."
+
+repos:
+  - name: push-nowt-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_NOWT_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-nowt-repo/main"
+
+  - name: Create a branch without a worktree
+    run: git branch hotfix
+    cwd: "$WORK_DIR/push-nowt-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Push it — succeeds with the no-worktree note
+    run: daft push hotfix 2>&1
+    cwd: "$WORK_DIR/push-nowt-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "'hotfix' has no checked-out worktree"
+        - "Pushed 'hotfix' to 'origin'"
+
+  - name: The branch reached the remote
+    run: git ls-remote --heads origin hotfix
+    cwd: "$WORK_DIR/push-nowt-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["hotfix"]
+
+  - name: Tracking was configured (--set-upstream shape)
+    run: git config branch.hotfix.remote
+    cwd: "$WORK_DIR/push-nowt-repo/main"
+    expect:
+      exit_code: 0
+      output_contains: ["origin"]

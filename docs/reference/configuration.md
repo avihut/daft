@@ -392,7 +392,7 @@ content (branch-naming policies, protected-branch guards): daft cannot classify
 an opaque hook, so the automatic skip is based purely on pushed content.
 
 Pass `--no-verify` to skip the hook for one invocation. Every command that can
-push accepts it: `daft sync --push`, `daft start` / `daft go -b` /
+push accepts it: `daft push`, `daft sync --push`, `daft start` / `daft go -b` /
 `git worktree-checkout -b`, `daft rename`, `daft remove` /
 `git worktree-branch -d/-D`, and `daft multi-remote move`.
 

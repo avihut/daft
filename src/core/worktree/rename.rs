@@ -278,6 +278,7 @@ pub fn execute(
                     PushAction::SetUpstream {
                         remote,
                         branch: &params.new_branch,
+                        force_with_lease: false,
                     },
                     &new_path,
                     params,

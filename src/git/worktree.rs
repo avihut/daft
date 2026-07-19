@@ -1,4 +1,5 @@
 use super::GitCommand;
+use crate::utils::git_command_at;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -105,8 +106,18 @@ impl GitCommand {
         Ok(())
     }
 
+    /// Enumerate this directory's worktrees.
+    ///
+    /// Runs through [`git_command_at`] rather than a bare `git`: an inherited
+    /// `GIT_DIR` — daft invoked from inside a git hook, or from a wrapper that
+    /// exports it — otherwise wins repo discovery and enumerates *that* repo's
+    /// worktrees instead of the current directory's. Every branch→worktree
+    /// lookup in daft funnels through here, so a retargeted list silently
+    /// reports "no worktree" and callers fall back to the invoking directory
+    /// (CLAUDE.md's Test Hygiene rule; the `daft push` hook cwd depends on it).
     pub fn worktree_list_porcelain(&self) -> Result<String> {
-        let output = Command::new("git")
+        let cwd = std::env::current_dir().context("Could not determine the current directory")?;
+        let output = git_command_at(&cwd)
             .args(["worktree", "list", "--porcelain"])
             .output()
             .context("Failed to execute git worktree list command")?;

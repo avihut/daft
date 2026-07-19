@@ -94,18 +94,16 @@ impl GitCommand {
         self.config_get(&key)
     }
 
-    /// Get the tracking remote for a branch, using an explicit working directory.
+    /// Read one config key from an explicit working directory.
     ///
-    /// Required for parallel workers where `set_current_dir` would race.
-    pub fn get_branch_tracking_remote_from(
-        &self,
-        branch: &str,
-        cwd: &std::path::Path,
-    ) -> Result<Option<String>> {
-        let key = format!("branch.{branch}.remote");
-        let output = Command::new("git")
-            .args(["config", "--get", &key])
-            .current_dir(cwd)
+    /// Goes through [`crate::utils::git_command_at`] so `-C <cwd>` is
+    /// authoritative: an inherited `GIT_DIR` (daft running inside a git hook)
+    /// otherwise wins repo discovery and answers from the wrong repo, which
+    /// reads as "no upstream configured" and silently changes what gets
+    /// pushed where.
+    fn config_get_from(&self, key: &str, cwd: &std::path::Path) -> Result<Option<String>> {
+        let output = crate::utils::git_command_at(cwd)
+            .args(["config", "--get", key])
             .output()
             .context("Failed to execute git config command")?;
 
@@ -118,6 +116,32 @@ impl GitCommand {
         } else {
             Ok(None)
         }
+    }
+
+    /// Get the tracking remote for a branch, using an explicit working directory.
+    ///
+    /// Required for parallel workers where `set_current_dir` would race.
+    pub fn get_branch_tracking_remote_from(
+        &self,
+        branch: &str,
+        cwd: &std::path::Path,
+    ) -> Result<Option<String>> {
+        self.config_get_from(&format!("branch.{branch}.remote"), cwd)
+    }
+
+    /// Get the upstream ref a branch merges with (`branch.<name>.merge`),
+    /// using an explicit working directory.
+    ///
+    /// The companion to [`Self::get_branch_tracking_remote_from`]: the remote
+    /// alone does not say *which* ref on it the branch tracks, and the two
+    /// disagreeing (local `feat` tracking `origin/main`) is what makes an
+    /// implicit `<branch>:<branch>` push surprising.
+    pub fn get_branch_merge_ref_from(
+        &self,
+        branch: &str,
+        cwd: &std::path::Path,
+    ) -> Result<Option<String>> {
+        self.config_get_from(&format!("branch.{branch}.merge"), cwd)
     }
 
     /// Configure a branch to track an explicit remote merge ref.
