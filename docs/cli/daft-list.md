@@ -25,7 +25,7 @@ Each worktree is shown with:
 - Branch name, with `✦` for the default branch
 - Relative path from the current directory
 - Ahead/behind counts vs. the base branch (e.g. +3 -1)
-- File status: +N staged, -N unstaged, ?N untracked
+- File status: !N conflicted, +N staged, -N unstaged, ?N untracked
 - Remote tracking status: ⇡N unpushed, ⇣N unpulled
 - Branch age since creation (e.g. 3d, 2w, 5mo)
 - Last commit: shorthand age + subject (e.g. 1h fix login bug)
@@ -47,10 +47,46 @@ changes). This is slower as it requires computing diffs for each worktree.
 Use `--format` for machine-readable output suitable for scripting. Supported
 formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`. JSON
 output includes fields like `is_default_branch`, `staged`, `unstaged`,
-`untracked`, `remote_ahead`, `remote_behind`, `branch_age`, `owner_name`, and
-`owner_email`. Use `--template '<tera>'` for custom output.
+`untracked`, `conflicted`, `operation`, `identity_source`, `remote_ahead`,
+`remote_behind`, `branch_age`, `owner_name`, and `owner_email`. Use
+`--template '<tera>'` for custom output.
 
 Use `--columns` to select which columns are shown and in what order.
+
+### Paused operations and detached HEAD
+
+Git detaches a worktree's HEAD to run a rebase, and keeps it detached until the
+rebase finishes. A worktree in that state keeps its branch name here: the row
+still reads `feat/x`, sorts in its usual place, and keeps its Base, Age, Owner
+and PR cells. The annotation column gains a glyph for the paused operation —
+`⟲` rebase, `⇄` merge, `⤷` cherry-pick, `⎌` revert, `◐` bisect, `✉` `git am` —
+and unresolved conflicts appear as a red `!N` under Changes.
+
+Add the `status` column to see the state in words:
+
+```bash
+daft list --columns +status
+```
+
+It reads `rebasing · 2 conflicts` while conflicts remain, and
+`rebasing · resolved` once they are resolved and staged but the operation is
+still waiting to be continued — a state nothing else in the table can show,
+since the conflict count is then zero.
+
+Only a detached checkout that no operation explains is treated as a scratch
+sandbox (`○`, dimmed). Even then, if daft knows what branch the worktree was
+created for it keeps that name and reports the checked-out commit as
+`detached @ <sha>`.
+
+If the checked-out branch disagrees with what daft recorded the worktree was
+for — someone checked out a different branch into it, or renamed one outside
+`daft rename` — the checkout wins the name and the row is marked `drifted`.
+`daft doctor` lists these, and `daft doctor --fix` updates the records to match
+what is checked out.
+
+Structured output carries the same information as `operation` (null when none),
+`conflicted`, and `identity_source` (`attached`, `recovered`, `persisted`, or
+`none`).
 
 ### Two-section layout
 

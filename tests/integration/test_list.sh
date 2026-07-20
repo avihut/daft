@@ -218,6 +218,63 @@ test_list_detached_head() {
     return 0
 }
 
+# Test that a worktree paused mid-rebase keeps its identity (#736)
+test_list_rebase_keeps_identity() {
+    git-worktree-init --layout contained rebase-identity-test || return 1
+    cd "rebase-identity-test"
+
+    cd master
+    echo "base" > conflict.txt
+    git add conflict.txt
+    git commit -m "Initial commit" >/dev/null 2>&1
+    git branch feat/x
+    echo "master side" > conflict.txt
+    git commit -am "master change" >/dev/null 2>&1
+    cd ..
+
+    git worktree add feat-wt feat/x >/dev/null 2>&1 || {
+        log_error "Failed to create worktree for feat/x"
+        return 1
+    }
+    cd feat-wt
+    echo "feature side" > conflict.txt
+    git commit -am "feature change" >/dev/null 2>&1
+    # Expected to stop on the conflict — that is the state under test.
+    git rebase master >/dev/null 2>&1
+    cd ..
+
+    # Precondition: git really detached HEAD, so this is not silently
+    # exercising the ordinary attached path.
+    if git worktree list --porcelain | grep -q "branch refs/heads/feat/x"; then
+        log_error "Expected git to report the rebasing worktree as detached"
+        return 1
+    fi
+
+    cd master
+    local output
+    output=$(NO_COLOR=1 git-worktree-list 2>&1)
+
+    if ! echo "$output" | grep -q "feat/x"; then
+        log_error "List should keep the branch name through a rebase"
+        log_error "Output: $output"
+        return 1
+    fi
+    if echo "$output" | grep -q "(detached)"; then
+        log_error "A rebasing worktree must not render as '(detached)'"
+        log_error "Output: $output"
+        return 1
+    fi
+    # The conflicted file is counted once, as a conflict.
+    if ! echo "$output" | grep -q '!1'; then
+        log_error "List should report the conflicted file as '!1'"
+        log_error "Output: $output"
+        return 1
+    fi
+
+    log_success "Identity and conflicts survive a rebase"
+    return 0
+}
+
 # Test ahead/behind counts
 test_list_ahead_behind() {
     local remote_repo=$(create_test_remote "test-repo-list-ahead" "main")
@@ -1116,6 +1173,7 @@ run_list_tests() {
     run_test "list_dirty_marker" "test_list_dirty_marker"
     run_test "list_json" "test_list_json"
     run_test "list_detached_head" "test_list_detached_head"
+    run_test "list_rebase_keeps_identity" "test_list_rebase_keeps_identity"
     run_test "list_ahead_behind" "test_list_ahead_behind"
     run_test "list_outside_repo" "test_list_outside_repo"
     run_test "list_help" "test_list_help"

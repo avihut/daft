@@ -32,7 +32,8 @@ pub enum SortColumn {
     LastCommit,
     /// Sort by total base divergence (`ahead + behind`).
     Base,
-    /// Sort by total local changes (`staged + unstaged + untracked`).
+    /// Sort by total local changes
+    /// (`conflicted + staged + unstaged + untracked`).
     Changes,
     /// Sort by total remote divergence (`remote_ahead + remote_behind`).
     Remote,
@@ -194,9 +195,12 @@ impl SortKey {
                     let b_total = b_lines + b.untracked;
                     self.apply_direction(a_total.cmp(&b_total))
                 } else {
-                    // Summary: total file count (staged + unstaged + untracked).
-                    let a_total = a.staged + a.unstaged + a.untracked;
-                    let b_total = b.staged + b.unstaged + b.untracked;
+                    // Summary: total file count (conflicted + staged +
+                    // unstaged + untracked). Conflicted files count once,
+                    // here as everywhere: without the term, a worktree whose
+                    // only changes are unresolved conflicts sorts as clean.
+                    let a_total = a.conflicted + a.staged + a.unstaged + a.untracked;
+                    let b_total = b.conflicted + b.staged + b.unstaged + b.untracked;
                     self.apply_direction(a_total.cmp(&b_total))
                 }
             }
@@ -758,6 +762,24 @@ mod tests {
         spec.sort(&mut infos);
         let sizes: Vec<Option<u64>> = infos.iter().map(|i| i.size_bytes).collect();
         assert_eq!(sizes, vec![Some(300), Some(200), Some(100)]);
+    }
+
+    /// A worktree whose only changes are unresolved conflicts is not clean:
+    /// `--sort changes` must rank it above one holding a single untracked
+    /// file. Regression: conflicted files were split out of staged/unstaged
+    /// into their own bucket and the summary total missed it, scoring a
+    /// conflict-only worktree 0 — a tie with genuinely pristine ones.
+    #[test]
+    fn test_sort_by_changes_counts_conflicted_files() {
+        let spec = SortSpec::parse("-changes").unwrap();
+        let mut conflict_only = info("conflict-only");
+        conflict_only.conflicted = 5;
+        let mut untracked_one = info("untracked-one");
+        untracked_one.untracked = 1;
+        let mut infos = vec![info("clean"), conflict_only, untracked_one];
+        spec.sort(&mut infos);
+        let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["conflict-only", "untracked-one", "clean"]);
     }
 
     #[test]

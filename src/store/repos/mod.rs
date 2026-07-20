@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod repo_policies;
 pub mod repo_sizes;
 pub mod visitor_seeds;
+pub mod worktree_identities;
 pub mod worktree_sizes;
 
 pub use catalog_repos::CatalogReposRepo;
@@ -32,6 +33,7 @@ pub use jobs::JobsRepo;
 pub use repo_policies::RepoPoliciesRepo;
 pub use repo_sizes::RepoSizesRepo;
 pub use visitor_seeds::VisitorSeedsRepo;
+pub use worktree_identities::WorktreeIdentitiesRepo;
 pub use worktree_sizes::WorktreeSizesRepo;
 
 /// Run a closure inside a deferred transaction on `conn`, commit on

@@ -240,6 +240,10 @@ pub fn execute(
         restore_stash_on_failure(stash_created, carry_source.as_deref(), git, sink);
         anyhow::bail!("Failed to create git worktree: {}", e);
     }
+    // Remember what this worktree is for (see checkout.rs). Best-effort.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+        store.record(&worktree_path, &params.new_branch_name);
+    }
     sink.on_stage(
         &StepKey::new(StageId::CreateBranch),
         StageEvent::Completed { annotation: None },
@@ -624,6 +628,21 @@ fn stash_if_carry(
     };
 
     let carry_path = carry_source.as_ref().unwrap();
+    // Never stash a worktree paused mid-operation. `git stash push` on a
+    // half-done rebase can even succeed — reverting a resolved conflict back
+    // to the upstream content — after which `git rebase --continue` sees an
+    // empty patch and silently drops the commit from the branch. The lookup
+    // above can resolve such a worktree precisely because it recovers
+    // mid-operation identity (op_state), and the current-worktree arm can be
+    // sitting in one too.
+    if let Some(op) = crate::git::op_state::probe_op_state(carry_path) {
+        sink.on_step(&format!(
+            "Skipping carry: worktree at '{}' is {}",
+            carry_path.display(),
+            op.kind.label()
+        ));
+        return Ok((false, None));
+    }
     change_directory(carry_path)?;
 
     match git.has_uncommitted_changes() {
@@ -1302,6 +1321,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn plan_commits_with_locked_row_set_and_push_skip() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1393,6 +1415,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_rows_planned_first_and_resolved_base_noted_on_branch_row() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1487,6 +1512,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn plan_shared_section_rows_resolve_by_outcome() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1573,6 +1601,87 @@ mod timeline_tests {
         assert!(
             worktree_path.join(".env").is_symlink(),
             "the link really happened"
+        );
+    }
+
+    /// A worktree paused mid-operation must never be a carry source: `git
+    /// stash push` on a half-done rebase can *succeed* — emptying a resolved
+    /// conflict back to the upstream content — after which `git rebase
+    /// --continue` sees an empty patch and silently drops the commit from
+    /// the branch. The base worktree here is detached, as it is for a
+    /// rebase's whole duration, so it is resolved through the
+    /// recovered-identity tier — exactly the lookup that makes it findable
+    /// as a carry source at all.
+    #[test]
+    #[serial]
+    fn carry_skips_a_base_worktree_paused_mid_rebase() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(tmp.path().join("f.txt"), "base\n").unwrap();
+        git(tmp.path(), &["add", "f.txt"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat"]);
+        let feat_wt = tmp.path().join("feat-wt");
+        git(
+            tmp.path(),
+            &["worktree", "add", "-q", feat_wt.to_str().unwrap(), "feat"],
+        );
+        // Mid-rebase shape: HEAD detached (git's posture for the whole
+        // operation) plus the state files the stat-only probe reads.
+        git(&feat_wt, &["checkout", "-q", "--detach"]);
+        let private = crate::git::op_state::resolve_worktree_git_dir(&feat_wt).unwrap();
+        std::fs::create_dir_all(private.join("rebase-merge")).unwrap();
+        std::fs::write(private.join("rebase-merge/head-name"), "refs/heads/feat\n").unwrap();
+        // The "conflict resolved, staged, awaiting --continue" content that
+        // an unguarded carry would stash away.
+        std::fs::write(feat_wt.join("f.txt"), "resolved\n").unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let new_wt = tmp.path().join("new-wt");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-next".to_string(),
+            base_branch_name: Some("feat".to_string()),
+            carry: true,
+            no_carry: false,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            push_verify: PushVerify::Auto,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(new_wt.clone()),
+        };
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(&params, &git_cmd, tmp.path(), None, &mut sink)
+            .expect("checkout-branch succeeds with carry skipped");
+
+        assert!(new_wt.exists(), "the new worktree is still created");
+        assert_eq!(
+            std::fs::read_to_string(feat_wt.join("f.txt")).unwrap(),
+            "resolved\n",
+            "the paused worktree's resolved content must not be stashed away"
+        );
+        let stashes = crate::utils::git_command_at(&feat_wt)
+            .args(["stash", "list"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&stashes.stdout).trim(),
+            "",
+            "no stash was created"
+        );
+        assert!(
+            private.join("rebase-merge").is_dir(),
+            "the rebase state is untouched"
         );
     }
 }

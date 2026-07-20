@@ -82,6 +82,9 @@ pub struct WorktreeInfo {
     pub unstaged: usize,
     /// Number of untracked files.
     pub untracked: usize,
+    /// Number of files with unresolved merge conflicts. Counted separately
+    /// from `staged`/`unstaged`, never in addition to them.
+    pub conflicted: usize,
     /// Commits ahead of the remote tracking branch (None if no upstream).
     pub remote_ahead: Option<usize>,
     /// Commits behind the remote tracking branch (None if no upstream).
@@ -118,7 +121,18 @@ pub struct WorktreeInfo {
     /// Most recent mtime of changed/untracked files (None if clean or not computed).
     pub working_tree_mtime: Option<i64>,
     /// Whether this is a detached HEAD sandbox (no branch).
+    ///
+    /// Narrower than "HEAD is detached": a worktree paused mid-operation is
+    /// not a sandbox. See [`super::identity`].
     pub is_sandbox: bool,
+    /// The git operation paused in this worktree, if any. Present for
+    /// attached worktrees too — a merge never detaches HEAD.
+    pub op: Option<crate::git::op_state::OpKind>,
+    /// How this row's branch name was established. `None` for rows that are
+    /// not worktrees (their name comes straight from the ref).
+    pub identity_source: Option<super::identity::IdentitySource>,
+    /// The recorded intended branch disagrees with what is checked out.
+    pub drifted: bool,
     /// The PR/MR this branch tracks (from `branch.<name>.merge`), or `None`.
     /// Local config only — no network.
     pub forge_ref: Option<super::forge_ref::ForgeBranchRef>,
@@ -139,6 +153,7 @@ impl WorktreeInfo {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
@@ -157,6 +172,9 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
+            drifted: false,
             forge_ref: None,
         }
     }
@@ -174,6 +192,7 @@ impl WorktreeInfo {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
@@ -192,6 +211,9 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
+            drifted: false,
             forge_ref: None,
         }
     }
@@ -284,10 +306,12 @@ impl WorktreeInfo {
                 staged,
                 unstaged,
                 untracked,
+                conflicted,
             } => {
                 self.staged = *staged;
                 self.unstaged = *unstaged;
                 self.untracked = *untracked;
+                self.conflicted = *conflicted;
                 FieldSet::CHANGES
             }
             P::LastCommit {
@@ -531,15 +555,32 @@ pub(crate) fn get_branch_creation_timestamp(branch: &str, worktree_path: &Path) 
 }
 
 /// Result of counting changed files in a worktree.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ChangedFiles {
     pub(crate) staged: usize,
     pub(crate) unstaged: usize,
     pub(crate) untracked: usize,
+    /// Files with unresolved merge conflicts. Counted on their own, never as
+    /// staged or unstaged — see [`classify_porcelain_status`].
+    pub(crate) conflicted: usize,
     /// Relative paths of all changed/untracked files (for mtime computation).
     pub(crate) paths: Vec<String>,
 }
 
-/// Count staged, unstaged, and untracked files in a worktree.
+/// The seven `XY` pairs `git status --porcelain` uses for unmerged paths.
+/// Both letters have to match: `AU` and `UA` are conflicts, but `AM` and `MA`
+/// are ordinary staged-and-modified files.
+const UNMERGED_PAIRS: [[u8; 2]; 7] = [
+    *b"DD", // both deleted
+    *b"AU", // added by us
+    *b"UD", // deleted by them
+    *b"UA", // added by them
+    *b"DU", // deleted by us
+    *b"AA", // both added
+    *b"UU", // both modified
+];
+
+/// Count staged, unstaged, untracked and conflicted files in a worktree.
 pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
@@ -548,50 +589,58 @@ pub(crate) fn count_changed_files(worktree_path: &Path) -> ChangedFiles {
 
     match output {
         Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let mut staged = 0;
-            let mut unstaged = 0;
-            let mut untracked = 0;
-            let mut paths = Vec::new();
-            for line in stdout.lines() {
-                if line.len() < 2 {
-                    continue;
-                }
-                let bytes = line.as_bytes();
-                let x = bytes[0]; // index (staged) status
-                let y = bytes[1]; // worktree (unstaged) status
-                if x == b'?' {
-                    untracked += 1;
-                } else {
-                    if x != b' ' && x != b'?' {
-                        staged += 1;
-                    }
-                    if y != b' ' && y != b'?' {
-                        unstaged += 1;
-                    }
-                }
-                // Extract filename (starts after "XY " at byte 3).
-                if line.len() > 3 {
-                    let path = &line[3..];
-                    // Renames show "old -> new"; take the new path.
-                    let path = path.rsplit_once(" -> ").map_or(path, |(_, new)| new);
-                    paths.push(path.to_string());
-                }
+            classify_porcelain_status(&String::from_utf8_lossy(&out.stdout))
+        }
+        _ => ChangedFiles::default(),
+    }
+}
+
+/// Classify `git status --porcelain` output into per-state counts.
+///
+/// Split from the git invocation so the `XY` classification — the part with
+/// the interesting edge cases — is testable without standing up a repo.
+///
+/// Conflicts are classified **first**, and exclusively. Their `XY` pairs
+/// otherwise read as "something in the index *and* something in the worktree",
+/// so a conflicted file used to be counted twice over — once as staged, once
+/// as unstaged — and a two-file conflict rendered as `+2 -2`, which reads like
+/// four files of ordinary work rather than two files needing a decision.
+pub(crate) fn classify_porcelain_status(stdout: &str) -> ChangedFiles {
+    let mut counts = ChangedFiles::default();
+
+    for line in stdout.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let x = bytes[0]; // index (staged) status
+        let y = bytes[1]; // worktree (unstaged) status
+
+        if UNMERGED_PAIRS.contains(&[x, y]) {
+            counts.conflicted += 1;
+        } else if x == b'?' {
+            counts.untracked += 1;
+        } else {
+            if x != b' ' && x != b'?' {
+                counts.staged += 1;
             }
-            ChangedFiles {
-                staged,
-                unstaged,
-                untracked,
-                paths,
+            if y != b' ' && y != b'?' {
+                counts.unstaged += 1;
             }
         }
-        _ => ChangedFiles {
-            staged: 0,
-            unstaged: 0,
-            untracked: 0,
-            paths: Vec::new(),
-        },
+
+        // Extract filename (starts after "XY " at byte 3). Conflicted files
+        // are included: they are modified on disk, so they count toward the
+        // working-tree mtime like any other change.
+        if line.len() > 3 {
+            let path = &line[3..];
+            // Renames show "old -> new"; take the new path.
+            let path = path.rsplit_once(" -> ").map_or(path, |(_, new)| new);
+            counts.paths.push(path.to_string());
+        }
     }
+
+    counts
 }
 
 /// Get ahead/behind counts for a branch relative to its remote tracking branch.
@@ -787,19 +836,27 @@ pub fn collect_worktree_info(
         .context("Failed to list worktrees")?;
 
     let entries = super::porcelain::parse_worktree_list_porcelain(&porcelain_output);
+    // Recover identity for worktrees git reports as detached because an
+    // operation is replaying commits in them, and note what that operation
+    // is. Bare entries resolve to `None` and are skipped.
+    // Persisted records are a pure read: absent store, absent records, and
+    // the resolution falls through to live state exactly as before.
+    let records = crate::core::repo::get_git_common_dir()
+        .map(|dir| super::identity_store::read_identities(&dir))
+        .unwrap_or_default();
+    let identities = super::identity::resolve_identities_with(&entries, &records);
     let mut infos = Vec::new();
 
-    for entry in entries {
-        // Skip bare entries (the bare repo root)
-        if entry.is_bare {
+    for (entry, identity) in entries.into_iter().zip(identities) {
+        let Some(identity) = identity else {
             continue;
-        }
-
-        let branch_display = if entry.is_detached {
-            "(detached)".to_string()
-        } else {
-            entry.branch.clone().unwrap_or_default()
         };
+
+        let branch_display = identity.name.clone();
+        // Everything branch-keyed below reads the *resolved* branch, not the
+        // porcelain's: mid-rebase `refs/heads/<branch>` still exists and
+        // still points at the pre-rebase tip, so these queries stay valid.
+        let branch = identity.branch.clone();
 
         // Canonicalize for comparison (ignore errors, fall back to raw path)
         let canonical_entry = entry
@@ -809,80 +866,62 @@ pub fn collect_worktree_info(
         let is_current = current_worktree_path == Some(canonical_entry.as_path());
 
         // Ahead/behind relative to base branch
-        let (ahead, behind) = if !entry.is_detached {
-            if let Some(branch) = &entry.branch {
-                match get_ahead_behind(base_branch, branch, &entry.path) {
-                    Some((a, b)) => (Some(a), Some(b)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let (ahead, behind) = match branch
+            .as_deref()
+            .and_then(|b| get_ahead_behind(base_branch, b, &entry.path))
+        {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
         };
 
-        // Count staged, unstaged, and untracked files
+        // Count staged, unstaged, untracked and conflicted files
         let changed = count_changed_files(&entry.path);
-        let (staged, unstaged, untracked) = (changed.staged, changed.unstaged, changed.untracked);
+        let (staged, unstaged, untracked, conflicted) = (
+            changed.staged,
+            changed.unstaged,
+            changed.untracked,
+            changed.conflicted,
+        );
 
         // Ahead/behind relative to upstream tracking branch
-        let (remote_ahead, remote_behind) = if !entry.is_detached {
-            if let Some(branch) = &entry.branch {
-                match get_upstream_ahead_behind(branch, &entry.path) {
-                    Some((a, b)) => (Some(a), Some(b)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+        let (remote_ahead, remote_behind) = match branch
+            .as_deref()
+            .and_then(|b| get_upstream_ahead_behind(b, &entry.path))
+        {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
         };
 
         // Last commit info
         let (last_commit_timestamp, last_commit_hash, last_commit_subject) =
             get_commit_metadata(&entry.path, git);
 
-        let owner = if !entry.is_detached {
+        let owner = branch.as_deref().and_then(|b| {
             ownership::resolve_owner_with_fallbacks(
                 base_branch,
-                &branch_display,
+                b,
                 &entry.path,
                 ownership_strategy,
                 user_email,
                 Some(remote_name),
             )
-        } else {
-            None
-        };
+        });
 
-        // Branch creation timestamp (only for non-detached worktrees)
-        let branch_creation_timestamp = if !entry.is_detached {
-            entry
-                .branch
-                .as_deref()
-                .and_then(|b| get_branch_creation_timestamp(b, &entry.path))
-        } else {
-            None
-        };
+        let branch_creation_timestamp = branch
+            .as_deref()
+            .and_then(|b| get_branch_creation_timestamp(b, &entry.path));
 
         // Whether this is the default (base) branch
-        let is_default_branch = entry.branch.as_deref().is_some_and(|b| b == base_branch);
+        let is_default_branch = branch.as_deref().is_some_and(|b| b == base_branch);
 
         // Line-level diff counts (only when stat is Lines)
-        let (base_lines_inserted, base_lines_deleted) = if stat == Stat::Lines && !entry.is_detached
+        let (base_lines_inserted, base_lines_deleted) = match (stat == Stat::Lines)
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_base_line_counts(base_branch, b, &entry.path))
         {
-            if let Some(branch) = &entry.branch {
-                match get_base_line_counts(base_branch, branch, &entry.path) {
-                    Some((ins, del)) => (Some(ins), Some(del)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
+            Some((ins, del)) => (Some(ins), Some(del)),
+            None => (None, None),
         };
 
         let (
@@ -897,19 +936,14 @@ pub fn collect_worktree_info(
             (None, None, None, None)
         };
 
-        let (remote_lines_inserted, remote_lines_deleted) =
-            if stat == Stat::Lines && !entry.is_detached {
-                if let Some(branch) = &entry.branch {
-                    match get_remote_line_counts(branch, &entry.path) {
-                        Some((ins, del)) => (Some(ins), Some(del)),
-                        None => (None, None),
-                    }
-                } else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
-            };
+        let (remote_lines_inserted, remote_lines_deleted) = match (stat == Stat::Lines)
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_remote_line_counts(b, &entry.path))
+        {
+            Some((ins, del)) => (Some(ins), Some(del)),
+            None => (None, None),
+        };
 
         let working_tree_mtime = if compute_mtime && !changed.paths.is_empty() {
             max_mtime_of_files(&entry.path, &changed.paths)
@@ -917,14 +951,10 @@ pub fn collect_worktree_info(
             None
         };
 
-        let forge_ref = if compute_forge_ref && !entry.is_detached {
-            entry
-                .branch
-                .as_deref()
-                .and_then(|b| get_forge_branch_ref(b, &entry.path))
-        } else {
-            None
-        };
+        let forge_ref = compute_forge_ref
+            .then_some(branch.as_deref())
+            .flatten()
+            .and_then(|b| get_forge_branch_ref(b, &entry.path));
 
         infos.push(WorktreeInfo {
             kind: EntryKind::Worktree,
@@ -937,6 +967,7 @@ pub fn collect_worktree_info(
             staged,
             unstaged,
             untracked,
+            conflicted,
             remote_ahead,
             remote_behind,
             last_commit_timestamp,
@@ -954,7 +985,10 @@ pub fn collect_worktree_info(
             owner,
             size_bytes: None,
             working_tree_mtime,
-            is_sandbox: entry.is_detached,
+            is_sandbox: identity.is_sandbox,
+            op: identity.op,
+            identity_source: Some(identity.source),
+            drifted: identity.drifted,
             forge_ref,
         });
     }
@@ -1080,6 +1114,7 @@ pub fn collect_branch_info(
                 staged: 0,
                 unstaged: 0,
                 untracked: 0,
+                conflicted: 0,
                 remote_ahead,
                 remote_behind,
                 last_commit_timestamp,
@@ -1098,6 +1133,9 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                op: None,
+                identity_source: None,
+                drifted: false,
                 forge_ref: None,
             });
         }
@@ -1166,6 +1204,7 @@ pub fn collect_branch_info(
                 staged: 0,
                 unstaged: 0,
                 untracked: 0,
+                conflicted: 0,
                 remote_ahead: None,
                 remote_behind: None,
                 last_commit_timestamp,
@@ -1184,6 +1223,9 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                op: None,
+                identity_source: None,
+                drifted: false,
                 forge_ref: None,
             });
         }
@@ -1209,6 +1251,121 @@ mod tests {
     #[test]
     fn test_parse_numstat_empty() {
         assert_eq!(parse_numstat(""), (0, 0));
+    }
+
+    // ── porcelain status classification ─────────────────────────────────────
+
+    /// Every `XY` pair git documents as unmerged counts as exactly one
+    /// conflict, and as nothing else. The regression: these pairs read as
+    /// "changed in the index" *and* "changed in the worktree", so each
+    /// conflicted file used to land in both the staged and the unstaged
+    /// tally — two conflicts rendered as `+2 -2`.
+    #[test]
+    fn every_unmerged_pair_counts_once_as_a_conflict() {
+        for pair in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            let counts = classify_porcelain_status(&format!("{pair} f.txt\n"));
+            assert_eq!(
+                counts,
+                ChangedFiles {
+                    conflicted: 1,
+                    staged: 0,
+                    unstaged: 0,
+                    untracked: 0,
+                    paths: vec!["f.txt".to_string()],
+                },
+                "porcelain pair {pair} misclassified"
+            );
+        }
+    }
+
+    /// The pairs that merely *look* unmerged because one letter matches.
+    /// `AM` is staged-add plus worktree-modify; `MA` and `MU` are not
+    /// conflicts either. Only both letters together make a conflict.
+    #[test]
+    fn lookalike_pairs_are_not_conflicts() {
+        let counts = classify_porcelain_status("AM a.txt\nMD b.txt\n");
+        assert_eq!(counts.conflicted, 0);
+        assert_eq!(counts.staged, 2);
+        assert_eq!(counts.unstaged, 2);
+    }
+
+    #[test]
+    fn ordinary_states_are_unchanged() {
+        // One staged, one unstaged, one both, one untracked.
+        let counts = classify_porcelain_status("M  a.txt\n M b.txt\nMM c.txt\n?? d.txt\n");
+        assert_eq!(counts.staged, 2, "a.txt and c.txt");
+        assert_eq!(counts.unstaged, 2, "b.txt and c.txt");
+        assert_eq!(counts.untracked, 1);
+        assert_eq!(counts.conflicted, 0);
+    }
+
+    #[test]
+    fn conflicts_mix_with_ordinary_changes_without_inflating_them() {
+        let counts = classify_porcelain_status("UU a.txt\nM  b.txt\n?? c.txt\n");
+        assert_eq!(counts.conflicted, 1);
+        assert_eq!(counts.staged, 1, "only b.txt — never the conflicted a.txt");
+        assert_eq!(counts.unstaged, 0);
+        assert_eq!(counts.untracked, 1);
+    }
+
+    /// Conflicted files are still modified on disk, so they must keep
+    /// contributing to the working-tree mtime like any other change.
+    #[test]
+    fn conflicted_paths_are_still_collected_for_mtime() {
+        let counts = classify_porcelain_status("UU src/a.txt\n");
+        assert_eq!(counts.paths, vec!["src/a.txt".to_string()]);
+    }
+
+    #[test]
+    fn rename_entries_report_the_new_path() {
+        let counts = classify_porcelain_status("R  old.txt -> new.txt\n");
+        assert_eq!(counts.paths, vec!["new.txt".to_string()]);
+        assert_eq!(counts.staged, 1);
+    }
+
+    #[test]
+    fn empty_and_truncated_lines_are_skipped() {
+        assert_eq!(classify_porcelain_status(""), ChangedFiles::default());
+        let counts = classify_porcelain_status("\nM\nM  a.txt\n");
+        assert_eq!(counts.staged, 1);
+        assert_eq!(counts.paths, vec!["a.txt".to_string()]);
+    }
+
+    /// End-to-end against a real repo: a conflicting merge, read through the
+    /// actual `git status --porcelain` invocation rather than a fixture
+    /// string, so the classification is pinned to git's real output.
+    #[test]
+    fn counts_a_real_conflict_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(path)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .expect("git");
+            out.status.success()
+        };
+        assert!(git(&["init", "-q", "-b", "main"]));
+        std::fs::write(path.join("f.txt"), "base\n").unwrap();
+        assert!(git(&["add", "f.txt"]));
+        assert!(git(&["commit", "-qm", "base"]));
+        assert!(git(&["checkout", "-qb", "other"]));
+        std::fs::write(path.join("f.txt"), "other\n").unwrap();
+        assert!(git(&["commit", "-qam", "other"]));
+        assert!(git(&["checkout", "-q", "main"]));
+        std::fs::write(path.join("f.txt"), "main\n").unwrap();
+        assert!(git(&["commit", "-qam", "main"]));
+        // Expected to fail — that is the conflict we are counting.
+        assert!(!git(&["merge", "other"]));
+
+        let counts = count_changed_files(path);
+        assert_eq!(counts.conflicted, 1);
+        assert_eq!(counts.staged, 0, "a conflict is not a staged change");
+        assert_eq!(counts.unstaged, 0, "nor an unstaged one");
     }
 }
 
@@ -1249,6 +1406,7 @@ mod apply_patch_tests {
             staged: 2,
             unstaged: 1,
             untracked: 4,
+            conflicted: 0,
         });
         assert_eq!((info.staged, info.unstaged, info.untracked), (2, 1, 4));
         assert_eq!(touched, FieldSet::CHANGES);

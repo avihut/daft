@@ -93,7 +93,14 @@ pub(super) fn generate_bash_completion_string(command_name: &str) -> Result<Stri
     if has_columns {
         output.push_str("    # Column name completion for --columns\n");
         output.push_str("    if [[ \"$prev\" == \"--columns\" ]]; then\n");
-        output.push_str("        local columns=\"annotation branch path size base changes remote pr age owner hash last-commit\"\n");
+        // `status` is list-only: sync/prune pin their own operation-progress
+        // Status column and reject the token.
+        let columns = if command_name == "git-worktree-list" {
+            "annotation status branch path size base changes remote pr age owner hash last-commit"
+        } else {
+            "annotation branch path size base changes remote pr age owner hash last-commit"
+        };
+        output.push_str(&format!("        local columns=\"{columns}\"\n"));
         output.push_str("        local prefixed=\"\"\n");
         output.push_str("        for c in $columns; do prefixed=\"$prefixed $c +$c -$c\"; done\n");
         output.push_str("        COMPREPLY=( $(compgen -W \"$prefixed\" -- \"$cur\") )\n");

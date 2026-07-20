@@ -66,6 +66,20 @@ Use -a / --all to show both (equivalent to -b -r).
 
 Non-worktree branches are shown with dimmed styling and blank Path/Changes columns.
 
+A worktree keeps its branch name even while git has detached its HEAD to run
+an operation: mid-rebase the row still reads `feat/x`, sorts in place, and
+keeps its Base/Age/Owner cells. The annotation column gains a glyph for the
+paused operation, and unresolved conflicts show as a red `!N` under Changes.
+Add the `status` column (--columns +status) to spell the state out, e.g.
+"rebasing · 2 conflicts" or "rebasing · resolved" when everything is resolved
+and the operation is only waiting to be continued.
+
+Only a detached checkout that no operation explains is treated as a scratch
+sandbox. Where daft knows what branch a worktree was made for, even that keeps
+its name, shown alongside the checked-out commit. A worktree whose checkout
+disagrees with that record is flagged as drifted; `daft doctor --fix`
+reconciles the record.
+
 Use --stat lines to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
@@ -171,7 +185,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit"
     )]
     pub(crate) columns: Option<String>,
 
@@ -200,6 +214,8 @@ pub struct Args {
 struct TableRow {
     /// Annotation column: current marker (">") and/or default branch indicator ("✦").
     annotation: String,
+    /// Paused operation and conflict state in words (e.g. "rebasing · 2 conflicts").
+    status: String,
     /// Branch name.
     name: String,
     /// Relative path from current directory.
@@ -284,6 +300,10 @@ fn should_use_live(args: &Args) -> bool {
     !args.emit.is_structured()
         && std::env::var_os("DAFT_NO_LIVE").is_none()
         && std::io::stdout().is_terminal()
+        // `--merging` is a display filter the live renderer does not apply, so
+        // on a TTY it used to be silently ignored and every worktree was
+        // listed. Route the filtered view at the renderer that honors it.
+        && !args.merging
 }
 
 /// Resolve the base branch to compare against, honoring `daft.remote` (not a
@@ -572,6 +592,22 @@ fn run_blocking(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Refresh the identity records from what was just observed. Only rows
+    // whose branch is attached or recovered are reported — never a detached
+    // reading, which would let a stale record overwrite the good one it
+    // exists to be the fallback for.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_common_dir)
+    {
+        store.observe_all(infos.iter().filter_map(|i| {
+            // Attached only. A row whose name was *recovered* is right about
+            // its branch but is not what this record is a fallback for, and a
+            // row downgraded by the collision guard carries the placeholder
+            // name — recording either would write fiction over fact.
+            (i.identity_source == Some(crate::core::worktree::identity::IdentitySource::Attached))
+                .then_some((i.path.as_deref()?, i.name.as_str()))
+        }));
+    }
+
     // Kick the detached refresh whenever `pr` was in play at all — including
     // when the gate just hid the column: the probe is what detects a repaired
     // auth and silently restores it on a later run.
@@ -636,14 +672,21 @@ fn run_blocking(args: Args) -> Result<()> {
     }
 
     if args.merging {
-        infos.retain(|info| {
-            info.path.as_ref().is_some_and(|p| {
-                matches!(
-                    crate::core::worktree::merge::detect_in_progress(p),
-                    Ok(Some(crate::core::worktree::merge::InProgressOp::Merge))
-                )
-            })
-        });
+        // Reads the operation each row was already enriched with, rather than
+        // re-probing every worktree. Still merge-specific: `--merging` means
+        // merges, not "any operation" — a rebase has its own signals now (the
+        // annotation glyph and the status column).
+        infos.retain(|info| info.op == Some(crate::git::op_state::OpKind::Merge));
+
+        // A filter that matched nothing is not an empty repository. Falling
+        // through to the table's empty branch would print the new-user
+        // onboarding block ("No worktrees yet", `daft go <branch>`) to
+        // someone who has worktrees and just asked which of them are
+        // mid-merge.
+        if infos.is_empty() && !args.emit.is_structured() {
+            println!("No worktrees have a merge in progress.");
+            return Ok(());
+        }
     }
 
     let now = Utc::now().timestamp();
@@ -683,6 +726,7 @@ fn run_blocking(args: Args) -> Result<()> {
 struct EmitColumns {
     branch: bool,
     annotation: bool,
+    status: bool,
     path: bool,
     size: bool,
     base: bool,
@@ -705,6 +749,11 @@ impl EmitColumns {
         Self {
             branch: has(ListColumn::Branch),
             annotation: has(ListColumn::Annotation),
+            // Opt-in like size/hash (explicit selection only, never in
+            // defaults): the composed text is presentation, but a selection
+            // that names the column must produce it — every selectable
+            // column maps to at least one field.
+            status: selected.contains(&ListColumn::Status),
             path: has(ListColumn::Path),
             size: selected.contains(&ListColumn::Size),
             base: has(ListColumn::Base),
@@ -732,6 +781,11 @@ impl EmitColumns {
             h.push("is_current".into());
             h.push("is_default_branch".into());
             h.push("is_sandbox".into());
+            h.push("operation".into());
+            h.push("identity_source".into());
+        }
+        if self.status {
+            h.push("status".into());
         }
         if self.path {
             h.push("path".into());
@@ -752,6 +806,7 @@ impl EmitColumns {
             h.push("staged".into());
             h.push("unstaged".into());
             h.push("untracked".into());
+            h.push("conflicted".into());
         }
         if self.changes_lines {
             h.push("staged_lines_inserted".into());
@@ -823,6 +878,22 @@ fn build_emit_table(
             row.push(Cell::bool(info.is_current));
             row.push(Cell::bool(info.is_default_branch));
             row.push(Cell::bool(info.is_sandbox));
+            match info.op {
+                Some(op) => row.push(Cell::str(op.as_str())),
+                None => row.push(Cell::null()),
+            }
+            match info.identity_source {
+                Some(src) => row.push(Cell::str(src.as_str())),
+                None => row.push(Cell::null()),
+            }
+        }
+        if cols.status {
+            let status = crate::output::format::format_worktree_status(info);
+            if status.is_empty() {
+                row.push(Cell::null());
+            } else {
+                row.push(Cell::str(status));
+            }
         }
         if cols.path {
             let rel_path = info
@@ -874,6 +945,7 @@ fn build_emit_table(
             row.push(Cell::Int(info.staged as i64));
             row.push(Cell::Int(info.unstaged as i64));
             row.push(Cell::Int(info.untracked as i64));
+            row.push(Cell::Int(info.conflicted as i64));
         }
         if cols.changes_lines {
             row.push(
@@ -1057,6 +1129,43 @@ impl Peaker for PriorityMaxExcept {
     }
 }
 
+/// Paint one row's annotation cell for the plain table.
+///
+/// Slot layout comes from [`AnnotationSlots`]; this only applies ANSI colour
+/// and pads unfilled slots so glyphs line up vertically down the column.
+fn render_annotation(
+    slots: crate::output::annotation::AnnotationSlots,
+    info: &crate::core::worktree::list::WorktreeInfo,
+    use_color: bool,
+) -> String {
+    use crate::output::annotation::AnnotationGlyph;
+
+    let mut out = String::new();
+    for (i, glyph) in slots.glyphs(info).into_iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let Some(glyph) = glyph else {
+            out.push(' ');
+            continue;
+        };
+        let symbol = glyph.symbol();
+        if !use_color {
+            out.push_str(symbol);
+            continue;
+        }
+        out.push_str(&match glyph {
+            AnnotationGlyph::Current => styles::cyan(symbol),
+            AnnotationGlyph::DefaultBranch => styles::bright_purple(symbol),
+            AnnotationGlyph::Sandbox => styles::dim(symbol),
+            // Operations and drift share the attention colour with the
+            // status column.
+            AnnotationGlyph::Operation(_) | AnnotationGlyph::Drift => styles::yellow(symbol),
+        });
+    }
+    out
+}
+
 fn print_table(
     infos: &[crate::core::worktree::list::WorktreeInfo],
     project_root: &std::path::Path,
@@ -1108,9 +1217,9 @@ fn print_table(
     let now = Utc::now().timestamp();
 
     // Determine which annotation types exist across all rows
-    let has_any_current = infos.iter().any(|i| i.is_current);
-    let has_any_default = infos.iter().any(|i| i.is_default_branch);
-    let has_any_sandbox = infos.iter().any(|i| i.is_sandbox);
+    // Which annotation sub-positions this run needs (shared with the live
+    // renderer so the two lay the column out identically).
+    let slots = crate::output::annotation::AnnotationSlots::for_rows(infos);
 
     let col_ctx = ColumnContext {
         project_root,
@@ -1138,50 +1247,7 @@ fn print_table(
         .iter()
         .zip(col_vals.iter())
         .map(|(info, vals)| {
-            // Build annotation: ">" first (cyan), then "✦" (bright purple),
-            // then "○" (dim) for sandbox
-            let mut annotation = String::new();
-            if has_any_current {
-                if info.is_current {
-                    if use_color {
-                        annotation.push_str(&styles::cyan(styles::CURRENT_WORKTREE_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::CURRENT_WORKTREE_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-                if has_any_default || has_any_sandbox {
-                    annotation.push(' ');
-                }
-            }
-            if has_any_default {
-                if info.is_default_branch {
-                    if use_color {
-                        annotation.push_str(&styles::bright_purple(styles::DEFAULT_BRANCH_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::DEFAULT_BRANCH_SYMBOL);
-                    }
-                } else if info.is_sandbox {
-                    if use_color {
-                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::SANDBOX_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-            } else if has_any_sandbox {
-                if info.is_sandbox {
-                    if use_color {
-                        annotation.push_str(&styles::dim(styles::SANDBOX_SYMBOL));
-                    } else {
-                        annotation.push_str(styles::SANDBOX_SYMBOL);
-                    }
-                } else {
-                    annotation.push(' ');
-                }
-            }
+            let annotation = render_annotation(slots, info, use_color);
 
             // Stat::Lines mode overrides base/changes/remote with line-level counts
             let (base, head, remote) = if stat == Stat::Lines {
@@ -1232,7 +1298,13 @@ fn print_table(
             } else {
                 (
                     format_ahead_behind(info.ahead, info.behind, use_color),
-                    format_head_status(info.staged, info.unstaged, info.untracked, use_color),
+                    format_head_status(
+                        info.conflicted,
+                        info.staged,
+                        info.unstaged,
+                        info.untracked,
+                        use_color,
+                    ),
                     format_remote_status(info.remote_ahead, info.remote_behind, use_color),
                 )
             };
@@ -1277,6 +1349,9 @@ fn print_table(
             if use_color && is_non_worktree {
                 TableRow {
                     annotation,
+                    // Non-worktree rows never carry an operation, so this is
+                    // empty; dimmed for consistency if that ever changes.
+                    status: styles::dim(&vals.status),
                     name: styles::dim(&vals.branch),
                     path: styles::dim(&vals.path),
                     size: if vals.size.is_empty() {
@@ -1333,6 +1408,12 @@ fn print_table(
             } else {
                 TableRow {
                     annotation,
+                    status: if vals.status.is_empty() || !use_color {
+                        vals.status.clone()
+                    } else {
+                        // Same attention colour as the annotation glyph.
+                        styles::yellow(&vals.status)
+                    },
                     name: vals.branch.clone(),
                     path: vals.path.clone(),
                     size: vals.size.clone(),
@@ -1357,6 +1438,7 @@ fn print_table(
         .filter(|c| **c != ListColumn::Annotation)
         .map(|c| {
             let label = match c {
+                ListColumn::Status => "Status",
                 ListColumn::Branch => "Branch",
                 ListColumn::Path => "Path",
                 ListColumn::Size => "Size",
@@ -1374,8 +1456,7 @@ fn print_table(
         })
         .collect();
 
-    let show_annotations = selected_columns.contains(&ListColumn::Annotation)
-        && (has_any_current || has_any_default || has_any_sandbox);
+    let show_annotations = selected_columns.contains(&ListColumn::Annotation) && !slots.is_empty();
 
     // Format a header cell: dim+underline for label, sort arrow with
     // brightness gradient based on sort priority rank.
@@ -1420,6 +1501,7 @@ fn print_table(
         let data_cols: Vec<&str> = col_headers
             .iter()
             .map(|(_, c)| match c {
+                ListColumn::Status => row.status.as_str(),
                 ListColumn::Branch => row.name.as_str(),
                 ListColumn::Path => row.path.as_str(),
                 ListColumn::Size => row.size.as_str(),
@@ -1645,8 +1727,106 @@ mod tests {
         assert!(!table.headers.contains(&"size_bytes".to_string()));
         // Hash column is NOT in defaults; should not appear.
         assert!(!table.headers.contains(&"hash".to_string()));
+        // Status column is NOT in defaults; should not appear.
+        assert!(!table.headers.contains(&"status".to_string()));
         // Empty infos means no rows.
         assert_eq!(table.rows.len(), 0);
+    }
+
+    /// Every selectable column must map to structured output. Regression:
+    /// `status` had no emit arm, so `--columns status --format json`
+    /// produced a zero-header table — one `{}` per worktree, exit 0 — and
+    /// `--columns branch,status` silently dropped the column the user named.
+    #[test]
+    fn build_emit_table_emits_the_status_column_when_selected() {
+        let mut rebasing = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        rebasing.op = Some(crate::git::op_state::OpKind::Rebase);
+        rebasing.conflicted = 2;
+        let plain = crate::core::worktree::list::WorktreeInfo::empty("main");
+
+        let table = build_emit_table(
+            &[rebasing, plain],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            &[ListColumn::Branch, ListColumn::Status],
+            0,
+            None,
+        );
+        let status_idx = table
+            .headers
+            .iter()
+            .position(|h| h == "status")
+            .expect("selected status column emits a header");
+        assert_eq!(
+            table.rows[0][status_idx],
+            Cell::str("rebasing · 2 conflicts"),
+            "the cell carries the same text the table renders"
+        );
+        assert_eq!(
+            table.rows[1][status_idx],
+            Cell::null(),
+            "an ordinary row emits null, not an empty string"
+        );
+    }
+
+    /// The identity/operation fields ride the columns they belong to and are
+    /// present under the default column set.
+    #[test]
+    fn build_emit_table_carries_identity_and_conflict_fields() {
+        let table = build_emit_table(
+            &[],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            ListColumn::list_defaults(),
+            0,
+            None,
+        );
+        for field in ["operation", "identity_source", "conflicted"] {
+            assert!(
+                table.headers.contains(&field.to_string()),
+                "default structured output must carry `{field}`"
+            );
+        }
+    }
+
+    /// Every emitted row must have exactly one cell per header — the two
+    /// halves are written in separate `if` chains, so a field added to one
+    /// and not the other silently shears the whole table.
+    #[test]
+    fn emit_rows_line_up_with_headers_for_a_recovered_worktree() {
+        let mut info = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        info.path = Some(std::path::PathBuf::from("/tmp/proj/feat"));
+        info.op = Some(crate::git::op_state::OpKind::Rebase);
+        info.identity_source = Some(crate::core::worktree::identity::IdentitySource::Recovered);
+        info.conflicted = 2;
+
+        for stat in [Stat::Summary, Stat::Lines] {
+            let table = build_emit_table(
+                std::slice::from_ref(&info),
+                std::path::Path::new("/tmp/proj"),
+                std::path::Path::new("/tmp/proj"),
+                stat,
+                ListColumn::list_defaults(),
+                0,
+                None,
+            );
+            assert_eq!(table.rows.len(), 1);
+            assert_eq!(
+                table.rows[0].len(),
+                table.headers.len(),
+                "row/header width mismatch in {stat:?} mode"
+            );
+
+            let at = |name: &str| {
+                let idx = table.headers.iter().position(|h| h == name).unwrap();
+                format!("{:?}", table.rows[0][idx])
+            };
+            assert!(at("operation").contains("rebase"));
+            assert!(at("identity_source").contains("recovered"));
+            assert!(at("conflicted").contains('2'));
+        }
     }
 
     /// Full parity with the live table: the blocking renderer paints the
@@ -1666,6 +1846,7 @@ mod tests {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
@@ -1684,6 +1865,9 @@ mod tests {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
+            drifted: false,
             forge_ref: None,
         };
         let infos = [info("main", true), info("feat", false)];
@@ -1725,6 +1909,7 @@ mod tests {
             staged: 0,
             unstaged: 0,
             untracked: 0,
+            conflicted: 0,
             remote_ahead: None,
             remote_behind: None,
             last_commit_timestamp: None,
@@ -1743,6 +1928,9 @@ mod tests {
             size_bytes: Some(1024),
             working_tree_mtime: None,
             is_sandbox: false,
+            op: None,
+            identity_source: None,
+            drifted: false,
             forge_ref: None,
         };
         let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];

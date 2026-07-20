@@ -199,6 +199,7 @@ impl TuiState {
             project_root,
             cwd,
             seeded_fields,
+            annotation_slots: crate::output::annotation::AnnotationSlots::for_rows(&worktree_infos),
             // Post-set by `daft list` when the PR column is selected (same
             // pattern as `unowned_start_index` below).
             forge_prs: None,

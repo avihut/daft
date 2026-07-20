@@ -142,6 +142,9 @@ fn parse_modifier_tokens<C: SelectableColumn>(
 pub enum ListColumn {
     /// Current/default branch annotation markers.
     Annotation,
+    /// Paused git operation and conflict state, spelled out. Opt-in — the
+    /// annotation column carries the same state as glyphs by default.
+    Status,
     /// Branch name.
     Branch,
     /// Worktree path.
@@ -171,6 +174,7 @@ impl ListColumn {
     pub fn all() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
+            ListColumn::Status,
             ListColumn::Branch,
             ListColumn::Path,
             ListColumn::Size,
@@ -242,17 +246,20 @@ impl ListColumn {
     pub fn canonical_position(self) -> u8 {
         match self {
             Self::Annotation => 1,
-            Self::Branch => 2,
-            Self::Path => 3,
-            Self::Size => 4,
-            Self::Base => 5,
-            Self::Changes => 6,
-            Self::Remote => 7,
-            Self::Pr => 8,
-            Self::Age => 9,
-            Self::Owner => 10,
-            Self::Hash => 11,
-            Self::LastCommit => 12,
+            // Before Branch: state reads first, identity second — the same
+            // order the annotation glyphs already sit in.
+            Self::Status => 2,
+            Self::Branch => 3,
+            Self::Path => 4,
+            Self::Size => 5,
+            Self::Base => 6,
+            Self::Changes => 7,
+            Self::Remote => 8,
+            Self::Pr => 9,
+            Self::Age => 10,
+            Self::Owner => 11,
+            Self::Hash => 12,
+            Self::LastCommit => 13,
         }
     }
 
@@ -260,6 +267,7 @@ impl ListColumn {
     pub fn cli_name(self) -> &'static str {
         match self {
             Self::Annotation => "annotation",
+            Self::Status => "status",
             Self::Branch => "branch",
             Self::Path => "path",
             Self::Size => "size",
@@ -296,6 +304,7 @@ impl FromStr for ListColumn {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "annotation" => Ok(Self::Annotation),
+            "status" => Ok(Self::Status),
             "branch" => Ok(Self::Branch),
             "path" => Ok(Self::Path),
             "size" => Ok(Self::Size),
@@ -386,7 +395,8 @@ impl ColumnSelection {
         match (token.as_str(), command) {
             ("status", CommandKind::Sync | CommandKind::Prune | CommandKind::Clone) => {
                 Err("'status' column cannot be controlled on this command\n  \
-                     it is always shown as the first column"
+                     it always shows the operation status as the first column\n  \
+                     (the selectable `status` column exists on `daft list`)"
                     .to_string())
             }
             ("pr", CommandKind::Clone) => Err("'pr' column is not available on `daft clone`\n  \
@@ -743,7 +753,6 @@ mod tests {
     #[test]
     fn test_unknown_column_parse_fails() {
         assert!("unknown".parse::<ListColumn>().is_err());
-        assert!("status".parse::<ListColumn>().is_err());
         assert!("".parse::<ListColumn>().is_err());
     }
 
@@ -895,10 +904,49 @@ mod tests {
         assert!(err.contains("cannot be controlled"), "Got: {err}");
     }
 
+    /// `status` is a real, selectable column on `daft list` — and only
+    /// there. Sync/prune/clone pin their own operation-progress Status
+    /// column, so the token stays rejected for them.
     #[test]
-    fn test_status_on_list_unknown() {
-        let err = ColumnSelection::parse("status,branch", CommandKind::List).unwrap_err();
-        assert!(err.contains("unknown column 'status'"), "Got: {err}");
+    fn test_status_selectable_on_list_only() {
+        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
+        assert_eq!(
+            resolved.columns,
+            vec![ListColumn::Status, ListColumn::Branch]
+        );
+
+        for command in [CommandKind::Sync, CommandKind::Prune, CommandKind::Clone] {
+            let err = ColumnSelection::parse("status,branch", command).unwrap_err();
+            assert!(err.contains("cannot be controlled"), "Got: {err}");
+            assert!(
+                err.contains("daft list"),
+                "the error should point at where the column does exist. Got: {err}"
+            );
+        }
+    }
+
+    /// The whole point of the canonical position: `+status` lands before
+    /// Branch no matter where the user wrote it.
+    #[test]
+    fn test_modifier_add_status_lands_before_branch() {
+        let resolved = ColumnSelection::parse("+status", CommandKind::List).unwrap();
+        let status = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Status)
+            .expect("status column added");
+        let branch = resolved
+            .columns
+            .iter()
+            .position(|c| *c == ListColumn::Branch)
+            .expect("branch column present");
+        assert!(
+            status < branch,
+            "status must precede branch, got {:?}",
+            resolved.columns
+        );
+        // And it is opt-in: absent from the defaults.
+        assert!(!ListColumn::list_defaults().contains(&ListColumn::Status));
     }
 
     #[test]

@@ -140,6 +140,8 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
         output.push_str("\n# Column name completions for --columns\n");
         let columns = [
             ("annotation", "Annotation markers"),
+            // list-only; filtered out below for sync/prune.
+            ("status", "Paused operation and conflicts"),
             ("branch", "Branch name"),
             ("path", "Worktree path"),
             ("size", "Disk size of worktree"),
@@ -152,7 +154,10 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("hash", "Commit hash"),
             ("last-commit", "Last commit"),
         ];
-        for (name, desc) in &columns {
+        for (name, desc) in columns
+            .iter()
+            .filter(|(name, _)| *name != "status" || command_name == "git-worktree-list")
+        {
             output.push_str(&format!(
                 "complete -c {} -l columns -x -a '{} +{} -{}' -d '{}'\n",
                 command_name, name, name, name, desc

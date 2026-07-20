@@ -1,0 +1,116 @@
+name: Identity survives a conflicted rebase
+description: >
+  A worktree paused mid-rebase keeps its branch name, is not classified as a
+  sandbox, and reports its conflicts — git detaches HEAD to replay commits, so
+  before #736 the row went anonymous exactly when it mattered most.
+
+steps:
+  - name: Init a test repo
+    run: git-worktree-init --layout contained rebase-identity
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rebase-identity/master"
+
+  - name: Create an initial commit
+    run: |
+      cd $WORK_DIR/rebase-identity/master
+      echo "base" > conflict.txt
+      git add conflict.txt
+      git commit -m "Initial commit"
+    expect:
+      exit_code: 0
+
+  - name: Branch feat/x off master, then diverge both sides on one file
+    run: |
+      cd $WORK_DIR/rebase-identity/master
+      git branch feat/x
+      echo "master side" > conflict.txt
+      git commit -am "master change"
+      cd $WORK_DIR/rebase-identity
+      git worktree add feat-wt feat/x
+      cd feat-wt
+      echo "feature side" > conflict.txt
+      git commit -am "feature change"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rebase-identity/feat-wt"
+
+  - name: Start a rebase that stops on the conflict (non-zero expected)
+    run: |
+      cd $WORK_DIR/rebase-identity/feat-wt
+      git rebase master
+    expect:
+      exit_code: 1
+
+  - name: Git itself reports the worktree as detached
+    # Precondition: without this, the assertions below could pass simply
+    # because git never detached and the ordinary attached path was used.
+    run: git worktree list --porcelain
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "detached"
+      output_not_contains:
+        - "branch refs/heads/feat/x"
+
+  - name: List keeps the branch name and shows the conflict
+    run: NO_COLOR=1 git-worktree-list 2>&1
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/x"
+        # One conflicted file, counted once — not as staged AND unstaged.
+        - "!1"
+      output_not_contains:
+        - "(detached)"
+
+  - name: The status column spells the operation out
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "rebasing"
+        - "1 conflict"
+
+  - name: Structured output carries the operation and identity source
+    run: NO_COLOR=1 git-worktree-list --format json 2>&1
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"operation": "rebase"'
+        - '"identity_source": "recovered"'
+        - '"conflicted": 1'
+        # The narrowed meaning: mid-operation is no longer a sandbox.
+        - '"is_sandbox": false'
+
+  - name: A rebase is not a merge, so --merging does not match it
+    run: NO_COLOR=1 git-worktree-list --merging 2>&1
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "No worktrees have a merge in progress."
+
+  - name: Aborting the rebase returns the row to normal
+    run: |
+      cd $WORK_DIR/rebase-identity/feat-wt
+      git rebase --abort
+    expect:
+      exit_code: 0
+
+  - name: No operation is reported once the rebase is over
+    run: NO_COLOR=1 git-worktree-list --columns +status 2>&1
+    cwd: "$WORK_DIR/rebase-identity/master"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "feat/x"
+      output_not_contains:
+        - "rebasing"
+        - "(detached)"

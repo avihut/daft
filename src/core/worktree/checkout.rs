@@ -228,6 +228,14 @@ pub fn execute(
             existing_path.display()
         ));
         sink.on_step("Changing to existing worktree...");
+        // Observed attached to this branch — an observation, not a
+        // redefinition: refresh the record's path/timestamp (and give
+        // worktrees daft did not create one), but never rewrite a recorded
+        // branch. Navigating into a drifted worktree would otherwise erase
+        // the drift before doctor could ever report it.
+        if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+            store.observe_all([(existing_path.as_path(), params.branch_name.as_str())]);
+        }
         change_directory(&existing_path)?;
 
         return Ok(CheckoutResult {
@@ -614,6 +622,12 @@ pub fn execute(
             worktree_path.display()
         )
         .into());
+    }
+    // Remember what this worktree is for, while we still know. Git records
+    // nothing that survives a later detached checkout, so this is the only
+    // moment the association is available for free. Best-effort.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_dir) {
+        store.record(&worktree_path, &params.branch_name);
     }
     sink.on_stage(
         &StepKey::new(StageId::CreateWorktree),
@@ -1106,6 +1120,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_off_plans_no_fetch_row_and_resolves_the_annotation_up_front() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1159,6 +1176,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_off_unknown_branch_errors_before_any_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1185,6 +1205,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_on_plans_the_fetch_row_and_notes_the_annotation() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1264,6 +1287,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_on_unknown_branch_errors_after_the_committed_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1298,6 +1324,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn deferred_unknown_branch_commits_no_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1329,6 +1358,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn deferred_fetch_leads_the_plan_pre_completed() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1418,6 +1450,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_leads_plan_with_resolve_receipt() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1489,6 +1524,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fork_forge_creates_branch_from_pull_ref_and_configures_tracking() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1567,6 +1605,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn forge_state_note_warns_but_proceeds() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1611,6 +1652,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fork_forge_missing_pull_ref_aborts_after_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1659,6 +1703,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_uses_the_base_remote_not_the_settings_default() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1722,6 +1769,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_falls_back_to_the_head_ref_when_the_branch_is_gone() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1780,6 +1830,70 @@ mod timeline_tests {
                 && matches!(e, StageEvent::Note(n) if n == "\u{2190} PR #6")),
             "the CheckOut row notes the head-ref provenance: {:?}",
             sink.events
+        );
+    }
+
+    /// Navigating into an already-existing worktree is an observation, not a
+    /// redefinition of what the worktree is for: it must never rewrite the
+    /// recorded branch. Regression: this arm called record() (an upsert), so
+    /// `daft go <live-branch>` silently erased the very drift `daft list`
+    /// had just flagged and doctor --fix exists to resolve deliberately.
+    #[test]
+    #[serial]
+    fn navigating_to_an_existing_worktree_preserves_recorded_intent() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Create the worktree through daft: intent recorded as feat-x.
+        let wt = tmp.path().join("feat-x-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("feat-x", wt.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("creation succeeds");
+        let common = tmp.path().join(".git");
+        let records = crate::core::worktree::identity_store::read_identities(&common);
+        assert_eq!(records["feat-x-wt"].branch, "feat-x");
+
+        // Someone checks a different branch out into it. The record now
+        // (correctly) disagrees: that is drift, and daft list reports it.
+        git(&wt, &["checkout", "-q", "-b", "feat-y"]);
+
+        // `daft go feat-y` matches the worktree on its attached branch and
+        // navigates. The record must survive as feat-x.
+        let mut sink = RecordingStageSink::default();
+        let result = execute(
+            &params("feat-y", wt.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("navigation succeeds");
+        assert!(result.already_existed, "this is the navigation arm");
+        let records = crate::core::worktree::identity_store::read_identities(&common);
+        assert_eq!(
+            records["feat-x-wt"].branch, "feat-x",
+            "navigation must not redefine recorded intent — drift stays until doctor --fix"
+        );
+        // Canonicalize both sides: the nav arm records git's canonical path
+        // (`/private/var/...` on macOS), the fixture holds the symlinked one.
+        assert_eq!(
+            PathBuf::from(&records["feat-x-wt"].worktree_path)
+                .canonicalize()
+                .unwrap(),
+            wt.canonicalize().unwrap(),
+            "the observation still refreshes the path"
         );
     }
 }

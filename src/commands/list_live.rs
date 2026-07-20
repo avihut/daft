@@ -87,31 +87,33 @@ pub fn run_live(args: Args) -> Result<()> {
         .worktree_list_porcelain()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let entries = crate::core::worktree::porcelain::parse_worktree_list_porcelain(&porcelain);
+    // Same recovery the blocking path does, at seed time so the Branch cell
+    // — which is never streamed — is right in the very first frame.
+    let identities = crate::core::worktree::identity::resolve_identities_with(
+        &entries,
+        &crate::core::worktree::identity_store::read_identities(&git_common_dir),
+    );
     let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
     let mut targets: Vec<list_stream::CollectorTarget> = Vec::new();
     let mut worktree_branches: HashSet<String> = HashSet::new();
 
-    for entry in entries {
-        if entry.is_bare {
+    for (entry, identity) in entries.into_iter().zip(identities) {
+        let Some(identity) = identity else {
             continue;
-        }
-        let branch_display = if entry.is_detached {
-            "(detached)".to_string()
-        } else {
-            entry.branch.clone().unwrap_or_default()
         };
+        let branch_display = identity.name.clone();
         let canonical = entry
             .path
             .canonicalize()
             .unwrap_or_else(|_| entry.path.clone());
         let is_current = current_path.as_deref() == Some(canonical.as_path());
-        let is_default_branch = entry.branch.as_deref() == Some(base_branch.as_str());
+        let is_default_branch = identity.branch.as_deref() == Some(base_branch.as_str());
 
         let mut info = WorktreeInfo::empty(&branch_display);
         info.path = Some(entry.path.clone());
         info.is_current = is_current;
         info.is_default_branch = is_default_branch;
-        info.is_sandbox = entry.is_detached;
+        apply_identity(&mut info, &identity);
         info.kind = EntryKind::Worktree;
         worktree_infos.push(info);
 
@@ -119,11 +121,15 @@ pub fn run_live(args: Args) -> Result<()> {
             branch_name: branch_display.clone(),
             path: Some(entry.path.clone()),
             kind: EntryKind::Worktree,
-            is_detached: entry.is_detached,
+            // "has no branch to query", not "HEAD is detached" — a recovered
+            // worktree has a real ref, so its branch-keyed cells must stream.
+            is_detached: identity.branch.is_none(),
         });
 
-        if !branch_display.is_empty() && !entry.is_detached {
-            worktree_branches.insert(branch_display);
+        // Recovered branches join the dedup set too, or `--branches` would
+        // list the branch a second time as a worktree-less local branch.
+        if let Some(branch) = identity.branch {
+            worktree_branches.insert(branch);
         }
     }
 
@@ -468,6 +474,18 @@ pub fn run_live(args: Args) -> Result<()> {
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
 
+    // Same identity refresh the blocking path does — attached and recovered
+    // rows only, never a detached reading.
+    if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&git_common_dir)
+    {
+        store.observe_all(final_state.live.rows.iter().filter_map(|row| {
+            // Attached only — see the blocking path.
+            (row.info.identity_source
+                == Some(crate::core::worktree::identity::IdentitySource::Attached))
+            .then_some((row.info.path.as_deref()?, row.info.name.as_str()))
+        }));
+    }
+
     // On normal completion, workers have already finished and `join()` returns
     // immediately. On cancellation, workers may still be mid-`git` invocation
     // (the cancel flag is checked between clusters, not mid-command). Skip the
@@ -478,6 +496,23 @@ pub fn run_live(args: Args) -> Result<()> {
     }
     Ok(())
 }
+/// Copy a resolved identity's derived fields onto a seeded row.
+///
+/// Every identity-derived field must flow through here: these are seed-only —
+/// no patch ever carries them — so one missed copy leaves the field at
+/// `WorktreeInfo::empty`'s default for the whole session while the blocking
+/// renderer shows it, a silent renderer-parity break (`drifted` was lost
+/// exactly this way once).
+fn apply_identity(
+    info: &mut WorktreeInfo,
+    identity: &crate::core::worktree::identity::WorktreeIdentity,
+) {
+    info.is_sandbox = identity.is_sandbox;
+    info.op = identity.op;
+    info.identity_source = Some(identity.source);
+    info.drifted = identity.drifted;
+}
+
 /// Fields the streaming collector must populate for this view: what the
 /// selected columns render plus what the sort inspects
 /// (`SortSpec::required_fields`, itself `--stat`-aware). The collector
@@ -493,6 +528,12 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
             ListColumn::Size => FieldSet::SIZE,
             ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
             ListColumn::Changes => FieldSet::CHANGES,
+            // The operation is known at seed; the conflict/resolved qualifier
+            // rides the same counts the Changes cell uses. LAST_COMMIT feeds
+            // the op-less Persisted arm (`detached @ <sha>`) — without it a
+            // narrow selection leaves the cell at a bare `detached` forever.
+            // The hash is HEAD-content-cached, so this adds no walk.
+            ListColumn::Status => FieldSet::CHANGES | FieldSet::LAST_COMMIT,
             ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             ListColumn::Age => FieldSet::BRANCH_AGE,
             ListColumn::Owner => FieldSet::OWNER,
@@ -535,6 +576,45 @@ mod collector_fields_tests {
 
     fn sort(input: &str, stat: Stat) -> SortSpec {
         SortSpec::parse(input).unwrap().with_stat(stat)
+    }
+
+    /// The live seed must carry *every* identity-derived field. These are
+    /// seed-only — no patch refreshes them — so a missed copy leaves the
+    /// field at its `empty()` default for the whole session while the
+    /// blocking renderer shows it. Regression: `drifted` was dropped here,
+    /// making the drift glyph and the `status` column's "drifted" dead on
+    /// the default TTY renderer.
+    #[test]
+    fn seed_copies_every_identity_derived_field() {
+        let identity = crate::core::worktree::identity::WorktreeIdentity {
+            name: "feat/x".to_string(),
+            branch: Some("feat/x".to_string()),
+            source: crate::core::worktree::identity::IdentitySource::Attached,
+            op: Some(crate::git::op_state::OpKind::Rebase),
+            is_sandbox: false,
+            drifted: true,
+        };
+        let mut info = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        apply_identity(&mut info, &identity);
+        assert!(!info.is_sandbox);
+        assert_eq!(info.op, Some(crate::git::op_state::OpKind::Rebase));
+        assert_eq!(
+            info.identity_source,
+            Some(crate::core::worktree::identity::IdentitySource::Attached)
+        );
+        assert!(info.drifted, "drifted must survive the seed copy");
+    }
+
+    /// The status column's op-less Persisted arm renders `detached @ <sha>`
+    /// from `last_commit_hash`, which streams only under LAST_COMMIT. With a
+    /// narrow selection (`--columns status,branch`) the live cell otherwise
+    /// sticks at a bare `detached` forever while the piped path shows the
+    /// sha.
+    #[test]
+    fn status_column_collects_changes_and_last_commit() {
+        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
+        let fields = collector_fields(&resolved.columns, None, Stat::Summary);
+        assert!(fields.contains(FieldSet::CHANGES | FieldSet::LAST_COMMIT));
     }
 
     /// #665 regression: the default view must not collect SIZE/MTIME (or any

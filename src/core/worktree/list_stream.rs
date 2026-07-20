@@ -252,7 +252,8 @@ fn run_worker(
         emit!(P::Changes {
             staged: c.staged,
             unstaged: c.unstaged,
-            untracked: c.untracked
+            untracked: c.untracked,
+            conflicted: c.conflicted
         });
     }
 

@@ -39,6 +39,20 @@ Use -a / --all to show both (equivalent to -b -r).
 
 Non-worktree branches are shown with dimmed styling and blank Path/Changes columns.
 
+A worktree keeps its branch name even while git has detached its HEAD to run
+an operation: mid-rebase the row still reads `feat/x`, sorts in place, and
+keeps its Base/Age/Owner cells. The annotation column gains a glyph for the
+paused operation, and unresolved conflicts show as a red `!N` under Changes.
+Add the `status` column (--columns +status) to spell the state out, e.g.
+"rebasing · 2 conflicts" or "rebasing · resolved" when everything is resolved
+and the operation is only waiting to be continued.
+
+Only a detached checkout that no operation explains is treated as a scratch
+sandbox. Where daft knows what branch a worktree was made for, even that keeps
+its name, shown alongside the checked-out commit. A worktree whose checkout
+disagrees with that record is flagged as drifted; `daft doctor --fix`
+reconciles the record.
+
 Use --stat lines to show line-level change counts (insertions and deletions)
 instead of the default summary (commit counts for base/remote, file counts for
 changes). This is slower as it requires computing diffs for each worktree.
@@ -113,7 +127,7 @@ git worktree-list [OPTIONS] [REPO]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--merging` | Only show worktrees with an in-progress merge |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, owner, hash, last-commit |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit |  |
 | `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
 | `--repo <REPO>` | List another cataloged repository's worktrees |  |
 | `--all-repos` | List every cataloged repository's worktrees |  |
