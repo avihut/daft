@@ -1,0 +1,60 @@
+name: rename's old-name remote delete skips the pre-push hook
+description:
+  "daft rename pushes the new name (a content push — the hook fires) and then
+  deletes the old remote name (statically ref-only — the hook is skipped under
+  the default pushVerify=auto, #747): a counting hook runs exactly once, the
+  remote ends up with only the new name, and the skip is reported in verbose
+  mode."
+
+repos:
+  - name: rename-skip-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_RENAME_SKIP_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rename-skip-repo/main"
+
+  - name: Checkout the feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/rename-skip-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/rename-skip-repo/feature/test-feature"
+
+  - name: Install a counting pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho hook-ran >> %s/hook-runs.txt\nexit 0\n' "$WORK_DIR" > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/rename-skip-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: Rename runs the hook for the new-name push but not the delete
+    run: daft rename feature/test-feature feature/renamed --verbose 2>&1
+    cwd: "$WORK_DIR/rename-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Skipping pre-push hook (a remote-branch delete pushes no content)"
+      dirs_exist:
+        - "$WORK_DIR/rename-skip-repo/feature/renamed"
+
+  - name: The hook ran exactly once
+    run: test "$(grep -c hook-ran $WORK_DIR/hook-runs.txt)" = "1"
+    cwd: "$WORK_DIR/rename-skip-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The remote has only the new name
+    run: git ls-remote --heads origin 2>/dev/null
+    cwd: "$WORK_DIR/rename-skip-repo/feature/renamed"
+    expect:
+      exit_code: 0
+      output_contains: ["feature/renamed"]
+      output_not_contains: ["feature/test-feature"]
