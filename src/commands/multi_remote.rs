@@ -5,7 +5,9 @@
 use crate::{
     core::OutputSink,
     core::worktree::ports::NoopStageRunner,
-    core::worktree::push::{HookVerdict, PushAction, push_with_hooks, resolve_delete_pre_push},
+    core::worktree::push::{
+        HookVerdict, PushAction, delete_failure_escalates, push_with_hooks, resolve_delete_pre_push,
+    },
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -18,7 +20,7 @@ use crate::{
         CliOutput, Output, OutputConfig,
         emit::{self, Cell, EmitArgs, EmitPayload, Section, Table},
     },
-    settings::DaftSettings,
+    settings::{DaftSettings, PushVerify},
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -129,7 +131,10 @@ to match the new remote organization.
 
 --push honors the repo's pre-push hook; the --delete-old delete pushes no
 content and skips it by default (configurable via daft.pushVerify: auto,
-always, or never). Pass --no-verify to skip both unconditionally.
+always, or never). daft.pushVerify is the base setting every daft push reads,
+so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify to
+skip both unconditionally.
 "#)]
     Move {
         #[arg(help = "Branch name or worktree path to move")]
@@ -689,8 +694,14 @@ fn cmd_move(
 
     // Remote pushes honor the repo's pre-push hook (#599); a failure with
     // the hook in effect escalates after the move's local steps complete.
+    //
+    // A delete only renders the hook under `always` — its verify decision is
+    // static (#747), so a `--delete-old`-only move under `auto`/`never` needs
+    // no presenter at all and must not pay for the hook probe here just to
+    // have `resolve_delete_pre_push` repeat it below.
+    let delete_may_render = delete_old && settings.push_verify == PushVerify::Always;
     let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
-        if (push || delete_old) && !no_verify && git.pre_push_hook_exists(&new_path) {
+        if (push || delete_may_render) && !no_verify && git.pre_push_hook_exists(&new_path) {
             let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
                 crate::executor::cli_presenter::CliPresenter::auto(
                     &crate::settings::HookOutputConfig::default(),
@@ -757,7 +768,7 @@ fn cmd_move(
         ));
 
         let hook_plan = resolve_delete_pre_push(&git, &new_path, settings.push_verify, no_verify);
-        if let Some(reason) = hook_plan.skip_reason {
+        if let Some(reason) = &hook_plan.skip_reason {
             output.step(reason);
         }
         match push_with_hooks(
@@ -774,14 +785,11 @@ fn cmd_move(
         ) {
             Ok(outcome) => {
                 if let Some(msg) = outcome.failure {
-                    // #747: `Bypassed` (skipped or --no-verify) escalates too —
-                    // a gate that never ran cannot have refused the push, yet
-                    // the branch survives on the old remote. Only hook-less
-                    // failures keep the legacy warn-and-continue.
-                    if matches!(
-                        outcome.hook,
-                        HookVerdict::Rejected | HookVerdict::Passed | HookVerdict::Bypassed
-                    ) {
+                    // #747: daft's own ref-only skip must not downgrade a real
+                    // failure to a warning, but an explicit `--no-verify`
+                    // keeps the legacy warn-and-continue — see
+                    // `delete_failure_escalates`.
+                    if delete_failure_escalates(outcome.hook, no_verify) {
                         let hint = if outcome.hook.no_verify_might_help() {
                             " (or re-run with --no-verify to bypass the hook)"
                         } else {

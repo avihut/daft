@@ -8,7 +8,7 @@ use crate::core::settings::PushVerify;
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
-    HookVerdict, PrePushDecision, PushAction, PushPayload, push_with_hooks, resolve_pre_push,
+    HookVerdict, PushAction, PushPayload, push_with_hooks, resolve_pre_push_plan,
 };
 use crate::core::{HookOutcome, HookRunner, ProgressSink};
 use crate::executor::presenter::JobPresenter;
@@ -48,6 +48,9 @@ pub struct CheckoutBranchParams {
     pub no_verify: bool,
     /// When the upstream push runs the repo's pre-push hook (from settings).
     pub push_verify: PushVerify,
+    /// Config key `push_verify` came from, quoted in the `never` skip reason
+    /// so it names a key the user can actually unset (#747).
+    pub push_verify_key: &'static str,
     /// Whether to fetch from remote before creating the worktree.
     pub checkout_fetch: bool,
     /// Optional layout for computing the worktree path.
@@ -743,54 +746,32 @@ fn push_if_enabled(
     ));
     sink.on_stage(&push_key, StageEvent::Started);
 
-    // Probe lazily: hook existence only when `auto` can act on it, and the
-    // unpushed-commit count only when a hook is actually present (with no
-    // hook, verify and skip are behaviorally identical). The probe uses the
-    // fully-qualified branch ref — a same-named tag would shadow the short
-    // name in rev-list's resolution.
-    let (hook_present, unpushed_count) = match params.push_verify {
-        // `--no-verify` skips silently regardless of hook presence, so don't probe.
-        _ if params.no_verify => (None, None),
-        PushVerify::Auto => {
-            let present = git.pre_push_hook_exists(worktree_path);
-            let count = if present {
-                match git.count_commits_not_on_remote(
-                    &format!("refs/heads/{}", params.new_branch_name),
-                    &params.remote_name,
-                    worktree_path,
-                ) {
-                    Ok(count) => Some(count),
-                    Err(e) => {
-                        crate::log_debug!("pre-push ref-only probe failed: {e}");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            (Some(present), count)
-        }
-        // `never` announces the skip only when a hook actually exists, so probe
-        // its presence (a cheap stat). `always` verifies unconditionally and
-        // lets push_with_hooks resolve presence for its own verdict.
-        PushVerify::Never => (Some(git.pre_push_hook_exists(worktree_path)), None),
-        PushVerify::Always => (None, None),
-    };
-
-    let verify = match resolve_pre_push(
+    // Both probes are lazy — see `resolve_pre_push_plan` for the policy. The
+    // commit count uses the fully-qualified branch ref: a same-named tag
+    // would shadow the short name in rev-list's resolution.
+    let plan = resolve_pre_push_plan(
         params.push_verify,
         params.no_verify,
-        hook_present.unwrap_or(false),
-        PushPayload::Commits { unpushed_count },
-    ) {
-        PrePushDecision::Verify => true,
-        PrePushDecision::Skip(reason) => {
-            if let Some(reason) = reason {
-                sink.on_step(reason);
-            }
-            false
-        }
-    };
+        params.push_verify_key,
+        || git.pre_push_hook_exists(worktree_path),
+        || PushPayload::Commits {
+            unpushed_count: match git.count_commits_not_on_remote(
+                &format!("refs/heads/{}", params.new_branch_name),
+                &params.remote_name,
+                worktree_path,
+            ) {
+                Ok(count) => Some(count),
+                Err(e) => {
+                    crate::log_debug!("pre-push ref-only probe failed: {e}");
+                    None
+                }
+            },
+        },
+    );
+    if let Some(reason) = &plan.skip_reason {
+        sink.on_step(reason);
+    }
+    let (verify, hook_present) = (plan.verify, plan.hook_present);
 
     // When the hook renders through the presenter its `MultiProgress` owns the
     // terminal, so pause the outer "Creating worktree..." spinner across the
@@ -1028,6 +1009,7 @@ mod tests {
             checkout_push: true,
             no_verify: false,
             push_verify,
+            push_verify_key: crate::settings::keys::CHECKOUT_PUSH_VERIFY,
             checkout_fetch: false,
             layout: None,
             at_path: None,
@@ -1176,7 +1158,11 @@ mod timeline_tests {
     /// GIT_WORK_TREE misses the rest — the Test Hygiene rule exists for
     /// exactly this). Local test identity only, never global config.
     fn git(dir: &Path, args: &[&str]) {
-        crate::utils::git_command_at(dir)
+        let status = crate::utils::git_command_at(dir)
+            // A developer's global commit.gpgsign=true would make every
+            // fixture commit sign via the real gpg agent, which flakes under
+            // parallel test load (same rationale as `git_in` above).
+            .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
@@ -1186,6 +1172,10 @@ mod timeline_tests {
             .stderr(Stdio::null())
             .status()
             .unwrap();
+        // Assert here rather than letting a silently-failed fixture command
+        // surface later as an unrelated assertion ("no upstream", "branch not
+        // found") that sends the reader hunting in the wrong place.
+        assert!(status.success(), "fixture git {args:?} failed in {dir:?}");
     }
 
     struct CwdGuard {
@@ -1235,6 +1225,7 @@ mod timeline_tests {
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
+            push_verify_key: crate::settings::keys::PUSH_VERIFY,
             checkout_fetch: false,
             layout: None,
             at_path: Some(worktree_path.clone()),
@@ -1336,6 +1327,7 @@ mod timeline_tests {
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
+            push_verify_key: crate::settings::keys::PUSH_VERIFY,
             checkout_fetch: true,
             layout: None,
             at_path: Some(worktree_path.clone()),
@@ -1436,6 +1428,7 @@ mod timeline_tests {
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
+            push_verify_key: crate::settings::keys::PUSH_VERIFY,
             checkout_fetch: false,
             layout: None,
             at_path: Some(worktree_path.clone()),
@@ -1546,6 +1539,7 @@ mod timeline_tests {
             checkout_push: false,
             no_verify: false,
             push_verify: PushVerify::Auto,
+            push_verify_key: crate::settings::keys::PUSH_VERIFY,
             checkout_fetch: false,
             layout: None,
             at_path: Some(new_wt.clone()),

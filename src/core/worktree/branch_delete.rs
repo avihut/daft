@@ -1268,8 +1268,14 @@ fn delete_single_branch(
         // (#747); `always` re-arms it. A failed delete still lands in
         // `result.errors` below regardless of the hook verdict — a skipped
         // gate must not soften a genuine transport or server-side failure.
+        //
+        // The plan is resolved per branch, not hoisted out of the loop: it
+        // probes `push_cwd`, and a relative `core.hooksPath` resolves against
+        // each worktree separately, so two branches in one invocation can
+        // genuinely have different hooks. One `rev-parse` per branch is the
+        // price of asking about the directory the hook would really run in.
         let hook_plan = resolve_delete_pre_push(ctx.git, push_cwd, ctx.push_verify, ctx.no_verify);
-        if let Some(reason) = hook_plan.skip_reason {
+        if let Some(reason) = &hook_plan.skip_reason {
             sink.on_step(reason);
         }
         match push_with_hooks(

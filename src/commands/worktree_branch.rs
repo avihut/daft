@@ -65,7 +65,10 @@ removal if the repository is trusted. See git-daft(1) for hook management.
 When remote deletion is enabled, the remote-branch delete pushes no content,
 so the repo's pre-push hook is skipped by default (configurable via
 daft.pushVerify: auto, always, or never; use always for hooks that gate
-deletes by ref name). Pass --no-verify to skip it unconditionally.
+deletes by ref name). daft.pushVerify is the base setting every daft push
+reads, so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify
+to skip it unconditionally.
 
 RENAME MODE (-m)
 
@@ -190,7 +193,10 @@ removal if the repository is trusted. See daft-hooks(1) for hook management.
 When remote deletion is enabled, the remote-branch delete pushes no content,
 so the repo's pre-push hook is skipped by default (configurable via
 daft.pushVerify: auto, always, or never; use always for hooks that gate
-deletes by ref name). Pass --no-verify to skip it unconditionally.
+deletes by ref name). daft.pushVerify is the base setting every daft push
+reads, so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify
+to skip it unconditionally.
 "#)]
 pub struct RemoveArgs {
     #[arg(required = true, help = "Branches or worktree paths to delete")]
@@ -536,9 +542,15 @@ fn run_branch_delete(
     // rail it embeds under each branch's active DeleteRemote row (re-resolved
     // per phase from the push target). Off the rail, keep the legacy #599
     // behavior: presenter only when the hook will fire, spinner otherwise.
-    // Unlike checkout's probe-dependent upper bound, a delete's verify
-    // decision is static (#747): the hook can only fire under
-    // `pushVerify = always`, so the gate is exact.
+    //
+    // Unlike checkout's probe-dependent upper bound, a delete's *verify*
+    // decision is static (#747) — the hook can only fire under
+    // `pushVerify = always` — so that half of the gate is exact. The
+    // hook-presence half is not: the delete probes each branch's own worktree
+    // while this runs before the branches are resolved and can only ask about
+    // the cwd, and a relative `core.hooksPath` resolves per worktree. The
+    // residue is cosmetic — a miss renders the hook through the fallback
+    // spinner path instead of the reported pre-push phase.
     let probe_git = GitCommand::new(quiet).with_gitoxide(settings.use_gitoxide);
     let push_hook_will_render = params.delete_remote
         && !params.no_verify

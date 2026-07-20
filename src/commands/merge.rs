@@ -40,6 +40,11 @@ Multiple sources invoke git's octopus strategy, announced explicitly.
 
 Finish commands (--abort, --continue, --quit) take an optional positional
 <worktree|branch>; default to the current worktree's branch.
+
+When post-merge cleanup deletes a merged branch's remote ref (enabled via
+daft.branchDelete.remote), that delete pushes no content, so the repo's
+pre-push hook is skipped by default. Set daft.pushVerify to always for hooks
+that gate deletes by ref name; merge has no per-invocation bypass.
 "#)]
 pub struct Args {
     /// Source branches/commits to merge (start mode), OR optional target worktree/branch

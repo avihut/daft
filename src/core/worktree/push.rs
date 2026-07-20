@@ -284,14 +284,14 @@ impl HookVerdict {
 
 /// Verdict on whether git should dispatch the repo's `pre-push` hook for a
 /// daft-initiated push that can prove itself ref-only (#679, #747).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrePushDecision {
     /// Let git run the hook.
     Verify,
     /// Suppress the hook; `Some(reason)` is reported as a progress step
     /// (`None` for the explicit `--no-verify` flag, which stays silent as it
     /// always has).
-    Skip(Option<&'static str>),
+    Skip(Option<String>),
 }
 
 /// What the push would transmit — the evidence `auto` weighs, and the site
@@ -324,44 +324,47 @@ pub enum PushPayload {
 /// `pushVerify = always` for a hook that must run on every push regardless;
 /// `always` is also what keeps ref-policy hooks (protected-branch delete
 /// gates) firing on deletes, since those act on the ref name, not content.
+/// `governing_key` is the config key whose value `setting` came from. The
+/// `never` reason quotes it verbatim as an undo hint, so the caller must pass
+/// the key that is really set rather than the one scoped to this site: with
+/// only `daft.pushVerify` set, the checkout push is governed by the base key,
+/// and pointing the user at the unset `daft.checkout.pushVerify` would send
+/// them to unset a key `git config --get` reports as absent (#747).
 pub fn resolve_pre_push(
     setting: PushVerify,
     no_verify_flag: bool,
     hook_present: bool,
     payload: PushPayload,
+    governing_key: &str,
 ) -> PrePushDecision {
     if no_verify_flag {
         return PrePushDecision::Skip(None);
     }
     match setting {
         // Only announce the skip when there is actually a hook to skip; a
-        // hook-less repo stays silent, matching `auto`. The reason names the
-        // most specific key governing this site — the one an undo would set.
-        PushVerify::Never if hook_present => PrePushDecision::Skip(Some(match payload {
-            PushPayload::Commits { .. } => {
-                "Skipping pre-push hook (daft.checkout.pushVerify = never)"
-            }
-            PushPayload::Delete => "Skipping pre-push hook (daft.pushVerify = never)",
-        })),
+        // hook-less repo stays silent, matching `auto`.
+        PushVerify::Never if hook_present => PrePushDecision::Skip(Some(format!(
+            "Skipping pre-push hook ({governing_key} = never)"
+        ))),
         PushVerify::Never => PrePushDecision::Skip(None),
         PushVerify::Always => PrePushDecision::Verify,
         PushVerify::Auto => match payload {
             PushPayload::Commits {
                 unpushed_count: Some(0),
-            } if hook_present => {
-                PrePushDecision::Skip(Some("Skipping pre-push hook (no new commits to push)"))
-            }
+            } if hook_present => PrePushDecision::Skip(Some(
+                "Skipping pre-push hook (no new commits to push)".to_string(),
+            )),
             PushPayload::Delete if hook_present => PrePushDecision::Skip(Some(
-                "Skipping pre-push hook (a remote-branch delete pushes no content)",
+                "Skipping pre-push hook (a remote-branch delete pushes no content)".to_string(),
             )),
             _ => PrePushDecision::Verify,
         },
     }
 }
 
-/// Resolved hook handling for one remote-branch delete: what to pass to
-/// [`push_with_hooks`] and what to tell the user.
-pub struct DeletePrePush {
+/// Resolved hook handling for one push: what to pass to [`push_with_hooks`]
+/// and what to tell the user.
+pub struct PrePushPlan {
     /// `verify` argument for [`push_with_hooks`].
     pub verify: bool,
     /// The hook-existence probe's answer when it ran (forward to
@@ -369,45 +372,110 @@ pub struct DeletePrePush {
     pub hook_present: Option<bool>,
     /// Skip reason to report as a progress step, when the skip should be
     /// announced.
-    pub skip_reason: Option<&'static str>,
+    pub skip_reason: Option<String>,
 }
 
-/// Decide the pre-push hook handling for a remote-branch delete (#747).
+/// Resolve the complete pre-push plan for one push: probe policy, decision,
+/// and what to announce. Every suppressible push site goes through here so
+/// the probe policy lives in exactly one place (#747).
 ///
-/// A delete is statically ref-only, so unlike the checkout upstream push
-/// there is no `rev-list` probe — the knob alone decides: `auto` and
-/// `never` skip, `always` verifies (the ref-policy escape hatch), and
-/// `--no-verify` wins silently. Hook existence is probed lazily, mirroring
-/// checkout's `push_if_enabled`: only when the decision can act on it
-/// (`auto`/`never`); `always` lets [`push_with_hooks`] resolve presence for
-/// its own verdict, and `--no-verify` skips without probing.
-pub fn resolve_delete_pre_push(
-    git: &GitCommand,
-    cwd: &Path,
+/// Both probes are lazy, because both cost a subprocess and neither is worth
+/// paying for when the answer cannot change the decision:
+///
+/// - `probe_hook` runs only when the decision can act on hook presence
+///   (`auto`/`never`). `always` verifies unconditionally and lets
+///   [`push_with_hooks`] resolve presence for its own verdict; `--no-verify`
+///   skips silently without probing at all.
+/// - `probe_payload` runs only for `auto` with a hook actually present — the
+///   one case whose outcome depends on what the push transmits. A delete
+///   passes a closure that answers [`PushPayload::Delete`] without doing any
+///   work, since a delete is ref-only by construction.
+pub fn resolve_pre_push_plan(
     setting: PushVerify,
     no_verify_flag: bool,
-) -> DeletePrePush {
+    governing_key: &str,
+    probe_hook: impl FnOnce() -> bool,
+    probe_payload: impl FnOnce() -> PushPayload,
+) -> PrePushPlan {
     let hook_present = if no_verify_flag || setting == PushVerify::Always {
         None
     } else {
-        Some(git.pre_push_hook_exists(cwd))
+        Some(probe_hook())
+    };
+    let payload = if setting == PushVerify::Auto && hook_present == Some(true) {
+        probe_payload()
+    } else {
+        // Unreachable as evidence: every path that skips the probe ignores
+        // the payload entirely. Spell it as "carries content" anyway so a
+        // future arm that starts reading it fails safe — toward verifying.
+        PushPayload::Commits {
+            unpushed_count: None,
+        }
     };
     match resolve_pre_push(
         setting,
         no_verify_flag,
         hook_present.unwrap_or(false),
-        PushPayload::Delete,
+        payload,
+        governing_key,
     ) {
-        PrePushDecision::Verify => DeletePrePush {
+        PrePushDecision::Verify => PrePushPlan {
             verify: true,
             hook_present,
             skip_reason: None,
         },
-        PrePushDecision::Skip(reason) => DeletePrePush {
+        PrePushDecision::Skip(reason) => PrePushPlan {
             verify: false,
             hook_present,
             skip_reason: reason,
         },
+    }
+}
+
+/// Decide the pre-push hook handling for a remote-branch delete (#747).
+///
+/// A delete is statically ref-only, so unlike the checkout upstream push
+/// there is no `rev-list` probe — the knob alone decides: `auto` and `never`
+/// skip, `always` verifies (the ref-policy escape hatch), and `--no-verify`
+/// wins silently. `daft.pushVerify` is always the governing key here; the
+/// checkout-scoped override does not reach delete sites.
+pub fn resolve_delete_pre_push(
+    git: &GitCommand,
+    cwd: &Path,
+    setting: PushVerify,
+    no_verify_flag: bool,
+) -> PrePushPlan {
+    resolve_pre_push_plan(
+        setting,
+        no_verify_flag,
+        crate::settings::keys::PUSH_VERIFY,
+        || git.pre_push_hook_exists(cwd),
+        || PushPayload::Delete,
+    )
+}
+
+/// Should a failed remote-branch delete escalate to a command failure, or
+/// stay the legacy warn-and-continue?
+///
+/// `Rejected`/`Passed` escalate as they always have (#599) — the gate ran, so
+/// the failure is real. The subtle case is `Bypassed`, which covers two very
+/// different situations that must not be graded alike (#747):
+///
+/// - **daft suppressed the gate** (the ref-only skip). Before #747 the hook
+///   ran here and a failure escalated; keeping it a warning would let the
+///   skip silently downgrade a genuine transport / auth / server-side refusal
+///   into a success. It must still escalate.
+/// - **the user passed `--no-verify`**. That path warned and exited 0 long
+///   before #747, and the flag says nothing about how failures are graded.
+///   Escalating would be an unrelated regression, so it stays a warning.
+///
+/// `NoHook` keeps warn-and-continue — an asymmetry inherited from #599, not
+/// introduced here.
+pub fn delete_failure_escalates(hook: HookVerdict, no_verify_flag: bool) -> bool {
+    match hook {
+        HookVerdict::Rejected | HookVerdict::Passed => true,
+        HookVerdict::Bypassed => !no_verify_flag,
+        HookVerdict::NoHook => false,
     }
 }
 
@@ -1412,6 +1480,13 @@ mod tests {
 
     // ── resolve_pre_push decision core (#679 upstream, #747 deletes) ────
 
+    /// Governing key for cases that do not exercise the undo hint itself.
+    const ANY_KEY: &str = crate::settings::keys::PUSH_VERIFY;
+
+    fn skipped(reason: &str) -> PrePushDecision {
+        PrePushDecision::Skip(Some(reason.to_string()))
+    }
+
     #[test]
     fn no_verify_flag_skips_silently_regardless_of_setting_and_payload() {
         for setting in [PushVerify::Auto, PushVerify::Always, PushVerify::Never] {
@@ -1422,7 +1497,7 @@ mod tests {
                 PushPayload::Delete,
             ] {
                 assert_eq!(
-                    resolve_pre_push(setting, true, true, payload),
+                    resolve_pre_push(setting, true, true, payload, ANY_KEY),
                     PrePushDecision::Skip(None)
                 );
             }
@@ -1438,6 +1513,7 @@ mod tests {
             PushPayload::Commits {
                 unpushed_count: Some(3),
             },
+            ANY_KEY,
         );
         assert!(matches!(decision, PrePushDecision::Skip(Some(_))));
     }
@@ -1453,33 +1529,53 @@ mod tests {
             PushPayload::Delete,
         ] {
             assert_eq!(
-                resolve_pre_push(PushVerify::Never, false, false, payload),
+                resolve_pre_push(PushVerify::Never, false, false, payload, ANY_KEY),
                 PrePushDecision::Skip(None)
             );
         }
     }
 
     #[test]
-    fn never_reason_names_the_key_governing_the_site() {
-        // The reason doubles as the undo hint, so it must name the key that
-        // actually governs each site: the checkout-scoped override for the
-        // upstream push, the base key for deletes (#747).
+    fn never_reason_names_the_key_the_caller_says_governs() {
+        // The reason doubles as the undo hint, so it quotes the key that
+        // actually holds the value — never one inferred from the site. With
+        // only `daft.pushVerify` set, the checkout push is governed by the
+        // base key, and naming the unset checkout override would send the
+        // user to `git config --unset` a key that is not there (#747).
+        let commits = PushPayload::Commits {
+            unpushed_count: Some(0),
+        };
         assert_eq!(
             resolve_pre_push(
                 PushVerify::Never,
                 false,
                 true,
-                PushPayload::Commits {
-                    unpushed_count: Some(0),
-                },
+                commits,
+                crate::settings::keys::CHECKOUT_PUSH_VERIFY,
             ),
-            PrePushDecision::Skip(Some(
-                "Skipping pre-push hook (daft.checkout.pushVerify = never)"
-            ))
+            skipped("Skipping pre-push hook (daft.checkout.pushVerify = never)")
+        );
+        // Same payload, value inherited from the base key: the hint follows
+        // the key, not the site.
+        assert_eq!(
+            resolve_pre_push(
+                PushVerify::Never,
+                false,
+                true,
+                commits,
+                crate::settings::keys::PUSH_VERIFY,
+            ),
+            skipped("Skipping pre-push hook (daft.pushVerify = never)")
         );
         assert_eq!(
-            resolve_pre_push(PushVerify::Never, false, true, PushPayload::Delete),
-            PrePushDecision::Skip(Some("Skipping pre-push hook (daft.pushVerify = never)"))
+            resolve_pre_push(
+                PushVerify::Never,
+                false,
+                true,
+                PushPayload::Delete,
+                crate::settings::keys::PUSH_VERIFY,
+            ),
+            skipped("Skipping pre-push hook (daft.pushVerify = never)")
         );
     }
 
@@ -1494,7 +1590,7 @@ mod tests {
             PushPayload::Delete,
         ] {
             assert_eq!(
-                resolve_pre_push(PushVerify::Always, false, true, payload),
+                resolve_pre_push(PushVerify::Always, false, true, payload, ANY_KEY),
                 PrePushDecision::Verify
             );
         }
@@ -1509,6 +1605,7 @@ mod tests {
             PushPayload::Commits {
                 unpushed_count: Some(0),
             },
+            ANY_KEY,
         );
         assert!(matches!(decision, PrePushDecision::Skip(Some(_))));
     }
@@ -1523,6 +1620,7 @@ mod tests {
                 PushPayload::Commits {
                     unpushed_count: Some(2),
                 },
+                ANY_KEY,
             ),
             PrePushDecision::Verify
         );
@@ -1538,6 +1636,7 @@ mod tests {
                 PushPayload::Commits {
                     unpushed_count: None,
                 },
+                ANY_KEY,
             ),
             PrePushDecision::Verify
         );
@@ -1555,7 +1654,7 @@ mod tests {
             PushPayload::Delete,
         ] {
             assert_eq!(
-                resolve_pre_push(PushVerify::Auto, false, false, payload),
+                resolve_pre_push(PushVerify::Auto, false, false, payload, ANY_KEY),
                 PrePushDecision::Verify
             );
         }
@@ -1566,11 +1665,46 @@ mod tests {
         // A delete is statically ref-only — the knob alone decides, no
         // rev-list probe input exists to consult (#747).
         assert_eq!(
-            resolve_pre_push(PushVerify::Auto, false, true, PushPayload::Delete),
-            PrePushDecision::Skip(Some(
-                "Skipping pre-push hook (a remote-branch delete pushes no content)"
-            ))
+            resolve_pre_push(PushVerify::Auto, false, true, PushPayload::Delete, ANY_KEY),
+            skipped("Skipping pre-push hook (a remote-branch delete pushes no content)")
         );
+    }
+
+    // ── delete_failure_escalates severity grading (#599 + #747) ─────────
+
+    #[test]
+    fn a_gate_that_ran_always_escalates_a_delete_failure() {
+        for no_verify in [false, true] {
+            for hook in [HookVerdict::Rejected, HookVerdict::Passed] {
+                assert!(delete_failure_escalates(hook, no_verify));
+            }
+        }
+    }
+
+    #[test]
+    fn daft_skipping_the_gate_preserves_the_pre_747_severity() {
+        // Before #747 a delete ran the hook, so a transport / auth /
+        // server-side failure graded `Passed` and escalated. The ref-only
+        // skip must not quietly demote that to a warning just because the
+        // verdict is now `Bypassed`.
+        assert!(delete_failure_escalates(HookVerdict::Bypassed, false));
+    }
+
+    #[test]
+    fn an_explicit_no_verify_keeps_its_long_standing_warning() {
+        // `--no-verify` warned and exited 0 long before #747, and the flag
+        // says nothing about how failures are graded — escalating here would
+        // be an unrelated regression for anyone scripting against it.
+        assert!(!delete_failure_escalates(HookVerdict::Bypassed, true));
+    }
+
+    #[test]
+    fn a_hookless_delete_failure_stays_a_warning() {
+        // Asymmetry inherited from #599, pinned here so a future change to
+        // it is a deliberate one.
+        for no_verify in [false, true] {
+            assert!(!delete_failure_escalates(HookVerdict::NoHook, no_verify));
+        }
     }
 
     // ── resolve_delete_pre_push wiring (#747) ───────────────────────────
@@ -1634,7 +1768,7 @@ mod tests {
         let hooked = resolve_delete_pre_push(&git, &repo.work, PushVerify::Never, false);
         assert!(!hooked.verify);
         assert_eq!(
-            hooked.skip_reason,
+            hooked.skip_reason.as_deref(),
             Some("Skipping pre-push hook (daft.pushVerify = never)")
         );
     }

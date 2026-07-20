@@ -9,7 +9,7 @@ use crate::core::multi_remote::path::{
 use crate::core::settings::PushVerify;
 use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
-    HookVerdict, PushAction, push_with_hooks, resolve_delete_pre_push,
+    HookVerdict, PushAction, delete_failure_escalates, push_with_hooks, resolve_delete_pre_push,
 };
 use crate::core::{HookRunner, ProgressSink};
 use crate::executor::presenter::JobPresenter;
@@ -297,6 +297,7 @@ pub fn execute(
                     &new_path,
                     !params.no_verify,
                     None,
+                    params.no_verify,
                     presenter,
                 ) {
                     Ok(()) => {
@@ -314,7 +315,7 @@ pub fn execute(
                             params.push_verify,
                             params.no_verify,
                         );
-                        if let Some(reason) = hook_plan.skip_reason {
+                        if let Some(reason) = &hook_plan.skip_reason {
                             sink.on_step(reason);
                         }
                         match run_remote_rename_push(
@@ -326,6 +327,7 @@ pub fn execute(
                             &new_path,
                             hook_plan.verify,
                             hook_plan.hook_present,
+                            params.no_verify,
                             presenter,
                         ) {
                             Ok(()) => {
@@ -430,13 +432,16 @@ enum PushFailure {
 
 /// `verify`/`hook_present` come from the caller: the new-name push passes
 /// `!params.no_verify` (a content push, out of #747's scope), the old-name
-/// delete passes its [`resolve_delete_pre_push`] plan.
+/// delete passes its [`resolve_delete_pre_push`] plan. `no_verify_flag` is
+/// what the *user* asked for, which the delete's grading needs to tell apart
+/// from daft's own ref-only skip — see [`delete_failure_escalates`].
 fn run_remote_rename_push(
     git: &GitCommand,
     action: PushAction<'_>,
     cwd: &Path,
     verify: bool,
     hook_present: Option<bool>,
+    no_verify_flag: bool,
     presenter: Option<&Arc<dyn JobPresenter>>,
 ) -> std::result::Result<(), PushFailure> {
     match push_with_hooks(
@@ -451,16 +456,17 @@ fn run_remote_rename_push(
         Ok(outcome) => match outcome.failure {
             None => Ok(()),
             Some(msg) => {
-                // #747: a delete whose hook was skipped or bypassed but which
-                // then genuinely failed (transport, auth, server-side reject)
-                // must still fail the command — a gate that never ran cannot
-                // have refused the push, yet the old branch survives on the
-                // remote. The new-name push keeps warn-and-continue for
-                // `Bypassed` (its #679-shape escalation is out of scope), and
-                // hook-less failures stay warnings everywhere.
-                let escalates = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed)
-                    || (matches!(action, PushAction::Delete { .. })
-                        && outcome.hook == HookVerdict::Bypassed);
+                // The new-name push keeps the #599 rule verbatim (its
+                // #679-shape escalation is out of scope); the delete grades
+                // through the shared #747 rule so daft's own ref-only skip
+                // does not quietly downgrade a real failure, while an
+                // explicit `--no-verify` keeps its long-standing warning.
+                let escalates = match action {
+                    PushAction::Delete { .. } => {
+                        delete_failure_escalates(outcome.hook, no_verify_flag)
+                    }
+                    _ => matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed),
+                };
                 if escalates {
                     Err(PushFailure::Gated(msg, outcome.hook))
                 } else {

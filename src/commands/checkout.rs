@@ -46,7 +46,8 @@ operation. The new branch is based on the current branch, or on `<base-branch>`
 if specified. After creating the branch locally, it is pushed to the remote
 and upstream tracking is configured. The repo's pre-push hook runs only when
 that push introduces new commits; a ref-only push of already-pushed commits
-skips it (configurable via daft.checkout.pushVerify: auto, always, or never).
+skips it (configurable via daft.checkout.pushVerify, which defaults to the
+base daft.pushVerify: auto, always, or never).
 
 With --start (or -s), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically, as if 'daft start'
@@ -190,8 +191,9 @@ With -b, creates a new branch and worktree in a single operation. The new
 branch is based on the current branch, or on `<base-branch>` if specified. It
 is pushed to the remote and upstream tracking is configured; the pre-push hook
 runs only when that push introduces new commits, skipping ref-only pushes
-(configurable via daft.checkout.pushVerify: auto, always, or never). Prefer
-'daft start' for creating new branches.
+(configurable via daft.checkout.pushVerify, which defaults to the base
+daft.pushVerify: auto, always, or never). Prefer 'daft start' for creating
+new branches.
 
 With -s (--start), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also
@@ -1826,6 +1828,7 @@ fn run_create_branch_core(
         },
         no_verify: args.no_verify,
         push_verify: settings.checkout_push_verify,
+        push_verify_key: settings.checkout_push_verify_key,
         checkout_fetch: if args.local {
             false
         } else {

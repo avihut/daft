@@ -642,6 +642,12 @@ pub struct DaftSettings {
     /// Follows `push_verify` unless `daft.checkout.pushVerify` is set.
     pub checkout_push_verify: PushVerify,
 
+    /// Config key `checkout_push_verify` came from — `daft.pushVerify` when
+    /// it was inherited, `daft.checkout.pushVerify` when explicitly overridden.
+    /// The `never` skip reason quotes this so it names a key the user can
+    /// actually unset (#747).
+    pub checkout_push_verify_key: &'static str,
+
     /// Default remote name for operations.
     pub remote: String,
 
@@ -792,6 +798,7 @@ impl Default for DaftSettings {
             checkout_upstream: defaults::CHECKOUT_UPSTREAM,
             push_verify: defaults::PUSH_VERIFY,
             checkout_push_verify: defaults::CHECKOUT_PUSH_VERIFY,
+            checkout_push_verify_key: keys::PUSH_VERIFY,
             remote: defaults::REMOTE.to_string(),
             checkout_branch_carry: defaults::CHECKOUT_BRANCH_CARRY,
             checkout_carry: defaults::CHECKOUT_CARRY,
@@ -876,8 +883,10 @@ impl DaftSettings {
             keys::CHECKOUT_PUSH_VERIFY,
             git.config_get(keys::CHECKOUT_PUSH_VERIFY)?,
         );
-        (settings.push_verify, settings.checkout_push_verify) =
-            resolve_push_verify(base_push_verify, checkout_push_verify);
+        let resolved = resolve_push_verify(base_push_verify, checkout_push_verify);
+        settings.push_verify = resolved.base;
+        settings.checkout_push_verify = resolved.checkout;
+        settings.checkout_push_verify_key = resolved.checkout_key;
 
         if let Some(value) = git.config_get(keys::REMOTE)?
             && !value.is_empty()
@@ -1127,8 +1136,10 @@ impl DaftSettings {
             keys::CHECKOUT_PUSH_VERIFY,
             git.config_get_global(keys::CHECKOUT_PUSH_VERIFY)?,
         );
-        (settings.push_verify, settings.checkout_push_verify) =
-            resolve_push_verify(base_push_verify, checkout_push_verify);
+        let resolved = resolve_push_verify(base_push_verify, checkout_push_verify);
+        settings.push_verify = resolved.base;
+        settings.checkout_push_verify = resolved.checkout;
+        settings.checkout_push_verify_key = resolved.checkout_key;
 
         if let Some(value) = git.config_get_global(keys::REMOTE)?
             && !value.is_empty()
@@ -1427,6 +1438,14 @@ pub(crate) fn parse_bool(value: &str, default: bool) -> bool {
 
 /// Parse one pushVerify config value, warning (and yielding `None`) on an
 /// unknown spelling so the caller falls back to the resolution defaults.
+///
+/// An unparseable key is *ignored*, which is not the same as "replaced by the
+/// built-in default": an ignored key falls through the same cascade an unset
+/// one does, and for the checkout override that cascade ends at
+/// `daft.pushVerify`, not at `auto`. The warning has to say so — promising
+/// the default while delivering the base value is precisely what would hide a
+/// typo'd `daft.checkout.pushVerify = alwyas` under `daft.pushVerify = never`,
+/// leaving the gate off on a push the user was trying to re-arm (#747).
 fn parse_push_verify_value(key: &str, value: Option<String>) -> Option<PushVerify> {
     let value = value?;
     if value.is_empty() {
@@ -1435,22 +1454,54 @@ fn parse_push_verify_value(key: &str, value: Option<String>) -> Option<PushVerif
     match PushVerify::parse(&value) {
         Some(verify) => Some(verify),
         None => {
-            eprintln!("daft: unknown value for {key}: {value:?} — using default");
+            let fallback = if key == keys::CHECKOUT_PUSH_VERIFY {
+                keys::PUSH_VERIFY
+            } else {
+                "the built-in default (auto)"
+            };
+            eprintln!(
+                "daft: unknown value for {key}: {value:?} — ignoring it, falling back to {fallback}"
+            );
             None
         }
     }
 }
 
-/// Resolve `(push_verify, checkout_push_verify)` from the two config keys:
-/// `daft.pushVerify` is the base every push site reads, and the more specific
+/// The effective pushVerify settings plus the provenance a skip reason needs.
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedPushVerify {
+    /// Base value every push site reads.
+    base: PushVerify,
+    /// Value governing the checkout upstream push.
+    checkout: PushVerify,
+    /// The config key that produced `checkout`. The `never` skip reason
+    /// doubles as an undo hint, so it must name the key the user actually
+    /// set — naming the scope it applies to would send them to unset a key
+    /// `git config --get` reports as absent (#747).
+    checkout_key: &'static str,
+}
+
+/// Resolve the pushVerify settings from the two config keys: `daft.pushVerify`
+/// is the base every push site reads, and the more specific
 /// `daft.checkout.pushVerify` overrides it for the branch-creation upstream
 /// push regardless of which config scope set either key (#747).
 fn resolve_push_verify(
     base: Option<PushVerify>,
     checkout_override: Option<PushVerify>,
-) -> (PushVerify, PushVerify) {
+) -> ResolvedPushVerify {
     let base = base.unwrap_or(defaults::PUSH_VERIFY);
-    (base, checkout_override.unwrap_or(base))
+    match checkout_override {
+        Some(checkout) => ResolvedPushVerify {
+            base,
+            checkout,
+            checkout_key: keys::CHECKOUT_PUSH_VERIFY,
+        },
+        None => ResolvedPushVerify {
+            base,
+            checkout: base,
+            checkout_key: keys::PUSH_VERIFY,
+        },
+    }
 }
 
 /// Configuration for hook output display.
@@ -1747,6 +1798,7 @@ mod tests {
         assert_eq!(settings.governor_memory_reserve, MemoryReserve::Auto);
         assert_eq!(settings.push_verify, PushVerify::Auto);
         assert_eq!(settings.checkout_push_verify, PushVerify::Auto);
+        assert_eq!(settings.checkout_push_verify_key, keys::PUSH_VERIFY);
     }
 
     /// #747: `daft.pushVerify` is the base every push site reads;
@@ -1754,22 +1806,58 @@ mod tests {
     /// only, and each falls back independently when unset.
     #[test]
     fn test_resolve_push_verify_base_and_override() {
+        use PushVerify::{Always, Auto, Never};
+
+        let resolved = resolve_push_verify(None, None);
+        assert_eq!((resolved.base, resolved.checkout), (Auto, Auto));
+
+        let resolved = resolve_push_verify(Some(Never), None);
+        assert_eq!((resolved.base, resolved.checkout), (Never, Never));
+
+        let resolved = resolve_push_verify(Some(Never), Some(Always));
+        assert_eq!((resolved.base, resolved.checkout), (Never, Always));
+
+        let resolved = resolve_push_verify(None, Some(Never));
+        assert_eq!((resolved.base, resolved.checkout), (Auto, Never));
+    }
+
+    /// #747: the `never` skip reason doubles as the undo hint, so the
+    /// resolution has to report which key produced the checkout value — an
+    /// inherited value must point at the base key, not at the unset override.
+    #[test]
+    fn test_resolve_push_verify_reports_governing_key() {
+        use PushVerify::Never;
+
         assert_eq!(
-            resolve_push_verify(None, None),
-            (PushVerify::Auto, PushVerify::Auto)
+            resolve_push_verify(Some(Never), None).checkout_key,
+            keys::PUSH_VERIFY,
         );
         assert_eq!(
-            resolve_push_verify(Some(PushVerify::Never), None),
-            (PushVerify::Never, PushVerify::Never)
+            resolve_push_verify(Some(Never), Some(Never)).checkout_key,
+            keys::CHECKOUT_PUSH_VERIFY,
         );
+        // Nothing set: the value is the built-in default, and the base key is
+        // the one that would change it.
         assert_eq!(
-            resolve_push_verify(Some(PushVerify::Never), Some(PushVerify::Always)),
-            (PushVerify::Never, PushVerify::Always)
+            resolve_push_verify(None, None).checkout_key,
+            keys::PUSH_VERIFY,
         );
-        assert_eq!(
-            resolve_push_verify(None, Some(PushVerify::Never)),
-            (PushVerify::Auto, PushVerify::Never)
+    }
+
+    /// #747: an unparseable value is ignored, so the checkout override falls
+    /// through to the base key exactly as an unset one does — including the
+    /// provenance, so the undo hint still names a key that is really set.
+    #[test]
+    fn test_unparseable_checkout_override_falls_through_to_base() {
+        let checkout = parse_push_verify_value(
+            keys::CHECKOUT_PUSH_VERIFY,
+            Some("alwyas".to_string()), // typo
         );
+        assert_eq!(checkout, None);
+
+        let resolved = resolve_push_verify(Some(PushVerify::Never), checkout);
+        assert_eq!(resolved.checkout, PushVerify::Never);
+        assert_eq!(resolved.checkout_key, keys::PUSH_VERIFY);
     }
 
     /// #733: `daft.gitoxide` is an opt-out — an explicit false must override
