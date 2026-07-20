@@ -69,12 +69,16 @@ impl IdentityStore {
         Some(Self { repo_hash, db_path })
     }
 
-    /// Record that `worktree_path` is for `branch`.
+    /// Record that `worktree_path` is for `branch` — a deliberate
+    /// (re)definition of intent.
     ///
-    /// Callers must only report worktrees they have observed *attached* to
-    /// that branch, or just created for it. Recording from a detached
-    /// observation would let a stale reading overwrite the good record it is
-    /// supposed to be the fallback for.
+    /// Reserved for the moments that *decide* what a worktree is for:
+    /// creation, `daft rename`, and `daft doctor --fix`. Merely seeing a
+    /// worktree attached to a branch is not one of them — that is an
+    /// observation and goes through [`Self::observe_all`], which never
+    /// rewrites the branch. Calling this from an observation path would
+    /// erase drift the moment a command touched the worktree, before doctor
+    /// could ever report it.
     pub fn record(&self, worktree_path: &Path, branch: &str) {
         let Some(worktree_id) = worktree_id_for(worktree_path) else {
             return;
