@@ -726,6 +726,7 @@ fn run_blocking(args: Args) -> Result<()> {
 struct EmitColumns {
     branch: bool,
     annotation: bool,
+    status: bool,
     path: bool,
     size: bool,
     base: bool,
@@ -748,6 +749,11 @@ impl EmitColumns {
         Self {
             branch: has(ListColumn::Branch),
             annotation: has(ListColumn::Annotation),
+            // Opt-in like size/hash (explicit selection only, never in
+            // defaults): the composed text is presentation, but a selection
+            // that names the column must produce it — every selectable
+            // column maps to at least one field.
+            status: selected.contains(&ListColumn::Status),
             path: has(ListColumn::Path),
             size: selected.contains(&ListColumn::Size),
             base: has(ListColumn::Base),
@@ -777,6 +783,9 @@ impl EmitColumns {
             h.push("is_sandbox".into());
             h.push("operation".into());
             h.push("identity_source".into());
+        }
+        if self.status {
+            h.push("status".into());
         }
         if self.path {
             h.push("path".into());
@@ -876,6 +885,14 @@ fn build_emit_table(
             match info.identity_source {
                 Some(src) => row.push(Cell::str(src.as_str())),
                 None => row.push(Cell::null()),
+            }
+        }
+        if cols.status {
+            let status = crate::output::format::format_worktree_status(info);
+            if status.is_empty() {
+                row.push(Cell::null());
+            } else {
+                row.push(Cell::str(status));
             }
         }
         if cols.path {
@@ -1710,8 +1727,47 @@ mod tests {
         assert!(!table.headers.contains(&"size_bytes".to_string()));
         // Hash column is NOT in defaults; should not appear.
         assert!(!table.headers.contains(&"hash".to_string()));
+        // Status column is NOT in defaults; should not appear.
+        assert!(!table.headers.contains(&"status".to_string()));
         // Empty infos means no rows.
         assert_eq!(table.rows.len(), 0);
+    }
+
+    /// Every selectable column must map to structured output. Regression:
+    /// `status` had no emit arm, so `--columns status --format json`
+    /// produced a zero-header table — one `{}` per worktree, exit 0 — and
+    /// `--columns branch,status` silently dropped the column the user named.
+    #[test]
+    fn build_emit_table_emits_the_status_column_when_selected() {
+        let mut rebasing = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        rebasing.op = Some(crate::git::op_state::OpKind::Rebase);
+        rebasing.conflicted = 2;
+        let plain = crate::core::worktree::list::WorktreeInfo::empty("main");
+
+        let table = build_emit_table(
+            &[rebasing, plain],
+            std::path::Path::new("/tmp/proj"),
+            std::path::Path::new("/tmp/proj"),
+            Stat::Summary,
+            &[ListColumn::Branch, ListColumn::Status],
+            0,
+            None,
+        );
+        let status_idx = table
+            .headers
+            .iter()
+            .position(|h| h == "status")
+            .expect("selected status column emits a header");
+        assert_eq!(
+            table.rows[0][status_idx],
+            Cell::str("rebasing · 2 conflicts"),
+            "the cell carries the same text the table renders"
+        );
+        assert_eq!(
+            table.rows[1][status_idx],
+            Cell::null(),
+            "an ordinary row emits null, not an empty string"
+        );
     }
 
     /// The identity/operation fields ride the columns they belong to and are
