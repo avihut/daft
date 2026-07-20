@@ -130,9 +130,33 @@ impl IdentityStore {
         }
     }
 
-    /// Forget every record for `branch`. Called when a worktree is removed —
-    /// removal paths know the branch, not the private-gitdir id, because git
-    /// has usually unregistered the worktree by then.
+    /// Forget a removed worktree's record.
+    ///
+    /// `captured_id` is the private-gitdir id read via [`worktree_id_for`]
+    /// *before* the removal — records are keyed on it, so deleting by id
+    /// removes the record no matter what branch it names. That is what
+    /// removal wants: a drifted or externally-renamed worktree's record must
+    /// not outlive its worktree, and git reuses freed ids, so a leftover row
+    /// would paint spurious drift on the id's next tenant. When the
+    /// directory was already gone before the id could be read, fall back to
+    /// [`Self::forget_branch`].
+    pub fn forget(&self, captured_id: Option<&str>, branch: &str) {
+        let Some(id) = captured_id else {
+            self.forget_branch(branch);
+            return;
+        };
+        if let Err(e) =
+            self.write(|conn| WorktreeIdentitiesRepo::delete(conn, &self.repo_hash, id).map(|_| ()))
+        {
+            crate::log_debug!("could not forget worktree identity: {e}");
+        }
+    }
+
+    /// Forget every record naming `branch` — the fallback for removal paths
+    /// that could no longer read the private-gitdir id (the directory was
+    /// already gone). Over-broad (two records naming one branch both go) and
+    /// blind to drifted rows (the record names the intent, not the checkout),
+    /// which is why [`Self::forget`] prefers the id.
     pub fn forget_branch(&self, branch: &str) {
         if let Err(e) = self.write(|conn| {
             WorktreeIdentitiesRepo::delete_for_branch(conn, &self.repo_hash, branch).map(|_| ())
@@ -294,6 +318,66 @@ mod tests {
         store.record(&worktree, "feat/x");
 
         store.forget_branch("feat/x");
+        assert!(read_identities(&common).is_empty());
+    }
+
+    /// Removal deletes by the captured id, not the branch: a drifted record
+    /// does not match the live branch name the removal path knows, and a
+    /// second record legitimately naming the same branch must survive.
+    /// Regression: the by-branch sweep missed the drifted row (orphaning it
+    /// onto git's next reuse of the id) and deleted the innocent one.
+    #[test]
+    #[serial]
+    fn forget_prefers_the_captured_id_and_spares_same_branch_records() {
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let (tmp, common, wt_a) = linked_worktree("wt-a");
+        let private_b = common.join("worktrees/wt-b");
+        std::fs::create_dir_all(&private_b).unwrap();
+        let wt_b = tmp.path().join("wt-b");
+        std::fs::create_dir_all(&wt_b).unwrap();
+        std::fs::write(
+            wt_b.join(".git"),
+            String::from("gitdir: ") + private_b.to_str().unwrap() + "\n",
+        )
+        .unwrap();
+        let store = IdentityStore::open(&common).unwrap();
+
+        // wt-a was created for feat/x but has drifted: the branch checked
+        // out (and being removed) is now `hotfix`. wt-b is feat/x's new home.
+        store.record(&wt_a, "feat/x");
+        store.record(&wt_b, "feat/x");
+
+        // The id is captured while the directory still exists…
+        let captured = worktree_id_for(&wt_a);
+        assert_eq!(captured.as_deref(), Some("wt-a"));
+        std::fs::remove_dir_all(&wt_a).unwrap();
+
+        // …so the drifted record dies with its worktree, by id, even though
+        // the removal path only knows the live branch name.
+        store.forget(captured.as_deref(), "hotfix");
+
+        let found = read_identities(&common);
+        assert!(
+            !found.contains_key("wt-a"),
+            "the removed worktree's record is gone"
+        );
+        assert_eq!(
+            found["wt-b"].branch, "feat/x",
+            "a same-branch record for another worktree survives"
+        );
+    }
+
+    /// When the directory was already gone before the id could be read, the
+    /// by-branch sweep is all that is left.
+    #[test]
+    #[serial]
+    fn forget_falls_back_to_the_branch_without_an_id() {
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let (_tmp, common, worktree) = linked_worktree("wt-a");
+        let store = IdentityStore::open(&common).unwrap();
+        store.record(&worktree, "feat/x");
+
+        store.forget(None, "feat/x");
         assert!(read_identities(&common).is_empty());
     }
 

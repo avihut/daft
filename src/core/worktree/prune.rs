@@ -913,6 +913,11 @@ fn remove_worktree(
     // Pre-remove hook
     run_removal_hook(HookType::PreRemove, ctx, wt_path, branch_name, sink);
 
+    // Capture the identity key while the directory can still be probed:
+    // records are keyed on the private-gitdir id, not the branch, and a
+    // drifted record does not match the branch name we know here.
+    let identity_id = crate::core::worktree::identity_store::worktree_id_for(wt_path);
+
     if wt_path.exists() {
         sink.on_step("Removing worktree...");
         if let Err(e) = ctx.git.worktree_remove(wt_path, force) {
@@ -951,7 +956,7 @@ fn remove_worktree(
     }
     // ...and its recorded identity, for the same reason.
     if let Some(store) = crate::core::worktree::identity_store::IdentityStore::open(&ctx.git_dir) {
-        store.forget_branch(branch_name);
+        store.forget(identity_id.as_deref(), branch_name);
     }
 
     RemoveOutcome::Removed

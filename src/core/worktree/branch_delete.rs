@@ -1208,6 +1208,13 @@ fn delete_single_branch(
     };
 
     let has_worktree = branch.worktree_path.is_some();
+    // Capture the identity key while the directory can still be probed:
+    // records are keyed on the private-gitdir id, not the branch, and a
+    // drifted record does not match the branch name we know here.
+    let identity_id = branch
+        .worktree_path
+        .as_deref()
+        .and_then(crate::core::worktree::identity_store::worktree_id_for);
     let stage_key = |id: StageId| StepKey::scoped(id, branch.name.clone());
 
     // Step 1: Cancel any running background jobs for this worktree, then
@@ -1485,7 +1492,7 @@ fn delete_single_branch(
         && let Some(store) =
             crate::core::worktree::identity_store::IdentityStore::open(&ctx.git_dir)
     {
-        store.forget_branch(&branch.name);
+        store.forget(identity_id.as_deref(), &branch.name);
     }
 
     result
