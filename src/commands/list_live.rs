@@ -113,9 +113,7 @@ pub fn run_live(args: Args) -> Result<()> {
         info.path = Some(entry.path.clone());
         info.is_current = is_current;
         info.is_default_branch = is_default_branch;
-        info.is_sandbox = identity.is_sandbox;
-        info.op = identity.op;
-        info.identity_source = Some(identity.source);
+        apply_identity(&mut info, &identity);
         info.kind = EntryKind::Worktree;
         worktree_infos.push(info);
 
@@ -498,6 +496,23 @@ pub fn run_live(args: Args) -> Result<()> {
     }
     Ok(())
 }
+/// Copy a resolved identity's derived fields onto a seeded row.
+///
+/// Every identity-derived field must flow through here: these are seed-only —
+/// no patch ever carries them — so one missed copy leaves the field at
+/// `WorktreeInfo::empty`'s default for the whole session while the blocking
+/// renderer shows it, a silent renderer-parity break (`drifted` was lost
+/// exactly this way once).
+fn apply_identity(
+    info: &mut WorktreeInfo,
+    identity: &crate::core::worktree::identity::WorktreeIdentity,
+) {
+    info.is_sandbox = identity.is_sandbox;
+    info.op = identity.op;
+    info.identity_source = Some(identity.source);
+    info.drifted = identity.drifted;
+}
+
 /// Fields the streaming collector must populate for this view: what the
 /// selected columns render plus what the sort inspects
 /// (`SortSpec::required_fields`, itself `--stat`-aware). The collector
@@ -514,8 +529,11 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
             ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
             ListColumn::Changes => FieldSet::CHANGES,
             // The operation is known at seed; the conflict/resolved qualifier
-            // rides the same counts the Changes cell uses.
-            ListColumn::Status => FieldSet::CHANGES,
+            // rides the same counts the Changes cell uses. LAST_COMMIT feeds
+            // the op-less Persisted arm (`detached @ <sha>`) — without it a
+            // narrow selection leaves the cell at a bare `detached` forever.
+            // The hash is HEAD-content-cached, so this adds no walk.
+            ListColumn::Status => FieldSet::CHANGES | FieldSet::LAST_COMMIT,
             ListColumn::Remote => FieldSet::REMOTE_AHEAD_BEHIND,
             ListColumn::Age => FieldSet::BRANCH_AGE,
             ListColumn::Owner => FieldSet::OWNER,
@@ -558,6 +576,45 @@ mod collector_fields_tests {
 
     fn sort(input: &str, stat: Stat) -> SortSpec {
         SortSpec::parse(input).unwrap().with_stat(stat)
+    }
+
+    /// The live seed must carry *every* identity-derived field. These are
+    /// seed-only — no patch refreshes them — so a missed copy leaves the
+    /// field at its `empty()` default for the whole session while the
+    /// blocking renderer shows it. Regression: `drifted` was dropped here,
+    /// making the drift glyph and the `status` column's "drifted" dead on
+    /// the default TTY renderer.
+    #[test]
+    fn seed_copies_every_identity_derived_field() {
+        let identity = crate::core::worktree::identity::WorktreeIdentity {
+            name: "feat/x".to_string(),
+            branch: Some("feat/x".to_string()),
+            source: crate::core::worktree::identity::IdentitySource::Attached,
+            op: Some(crate::git::op_state::OpKind::Rebase),
+            is_sandbox: false,
+            drifted: true,
+        };
+        let mut info = crate::core::worktree::list::WorktreeInfo::empty("feat/x");
+        apply_identity(&mut info, &identity);
+        assert!(!info.is_sandbox);
+        assert_eq!(info.op, Some(crate::git::op_state::OpKind::Rebase));
+        assert_eq!(
+            info.identity_source,
+            Some(crate::core::worktree::identity::IdentitySource::Attached)
+        );
+        assert!(info.drifted, "drifted must survive the seed copy");
+    }
+
+    /// The status column's op-less Persisted arm renders `detached @ <sha>`
+    /// from `last_commit_hash`, which streams only under LAST_COMMIT. With a
+    /// narrow selection (`--columns status,branch`) the live cell otherwise
+    /// sticks at a bare `detached` forever while the piped path shows the
+    /// sha.
+    #[test]
+    fn status_column_collects_changes_and_last_commit() {
+        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
+        let fields = collector_fields(&resolved.columns, None, Stat::Summary);
+        assert!(fields.contains(FieldSet::CHANGES | FieldSet::LAST_COMMIT));
     }
 
     /// #665 regression: the default view must not collect SIZE/MTIME (or any
