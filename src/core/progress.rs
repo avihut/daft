@@ -384,6 +384,7 @@ pub struct TimelineBridge<'a> {
     timeline: &'a mut crate::output::timeline::Timeline,
     executor: HookExecutor,
     output_config: HookOutputConfig,
+    prompts_enabled: bool,
 }
 
 impl<'a> TimelineBridge<'a> {
@@ -398,7 +399,21 @@ impl<'a> TimelineBridge<'a> {
             timeline,
             executor,
             output_config,
+            prompts_enabled: true,
         }
+    }
+
+    /// Answer the consolidation prompts from the [`ConsolidationPrompter`]
+    /// defaults — always `Abort` — instead of reading the terminal.
+    ///
+    /// For invocations that must not block on a keypress even though stdin is
+    /// a TTY: `daft remove --repo` (#749) targets another repository, where a
+    /// prompt about *that* repo's daft files would arrive with no context the
+    /// user is watching. Refusing is the safe answer; nothing is ever merged
+    /// or discarded without an explicit interactive answer or `--force`.
+    pub fn without_prompts(mut self) -> Self {
+        self.prompts_enabled = false;
+        self
     }
 }
 
@@ -518,12 +533,18 @@ impl ConsolidationPrompter for TimelineBridge<'_> {
     // holds). With no region live, the prompt runs directly (Plain mode
     // unchanged).
     fn on_refined(&mut self, req: &ConsolidationRequest) -> ConsolidationChoice {
+        if !self.prompts_enabled {
+            return ConsolidationChoice::Abort;
+        }
         let handle = self.timeline.handle();
         let output = &mut *self.output;
         handle.suspend_for_prompt(|| prompt_refined(output, req))
     }
 
     fn on_conflicts(&mut self, filename: &str, keys: &[String]) -> ConflictSide {
+        if !self.prompts_enabled {
+            return ConflictSide::Abort;
+        }
         let handle = self.timeline.handle();
         let output = &mut *self.output;
         handle.suspend_for_prompt(|| prompt_conflict_side(output, filename, keys))

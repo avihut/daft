@@ -4,7 +4,7 @@
 .SH NAME
 daft remove \- Delete branches and their worktrees
 .SH SYNOPSIS
-\fBdaft remove\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-\-no\-verify\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCHES\fR> 
+\fBdaft remove\fR [\fB\-f\fR|\fB\-\-force\fR] [\fB\-\-local\fR] [\fB\-\-remote\fR] [\fB\-\-no\-verify\fR] [\fB\-\-repo\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCHES\fR> 
 .SH DESCRIPTION
 .PP
 Deletes one or more local branches along with their associated worktrees and
@@ -62,6 +62,9 @@ Only delete the remote branch, keep local worktree and branch
 .TP
 \fB\-\-no\-verify\fR
 Skip the repo\*(Aqs pre\-push hook when deleting the remote branch
+.TP
+\fB\-\-repo\fR \fI<REPO>\fR
+Remove branches in another cataloged repository
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 Operate quietly; suppress progress reporting

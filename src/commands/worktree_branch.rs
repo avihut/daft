@@ -225,11 +225,32 @@ pub struct RemoveArgs {
     )]
     no_verify: bool,
 
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        help = "Remove branches in another cataloged repository"
+    )]
+    repo: Option<String>,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+}
+
+/// How a `daft remove` invocation reached its target repository.
+///
+/// Two behaviors key off this rather than off `--repo` directly, because
+/// `--repo <the-repo-you-are-standing-in>` resolves back to [`Self::Local`]:
+/// the flag names a repository, it does not by itself mean "elsewhere".
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoveScope {
+    /// The repository the cwd is in (reached directly, by worktree path, or
+    /// by a `--repo` that names that same repository).
+    Local,
+    /// Another cataloged repository, entered via `--repo` (#749).
+    CrossRepo,
 }
 
 /// Entry point for `daft remove`.
@@ -240,13 +261,22 @@ pub fn run_remove() -> Result<()> {
 
     init_logging(remove_args.verbose);
 
-    // When invoked outside a git repository, allow operating on worktree paths
-    // by discovering the owning repo from the first existing path argument and
-    // chdir-ing to its project root. All path arguments are canonicalized first
-    // so the subsequent chdir doesn't break their resolution.
-    if !is_git_repository()? {
-        prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;
-    }
+    // Everything below is cwd-driven, so reaching another repository is done
+    // by entering it first — the same trick `prepare_out_of_repo_paths` plays
+    // for path arguments. Both must land before `DaftSettings::load()`, which
+    // reads the repo-local config of whatever directory we end up in.
+    let scope = match remove_args.repo.clone() {
+        // `--repo <name>`: exec-shape targeting by catalog name (#749).
+        Some(needle) => enter_repo_by_name(&needle, &remove_args)?,
+        // No `--repo`, and nowhere to resolve branch names against: fall back
+        // to discovering the owning repo from a worktree path argument.
+        None => {
+            if !is_git_repository()? {
+                prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;
+            }
+            RemoveScope::Local
+        }
+    };
 
     let settings = DaftSettings::load()?;
     let config = OutputConfig::with_autocd(remove_args.quiet, remove_args.verbose, settings.autocd);
@@ -260,9 +290,90 @@ pub fn run_remove() -> Result<()> {
         remove_args.remote,
         "-f/--force",
         remove_args.no_verify,
+        scope,
         &mut output,
         &settings,
     )
+}
+
+/// Resolve `--repo <needle>` through the catalog, announce the destination,
+/// and enter it unless it is the repository the user is already in.
+///
+/// Fails closed by construction: [`crate::catalog::resolve_repo_arg`] errors on
+/// a store failure, an unknown name, a tombstoned entry, or a recorded path
+/// that no longer exists. A cross-repo removal must never be reinterpreted as
+/// a local one — that would turn a catalog outage into a deletion in the wrong
+/// repository.
+fn enter_repo_by_name(needle: &str, args: &RemoveArgs) -> Result<RemoveScope> {
+    reject_path_args_with_repo(&args.branches, needle)?;
+
+    let row = crate::catalog::resolve_repo_arg(needle)?;
+
+    // Announce the resolved destination before any work happens — a removal
+    // aimed somewhere other than "here" must be impossible to miss (`-q` opts
+    // out). Its own CliOutput, with autocd off: this line is never a cd hint.
+    let subject = if args.branches.len() == 1 {
+        format!("branch '{}'", args.branches[0])
+    } else {
+        format!("{} branches", args.branches.len())
+    };
+    let mut announce = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, false));
+    announce.result(&format!(
+        "Removing {} in '{}' ({})",
+        subject, row.name, row.path
+    ));
+
+    if resolves_to_current_repo(&row) {
+        return Ok(RemoveScope::Local);
+    }
+
+    crate::utils::change_directory(std::path::Path::new(&row.path))?;
+    Ok(RemoveScope::CrossRepo)
+}
+
+/// Whether `row` names the repository the cwd is already inside.
+///
+/// `--repo <current-repo>` must behave exactly like a plain local removal.
+/// Entering the project root would move the cwd out of the worktree being
+/// removed, and the cd-redirect that rescues the user's shell is derived from
+/// the cwd — so treating "here" as cross-repo would strand them in a deleted
+/// directory. Both sides are stored canonical (`CatalogRepoRow::git_common_dir`
+/// and [`crate::core::repo::get_git_common_dir`]), so a direct compare is
+/// sound; being outside any repository simply reads as "not the current repo".
+fn resolves_to_current_repo(row: &crate::store::models::CatalogRepoRow) -> bool {
+    let Ok(git_dir) = crate::core::repo::get_git_common_dir() else {
+        return false;
+    };
+    let canonical = git_dir.canonicalize().unwrap_or(git_dir);
+    canonical.to_string_lossy() == row.git_common_dir
+}
+
+/// Reject path-spelled positionals when `--repo` already names the target.
+///
+/// A worktree path identifies its own repository, so pairing the two is
+/// contradictory — reject it rather than picking a winner. The test is
+/// deliberately *spelling*-based rather than an on-disk probe: worktree
+/// directories are named after their branches, so `daft remove --repo api
+/// feat/foo` run from a repo that happens to have a `feat/foo` worktree would
+/// otherwise be rejected for naming a perfectly ordinary branch. Bare names
+/// stay branch names and are matched against the target repo's worktrees after
+/// the chdir, where that resolution is meaningful.
+fn reject_path_args_with_repo(branches: &[String], needle: &str) -> Result<()> {
+    for arg in branches {
+        let path_spelled = arg.starts_with('/')
+            || arg.starts_with('~')
+            || arg == "."
+            || arg == ".."
+            || arg.starts_with("./")
+            || arg.starts_with("../");
+        if path_spelled {
+            anyhow::bail!(
+                "'{arg}' is a worktree path, which already identifies its repository\n  \
+                 tip: drop --repo to remove by path, or pass branch names to remove in '{needle}'"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Prepare a path-accepting daft command (currently `daft remove` and `daft
@@ -480,6 +591,8 @@ fn run_with_args(args: Args) -> Result<()> {
             args.remote,
             "-D/--force",
             args.no_verify,
+            // The legacy `git worktree-branch -d/-D` form has no `--repo`.
+            RemoveScope::Local,
             &mut output,
             &settings,
         )?;
@@ -496,6 +609,7 @@ fn run_branch_delete(
     remote_only: bool,
     force_flag_label: &str,
     no_verify: bool,
+    scope: RemoveScope,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -586,6 +700,14 @@ fn run_branch_delete(
     let exec_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
+        // Repo-aware forms never prompt interactively (Repo-Aware Command
+        // Grammar). Suppressing hands the consolidation decision to the
+        // `ConsolidationPrompter` defaults — always Abort — so a cross-repo
+        // removal refuses with the usual `daft file merge` / `-f` guidance
+        // instead of blocking on a keypress the user isn't expecting.
+        if scope == RemoveScope::CrossRepo {
+            bridge = bridge.without_prompts();
+        }
         let witness = crate::commands::forge_cache::merged_witness(
             &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
         );
@@ -664,8 +786,18 @@ fn run_branch_delete(
         }
     }
 
-    // Write the cd target for the shell wrapper
-    if let Some(ref cd_target) = result.cd_target {
+    // Write the cd target for the shell wrapper.
+    //
+    // Never for a cross-repo removal (#749): the user's cwd is in a different
+    // repository and stays perfectly valid, so relocating their shell into the
+    // repo they targeted would be user-hostile. The core's own gate is
+    // cwd-derived and mostly agrees, but it also matches by branch *name*, and
+    // at a project root the bare HEAD reads as the default branch — enough for
+    // `daft remove --repo <other> <its-default-branch>` to slip through. Gate
+    // on the scope instead of relying on that.
+    if scope == RemoveScope::Local
+        && let Some(ref cd_target) = result.cd_target
+    {
         if std::env::var(CD_FILE_ENV).is_ok() {
             output.cd_path(cd_target);
         } else {
