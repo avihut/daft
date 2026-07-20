@@ -35,7 +35,9 @@ of config.
 
 The remote delete pushes no content, so the repo's pre-push hook is skipped by
 default (configurable via `daft.pushVerify`; `--no-verify` skips it
-unconditionally). See
+unconditionally). `daft.pushVerify` is the base setting every daft push reads,
+so it also affects the branch-creation upstream push; scope it to that push
+alone with `daft.checkout.pushVerify`. See
 [Git Hooks](/reference/configuration#git-hooks) for details.
 
 Safety checks prevent accidental data loss. Use `-f` (`--force`) to override.

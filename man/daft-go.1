@@ -34,8 +34,9 @@ With \-b, creates a new branch and worktree in a single operation. The new
 branch is based on the current branch, or on `<base\-branch>` if specified. It
 is pushed to the remote and upstream tracking is configured; the pre\-push hook
 runs only when that push introduces new commits, skipping ref\-only pushes
-(configurable via daft.checkout.pushVerify: auto, always, or never). Prefer
-\*(Aqdaft start\*(Aq for creating new branches.
+(configurable via daft.checkout.pushVerify, which defaults to the base
+daft.pushVerify: auto, always, or never). Prefer \*(Aqdaft start\*(Aq for creating
+new branches.
 .PP
 With \-s (\-\-start), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also

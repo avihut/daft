@@ -55,12 +55,13 @@ pre-push gate blocks the push and fails the command; its run is reported as a
 carry no content are the conditional sites: the automatic upstream push on
 branch creation consults the hook only when it would publish commits the remote
 does not already have, and remote-branch deletes (`daft remove`, `daft rename`'s
-old-name cleanup) skip it outright — a delete pushes zero objects, so a content
-gate has nothing to validate. Both are tunable via `daft.pushVerify` (set
-`always` for ref-policy hooks such as protected-branch delete guards;
-`daft.checkout.pushVerify` scopes the upstream push alone). Pass `--no-verify`
-to any pushing command to skip the hook for one invocation. And because the
-shared hook always runs in the pushed branch's own worktree under
+old-name cleanup, `daft merge`'s post-merge cleanup) skip it outright — a delete
+pushes zero objects, so a content gate has nothing to validate. Both are tunable
+via `daft.pushVerify` (set `always` for ref-policy hooks such as
+protected-branch delete guards; `daft.checkout.pushVerify` scopes the upstream
+push alone). Pass `--no-verify` to any pushing command to skip the hook for one
+invocation — `daft merge` is the exception, gated by the config key alone. And
+because the shared hook always runs in the pushed branch's own worktree under
 [daft push](/reference/cli/daft-push), that command is the way to push another
 worktree's branch without the hook validating the wrong tree. See
 [Git Hooks](/reference/configuration#git-hooks) for the details.

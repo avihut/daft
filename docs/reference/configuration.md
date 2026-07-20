@@ -77,13 +77,13 @@ By default, daft does not contact the remote during worktree management. All
 remote operations are opt-in. Use `daft config remote-sync` to toggle these
 settings interactively, or set them directly with `git config`.
 
-| Key                        | Default           | Description                                                                                                         |
-| -------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `daft.checkout.fetch`      | `false`           | Fetch from remote before creating a worktree for an existing branch                                                 |
-| `daft.checkout.push`       | `false`           | Push new branches to remote after creation                                                                          |
-| `daft.pushVerify`          | `auto`            | When ref-only pushes (remote-branch deletes, the upstream push) run the pre-push hook — see [Git Hooks](#git-hooks) |
-| `daft.checkout.pushVerify` | `daft.pushVerify` | Checkout-scoped override of `daft.pushVerify` for the automatic upstream push (`auto`, `always`, `never`)           |
-| `daft.branchDelete.remote` | `false`           | Delete the remote branch when removing a local branch                                                               |
+| Key                        | Default           | Description                                                                                                                                  |
+| -------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.checkout.fetch`      | `false`           | Fetch from remote before creating a worktree for an existing branch                                                                          |
+| `daft.checkout.push`       | `false`           | Push new branches to remote after creation                                                                                                   |
+| `daft.pushVerify`          | `auto`            | Base setting: when daft's suppressible pushes (remote-branch deletes, the upstream push) run the pre-push hook — see [Git Hooks](#git-hooks) |
+| `daft.checkout.pushVerify` | `daft.pushVerify` | Checkout-scoped override of `daft.pushVerify` for the automatic upstream push (`auto`, `always`, `never`)                                    |
+| `daft.branchDelete.remote` | `false`           | Delete the remote branch when removing a local branch                                                                                        |
 
 ### Enabling Remote Sync
 
@@ -390,11 +390,17 @@ qualify as ref-only:
 Control this with `daft.pushVerify` (the base setting every such site reads;
 `daft.checkout.pushVerify` overrides it for the upstream push alone):
 
-| Value    | Behavior                                                      |
-| -------- | ------------------------------------------------------------- |
-| `auto`   | (default) Run the hook only when the push carries new commits |
-| `always` | Run the hook on every such push, including ref-only ones      |
-| `never`  | Never run the hook on these pushes                            |
+| Value    | Behavior                                                                        |
+| -------- | ------------------------------------------------------------------------------- |
+| `auto`   | (default) Run the hook only when the push carries new commits                   |
+| `always` | Run the hook on every such push, including ref-only ones                        |
+| `never`  | Never run the hook on these pushes, even when the upstream push carries commits |
+
+Note the asymmetry in `never`: `auto` and `always` decide per push from what it
+transmits, but `never` is unconditional. Setting `daft.pushVerify` to `never` to
+quiet the hook on deletes therefore also disarms it on the upstream push when
+that push does carry new commits. Scope the base key to deletes by re-arming the
+other site with `daft.checkout.pushVerify = auto`.
 
 `always` is for repositories whose pre-push hooks act on the ref rather than the
 content (branch-naming policies, protected-branch guards that reject deleting
@@ -403,10 +409,11 @@ skip is based purely on pushed content. Content-carrying pushes -- `daft push`,
 `daft sync --push`, and `daft rename`'s new-name push -- always verify and do
 not consult these settings.
 
-Pass `--no-verify` to skip the hook for one invocation. Every command that can
-push accepts it: `daft push`, `daft sync --push`, `daft start` / `daft go -b` /
-`git worktree-checkout -b`, `daft rename`, `daft remove` /
-`git worktree-branch -d/-D`, and `daft multi-remote move`.
+Pass `--no-verify` to skip the hook for one invocation: `daft push`,
+`daft sync --push`, `daft start` / `daft go -b` / `git worktree-checkout -b`,
+`daft rename`, `daft remove` / `git worktree-branch -d/-D`, and
+`daft multi-remote move` all accept it. `daft merge` is the exception -- its
+post-merge cleanup delete is governed by `daft.pushVerify` alone.
 
 Remote operations are disabled by default. When enabled (via
 `daft config remote-sync --on` or by setting the individual keys), this affects:
@@ -417,6 +424,10 @@ Remote operations are disabled by default. When enabled (via
 - **`daft remove` / `git worktree-branch -d`** -- pushes `--delete` to remove
   the remote branch (controlled by `daft.branchDelete.remote`; pre-push hook
   gating per `daft.pushVerify` above)
+- **`daft merge`** -- post-merge cleanup deletes the merged branch's remote ref
+  on the same `daft.branchDelete.remote` setting, gated by `daft.pushVerify`.
+  Unlike the other sites, `daft merge` has no `--no-verify`, so the config key
+  is the only control there.
 - **`daft multi-remote move --push`** -- pushes an existing branch to a new
   remote
 

@@ -49,7 +49,10 @@ removal if the repository is trusted. See git-daft(1) for hook management.
 When remote deletion is enabled, the remote-branch delete pushes no content,
 so the repo's pre-push hook is skipped by default (configurable via
 daft.pushVerify: auto, always, or never; use always for hooks that gate
-deletes by ref name). Pass --no-verify to skip it unconditionally.
+deletes by ref name). daft.pushVerify is the base setting every daft push
+reads, so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify
+to skip it unconditionally.
 
 ## Usage
 

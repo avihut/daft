@@ -26,7 +26,8 @@ being renamed, the shell wrapper will cd to the new location after the
 rename completes.
 
 The new-name push honors the repo's pre-push hook; the old-name delete pushes
-no content and skips it by default (configurable via `daft.pushVerify`). See
+no content and skips it by default (configurable via `daft.pushVerify`, the
+base setting every daft push reads). See
 [Git Hooks](/reference/configuration#git-hooks) for details.
 
 Empty parent directories left behind by the move are automatically cleaned up.
