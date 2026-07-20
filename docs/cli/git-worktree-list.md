@@ -44,7 +44,7 @@ an operation: mid-rebase the row still reads `feat/x`, sorts in place, and
 keeps its Base/Age/Owner cells. The annotation column gains a glyph for the
 paused operation, and unresolved conflicts show as a red `!N` under Changes.
 Add the `status` column (--columns +status) to spell the state out, e.g.
-"rebasing - 2 conflicts" or "rebasing - resolved" when everything is resolved
+"rebasing · 2 conflicts" or "rebasing · resolved" when everything is resolved
 and the operation is only waiting to be continued.
 
 Only a detached checkout that no operation explains is treated as a scratch
