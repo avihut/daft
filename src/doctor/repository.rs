@@ -178,6 +178,11 @@ pub fn check_worktree_identity_drift(ctx: &RepoContext) -> CheckResult {
         .collect();
     let fix_targets = drifted.clone();
     let dry_details = details.clone();
+    // Capture the checked repo's dir by move: fixes run *after* doctor has
+    // restored the original cwd (and under --all-repos, from a different
+    // repo entirely), so a cwd-derived lookup here would write these targets
+    // into some other repo's store.
+    let fix_dir = ctx.git_common_dir.clone();
 
     CheckResult::warning(
         "Worktree identities",
@@ -186,8 +191,7 @@ pub fn check_worktree_identity_drift(ctx: &RepoContext) -> CheckResult {
     .with_details(details)
     .with_suggestion("run with --fix to update the records to match what is checked out")
     .with_fix(Box::new(move || {
-        let ctx_dir = crate::core::repo::get_git_common_dir().map_err(|e| e.to_string())?;
-        let store = crate::core::worktree::identity_store::IdentityStore::open(&ctx_dir)
+        let store = crate::core::worktree::identity_store::IdentityStore::open(&fix_dir)
             .ok_or_else(|| "identity records unavailable".to_string())?;
         for (path, checked_out, _) in &fix_targets {
             store.record(path, checked_out);
@@ -468,6 +472,60 @@ mod tests {
     fn test_is_common_dir_bare_no_config() {
         let temp = tempfile::tempdir().unwrap();
         assert!(!is_common_dir_bare(temp.path()));
+    }
+
+    /// The deferred --fix closure must write into the repo the check was
+    /// built from, not whatever the process cwd names when apply_fixes later
+    /// runs: doctor restores the original cwd between collect and fix, so
+    /// under --all-repos a cwd-derived store lookup wrote repo B's drift
+    /// targets into repo A's store — same-named ids (`master`) even
+    /// overwrite A's real records via upsert — while B's drift survived
+    /// behind a green "done".
+    #[test]
+    #[serial_test::serial]
+    fn identity_fix_writes_into_the_checked_repo_not_the_cwd() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let orig_cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        git(&repo, &["branch", "feat-x"]);
+        let wt = tmp.path().join("wt");
+        git(
+            &repo,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "feat-x"],
+        );
+        let common = repo.join(".git");
+
+        // A record disagreeing with the checkout: drift.
+        let store = crate::core::worktree::identity_store::IdentityStore::open(&common).unwrap();
+        store.record(&wt, "feat-recorded");
+
+        // The check runs with cwd inside the repo, as doctor's collect pass
+        // arranges…
+        std::env::set_current_dir(&repo).unwrap();
+        let ctx = RepoContext {
+            git_common_dir: common.clone(),
+            project_root: repo.clone(),
+            current_worktree: repo.clone(),
+            is_bare: false,
+        };
+        let result = check_worktree_identity_drift(&ctx);
+        std::env::set_current_dir(&orig_cwd).unwrap();
+        assert_eq!(result.status, CheckStatus::Warning);
+        let fix = result.fix.expect("drift offers a fix");
+
+        // …but the fix runs after doctor restored the original cwd.
+        fix().expect("fix succeeds away from the repo's cwd");
+
+        let records = crate::core::worktree::identity_store::read_identities(&common);
+        let id = crate::core::worktree::identity_store::worktree_id_for(&wt).unwrap();
+        assert_eq!(
+            records[&id].branch, "feat-x",
+            "the record is reconciled to the checkout, in the checked repo's store"
+        );
     }
 
     #[test]
