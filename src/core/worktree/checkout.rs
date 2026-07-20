@@ -1117,6 +1117,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_off_plans_no_fetch_row_and_resolves_the_annotation_up_front() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1170,6 +1173,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_off_unknown_branch_errors_before_any_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1196,6 +1202,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_on_plans_the_fetch_row_and_notes_the_annotation() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1275,6 +1284,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_on_unknown_branch_errors_after_the_committed_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1309,6 +1321,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn deferred_unknown_branch_commits_no_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1340,6 +1355,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn deferred_fetch_leads_the_plan_pre_completed() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1429,6 +1447,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_leads_plan_with_resolve_receipt() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1500,6 +1521,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fork_forge_creates_branch_from_pull_ref_and_configures_tracking() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1578,6 +1602,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn forge_state_note_warns_but_proceeds() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1622,6 +1649,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fork_forge_missing_pull_ref_aborts_after_plan() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1670,6 +1700,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_uses_the_base_remote_not_the_settings_default() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");
@@ -1733,6 +1766,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn same_repo_forge_falls_back_to_the_head_ref_when_the_branch_is_gone() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin");

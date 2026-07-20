@@ -1306,6 +1306,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn plan_commits_with_locked_row_set_and_push_skip() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1397,6 +1400,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn fetch_rows_planned_first_and_resolved_base_noted_on_branch_row() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
@@ -1491,6 +1497,9 @@ mod timeline_tests {
     #[test]
     #[serial]
     fn plan_shared_section_rows_resolve_by_outcome() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         git(tmp.path(), &["init", "-q", "-b", "main"]);
