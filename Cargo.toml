@@ -8,7 +8,7 @@ term-styles = { path = "term-styles", version = "0.1.0" }
 
 [package]
 name = "daft"
-version = "1.22.0"
+version = "1.23.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A comprehensive Git extensions toolkit that enhances developer workflows, starting with powerful worktree management"

@@ -2,7 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.22.0](https://github.com/avihut/daft/compare/v1.21.1...v1.22.0) - 2026-07-18
+## [1.23.0](https://github.com/avihut/daft/compare/v1.22.0...v1.23.0) - 2026-07-20
+
+
+### Bug Fixes
+
+- **prune**: Detect squash merges the patch-id probes miss (#741)
+
+
+### Features
+
+- **list**: Keep branch identity through rebase and detached HEAD (#748)
+- **output**: Live v toggle for verbose output on the plan-execute rail (#740)
+- **git**: Graduate gitoxide backend to stable (default on; flag becomes opt-out) (#734)
+- **push**: Daft push — run pre-push hooks in the pushed branch's worktree (#732)
+- **start**: Accept a positional repo target (daft start <repo> <branch> [base]) (#731)
+- Daft run — user-invoked tasks in daft.yml (#727)
+- Forge PR/MR checkout (pr:/mr:/URL) via gh/glab passthrough (#723)
+
+
+### Testing
+
+- **state-guard**: Tolerate concurrent daft activity on the shared state dir (#743)
+- **integration**: Fail-closed __dirs preflight so bash suites can't leak into the real catalog (#739)
+## [1.22.0](https://github.com/avihut/daft/compare/v1.21.1...v1.22.0) - 2026-07-19
 
 
 ### Features
