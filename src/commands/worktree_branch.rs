@@ -268,8 +268,8 @@ pub fn run_remove() -> Result<()> {
     let scope = match remove_args.repo.clone() {
         // `--repo <name>`: exec-shape targeting by catalog name (#749).
         Some(needle) => enter_repo_by_name(&needle, &remove_args)?,
-        // No `--repo`, and nowhere to resolve branch names against: fall back
-        // to discovering the owning repo from a worktree path argument.
+        // No `--repo`. Inside a repo this is an ordinary local removal; from
+        // outside one, the owning repo is discovered from a path argument.
         None => {
             if !is_git_repository()? {
                 prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;

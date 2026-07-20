@@ -827,19 +827,10 @@ fn start_second_slot(first: &str) -> StartSecondSlot {
 /// its default completion (and stays forge-free: the create-family guard
 /// rejects basing a new branch on a PR ref).
 fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
-    if first_word.is_empty() {
-        return Vec::new();
-    }
-    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
-        return Vec::new();
-    };
-    let Ok(Some(row)) = catalog.resolve_live_name(first_word) else {
+    let Some(row) = live_catalog_repo(first_word) else {
         return Vec::new();
     };
     let root = std::path::Path::new(&row.path);
-    if !root.is_dir() {
-        return Vec::new();
-    }
     let mut entries = repo_branch_entries(root, &row.name, prefix, true);
     entries.extend(complete_forge_targets(prefix, Some(root)));
     entries
@@ -848,27 +839,34 @@ fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
 /// Branches of the catalog repo named by a `--repo <name>` already on the
 /// command line, which the shell snippets pass via `DAFT_COMPLETE_REPO_FLAG`.
 ///
-/// Shares [`complete_go_second`]'s silent contract, and leans on it harder: a
-/// miss completes *nothing* rather than falling back to the cwd repo, because
+/// A miss completes *nothing* rather than falling back to the cwd repo:
 /// offering the caller's branches for a removal aimed elsewhere would suggest
 /// names that don't exist in the target — on a destructive verb.
 fn cross_repo_branches(needle: &str, prefix: &str) -> Vec<CompletionEntry> {
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+    let Some(row) = live_catalog_repo(needle) else {
         return Vec::new();
     };
-    let Ok(Some(row)) = catalog.resolve_live_name(needle) else {
-        return Vec::new();
-    };
-    let root = std::path::Path::new(&row.path);
-    if !root.is_dir() {
-        return Vec::new();
-    }
     // Local heads only: `daft remove` deletes local branches, and even
     // `--remote` names the local branch whose upstream is being deleted.
-    repo_branch_entries(root, &row.name, prefix, false)
+    repo_branch_entries(std::path::Path::new(&row.path), &row.name, prefix, false)
+}
+
+/// Resolve a catalog repo name to a live, on-disk entry for completion.
+///
+/// Holds the hot-path contract in one place: silent on every failure. An empty
+/// needle, a dead store, an unknown or tombstoned name, or a recorded path
+/// that no longer exists all yield `None` — never an error, never stderr.
+fn live_catalog_repo(needle: &str) -> Option<crate::store::models::CatalogRepoRow> {
+    if needle.is_empty() {
+        return None;
+    }
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return None;
+    };
+    let Ok(Some(row)) = catalog.resolve_live_name(needle) else {
+        return None;
+    };
+    std::path::Path::new(&row.path).is_dir().then_some(row)
 }
 
 /// Branch names of the repo at `root`, deduped, described by the repo's
