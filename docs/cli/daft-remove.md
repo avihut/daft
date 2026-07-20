@@ -27,6 +27,25 @@ relative worktree paths and discovers the owning repository from the path
 itself, so worktrees can be cleaned up without first `cd`-ing into a sibling
 worktree. All paths in a single invocation must belong to the same repository.
 
+`--repo <name>` addresses another cataloged repository by name instead of by
+path, from inside a different repository or from outside any repository:
+
+```bash
+daft remove --repo api feature-x
+```
+
+The resolved destination is announced before any work begins. Because the
+removal happens elsewhere, your current directory stays valid and your shell
+is never relocated. Combining `--repo` with a worktree path is an error --
+the path already identifies its own repository. There is no `--all-repos`
+form; removing one branch across every repository is rarely intended, and
+fleet-wide cleanup is [daft prune](./git-worktree-prune.md)'s job.
+
+Note that `--repo` is a flag rather than a positional. `daft remove api
+feature-x` always means "remove the branches `api` and `feature-x` in the
+current repository" -- the positional slot is a list of branches or paths and
+is never reinterpreted as a repository name.
+
 By default, the remote branch is not deleted. To also delete the remote branch,
 set `daft.branchDelete.remote true` or use `daft config remote-sync --on`. You
 can also pass `--remote` to delete only the remote branch while keeping the
@@ -51,6 +70,7 @@ local branch ref and remote branch are always preserved.
 | `-f, --force` | Force deletion even if not fully merged | |
 | `--local` | Delete only locally; do not touch the remote branch | |
 | `--remote` | Delete only the remote branch; keep the local worktree and branch | |
+| `--repo <REPO>` | Remove branches in another cataloged repository | |
 | `-v, --verbose` | Show detailed progress | |
 | `-q, --quiet` | Suppress non-error output | |
 

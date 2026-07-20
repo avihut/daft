@@ -473,6 +473,19 @@ takes exactly one of two shapes.
    `--all-repos`, as in `update`/`exec`/`prune`. Positionals keep their local
    meaning; bare `--repo` targets the repo's default-branch worktree.
 
+   A destructive verb takes this shape even when a positional slot looks
+   free-ish, and may drop `--all-repos` entirely — `remove` (#749) is the worked
+   example. Its positional is a required variadic list of branches or paths, so
+   the slot is not free and `daft remove api feature-x` must keep meaning "both
+   branches, here"; a wrong guess would delete a local branch plus its remote,
+   where `start`'s worst case is a branch in the wrong place. `--all-repos` is
+   omitted because "remove branch X everywhere" is rarely meant, and fleet
+   cleanup is `prune`'s job. Two rules such a verb inherits: a cross-repo run
+   must not write `DAFT_CD_FILE` (the user's cwd is still valid — relocating
+   them is user-hostile), and `--repo` naming the repo you are _already in_ must
+   resolve back to the local path, since the cd-redirect that rescues a user
+   standing in the doomed worktree is cwd-derived.
+
 Either way: `--repo` stays the canonical spelling (the positional is sugar,
 exclusive with it); resolve through `catalog::resolve_repo_arg` /
 `fleet::for_each_repo` — never hand-rolled lookups; positional resolution is
