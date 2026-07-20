@@ -123,6 +123,7 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
         command_name,
         "daft-go"
             | "daft-start"
+            | "daft-remove"
             | "git-worktree-list"
             | "git-worktree-fetch"
             | "git-worktree-exec"
@@ -939,6 +940,68 @@ mod tests {
         );
     }
 
+    /// `daft remove --repo <name> <TAB>` must complete the *target* repo's
+    /// branches, so the shells have to forward the flag's value — the
+    /// `__complete` protocol carries only the current word (#749). Offering
+    /// the caller's branches instead would suggest names that don't exist in
+    /// the repo being targeted, on a destructive verb.
+    #[test]
+    fn remove_forwards_repo_flag_value_for_cross_repo_branches() {
+        for (shell, script) in [
+            (
+                "bash",
+                bash::generate_bash_completion_string("daft-remove").expect("bash gen"),
+            ),
+            (
+                "zsh",
+                zsh::generate_zsh_completion_string("daft-remove").expect("zsh gen"),
+            ),
+        ] {
+            assert!(
+                script.contains(r#"DAFT_COMPLETE_REPO_FLAG="$__repo""#),
+                "{shell} daft-remove must forward the --repo value to __complete"
+            );
+            // Both spellings: `--repo x` reads the next word, `--repo=x` splits.
+            assert!(
+                script.contains(r#"__repo="${words[$((__i + 1))]:-}""#)
+                    && script.contains(r#"__repo="${__w#*=}""#),
+                "{shell} daft-remove must capture --repo in both `--repo x` and `--repo=x` forms"
+            );
+        }
+
+        // fish's umbrella is hand-inlined and does not delegate to the rich
+        // generator, so it needs its own capture helper and verb registration.
+        let fish = fish::generate_daft_fish_completions();
+        assert!(
+            fish.contains("function __daft_verb_repo_flag")
+                && fish.contains("DAFT_COMPLETE_REPO_FLAG=(__daft_verb_repo_flag)"),
+            "fish's remove completion must forward the --repo value via a capture helper"
+        );
+        assert!(
+            fish.contains("go list update exec prune start remove' -l repo"),
+            "fish must complete --repo values for remove"
+        );
+    }
+
+    /// Regression guard for the shared `env_prefix`: adding remove's repo
+    /// hand-off must not displace go/start's first-positional hand-off, which
+    /// is what makes `daft go <repo> <TAB>` complete the target's branches.
+    /// A remove-only assertion would not notice that loss.
+    #[test]
+    fn repo_flag_forwarding_does_not_displace_go_start_first_positional() {
+        for (command, expected) in [
+            ("daft-go", r#"DAFT_COMPLETE_GO_FIRST="$__first""#),
+            ("daft-start", r#"DAFT_COMPLETE_START_FIRST="$__first""#),
+        ] {
+            let bash = bash::generate_bash_completion_string(command).expect("bash gen");
+            let zsh = zsh::generate_zsh_completion_string(command).expect("zsh gen");
+            assert!(
+                bash.contains(expected) && zsh.contains(expected),
+                "{command} must still forward its first positional in both shells"
+            );
+        }
+    }
+
     /// `daft repo remove --repo <name>` / `--keep-files`: the repo-verb
     /// sections of the umbrella completions are hardcoded per shell, so a
     /// new flag must land in all three (fig has its own spec test).
@@ -1082,9 +1145,15 @@ mod tests {
             !umbrella.contains("DAFT_COMPLETE_START_FIRST=(commandline -opc)[3]"),
             "fish umbrella must not index tokens raw — a leading flag shifts them"
         );
+        // Membership, not the exact verb list: the list grows as commands
+        // gain `--repo`, and pinning it verbatim fails every such addition
+        // for a reason unrelated to what this test is about.
         assert!(
-            umbrella
-                .contains("'__fish_seen_subcommand_from go list update exec prune start' -l repo"),
+            umbrella.lines().any(|line| {
+                line.contains("-l repo")
+                    && line.contains("__fish_seen_subcommand_from")
+                    && line.contains("start")
+            }),
             "fish umbrella --repo values must include start"
         );
     }

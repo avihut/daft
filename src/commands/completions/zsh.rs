@@ -353,10 +353,39 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     // so pass the first positional via env.
     // `$__first` is the first *positional*, not words[2], so a leading flag
     // can't masquerade as the repo name.
-    let env_prefix = match command_name {
-        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="$__first" "#,
-        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="$__first" "#,
-        _ => "",
+    // Additive, not either/or: a command can need both hand-offs, and
+    // dropping one here silently breaks that slot's completion.
+    let mut env_prefix = String::new();
+    match command_name {
+        "daft-go" => env_prefix.push_str(r#"DAFT_COMPLETE_GO_FIRST="$__first" "#),
+        "daft-start" => env_prefix.push_str(r#"DAFT_COMPLETE_START_FIRST="$__first" "#),
+        _ => {}
+    }
+    // Commands that take --repo forward its value so slots after it complete
+    // against the *target* repo rather than the caller's (#749).
+    if command_has_repo_flag(command_name) {
+        env_prefix.push_str(r#"DAFT_COMPLETE_REPO_FLAG="$__repo" "#);
+    }
+
+    // Captured in the same scan that counts positionals: the flag may sit
+    // anywhere before the cursor, in either spelling. Reading `__i + 1` is
+    // safe because the value-skip below has not advanced past it yet.
+    let repo_capture = if command_has_repo_flag(command_name) {
+        r#"                if [[ "${__w%%=*}" == "--repo" ]]; then
+                    if [[ "$__w" == *=* ]]; then
+                        __repo="${__w#*=}"
+                    else
+                        __repo="${words[$((__i + 1))]:-}"
+                    fi
+                fi
+"#
+    } else {
+        ""
+    };
+    let repo_decl = if command_has_repo_flag(command_name) {
+        "    local __repo=\"\"\n"
+    } else {
+        ""
     };
 
     // Positional slots are counted, not derived from $CURRENT: flags and
@@ -365,12 +394,12 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     let position_pre = format!(
         r#"    local -a __posargs
     local __i=2 __w
-    while (( __i < CURRENT )); do
+{repo_decl}    while (( __i < CURRENT )); do
         __w="${{words[$__i]}}"
         case "$__w" in
             --) ;;
             -*)
-                if [[ " {value_flags} " == *" ${{__w%%=*}} "* && "$__w" != *=* ]]; then
+{repo_capture}                if [[ " {value_flags} " == *" ${{__w%%=*}} "* && "$__w" != *=* ]]; then
                     __i=$((__i + 1))
                 fi
                 ;;

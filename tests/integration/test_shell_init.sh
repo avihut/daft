@@ -623,6 +623,107 @@ test_start_cross_repo_cd_through_wrapper() {
     return 0
 }
 
+# Regression (#749): `daft remove --repo <other>` removes in ANOTHER repo, so
+# the shell must stay put. The user's cwd is still perfectly valid, and moving
+# them into the repo they targeted would be user-hostile. Only the wrapper can
+# cd, so the YAML scenarios (which drive the binary directly) cannot catch a
+# regression here.
+test_remove_cross_repo_does_not_cd_through_wrapper() {
+    log "Testing: daft remove --repo <other> through wrapper leaves the shell where it was"
+
+    local remote_a remote_b
+    remote_a=$(create_test_remote "test-rm-cross-a" "main")
+    remote_b=$(create_test_remote "test-rm-cross-b" "main")
+
+    git-worktree-clone --layout contained "$remote_a" >/dev/null 2>&1
+    git-worktree-clone --layout contained "$remote_b" >/dev/null 2>&1
+    local repo_a="$PWD/test-rm-cross-a"
+    local repo_b="$PWD/test-rm-cross-b"
+
+    # Give repo_b a worktree to remove.
+    (builtin cd "$repo_b/main" && daft start wip-b >/dev/null 2>&1) || true
+    if [[ ! -d "$repo_b/wip-b" ]]; then
+        log_error "setup failed: $repo_b/wip-b was not created"
+        return 1
+    fi
+
+    # Stand in repo_a/main and remove a worktree over in repo_b.
+    local out
+    out=$(REPO_A_MAIN="$repo_a/main" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$REPO_A_MAIN" || exit 11
+        daft remove --repo test-rm-cross-b wip-b -f >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    # Resolve BOTH sides: a shell that never moved reports the logical path it
+    # was given (/tmp/...), while realpath yields /private/tmp/... on macOS.
+    # The start counterpart can compare raw because daft canonicalizes the path
+    # it writes to DAFT_CD_FILE — here the whole point is that it wrote nothing.
+    local resolved_repo_a resolved_out
+    resolved_repo_a=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$repo_a")
+    resolved_out=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$out")
+
+    if [[ "$resolved_out" != "$resolved_repo_a/main" ]]; then
+        log_error "cross-repo remove relocated the shell"
+        log_error "  expected pwd: $resolved_repo_a/main"
+        log_error "  actual pwd:   $resolved_out"
+        return 1
+    fi
+    if [[ -d "$repo_b/wip-b" ]]; then
+        log_error "cross-repo remove did not remove $repo_b/wip-b"
+        return 1
+    fi
+
+    log_success "cross-repo remove left the shell at: $out"
+    return 0
+}
+
+# Regression (#749): the counterpart. `--repo` naming the repo you are ALREADY
+# in must behave like a plain local removal, cd-redirect included — the flag
+# names a repository, it does not by itself mean "elsewhere". If the same-repo
+# check ever false-negatives, this run would be treated as cross-repo and the
+# shell would be stranded in the directory it just deleted. Nothing else in the
+# suite discriminates that.
+test_remove_same_repo_still_rescues_shell() {
+    log "Testing: daft remove --repo <self> from inside the doomed worktree still cds out"
+
+    local remote
+    remote=$(create_test_remote "test-rm-self" "main")
+    git-worktree-clone --layout contained "$remote" >/dev/null 2>&1
+    local repo="$PWD/test-rm-self"
+
+    (builtin cd "$repo/main" && daft start doomed >/dev/null 2>&1) || true
+    if [[ ! -d "$repo/doomed" ]]; then
+        log_error "setup failed: $repo/doomed was not created"
+        return 1
+    fi
+
+    # Stand INSIDE the worktree being removed, and name its own repo.
+    local out
+    out=$(DOOMED="$repo/doomed" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$DOOMED" || exit 11
+        daft remove --repo test-rm-self doomed -f >/dev/null 2>&1 || true
+        builtin pwd
+    ' 2>&1) || true
+
+    local resolved_repo
+    resolved_repo=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$repo")
+
+    # The shell must have been rescued somewhere still-existing inside the repo
+    # (project root or default-branch worktree, per prune_cd_target).
+    if [[ "$out" != "$resolved_repo"* ]] || [[ ! -d "$out" ]]; then
+        log_error "same-repo remove did not rescue the shell into a live directory"
+        log_error "  expected a live path under: $resolved_repo"
+        log_error "  actual pwd:                 $out"
+        return 1
+    fi
+
+    log_success "same-repo remove rescued the shell to: $out"
+    return 0
+}
+
 # Regression: trailing `daft -C` (no path argument) through the wrapper must
 # emit the same `option requires an argument` error the binary would print,
 # and exit 2. Previously the wrapper's `shift 2 || return 2` short-circuited
@@ -713,6 +814,8 @@ main() {
     run_test "daft_repo_wrapper_writes_cd_file" test_daft_repo_wrapper_writes_cd_file
     run_test "c_flag_cd_redirect_through_wrapper" test_c_flag_cd_redirect_through_wrapper
     run_test "start_cross_repo_cd_through_wrapper" test_start_cross_repo_cd_through_wrapper
+    run_test "remove_cross_repo_does_not_cd_through_wrapper" test_remove_cross_repo_does_not_cd_through_wrapper
+    run_test "remove_same_repo_still_rescues_shell" test_remove_same_repo_still_rescues_shell
     run_test "c_flag_no_arg_through_wrapper_errors_cleanly" test_c_flag_no_arg_through_wrapper_errors_cleanly
     run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
 

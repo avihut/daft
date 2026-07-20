@@ -831,6 +831,93 @@ DRIVE_EOS
     esac
 }
 
+test_remove_repo_flag_completion() {
+    run_test "daft remove --repo <name> completes that repo's branches"
+
+    local result
+    result=$(
+        set +eu
+        sb=$(mktemp -d "${TMPDIR:-/tmp}/daft-ci-complete.XXXXXX")
+        trap 'rm -rf "$sb"' EXIT
+        export DAFT_CONFIG_DIR="$sb/cfg" DAFT_DATA_DIR="$sb/data" DAFT_STATE_DIR="$sb/st"
+
+        # Never touch real state: if the binary ignores DAFT_*_DIR (a tagged
+        # release build), skip rather than pollute the real catalog.
+        if [[ "$("$DAFT_BIN" __dirs 2>/dev/null)" != *"$sb"* ]]; then
+            echo "SKIP: binary ignores DAFT_*_DIR (isolation unavailable)"
+            exit 0
+        fi
+
+        mkdir -p "$sb/bin"; ln -sf "$DAFT_BIN" "$sb/bin/daft"; export PATH="$sb/bin:$PATH"
+        export GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t.co \
+               GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t.co
+        # Distinct branch names per repo: that is what proves the completion
+        # read the *target* repo rather than the caller's.
+        for r in apiservice webclient; do
+            mkdir -p "$sb/$r"; (cd "$sb/$r" && git init -q \
+                && git commit -q --allow-empty -m init \
+                && git branch "only-in-$r" \
+                && daft repo add --name "$r" >/dev/null 2>&1)
+        done
+        cd "$sb/apiservice" || exit 1
+
+        # Without the flag: the cwd repo's branches (unchanged behavior).
+        local_out=$(daft __complete daft-remove '' --position 1 2>/dev/null | cut -f1)
+        [[ "$local_out" == *only-in-apiservice* ]] \
+            || { echo "FAIL local=[$local_out]"; exit 0; }
+
+        # With it: the target's branches, and NOT the caller's — offering the
+        # caller's would suggest names that don't exist where the removal lands.
+        cross=$(DAFT_COMPLETE_REPO_FLAG=webclient \
+            daft __complete daft-remove '' --position 1 2>/dev/null | cut -f1)
+        [[ "$cross" == *only-in-webclient* ]] \
+            || { echo "FAIL cross=[$cross]"; exit 0; }
+        [[ "$cross" != *only-in-apiservice* ]] \
+            || { echo "FAIL cross leaked caller's branches=[$cross]"; exit 0; }
+
+        # Fails closed: an unknown repo completes nothing rather than silently
+        # falling back to the cwd repo's branches.
+        miss=$(DAFT_COMPLETE_REPO_FLAG=zzz-not-a-repo \
+            daft __complete daft-remove '' --position 1 2>/dev/null | cut -f1)
+        [[ -z "$miss" ]] || { echo "FAIL miss=[$miss]"; exit 0; }
+
+        # The sourced bash umbrella must actually capture --repo off the line.
+        drive_bash=""
+        for candidate in "$(command -v bash)" /opt/homebrew/bin/bash \
+                         /usr/local/bin/bash /bin/bash; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'type mapfile' >/dev/null 2>&1; then
+                drive_bash="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$drive_bash" ]]; then
+            echo "SKIP: no bash 4+ available for the sourced-wrapper layer"
+            exit 0
+        fi
+        "$drive_bash" <<'DRIVE_EOS'
+_init_completion() {
+    cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD; return 0
+}
+source <(daft completions bash 2>/dev/null)
+drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
+
+drive daft remove --repo webclient "";   spaced="${COMPREPLY[*]}"
+drive daft remove --repo=webclient "";   equals="${COMPREPLY[*]}"
+if [[ "$spaced" == *only-in-webclient* && "$equals" == *only-in-webclient* ]]; then
+    echo "PASS"
+else
+    echo "FAIL spaced=[$spaced] equals=[$equals]"
+fi
+DRIVE_EOS
+    )
+    case "$result" in
+        PASS) pass_test ;;
+        SKIP*) echo "  ($result)"; pass_test ;;
+        *) fail_test "$result" ;;
+    esac
+}
+
 # Main test execution
 main() {
     echo "========================================="
@@ -878,6 +965,7 @@ main() {
     test_dynamic_branch_completion
     test_repo_name_completion_case_insensitive
     test_start_repo_positional_completion
+    test_remove_repo_flag_completion
 
 
     # Test dynamic completion wiring

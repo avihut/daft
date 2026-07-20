@@ -258,6 +258,24 @@ function __daft_verb_first
     test (count $a) -ge 1; and echo $a[1]; or echo ''
 end
 
+# Value of a --repo flag already on the line, in either spelling. Lets slots
+# after it complete against the target repo instead of the caller's (#749).
+function __daft_verb_repo_flag
+    set -l toks (commandline -opc)
+    for i in (seq 1 (count $toks))
+        set -l w $toks[$i]
+        if string match -q -- '--repo=*' $w
+            echo (string split -m1 '=' -- $w)[2]
+            return
+        end
+        if test "$w" = '--repo'; and test (count $toks) -ge (math $i + 1)
+            echo $toks[(math $i + 1)]
+            return
+        end
+    end
+    echo ''
+end
+
 "#,
         vflags.join(" ")
     );
@@ -511,7 +529,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config fil
 complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 1' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 2' -f -a "(env DAFT_COMPLETE_GO_FIRST=(__daft_verb_first) daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
 # --repo flag values complete to catalog repo names
-complete -c daft -n '__fish_seen_subcommand_from go list update exec prune start' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
+complete -c daft -n '__fish_seen_subcommand_from go list update exec prune start remove' -l repo -x -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
 # list's optional positional is a cataloged repo (sugar for --repo); the
 # token-count gate keeps this off `daft repo list` and off flag values
 complete -c daft -n '__fish_seen_subcommand_from list; and test (count (commandline -opc)) -eq 2' -f -a "(daft __complete repo-name (commandline -ct) 2>/dev/null | cut -f1)"
@@ -526,7 +544,7 @@ complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete g
 # run: task names from daft.yml (plain names, no descriptions)
 complete -c daft -n '__fish_seen_subcommand_from run' -f -a "(daft __complete daft-run (commandline -ct) --position 1 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
-complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from remove' -f -a "(env DAFT_COMPLETE_REPO_FLAG=(__daft_verb_repo_flag) daft __complete daft-remove (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from remove' -a "(__fish_complete_directories (commandline -ct))"
 complete -c daft -n '__fish_seen_subcommand_from rename' -f -a "(daft __complete daft-rename (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from rename' -a "(__fish_complete_directories (commandline -ct))"
