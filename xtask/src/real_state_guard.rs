@@ -97,7 +97,17 @@ pub fn run(mode: Mode, file: &Path) -> Result<()> {
             if diffs.is_empty() {
                 return Ok(());
             }
-            bail!("{}", tripwire_message(&diffs));
+            let (fatal, advisory) = partition_fatality(&diffs, is_ci());
+            if !fatal.is_empty() {
+                // A change on an attributable surface (catalog / config / skill,
+                // or any state surface in CI) — fail, folding in the concurrent
+                // state churn for context.
+                bail!("{}", tripwire_message(&fatal, &advisory));
+            }
+            // Only the machine-global state surfaces changed, outside CI:
+            // unattributable concurrent-daft churn. Warn, don't fail.
+            eprintln!("{}", concurrency_note(&advisory));
+            Ok(())
         }
     }
 }
@@ -143,39 +153,121 @@ struct DirDigest {
     names_hash: String,
 }
 
+/// Which real surface a diff belongs to. Drives fatality (see
+/// [`Surface::is_concurrency_exposed`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Surface {
+    Catalog,
+    ConfigFiles,
+    StateTop,
+    StateJobs,
+    ClaudeSkill,
+}
+
+impl Surface {
+    /// `<state>/daft/` and its `jobs/` subtree are shared by *every* daft
+    /// process on the machine: a sibling worktree's test suite, a `daft`
+    /// command in another terminal, or the background `__clean-logs`/coordinator
+    /// all create and remove `jobs/<uuid>/` entries there, independently of the
+    /// guarded run. An entry-set change is therefore unattributable — the same
+    /// property that made the config daemon-stamps ([`VOLATILE_CONFIG_FILES`])
+    /// unwatchable. Outside CI (where the runner is not the only daft) these
+    /// surfaces are advisory, not fatal.
+    ///
+    /// Catalog / config / skill are NOT exposed: a honoring binary (guaranteed
+    /// by the `__dirs` preflight for exec suites, and by cfg(test) construction
+    /// for unit tests) sandboxes its catalog too, so concurrent activity cannot
+    /// churn the real one — only a genuine leak can. They stay fatal everywhere.
+    fn is_concurrency_exposed(self) -> bool {
+        matches!(self, Surface::StateTop | Surface::StateJobs)
+    }
+}
+
 impl Snapshot {
-    /// Human-readable list of the surfaces that changed between `self`
-    /// (recorded) and `now` (recomputed). Empty ⇒ nothing leaked.
-    fn diff(&self, now: &Snapshot) -> Vec<String> {
+    /// The surfaces that changed between `self` (recorded) and `now`
+    /// (recomputed), each tagged with its [`Surface`] so the caller can decide
+    /// fatality. Empty ⇒ nothing changed.
+    fn diff(&self, now: &Snapshot) -> Vec<(Surface, String)> {
         let mut out = Vec::new();
         if self.catalog != now.catalog {
-            out.push("data:   the repo catalog under <data>/daft/catalog/ changed".to_string());
+            out.push((
+                Surface::Catalog,
+                "data:   the repo catalog under <data>/daft/catalog/ changed".to_string(),
+            ));
         }
         if self.config_files != now.config_files {
-            out.push(format!(
-                "config: files under <config>/daft/ changed ({})",
-                changed_keys(&self.config_files, &now.config_files).join(", ")
+            out.push((
+                Surface::ConfigFiles,
+                format!(
+                    "config: files under <config>/daft/ changed ({})",
+                    changed_keys(&self.config_files, &now.config_files).join(", ")
+                ),
             ));
         }
         if self.state_top != now.state_top {
-            out.push(format!(
-                "state:  entries under <state>/daft/ changed ({} → {})",
-                self.state_top.count, now.state_top.count
+            out.push((
+                Surface::StateTop,
+                format!(
+                    "state:  entries under <state>/daft/ changed ({} → {})",
+                    self.state_top.count, now.state_top.count
+                ),
             ));
         }
         if self.state_jobs != now.state_jobs {
-            out.push(format!(
-                "state:  entries under <state>/daft/jobs/ changed ({} → {})",
-                self.state_jobs.count, now.state_jobs.count
+            out.push((
+                Surface::StateJobs,
+                format!(
+                    "state:  entries under <state>/daft/jobs/ changed ({} → {})",
+                    self.state_jobs.count, now.state_jobs.count
+                ),
             ));
         }
         if self.claude_skill != now.claude_skill {
-            out.push(
+            out.push((
+                Surface::ClaudeSkill,
                 "home:   ~/.claude/skills/daft-worktree-workflow/SKILL.md changed".to_string(),
-            );
+            ));
         }
         out
     }
+}
+
+/// CI-environment variables, mirroring daft's `trust_prune::is_ci_environment`
+/// (which is `pub(crate)` and so unreachable from xtask). Kept in lockstep by
+/// [`tests::ci_var_list_matches_daft`] — a CI daft treats as CI but this guard
+/// does not would keep the concurrency-exposed state surfaces fatal there,
+/// reintroducing the false positive in that CI.
+const CI_ENV_VARS: &[&str] = &[
+    "CI",
+    "GITHUB_ACTIONS",
+    "JENKINS_URL",
+    "TRAVIS",
+    "CIRCLECI",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "TF_BUILD",
+];
+
+/// Whether the guard is running under CI, where the runner is the only daft on
+/// the machine so the state surfaces are reliable (no concurrent churn).
+fn is_ci() -> bool {
+    CI_ENV_VARS.iter().any(|v| std::env::var_os(v).is_some())
+}
+
+/// Split diffs into `(fatal, advisory)`. A diff is advisory only when it is on a
+/// concurrency-exposed surface AND we are not in CI — otherwise it is fatal.
+/// Pure, so it is unit-tested without touching the env or filesystem.
+fn partition_fatality(diffs: &[(Surface, String)], ci: bool) -> (Vec<String>, Vec<String>) {
+    let mut fatal = Vec::new();
+    let mut advisory = Vec::new();
+    for (surface, msg) in diffs {
+        if surface.is_concurrency_exposed() && !ci {
+            advisory.push(msg.clone());
+        } else {
+            fatal.push(msg.clone());
+        }
+    }
+    (fatal, advisory)
 }
 
 /// Capture the current fingerprint of the real surfaces.
@@ -202,16 +294,29 @@ fn changed_keys(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> V
 }
 
 /// Build the failure message, appending the concrete real paths so the reader
-/// knows exactly which files to inspect.
-fn tripwire_message(diffs: &[String]) -> String {
+/// knows exactly which files to inspect. `fatal` are the attributable surfaces
+/// that failed the run; `advisory` is any concurrent state churn, folded in for
+/// context so the reader isn't puzzled by a partial picture.
+fn tripwire_message(fatal: &[String], advisory: &[String]) -> String {
     let mut msg = String::from(
         "TRIPWIRE: the real daft state changed during this run — the test suite leaked \
          into your real config/state/data dirs.\n\n",
     );
-    for d in diffs {
+    for d in fatal {
         msg.push_str("  • ");
         msg.push_str(d);
         msg.push('\n');
+    }
+    if !advisory.is_empty() {
+        msg.push_str(
+            "\nAlso changed (machine-global state dir — usually concurrent daft activity, \
+             not this run):\n",
+        );
+        for d in advisory {
+            msg.push_str("  • ");
+            msg.push_str(d);
+            msg.push('\n');
+        }
     }
     msg.push_str(
         "\nFor the config/data/state surfaces this almost always means the binary under \
@@ -230,6 +335,32 @@ fn tripwire_message(diffs: &[String]) -> String {
     msg.push_str(&show("data  ", real_data_dir()));
     msg.push_str(&show("state ", Ok(real_state_dir())));
     msg.push_str(&show("skill ", real_claude_skill_file()));
+    msg
+}
+
+/// Non-fatal note for when *only* the concurrency-exposed state surfaces changed
+/// outside CI: the shared `<state>/daft/` dir moved, but that is unattributable
+/// to the guarded run (another daft process churns it just as readily), so the
+/// run passes with a heads-up rather than a spurious failure (#742).
+fn concurrency_note(advisory: &[String]) -> String {
+    let mut msg = String::from(
+        "NOTE: the real daft state dir changed during this run, but only on the \
+         machine-global state surface — not the catalog, config, or agent skill. This is \
+         expected when another daft process runs concurrently: a sibling worktree's test \
+         suite, a `daft` command in another terminal, or the background log-clean / \
+         coordinator, all of which create and remove jobs/<uuid>/ entries in the shared \
+         state dir. Not attributable to this run, so not failing it — in CI, where the \
+         runner is the only daft, this stays fatal (#742).\n\n",
+    );
+    for d in advisory {
+        msg.push_str("  • ");
+        msg.push_str(d);
+        msg.push('\n');
+    }
+    msg.push_str(&format!(
+        "\nReal state dir: {}\n",
+        real_state_dir().display()
+    ));
     msg
 }
 
@@ -502,8 +633,10 @@ mod tests {
         catalog_changed
             .catalog
             .insert("catalog.db".to_string(), "deadbeef".to_string());
-        assert_eq!(base.diff(&catalog_changed).len(), 1);
-        assert!(base.diff(&catalog_changed)[0].contains("catalog"));
+        let catalog_msgs = base.diff(&catalog_changed);
+        assert_eq!(catalog_msgs.len(), 1);
+        assert_eq!(catalog_msgs[0].0, Surface::Catalog);
+        assert!(catalog_msgs[0].1.contains("catalog"));
 
         // #667: a config write beyond repos.json (the update-check stamp) must
         // trip the config surface — hashing only repos.json missed it — and
@@ -514,14 +647,15 @@ mod tests {
             .insert("update-check.json".to_string(), "abc".to_string());
         let config_msgs = base.diff(&config_changed);
         assert_eq!(config_msgs.len(), 1);
-        assert!(config_msgs[0].contains("config"));
-        assert!(config_msgs[0].contains("update-check.json"));
+        assert_eq!(config_msgs[0].0, Surface::ConfigFiles);
+        assert!(config_msgs[0].1.contains("config"));
+        assert!(config_msgs[0].1.contains("update-check.json"));
 
         let mut repos_changed = Snapshot::default();
         repos_changed
             .config_files
             .insert("repos.json".to_string(), "abc".to_string());
-        assert!(base.diff(&repos_changed)[0].contains("repos.json"));
+        assert!(base.diff(&repos_changed)[0].1.contains("repos.json"));
 
         let jobs_changed = Snapshot {
             state_jobs: DirDigest {
@@ -531,16 +665,140 @@ mod tests {
             },
             ..Snapshot::default()
         };
-        assert!(base.diff(&jobs_changed)[0].contains("jobs"));
+        let jobs_msgs = base.diff(&jobs_changed);
+        assert_eq!(jobs_msgs[0].0, Surface::StateJobs);
+        assert!(jobs_msgs[0].1.contains("jobs"));
 
         let skill_changed = Snapshot {
             claude_skill: Some("abc".to_string()),
             ..Snapshot::default()
         };
-        assert!(base.diff(&skill_changed)[0].contains(".claude/skills"));
+        let skill_msgs = base.diff(&skill_changed);
+        assert_eq!(skill_msgs[0].0, Surface::ClaudeSkill);
+        assert!(skill_msgs[0].1.contains(".claude/skills"));
 
         // Identical snapshots ⇒ clean.
         assert!(base.diff(&Snapshot::default()).is_empty());
+    }
+
+    /// #742: the observed false positive — only `<state>/daft/jobs/` changed,
+    /// the signature of a concurrent daft process creating `jobs/<uuid>/` dirs
+    /// in the shared state dir. Outside CI it must be advisory (warn, not fail);
+    /// in CI, where the runner is the only daft, it stays fatal.
+    #[test]
+    fn state_jobs_churn_is_advisory_outside_ci_but_fatal_in_ci() {
+        let base = Snapshot::default();
+        let jobs_changed = Snapshot {
+            state_jobs: DirDigest {
+                exists: true,
+                count: 11,
+                names_hash: "x".to_string(),
+            },
+            ..Snapshot::default()
+        };
+        let diffs = base.diff(&jobs_changed);
+        assert_eq!(diffs.len(), 1);
+        assert!(diffs[0].0.is_concurrency_exposed());
+
+        let (fatal, advisory) = partition_fatality(&diffs, false);
+        assert!(fatal.is_empty(), "state churn must not be fatal outside CI");
+        assert_eq!(advisory.len(), 1);
+
+        let (fatal_ci, advisory_ci) = partition_fatality(&diffs, true);
+        assert_eq!(fatal_ci.len(), 1, "state churn stays fatal in CI");
+        assert!(advisory_ci.is_empty());
+    }
+
+    /// The top-level `<state>/daft/` set (coordinator sockets/pids) is equally
+    /// concurrency-exposed — another session's coordinator spawn/exit churns it.
+    #[test]
+    fn state_top_churn_is_advisory_outside_ci() {
+        let base = Snapshot::default();
+        let top_changed = Snapshot {
+            state_top: DirDigest {
+                exists: true,
+                count: 3,
+                names_hash: "y".to_string(),
+            },
+            ..Snapshot::default()
+        };
+        let (fatal, advisory) = partition_fatality(&base.diff(&top_changed), false);
+        assert!(fatal.is_empty());
+        assert_eq!(advisory.len(), 1);
+    }
+
+    /// Catalog / config / skill are attributable (a honoring binary sandboxes
+    /// them), so a change is a genuine leak and must fail regardless of CI —
+    /// otherwise this change would blind the guard to the #696 / #666 / #664
+    /// leaks it exists to catch.
+    #[test]
+    fn attributable_surface_leaks_are_fatal_even_outside_ci() {
+        let base = Snapshot::default();
+
+        let mut catalog = Snapshot::default();
+        catalog
+            .catalog
+            .insert("catalog.db".to_string(), "d".to_string());
+        let mut config = Snapshot::default();
+        config
+            .config_files
+            .insert("repos.json".to_string(), "d".to_string());
+        let skill = Snapshot {
+            claude_skill: Some("d".to_string()),
+            ..Snapshot::default()
+        };
+
+        for leaked in [catalog, config, skill] {
+            let (fatal, advisory) = partition_fatality(&base.diff(&leaked), false);
+            assert_eq!(
+                fatal.len(),
+                1,
+                "attributable-surface leak must be fatal outside CI"
+            );
+            assert!(advisory.is_empty());
+        }
+    }
+
+    /// A genuine catalog leak beside concurrent state churn must still fail
+    /// outside CI — the fatal catalog surface dominates; the state advisory
+    /// cannot rescue it.
+    #[test]
+    fn real_leak_beside_concurrent_state_churn_still_fails_outside_ci() {
+        let base = Snapshot::default();
+        let mut mixed = Snapshot::default();
+        mixed
+            .catalog
+            .insert("catalog.db".to_string(), "d".to_string());
+        mixed.state_jobs = DirDigest {
+            exists: true,
+            count: 1,
+            names_hash: "z".to_string(),
+        };
+        let (fatal, advisory) = partition_fatality(&base.diff(&mixed), false);
+        assert_eq!(fatal.len(), 1);
+        assert_eq!(advisory.len(), 1);
+    }
+
+    /// `is_ci()`'s var list mirrors daft's `trust_prune::is_ci_environment`
+    /// (which is `pub(crate)`, so we can't compare directly). A drift — daft
+    /// learning a CI var this guard doesn't — would keep the state surfaces
+    /// fatal in that CI, reintroducing the false positive there. Pin the set so
+    /// the drift is a failing test, not a silent regression.
+    #[test]
+    fn ci_var_list_matches_daft() {
+        assert_eq!(
+            CI_ENV_VARS,
+            &[
+                "CI",
+                "GITHUB_ACTIONS",
+                "JENKINS_URL",
+                "TRAVIS",
+                "CIRCLECI",
+                "GITLAB_CI",
+                "BUILDKITE",
+                "TF_BUILD",
+            ]
+        );
     }
 
     #[test]
