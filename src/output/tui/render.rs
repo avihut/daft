@@ -572,11 +572,24 @@ fn render_base_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
 /// Render the Changes column cell with colored indicators.
 fn render_changes_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
     let mut spans = Vec::new();
+    // Conflicts lead in both stat modes, mirroring the blocking renderer
+    // (`format_head_status` / `format_head_status_lines`): they are the one
+    // state here that blocks the user, and a conflict count is a file count
+    // even under `--stat lines`.
+    if info.conflicted > 0 {
+        spans.push(Span::styled(
+            format!("!{}", info.conflicted),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    }
     if stat == Stat::Lines {
         let ins =
             info.staged_lines_inserted.unwrap_or(0) + info.unstaged_lines_inserted.unwrap_or(0);
         let del = info.staged_lines_deleted.unwrap_or(0) + info.unstaged_lines_deleted.unwrap_or(0);
         if ins > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled(
                 format!("+{ins}"),
                 Style::default().fg(Color::Green),
@@ -593,6 +606,9 @@ fn render_changes_cell(info: &WorktreeInfo, stat: Stat) -> Cell<'static> {
         }
     } else {
         if info.staged > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled(
                 format!("+{}", info.staged),
                 Style::default().fg(Color::Green),
@@ -789,7 +805,8 @@ fn render_cell(
             }
         }
         Column::Changes => {
-            let unfilled = wt.info.staged + wt.info.unstaged + wt.info.untracked == 0;
+            let unfilled =
+                wt.info.staged + wt.info.unstaged + wt.info.untracked + wt.info.conflicted == 0;
             if unfilled && is_cell_unloaded(FieldSet::CHANGES) {
                 not_loaded_cell(width)
             } else if unfilled && is_cell_loading(FieldSet::CHANGES) {
@@ -1255,6 +1272,52 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
+
+    /// Render one cell into a tiny table and return the row's text.
+    fn render_cell_text(cell: Cell<'static>, width: u16) -> (String, ratatui::buffer::Buffer) {
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let table = Table::new(vec![Row::new(vec![cell])], &[Constraint::Length(width)]);
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row: String = (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        (row, buffer)
+    }
+
+    /// The Changes cell must lead with `!N` — mirroring the blocking
+    /// renderer's `format_head_status` — in both stat modes. Regression:
+    /// conflicted files were split out of staged/unstaged and this cell was
+    /// never taught the new bucket, so a conflict-only worktree rendered an
+    /// empty cell on the default TTY renderer.
+    #[test]
+    fn changes_cell_leads_with_conflicts() {
+        let mut info = WorktreeInfo::empty("feat");
+        info.conflicted = 2;
+        info.staged = 1;
+
+        let (row, buffer) = render_cell_text(render_changes_cell(&info, Stat::Summary), 12);
+        assert!(
+            row.contains("!2 +1"),
+            "summary mode leads with conflicts, separated: got {row:?}"
+        );
+        // Bold red separates blocking conflicts from plain-red unstaged.
+        assert_eq!(buffer[(0, 0)].fg, Color::Red);
+        assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
+
+        // A conflict count is a file count, but it survives `--stat lines`
+        // too — these files need a decision regardless of stat mode.
+        let (row, _) = render_cell_text(render_changes_cell(&info, Stat::Lines), 12);
+        assert!(
+            row.contains("!2"),
+            "lines mode keeps conflicts: got {row:?}"
+        );
     }
 
     #[test]
