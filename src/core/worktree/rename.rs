@@ -6,8 +6,11 @@
 use crate::core::multi_remote::path::{
     calculate_worktree_path, extract_remote_from_path, resolve_remote_for_branch,
 };
+use crate::core::settings::PushVerify;
 use crate::core::worktree::ports::NoopStageRunner;
-use crate::core::worktree::push::{HookVerdict, PushAction, push_with_hooks};
+use crate::core::worktree::push::{
+    HookVerdict, PushAction, push_with_hooks, resolve_delete_pre_push,
+};
 use crate::core::{HookRunner, ProgressSink};
 use crate::executor::presenter::JobPresenter;
 use crate::git::GitCommand;
@@ -41,6 +44,10 @@ pub struct RenameParams {
     pub multi_remote_default: String,
     /// Skip the repo's pre-push hook on remote operations (`--no-verify`).
     pub no_verify: bool,
+    /// When the old-name remote delete runs the repo's pre-push hook
+    /// (`daft.pushVerify`, #747). The new-name push is a content push and
+    /// always verifies.
+    pub push_verify: PushVerify,
 }
 
 /// Result of a rename operation.
@@ -288,15 +295,28 @@ pub fn execute(
                         force_with_lease: false,
                     },
                     &new_path,
-                    params,
+                    !params.no_verify,
+                    None,
                     presenter,
                 ) {
                     Ok(()) => {
-                        // Delete old remote branch.
+                        // Delete old remote branch. A delete pushes no
+                        // content, so under the default `pushVerify = auto`
+                        // the pre-push gate is skipped (#747); `always`
+                        // re-arms it for ref-policy hooks.
                         sink.on_step(&format!(
                             "Deleting old remote branch '{}/{}'...",
                             remote, old_branch
                         ));
+                        let hook_plan = resolve_delete_pre_push(
+                            &git,
+                            &new_path,
+                            params.push_verify,
+                            params.no_verify,
+                        );
+                        if let Some(reason) = hook_plan.skip_reason {
+                            sink.on_step(reason);
+                        }
                         match run_remote_rename_push(
                             &git,
                             PushAction::Delete {
@@ -304,7 +324,8 @@ pub fn execute(
                                 branch: &old_branch,
                             },
                             &new_path,
-                            params,
+                            hook_plan.verify,
+                            hook_plan.hook_present,
                             presenter,
                         ) {
                             Ok(()) => {
@@ -317,13 +338,19 @@ pub fn execute(
                                 } else {
                                     ""
                                 };
+                                // A skipped/bypassed gate has nothing to add
+                                // to the cause line (#747) — the git error in
+                                // `msg` is the whole story.
+                                let cause = match verdict {
+                                    HookVerdict::Bypassed => String::new(),
+                                    _ => format!(" ({})", verdict.failure_cause()),
+                                };
                                 push_gate_error = Some(format!(
                                     "Could not delete old remote branch '{remote}/{old_branch}': \
-                                     {msg} ({cause}). The branch was renamed locally and \
+                                     {msg}{cause}. The branch was renamed locally and \
                                      '{remote}/{new}' was pushed; delete the old remote branch \
                                      manually with: git push {remote} --delete {old_branch}{hint}",
                                     new = params.new_branch,
-                                    cause = verdict.failure_cause(),
                                 ));
                             }
                             Err(PushFailure::Other(e)) => {
@@ -401,26 +428,40 @@ enum PushFailure {
     Other(String),
 }
 
+/// `verify`/`hook_present` come from the caller: the new-name push passes
+/// `!params.no_verify` (a content push, out of #747's scope), the old-name
+/// delete passes its [`resolve_delete_pre_push`] plan.
 fn run_remote_rename_push(
     git: &GitCommand,
     action: PushAction<'_>,
     cwd: &Path,
-    params: &RenameParams,
+    verify: bool,
+    hook_present: Option<bool>,
     presenter: Option<&Arc<dyn JobPresenter>>,
 ) -> std::result::Result<(), PushFailure> {
     match push_with_hooks(
         git,
         action,
         cwd,
-        !params.no_verify,
+        verify,
         &NoopStageRunner,
         presenter,
-        None,
+        hook_present,
     ) {
         Ok(outcome) => match outcome.failure {
             None => Ok(()),
             Some(msg) => {
-                if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                // #747: a delete whose hook was skipped or bypassed but which
+                // then genuinely failed (transport, auth, server-side reject)
+                // must still fail the command — a gate that never ran cannot
+                // have refused the push, yet the old branch survives on the
+                // remote. The new-name push keeps warn-and-continue for
+                // `Bypassed` (its #679-shape escalation is out of scope), and
+                // hook-less failures stay warnings everywhere.
+                let escalates = matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed)
+                    || (matches!(action, PushAction::Delete { .. })
+                        && outcome.hook == HookVerdict::Bypassed);
+                if escalates {
                     Err(PushFailure::Gated(msg, outcome.hook))
                 } else {
                     Err(PushFailure::Other(msg))

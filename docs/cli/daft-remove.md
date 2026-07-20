@@ -33,6 +33,11 @@ can also pass `--remote` to delete only the remote branch while keeping the
 local worktree and branch, or `--local` to skip the remote entirely regardless
 of config.
 
+The remote delete pushes no content, so the repo's pre-push hook is skipped by
+default (configurable via `daft.pushVerify`; `--no-verify` skips it
+unconditionally). See
+[Git Hooks](/reference/configuration#git-hooks) for details.
+
 Safety checks prevent accidental data loss. Use `-f` (`--force`) to override.
 For the default branch (e.g. main), `-f` removes its worktree only -- the
 local branch ref and remote branch are always preserved.

@@ -5,7 +5,7 @@
 use crate::{
     core::OutputSink,
     core::worktree::ports::NoopStageRunner,
-    core::worktree::push::{HookVerdict, PushAction, push_with_hooks},
+    core::worktree::push::{HookVerdict, PushAction, push_with_hooks, resolve_delete_pre_push},
     get_project_root,
     git::GitCommand,
     is_git_repository,
@@ -126,6 +126,10 @@ records are updated accordingly.
 
 Options like --set-upstream can update the branch's tracking configuration
 to match the new remote organization.
+
+--push honors the repo's pre-push hook; the --delete-old delete pushes no
+content and skips it by default (configurable via daft.pushVerify: auto,
+always, or never). Pass --no-verify to skip both unconditionally.
 "#)]
     Move {
         #[arg(help = "Branch name or worktree path to move")]
@@ -740,7 +744,9 @@ fn cmd_move(
     }
 
     // Delete from old remote if requested (skipped if the push was gated —
-    // the same hook would gate this push too).
+    // the same hook would gate this push too). A delete pushes no content,
+    // so under the default `pushVerify = auto` the pre-push gate is skipped
+    // (#747); `always` re-arms it for ref-policy hooks.
     if delete_old
         && push_gate_error.is_none()
         && let Some(old_remote) = current_remote
@@ -750,6 +756,10 @@ fn cmd_move(
             old_remote, branch_name
         ));
 
+        let hook_plan = resolve_delete_pre_push(&git, &new_path, settings.push_verify, no_verify);
+        if let Some(reason) = hook_plan.skip_reason {
+            output.step(reason);
+        }
         match push_with_hooks(
             &git,
             PushAction::Delete {
@@ -757,24 +767,36 @@ fn cmd_move(
                 branch: &branch_name,
             },
             &new_path,
-            !no_verify,
+            hook_plan.verify,
             &NoopStageRunner,
             push_presenter.as_ref(),
-            None,
+            hook_plan.hook_present,
         ) {
             Ok(outcome) => {
                 if let Some(msg) = outcome.failure {
-                    if matches!(outcome.hook, HookVerdict::Rejected | HookVerdict::Passed) {
+                    // #747: `Bypassed` (skipped or --no-verify) escalates too —
+                    // a gate that never ran cannot have refused the push, yet
+                    // the branch survives on the old remote. Only hook-less
+                    // failures keep the legacy warn-and-continue.
+                    if matches!(
+                        outcome.hook,
+                        HookVerdict::Rejected | HookVerdict::Passed | HookVerdict::Bypassed
+                    ) {
                         let hint = if outcome.hook.no_verify_might_help() {
                             " (or re-run with --no-verify to bypass the hook)"
                         } else {
                             ""
                         };
+                        // A skipped/bypassed gate has nothing to add to the
+                        // cause line — the git error in `msg` is the story.
+                        let cause = match outcome.hook {
+                            HookVerdict::Bypassed => String::new(),
+                            _ => format!(" ({})", outcome.hook.failure_cause()),
+                        };
                         push_gate_error = Some(format!(
-                            "Could not delete '{old_remote}/{branch_name}': {msg} ({}). \
+                            "Could not delete '{old_remote}/{branch_name}': {msg}{cause}. \
                              Delete it manually with: \
                              git push {old_remote} --delete {branch_name}{hint}",
-                            outcome.hook.failure_cause(),
                         ));
                     } else {
                         output.warning(&format!("Failed to delete from old remote: {}", msg));

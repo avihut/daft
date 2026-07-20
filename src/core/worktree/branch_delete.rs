@@ -4,7 +4,7 @@
 
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
 use crate::core::worktree::ports::{ForgeMergedWitness, NoopStageRunner};
-use crate::core::worktree::push::{PushAction, push_with_hooks};
+use crate::core::worktree::push::{PushAction, push_with_hooks, resolve_delete_pre_push};
 use crate::core::{
     ConflictSide, ConsolidationChoice, ConsolidationPrompter, ConsolidationRequest, HookRunner,
     ProgressSink, RefinedFileSummary,
@@ -14,7 +14,7 @@ use crate::git::GitCommand;
 use crate::hooks::visitor_seeds::{self, FileClass, SeedsContext};
 use crate::hooks::{HookContext, HookType, RemovalReason};
 use crate::remote::get_default_branch_local;
-use crate::settings::PruneCdTarget;
+use crate::settings::{PruneCdTarget, PushVerify};
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -46,6 +46,10 @@ pub struct BranchDeleteParams {
     /// Skip the repo's pre-push hook when deleting the remote branch
     /// (`--no-verify`).
     pub no_verify: bool,
+    /// When the remote-branch delete runs the repo's pre-push hook
+    /// (`daft.pushVerify`). A delete is statically ref-only, so `auto`
+    /// skips the hook (#747); `always` re-arms it for ref-policy gates.
+    pub push_verify: PushVerify,
     /// Where to cd after deleting the current worktree.
     pub prune_cd_target: PruneCdTarget,
     /// Label exposed to hook scripts as `DAFT_COMMAND`. Defaults to
@@ -130,6 +134,8 @@ struct BranchDeleteContext<'a> {
     default_branch: String,
     /// Skip the repo's pre-push hook on the remote-branch delete.
     no_verify: bool,
+    /// When the remote-branch delete runs the repo's pre-push hook (#747).
+    push_verify: PushVerify,
     /// Reports the pre-push hook run on the remote-branch delete (#599).
     presenter: Option<&'a Arc<dyn JobPresenter>>,
 }
@@ -209,6 +215,7 @@ pub fn execute(
         source_worktree: std::env::current_dir()?,
         default_branch,
         no_verify: params.no_verify,
+        push_verify: params.push_verify,
         presenter,
     };
 
@@ -1256,6 +1263,15 @@ fn delete_single_branch(
             .as_deref()
             .filter(|p| p.is_dir())
             .unwrap_or(&ctx.project_root);
+        // A delete pushes no content, so under the default `pushVerify =
+        // auto` the pre-push gate has nothing to validate and is skipped
+        // (#747); `always` re-arms it. A failed delete still lands in
+        // `result.errors` below regardless of the hook verdict — a skipped
+        // gate must not soften a genuine transport or server-side failure.
+        let hook_plan = resolve_delete_pre_push(ctx.git, push_cwd, ctx.push_verify, ctx.no_verify);
+        if let Some(reason) = hook_plan.skip_reason {
+            sink.on_step(reason);
+        }
         match push_with_hooks(
             ctx.git,
             PushAction::Delete {
@@ -1263,10 +1279,10 @@ fn delete_single_branch(
                 branch: remote_branch,
             },
             push_cwd,
-            !ctx.no_verify,
+            hook_plan.verify,
             &NoopStageRunner,
             ctx.presenter,
-            None,
+            hook_plan.hook_present,
         )
         .and_then(crate::core::worktree::push::PushOutcome::into_result)
         {
@@ -1642,6 +1658,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -1681,6 +1698,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -1988,6 +2006,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: true,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2057,6 +2076,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: true,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2101,6 +2121,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2184,6 +2205,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2290,6 +2312,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2378,6 +2401,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: true,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "merge".to_string(),
             skip_merge_validation: false,
@@ -2533,6 +2557,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2623,6 +2648,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,
@@ -2725,6 +2751,7 @@ mod tests {
             remote_only: false,
             keep_local_branch: false,
             no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
             prune_cd_target: crate::settings::PruneCdTarget::Root,
             command_label: "branch-delete".to_string(),
             skip_merge_validation: false,

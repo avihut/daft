@@ -12,7 +12,7 @@ use crate::{
         CliOutput, Output, OutputConfig,
         timeline::{Timeline, TimelineMode},
     },
-    settings::DaftSettings,
+    settings::{DaftSettings, PushVerify},
 };
 use anyhow::Result;
 use clap::Parser;
@@ -62,12 +62,19 @@ deleted.
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
 
+When remote deletion is enabled, the remote-branch delete pushes no content,
+so the repo's pre-push hook is skipped by default (configurable via
+daft.pushVerify: auto, always, or never; use always for hooks that gate
+deletes by ref name). Pass --no-verify to skip it unconditionally.
+
 RENAME MODE (-m)
 
 Renames a local branch and moves its associated worktree directory to match
 the new branch name. If the branch has a remote tracking branch, the remote
 branch is also renamed (push new name, delete old name) unless --no-remote
-is specified.
+is specified. The new-name push honors the repo's pre-push hook; the old-name
+delete pushes no content and skips it by default (configurable via
+daft.pushVerify).
 
 The source can be specified as a branch name or a path to an existing
 worktree (absolute or relative).
@@ -179,6 +186,11 @@ deleted.
 
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See daft-hooks(1) for hook management.
+
+When remote deletion is enabled, the remote-branch delete pushes no content,
+so the repo's pre-push hook is skipped by default (configurable via
+daft.pushVerify: auto, always, or never; use always for hooks that gate
+deletes by ref name). Pass --no-verify to skip it unconditionally.
 "#)]
 pub struct RemoveArgs {
     #[arg(required = true, help = "Branches or worktree paths to delete")]
@@ -330,7 +342,9 @@ fn prepare_out_of_repo_paths(args: &mut Vec<String>, command_name: &str) -> Resu
 Renames a local branch and moves its associated worktree directory to match
 the new branch name. If the branch has a remote tracking branch, the remote
 branch is also renamed (push new name, delete old name) unless --no-remote
-is specified.
+is specified. The new-name push honors the repo's pre-push hook; the old-name
+delete pushes no content and skips it by default (configurable via
+daft.pushVerify: auto, always, or never).
 
 The source can be specified as a branch name or a path to an existing
 worktree (absolute or relative).
@@ -495,6 +509,7 @@ fn run_branch_delete(
         remote_only,
         keep_local_branch: false,
         no_verify,
+        push_verify: settings.push_verify,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
         skip_merge_validation: false,
@@ -521,9 +536,13 @@ fn run_branch_delete(
     // rail it embeds under each branch's active DeleteRemote row (re-resolved
     // per phase from the push target). Off the rail, keep the legacy #599
     // behavior: presenter only when the hook will fire, spinner otherwise.
+    // Unlike checkout's probe-dependent upper bound, a delete's verify
+    // decision is static (#747): the hook can only fire under
+    // `pushVerify = always`, so the gate is exact.
     let probe_git = GitCommand::new(quiet).with_gitoxide(settings.use_gitoxide);
     let push_hook_will_render = params.delete_remote
         && !params.no_verify
+        && params.push_verify == PushVerify::Always
         && std::env::current_dir()
             .map(|cwd| probe_git.pre_push_hook_exists(&cwd))
             .unwrap_or(false);
@@ -674,6 +693,7 @@ fn run_rename_inner(
         multi_remote_enabled: settings.multi_remote_enabled,
         multi_remote_default: settings.multi_remote_default.clone(),
         no_verify,
+        push_verify: settings.push_verify,
     };
 
     let mut hooks_config = crate::core::settings::load_hooks_config()?;

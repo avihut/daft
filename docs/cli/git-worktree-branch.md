@@ -55,12 +55,19 @@ deleted.
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
 
+When remote deletion is enabled, the remote-branch delete pushes no content,
+so the repo's pre-push hook is skipped by default (configurable via
+daft.pushVerify: auto, always, or never; use always for hooks that gate
+deletes by ref name). Pass --no-verify to skip it unconditionally.
+
 RENAME MODE (-m)
 
 Renames a local branch and moves its associated worktree directory to match
 the new branch name. If the branch has a remote tracking branch, the remote
 branch is also renamed (push new name, delete old name) unless --no-remote
-is specified.
+is specified. The new-name push honors the repo's pre-push hook; the old-name
+delete pushes no content and skips it by default (configurable via
+daft.pushVerify).
 
 The source can be specified as a branch name or a path to an existing
 worktree (absolute or relative).
