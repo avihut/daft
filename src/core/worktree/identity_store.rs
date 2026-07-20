@@ -120,7 +120,7 @@ impl IdentityStore {
         if rows.is_empty() {
             return;
         }
-        if let Err(e) = self.write(|conn| {
+        if let Err(e) = self.write_fail_fast(|conn| {
             for row in &rows {
                 WorktreeIdentitiesRepo::observe(conn, row)?;
             }
@@ -169,8 +169,37 @@ impl IdentityStore {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::error::Result<T>,
     ) -> crate::store::error::Result<T> {
+        self.write_inner(false, f)
+    }
+
+    /// Like [`Self::write`], but fail fast instead of waiting out the full
+    /// writer busy timeout. For writes on otherwise read-only interactive
+    /// paths (`daft list`'s observation pass): don't let a display-nicety
+    /// write block the prompt for 5s when a coordinator/sync process holds
+    /// the coordinator.db write lock — fail with SQLITE_BUSY (swallowed by
+    /// the caller) and let the next run observe instead. Same convention as
+    /// `size_cache::persist_inner` and the forge_cache writers (review 5).
+    /// Deliberate writes (record/forget) keep the patient default: they run
+    /// on mutating commands, where completing the write matters more.
+    fn write_fail_fast<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::error::Result<T>,
+    ) -> crate::store::error::Result<T> {
+        self.write_inner(true, f)
+    }
+
+    fn write_inner<T>(
+        &self,
+        fail_fast: bool,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::error::Result<T>,
+    ) -> crate::store::error::Result<T> {
         let pool = Pool::open(&self.db_path)?;
         let mut conn = pool.writer()?;
+        if fail_fast {
+            conn.busy_timeout(std::time::Duration::from_millis(
+                crate::store::connection::READER_BUSY_TIMEOUT_MS as u64,
+            ))?;
+        }
         with_write_txn(&mut conn, f)
     }
 }
