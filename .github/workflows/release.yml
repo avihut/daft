@@ -683,7 +683,7 @@ jobs:
           cat /tmp/PKGBUILD
       - name: Publish to AUR
         if: ${{ env.SKIP_AUR != 'true' }}
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
           pkgname: daft-bin
           pkgbuild: /tmp/PKGBUILD
