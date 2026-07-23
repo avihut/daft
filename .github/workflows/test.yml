@@ -140,7 +140,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       - name: Run cargo-deny
         run: mise run deny
@@ -179,7 +179,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       # mise installs the toolchain pinned in mise.toml (rust = "1.95") and
       # exports RUSTUP_TOOLCHAIN, overriding the dtolnay-installed `stable`.
@@ -226,7 +226,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       - name: Run Rust unit tests
         run: mise run test:unit
