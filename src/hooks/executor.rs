@@ -32,6 +32,29 @@ fn resolve_fail_mode(hook_config: &HookConfig, yaml: Option<FailMode>) -> FailMo
     }
 }
 
+/// Build a warning when an *unparseable* git-config `failMode` is silently
+/// overridden by a committed `daft.yml fail_mode:`.
+///
+/// Under "git wins", a present git value is expected to override the committed
+/// one — but a typo (`abrot`) does not parse, so it is ignored and the YAML
+/// value wins instead. Left silent, someone who ran `git config … failMode
+/// abrot` to restore local gating would believe they had, while a failing
+/// gating hook is quietly downgraded to the committed `warn`. Scoped to the
+/// exact harm: only fires when a YAML value is actually present to be
+/// overridden. Returns `None` (no warning) otherwise.
+fn unparsed_git_fail_mode_warning(
+    hook_config: &HookConfig,
+    yaml: Option<FailMode>,
+) -> Option<String> {
+    match (&hook_config.fail_mode_git_unparsed, yaml) {
+        (Some(bad), Some(yaml_mode)) => Some(format!(
+            "Ignoring invalid git config failMode {bad:?} (expected \"abort\" or \"warn\"); \
+             using the committed daft.yml fail_mode: {yaml_mode}"
+        )),
+        _ => None,
+    }
+}
+
 /// Result of a hook execution.
 #[derive(Debug, Clone)]
 pub struct HookResult {
@@ -379,6 +402,13 @@ impl HookExecutor {
         // every `Ok(Some(...))` exit below so the caller can translate a failure
         // per the resolved mode.
         let effective_fail_mode = resolve_fail_mode(hook_config, hook_def.fail_mode);
+
+        // Surface an unparseable git `failMode` that is being silently
+        // overridden by the committed value, so the misconfiguration is visible
+        // rather than a quiet gating downgrade.
+        if let Some(msg) = unparsed_git_fail_mode_warning(hook_config, hook_def.fail_mode) {
+            output.warning(&msg);
+        }
 
         // Check trust level (unless bypassed by explicit invocation)
         if !self.bypass_trust {
@@ -850,6 +880,32 @@ mod tests {
             FailMode::Abort
         );
         assert_eq!(resolve_fail_mode(&cfg, None), FailMode::Abort);
+    }
+
+    #[test]
+    fn unparsed_git_fail_mode_warns_only_when_overriding_a_committed_value() {
+        let mut cfg = HookConfig::new(HookType::PreMerge);
+
+        // No unparseable git value recorded → never warns.
+        assert!(unparsed_git_fail_mode_warning(&cfg, Some(FailMode::Warn)).is_none());
+        assert!(unparsed_git_fail_mode_warning(&cfg, None).is_none());
+
+        // A present-but-unparseable git value (e.g. a `failMode abrot` typo)...
+        cfg.fail_mode_git_unparsed = Some("abrot".to_string());
+
+        // ...with a committed daft.yml value being silently overridden → warn,
+        // naming the bad value. This is the precise harm: the user believes
+        // their git override re-gated the hook, but the committed value wins.
+        let msg = unparsed_git_fail_mode_warning(&cfg, Some(FailMode::Warn))
+            .expect("must warn when a committed value silently wins over a bad git value");
+        assert!(
+            msg.contains("abrot"),
+            "warning should name the bad value: {msg}"
+        );
+
+        // ...but with no committed value nothing is being overridden (the
+        // default applies either way), so stay quiet to avoid noise.
+        assert!(unparsed_git_fail_mode_warning(&cfg, None).is_none());
     }
 
     #[test]

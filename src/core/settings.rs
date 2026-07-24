@@ -1719,14 +1719,19 @@ fn load_hook_type_config(
         (None, Some(dep)) => git.config_get(&keys::hooks::hook_key(dep, "failMode"))?,
         (None, None) => None,
     };
-    if let Some(value) = fail_mode_value
-        && let Some(mode) = FailMode::parse(&value)
-    {
-        hook_config.fail_mode = mode;
-        // A parsed git value takes precedence over any committed
-        // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`). An
-        // unparseable value is ignored, leaving the daft.yml value free to win.
-        hook_config.fail_mode_from_git = true;
+    if let Some(value) = fail_mode_value {
+        if let Some(mode) = FailMode::parse(&value) {
+            hook_config.fail_mode = mode;
+            // A parsed git value takes precedence over any committed
+            // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`).
+            hook_config.fail_mode_from_git = true;
+        } else {
+            // Present but unparseable (e.g. a typo): leave the daft.yml value
+            // (or the default) free to win, but remember the bad value so the
+            // executor can warn that the git override was ignored rather than
+            // silently dropping it.
+            hook_config.fail_mode_git_unparsed = Some(value);
+        }
     }
 
     Ok(())
@@ -1762,14 +1767,19 @@ fn load_hook_type_config_global(
         (None, Some(dep)) => git.config_get_global(&keys::hooks::hook_key(dep, "failMode"))?,
         (None, None) => None,
     };
-    if let Some(value) = fail_mode_value
-        && let Some(mode) = FailMode::parse(&value)
-    {
-        hook_config.fail_mode = mode;
-        // A parsed git value takes precedence over any committed
-        // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`). An
-        // unparseable value is ignored, leaving the daft.yml value free to win.
-        hook_config.fail_mode_from_git = true;
+    if let Some(value) = fail_mode_value {
+        if let Some(mode) = FailMode::parse(&value) {
+            hook_config.fail_mode = mode;
+            // A parsed git value takes precedence over any committed
+            // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`).
+            hook_config.fail_mode_from_git = true;
+        } else {
+            // Present but unparseable (e.g. a typo): leave the daft.yml value
+            // (or the default) free to win, but remember the bad value so the
+            // executor can warn that the git override was ignored rather than
+            // silently dropping it.
+            hook_config.fail_mode_git_unparsed = Some(value);
+        }
     }
 
     Ok(())
@@ -2095,6 +2105,110 @@ mod tests {
         assert!(
             global.worktree_post_create.fail_mode_from_git,
             "load_hooks_config_global must also set fail_mode_from_git"
+        );
+    }
+
+    /// #768 (review follow-up): a git-config `failMode` that is present but
+    /// unparseable (a typo) must be *captured* — not silently swallowed — in
+    /// BOTH loaders: `fail_mode_from_git` stays false (so a committed daft.yml
+    /// value is free to win), `fail_mode` stays at the type default, and the
+    /// raw bad value is recorded so the executor can warn instead of quietly
+    /// downgrading a gating hook. Guards the same two-site asymmetry as the
+    /// flag test above.
+    #[test]
+    #[serial_test::serial]
+    fn unparseable_git_fail_mode_is_captured_in_both_loaders() {
+        struct Restore {
+            cwd: Option<std::path::PathBuf>,
+            global: Option<std::ffi::OsString>,
+            nosystem: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(cwd) = &self.cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                unsafe {
+                    match self.global.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_GLOBAL", v),
+                        None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+                    }
+                    match self.nosystem.take() {
+                        Some(v) => std::env::set_var("GIT_CONFIG_NOSYSTEM", v),
+                        None => std::env::remove_var("GIT_CONFIG_NOSYSTEM"),
+                    }
+                }
+            }
+        }
+
+        let _restore = Restore {
+            cwd: std::env::current_dir().ok(),
+            global: std::env::var_os("GIT_CONFIG_GLOBAL"),
+            nosystem: std::env::var_os("GIT_CONFIG_NOSYSTEM"),
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let global_cfg = home.path().join("gitconfig-global");
+        std::fs::write(&global_cfg, "").unwrap();
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &global_cfg);
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
+
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        // A typo: present but unparseable.
+        git(&["config", "daft.hooks.worktreePostCreate.failMode", "abrot"]);
+
+        std::env::set_current_dir(&repo_path).unwrap();
+
+        // Local (effective) loader.
+        let local = load_hooks_config_with(&GitCommand::new(true)).unwrap();
+        assert!(
+            !local.worktree_post_create.fail_mode_from_git,
+            "an unparseable git value must not flag fail_mode_from_git (local)"
+        );
+        assert_eq!(
+            local.worktree_post_create.fail_mode_git_unparsed.as_deref(),
+            Some("abrot"),
+            "the local loader must capture the unparseable git value"
+        );
+        assert_eq!(
+            local.worktree_post_create.fail_mode,
+            FailMode::Abort,
+            "fail_mode stays at the type default when git is unparseable"
+        );
+
+        // Global-only loader (clone / repo-remove path): SAME capture, or the
+        // executor's override warning never fires at clone time.
+        git(&[
+            "config",
+            "--file",
+            global_cfg.to_str().unwrap(),
+            "daft.hooks.worktreePostCreate.failMode",
+            "abrot",
+        ]);
+        let global = load_hooks_config_global().unwrap();
+        assert!(!global.worktree_post_create.fail_mode_from_git);
+        assert_eq!(
+            global
+                .worktree_post_create
+                .fail_mode_git_unparsed
+                .as_deref(),
+            Some("abrot"),
+            "load_hooks_config_global must also capture the unparseable value"
         );
     }
 

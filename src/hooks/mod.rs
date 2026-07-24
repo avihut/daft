@@ -250,7 +250,11 @@ impl fmt::Display for HookType {
 }
 
 /// Behavior when a hook fails (non-zero exit code).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// `Serialize` is derived (lowercase). `Deserialize` is hand-written (below) so
+/// a committed `daft.yml fail_mode:` parses case-insensitively — the same rule
+/// the git-config `failMode` surface already uses via [`FailMode::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FailMode {
     /// Abort the operation if the hook fails.
@@ -261,13 +265,34 @@ pub enum FailMode {
 }
 
 impl FailMode {
-    /// Parse a fail mode from a string.
+    /// Parse a fail mode from a string (case-insensitive).
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "abort" => Some(FailMode::Abort),
             "warn" => Some(FailMode::Warn),
             _ => None,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for FailMode {
+    /// Deserialize case-insensitively via [`FailMode::parse`] so a committed
+    /// `daft.yml fail_mode:` accepts the same spellings the git-config
+    /// `failMode` surface does (`abort`, `Abort`, `WARN`, …). A derived
+    /// `rename_all = "lowercase"` deserialize would reject a mis-cased value
+    /// that git config accepts and — because a bad enum value fails the *entire*
+    /// `daft.yml` deserialize — would silently drop every YAML hook for that
+    /// operation to the legacy-script fallback.
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        FailMode::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid fail_mode {s:?}, expected \"abort\" or \"warn\""
+            ))
+        })
     }
 }
 
@@ -293,6 +318,13 @@ pub struct HookConfig {
     /// git value left unset lets the `daft.yml` value win over the default.
     /// See `executor::resolve_fail_mode`.
     pub fail_mode_from_git: bool,
+    /// The raw git-config `failMode` value when it was present but did not
+    /// parse (e.g. a typo like `abrot`). `None` when git was unset or supplied
+    /// a valid value. An unparseable git value is ignored — the `daft.yml`
+    /// value (or the default) wins — but the executor surfaces this so the
+    /// silent-override footgun becomes a visible warning. See
+    /// `executor::unparsed_git_fail_mode_warning`.
+    pub fail_mode_git_unparsed: Option<String>,
 }
 
 impl HookConfig {
@@ -302,6 +334,7 @@ impl HookConfig {
             enabled: true,
             fail_mode: hook_type.default_fail_mode(),
             fail_mode_from_git: false,
+            fail_mode_git_unparsed: None,
         }
     }
 }

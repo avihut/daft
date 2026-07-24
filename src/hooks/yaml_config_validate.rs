@@ -191,6 +191,22 @@ fn validate_hook_def(section: &str, name: &str, hook: &HookDef, result: &mut Val
             "Both 'jobs' and 'commands' are set; 'commands' will be merged into 'jobs'",
         );
     }
+
+    // A hook entry with neither jobs nor commands runs nothing. A
+    // `fail_mode:`-only entry is the natural way to land here, and for the
+    // `hooks:` section its mere presence still suppresses any legacy script
+    // hook of the same name — so make the no-op visible instead of silent.
+    if hook.jobs.is_none() && hook.commands.is_none() {
+        let suffix = if section == "hooks" {
+            "; being present, it also suppresses any legacy script hook of the same name"
+        } else {
+            ""
+        };
+        result.warn(
+            &path,
+            format!("'{name}' defines no jobs or commands, so it runs nothing{suffix}"),
+        );
+    }
 }
 
 /// Validate a single job definition.
@@ -485,6 +501,30 @@ mod tests {
         let result = validate_config(&config).unwrap();
         assert!(result.is_ok());
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_fail_mode_only_hook_entry_warns_it_runs_nothing() {
+        // A `fail_mode:`-only hook entry (no jobs, no commands) runs nothing
+        // and, by its mere presence, suppresses any legacy script hook of the
+        // same name. Surface that as a warning rather than a silent no-op.
+        let yaml = r#"
+hooks:
+  worktree-post-create:
+    fail_mode: abort
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let result = validate_config(&config).unwrap();
+        assert!(result.is_ok(), "empty entry is a warning, not an error");
+        assert!(
+            result.warnings.iter().any(|w| {
+                w.path == "hooks.worktree-post-create"
+                    && w.message.contains("runs nothing")
+                    && w.message.contains("legacy")
+            }),
+            "expected a no-op + legacy-suppression warning, got: {:?}",
+            result.warnings
+        );
     }
 
     #[test]

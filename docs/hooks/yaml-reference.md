@@ -179,6 +179,11 @@ value, so a developer can always change the mode on their own machine:
 git config daft.hooks.worktreePostCreate.failMode warn
 ```
 
+Both `fail_mode:` and the git config accept `abort` or `warn`
+case-insensitively. If the git config holds an unrecognized value, daft ignores
+it (the committed `fail_mode:` or the default applies) and prints a warning, so
+a typo does not silently change the failure behavior.
+
 `fail_mode` has no effect under `tasks:` — `daft run` stops on the first failing
 job regardless.
 
