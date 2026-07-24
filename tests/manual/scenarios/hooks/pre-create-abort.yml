@@ -1,40 +1,94 @@
-name: Pre-create hook abort prevents worktree creation
-description: Pre-create hook that exits 1 produces error in output
+name: Pre-create hook failure aborts by default, failMode=warn opts out
+description:
+  "A failing worktree-pre-create hook aborts creation before `git worktree add`
+  runs, so no worktree is left behind and the -x/--exec tail never runs. Setting
+  daft.hooks.worktreePreCreate.failMode=warn makes creation continue — the
+  worktree is created and -x runs — symmetric with every other hook's fail mode
+  (#767). Covers both the existing-branch and new-branch creation paths."
 
 repos:
-  - name: test-hooks-abort
+  - name: test-pre-abort
     default_branch: main
     branches:
       - name: main
         files:
           - path: README.md
-            content: "# Hook abort test"
+            content: "# Pre-create abort test"
         commits:
           - message: "Initial commit"
-      - name: feature/should-fail
+      - name: feat-abort
+        from: main
+      - name: feat-warn
         from: main
     daft_yml: |
       hooks:
         worktree-pre-create:
           jobs:
-            - name: block
+            - name: gate
               run: exit 1
 
 steps:
   - name: Clone the repository
-    run: git-worktree-clone --layout contained $REMOTE_TEST_HOOKS_ABORT
+    run: git-worktree-clone --layout contained $REMOTE_TEST_PRE_ABORT
     expect:
       exit_code: 0
 
   - name: Trust the repository
     run: daft hooks trust --force 2>&1
-    cwd: "$WORK_DIR/test-hooks-abort/main"
+    cwd: "$WORK_DIR/test-pre-abort/main"
     expect:
       exit_code: 0
 
-  - name: Checkout with failing pre-create hook shows error
-    run: git-worktree-checkout feature/should-fail 2>&1
-    cwd: "$WORK_DIR/test-hooks-abort/main"
+  - name:
+      Existing-branch checkout with failing pre-create aborts before creation
+    run: git-worktree-checkout feat-abort -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pre-abort/main"
     expect:
+      exit_code: 1
       output_contains:
-        - "hook failed"
+        - "worktree-pre-create hook failed"
+      files_not_exist:
+        - "$WORK_DIR/test-pre-abort/feat-abort/README.md"
+        - "$WORK_DIR/test-pre-abort/feat-abort/exec-marker.txt"
+
+  - name:
+      New-branch creation with failing pre-create also aborts before creation
+    run: git-worktree-checkout -b feat-new-abort -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pre-abort/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "worktree-pre-create hook failed"
+      files_not_exist:
+        - "$WORK_DIR/test-pre-abort/feat-new-abort/README.md"
+        - "$WORK_DIR/test-pre-abort/feat-new-abort/exec-marker.txt"
+
+  - name: failMode=warn opts out of the pre-create gate
+    run: git config daft.hooks.worktreePreCreate.failMode warn
+    cwd: "$WORK_DIR/test-pre-abort/main"
+    expect:
+      exit_code: 0
+
+  - name: Existing-branch checkout under warn creates the worktree and runs -x
+    run: git-worktree-checkout feat-warn -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pre-abort/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "continuing anyway"
+      dirs_exist:
+        - "$WORK_DIR/test-pre-abort/feat-warn"
+      files_exist:
+        - "$WORK_DIR/test-pre-abort/feat-warn/exec-marker.txt"
+
+  - name: New-branch creation under warn also creates the worktree and runs -x
+    run: git-worktree-checkout -b feat-new-warn -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pre-abort/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "continuing anyway"
+      dirs_exist:
+        - "$WORK_DIR/test-pre-abort/feat-new-warn"
+      files_exist:
+        - "$WORK_DIR/test-pre-abort/feat-new-warn/exec-marker.txt"

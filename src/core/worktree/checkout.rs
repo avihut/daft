@@ -560,10 +560,11 @@ pub fn execute(
     )
     .with_new_branch(false);
 
-    let hook_outcome = sink.run_hook(&hook_ctx)?;
-    if !hook_outcome.success && !hook_outcome.skipped {
-        return Err(anyhow::anyhow!("Pre-create hook failed").into());
-    }
+    // The pre-create hook's fail mode is honored inside the executor (#767):
+    // under the default `Abort` it bails here via `?`; under `warn` it returns
+    // `Ok(success: false)` and creation continues — symmetric with every other
+    // hook. Do not re-add a guard that force-aborts the `warn` case.
+    sink.run_hook(&hook_ctx)?;
 
     // Create worktree. `git worktree add` materializes the branch checkout
     // and the worktree in one call; the two plan rows resolve around it as a
