@@ -457,6 +457,25 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
                         format_job_line(job, is_last_hook, is_last_job, state.tick),
                     ));
                     row_count += 1;
+                    // Nested manager children (#753): one more tree tier.
+                    let child_count = job.children.len();
+                    for (c, child) in job.children.iter().enumerate() {
+                        let is_last_child = c == child_count - 1;
+                        let empty_cells: Vec<Cell> =
+                            (0..num_columns).map(|_| Cell::from("")).collect();
+                        all_rows.push(Row::new(empty_cells));
+                        hook_overlays.push((
+                            row_count,
+                            format_child_line(
+                                child,
+                                is_last_hook,
+                                is_last_job,
+                                is_last_child,
+                                state.tick,
+                            ),
+                        ));
+                        row_count += 1;
+                    }
                 }
             }
         }
@@ -1074,8 +1093,6 @@ fn format_job_line(
     job_is_last: bool,
     tick: usize,
 ) -> Line<'static> {
-    use super::state::JobSubStatus;
-
     let prefix = match (parent_hook_is_last, job_is_last) {
         (false, false) => "  \u{2502} \u{251C} ", // "  │ ├ "
         (false, true) => "  \u{2502} \u{2514} ",  // "  │ └ "
@@ -1083,7 +1100,21 @@ fn format_job_line(
         (true, true) => "    \u{2514} ",          // "    └ "
     };
 
-    let (status_span, name_color) = match &job.status {
+    let (status_span, name_style) = job_status_spans(&job.status, tick);
+
+    Line::from(vec![
+        Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(format!("{} ", job.name), name_style),
+        status_span,
+    ])
+}
+
+/// The status glyph + name style shared by job sub-rows and their nested
+/// manager children (#753) — one status vocabulary across both tiers.
+fn job_status_spans(status: &super::state::JobSubStatus, tick: usize) -> (Span<'static>, Style) {
+    use super::state::JobSubStatus;
+
+    let (status_span, name_color) = match status {
         JobSubStatus::Running => {
             let spinner = SPINNER_FRAMES[tick % SPINNER_FRAMES.len()];
             (
@@ -1118,15 +1149,45 @@ fn format_job_line(
         }
     };
 
-    let name_style = if matches!(job.status, JobSubStatus::Skipped { .. }) {
+    let name_style = if matches!(status, JobSubStatus::Skipped { .. }) {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(name_color)
     };
+    (status_span, name_style)
+}
+
+/// Format a nested manager child (#753): one tree tier under its parent job
+/// line, same status vocabulary.
+fn format_child_line(
+    child: &super::state::ChildSubRow,
+    parent_hook_is_last: bool,
+    parent_job_is_last: bool,
+    child_is_last: bool,
+    tick: usize,
+) -> Line<'static> {
+    let hook_segment = if parent_hook_is_last {
+        "    "
+    } else {
+        "  \u{2502} "
+    };
+    let job_segment = if parent_job_is_last {
+        "  "
+    } else {
+        "\u{2502} "
+    };
+    let branch = if child_is_last {
+        "\u{2514} "
+    } else {
+        "\u{251C} "
+    };
+    let prefix = format!("{hook_segment}{job_segment}{branch}");
+
+    let (status_span, name_style) = job_status_spans(&child.status, tick);
 
     Line::from(vec![
         Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(format!("{} ", job.name), name_style),
+        Span::styled(format!("{} ", child.name), name_style),
         status_span,
     ])
 }

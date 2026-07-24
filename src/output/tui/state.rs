@@ -89,6 +89,16 @@ pub enum JobSubStatus {
 pub struct JobSubRow {
     pub name: String,
     pub status: JobSubStatus,
+    /// Nested manager children (#753): a manager recognized inside this
+    /// job's output reports its own jobs, rendered one tier deeper.
+    pub children: Vec<ChildSubRow>,
+}
+
+/// A nested manager child's row under a job sub-row (#753).
+#[derive(Debug, Clone)]
+pub struct ChildSubRow {
+    pub name: String,
+    pub status: JobSubStatus,
 }
 
 /// Entry for the post-TUI hook summary (printed after TUI exits on warning/failure).
@@ -503,6 +513,7 @@ impl TuiState {
                     hook_sub.job_sub_rows.push(JobSubRow {
                         name: job_name.clone(),
                         status: JobSubStatus::Running,
+                        children: Vec::new(),
                     });
                 }
             }
@@ -531,6 +542,40 @@ impl TuiState {
                         JobCompletionStatus::Skipped => JobSubStatus::Skipped {
                             duration: *duration,
                             reason: skip_reason.clone().unwrap_or_default(),
+                        },
+                    };
+                }
+            }
+            DagEvent::ChildJobStarted {
+                branch_name,
+                hook_type,
+                parent_job,
+                name,
+            } => {
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, parent_job) {
+                    job_sub.children.push(ChildSubRow {
+                        name: name.clone(),
+                        status: JobSubStatus::Running,
+                    });
+                }
+            }
+            DagEvent::ChildJobCompleted {
+                branch_name,
+                hook_type,
+                parent_job,
+                name,
+                status,
+                duration,
+            } => {
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, parent_job)
+                    && let Some(child) = job_sub.children.iter_mut().rfind(|c| c.name == *name)
+                {
+                    child.status = match status {
+                        JobCompletionStatus::Succeeded => JobSubStatus::Succeeded(*duration),
+                        JobCompletionStatus::Failed => JobSubStatus::Failed(*duration),
+                        JobCompletionStatus::Skipped => JobSubStatus::Skipped {
+                            duration: *duration,
+                            reason: String::new(),
                         },
                     };
                 }
@@ -590,6 +635,26 @@ impl TuiState {
             .rows
             .iter_mut()
             .find(|w| w.info.name == branch_name)
+    }
+
+    /// The named job sub-row under a branch's latest sub-row for
+    /// `hook_type`, when sub-rows render at all (`-v`). Nested manager
+    /// children (#753) resolve their parent through this.
+    fn find_job_sub_mut(
+        &mut self,
+        branch_name: &str,
+        hook_type: &DagHookPhase,
+        job: &str,
+    ) -> Option<&mut JobSubRow> {
+        if !self.show_hook_sub_rows {
+            return None;
+        }
+        let row = self.find_row_mut(branch_name)?;
+        let hook_sub = row
+            .hook_sub_rows
+            .iter_mut()
+            .rfind(|s| s.hook_type == *hook_type)?;
+        hook_sub.job_sub_rows.iter_mut().rfind(|j| j.name == job)
     }
 
     fn map_final_status(
@@ -1444,6 +1509,49 @@ mod tests {
             state.hook_summaries[0].failing_job.as_deref(),
             Some("unit tests (related)"),
             "the post-TUI report can name the job that sank the hook"
+        );
+    }
+
+    #[test]
+    fn child_events_populate_the_third_tier() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            job_name: "setup".into(),
+        });
+        state.apply_event(&DagEvent::ChildJobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            parent_job: "setup".into(),
+            name: "install".into(),
+        });
+        state.apply_event(&DagEvent::ChildJobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            parent_job: "setup".into(),
+            name: "install".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(400),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        let job = &row.hook_sub_rows[0].job_sub_rows[0];
+        assert_eq!(job.children.len(), 1);
+        assert_eq!(job.children[0].name, "install");
+        assert_eq!(
+            job.children[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(400))
         );
     }
 

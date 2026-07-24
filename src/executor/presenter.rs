@@ -80,6 +80,24 @@ pub trait JobPresenter: Send + Sync {
     /// and close note); everything else ignores it. Default: ignore.
     fn on_manager_engaged(&self, _scope: Option<&str>, _manager: &str, _version: Option<&str>) {}
 
+    /// A recognized manager running *inside* a lifecycle job reported one of
+    /// its own jobs (#753). Children are presentation only: they never carry
+    /// a `JobResult`, outcome policy stays the parent job's, and the child's
+    /// raw lines still flow through `on_job_output` under the parent (its
+    /// buffers, threads, and failure dumps are unchanged). Default: ignore.
+    fn on_child_job_start(&self, _parent: &str, _name: &str) {}
+
+    /// A manager child resolved successfully (its manager's summary said so,
+    /// or the parent settled successfully with it still open).
+    fn on_child_job_success(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
+    /// A manager child resolved failed.
+    fn on_child_job_failure(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
+    /// A manager child settled by a cancelled parent — no row may be left
+    /// spinning behind a `⊘` parent.
+    fn on_child_job_cancelled(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
     /// A phase has completed. Display the summary.
     fn on_phase_complete(&self, total_duration: Duration);
 

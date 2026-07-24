@@ -7,7 +7,7 @@ use super::presenter::JobPresenter;
 use super::{JobResult, NodeStatus};
 use crate::core::stage::{StageId, StepKey};
 use crate::output::hook_progress::{HookRenderer, JobOutcome, JobResultEntry};
-use crate::output::timeline::{RailHookRenderer, TimelineHandle};
+use crate::output::timeline::{ChildOutcome, RailHookRenderer, TimelineHandle};
 use crate::settings::HookOutputConfig;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -123,6 +123,23 @@ impl EmbedRenderer {
         match self {
             Self::Block(_) => {}
             Self::Rail(r) => r.set_manager_engaged(manager, version),
+        }
+    }
+
+    /// Nested manager children (#753) render one tier under their parent on
+    /// the rail; the block renderer keeps nested manager output raw inside
+    /// the parent's section (its inline stream already shows every line).
+    fn start_child_job(&mut self, parent: &str, name: &str) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.start_child_job(parent, name),
+        }
+    }
+
+    fn finish_child_job(&mut self, parent: &str, name: &str, outcome: ChildOutcome) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.finish_child_job(parent, name, outcome),
         }
     }
 
@@ -368,6 +385,30 @@ impl JobPresenter for CliPresenter {
     fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
         if let Some(r) = ready(&mut self.lock()) {
             r.set_manager_engaged(manager, version);
+        }
+    }
+
+    fn on_child_job_start(&self, parent: &str, name: &str) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.start_child_job(parent, name);
+        }
+    }
+
+    fn on_child_job_success(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Done(duration));
+        }
+    }
+
+    fn on_child_job_failure(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Failed(duration));
+        }
+    }
+
+    fn on_child_job_cancelled(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Cancelled(duration));
         }
     }
 

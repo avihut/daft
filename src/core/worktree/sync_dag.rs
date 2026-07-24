@@ -663,6 +663,24 @@ pub enum DagEvent {
         manager: String,
         version: Option<String>,
     },
+    /// A manager recognized *inside* a lifecycle job reported one of its own
+    /// jobs (#753) — rendered a tier under the parent job's sub-row.
+    ChildJobStarted {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        parent_job: String,
+        name: String,
+    },
+    /// A nested manager child resolved (its summary said so, or the parent
+    /// settled it).
+    ChildJobCompleted {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        parent_job: String,
+        name: String,
+        status: JobCompletionStatus,
+        duration: Duration,
+    },
     /// A job started running within a hook.
     JobStarted {
         branch_name: String,

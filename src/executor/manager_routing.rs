@@ -38,6 +38,7 @@ use crate::executor::JobResult;
 use crate::executor::presenter::JobPresenter;
 use crate::hooks::manager_output::{Detector, DetectorEnd, DetectorStep, ManagerEvent};
 use crate::settings::HookOutputConfig;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -222,6 +223,234 @@ enum GateVerdict {
     Cancelled,
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Lifecycle nesting: a manager running INSIDE a lifecycle job
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Per-parent recognition state for [`LifecycleRoutingPresenter`].
+struct NestState {
+    detector: Detector,
+    /// Recognized child names in appearance order.
+    started: Vec<String>,
+    /// Children the manager's summary has resolved.
+    resolved: Vec<String>,
+}
+
+impl NestState {
+    fn fresh() -> Self {
+        Self {
+            detector: Detector::new(),
+            started: Vec::new(),
+            resolved: Vec::new(),
+        }
+    }
+}
+
+/// Wraps a lifecycle presenter, annotating jobs whose output turns out to be
+/// a hook manager's with nested child sub-structure (#753).
+///
+/// Unlike the gate wrapper this is a pure tee: **every** raw line is
+/// forwarded to `on_job_output` under its parent exactly as today — the
+/// parent's buffers, verbose threads, and failure dumps are untouched, and a
+/// declined stream needs no replay because nothing was ever withheld. On
+/// engagement the manager's jobs surface *additionally* as `on_child_job_*`
+/// events under the parent (`on_manager_engaged(Some(parent), …)` announces
+/// whose they are). Children never synthesize `JobResult`s — outcome policy
+/// stays the parent's — and children the summary never resolved settle with
+/// the parent's own verdict so no row outlives its parent.
+pub struct LifecycleRoutingPresenter {
+    inner: Arc<dyn JobPresenter>,
+    /// Per-parent detectors; one mutex orders feed + child emission across
+    /// the runner's per-job reader threads.
+    state: Mutex<HashMap<String, NestState>>,
+}
+
+impl LifecycleRoutingPresenter {
+    pub fn wrap(inner: Arc<dyn JobPresenter>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            state: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Wrap when `daft.hooks.output.parseManagers` allows it — the same
+    /// kill switch as the gate path.
+    pub fn wrap_when(enabled: bool, presenter: Arc<dyn JobPresenter>) -> Arc<dyn JobPresenter> {
+        if enabled {
+            Self::wrap(presenter)
+        } else {
+            presenter
+        }
+    }
+
+    /// Settle a parent's unresolved children with the parent's verdict.
+    fn settle_children(&self, parent: &str, verdict: GateVerdict) {
+        let mut state = self.state.lock().expect("lifecycle routing poisoned");
+        let Some(nest) = state.get_mut(parent) else {
+            return;
+        };
+        let unresolved: Vec<String> = nest
+            .started
+            .iter()
+            .filter(|name| !nest.resolved.contains(name))
+            .cloned()
+            .collect();
+        for name in unresolved {
+            match verdict {
+                GateVerdict::Success => {
+                    self.inner
+                        .on_child_job_success(parent, &name, Duration::ZERO);
+                }
+                GateVerdict::Failure => {
+                    self.inner
+                        .on_child_job_failure(parent, &name, Duration::ZERO);
+                }
+                GateVerdict::Cancelled => {
+                    self.inner
+                        .on_child_job_cancelled(parent, &name, Duration::ZERO);
+                }
+            }
+            nest.resolved.push(name);
+        }
+    }
+}
+
+impl JobPresenter for LifecycleRoutingPresenter {
+    fn on_phase_start(&self, phase_name: &str, target: Option<&str>) {
+        self.state
+            .lock()
+            .expect("lifecycle routing poisoned")
+            .clear();
+        self.inner.on_phase_start(phase_name, target);
+    }
+
+    fn on_job_start(&self, name: &str, description: Option<&str>, command_preview: Option<&str>) {
+        self.inner.on_job_start(name, description, command_preview);
+    }
+
+    fn on_job_output(&self, name: &str, line: &str) {
+        // The raw line always reaches the parent first — evidence stays
+        // parent-scoped and byte-identical to an unwrapped run.
+        let mut state = self.state.lock().expect("lifecycle routing poisoned");
+        self.inner.on_job_output(name, line);
+        let nest = state
+            .entry(name.to_string())
+            .or_insert_with(NestState::fresh);
+        match nest.detector.feed(line) {
+            // Declined replay is redundant here: nothing was withheld.
+            DetectorStep::Buffering | DetectorStep::Passthrough | DetectorStep::Declined { .. } => {
+            }
+            DetectorStep::Events(events) => {
+                for event in events {
+                    match event {
+                        ManagerEvent::Engaged {
+                            manager, version, ..
+                        } => {
+                            self.inner
+                                .on_manager_engaged(Some(name), manager, version.as_deref());
+                        }
+                        ManagerEvent::JobStarted { name: child } => {
+                            nest.started.push(child.clone());
+                            self.inner.on_child_job_start(name, &child);
+                        }
+                        ManagerEvent::JobResolved {
+                            name: child,
+                            ok,
+                            duration,
+                        } => {
+                            nest.resolved.push(child.clone());
+                            let duration = duration.unwrap_or(Duration::ZERO);
+                            if ok {
+                                self.inner.on_child_job_success(name, &child, duration);
+                            } else {
+                                self.inner.on_child_job_failure(name, &child, duration);
+                            }
+                        }
+                        // Child lines already reached the parent raw; skips
+                        // and totals stay parent-level noise here.
+                        ManagerEvent::JobOutput { .. }
+                        | ManagerEvent::JobSkipped { .. }
+                        | ManagerEvent::PhaseDone { .. } => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_job_success(&self, name: &str, duration: Duration) {
+        self.settle_children(name, GateVerdict::Success);
+        self.inner.on_job_success(name, duration);
+    }
+
+    fn on_job_failure(&self, name: &str, duration: Duration) {
+        self.settle_children(name, GateVerdict::Failure);
+        self.inner.on_job_failure(name, duration);
+    }
+
+    fn on_job_failure_with_exit(&self, name: &str, duration: Duration, exit_code: Option<i32>) {
+        self.settle_children(name, GateVerdict::Failure);
+        self.inner
+            .on_job_failure_with_exit(name, duration, exit_code);
+    }
+
+    fn on_job_skipped(
+        &self,
+        name: &str,
+        reason: &str,
+        duration: Duration,
+        show_duration: bool,
+        command_preview: Option<&str>,
+    ) {
+        self.inner
+            .on_job_skipped(name, reason, duration, show_duration, command_preview);
+    }
+
+    fn on_job_cancelled(&self, name: &str, duration: Duration) {
+        self.settle_children(name, GateVerdict::Cancelled);
+        self.inner.on_job_cancelled(name, duration);
+    }
+
+    fn on_job_background(&self, name: &str, description: Option<&str>) {
+        self.inner.on_job_background(name, description);
+    }
+
+    fn on_message(&self, msg: &str) {
+        self.inner.on_message(msg);
+    }
+
+    fn on_jobs_planned(&self, names: &[String]) {
+        self.inner.on_jobs_planned(names);
+    }
+
+    fn on_manager_engaged(&self, scope: Option<&str>, manager: &str, version: Option<&str>) {
+        self.inner.on_manager_engaged(scope, manager, version);
+    }
+
+    fn on_child_job_start(&self, parent: &str, name: &str) {
+        self.inner.on_child_job_start(parent, name);
+    }
+
+    fn on_child_job_success(&self, parent: &str, name: &str, duration: Duration) {
+        self.inner.on_child_job_success(parent, name, duration);
+    }
+
+    fn on_child_job_failure(&self, parent: &str, name: &str, duration: Duration) {
+        self.inner.on_child_job_failure(parent, name, duration);
+    }
+
+    fn on_child_job_cancelled(&self, parent: &str, name: &str, duration: Duration) {
+        self.inner.on_child_job_cancelled(parent, name, duration);
+    }
+
+    fn on_phase_complete(&self, total_duration: Duration) {
+        self.inner.on_phase_complete(total_duration);
+    }
+
+    fn take_results(&self) -> Vec<JobResult> {
+        self.inner.take_results()
+    }
+}
+
 impl JobPresenter for ManagerRoutingPresenter {
     fn on_phase_start(&self, phase_name: &str, target: Option<&str>) {
         // One detector serves one stream: a presenter reused across phases
@@ -393,6 +622,18 @@ mod tests {
                 scope.unwrap_or("-"),
                 version.unwrap_or("-")
             ));
+        }
+        fn on_child_job_start(&self, parent: &str, name: &str) {
+            self.log(format!("child_start:{parent}:{name}"));
+        }
+        fn on_child_job_success(&self, parent: &str, name: &str, _duration: Duration) {
+            self.log(format!("child_success:{parent}:{name}"));
+        }
+        fn on_child_job_failure(&self, parent: &str, name: &str, _duration: Duration) {
+            self.log(format!("child_failure:{parent}:{name}"));
+        }
+        fn on_child_job_cancelled(&self, parent: &str, name: &str, _duration: Duration) {
+            self.log(format!("child_cancelled:{parent}:{name}"));
         }
         fn on_phase_complete(&self, _total: Duration) {
             self.log("phase_complete".to_string());
@@ -642,6 +883,111 @@ mod tests {
             ]
         );
         assert!(ManagerRoutingPresenter::wrap_if_enabled(&config, None).is_none());
+    }
+
+    // ── lifecycle nesting ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_manager_inside_a_lifecycle_job_gains_children_and_keeps_raw_lines() {
+        let recording = Recording::arc();
+        let wrapper = LifecycleRoutingPresenter::wrap(recording.clone());
+        wrapper.on_phase_start("post-clone", None);
+        wrapper.on_job_start("setup", None, None);
+        for line in [
+            "╭──────╮",
+            BANNER,
+            "╰──────╯",
+            "┃  install ❯ ",
+            "packages linked",
+            "summary: (done in 0.5 seconds)",
+            "✔️ install (0.4 seconds)",
+        ] {
+            wrapper.on_job_output("setup", line);
+        }
+        wrapper.on_job_success("setup", Duration::from_secs(1));
+
+        let events = recording.events();
+        // Every raw line reached the parent untouched — evidence unchanged.
+        for line in ["╭──────╮", BANNER, "┃  install ❯ ", "packages linked"] {
+            assert!(
+                events.contains(&format!("output:setup:{line}")),
+                "raw line {line:?} must reach the parent: {events:?}"
+            );
+        }
+        // And the manager's job surfaced as a child alongside.
+        assert!(events.contains(&"manager_engaged:setup:lefthook:2.1.10".to_string()));
+        assert!(events.contains(&"child_start:setup:install".to_string()));
+        assert!(events.contains(&"child_success:setup:install".to_string()));
+        assert!(events.contains(&"success:setup".to_string()));
+    }
+
+    #[test]
+    fn a_plain_lifecycle_job_gains_no_children() {
+        let recording = Recording::arc();
+        let wrapper = LifecycleRoutingPresenter::wrap(recording.clone());
+        wrapper.on_job_start("build", None, None);
+        wrapper.on_job_output("build", "compiling daft");
+        wrapper.on_job_output("build", "done");
+        wrapper.on_job_success("build", Duration::from_secs(1));
+
+        assert_eq!(
+            recording.events(),
+            vec![
+                "start:build:-".to_string(),
+                "output:build:compiling daft".to_string(),
+                "output:build:done".to_string(),
+                "success:build".to_string(),
+            ],
+            "declined streams are byte-identical passthrough"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_parent_settles_open_children_as_cancelled() {
+        // A ⊘ parent must strand no spinning child rows.
+        let recording = Recording::arc();
+        let wrapper = LifecycleRoutingPresenter::wrap(recording.clone());
+        wrapper.on_job_start("setup", None, None);
+        for line in [BANNER, "┃  install ❯ ", "linking..."] {
+            wrapper.on_job_output("setup", line);
+        }
+        wrapper.on_job_cancelled("setup", Duration::from_secs(1));
+
+        let events = recording.events();
+        assert!(
+            events.contains(&"child_cancelled:setup:install".to_string()),
+            "{events:?}"
+        );
+        assert!(events.contains(&"cancelled:setup".to_string()));
+    }
+
+    #[test]
+    fn two_parents_recognize_independently() {
+        // Parallel lifecycle jobs each get their own detector; one engaging
+        // must not bleed children into the other.
+        let recording = Recording::arc();
+        let wrapper = LifecycleRoutingPresenter::wrap(recording.clone());
+        wrapper.on_job_start("managed", None, None);
+        wrapper.on_job_start("plain", None, None);
+        wrapper.on_job_output("plain", "ordinary output");
+        wrapper.on_job_output("managed", BANNER);
+        wrapper.on_job_output("managed", "┃  fmt ❯ ");
+        wrapper.on_job_output("plain", "more output");
+        wrapper.on_job_failure("managed", Duration::from_secs(1));
+        wrapper.on_job_success("plain", Duration::from_secs(1));
+
+        let events = recording.events();
+        assert!(events.contains(&"child_start:managed:fmt".to_string()));
+        assert!(
+            events.contains(&"child_failure:managed:fmt".to_string()),
+            "no-summary children settle with the parent verdict: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.starts_with("child_") && e.contains(":plain:")),
+            "the plain parent gains no children: {events:?}"
+        );
     }
 
     #[test]

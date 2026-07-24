@@ -55,6 +55,75 @@ struct JobState {
     /// The succinct live annotation: latest output line, seeded from the
     /// job's description. Kept unpainted; painted at composition.
     annotation: Option<String>,
+    /// Nested manager children (#753): a manager recognized inside this
+    /// job's output reports its own jobs, rendered one tier deeper. Live
+    /// bars flip to receipt faces in place (a println receipt cannot land
+    /// under a still-running parent); the whole set persists as one batch
+    /// when the parent resolves.
+    children: Vec<ChildState>,
+    /// Alignment column for this parent's child receipts.
+    child_width: usize,
+}
+
+/// One nested manager child row.
+struct ChildState {
+    name: String,
+    bar: ProgressBar,
+    /// The resolved face, once known. `None` while running.
+    outcome: Option<ChildOutcome>,
+}
+
+/// A nested child's resolved face (#753). Public: the presenter dispatch
+/// translates `on_child_job_*` events into these.
+pub enum ChildOutcome {
+    Done(Duration),
+    Failed(Duration),
+    Cancelled(Duration),
+}
+
+/// Compose a child's receipt row: the ordinary hook-job vocabulary, padded to
+/// the parent's child column. The caller supplies the gutter tiers.
+fn child_receipt_row(name: &str, outcome: &ChildOutcome, width: usize, use_color: bool) -> String {
+    let dim_duration = |duration: &Duration| {
+        (*duration >= render::DURATION_THRESHOLD).then(|| {
+            render::paint(
+                GREY,
+                &format!("({})", format_duration(*duration)),
+                use_color,
+            )
+        })
+    };
+    match outcome {
+        ChildOutcome::Done(duration) => render::hook_job_row(
+            &HookJobFace::Done {
+                duration: Some(*duration),
+            },
+            name,
+            None,
+            width,
+            use_color,
+        ),
+        ChildOutcome::Failed(duration) => render::hook_job_row(
+            &HookJobFace::Failed,
+            name,
+            dim_duration(duration).as_deref(),
+            width,
+            use_color,
+        ),
+        ChildOutcome::Cancelled(duration) => {
+            let annotation = match dim_duration(duration) {
+                Some(d) => format!("cancelled {d}"),
+                None => "cancelled".to_string(),
+            };
+            render::hook_job_row(
+                &HookJobFace::Cancelled,
+                name,
+                Some(&annotation),
+                width,
+                use_color,
+            )
+        }
+    }
 }
 
 pub struct RailHookRenderer {
@@ -80,6 +149,11 @@ pub struct RailHookRenderer {
     /// The main job-spinner row style (`{spinner:.cyan}  {wide_msg}`, gutter +
     /// group tier). The thread sub-row styles live in [`ThreadStyles`].
     job_style: ProgressStyle,
+    /// Nested manager children live one gutter tier deeper than job rows.
+    child_style: ProgressStyle,
+    /// A resolved child's bar flips to this message-only style — its receipt
+    /// face rides the message until the parent settles and persists it.
+    child_receipt_style: ProgressStyle,
     thread_styles: ThreadStyles,
     jobs: HashMap<String, JobState>,
     /// Jobs already resolved `✗` — used to intercept the runner's redundant
@@ -126,6 +200,17 @@ impl RailHookRenderer {
         let job_style = ProgressStyle::with_template(&tier(render::gutter(base, embed.use_color)))
             .expect("job template is valid")
             .tick_chars(super::region::TICK_CHARS);
+        let child_style = ProgressStyle::with_template(&tier(render::gutter(
+            &render::gutter(base, embed.use_color),
+            embed.use_color,
+        )))
+        .expect("child template is valid")
+        .tick_chars(super::region::TICK_CHARS);
+        let child_receipt_style = ProgressStyle::with_template(&tier(render::gutter(
+            &render::gutter("{wide_msg}", embed.use_color),
+            embed.use_color,
+        )))
+        .expect("child receipt template is valid");
         // Hook job rows sit inside their `├─` section (depth 1); a section in
         // a group span nests one tier deeper (depth 2).
         let thread_styles = ThreadStyles::new(embed.use_color, if embed.in_group { 2 } else { 1 });
@@ -141,6 +226,8 @@ impl RailHookRenderer {
             section_label: embed.section_label,
             in_group: embed.in_group,
             job_style,
+            child_style,
+            child_receipt_style,
             thread_styles,
             jobs: HashMap::new(),
             failed: HashSet::new(),
@@ -261,6 +348,8 @@ impl RailHookRenderer {
             bar,
             thread,
             annotation: description.map(str::to_string),
+            children: Vec::new(),
+            child_width: 0,
         };
         self.jobs.insert(name.to_string(), state);
         self.census_seen += 1;
@@ -332,6 +421,79 @@ impl RailHookRenderer {
         }
     }
 
+    /// A nested manager child appeared under `parent` (#753): a live bar one
+    /// gutter tier deeper, spinner running until its manager's summary (or
+    /// the parent's own verdict) resolves it. No-op when the parent isn't a
+    /// live job (children are presentation; nothing to anchor to, nothing to
+    /// show).
+    pub fn start_child_job(&mut self, parent: &str, name: &str) {
+        let Some(state) = self.jobs.get_mut(parent) else {
+            return;
+        };
+        // Children stack between the parent's row and its thread: each new
+        // bar seats right after the previous child (or the parent row).
+        let anchor = state
+            .children
+            .last()
+            .map(|c| c.bar.clone())
+            .unwrap_or_else(|| state.bar.clone());
+        let bar = self.mp.insert_after(&anchor, ProgressBar::new_spinner());
+        bar.set_style(self.child_style.clone());
+        bar.set_message(name.to_string());
+        bar.enable_steady_tick(Duration::from_millis(80));
+        state.child_width = state.child_width.max(name.chars().count());
+        state.children.push(ChildState {
+            name: name.to_string(),
+            bar,
+            outcome: None,
+        });
+    }
+
+    /// A nested child resolved: flip its live bar to the receipt face in
+    /// place — a println receipt cannot land under a still-running parent,
+    /// so the row waits (already wearing its outcome) for the parent's batch.
+    pub fn finish_child_job(&mut self, parent: &str, name: &str, outcome: ChildOutcome) {
+        let (receipt_style, use_color) = (self.child_receipt_style.clone(), self.use_color);
+        let Some(state) = self.jobs.get_mut(parent) else {
+            return;
+        };
+        let width = state.child_width;
+        let Some(child) = state
+            .children
+            .iter_mut()
+            .rfind(|c| c.name == name && c.outcome.is_none())
+        else {
+            return;
+        };
+        child.bar.disable_steady_tick();
+        child.bar.set_style(receipt_style);
+        child
+            .bar
+            .set_message(child_receipt_row(&child.name, &outcome, width, use_color));
+        child.outcome = Some(outcome);
+    }
+
+    /// Persist a settled parent's child receipts, one tier deep, and drop
+    /// their bars. Runs inside the parent's finish batch, right after the
+    /// parent's own receipt. A child somehow still open settles on the ⊘
+    /// face — no row may be left implying it ran to completion.
+    fn persist_children(&self, state: Option<&JobState>) {
+        let Some(state) = state else { return };
+        for child in &state.children {
+            let outcome = child
+                .outcome
+                .as_ref()
+                .unwrap_or(&ChildOutcome::Cancelled(Duration::ZERO));
+            let row = child_receipt_row(&child.name, outcome, state.child_width, self.use_color);
+            self.mp
+                .println(self.tucked(render::gutter(
+                    &render::gutter(&row, self.use_color),
+                    self.use_color,
+                )))
+                .ok();
+        }
+    }
+
     pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
         let state = self.remove_bar(name);
         self.persist_receipt(render::hook_job_row(
@@ -343,6 +505,7 @@ impl RailHookRenderer {
             self.name_width,
             self.use_color,
         ));
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), false);
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -361,6 +524,7 @@ impl RailHookRenderer {
             self.use_color,
         ));
         self.failed.insert(name.to_string());
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), true);
         // Succinct: the captured output lands below the rail footer — the
         // rail's errors-after pattern — not torn through the live bars.
@@ -436,6 +600,7 @@ impl RailHookRenderer {
             self.use_color,
         ));
         self.failed.insert(name.to_string());
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), true);
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -603,6 +768,10 @@ impl RailHookRenderer {
         state.thread.mark_resolved();
         state.bar.disable_steady_tick();
         self.mp.remove(&state.bar);
+        for child in &state.children {
+            child.bar.disable_steady_tick();
+            self.mp.remove(&child.bar);
+        }
         state.thread.remove_thread_bars(&self.mp);
         Some(state)
     }
@@ -1184,6 +1353,87 @@ mod tests {
     fn verbose_condition_skips_stay_silent() {
         let (mut r, term, _h) = harness_with(verbose_config(), None, false);
         r.finish_job_skipped("lint", "skip: true", Duration::ZERO, false, None);
+        assert_eq!(term.contents(), "");
+    }
+
+    // ── nested manager children (#753) ────────────────────────────────────
+
+    #[test]
+    fn children_persist_as_a_batch_under_the_settled_parent() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "install");
+        r.start_child_job("setup", "fmt");
+        r.finish_child_job(
+            "setup",
+            "install",
+            ChildOutcome::Done(Duration::from_millis(2100)),
+        );
+        r.finish_child_job(
+            "setup",
+            "fmt",
+            ChildOutcome::Done(Duration::from_millis(300)),
+        );
+        r.finish_job_success("setup", Duration::from_millis(2500));
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{2713}  setup  (2.5s)\n\
+             \u{2502}  \u{2502}  \u{2713}  install  (2.1s)\n\
+             \u{2502}  \u{2502}  \u{2713}  fmt",
+            "parent receipt first, then its children one tier deeper"
+        );
+    }
+
+    #[test]
+    fn a_failing_child_keeps_its_face_in_the_batch() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "unit tests (related)");
+        r.finish_child_job(
+            "setup",
+            "unit tests (related)",
+            ChildOutcome::Failed(Duration::from_millis(1500)),
+        );
+        r.finish_job_failure("setup", Duration::from_secs(2));
+        let contents = term.contents();
+        assert!(
+            contents.contains("\u{2502}  \u{2502}  \u{2717}  unit tests (related)  (1.5s)"),
+            "the failing child wears ✗ with its duration: {contents}"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_child_settles_on_the_cancel_face() {
+        // Defensive: the routing wrapper settles children before the parent
+        // verdict arrives, but a child somehow still open must not persist
+        // implying it completed.
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "hung");
+        r.finish_job_failure("setup", Duration::from_secs(1));
+        assert!(
+            term.contents().contains("\u{2298}  hung  cancelled"),
+            "an open child settles ⊘, never ✓: {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn children_of_a_dropped_renderer_never_persist() {
+        // Abort mid-nest: live bars die with the region; nothing may leak
+        // into scrollback as a receipt.
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "install");
+        drop(r);
+        assert_eq!(term.contents(), "", "no receipt without a settled parent");
+    }
+
+    #[test]
+    fn a_child_for_an_unknown_parent_is_ignored() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_child_job("ghost", "install");
+        r.finish_child_job("ghost", "install", ChildOutcome::Done(Duration::ZERO));
         assert_eq!(term.contents(), "");
     }
 

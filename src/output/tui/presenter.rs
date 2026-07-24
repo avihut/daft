@@ -253,6 +253,43 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
+    fn on_child_job_start(&self, parent: &str, name: &str) {
+        let _ = self.sender.send(DagEvent::ChildJobStarted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            parent_job: parent.to_string(),
+            name: name.to_string(),
+        });
+    }
+
+    fn on_child_job_success(&self, parent: &str, name: &str, duration: Duration) {
+        let _ = self.sender.send(DagEvent::ChildJobCompleted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            parent_job: parent.to_string(),
+            name: name.to_string(),
+            status: JobCompletionStatus::Succeeded,
+            duration,
+        });
+    }
+
+    fn on_child_job_failure(&self, parent: &str, name: &str, duration: Duration) {
+        let _ = self.sender.send(DagEvent::ChildJobCompleted {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            parent_job: parent.to_string(),
+            name: name.to_string(),
+            status: JobCompletionStatus::Failed,
+            duration,
+        });
+    }
+
+    fn on_child_job_cancelled(&self, parent: &str, name: &str, duration: Duration) {
+        // Same mapping as on_job_cancelled: the table has no cancelled
+        // vocabulary for sub-rows; a settled-by-cancel child reads failed.
+        self.on_child_job_failure(parent, name, duration);
+    }
+
     fn take_results(&self) -> Vec<JobResult> {
         // TUI doesn't use per-job results — the TuiBridge handles outcomes
         // via the DagEvent channel.
