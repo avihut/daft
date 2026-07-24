@@ -274,6 +274,10 @@ impl HookProgressRenderer {
                 return;
             };
 
+            // Buffer the raw child line: `finish_job` echoes it back to
+            // scrollback verbatim (color, emoji, alignment intact). Width
+            // normalization for the live tail bars (#751) happens at the
+            // rolling-window seam below, never at capture.
             state.output_buffer.push(line.to_string());
 
             // Nothing to display when quiet or tail_lines == 0.
@@ -342,7 +346,11 @@ impl HookProgressRenderer {
             for (i, tail_pb) in state.tail_lines.iter().enumerate() {
                 let buf_idx = start + i;
                 if buf_idx < buf_len {
-                    tail_pb.set_message(state.output_buffer[buf_idx].clone());
+                    // Live seam: sanitize on the way to the padded tail bar
+                    // (#751); the buffer keeps the raw copy for the echo.
+                    tail_pb.set_message(crate::output::live_line::sanitize(
+                        &state.output_buffer[buf_idx],
+                    ));
                 } else {
                     tail_pb.set_message(String::new());
                 }
@@ -610,6 +618,22 @@ impl HookProgressRenderer {
     #[cfg(test)]
     pub fn get_tail_line_count(&self, name: &str) -> usize {
         self.jobs.get(name).map(|s| s.tail_lines.len()).unwrap_or(0)
+    }
+
+    /// Test-only: the live tail bars' current messages, top to bottom. Distinct
+    /// from [`Self::get_buffered_output`] (the raw buffer) — these are the
+    /// sanitized live-region strings (#751).
+    #[cfg(test)]
+    pub fn get_tail_line_messages(&self, name: &str) -> Vec<String> {
+        self.jobs
+            .get(name)
+            .map(|s| {
+                s.tail_lines
+                    .iter()
+                    .map(|b| b.message().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[cfg(test)]

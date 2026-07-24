@@ -1329,6 +1329,32 @@ mod tests {
     }
 
     #[test]
+    fn terse_exec_annotation_sanitizes_vs16_emoji() {
+        // #751 report 2 shape: a short child line whose `✔️` (U+2714 + VS16)
+        // measures one column but draws two. The terse annotation must read
+        // the sanitized buffer back, never repaint the raw line.
+        let (mut tl, term) = captured("Running lefthook in 1 worktree");
+        tl.set_ordered_receipts(true);
+        tl.set_row_output(exec_row_output());
+        tl.commit_plan(PlanCommit::new(vec![exec_row("master")]));
+        let k = exec_key("master");
+        tl.on_stage(&k, StageEvent::Started);
+        tl.handle()
+            .push_row_output(&k, "\u{2714}\u{FE0F} unit tests (33.07 seconds)");
+        let live = term.contents();
+        assert!(
+            !live.contains('\u{FE0F}'),
+            "VS16 must not reach the live region: {live:?}"
+        );
+        assert!(
+            live.contains("\u{2714} unit tests"),
+            "text presentation survives on the annotation: {live:?}"
+        );
+        tl.on_stage(&k, StageEvent::Completed { annotation: None });
+        tl.finish("Done in 0.1s");
+    }
+
+    #[test]
     fn verbose_row_threads_its_log_grey_under_success() {
         let (mut tl, term) = captured("Running mise clean in 1 worktree");
         tl.set_ordered_receipts(true);

@@ -20,25 +20,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// Normalize a captured child-output line to a single, control-free line
-/// before it rides a rail bar or lands in the receipt — a raw line from a
-/// chatty command (`cargo`/`npm`/`docker`, which repaint with `\r` and ANSI)
-/// would otherwise return the cursor to column 0 or inject escapes mid-row and
-/// corrupt the live rail and its scrollback. The rail row/window enforce
-/// single-line *width* (`{wide_msg}`) but not content, so the caller owns this.
-fn sanitize(line: &str) -> String {
-    // Progress output overwrites its line with `\r`; keep only the final
-    // segment the terminal would have shown.
-    let visible = line.rsplit('\r').next().unwrap_or(line);
-    // Drop ANSI escape sequences, then any remaining control character (tabs
-    // become spaces so words don't fuse).
-    console::strip_ansi_codes(visible)
-        .chars()
-        .map(|c| if c == '\t' { ' ' } else { c })
-        .filter(|c| !c.is_control())
-        .collect()
-}
-
 /// The [`StepKey`] for target `label`'s command `idx` of `count`. A single
 /// command keys by the bare label (the row's identity is the worktree); a
 /// pipeline disambiguates each command by index. The plan builder and the
@@ -104,7 +85,9 @@ impl JobPresenter for RailExecPresenter {
 
     fn on_job_output(&self, name: &str, line: &str) {
         if let Some(key) = self.current(name) {
-            self.handle.push_row_output(&key, &sanitize(line));
+            // Raw child lines are sanitized for the live region at the
+            // `ThreadedJob::record` choke point (`output::live_line`, #751).
+            self.handle.push_row_output(&key, line);
         }
     }
 
@@ -199,21 +182,6 @@ mod tests {
         tl.commit_plan(plan);
         let presenter = RailExecPresenter::new(tl.handle(), rows);
         (tl, presenter, term)
-    }
-
-    #[test]
-    fn sanitize_strips_ansi_carriage_returns_and_controls() {
-        // A cargo/npm-style progress line: ANSI color + `\r` repaint. Only the
-        // final segment survives, control-free — nothing that could return the
-        // cursor or inject escapes into a rail row.
-        assert_eq!(
-            sanitize("\x1b[32mBuilding [==>  ] 40%\rBuilding [====] 100%\x1b[0m"),
-            "Building [====] 100%"
-        );
-        assert_eq!(sanitize("tab\there"), "tab here");
-        assert_eq!(sanitize("plain output"), "plain output");
-        // A bare carriage return leaves no residue.
-        assert_eq!(sanitize("gone\rkept"), "kept");
     }
 
     #[test]

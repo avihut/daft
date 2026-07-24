@@ -261,8 +261,9 @@ impl RailHookRenderer {
             }
         } else {
             // Succinct's single line of liveness: the latest output line rides
-            // the annotation slot.
-            state.annotation = Some(line.trim_end().to_string());
+            // the annotation slot — sanitized on the way to the bar (#751), and
+            // skipping a control-only line so it never blanks the row.
+            state.annotation = state.thread.live_tail();
             self.refresh_bar(name);
         }
     }
@@ -846,6 +847,30 @@ mod tests {
         let live = r.jobs.get("db").unwrap().bar.message();
         assert!(live.contains("applying migration 3"), "got: {live:?}");
         assert!(!live.contains("Prepare the database"));
+    }
+
+    #[test]
+    fn succinct_annotation_sanitizes_vs16_emoji_output() {
+        // #751 report 1: lefthook's `✔️` (U+2714 + VS16) measures one column
+        // but draws two. Verbatim on a live bar, indicatif's full-width row
+        // filler makes the physical row overflow and leak a ghost copy every
+        // redraw tick. The annotation must carry the sanitized buffer line,
+        // never the raw child line.
+        let (mut r, _term, _h) = harness(None, false);
+        r.start_job("pnpm-install", None);
+        r.update_job_output(
+            "pnpm-install",
+            "lefthook postinstall: sync hooks: \u{2714}\u{FE0F} (pre-push, pre-commit)",
+        );
+        let msg = r.jobs.get("pnpm-install").unwrap().bar.message();
+        assert!(
+            !msg.contains('\u{FE0F}'),
+            "VS16 must not reach a live bar: {msg:?}"
+        );
+        assert!(
+            msg.contains("\u{2714} (pre-push"),
+            "text presentation survives: {msg:?}"
+        );
     }
 
     // ── verbose: the threaded log ─────────────────────────────────────────

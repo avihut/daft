@@ -189,12 +189,20 @@ impl ThreadedJob {
         self.trailer = Some(pb);
     }
 
-    /// Buffer one output line into the receipt log, enforcing the byte cap.
-    /// The live view (annotation or rolling window) is repainted by the caller
-    /// / [`Self::roll_window`]; this only records.
+    /// Buffer one output line *raw* into the receipt log, enforcing the byte
+    /// cap. The live view (annotation or rolling window) is repainted by the
+    /// caller / [`Self::roll_window`]; this only records.
+    ///
+    /// The buffer is the source of truth and holds the unmodified child line,
+    /// so the permanent surfaces that read it back — [`Self::compose_log`] for
+    /// receipts and the caller's deferred failure dump — keep full fidelity
+    /// (color, emoji, alignment). Width normalization for the live region
+    /// ([`crate::output::live_line`], #751) happens only where a line becomes a
+    /// bar message: [`Self::roll_window`] and [`Self::live_tail`]. A live view
+    /// must be composed through one of those, never from a raw buffer line.
     pub(super) fn record(&mut self, line: &str) {
-        self.output.push(line.to_string());
         self.output_bytes += line.len() + 1;
+        self.output.push(line.to_string());
         if let Some(cap) = self.cap {
             let mut drop_to = 0;
             while self.output_bytes > cap && drop_to + 1 < self.output.len() {
@@ -238,9 +246,27 @@ impl ThreadedJob {
         }
         let start = self.output.len().saturating_sub(self.tail_bars.len());
         for (i, pb) in self.tail_bars.iter().enumerate() {
-            let text = self.output.get(start + i).map_or("", String::as_str);
-            pb.set_message(render::paint(GREY, text, styles.use_color));
+            // Live seam: each windowed line is sanitized (#751) so the padded
+            // bar row renders exactly as wide as indicatif measures it.
+            let text = self
+                .output
+                .get(start + i)
+                .map_or(String::new(), |l| crate::output::live_line::sanitize(l));
+            pb.set_message(render::paint(GREY, &text, styles.use_color));
         }
+    }
+
+    /// The most recent buffered line, sanitized for a single live annotation
+    /// slot (#751). Skips lines that sanitize away to nothing — a control-only
+    /// line (e.g. a bare erase) must not blank the row's liveness; the last
+    /// line that still carries visible text stays shown. `None` only when no
+    /// buffered line has visible content.
+    pub(super) fn live_tail(&self) -> Option<String> {
+        self.output
+            .iter()
+            .rev()
+            .map(|l| crate::output::live_line::sanitize(l))
+            .find(|s| !s.is_empty())
     }
 
     /// A ticking promoter: a job still silent past `delay` shows a dim elapsed
@@ -495,5 +521,71 @@ mod tests {
             job.record(&format!("line {i}"));
         }
         assert_eq!(job.output().len(), 100);
+    }
+
+    #[test]
+    fn record_keeps_raw_lines_the_live_seam_sanitizes() {
+        // #751: `record` buffers the child line unmodified — the buffer is the
+        // source of truth. VS16 (`✔️`), ANSI color, and `\r` rewrites all
+        // survive verbatim, so the permanent receipt / failure dump keep full
+        // fidelity.
+        let mut job = ThreadedJob::new(None, None);
+        job.record("sync hooks: \u{2714}\u{FE0F} (pre-push)");
+        job.record("\x1b[32m40%\x1b[0m\r\x1b[32m100%\x1b[0m");
+        assert_eq!(
+            job.output(),
+            &[
+                "sync hooks: \u{2714}\u{FE0F} (pre-push)".to_string(),
+                "\x1b[32m40%\x1b[0m\r\x1b[32m100%\x1b[0m".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn live_tail_sanitizes_and_skips_lines_that_sanitize_away() {
+        // The live annotation seam normalizes on the way to the bar: VS16 drops
+        // to text presentation, ANSI/`\r` resolve to the shown segment.
+        let mut job = ThreadedJob::new(None, None);
+        job.record("\u{2714}\u{FE0F} unit tests (33.07 seconds)");
+        assert_eq!(
+            job.live_tail().as_deref(),
+            Some("\u{2714} unit tests (33.07 seconds)")
+        );
+        // A trailing control-only line sanitizes to nothing; the annotation
+        // keeps the last line with visible text rather than blanking (#751).
+        job.record("\x1b[2K");
+        assert_eq!(
+            job.live_tail().as_deref(),
+            Some("\u{2714} unit tests (33.07 seconds)")
+        );
+        // No visible content anywhere → no annotation.
+        let mut blank = ThreadedJob::new(None, None);
+        blank.record("\x1b[2K");
+        assert_eq!(blank.live_tail(), None);
+    }
+
+    #[test]
+    fn roll_window_sanitizes_and_compose_log_keeps_raw() {
+        // The live window and the permanent receipt read the same raw buffer
+        // but diverge at the seam: the window sanitizes (no VS16 reaches a
+        // padded bar row), the receipt keeps the raw evidence under a failure.
+        let mp = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let row = mp.add(ProgressBar::new_spinner());
+        let styles = ThreadStyles::new(false, 0);
+        let mut job = ThreadedJob::new(None, None);
+        job.record("\u{2714}\u{FE0F} done");
+        job.open(&mp, &row, &styles);
+        job.roll_window(&mp, &styles, 4, &row);
+        assert!(
+            job.tail_messages().iter().all(|m| !m.contains('\u{FE0F}')),
+            "VS16 must not reach a live window bar: {:?}",
+            job.tail_messages()
+        );
+        assert!(
+            job.compose_log(&styles, true)
+                .iter()
+                .any(|l| l.contains('\u{FE0F}')),
+            "the failure receipt keeps the raw glyph as evidence"
+        );
     }
 }
