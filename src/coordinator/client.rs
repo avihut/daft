@@ -64,6 +64,7 @@ impl CoordinatorClient {
         _tag: Option<&str>,
         _invocation_prefix: Option<&str>,
         _older_than_secs: Option<u64>,
+        _kill: bool,
     ) -> Result<Vec<String>> {
         match self.0 {}
     }
