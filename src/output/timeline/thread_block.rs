@@ -314,7 +314,10 @@ impl ThreadedJob {
         std::thread::spawn(move || {
             std::thread::sleep(delay);
             // The message to fall back to if an iteration races a just-arrived
-            // first output line: the composition as of promotion time.
+            // first output line: the composition as of promotion time. Load-
+            // bearing in verbose (restores the stable description); in succinct
+            // the annotation changes per line, so a restored snapshot is at
+            // worst one line stale and the next output line repaints it.
             let resting = row_bar.message();
             loop {
                 if done.load(Ordering::SeqCst) || seen.load(Ordering::SeqCst) {
@@ -352,6 +355,14 @@ impl ThreadedJob {
     /// Whether the live thread block is currently up.
     pub(super) fn is_open(&self) -> bool {
         self.trailer.is_some()
+    }
+
+    /// The bottom-most live thread bar (the anti-fusion trailer), when the
+    /// thread is open. Nested children anchor below it so they render under
+    /// the parent's `❯ command`/output tail, not wedged above it (`tail_bars`
+    /// always insert above the trailer, so the trailer stays the floor).
+    pub(super) fn bottom_bar(&self) -> Option<&ProgressBar> {
+        self.trailer.as_ref()
     }
 
     /// Take the live thread down *and forget its bars* — the inverse of

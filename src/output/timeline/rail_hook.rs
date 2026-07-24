@@ -81,18 +81,18 @@ pub enum ChildOutcome {
     Cancelled(Duration),
 }
 
+/// The rail's dim, parenthesized duration vocabulary — shown only at ≥1s.
+/// One definition for both row faces ([`RailHookRenderer::duration_annotation`])
+/// and nested child receipts ([`child_receipt_row`]), so the threshold, colour,
+/// and parenthesization can't drift between a parent row and its children.
+fn dim_duration(duration: Duration, use_color: bool) -> Option<String> {
+    (duration >= render::DURATION_THRESHOLD)
+        .then(|| render::paint(GREY, &format!("({})", format_duration(duration)), use_color))
+}
+
 /// Compose a child's receipt row: the ordinary hook-job vocabulary, padded to
 /// the parent's child column. The caller supplies the gutter tiers.
 fn child_receipt_row(name: &str, outcome: &ChildOutcome, width: usize, use_color: bool) -> String {
-    let dim_duration = |duration: &Duration| {
-        (*duration >= render::DURATION_THRESHOLD).then(|| {
-            render::paint(
-                GREY,
-                &format!("({})", format_duration(*duration)),
-                use_color,
-            )
-        })
-    };
     match outcome {
         ChildOutcome::Done(duration) => render::hook_job_row(
             &HookJobFace::Done {
@@ -106,12 +106,12 @@ fn child_receipt_row(name: &str, outcome: &ChildOutcome, width: usize, use_color
         ChildOutcome::Failed(duration) => render::hook_job_row(
             &HookJobFace::Failed,
             name,
-            dim_duration(duration).as_deref(),
+            dim_duration(*duration, use_color).as_deref(),
             width,
             use_color,
         ),
         ChildOutcome::Cancelled(duration) => {
-            let annotation = match dim_duration(duration) {
+            let annotation = match dim_duration(*duration, use_color) {
                 Some(d) => format!("cancelled {d}"),
                 None => "cancelled".to_string(),
             };
@@ -448,13 +448,20 @@ impl RailHookRenderer {
         let Some(state) = self.jobs.get_mut(parent) else {
             return;
         };
-        // Children stack between the parent's row and its thread: each new
-        // bar seats right after the previous child (or the parent row).
-        let anchor = state
-            .children
-            .last()
-            .map(|c| c.bar.clone())
-            .unwrap_or_else(|| state.bar.clone());
+        // Children stack below the parent's own thread: the first seats after
+        // the parent's bottom thread bar (its trailer) when a verbose thread is
+        // open, else right under the row; each next child seats after the
+        // previous one. Anchoring the first on the row bar instead would wedge
+        // children above the parent's `❯ command`/output, since the thread bars
+        // were inserted there first (#753 review).
+        let anchor = match state.children.last() {
+            Some(last) => last.bar.clone(),
+            None => state
+                .thread
+                .bottom_bar()
+                .cloned()
+                .unwrap_or_else(|| state.bar.clone()),
+        };
         let bar = self.mp.insert_after(&anchor, ProgressBar::new_spinner());
         bar.set_style(self.child_style.clone());
         bar.set_message(name.to_string());
@@ -795,6 +802,20 @@ impl RailHookRenderer {
         let Some(state) = self.jobs.get(name) else {
             return;
         };
+        // A settled done-pending row wears the grey ✓, not an annotation. Its
+        // output was suppressed so `annotation` is stale/None — without this a
+        // later, wider-named job growing the alignment column would repad this
+        // bar back to a bare name and wipe the checkmark (#753 review).
+        if state.thread.is_done_pending() {
+            state.bar.set_message(render::hook_job_row(
+                &HookJobFace::DonePending,
+                name,
+                None,
+                self.name_width,
+                self.use_color,
+            ));
+            return;
+        }
         let msg = match state.annotation.as_deref().filter(|a| !a.is_empty()) {
             Some(a) => format!(
                 "{name:<width$}  {}",
@@ -825,18 +846,10 @@ impl RailHookRenderer {
     }
 
     /// The rail's duration vocabulary for faces that don't carry their own:
-    /// dim, parenthesized, only at ≥ 1s.
+    /// dim, parenthesized, only at ≥ 1s. Delegates to the shared
+    /// [`dim_duration`] so parent rows and child receipts stay in lockstep.
     fn duration_annotation(&self, duration: Duration) -> Option<String> {
-        (duration >= render::DURATION_THRESHOLD).then(|| {
-            render::paint(
-                GREY,
-                &format!(
-                    "({})",
-                    crate::output::hook_progress::format_duration(duration)
-                ),
-                self.use_color,
-            )
-        })
+        dim_duration(duration, self.use_color)
     }
 }
 
@@ -1656,6 +1669,32 @@ mod tests {
         assert_eq!(
             msg, "\u{2713}  build-check",
             "late block output leaves the done-pending face untouched: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn a_done_pending_row_keeps_its_grey_check_when_a_wider_job_grows_the_column() {
+        // A settled grey ✓ row must survive a later, wider-named job growing
+        // the alignment column: refresh_bar repads every live bar, and without
+        // the done-pending guard it would rewrite this one to a bare name and
+        // wipe the checkmark (#753 review).
+        let (mut r, _term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.mark_done_pending("fmt");
+        assert_eq!(
+            r.jobs.get("fmt").unwrap().bar.message(),
+            "\u{2713}  fmt",
+            "settled grey ✓ before the column grows"
+        );
+        // A wider-named job grows name_width and refreshes every live bar,
+        // including the done-pending one.
+        r.start_job("integration-tests", None);
+        let msg = r.jobs.get("fmt").unwrap().bar.message();
+        assert!(
+            msg.starts_with('\u{2713}'),
+            "the grey ✓ survives a later job growing the column: {msg:?}"
         );
     }
 
