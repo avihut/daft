@@ -1122,6 +1122,15 @@ fn job_status_spans(status: &super::state::JobSubStatus, tick: usize) -> (Span<'
                 Color::Yellow,
             )
         }
+        JobSubStatus::DonePending => (
+            // Finished running, verdict pending (#753): a neutral grey check,
+            // no duration yet. Deliberately not green — the confirmed success
+            // (with the official duration) lands with the summary's
+            // `Succeeded`, and a job the summary reveals as failed flips this
+            // grey check straight to red, having never claimed success.
+            Span::styled(CHECKMARK.to_string(), Style::default().fg(Color::DarkGray)),
+            Color::DarkGray,
+        ),
         JobSubStatus::Succeeded(d) => (
             Span::styled(
                 format!("{CHECKMARK} {}ms", d.as_millis()),
@@ -1326,6 +1335,31 @@ mod tests {
             false,
             crate::core::worktree::info_field::FieldSet::EMPTY,
         )
+    }
+
+    #[test]
+    fn done_pending_job_renders_a_neutral_grey_check() {
+        // #753: a flushed-but-unconfirmed manager job settles to a grey check
+        // with no duration — deliberately NOT the green of a confirmed
+        // success, which lands only with the summary's Succeeded.
+        use crate::output::tui::state::JobSubStatus;
+        use std::time::Duration;
+
+        let (status_span, name_style) = job_status_spans(&JobSubStatus::DonePending, 0);
+        assert_eq!(status_span.content, CHECKMARK);
+        assert_eq!(status_span.style.fg, Some(Color::DarkGray));
+        assert_ne!(
+            status_span.style.fg,
+            Some(Color::Green),
+            "the interim settle must never borrow the reserved success green",
+        );
+        assert_eq!(name_style.fg, Some(Color::DarkGray));
+
+        // Contrast: the confirmed success is green with its official duration.
+        let (ok_span, _) =
+            job_status_spans(&JobSubStatus::Succeeded(Duration::from_millis(2100)), 0);
+        assert_eq!(ok_span.style.fg, Some(Color::Green));
+        assert!(ok_span.content.contains("2100ms"));
     }
 
     #[test]

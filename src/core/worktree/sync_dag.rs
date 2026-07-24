@@ -687,6 +687,18 @@ pub enum DagEvent {
         hook_type: DagHookPhase,
         job_name: String,
     },
+    /// A recognized manager job's output block flushed (#753): in lefthook's
+    /// default buffered mode a job's block reaches us when the job *finishes
+    /// running*, ahead of the end-of-run summary that stamps the confirmed
+    /// verdict + official duration. This is the real-time "done, verdict
+    /// pending" signal — the job sub-row settles to a neutral grey check now
+    /// and the later `JobCompleted` flips it to the confirmed outcome. Purely
+    /// a display transition; it never carries or implies a verdict.
+    JobFlushed {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        job_name: String,
+    },
     /// A job completed within a hook.
     JobCompleted {
         branch_name: String,

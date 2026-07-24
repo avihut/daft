@@ -253,6 +253,18 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
+    fn on_manager_job_flushed(&self, name: &str) {
+        // A recognized manager job's block flushed: it finished running,
+        // ahead of the summary's verdict. Forward the real-time settle so the
+        // sub-row stops spinning now (grey check) instead of only resolving
+        // when the whole run's summary lands (#753).
+        let _ = self.sender.send(DagEvent::JobFlushed {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            job_name: name.to_string(),
+        });
+    }
+
     fn on_child_job_start(&self, parent: &str, name: &str) {
         let _ = self.sender.send(DagEvent::ChildJobStarted {
             branch_name: self.branch_name.clone(),
@@ -537,6 +549,30 @@ mod tests {
                 assert_eq!(version.as_deref(), Some("2.1.10"));
             }
             other => panic!("expected ManagerEngaged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manager_job_flush_forwards_as_a_dag_event() {
+        // #753: the block-flush settle must reach the renderer so a sync
+        // job sub-row stops spinning the instant the job finishes, ahead of
+        // the manager's summary.
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
+
+        presenter.on_manager_job_flushed("build-check");
+
+        match rx.try_recv().expect("should receive JobFlushed") {
+            DagEvent::JobFlushed {
+                branch_name,
+                hook_type,
+                job_name,
+            } => {
+                assert_eq!(branch_name, "feat/x");
+                assert_eq!(hook_type, DagHookPhase::PrePush);
+                assert_eq!(job_name, "build-check");
+            }
+            other => panic!("expected JobFlushed, got {other:?}"),
         }
     }
 

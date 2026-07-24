@@ -79,9 +79,18 @@ pub struct HookSubRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobSubStatus {
     Running,
+    /// A recognized manager job whose output block flushed but whose verdict
+    /// the manager has not yet stamped (#753): it has *finished running* but
+    /// the confirmed outcome + official duration arrive with the end-of-run
+    /// summary. Rendered as a neutral grey check — never the green of a
+    /// confirmed success — until the `JobCompleted` that resolves it.
+    DonePending,
     Succeeded(Duration),
     Failed(Duration),
-    Skipped { duration: Duration, reason: String },
+    Skipped {
+        duration: Duration,
+        reason: String,
+    },
 }
 
 /// A job sub-row displayed beneath a hook sub-row in -v mode.
@@ -515,6 +524,22 @@ impl TuiState {
                         status: JobSubStatus::Running,
                         children: Vec::new(),
                     });
+                }
+            }
+            DagEvent::JobFlushed {
+                branch_name,
+                hook_type,
+                job_name,
+            } => {
+                // The job's block flushed: it finished running, verdict
+                // pending. Settle a still-spinning row to the neutral grey
+                // check. Guarded to `Running` only so a verdict that somehow
+                // beat the flush (or a duplicate flush) never un-resolves a
+                // row the summary already stamped.
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, job_name)
+                    && job_sub.status == JobSubStatus::Running
+                {
+                    job_sub.status = JobSubStatus::DonePending;
                 }
             }
             DagEvent::JobCompleted {
@@ -1615,6 +1640,165 @@ mod tests {
         assert_eq!(
             row.hook_sub_rows[0].job_sub_rows[0].status,
             JobSubStatus::Succeeded(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn job_flushed_settles_running_row_to_done_pending() {
+        // #753: a manager job's block flushes when it finishes running,
+        // ahead of the summary. The row must stop spinning now — settle to
+        // the neutral grey DonePending, not wait for the verdict.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::DonePending,
+        );
+    }
+
+    #[test]
+    fn a_flushed_job_confirms_green_at_the_summary() {
+        // The grey DonePending resolves to the confirmed green + official
+        // duration when the summary's JobCompleted lands.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(2100),
+            skip_reason: None,
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(2100)),
+        );
+    }
+
+    #[test]
+    fn a_flushed_jobs_verdict_wins_when_the_summary_flips_it_to_failed() {
+        // The transient must never get stuck grey: a job that flushed to
+        // DonePending but the summary (or a killed-phase sweep) reveals as
+        // failed flips straight to red. DonePending never claimed success, so
+        // this is honest, not a green→red repaint.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+            status: JobCompletionStatus::Failed,
+            duration: Duration::from_millis(500),
+            skip_reason: None,
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Failed(Duration::from_millis(500)),
+        );
+    }
+
+    #[test]
+    fn job_flushed_never_reverts_an_already_resolved_row() {
+        // A late or duplicate flush after the verdict already landed must not
+        // drag a green/red row back to grey. The Running-only guard holds.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(300),
+            skip_reason: None,
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(300)),
         );
     }
 
