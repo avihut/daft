@@ -139,23 +139,26 @@ never keeps an identity ink.
   `git push` and daft sees one output stream. When that stream is a **hook
   manager** (lefthook 2.x — every released 2.x version is covered), daft
   recognizes its line grammar and renders the manager's jobs as first-class rows
-  under the `├─ pre-push hooks` anchor: live spinners as each job's block
-  streams in, one receipt per job with the manager's own names and durations,
-  and a failure dump scoped to the failing job
+  under the `├─ pre-push hooks` anchor. daft reads the manager's config for the
+  job list, so every job — including one that runs for minutes — is a live
+  spinner from the moment the manager engages, not only once its output finally
+  arrives; each resolves to its own receipt with the manager's own name and
+  duration, and a failure dump is scoped to the failing job
   (`error: hook job 'unit tests (related)' failed:`) instead of the whole run.
-  While the phase runs, a dim census row atop the section counts jobs as they
-  appear (`lefthook v2.1.10 · 3 jobs` — lefthook announces no upfront total),
-  and vanishes when the phase settles; in verbose mode the closing note keeps
-  the manager's identity for scrollback
-  (`└ all jobs in 42.4s · lefthook v2.1.10`). Output daft does not recognize — a
-  plain script, husky, an unknown tool — passes through untouched as the single
-  `pre-push` job, exactly as before; jobs the manager never resolved (killed
-  mid-run) settle with the push verdict so no row is left spinning, and the push
-  verdict itself always comes from git's own result, never from recognized
-  output. `daft.hooks.output.parseManagers=false` turns recognition off
-  entirely. `daft sync --push` reports the same structure in its table: the
-  manager's jobs as `-v` sub-rows, the hook line annotated with the manager's
-  identity, and the post-run `Hooks:` report naming the failing job
+  (Managers report per-job pass/fail and durations only in their end-of-run
+  summary, so the rows spin until the run finishes and then resolve together.)
+  While the phase runs, a dim census row atop the section names the manager and
+  its job count (`lefthook v2.1.10 · 3 jobs`) and vanishes when the phase
+  settles; in verbose mode the closing note keeps the manager's identity for
+  scrollback (`└ all jobs in 42.4s · lefthook v2.1.10`). Output daft does not
+  recognize — a plain script, husky, an unknown tool — passes through untouched
+  as the single `pre-push` job, exactly as before; jobs the manager never
+  resolved (killed mid-run) settle with the push verdict so no row is left
+  spinning, and the push verdict itself always comes from git's own result,
+  never from recognized output. `daft.hooks.output.parseManagers=false` turns
+  recognition off entirely. `daft sync --push` reports the same structure in its
+  table: the manager's jobs as `-v` sub-rows, the hook line annotated with the
+  manager's identity, and the post-run `Hooks:` report naming the failing job
   (`pre-push · unit tests (related) failed`) with only that job's output.
 - Pass `-v` — or set `daft.hooks.output.verbose` — to thread each job's log
   under its row. The section anchor gains the hook key and engine version
