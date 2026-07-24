@@ -72,10 +72,14 @@ pub enum ManagerEvent {
         ok: bool,
         duration: Option<Duration>,
     },
-    /// The manager reported the phase finished. Jobs still unresolved after
-    /// the stream ends (no summary: manager killed, output suppressed) are
-    /// the consumer's to reconcile against the phase verdict.
-    PhaseDone { total: Option<Duration> },
+    /// The manager reported the phase finished — its summary section opened.
+    /// The presence of this event is the signal that the manager ran to a
+    /// clean report: a seeded job still unresolved once the summary is in was
+    /// deliberately not run (a piped stop, a silent condition/glob skip), not
+    /// killed mid-flight. Jobs unresolved when the stream ends *without* a
+    /// summary (manager killed, output suppressed) are the consumer's to
+    /// reconcile against the phase verdict.
+    PhaseDone,
 }
 
 /// One probing step: what a still-undecided recognizer made of a line.

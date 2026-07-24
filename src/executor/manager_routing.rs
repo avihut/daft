@@ -240,7 +240,7 @@ impl ManagerRoutingPresenter {
                 // The rail's section close renders from the real
                 // `on_phase_complete`; the manager's own total is surfaced
                 // by the engaged annotation (separate change).
-                ManagerEvent::PhaseDone { .. } => {}
+                ManagerEvent::PhaseDone => {}
             }
         }
     }
@@ -452,10 +452,10 @@ impl JobPresenter for LifecycleRoutingPresenter {
                             }
                         }
                         // Child lines already reached the parent raw; skips
-                        // and totals stay parent-level noise here.
+                        // and the summary marker stay parent-level noise here.
                         ManagerEvent::JobOutput { .. }
                         | ManagerEvent::JobSkipped { .. }
-                        | ManagerEvent::PhaseDone { .. } => {}
+                        | ManagerEvent::PhaseDone => {}
                     }
                 }
             }

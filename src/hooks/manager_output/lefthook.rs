@@ -71,9 +71,13 @@ static OUTCOME: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid regex")
 });
 
-/// Phase total inside the `summary:` line: `(done in 0.77 seconds)`.
-static SUMMARY_TOTAL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(done in\s+(\d+(?:\.\d+)?)\s*seconds?\)").expect("valid regex"));
+/// The summary section opener: `summary: (done in 0.77 seconds)` or
+/// `summary: (skipped)`. Gated to the parenthesized form lefthook always
+/// prints, so a job whose *own* output starts a line `summary: …` (a test
+/// runner's `summary: 12 passed`) is not mistaken for the section boundary —
+/// which would strand every following block line before the real summary.
+static SUMMARY_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^summary:\s*\(").expect("valid regex"));
 
 enum State {
     /// Undecided; only banner-prefix lines are tolerated.
@@ -117,7 +121,15 @@ impl Default for Lefthook {
 }
 
 fn parse_seconds(text: &str) -> Option<Duration> {
-    text.parse::<f64>().ok().map(Duration::from_secs_f64)
+    // `try_from_secs_f64`, not `from_secs_f64`: the latter panics on a
+    // non-finite or overflowing value, and a ~20-digit seconds token (a
+    // job's own garbled output, a corrupt capture) parses to a finite f64
+    // that overflows `Duration`. A panic here unwinds while the routing
+    // presenter holds its state mutex, poisoning it for the sibling drain
+    // thread — so a bad number must degrade to "no duration", never a crash.
+    text.parse::<f64>()
+        .ok()
+        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
 }
 
 /// Config file names lefthook reads from a repo root, in preference order.
@@ -216,13 +228,10 @@ impl ManagerRecognizer for Lefthook {
                 Vec::new()
             }
             State::Body => {
-                if line.starts_with("summary:") {
+                if SUMMARY_OPEN.is_match(&line) {
                     self.state = State::Summary;
                     self.current_job = None;
-                    let total = SUMMARY_TOTAL
-                        .captures(&line)
-                        .and_then(|c| parse_seconds(&c[1]));
-                    return vec![ManagerEvent::PhaseDone { total }];
+                    return vec![ManagerEvent::PhaseDone];
                 }
                 if let Some(captures) = JOB_HEADER.captures(&line) {
                     let name = captures[1].to_string();
@@ -235,13 +244,17 @@ impl ManagerRecognizer for Lefthook {
                         reason: captures[2].to_string(),
                     }];
                 }
-                if SEPARATOR.is_match(&line) {
-                    // The summary separator closes the last block; blanks
-                    // after it must not be attributed to that job.
-                    self.current_job = None;
-                    return Vec::new();
-                }
-                if BOTTOM_FRAME.is_match(&line) || TOP_FRAME.is_match(&line) {
+                if SEPARATOR.is_match(&line)
+                    || BOTTOM_FRAME.is_match(&line)
+                    || TOP_FRAME.is_match(&line)
+                {
+                    // Decoration: the pre-summary rule, or a box frame. Drop
+                    // the line but keep the block open — clearing current_job
+                    // here would strand every following line of a job whose
+                    // own output drew a `────` rule or a frame (its error tail
+                    // and `exit status N` included). The real block boundary
+                    // is the next `┃` header or the `summary:` opener, both of
+                    // which reset current_job themselves.
                     return Vec::new();
                 }
                 if self.current_job.is_none() && line.starts_with("sync hooks:") {
@@ -390,7 +403,7 @@ mod tests {
         fn phase_done_count(&self) -> usize {
             self.events
                 .iter()
-                .filter(|e| matches!(e, ManagerEvent::PhaseDone { .. }))
+                .filter(|e| matches!(e, ManagerEvent::PhaseDone))
                 .count()
         }
     }
@@ -675,11 +688,80 @@ mod tests {
     }
 
     #[test]
-    fn a_summary_without_a_parsable_total_still_opens_the_summary() {
+    fn a_bare_skipped_summary_still_opens_the_summary() {
         let mut recognizer = Lefthook::new();
         recognizer.probe("│ 🥊 lefthook v2.0.0  hook: pre-push │");
         let events = recognizer.feed("summary: (skipped)");
-        assert_eq!(events, vec![ManagerEvent::PhaseDone { total: None }]);
+        assert_eq!(events, vec![ManagerEvent::PhaseDone]);
+    }
+
+    #[test]
+    fn a_job_line_starting_summary_is_not_the_section_boundary() {
+        // A test runner printing `summary: 12 passed` inside its own block
+        // must stay block output — matching it as the manager's summary would
+        // end parsing early and strand every following job (#753 review).
+        let mut recognizer = Lefthook::new();
+        recognizer.probe("│ 🥊 lefthook v2.0.0  hook: pre-push │");
+        recognizer.feed("┃  tests ❯ ");
+        let mid_block = recognizer.feed("summary: 12 passed, 0 failed");
+        assert_eq!(
+            mid_block,
+            vec![ManagerEvent::JobOutput {
+                name: "tests".to_string(),
+                line: "summary: 12 passed, 0 failed".to_string(),
+            }],
+            "a job's own `summary: …` line is block output, not the boundary"
+        );
+        // The next real block header still parses — the state machine never
+        // slipped into Summary.
+        let next = recognizer.feed("┃  clippy ❯ ");
+        assert_eq!(
+            next,
+            vec![ManagerEvent::JobStarted {
+                name: "clippy".to_string()
+            }],
+            "the real block after a false summary line still starts"
+        );
+        // And the true summary (parenthesized) does open the section.
+        assert_eq!(
+            recognizer.feed("summary: (done in 1.0 seconds)"),
+            vec![ManagerEvent::PhaseDone]
+        );
+    }
+
+    #[test]
+    fn a_rule_inside_a_job_block_does_not_truncate_it() {
+        // A job drawing a `────` divider (a formatter/test-runner rule) must
+        // not close its own block — the error tail after the rule is exactly
+        // what a failure dump needs (#753 review).
+        let mut recognizer = Lefthook::new();
+        recognizer.probe("│ 🥊 lefthook v2.0.0  hook: pre-push │");
+        recognizer.feed("┃  tests ❯ ");
+        recognizer.feed("running suite");
+        let rule = recognizer.feed("────────────");
+        assert!(
+            rule.is_empty(),
+            "the rule line itself is dropped decoration"
+        );
+        let after = recognizer.feed("FAILED: assertion at foo.rs:12");
+        assert_eq!(
+            after,
+            vec![ManagerEvent::JobOutput {
+                name: "tests".to_string(),
+                line: "FAILED: assertion at foo.rs:12".to_string(),
+            }],
+            "output after an in-block rule stays attributed to the job"
+        );
+    }
+
+    #[test]
+    fn a_pathological_seconds_token_yields_no_duration_not_a_panic() {
+        // A ~20-digit seconds value parses to a finite f64 that overflows
+        // Duration; `try_from_secs_f64` must degrade to None rather than panic
+        // and poison the routing mutex (#753 review).
+        assert_eq!(parse_seconds("99999999999999999999"), None);
+        assert_eq!(parse_seconds("inf"), None);
+        assert_eq!(parse_seconds("0.5"), Some(Duration::from_secs_f64(0.5)));
     }
 
     // ── roster seed (#753) ────────────────────────────────────────────────
