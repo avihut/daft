@@ -10,7 +10,7 @@ use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
     HookVerdict, PushAction, PushPayload, push_with_hooks, resolve_pre_push_plan,
 };
-use crate::core::{HookOutcome, HookRunner, ProgressSink};
+use crate::core::{HookRunner, ProgressSink};
 use crate::executor::presenter::JobPresenter;
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -72,7 +72,6 @@ pub struct CheckoutBranchResult {
     pub push_set: bool,
     pub push_skipped: bool,
     pub git_dir: PathBuf,
-    pub post_hook_outcome: HookOutcome,
 }
 
 /// Execute the checkout-branch operation.
@@ -365,7 +364,37 @@ pub fn execute(
     .with_new_branch(true)
     .with_base_branch(&base_branch);
 
-    let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
+    // A failed post-create aborts by default (#765): the Err propagates to
+    // the command layer, which returns before the `-x` tail and exits
+    // non-zero. Under `failMode=warn` the run returns Ok (success: false)
+    // and the command proceeds — that outcome is deliberately not captured;
+    // Err propagation is the single abort mechanism.
+    let post_create_result = sink.run_hook(&post_hook_ctx);
+
+    // The upstream push ran before the hook, so on a post-create abort the
+    // remote state is already mutated — surface it now, because the abort
+    // error below becomes the command's failure and the deferred pre-push
+    // gate bail (#599) a few lines down is never reached (#765 review,
+    // findings 4 & 5).
+    if post_create_result.is_err() {
+        if let Some(message) = &push_gate_error {
+            sink.on_warning(&format!(
+                "the upstream push of '{}' was refused: {message}",
+                params.new_branch_name
+            ));
+        } else if push_set {
+            sink.on_warning(&format!(
+                "note: '{}' was already pushed to '{}' before the hook failed",
+                params.new_branch_name, params.remote_name
+            ));
+        }
+    }
+
+    // `was_new_branch = true`: this command created the branch, so `daft remove`
+    // is a safe cleanup suggestion.
+    post_create_result.map_err(|e| {
+        super::post_create_failure_error(e, &worktree_path, &params.new_branch_name, true)
+    })?;
 
     // The worktree is fully set up — now surface a deferred pre-push gate
     // refusal as the command's failure (#599 acceptance: non-zero exit).
@@ -383,7 +412,6 @@ pub fn execute(
         push_set,
         push_skipped,
         git_dir,
-        post_hook_outcome,
     })
 }
 

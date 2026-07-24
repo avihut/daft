@@ -54,7 +54,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/retry 2>&1
     cwd: "$WORK_DIR/test-retry-empty/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
       output_contains:
         - "failing on purpose"
 

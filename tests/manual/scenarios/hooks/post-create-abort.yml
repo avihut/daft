@@ -1,0 +1,81 @@
+name: Post-create hook failure aborts by default, failMode=warn opts out
+description:
+  "A failing worktree-post-create hook makes the creation command skip its
+  -x/--exec tail and exit non-zero, while the worktree itself is kept on disk
+  (#765). Setting daft.hooks.worktreePostCreate.failMode=warn restores the old
+  continue-on-failure behavior: -x runs and the command exits 0."
+
+repos:
+  - name: test-pc-abort
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Post-create abort test"
+        commits:
+          - message: "Initial commit"
+      - name: feat-abort
+        from: main
+      - name: feat-warn
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: exit 1
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_PC_ABORT
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-pc-abort/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout with failing post-create skips -x and exits non-zero
+    run: git-worktree-checkout feat-abort -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pc-abort/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "worktree-post-create hook failed"
+        - "created and kept"
+      files_not_exist:
+        - "$WORK_DIR/test-pc-abort/feat-abort/exec-marker.txt"
+      dirs_exist:
+        - "$WORK_DIR/test-pc-abort/feat-abort"
+
+  - name: New-branch creation with failing post-create also aborts before -x
+    run: git-worktree-checkout -b feat-new -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pc-abort/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "worktree-post-create hook failed"
+        - "created and kept"
+      files_not_exist:
+        - "$WORK_DIR/test-pc-abort/feat-new/exec-marker.txt"
+      dirs_exist:
+        - "$WORK_DIR/test-pc-abort/feat-new"
+
+  - name: failMode=warn restores continue-on-failure
+    run: git config daft.hooks.worktreePostCreate.failMode warn
+    cwd: "$WORK_DIR/test-pc-abort/main"
+    expect:
+      exit_code: 0
+
+  - name: Checkout under warn runs -x and exits 0 despite the failing hook
+    run: git-worktree-checkout feat-warn -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pc-abort/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "continuing anyway"
+      files_exist:
+        - "$WORK_DIR/test-pc-abort/feat-warn/exec-marker.txt"

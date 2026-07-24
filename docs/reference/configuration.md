@@ -298,6 +298,9 @@ Hook names: `postClone`, `worktreePreCreate`, `worktreePostCreate`,
 Default fail modes:
 
 - `worktreePreCreate`: `abort` (setup must succeed before creating worktree)
+- `worktreePostCreate`: `abort` (a failed setup makes the creation command exit
+  non-zero and skip its `-x`/`--exec` commands; the worktree is kept on disk)
+- `preMerge`: `abort` (gates the merge)
 - All others: `warn` (don't block operations)
 
 ### Hook Output Settings
@@ -349,8 +352,8 @@ git config daft.update.args "--rebase"
 # Disable hooks globally
 git config --global daft.hooks.enabled false
 
-# Make post-create hooks abort on failure
-git config daft.hooks.worktreePostCreate.failMode abort
+# Let creation commands continue past a failing post-create hook
+git config daft.hooks.worktreePostCreate.failMode warn
 ```
 
 ## Environment Variables

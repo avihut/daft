@@ -45,7 +45,7 @@
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
 //! | `daft.hooks.output.verbose` | `false` | Show skipped jobs and their reasons |
 //! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
-//! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn) |
+//! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn). Defaults: `worktreePreCreate`, `worktreePostCreate`, `preMerge` abort; all others warn |
 //!
 //! # Example
 //!
@@ -59,8 +59,8 @@
 //! # Disable hooks globally
 //! git config --global daft.hooks.enabled false
 //!
-//! # Make post-create hooks abort on failure
-//! git config daft.hooks.postCreate.failMode abort
+//! # Let creation commands continue past a failing post-create hook
+//! git config daft.hooks.worktreePostCreate.failMode warn
 //! ```
 
 use crate::core::worktree::list::Stat;

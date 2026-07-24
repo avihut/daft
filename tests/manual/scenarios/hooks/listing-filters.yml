@@ -40,7 +40,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/filters 2>&1
     cwd: "$WORK_DIR/test-listing-filters/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: Filter by --status failed shows the invocation
     run: daft hooks jobs --status failed 2>&1

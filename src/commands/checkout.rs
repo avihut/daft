@@ -1969,23 +1969,39 @@ fn run_start_with_related(
 
     let original_dir = get_current_directory()?;
 
-    // 1) Current repo first — its failure aborts the whole fan-out.
+    // 1) Current repo first. A genuine *creation* failure aborts the whole
+    //    fan-out. A post-create *hook* failure does not (#765): the worktree
+    //    was created, so siblings still get the branch — matching the pre-#765
+    //    fan-out reach — and the command exits non-zero at the end instead.
     let git = GitCommand::new(args.quiet);
     let settings = DaftSettings::load_with(&git)?;
     let git = git.with_gitoxide(settings.use_gitoxide);
     let autocd = settings.autocd && !args.no_cd;
     let mut output = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, autocd));
 
-    let current_result = match run_create_branch_core(&args, &settings, &git, &mut output) {
-        Ok(result) => result,
-        Err(e) => {
-            change_directory(&original_dir).ok();
-            return Err(e);
-        }
-    };
+    let (current_cd_target, current_post_create_failed) =
+        match run_create_branch_core(&args, &settings, &git, &mut output) {
+            Ok(result) => (result.cd_target, false),
+            Err(e) => match e.downcast::<crate::core::worktree::PostCreateHookFailed>() {
+                // Worktree created here — only the post-create hook failed.
+                // Surface its recovery hint, then carry on to the fan-out.
+                Ok(failed) => {
+                    output.error(&failed.to_string());
+                    (failed.worktree_path.clone(), true)
+                }
+                // Anything else means the branch was not created here: abort.
+                Err(e) => {
+                    change_directory(&original_dir).ok();
+                    return Err(e);
+                }
+            },
+        };
 
-    // 2) Every related repo, collecting failures instead of cascading.
-    let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
+    // 2) Every related repo, distinguishing a post-create hook failure (branch
+    //    created there, only the hook broke) from a genuine creation failure —
+    //    the former must not be reported as "creation failed".
+    let mut creation_failures: Vec<(String, anyhow::Error)> = Vec::new();
+    let mut post_create_failures: Vec<String> = Vec::new();
     for relation in &resolved {
         let row = relation.repo.as_ref().expect("verified upfront");
         output.result(&format!(
@@ -1993,33 +2009,65 @@ fn run_start_with_related(
             args.branch_name, row.name
         ));
         if let Err(e) = create_branch_in_related_repo(row, &args, &mut output) {
-            failures.push((row.name.clone(), e));
+            match e.downcast::<crate::core::worktree::PostCreateHookFailed>() {
+                Ok(_) => post_create_failures.push(row.name.clone()),
+                Err(e) => creation_failures.push((row.name.clone(), e)),
+            }
         }
     }
 
     // 3) Settle in the current repo's new worktree.
-    change_directory(&current_result.cd_target)?;
+    change_directory(&current_cd_target)?;
     if let Some(src) = source_worktree
         && let Ok(git_dir) = get_git_common_dir()
     {
         let _ = previous::save(&git_dir, &src);
     }
 
-    // -x runs only in the current repo (documented).
-    let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
-    output.cd_path(&current_result.cd_target);
-    maybe_show_shell_hint(&mut output)?;
-    exec_result?;
+    // -x runs only in the current repo (documented), and only if its
+    // post-create hook succeeded: #765 skips the -x tail on a failed hook and
+    // does not teleport the shell into the half-set-up worktree.
+    if current_post_create_failed {
+        maybe_show_shell_hint(&mut output)?;
+    } else {
+        let exec_result = crate::exec::run_exec_commands(&args.exec, &mut output);
+        output.cd_path(&current_cd_target);
+        maybe_show_shell_hint(&mut output)?;
+        exec_result?;
+    }
 
-    if !failures.is_empty() {
-        for (name, e) in &failures {
-            output.warning(&format!("'{name}': {e}"));
+    // Any post-create hook failure (here or in a sibling) or any genuine
+    // creation failure makes the command exit non-zero (#765).
+    if current_post_create_failed
+        || !post_create_failures.is_empty()
+        || !creation_failures.is_empty()
+    {
+        for (name, e) in &creation_failures {
+            output.warning(&format!("'{name}': creation failed: {e}"));
         }
-        anyhow::bail!(
-            "branch '{}' created here, but creation failed in {} related repo(s)",
-            args.branch_name,
-            failures.len()
-        );
+        for name in &post_create_failures {
+            output.warning(&format!(
+                "'{name}': branch created, but its worktree-post-create hook failed"
+            ));
+        }
+
+        let mut problems: Vec<String> = Vec::new();
+        if current_post_create_failed {
+            problems.push("its post-create hook failed here".to_string());
+        }
+        if !post_create_failures.is_empty() {
+            problems.push(format!(
+                "the post-create hook failed in {} related repo(s)",
+                post_create_failures.len()
+            ));
+        }
+        if !creation_failures.is_empty() {
+            problems.push(format!(
+                "creation failed in {} related repo(s)",
+                creation_failures.len()
+            ));
+        }
+        anyhow::bail!("branch '{}': {}", args.branch_name, problems.join("; "));
     }
     Ok(())
 }

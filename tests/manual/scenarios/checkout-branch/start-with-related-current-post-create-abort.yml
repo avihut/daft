@@ -1,0 +1,76 @@
+name: Start --with-related fans out despite a current-repo post-create failure
+description:
+  "A failing worktree-post-create hook in the primary repo of a daft start
+  --with-related fan-out must NOT abort the fan-out (#765 review): the branch is
+  still created in every related repo, the primary worktree is kept, and the
+  command exits non-zero. Regression test — Err propagation from the creation
+  core previously short-circuited the sibling repos entirely."
+
+repos:
+  - name: test-rel-a
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# rel-a"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: setup
+              run: exit 1
+  - name: test-rel-b
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# rel-b"
+        commits:
+          - message: "Initial commit"
+
+steps:
+  - name: Clone both repos
+    run:
+      git-worktree-clone --layout contained $REMOTE_TEST_REL_A &&
+      git-worktree-clone --layout contained $REMOTE_TEST_REL_B
+    expect:
+      exit_code: 0
+
+  - name: Trust both repos
+    run:
+      'cd "$WORK_DIR/test-rel-a/main" && daft hooks trust --force && cd
+      "$WORK_DIR/test-rel-b/main" && daft hooks trust --force 2>&1'
+    expect:
+      exit_code: 0
+
+  - name: Declare a relation from A to B (keeping the committed failing hook)
+    run: |
+      printf 'relations:\n  - url: %s\n' "$REMOTE_TEST_REL_B" >> daft.yml
+    cwd: "$WORK_DIR/test-rel-a/main"
+    expect:
+      exit_code: 0
+
+  - name: Fan-out reaches the sibling even though the primary hook failed
+    run: daft start feat-sync --with-related 2>&1
+    cwd: "$WORK_DIR/test-rel-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "worktree-post-create hook failed"
+        - "Creating 'feat-sync' in 'test-rel-b'"
+        - "its post-create hook failed here"
+      dirs_exist:
+        - "$WORK_DIR/test-rel-a/feat-sync"
+        - "$WORK_DIR/test-rel-b/feat-sync"
+
+  - name: The sibling branch reached its remote
+    run: "true"
+    expect:
+      exit_code: 0
+      branch_exists:
+        - repo: test-rel-b
+          branch: feat-sync

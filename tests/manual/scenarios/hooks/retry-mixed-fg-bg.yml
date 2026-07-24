@@ -44,7 +44,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/mix 2>&1
     cwd: "$WORK_DIR/test-retry-mixed/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: Wait for bg-fail to reach terminal state, then list
     # The old loop exited as soon as ANY job had status "failed", which
