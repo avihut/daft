@@ -7,7 +7,7 @@ description:
   environment isolation, or when users ask about worktree-based workflows.
   Covers daft commands, hooks automation via daft.yml, and environment tooling
   like mise, direnv, nvm, and pyenv.
-daft_version: "1.23.0"
+daft_version: "1.23.1"
 ---
 
 # daft Worktree Workflow
