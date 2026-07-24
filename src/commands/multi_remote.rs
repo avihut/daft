@@ -702,11 +702,21 @@ fn cmd_move(
     let delete_may_render = delete_old && settings.push_verify == PushVerify::Always;
     let push_presenter: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> =
         if (push || delete_may_render) && !no_verify && git.pre_push_hook_exists(&new_path) {
-            let p: std::sync::Arc<dyn crate::executor::presenter::JobPresenter> =
-                crate::executor::cli_presenter::CliPresenter::auto(
-                    &crate::settings::HookOutputConfig::default(),
-                );
-            Some(p)
+            // The repo's configured output settings, not defaults — this site
+            // used `HookOutputConfig::default()` and silently ignored the
+            // user's `daft.hooks.output.*` config.
+            let hook_output_config = crate::core::settings::load_hooks_config_with(&git)?.output;
+            let p: Option<std::sync::Arc<dyn crate::executor::presenter::JobPresenter>> = Some(
+                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config),
+            );
+            // A recognized hook manager's jobs render as first-class rows
+            // (#753), seeded from the moved worktree's config; unrecognized
+            // streams keep today's synthetic job.
+            crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
+                &hook_output_config,
+                Some(new_path.as_path()),
+                p,
+            )
         } else {
             None
         };

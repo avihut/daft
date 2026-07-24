@@ -736,6 +736,15 @@ fn run_branch_delete(
         } else {
             None
         };
+    // A recognized hook manager's jobs render as first-class rows (#753);
+    // unrecognized streams keep today's synthetic pre-push job. No roster seed:
+    // this is the branch-delete pre-push path (a remote delete has no local
+    // job roster to seed) — jobs reveal as the manager completes them.
+    let push_presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
+        &hook_output_config,
+        None,
+        push_presenter,
+    );
 
     if interactive {
         // The rail opens immediately; validation runs under the planning

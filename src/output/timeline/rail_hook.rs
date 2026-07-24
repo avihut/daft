@@ -55,6 +55,75 @@ struct JobState {
     /// The succinct live annotation: latest output line, seeded from the
     /// job's description. Kept unpainted; painted at composition.
     annotation: Option<String>,
+    /// Nested manager children (#753): a manager recognized inside this
+    /// job's output reports its own jobs, rendered one tier deeper. Live
+    /// bars flip to receipt faces in place (a println receipt cannot land
+    /// under a still-running parent); the whole set persists as one batch
+    /// when the parent resolves.
+    children: Vec<ChildState>,
+    /// Alignment column for this parent's child receipts.
+    child_width: usize,
+}
+
+/// One nested manager child row.
+struct ChildState {
+    name: String,
+    bar: ProgressBar,
+    /// The resolved face, once known. `None` while running.
+    outcome: Option<ChildOutcome>,
+}
+
+/// A nested child's resolved face (#753). Public: the presenter dispatch
+/// translates `on_child_job_*` events into these.
+pub enum ChildOutcome {
+    Done(Duration),
+    Failed(Duration),
+    Cancelled(Duration),
+}
+
+/// The rail's dim, parenthesized duration vocabulary — shown only at ≥1s.
+/// One definition for both row faces ([`RailHookRenderer::duration_annotation`])
+/// and nested child receipts ([`child_receipt_row`]), so the threshold, colour,
+/// and parenthesization can't drift between a parent row and its children.
+fn dim_duration(duration: Duration, use_color: bool) -> Option<String> {
+    (duration >= render::DURATION_THRESHOLD)
+        .then(|| render::paint(GREY, &format!("({})", format_duration(duration)), use_color))
+}
+
+/// Compose a child's receipt row: the ordinary hook-job vocabulary, padded to
+/// the parent's child column. The caller supplies the gutter tiers.
+fn child_receipt_row(name: &str, outcome: &ChildOutcome, width: usize, use_color: bool) -> String {
+    match outcome {
+        ChildOutcome::Done(duration) => render::hook_job_row(
+            &HookJobFace::Done {
+                duration: Some(*duration),
+            },
+            name,
+            None,
+            width,
+            use_color,
+        ),
+        ChildOutcome::Failed(duration) => render::hook_job_row(
+            &HookJobFace::Failed,
+            name,
+            dim_duration(*duration, use_color).as_deref(),
+            width,
+            use_color,
+        ),
+        ChildOutcome::Cancelled(duration) => {
+            let annotation = match dim_duration(*duration, use_color) {
+                Some(d) => format!("cancelled {d}"),
+                None => "cancelled".to_string(),
+            };
+            render::hook_job_row(
+                &HookJobFace::Cancelled,
+                name,
+                Some(&annotation),
+                width,
+                use_color,
+            )
+        }
+    }
 }
 
 pub struct RailHookRenderer {
@@ -80,6 +149,15 @@ pub struct RailHookRenderer {
     /// The main job-spinner row style (`{spinner:.cyan}  {wide_msg}`, gutter +
     /// group tier). The thread sub-row styles live in [`ThreadStyles`].
     job_style: ProgressStyle,
+    /// Nested manager children live one gutter tier deeper than job rows.
+    child_style: ProgressStyle,
+    /// A resolved child's bar flips to this message-only style — its receipt
+    /// face rides the message until the parent settles and persists it.
+    child_receipt_style: ProgressStyle,
+    /// A done-pending job's bar flips to this message-only style (job tier):
+    /// the grey `✓` face rides the message in place of the spinner until the
+    /// summary persists the confirmed receipt (#753).
+    job_receipt_style: ProgressStyle,
     thread_styles: ThreadStyles,
     jobs: HashMap<String, JobState>,
     /// Jobs already resolved `✗` — used to intercept the runner's redundant
@@ -89,6 +167,17 @@ pub struct RailHookRenderer {
     finished: Vec<JobResultEntry>,
     /// Running max of started job names; live bars re-pad when it grows.
     name_width: usize,
+    /// The recognized hook manager's identity (`lefthook v2.1.10`), set by
+    /// [`Self::set_manager_engaged`]. Folded into the persisted section header
+    /// as its annotation, so the manager + version stay on screen for the
+    /// whole run and in scrollback after.
+    manager_fact: Option<String>,
+    /// The deferred `├─ <section>` header's hook name (#753): stored at
+    /// `print_header` and printed lazily on the first content, so a manager
+    /// that engages first can fold its identity in. `None` once flushed. The
+    /// `target` arg is dropped — the rail header or branch anchor already
+    /// names the target.
+    pending_header: Option<String>,
 }
 
 impl RailHookRenderer {
@@ -114,6 +203,23 @@ impl RailHookRenderer {
         let job_style = ProgressStyle::with_template(&tier(render::gutter(base, embed.use_color)))
             .expect("job template is valid")
             .tick_chars(super::region::TICK_CHARS);
+        let child_style = ProgressStyle::with_template(&tier(render::gutter(
+            &render::gutter(base, embed.use_color),
+            embed.use_color,
+        )))
+        .expect("child template is valid")
+        .tick_chars(super::region::TICK_CHARS);
+        let child_receipt_style = ProgressStyle::with_template(&tier(render::gutter(
+            &render::gutter("{wide_msg}", embed.use_color),
+            embed.use_color,
+        )))
+        .expect("child receipt template is valid");
+        // A done-pending job's receipt face rides `{wide_msg}` with no spinner,
+        // one tier shallower than a child receipt (job rows sit at the section
+        // depth).
+        let job_receipt_style =
+            ProgressStyle::with_template(&tier(render::gutter("{wide_msg}", embed.use_color)))
+                .expect("job receipt template is valid");
         // Hook job rows sit inside their `├─` section (depth 1); a section in
         // a group span nests one tier deeper (depth 2).
         let thread_styles = ThreadStyles::new(embed.use_color, if embed.in_group { 2 } else { 1 });
@@ -129,34 +235,69 @@ impl RailHookRenderer {
             section_label: embed.section_label,
             in_group: embed.in_group,
             job_style,
+            child_style,
+            child_receipt_style,
+            job_receipt_style,
             thread_styles,
             jobs: HashMap::new(),
             failed: HashSet::new(),
             finished: Vec::new(),
             name_width: 0,
+            manager_fact: None,
+            pending_header: None,
         }
     }
 
-    /// The `├─ <section>` anchor. The consumed rail row's label names the
-    /// section; gate embeds (pre-push under an active Push row) fall back to
-    /// the phase name. Verbose carries the banner's surviving facts — the
-    /// raw hook key (the daft.yml lookup key) and the engine version — as a
-    /// grey annotation; the `on: <target>` segment is gone for good, because
-    /// the rail header or branch anchor already names the target. When the
-    /// key IS the label (`daft run` tasks: the section is the daft.yml
-    /// lookup key), the annotation keeps only the version — no stutter.
-    pub fn print_header(&self, hook_name: &str, _target: Option<&str>) {
+    /// A hook manager engaged on the gate stream (#753): record its identity
+    /// so the section header names it, then flush the header. The header was
+    /// held until now precisely so a manager engaging before the first job row
+    /// (~0.3s, ahead of any completion) could be folded in — an already
+    /// `println`'d header could never gain the fact.
+    pub fn set_manager_engaged(&mut self, manager: &str, version: Option<&str>) {
+        let fact = match version {
+            Some(version) => format!("{manager} v{version}"),
+            None => manager.to_string(),
+        };
+        self.manager_fact = Some(fact);
+        self.ensure_header();
+    }
+
+    /// Store the `├─ <section>` header; [`Self::ensure_header`] prints it
+    /// lazily on the first content line. Deferring is what lets a manager that
+    /// engages first fold its identity into the annotation.
+    pub fn print_header(&mut self, hook_name: &str, _target: Option<&str>) {
+        self.pending_header = Some(hook_name.to_string());
+    }
+
+    /// Flush the deferred header exactly once, before the first content line.
+    /// The consumed rail row's label names the section; gate embeds (pre-push
+    /// under an active Push row) fall back to the phase name. The annotation
+    /// carries a recognized manager's identity (`lefthook v2.1.10`) at both
+    /// densities — the run's provenance, kept on screen and in scrollback — or,
+    /// absent a manager, verbose's raw hook key (the daft.yml lookup key) plus
+    /// the engine version. The `on: <target>` segment is gone for good: the
+    /// rail header or branch anchor already names the target. When the key IS
+    /// the label (`daft run` tasks), the annotation keeps only the version — no
+    /// stutter.
+    fn ensure_header(&mut self) {
+        let Some(hook_name) = self.pending_header.take() else {
+            return;
+        };
         let label = match &self.section_label {
             Some(label) => label.clone(),
             None => format!("{hook_name} hooks"),
         };
-        let annotation = self.verbose.get().then(|| {
-            if label == hook_name {
+        let annotation = if let Some(fact) = &self.manager_fact {
+            Some(fact.clone())
+        } else if self.verbose.get() {
+            Some(if label == hook_name {
                 format!("daft v{}", crate::VERSION)
             } else {
                 format!("{hook_name} \u{b7} daft v{}", crate::VERSION)
-            }
-        });
+            })
+        } else {
+            None
+        };
         self.mp
             .println(self.tucked(render::group(&label, annotation.as_deref(), self.use_color)))
             .ok();
@@ -182,6 +323,7 @@ impl RailHookRenderer {
         description: Option<&str>,
         command_preview: Option<&str>,
     ) {
+        self.ensure_header();
         let bar = self
             .mp
             .insert_before(&self.anchor, ProgressBar::new_spinner());
@@ -199,27 +341,45 @@ impl RailHookRenderer {
             bar,
             thread,
             annotation: description.map(str::to_string),
+            children: Vec::new(),
+            child_width: 0,
         };
         self.jobs.insert(name.to_string(), state);
         self.grow_width_to(name.chars().count());
         self.refresh_bar(name);
         if let Some(state) = self.jobs.get(name) {
             state.bar.enable_steady_tick(Duration::from_millis(80));
-            if self.verbose.get() {
+            if !self.quiet {
                 // Ticking promoter: a job still silent past `timerDelay` shows
                 // a dim elapsed counter in its annotation slot until output or
-                // resolution. The message always travels the `{wide_msg}`
-                // template (a template-side `{elapsed}` would need `{msg}`,
-                // and unbounded description content there wraps and desyncs
-                // indicatif's line accounting).
+                // resolution — a live per-job timer (#753: a manager's seeded
+                // job is silent its whole run, so this is what keeps a long
+                // job visibly alive). Runs at both densities now; verbose
+                // additionally threads the log. The message always travels the
+                // `{wide_msg}` template (a template-side `{elapsed}` would need
+                // `{msg}`, and unbounded description content there wraps and
+                // desyncs indicatif's line accounting). Once the job's block
+                // flushes the closure holds the grey `✓` done face, so a
+                // straggler tick can never repaint a timer over a done row.
                 let use_color = self.use_color;
                 let width = self.name_width;
                 let name = name.to_string();
+                let done_pending = state.thread.done_pending_flag();
                 state
                     .thread
                     .spawn_promoter(state.bar.clone(), self.timer_delay, move |elapsed| {
-                        let suffix = ThreadedJob::elapsed_suffix(elapsed, use_color);
-                        format!("{name:<width$}  {suffix}")
+                        if done_pending.load(std::sync::atomic::Ordering::SeqCst) {
+                            render::hook_job_row(
+                                &HookJobFace::DonePending,
+                                &name,
+                                None,
+                                width,
+                                use_color,
+                            )
+                        } else {
+                            let suffix = ThreadedJob::elapsed_suffix(elapsed, use_color);
+                            format!("{name:<width$}  {suffix}")
+                        }
                     });
             }
         }
@@ -231,6 +391,14 @@ impl RailHookRenderer {
         };
         state.thread.record(line);
         if self.quiet {
+            return;
+        }
+        // A done-pending row (its manager block already flushed) keeps its grey
+        // ✓ face: record the line for a possible failure dump, but never
+        // repaint or un-freeze the settled row. In default piped mode a job's
+        // whole block — every output line — arrives right after the flush
+        // signal, so this is the common path, not an edge.
+        if state.thread.is_done_pending() {
             return;
         }
         let verbose = self.verbose.get();
@@ -262,13 +430,124 @@ impl RailHookRenderer {
         } else {
             // Succinct's single line of liveness: the latest output line rides
             // the annotation slot — sanitized on the way to the bar (#751), and
-            // skipping a control-only line so it never blanks the row.
+            // skipping a control-only line so it never blanks the row. Output
+            // also retires the elapsed counter (#753): the timer answers "is
+            // this silent job alive?", and real output answers it better.
+            state.thread.mark_output_seen();
             state.annotation = state.thread.live_tail();
             self.refresh_bar(name);
         }
     }
 
+    /// A nested manager child appeared under `parent` (#753): a live bar one
+    /// gutter tier deeper, spinner running until its manager's summary (or
+    /// the parent's own verdict) resolves it. No-op when the parent isn't a
+    /// live job (children are presentation; nothing to anchor to, nothing to
+    /// show).
+    pub fn start_child_job(&mut self, parent: &str, name: &str) {
+        let Some(state) = self.jobs.get_mut(parent) else {
+            return;
+        };
+        // Children stack below the parent's own thread: the first seats after
+        // the parent's bottom thread bar (its trailer) when a verbose thread is
+        // open, else right under the row; each next child seats after the
+        // previous one. Anchoring the first on the row bar instead would wedge
+        // children above the parent's `❯ command`/output, since the thread bars
+        // were inserted there first (#753 review).
+        let anchor = match state.children.last() {
+            Some(last) => last.bar.clone(),
+            None => state
+                .thread
+                .bottom_bar()
+                .cloned()
+                .unwrap_or_else(|| state.bar.clone()),
+        };
+        let bar = self.mp.insert_after(&anchor, ProgressBar::new_spinner());
+        bar.set_style(self.child_style.clone());
+        bar.set_message(name.to_string());
+        bar.enable_steady_tick(Duration::from_millis(80));
+        state.child_width = state.child_width.max(name.chars().count());
+        state.children.push(ChildState {
+            name: name.to_string(),
+            bar,
+            outcome: None,
+        });
+    }
+
+    /// A nested child resolved: flip its live bar to the receipt face in
+    /// place — a println receipt cannot land under a still-running parent,
+    /// so the row waits (already wearing its outcome) for the parent's batch.
+    pub fn finish_child_job(&mut self, parent: &str, name: &str, outcome: ChildOutcome) {
+        let (receipt_style, use_color) = (self.child_receipt_style.clone(), self.use_color);
+        let Some(state) = self.jobs.get_mut(parent) else {
+            return;
+        };
+        let width = state.child_width;
+        let Some(child) = state
+            .children
+            .iter_mut()
+            .rfind(|c| c.name == name && c.outcome.is_none())
+        else {
+            return;
+        };
+        child.bar.disable_steady_tick();
+        child.bar.set_style(receipt_style);
+        child
+            .bar
+            .set_message(child_receipt_row(&child.name, &outcome, width, use_color));
+        child.outcome = Some(outcome);
+    }
+
+    /// Persist a settled parent's child receipts, one tier deep, and drop
+    /// their bars. Runs inside the parent's finish batch, right after the
+    /// parent's own receipt. A child somehow still open settles on the ⊘
+    /// face — no row may be left implying it ran to completion.
+    fn persist_children(&self, state: Option<&JobState>) {
+        let Some(state) = state else { return };
+        for child in &state.children {
+            let outcome = child
+                .outcome
+                .as_ref()
+                .unwrap_or(&ChildOutcome::Cancelled(Duration::ZERO));
+            let row = child_receipt_row(&child.name, outcome, state.child_width, self.use_color);
+            self.mp
+                .println(self.tucked(render::gutter(
+                    &render::gutter(&row, self.use_color),
+                    self.use_color,
+                )))
+                .ok();
+        }
+    }
+
+    /// A recognized manager's block for `name` flushed (#753): it finished
+    /// running, its verdict still pending. Settle the row in place to the
+    /// neutral grey `✓` — spinner off, timer off — and hold it there. The
+    /// summary later removes this bar and persists the confirmed `✓`/`✗`
+    /// receipt with the official duration; a job the summary flips to failed
+    /// goes grey `✓` → red `✗`, having never worn green. No-op for an unknown
+    /// job (already resolved, or never seeded).
+    pub fn mark_done_pending(&mut self, name: &str) {
+        self.ensure_header();
+        let Some(state) = self.jobs.get(name) else {
+            return;
+        };
+        // Style first (message-only, no spinner), then the flag: the promoter
+        // closure reads the flag to compose the grey ✓, so once it is set no
+        // straggler tick can repaint a timer here.
+        state.bar.disable_steady_tick();
+        state.bar.set_style(self.job_receipt_style.clone());
+        state.thread.mark_done_pending();
+        state.bar.set_message(render::hook_job_row(
+            &HookJobFace::DonePending,
+            name,
+            None,
+            self.name_width,
+            self.use_color,
+        ));
+    }
+
     pub fn finish_job_success(&mut self, name: &str, duration: Duration) {
+        self.ensure_header();
         let state = self.remove_bar(name);
         self.persist_receipt(render::hook_job_row(
             &HookJobFace::Done {
@@ -279,6 +558,7 @@ impl RailHookRenderer {
             self.name_width,
             self.use_color,
         ));
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), false);
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -288,6 +568,7 @@ impl RailHookRenderer {
     }
 
     pub fn finish_job_failure(&mut self, name: &str, duration: Duration) {
+        self.ensure_header();
         let state = self.remove_bar(name);
         self.persist_receipt(render::hook_job_row(
             &HookJobFace::Failed,
@@ -297,6 +578,7 @@ impl RailHookRenderer {
             self.use_color,
         ));
         self.failed.insert(name.to_string());
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), true);
         // Succinct: the captured output lands below the rail footer — the
         // rail's errors-after pattern — not torn through the live bars.
@@ -335,6 +617,7 @@ impl RailHookRenderer {
         show_duration: bool,
         _command_preview: Option<&str>,
     ) {
+        self.ensure_header();
         self.remove_bar(name);
         if !is_condition_skip(reason) {
             self.persist_receipt(render::hook_job_row(
@@ -359,6 +642,7 @@ impl RailHookRenderer {
     /// a job row (lifecycle hooks still have no cancellation path). Verbose
     /// treats the log as evidence, same as a failure.
     pub fn finish_job_cancelled(&mut self, name: &str, duration: Duration) {
+        self.ensure_header();
         let state = self.remove_bar(name);
         let annotation = match self.duration_annotation(duration) {
             Some(dur) => format!("cancelled {dur}"),
@@ -372,6 +656,7 @@ impl RailHookRenderer {
             self.use_color,
         ));
         self.failed.insert(name.to_string());
+        self.persist_children(state.as_ref());
         self.persist_log(state.as_ref().map(|s| &s.thread), true);
         self.finished.push(JobResultEntry {
             name: name.to_string(),
@@ -383,6 +668,7 @@ impl RailHookRenderer {
     /// `↻ <name>  background` — the dispatch receipt; the job itself runs
     /// under the coordinator, visible via `daft hooks jobs`.
     pub fn show_background_job(&mut self, name: &str, _description: Option<&str>) {
+        self.ensure_header();
         self.grow_width_to(name.chars().count());
         self.persist_receipt(render::hook_job_row(
             &HookJobFace::Background,
@@ -401,15 +687,17 @@ impl RailHookRenderer {
     /// row. Verbose: the legacy summary's one surviving fact, the phase
     /// total, closes the section as a recessed `└` note — the section's own
     /// rail end (always with the total; the 1s threshold is for row
-    /// durations, not the relocated "done in").
-    pub fn print_summary(&self, total_duration: Duration) {
+    /// durations, not the relocated "done in"). A recognized manager's
+    /// identity lives in the section header now, so the note no longer
+    /// repeats it. Also the backstop that flushes a header for a phase that
+    /// produced no content at all.
+    pub fn print_summary(&mut self, total_duration: Duration) {
+        self.ensure_header();
         if !self.verbose.get() || self.finished.is_empty() {
             return;
         }
-        let note = render::section_close(
-            &format!("all jobs in {}", format_duration(total_duration)),
-            self.use_color,
-        );
+        let close = format!("all jobs in {}", format_duration(total_duration));
+        let note = render::section_close(&close, self.use_color);
         self.mp
             .println(self.tucked(render::gutter(&note, self.use_color)))
             .ok();
@@ -514,6 +802,20 @@ impl RailHookRenderer {
         let Some(state) = self.jobs.get(name) else {
             return;
         };
+        // A settled done-pending row wears the grey ✓, not an annotation. Its
+        // output was suppressed so `annotation` is stale/None — without this a
+        // later, wider-named job growing the alignment column would repad this
+        // bar back to a bare name and wipe the checkmark (#753 review).
+        if state.thread.is_done_pending() {
+            state.bar.set_message(render::hook_job_row(
+                &HookJobFace::DonePending,
+                name,
+                None,
+                self.name_width,
+                self.use_color,
+            ));
+            return;
+        }
         let msg = match state.annotation.as_deref().filter(|a| !a.is_empty()) {
             Some(a) => format!(
                 "{name:<width$}  {}",
@@ -535,23 +837,40 @@ impl RailHookRenderer {
         state.thread.mark_resolved();
         state.bar.disable_steady_tick();
         self.mp.remove(&state.bar);
+        for child in &state.children {
+            child.bar.disable_steady_tick();
+            self.mp.remove(&child.bar);
+        }
         state.thread.remove_thread_bars(&self.mp);
         Some(state)
     }
 
     /// The rail's duration vocabulary for faces that don't carry their own:
-    /// dim, parenthesized, only at ≥ 1s.
+    /// dim, parenthesized, only at ≥ 1s. Delegates to the shared
+    /// [`dim_duration`] so parent rows and child receipts stay in lockstep.
     fn duration_annotation(&self, duration: Duration) -> Option<String> {
-        (duration >= render::DURATION_THRESHOLD).then(|| {
-            render::paint(
-                GREY,
-                &format!(
-                    "({})",
-                    crate::output::hook_progress::format_duration(duration)
-                ),
-                self.use_color,
-            )
-        })
+        dim_duration(duration, self.use_color)
+    }
+}
+
+impl Drop for RailHookRenderer {
+    /// Abort mid-phase (Ctrl+C, a dropped region): clear every still-live row
+    /// and stop its ticker, deterministically — the live-region contract is
+    /// that unresolved bars die with the region, never freezing into
+    /// scrollback (the zombie-line lesson: `mp.remove`, never
+    /// `finish_and_clear`). At a normal phase end `jobs` is already empty
+    /// (every job resolved through `remove_bar`), so this is a no-op then.
+    fn drop(&mut self) {
+        for state in self.jobs.values() {
+            state.thread.mark_resolved();
+            state.bar.disable_steady_tick();
+            state.thread.remove_thread_bars(&self.mp);
+            for child in &state.children {
+                child.bar.disable_steady_tick();
+                self.mp.remove(&child.bar);
+            }
+            self.mp.remove(&state.bar);
+        }
     }
 }
 
@@ -669,8 +988,11 @@ mod tests {
 
     #[test]
     fn gate_embed_derives_anchor_from_phase_name() {
-        let (r, term, _h) = harness(None, false);
+        let (mut r, term, _h) = harness(None, false);
         r.print_header("pre-push", Some("feat/x"));
+        // The header is deferred (#753) until the first content; a phase that
+        // produces none still flushes it at settle.
+        r.print_summary(Duration::ZERO);
         assert_eq!(term.contents(), "\u{251c}\u{2500} pre-push hooks");
     }
 
@@ -894,8 +1216,9 @@ mod tests {
 
     #[test]
     fn verbose_anchor_carries_hook_key_and_version() {
-        let (r, term, _h) = harness_with(verbose_config(), Some("post-create hooks"), false);
+        let (mut r, term, _h) = harness_with(verbose_config(), Some("post-create hooks"), false);
         r.print_header("worktree-post-create", Some("feat/x"));
+        r.print_summary(Duration::ZERO);
         assert_eq!(
             term.contents(),
             format!(
@@ -907,8 +1230,9 @@ mod tests {
 
     #[test]
     fn succinct_anchor_stays_bare() {
-        let (r, term, _h) = harness(Some("post-create hooks"), false);
+        let (mut r, term, _h) = harness(Some("post-create hooks"), false);
         r.print_header("worktree-post-create", None);
+        r.print_summary(Duration::ZERO);
         assert_eq!(term.contents(), "\u{251c}\u{2500} post-create hooks");
     }
 
@@ -917,8 +1241,9 @@ mod tests {
         // `daft run` tasks: the section label IS the daft.yml lookup key, so
         // the annotation keeps only the engine version — `stack  stack · …`
         // would stutter.
-        let (r, term, _h) = harness_with(verbose_config(), Some("stack"), false);
+        let (mut r, term, _h) = harness_with(verbose_config(), Some("stack"), false);
         r.print_header("stack", None);
+        r.print_summary(Duration::ZERO);
         assert_eq!(
             term.contents(),
             format!("\u{251c}\u{2500} stack  daft v{}", crate::VERSION)
@@ -1098,7 +1423,7 @@ mod tests {
 
     #[test]
     fn closing_note_skips_empty_phases_and_succinct_mode() {
-        let (r, term, _h) = harness_with(verbose_config(), None, false);
+        let (mut r, term, _h) = harness_with(verbose_config(), None, false);
         r.print_summary(Duration::from_secs(3));
         assert_eq!(term.contents(), "", "no jobs — no note");
         let (mut r, term, _h) = harness(None, false);
@@ -1117,6 +1442,260 @@ mod tests {
         let (mut r, term, _h) = harness_with(verbose_config(), None, false);
         r.finish_job_skipped("lint", "skip: true", Duration::ZERO, false, None);
         assert_eq!(term.contents(), "");
+    }
+
+    // ── nested manager children (#753) ────────────────────────────────────
+
+    #[test]
+    fn children_persist_as_a_batch_under_the_settled_parent() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "install");
+        r.start_child_job("setup", "fmt");
+        r.finish_child_job(
+            "setup",
+            "install",
+            ChildOutcome::Done(Duration::from_millis(2100)),
+        );
+        r.finish_child_job(
+            "setup",
+            "fmt",
+            ChildOutcome::Done(Duration::from_millis(300)),
+        );
+        r.finish_job_success("setup", Duration::from_millis(2500));
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{2713}  setup  (2.5s)\n\
+             \u{2502}  \u{2502}  \u{2713}  install  (2.1s)\n\
+             \u{2502}  \u{2502}  \u{2713}  fmt",
+            "parent receipt first, then its children one tier deeper"
+        );
+    }
+
+    #[test]
+    fn a_failing_child_keeps_its_face_in_the_batch() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "unit tests (related)");
+        r.finish_child_job(
+            "setup",
+            "unit tests (related)",
+            ChildOutcome::Failed(Duration::from_millis(1500)),
+        );
+        r.finish_job_failure("setup", Duration::from_secs(2));
+        let contents = term.contents();
+        assert!(
+            contents.contains("\u{2502}  \u{2502}  \u{2717}  unit tests (related)  (1.5s)"),
+            "the failing child wears ✗ with its duration: {contents}"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_child_settles_on_the_cancel_face() {
+        // Defensive: the routing wrapper settles children before the parent
+        // verdict arrives, but a child somehow still open must not persist
+        // implying it completed.
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "hung");
+        r.finish_job_failure("setup", Duration::from_secs(1));
+        assert!(
+            term.contents().contains("\u{2298}  hung  cancelled"),
+            "an open child settles ⊘, never ✓: {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn children_of_a_dropped_renderer_never_persist() {
+        // Abort mid-nest: live bars die with the region; nothing may leak
+        // into scrollback as a receipt.
+        let (mut r, term, _h) = harness(None, false);
+        r.start_job("setup", None);
+        r.start_child_job("setup", "install");
+        drop(r);
+        assert_eq!(term.contents(), "", "no receipt without a settled parent");
+    }
+
+    #[test]
+    fn a_child_for_an_unknown_parent_is_ignored() {
+        let (mut r, term, _h) = harness(None, false);
+        r.start_child_job("ghost", "install");
+        r.finish_child_job("ghost", "install", ChildOutcome::Done(Duration::ZERO));
+        assert_eq!(term.contents(), "");
+    }
+
+    // ── the persistent manager header (#753) ──────────────────────────────
+
+    #[test]
+    fn the_manager_header_names_the_manager_and_persists() {
+        let (mut r, term, _h) = harness(None, false);
+        // Order mirrors production: the phase-start header is deferred, then a
+        // manager engages before any job and folds its identity in.
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        assert_eq!(
+            term.contents(),
+            "\u{251c}\u{2500} pre-push hooks  lefthook v2.1.10",
+            "the header names the manager + version, and it's a persisted \
+             println — it stays after the run: {}",
+            term.contents()
+        );
+        // It does not vanish when the phase settles (the old census did).
+        r.start_job("fmt", None);
+        r.finish_job_success("fmt", Duration::from_millis(300));
+        r.print_summary(Duration::from_secs(3));
+        assert!(
+            term.contents()
+                .starts_with("\u{251c}\u{2500} pre-push hooks  lefthook v2.1.10"),
+            "the header persists above the receipts: {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn no_census_row_the_count_is_gone_the_fact_is_in_the_header() {
+        let (mut r, term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.start_job("clippy", None);
+        let contents = term.contents();
+        assert!(
+            !contents.contains("job"),
+            "the '· N jobs' census row is gone (job rows are the count now): {contents}"
+        );
+        assert!(
+            contents.contains("lefthook v2.1.10"),
+            "the manager fact rides the header instead: {contents}"
+        );
+    }
+
+    #[test]
+    fn the_verbose_close_note_no_longer_repeats_the_manager_fact() {
+        let (mut r, term, _h) = harness_with(verbose_config(), None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.finish_job_success("fmt", Duration::from_millis(300));
+        r.print_summary(Duration::from_millis(3000));
+        let contents = term.contents();
+        assert!(
+            contents.starts_with("\u{251c}\u{2500} pre-push hooks  lefthook v2.1.10"),
+            "the fact is in the header: {contents}"
+        );
+        assert!(
+            contents.ends_with("\u{2502}  \u{2514}  all jobs in 3.0s"),
+            "the close note carries only the total — the header owns the fact: {contents}"
+        );
+    }
+
+    #[test]
+    fn quiet_shows_the_manager_header_but_suppresses_job_output() {
+        let (mut r, term, _h) = harness(None, true);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.update_job_output("fmt", "secret output");
+        let contents = term.contents();
+        assert!(
+            contents.contains("lefthook v2.1.10"),
+            "the header is structure, shown in quiet: {contents}"
+        );
+        assert!(
+            !contents.contains("secret output"),
+            "quiet still keeps hook output off the live region: {contents}"
+        );
+    }
+
+    // ── resolve-on-flush: the grey ✓ done-pending lifecycle (#753) ─────────
+
+    #[test]
+    fn a_flushed_block_settles_grey_then_the_summary_confirms_green() {
+        let (mut r, term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("build-check", None);
+        // The block flushed at the job's completion — settle the live row to
+        // the neutral grey ✓, ahead of the summary's verdict.
+        r.mark_done_pending("build-check");
+        let msg = r.jobs.get("build-check").unwrap().bar.message();
+        assert_eq!(
+            msg, "\u{2713}  build-check",
+            "the row wears a bare (grey) ✓ — finished running, verdict pending, \
+             no duration yet: {msg:?}"
+        );
+        // The summary confirms it: the green ✓ receipt with the official
+        // duration replaces the live row.
+        r.finish_job_success("build-check", Duration::from_millis(26_700));
+        assert_eq!(
+            term.contents(),
+            "\u{251c}\u{2500} pre-push hooks  lefthook v2.1.10\n\
+             \u{2502}  \u{2713}  build-check  (26.7s)"
+        );
+    }
+
+    #[test]
+    fn a_flushed_block_the_summary_flips_to_failed_goes_grey_then_red() {
+        // The neutral grey ✓ never claimed success, so a job the summary
+        // reveals as failed simply resolves to the red ✗ — no false green.
+        let (mut r, term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("unit-tests", None);
+        r.update_job_output("unit-tests", "test bar ... FAIL");
+        r.mark_done_pending("unit-tests");
+        r.finish_job_failure("unit-tests", Duration::from_millis(1500));
+        assert!(
+            term.contents()
+                .contains("\u{2502}  \u{2717}  unit-tests  (1.5s)"),
+            "grey ✓ → red ✗ when the verdict lands: {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn a_done_pending_row_ignores_late_block_output() {
+        // In default piped mode a job's whole block arrives right after the
+        // flush signal — those lines are recorded for a possible dump but must
+        // not un-freeze the settled grey ✓ row.
+        let (mut r, _term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("build-check", None);
+        r.mark_done_pending("build-check");
+        r.update_job_output("build-check", "Compiling daft v1.0.0");
+        let msg = r.jobs.get("build-check").unwrap().bar.message();
+        assert_eq!(
+            msg, "\u{2713}  build-check",
+            "late block output leaves the done-pending face untouched: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn a_done_pending_row_keeps_its_grey_check_when_a_wider_job_grows_the_column() {
+        // A settled grey ✓ row must survive a later, wider-named job growing
+        // the alignment column: refresh_bar repads every live bar, and without
+        // the done-pending guard it would rewrite this one to a bare name and
+        // wipe the checkmark (#753 review).
+        let (mut r, _term, _h) = harness(None, false);
+        r.print_header("pre-push", None);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.mark_done_pending("fmt");
+        assert_eq!(
+            r.jobs.get("fmt").unwrap().bar.message(),
+            "\u{2713}  fmt",
+            "settled grey ✓ before the column grows"
+        );
+        // A wider-named job grows name_width and refreshes every live bar,
+        // including the done-pending one.
+        r.start_job("integration-tests", None);
+        let msg = r.jobs.get("fmt").unwrap().bar.message();
+        assert!(
+            msg.starts_with('\u{2713}'),
+            "the grey ✓ survives a later job growing the column: {msg:?}"
+        );
     }
 
     #[test]
@@ -1162,17 +1741,29 @@ mod tests {
     }
 
     #[test]
-    fn succinct_never_promotes() {
+    fn succinct_also_runs_the_live_timer_for_a_silent_job() {
+        // #753: a live per-job timer is now a both-densities affordance — a
+        // silent succinct row (e.g. a manager's seeded job, quiet until its
+        // block flushes) must still show it's alive.
         let config = HookOutputConfig {
             timer_delay_secs: 0,
             ..Default::default()
         };
         let (mut r, _term, _h) = harness_with(config, None, false);
         r.start_job("build", None);
-        std::thread::sleep(Duration::from_millis(100));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !r.timer_promoted("build") && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(
-            !r.timer_promoted("build"),
-            "promotion is a verbose affordance"
+            r.timer_promoted("build"),
+            "a silent succinct job past timerDelay gains the elapsed counter: {:?}",
+            r.jobs.get("build").unwrap().bar.message()
+        );
+        let msg = r.jobs.get("build").unwrap().bar.message();
+        assert!(
+            msg.starts_with("build") && msg.contains('('),
+            "the counter seats in the annotation slot: {msg:?}"
         );
     }
 }

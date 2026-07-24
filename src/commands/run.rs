@@ -250,6 +250,15 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
                 )]));
                 let presenter =
                     CliPresenter::embedded(&output_config, tl.handle(), task_key.clone());
+                // A task invoking a hook manager (lefthook) gains nested
+                // child rows on its rail row (#753); the hidden passthrough
+                // arm above stays unwrapped — the job owns the terminal and
+                // daft adds no chrome there.
+                let presenter =
+                    crate::executor::manager_routing::LifecycleRoutingPresenter::wrap_when(
+                        output_config.parse_managers,
+                        presenter,
+                    );
                 (task_def, presenter, Some(tl))
             }
         };

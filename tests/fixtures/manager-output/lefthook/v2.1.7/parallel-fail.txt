@@ -1,0 +1,20 @@
+[38;2;56;56;56m╭─────────────────────[m[38;2;56;56;56m─────────────────╮[m
+[38;2;56;56;56m│[m 🥊 lefthook  v2.1.7  hook:  [1mpre-push[m [38;2;56;56;56m│[m
+[38;2;56;56;56m╰─────────────────────[m[38;2;56;56;56m─────────────────╯[m
+┃  fmt ❯ 
+fmt ok
+
+┃  typecheck ❯ 
+typecheck ok
+
+┃  unit tests (related) ❯ 
+FAILED assertion at foo.rs:12
+test bar ... FAIL
+
+exit status 1
+[38;2;56;56;56m  ────────────────────────────────────[m
+summary: (done in 0.27 seconds)
+✔️ fmt (0.16 seconds)
+✔️ typecheck (0.17 seconds)
+🥊 unit tests (related) (0.27 seconds)
+error: failed to push some refs to '/tmp/daft-lefthook-cap.P5eOgG/remote.git'

@@ -8,6 +8,7 @@ pub mod cli_presenter;
 pub mod command;
 pub mod dag;
 pub mod log_sink;
+pub mod manager_routing;
 pub mod presenter;
 pub mod runner;
 

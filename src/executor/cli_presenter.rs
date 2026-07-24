@@ -7,7 +7,7 @@ use super::presenter::JobPresenter;
 use super::{JobResult, NodeStatus};
 use crate::core::stage::{StageId, StepKey};
 use crate::output::hook_progress::{HookRenderer, JobOutcome, JobResultEntry};
-use crate::output::timeline::{RailHookRenderer, TimelineHandle};
+use crate::output::timeline::{ChildOutcome, RailHookRenderer, TimelineHandle};
 use crate::settings::HookOutputConfig;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -109,10 +109,48 @@ impl EmbedRenderer {
         }
     }
 
-    fn print_summary(&self, total_duration: Duration) {
+    fn print_summary(&mut self, total_duration: Duration) {
         match self {
             Self::Block(r) => r.print_summary(total_duration),
             Self::Rail(r) => r.print_summary(total_duration),
+        }
+    }
+
+    /// A recognized hook manager on the gate stream (#753). The rail folds the
+    /// manager + version into its section header; the block renderer's banner
+    /// and summary already frame the jobs, so it ignores the fact.
+    fn set_manager_engaged(&mut self, manager: &str, version: Option<&str>) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.set_manager_engaged(manager, version),
+        }
+    }
+
+    /// A recognized manager's block for `name` flushed — it finished running,
+    /// verdict pending (#753). The rail settles the row to the neutral grey
+    /// `✓`; the block renderer prints the job's block inline as it arrives, so
+    /// there is no live row to settle.
+    fn mark_done_pending(&mut self, name: &str) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.mark_done_pending(name),
+        }
+    }
+
+    /// Nested manager children (#753) render one tier under their parent on
+    /// the rail; the block renderer keeps nested manager output raw inside
+    /// the parent's section (its inline stream already shows every line).
+    fn start_child_job(&mut self, parent: &str, name: &str) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.start_child_job(parent, name),
+        }
+    }
+
+    fn finish_child_job(&mut self, parent: &str, name: &str, outcome: ChildOutcome) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.finish_child_job(parent, name, outcome),
         }
     }
 
@@ -352,6 +390,47 @@ impl JobPresenter for CliPresenter {
         }
         if let Some(r) = ready(&mut self.lock()) {
             r.seed_name_width(width);
+        }
+    }
+
+    fn on_manager_engaged(&self, scope: Option<&str>, manager: &str, version: Option<&str>) {
+        // Only the hook-level (gate) manager labels the section header. A
+        // manager nested inside one lifecycle job (`scope` set) must not
+        // relabel the whole section — its jobs surface as that job's children.
+        if scope.is_none()
+            && let Some(r) = ready(&mut self.lock())
+        {
+            r.set_manager_engaged(manager, version);
+        }
+    }
+
+    fn on_manager_job_flushed(&self, name: &str) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.mark_done_pending(name);
+        }
+    }
+
+    fn on_child_job_start(&self, parent: &str, name: &str) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.start_child_job(parent, name);
+        }
+    }
+
+    fn on_child_job_success(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Done(duration));
+        }
+    }
+
+    fn on_child_job_failure(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Failed(duration));
+        }
+    }
+
+    fn on_child_job_cancelled(&self, parent: &str, name: &str, duration: Duration) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.finish_child_job(parent, name, ChildOutcome::Cancelled(duration));
         }
     }
 

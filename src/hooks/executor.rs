@@ -304,6 +304,15 @@ impl HookExecutor {
             return Ok(HookResult::skipped("Hooks are globally disabled"));
         }
 
+        // A hook job whose output turns out to be a hook manager's (a job
+        // running lefthook) gains nested child sub-structure (#753). One
+        // wrap here covers every lifecycle path — CLI, TUI, and replay —
+        // and the raw stream still reaches the parent untouched.
+        let presenter = crate::executor::manager_routing::LifecycleRoutingPresenter::wrap_when(
+            self.config.output.parse_managers,
+            presenter,
+        );
+
         // Check if this specific hook is enabled
         let hook_config = self.config.get_hook_config(ctx.hook_type);
         if !hook_config.enabled {

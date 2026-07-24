@@ -1,0 +1,7 @@
+╭───╮
+🔧 my custom pre-push
+╰───╯
+linting...
+done
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+ + df7a62a...7404a14 master -> master (forced update)

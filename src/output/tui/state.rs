@@ -69,20 +69,43 @@ pub struct HookSubRow {
     pub hook_type: DagHookPhase,
     pub status: HookSubStatus,
     pub job_sub_rows: Vec<JobSubRow>,
+    /// The recognized hook manager's identity (`lefthook v2.1.10`, #753):
+    /// the job sub-rows below are the manager's own jobs. Rendered as a dim
+    /// annotation on the hook line.
+    pub manager: Option<String>,
 }
 
 /// Status of a single job sub-row within a hook (for -v mode).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobSubStatus {
     Running,
+    /// A recognized manager job whose output block flushed but whose verdict
+    /// the manager has not yet stamped (#753): it has *finished running* but
+    /// the confirmed outcome + official duration arrive with the end-of-run
+    /// summary. Rendered as a neutral grey check — never the green of a
+    /// confirmed success — until the `JobCompleted` that resolves it.
+    DonePending,
     Succeeded(Duration),
     Failed(Duration),
-    Skipped { duration: Duration, reason: String },
+    Skipped {
+        duration: Duration,
+        reason: String,
+    },
 }
 
 /// A job sub-row displayed beneath a hook sub-row in -v mode.
 #[derive(Debug, Clone)]
 pub struct JobSubRow {
+    pub name: String,
+    pub status: JobSubStatus,
+    /// Nested manager children (#753): a manager recognized inside this
+    /// job's output reports its own jobs, rendered one tier deeper.
+    pub children: Vec<ChildSubRow>,
+}
+
+/// A nested manager child's row under a job sub-row (#753).
+#[derive(Debug, Clone)]
+pub struct ChildSubRow {
     pub name: String,
     pub status: JobSubStatus,
 }
@@ -96,7 +119,11 @@ pub struct HookSummaryEntry {
     pub warned: bool,
     pub duration: Duration,
     pub exit_code: Option<i32>,
+    /// Scoped to `failing_job`'s lines when set (#753); the whole capture
+    /// otherwise.
     pub output: Option<String>,
+    /// The manager job whose failure sank the hook, when one is known.
+    pub failing_job: Option<String>,
 }
 
 /// Accumulated resource-governor visibility (#678), surfaced as a one-line
@@ -408,6 +435,7 @@ impl TuiState {
                             hook_type: *hook_type,
                             status: HookSubStatus::Running,
                             job_sub_rows: Vec::new(),
+                            manager: None,
                         });
                     }
                 }
@@ -420,6 +448,7 @@ impl TuiState {
                 duration,
                 exit_code,
                 output,
+                failing_job,
             } => {
                 let show_sub_rows = self.show_hook_sub_rows;
                 if let Some(row) = self.find_row_mut(branch_name) {
@@ -455,6 +484,32 @@ impl TuiState {
                         duration: *duration,
                         exit_code: *exit_code,
                         output: output.clone(),
+                        failing_job: failing_job.clone(),
+                    });
+                }
+            }
+            DagEvent::ManagerEngaged {
+                branch_name,
+                hook_type,
+                parent_job,
+                manager,
+                version,
+            } => {
+                // Only the hook-level (gate) manager labels the hook. A manager
+                // nested inside one lifecycle job (`parent_job` set) must not
+                // relabel the whole hook and its sibling jobs — its jobs
+                // already surface as that job's children.
+                if parent_job.is_none()
+                    && self.show_hook_sub_rows
+                    && let Some(row) = self.find_row_mut(branch_name)
+                    && let Some(hook_sub) = row
+                        .hook_sub_rows
+                        .iter_mut()
+                        .rfind(|s| s.hook_type == *hook_type)
+                {
+                    hook_sub.manager = Some(match version {
+                        Some(version) => format!("{manager} v{version}"),
+                        None => manager.clone(),
                     });
                 }
             }
@@ -473,7 +528,24 @@ impl TuiState {
                     hook_sub.job_sub_rows.push(JobSubRow {
                         name: job_name.clone(),
                         status: JobSubStatus::Running,
+                        children: Vec::new(),
                     });
+                }
+            }
+            DagEvent::JobFlushed {
+                branch_name,
+                hook_type,
+                job_name,
+            } => {
+                // The job's block flushed: it finished running, verdict
+                // pending. Settle a still-spinning row to the neutral grey
+                // check. Guarded to `Running` only so a verdict that somehow
+                // beat the flush (or a duplicate flush) never un-resolves a
+                // row the summary already stamped.
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, job_name)
+                    && job_sub.status == JobSubStatus::Running
+                {
+                    job_sub.status = JobSubStatus::DonePending;
                 }
             }
             DagEvent::JobCompleted {
@@ -501,6 +573,40 @@ impl TuiState {
                         JobCompletionStatus::Skipped => JobSubStatus::Skipped {
                             duration: *duration,
                             reason: skip_reason.clone().unwrap_or_default(),
+                        },
+                    };
+                }
+            }
+            DagEvent::ChildJobStarted {
+                branch_name,
+                hook_type,
+                parent_job,
+                name,
+            } => {
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, parent_job) {
+                    job_sub.children.push(ChildSubRow {
+                        name: name.clone(),
+                        status: JobSubStatus::Running,
+                    });
+                }
+            }
+            DagEvent::ChildJobCompleted {
+                branch_name,
+                hook_type,
+                parent_job,
+                name,
+                status,
+                duration,
+            } => {
+                if let Some(job_sub) = self.find_job_sub_mut(branch_name, hook_type, parent_job)
+                    && let Some(child) = job_sub.children.iter_mut().rfind(|c| c.name == *name)
+                {
+                    child.status = match status {
+                        JobCompletionStatus::Succeeded => JobSubStatus::Succeeded(*duration),
+                        JobCompletionStatus::Failed => JobSubStatus::Failed(*duration),
+                        JobCompletionStatus::Skipped => JobSubStatus::Skipped {
+                            duration: *duration,
+                            reason: String::new(),
                         },
                     };
                 }
@@ -560,6 +666,26 @@ impl TuiState {
             .rows
             .iter_mut()
             .find(|w| w.info.name == branch_name)
+    }
+
+    /// The named job sub-row under a branch's latest sub-row for
+    /// `hook_type`, when sub-rows render at all (`-v`). Nested manager
+    /// children (#753) resolve their parent through this.
+    fn find_job_sub_mut(
+        &mut self,
+        branch_name: &str,
+        hook_type: &DagHookPhase,
+        job: &str,
+    ) -> Option<&mut JobSubRow> {
+        if !self.show_hook_sub_rows {
+            return None;
+        }
+        let row = self.find_row_mut(branch_name)?;
+        let hook_sub = row
+            .hook_sub_rows
+            .iter_mut()
+            .rfind(|s| s.hook_type == *hook_type)?;
+        hook_sub.job_sub_rows.iter_mut().rfind(|j| j.name == job)
     }
 
     fn map_final_status(
@@ -1276,6 +1402,7 @@ mod tests {
             duration: Duration::from_millis(100),
             exit_code: Some(1),
             output: Some("warning output".into()),
+            failing_job: None,
         });
         let row = state
             .live
@@ -1301,6 +1428,7 @@ mod tests {
             duration: Duration::from_millis(50),
             exit_code: Some(0),
             output: None,
+            failing_job: None,
         });
         let row = state
             .live
@@ -1344,6 +1472,7 @@ mod tests {
             duration: dur,
             exit_code: Some(0),
             output: None,
+            failing_job: None,
         });
 
         let row = state
@@ -1356,6 +1485,136 @@ mod tests {
         assert_eq!(
             row.hook_sub_rows[0].status,
             HookSubStatus::Succeeded(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn manager_engaged_annotates_the_hook_sub_row() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::ManagerEngaged {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            parent_job: None,
+            manager: "lefthook".into(),
+            version: Some("2.1.10".into()),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].manager.as_deref(),
+            Some("lefthook v2.1.10"),
+            "the hook line names whose jobs follow"
+        );
+    }
+
+    #[test]
+    fn a_nested_manager_does_not_relabel_the_whole_hook() {
+        // A manager recognized inside one lifecycle job (`parent_job` set)
+        // must not stamp its identity on the hook line and its sibling jobs
+        // (#753 review). Its jobs surface as that job's children instead.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::ManagerEngaged {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            parent_job: Some("setup".into()),
+            manager: "lefthook".into(),
+            version: Some("2.1.10".into()),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].manager, None,
+            "a job-nested manager must not label the hook itself"
+        );
+    }
+
+    #[test]
+    fn failing_job_rides_the_hook_summary() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::HookCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            success: false,
+            warned: true,
+            duration: Duration::from_millis(500),
+            exit_code: None,
+            output: Some("FAILED assertion".into()),
+            failing_job: Some("unit tests (related)".into()),
+        });
+
+        assert_eq!(state.hook_summaries.len(), 1);
+        assert_eq!(
+            state.hook_summaries[0].failing_job.as_deref(),
+            Some("unit tests (related)"),
+            "the post-TUI report can name the job that sank the hook"
+        );
+    }
+
+    #[test]
+    fn child_events_populate_the_third_tier() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            job_name: "setup".into(),
+        });
+        state.apply_event(&DagEvent::ChildJobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            parent_job: "setup".into(),
+            name: "install".into(),
+        });
+        state.apply_event(&DagEvent::ChildJobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: HookType::PostCreate.into(),
+            parent_job: "setup".into(),
+            name: "install".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(400),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        let job = &row.hook_sub_rows[0].job_sub_rows[0];
+        assert_eq!(job.children.len(), 1);
+        assert_eq!(job.children[0].name, "install");
+        assert_eq!(
+            job.children[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(400))
         );
     }
 
@@ -1419,6 +1678,165 @@ mod tests {
         assert_eq!(
             row.hook_sub_rows[0].job_sub_rows[0].status,
             JobSubStatus::Succeeded(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn job_flushed_settles_running_row_to_done_pending() {
+        // #753: a manager job's block flushes when it finishes running,
+        // ahead of the summary. The row must stop spinning now — settle to
+        // the neutral grey DonePending, not wait for the verdict.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::DonePending,
+        );
+    }
+
+    #[test]
+    fn a_flushed_job_confirms_green_at_the_summary() {
+        // The grey DonePending resolves to the confirmed green + official
+        // duration when the summary's JobCompleted lands.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(2100),
+            skip_reason: None,
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(2100)),
+        );
+    }
+
+    #[test]
+    fn a_flushed_jobs_verdict_wins_when_the_summary_flips_it_to_failed() {
+        // The transient must never get stuck grey: a job that flushed to
+        // DonePending but the summary (or a killed-phase sweep) reveals as
+        // failed flips straight to red. DonePending never claimed success, so
+        // this is honest, not a green→red repaint.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "unit-tests".into(),
+            status: JobCompletionStatus::Failed,
+            duration: Duration::from_millis(500),
+            skip_reason: None,
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Failed(Duration::from_millis(500)),
+        );
+    }
+
+    #[test]
+    fn job_flushed_never_reverts_an_already_resolved_row() {
+        // A late or duplicate flush after the verdict already landed must not
+        // drag a green/red row back to grey. The Running-only guard holds.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::JobStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+        state.apply_event(&DagEvent::JobCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+            status: JobCompletionStatus::Succeeded,
+            duration: Duration::from_millis(300),
+            skip_reason: None,
+        });
+        state.apply_event(&DagEvent::JobFlushed {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            job_name: "build-check".into(),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].job_sub_rows[0].status,
+            JobSubStatus::Succeeded(Duration::from_millis(300)),
         );
     }
 

@@ -72,6 +72,44 @@ pub trait JobPresenter: Send + Sync {
     /// later `needs:` wave. Default: ignore.
     fn on_jobs_planned(&self, _names: &[String]) {}
 
+    /// A hook manager was recognized on a job's output stream (#753): the
+    /// jobs that follow are the manager's, routed as first-class events.
+    /// `scope` is `None` on the pre-push gate path (the phase itself is the
+    /// manager run) or the owning job's name when a manager runs inside a
+    /// lifecycle job. Renderers may surface the fact (the rail folds it into
+    /// the section header); everything else ignores it. Default: ignore.
+    fn on_manager_engaged(&self, _scope: Option<&str>, _manager: &str, _version: Option<&str>) {}
+
+    /// A recognized manager's output block for `name` flushed (#753). In
+    /// lefthook's default (buffered) piped mode a job's block flushes at its
+    /// completion, so this is a real-time "finished running" signal — ahead of
+    /// the verdict, which the manager stamps only in its end-of-run summary.
+    /// A live renderer stops the row's spinner and shows a neutral grey `✓`
+    /// done-pending face; the summary later persists the confirmed `✓`/`✗`
+    /// with the official duration. Display only — never a `JobResult`, never
+    /// the verdict or exit policy. (Under `follow: true` the block header
+    /// prints at job *start*; the row settles early there and the summary
+    /// self-corrects — a rare, opt-in mode.) Default: ignore.
+    fn on_manager_job_flushed(&self, _name: &str) {}
+
+    /// A recognized manager running *inside* a lifecycle job reported one of
+    /// its own jobs (#753). Children are presentation only: they never carry
+    /// a `JobResult`, outcome policy stays the parent job's, and the child's
+    /// raw lines still flow through `on_job_output` under the parent (its
+    /// buffers, threads, and failure dumps are unchanged). Default: ignore.
+    fn on_child_job_start(&self, _parent: &str, _name: &str) {}
+
+    /// A manager child resolved successfully (its manager's summary said so,
+    /// or the parent settled successfully with it still open).
+    fn on_child_job_success(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
+    /// A manager child resolved failed.
+    fn on_child_job_failure(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
+    /// A manager child settled by a cancelled parent — no row may be left
+    /// spinning behind a `⊘` parent.
+    fn on_child_job_cancelled(&self, _parent: &str, _name: &str, _duration: Duration) {}
+
     /// A phase has completed. Display the summary.
     fn on_phase_complete(&self, total_duration: Duration);
 

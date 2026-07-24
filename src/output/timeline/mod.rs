@@ -26,7 +26,7 @@ mod thread_block;
 
 pub use bridge::RegionOutput;
 pub use bridge::{error_line, warning_line};
-pub use rail_hook::RailHookRenderer;
+pub use rail_hook::{ChildOutcome, RailHookRenderer};
 pub use region::HookEmbed;
 
 /// The annotation a row that never ran wears: the `○ … (not run)` receipt. Two

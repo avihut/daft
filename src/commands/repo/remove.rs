@@ -436,6 +436,7 @@ fn run_sequential(
                 duration,
                 exit_code,
                 output,
+                failing_job: _,
             } = ev
             {
                 // docs/superpowers/specs/2026-04-28-remove-repo-design.md L178:
@@ -503,6 +504,7 @@ fn run_sequential(
             duration,
             exit_code,
             output,
+            failing_job: _,
         } = ev
         {
             if !success && !warned {

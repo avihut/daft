@@ -44,6 +44,7 @@
 //! | `daft.hooks.output.timerDelay` | `5` | Seconds before showing elapsed timer |
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
 //! | `daft.hooks.output.verbose` | `false` | Show skipped jobs and their reasons |
+//! | `daft.hooks.output.parseManagers` | `true` | Render recognized hook-manager (lefthook) jobs as first-class rows |
 //! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
 //! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn). Also settable per-hook in `daft.yml` via `fail_mode:`; this git-config value takes precedence over the committed one. Defaults: `worktreePreCreate`, `worktreePostCreate`, `preMerge` abort; all others warn |
 //!
@@ -597,6 +598,9 @@ pub mod keys {
 
         /// Config key for hooks.output.verbose setting.
         pub const OUTPUT_VERBOSE: &str = "daft.hooks.output.verbose";
+
+        /// Config key for hooks.output.parseManagers setting.
+        pub const OUTPUT_PARSE_MANAGERS: &str = "daft.hooks.output.parseManagers";
 
         /// Config key for hooks.trustPrune setting (auto-prune stale trust entries).
         pub const TRUST_PRUNE: &str = "daft.hooks.trustPrune";
@@ -1523,6 +1527,10 @@ pub struct HookOutputConfig {
     /// default `"daft hooks"`; `daft run` sets `"daft run"` so a task doesn't
     /// mislabel itself as a hook.
     pub banner: &'static str,
+    /// Recognize hook-manager output (lefthook) and render its jobs as
+    /// first-class rows (#753). The kill switch back to the opaque synthetic
+    /// `pre-push` job; unrecognized streams fall back to it either way.
+    pub parse_managers: bool,
 }
 
 impl Default for HookOutputConfig {
@@ -1534,6 +1542,7 @@ impl Default for HookOutputConfig {
             verbose: false,
             compact_finalization: false,
             banner: "daft hooks",
+            parse_managers: true,
         }
     }
 }
@@ -1613,6 +1622,9 @@ pub fn load_hooks_config_with(git: &GitCommand) -> Result<HooksConfig> {
     if let Some(value) = git.config_get(keys::hooks::OUTPUT_VERBOSE)? {
         config.output.verbose = parse_bool(&value, false);
     }
+    if let Some(value) = git.config_get(keys::hooks::OUTPUT_PARSE_MANAGERS)? {
+        config.output.parse_managers = parse_bool(&value, true);
+    }
 
     // Load per-hook settings
     for hook_type in HookType::all() {
@@ -1678,6 +1690,9 @@ pub fn load_hooks_config_global() -> Result<HooksConfig> {
     }
     if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_VERBOSE)? {
         config.output.verbose = parse_bool(&value, false);
+    }
+    if let Some(value) = git.config_get_global(keys::hooks::OUTPUT_PARSE_MANAGERS)? {
+        config.output.parse_managers = parse_bool(&value, true);
     }
 
     // Load per-hook settings from global config

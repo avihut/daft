@@ -1,0 +1,74 @@
+name: parseManagers=false pushes a lefthook-shaped stream unchanged
+description:
+  "The kill switch (#753): with daft.hooks.output.parseManagers=false the
+  wrapper never engages — a lefthook-shaped stream flows down the exact pre-#753
+  path. The push succeeds and the exit code is unchanged; the restored
+  synthetic-job rendering is pinned by the wrapper's knob unit test."
+
+repos:
+  - name: push-gate-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_GATE_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-gate-repo/main"
+
+  - name: Checkout the feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-gate-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Commit a change on the feature branch
+    run: |
+      echo "change" > change.txt
+      git add change.txt
+      GIT_AUTHOR_EMAIL="me@example.com" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Change"
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Install a lefthook-grammar hook and disable manager parsing
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      cat > $WORK_DIR/test-hooks/pre-push <<'HOOK'
+      #!/bin/sh
+      printf '╭─────────────────────────────────────────╮\n'
+      printf '│ 🥊 lefthook v9.9.9-test  hook: pre-push │\n'
+      printf '╰─────────────────────────────────────────╯\n'
+      printf '┃  fmt ❯ \n'
+      printf 'fmt clean\n'
+      printf '\n'
+      printf '  ────────────────────────────────────\n'
+      printf 'summary: (done in 0.20 seconds)\n'
+      printf '✔️ fmt (0.20 seconds)\n'
+      exit 0
+      HOOK
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+      git config daft.hooks.output.parseManagers false
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: push succeeds down the unwrapped path
+    # `daft push`, not `git-worktree-push`: CI's binary setup creates only a
+    # subset of the multicall symlinks, so the symlink spelling is a race.
+    run: daft push 2>&1
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Pushed 'feature/test-feature'"
+
+  - name: The remote branch was updated
+    run: |
+      git fetch origin 2>/dev/null
+      git rev-list --count origin/feature/test-feature..feature/test-feature
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains: ["0"]

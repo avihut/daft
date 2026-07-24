@@ -645,11 +645,60 @@ pub enum DagEvent {
         duration: Duration,
         /// Exit code from the hook process, if available.
         exit_code: Option<i32>,
-        /// Captured stdout+stderr, only stored on failure/warning.
+        /// Captured output, only stored on failure/warning. When
+        /// `failing_job` is set this is scoped to that job's own lines
+        /// (#753); otherwise it is the whole merged stream.
         output: Option<String>,
+        /// The job whose failure sank the hook, when one is known — a
+        /// recognized manager names its jobs, so the report can say which
+        /// one failed instead of dumping the whole run.
+        failing_job: Option<String>,
+    },
+    /// A hook manager (lefthook) was recognized on a hook's output stream
+    /// (#753): the JobStarted/JobCompleted events that follow are the
+    /// manager's own jobs. `parent_job` is `None` for the hook-level (gate)
+    /// manager whose identity labels the whole hook, and `Some(job)` for a
+    /// manager recognized *inside* one lifecycle job — which must not relabel
+    /// the hook or its sibling jobs (its jobs surface as that job's children).
+    ManagerEngaged {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        parent_job: Option<String>,
+        manager: String,
+        version: Option<String>,
+    },
+    /// A manager recognized *inside* a lifecycle job reported one of its own
+    /// jobs (#753) — rendered a tier under the parent job's sub-row.
+    ChildJobStarted {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        parent_job: String,
+        name: String,
+    },
+    /// A nested manager child resolved (its summary said so, or the parent
+    /// settled it).
+    ChildJobCompleted {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        parent_job: String,
+        name: String,
+        status: JobCompletionStatus,
+        duration: Duration,
     },
     /// A job started running within a hook.
     JobStarted {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        job_name: String,
+    },
+    /// A recognized manager job's output block flushed (#753): in lefthook's
+    /// default buffered mode a job's block reaches us when the job *finishes
+    /// running*, ahead of the end-of-run summary that stamps the confirmed
+    /// verdict + official duration. This is the real-time "done, verdict
+    /// pending" signal — the job sub-row settles to a neutral grey check now
+    /// and the later `JobCompleted` flips it to the confirmed outcome. Purely
+    /// a display transition; it never carries or implies a verdict.
+    JobFlushed {
         branch_name: String,
         hook_type: DagHookPhase,
         job_name: String,

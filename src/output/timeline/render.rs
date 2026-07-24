@@ -41,6 +41,13 @@ pub(super) enum RowFace {
 pub(super) enum HookJobFace {
     /// `✓` — green glyph and name.
     Done { duration: Option<Duration> },
+    /// `✓` grey — the job's block flushed (it finished running) but its
+    /// verdict is unknown: a recognized manager stamps pass/fail and the
+    /// official duration only in its end-of-run summary (#753). A neutral,
+    /// dim done — never the green of a confirmed success — so a job that
+    /// turns out to have failed flips grey `✓` → red `✗` when its verdict
+    /// lands, having never claimed success.
+    DonePending,
     /// `✗` — bold-red glyph, red name.
     Failed,
     /// `↓` — yellow glyph and name; the reason stays plain.
@@ -285,6 +292,9 @@ pub(super) fn hook_job_row(
                 .map(|d| paint(GREY, &format!("({})", format_duration(d)), use_color));
             flooded(styles::GREEN, "\u{2713}", None, dur.as_deref())
         }
+        // Grey ✓, no duration: finished running, verdict pending. The colour
+        // (not the glyph) is what separates it from a confirmed `Done`.
+        HookJobFace::DonePending => flooded(GREY, "\u{2713}", None, None),
         HookJobFace::Failed => {
             let glyph = if use_color {
                 format!("{}{}\u{2717}{}", styles::BOLD, styles::RED, styles::RESET)

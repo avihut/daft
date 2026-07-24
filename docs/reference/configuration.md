@@ -311,12 +311,13 @@ value on their own machine. See the
 
 ### Hook Output Settings
 
-| Key                            | Default | Description                                                                                                                                                                  |
-| ------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daft.hooks.output.quiet`      | `false` | Suppress hook stdout/stderr                                                                                                                                                  |
-| `daft.hooks.output.timerDelay` | `5`     | Seconds before a silent job shows an elapsed timer (verbose output only)                                                                                                     |
-| `daft.hooks.output.tailLines`  | `6`     | Live rolling output lines per job in verbose output (0 = none); the persisted log is never windowed. Also sizes the live window of `daft exec`'s per-worktree output threads |
-| `daft.hooks.output.verbose`    | `false` | Thread each hook job's log through the [progress timeline](/reference/progress-timeline) (`-v` per invocation does the same); in plain output, show each job's command line  |
+| Key                               | Default | Description                                                                                                                                                                                                               |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daft.hooks.output.quiet`         | `false` | Suppress hook stdout/stderr                                                                                                                                                                                               |
+| `daft.hooks.output.timerDelay`    | `5`     | Seconds before a silent job shows an elapsed timer (verbose output only)                                                                                                                                                  |
+| `daft.hooks.output.tailLines`     | `6`     | Live rolling output lines per job in verbose output (0 = none); the persisted log is never windowed. Also sizes the live window of `daft exec`'s per-worktree output threads                                              |
+| `daft.hooks.output.verbose`       | `false` | Thread each hook job's log through the [progress timeline](/reference/progress-timeline) (`-v` per invocation does the same); in plain output, show each job's command line                                               |
+| `daft.hooks.output.parseManagers` | `true`  | Recognize hook-manager output (lefthook 2.x) on the pre-push stream and render the manager's jobs as first-class rows; `false` restores the single opaque `pre-push` job. Unrecognized streams fall back to it either way |
 
 ### YAML Hooks Configuration
 
