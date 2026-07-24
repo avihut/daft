@@ -139,26 +139,35 @@ never keeps an identity ink.
   `git push` and daft sees one output stream. When that stream is a **hook
   manager** (lefthook 2.x — every released 2.x version is covered), daft
   recognizes its line grammar and renders the manager's jobs as first-class rows
-  under the `├─ pre-push hooks` anchor. daft reads the manager's config for the
-  job list, so every job — including one that runs for minutes — is a live
-  spinner from the moment the manager engages, not only once its output finally
-  arrives; each resolves to its own receipt with the manager's own name and
-  duration, and a failure dump is scoped to the failing job
+  under the `├─ pre-push hooks` anchor, and folds the manager's identity into
+  that header (`├─ pre-push hooks  lefthook v2.1.10`) — a persisted line that
+  stays on screen while the run works and in scrollback after. daft reads the
+  manager's config for the job list, so every job — including one that runs for
+  minutes — is a live spinner with a running elapsed timer from the moment the
+  manager engages, not only once its output finally arrives. (The roster is read
+  up front, so a manager configured to run serially still shows all its jobs
+  from engagement: a not-yet-started job spins with a timer counting from the
+  phase start, not its own — a pipe gives no per-job start signal to key it to.)
+  The instant a job's output block flushes (in default piped mode that is the
+  job's completion), its row stops spinning and settles to a neutral grey `✓` —
+  finished running, verdict pending — so a job that finished early no longer
+  looks busy until the whole run ends. Managers report per-job pass/fail and the
+  official duration only in their end-of-run summary, so each grey `✓` resolves
+  there to its confirmed receipt: green `✓` with the duration, or red `✗` with
+  the failure dump scoped to that job
   (`error: hook job 'unit tests (related)' failed:`) instead of the whole run.
-  (Managers report per-job pass/fail and durations only in their end-of-run
-  summary, so the rows spin until the run finishes and then resolve together.)
-  While the phase runs, a dim census row atop the section names the manager and
-  its job count (`lefthook v2.1.10 · 3 jobs`) and vanishes when the phase
-  settles; in verbose mode the closing note keeps the manager's identity for
-  scrollback (`└ all jobs in 42.4s · lefthook v2.1.10`). Output daft does not
-  recognize — a plain script, husky, an unknown tool — passes through untouched
-  as the single `pre-push` job, exactly as before; jobs the manager never
-  resolved (killed mid-run) settle with the push verdict so no row is left
-  spinning, and the push verdict itself always comes from git's own result,
-  never from recognized output. `daft.hooks.output.parseManagers=false` turns
-  recognition off entirely. `daft sync --push` reports the same structure in its
-  table: the manager's jobs as `-v` sub-rows, the hook line annotated with the
-  manager's identity, and the post-run `Hooks:` report naming the failing job
+  The confirmed verdicts land together at the summary because that is the only
+  moment the manager reveals them. In verbose mode the closing note carries the
+  phase total (`└ all jobs in 42.4s`); the manager's identity already lives in
+  the header, so the note no longer repeats it. Output daft does not recognize —
+  a plain script, husky, an unknown tool — passes through untouched as the
+  single `pre-push` job, exactly as before; jobs the manager never resolved
+  (killed mid-run) settle with the push verdict so no row is left spinning, and
+  the push verdict itself always comes from git's own result, never from
+  recognized output. `daft.hooks.output.parseManagers=false` turns recognition
+  off entirely. `daft sync --push` reports the same structure in its table: the
+  manager's jobs as `-v` sub-rows, the hook line annotated with the manager's
+  identity, and the post-run `Hooks:` report naming the failing job
   (`pre-push · unit tests (related) failed`) with only that job's output.
 - Pass `-v` — or set `daft.hooks.output.verbose` — to thread each job's log
   under its row. The section anchor gains the hook key and engine version
