@@ -188,7 +188,8 @@ resolves purely against the catalog. Anything resolvable in the current
 repository always wins over a catalog match.
 
 With -b, creates a new branch and worktree in a single operation. The new
-branch is based on the current branch, or on `<base-branch>` if specified. It
+branch is based on the current branch, or on `<base>` (a branch or any
+commit-ish) if specified. It
 is pushed to the remote and upstream tracking is configured; the pre-push hook
 runs only when that push introduces new commits, skipping ref-only pushes
 (configurable via daft.checkout.pushVerify, which defaults to the base
@@ -211,13 +212,17 @@ See daft-hooks(1) for hook management.
 "#)]
 pub struct GoArgs {
     #[arg(
+        value_name = "BRANCH|COMMIT-ISH",
         help = "Branch, commit-ish, or catalog repo to open; use '-' for previous worktree",
         allow_hyphen_values = true,
         required_unless_present = "repo"
     )]
     branch_name: Option<String>,
 
-    #[arg(help = "Branch inside <repo> when two arguments are given; base branch with -b")]
+    #[arg(
+        value_name = "BRANCH_OR_BASE",
+        help = "Branch inside <repo> when two arguments are given; base branch or commit-ish with -b"
+    )]
     second: Option<String>,
 
     #[arg(
@@ -310,8 +315,9 @@ Creates a new branch and a corresponding worktree in a single operation. The
 worktree is placed at the project root level as a sibling to other worktrees,
 using the branch name as the directory name.
 
-The new branch is based on the current branch, or on `<base-branch>` if
-specified. After creating the branch locally, it is pushed to the remote and
+The new branch is based on the current branch, or on `<base>` if specified —
+a branch, or any commit-ish (a tag, a SHA, a spelling like `HEAD~2`).
+After creating the branch locally, it is pushed to the remote and
 upstream tracking is configured (unless disabled via daft.checkout.push). The
 repo's pre-push hook runs only when that push introduces new commits; a
 ref-only push of already-pushed commits skips it (configurable via
@@ -362,21 +368,21 @@ See daft-hooks(1) for hook management.
 "#)]
 pub struct StartArgs {
     #[arg(
-        value_name = "BRANCH_NAME",
+        value_name = "BRANCH|COMMIT-ISH",
         required_unless_present = "fork",
-        help = "Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`; with --fork, the base position instead"
+        help = "Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`; with --fork, the commit-ish to fork from instead (defaults to HEAD)"
     )]
     first: Option<String>,
 
     #[arg(
         value_name = "BASE_OR_BRANCH",
-        help = "Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`"
+        help = "Base branch or commit-ish (defaults to the current branch); or, when it resolves to nothing here, the new branch inside `<repo>`; not used with --fork"
     )]
     second: Option<String>,
 
     #[arg(
         value_name = "BASE",
-        help = "Base branch inside `<repo>` (three-name form); must exist there"
+        help = "Base branch or commit-ish inside `<repo>` (three-name form); must resolve there; not used with --fork"
     )]
     third: Option<String>,
 

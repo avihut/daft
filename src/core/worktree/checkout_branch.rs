@@ -610,7 +610,7 @@ fn select_checkout_base(
         Ok(format!("{remote_name}/{base_branch}"))
     } else {
         sink.on_step(&format!(
-            "Neither local nor remote branch found for '{base_branch}', using as-is"
+            "No local or remote branch named '{base_branch}'; using it as a commit-ish base"
         ));
         Ok(base_branch.to_string())
     }

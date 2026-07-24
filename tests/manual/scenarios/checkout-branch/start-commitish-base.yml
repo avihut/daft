@@ -1,0 +1,54 @@
+name: Start with a commit-ish base
+description:
+  daft start <branch> <base> accepts any commit-ish base — a tag or a raw SHA,
+  not just a branch — through select_checkout_base's fall-through
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Tag develop's commit
+    run: git -c tag.gpgSign=false tag v1.0 develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Start a branch based on the tag
+    run: daft start from-tag v1.0
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/from-tag"
+
+  - name: The new branch exists and sits at the tagged commit, not main's tip
+    run: |
+      git show-ref --verify --quiet refs/heads/from-tag
+      test "$(git -C ../from-tag rev-parse HEAD)" = "$(git rev-parse 'v1.0^{commit}')"
+      test "$(git -C ../from-tag rev-parse HEAD)" != "$(git rev-parse main)"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Start a branch based on a raw SHA
+    run: |
+      daft start from-sha "$(git rev-parse 'v1.0^{commit}')"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/from-sha"
+
+  - name: The SHA-based branch sits at that commit
+    run: |
+      git show-ref --verify --quiet refs/heads/from-sha
+      test "$(git -C ../from-sha rev-parse HEAD)" = "$(git rev-parse 'v1.0^{commit}')"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
