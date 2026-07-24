@@ -32,7 +32,19 @@
 
 pub mod lefthook;
 
+use std::path::Path;
 use std::time::Duration;
+
+/// The jobs a recognized manager would run for `hook`, read from the manager's
+/// own config under `dir`. Modular: a new manager adds one arm. This is the
+/// display-only roster seed (#753) — see [`lefthook::roster`] for the contract.
+/// Empty for an unknown manager or any unreadable config.
+pub fn roster(manager: &str, dir: &Path, hook: &str) -> Vec<String> {
+    match manager {
+        "lefthook" => lefthook::roster(dir, hook),
+        _ => Vec::new(),
+    }
+}
 
 /// What a recognized manager stream reports, in stream order.
 #[derive(Debug, Clone, PartialEq)]

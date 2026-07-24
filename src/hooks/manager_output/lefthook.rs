@@ -31,6 +31,7 @@
 use super::{ManagerEvent, ManagerRecognizer, Probe};
 use crate::output::format::strip_ansi;
 use regex::Regex;
+use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -117,6 +118,65 @@ impl Default for Lefthook {
 
 fn parse_seconds(text: &str) -> Option<Duration> {
     text.parse::<f64>().ok().map(Duration::from_secs_f64)
+}
+
+/// Config file names lefthook reads from a repo root, in preference order.
+/// Best-effort: `extends:`, `lefthook-local.yml` overrides, and
+/// `$LEFTHOOK_CONFIG` are not followed. Under-listing is harmless — a job they
+/// add is revealed when its block flushes, exactly as without a seed.
+const CONFIG_NAMES: &[&str] = &[
+    "lefthook.yml",
+    "lefthook.yaml",
+    ".lefthook.yml",
+    ".lefthook.yaml",
+];
+
+/// The jobs lefthook would run for `hook`, read from its config in `dir`.
+///
+/// This is the display-only roster seed (#753): lefthook's default (buffered)
+/// output reveals a job only when it *completes*, so a long job is invisible
+/// for its whole run. The routing wrapper shows these names as pending rows up
+/// front and lets the stream resolve them. It never feeds verdict or exit
+/// policy — a seeded job the run never resolves settles as skipped, and the
+/// push verdict stays `PushIo`-derived. Empty on any missing, unreadable, or
+/// unparseable config (the stream then reveals jobs as before).
+pub fn roster(dir: &Path, hook: &str) -> Vec<String> {
+    for name in CONFIG_NAMES {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            return parse_roster(&text, hook);
+        }
+    }
+    Vec::new()
+}
+
+/// Job names under `<hook>` in a lefthook config: `commands:` map keys and
+/// `jobs:` list `name`s, in config order. Tolerant of either or both forms and
+/// of unrelated keys; any parse error or missing hook yields an empty roster.
+fn parse_roster(yaml: &str, hook: &str) -> Vec<String> {
+    let Ok(root) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return Vec::new();
+    };
+    let Some(section) = root.get(hook) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    // `commands:` — a mapping of job-name -> spec. serde_yaml's Mapping keeps
+    // insertion (config) order.
+    if let Some(commands) = section.get("commands").and_then(|v| v.as_mapping()) {
+        names.extend(
+            commands
+                .keys()
+                .filter_map(|k| k.as_str().map(str::to_string)),
+        );
+    }
+    // `jobs:` — a sequence of specs, each carrying its own `name`.
+    if let Some(jobs) = section.get("jobs").and_then(|v| v.as_sequence()) {
+        names.extend(
+            jobs.iter()
+                .filter_map(|job| job.get("name").and_then(|v| v.as_str()).map(str::to_string)),
+        );
+    }
+    names
 }
 
 impl ManagerRecognizer for Lefthook {
@@ -620,5 +680,89 @@ mod tests {
         recognizer.probe("│ 🥊 lefthook v2.0.0  hook: pre-push │");
         let events = recognizer.feed("summary: (skipped)");
         assert_eq!(events, vec![ManagerEvent::PhaseDone { total: None }]);
+    }
+
+    // ── roster seed (#753) ────────────────────────────────────────────────
+
+    #[test]
+    fn roster_reads_commands_in_config_order() {
+        // The `commands:` map form (daft's own lefthook.yml). Order matters:
+        // the seeded rows should mirror the config, not sort.
+        let yaml = "\
+pre-push:
+  parallel: true
+  commands:
+    build-check:
+      run: cargo check
+    unit-tests:
+      glob: \"*.rs\"
+      run: mise run test:unit
+";
+        assert_eq!(
+            parse_roster(yaml, "pre-push"),
+            vec!["build-check", "unit-tests"]
+        );
+    }
+
+    #[test]
+    fn roster_reads_the_jobs_list_form() {
+        // The newer `jobs:` sequence form, each entry naming itself.
+        let yaml = "\
+pre-push:
+  jobs:
+    - name: fmt
+      run: cargo fmt --check
+    - name: clippy
+      run: cargo clippy
+";
+        assert_eq!(parse_roster(yaml, "pre-push"), vec!["fmt", "clippy"]);
+    }
+
+    #[test]
+    fn roster_merges_commands_and_jobs_and_ignores_nameless_and_other_hooks() {
+        let yaml = "\
+pre-commit:
+  commands:
+    other-hook-job:
+      run: true
+pre-push:
+  commands:
+    a:
+      run: true
+  jobs:
+    - name: b
+      run: true
+    - run: nameless-is-dropped
+";
+        assert_eq!(parse_roster(yaml, "pre-push"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn roster_is_empty_for_a_missing_hook_or_malformed_config() {
+        let yaml = "pre-commit:\n  commands:\n    x:\n      run: true\n";
+        assert!(parse_roster(yaml, "pre-push").is_empty(), "hook absent");
+        assert!(
+            parse_roster("this: [is: not: valid", "pre-push").is_empty(),
+            "malformed YAML yields no roster, never a panic"
+        );
+        assert!(
+            parse_roster("pre-push: just-a-scalar", "pre-push").is_empty(),
+            "a hook without commands/jobs yields no roster"
+        );
+    }
+
+    #[test]
+    fn roster_reads_the_first_config_file_present_and_is_empty_without_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            roster(dir.path(), "pre-push").is_empty(),
+            "no config file → empty roster (stream reveals jobs as before)"
+        );
+        fs::write(
+            dir.path().join("lefthook.yml"),
+            "pre-push:\n  commands:\n    build-check:\n      run: cargo check\n",
+        )
+        .expect("write config");
+        assert_eq!(roster(dir.path(), "pre-push"), vec!["build-check"]);
     }
 }
