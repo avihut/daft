@@ -90,6 +90,21 @@ pub fn short_oid(oid: &str) -> &str {
     &oid[..oid.len().min(7)]
 }
 
+/// `HEAD` of the worktree at `path`, as a full OID. `None` when unreadable —
+/// callers degrade (report the requested commit, skip a guard) rather than
+/// erroring on a broken worktree.
+pub(crate) fn worktree_head(path: &Path) -> Option<String> {
+    let out = crate::utils::git_command_at(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!oid.is_empty()).then_some(oid)
+}
+
 /// Directory name for a spelling that cannot name itself: a hex prefix of
 /// the resolved commit.
 pub fn derived_dirname(commit: &str) -> String {
@@ -165,7 +180,14 @@ pub fn execute_visit(
     {
         let kind = record_for(&records, &entry.path).map(|r| r.kind);
         if kind != Some(WorktreeKind::Fork) {
-            return navigate(&dir, &entry.path.clone(), &params.commit, &git_dir, sink);
+            return navigate(
+                &dir,
+                &entry.path.clone(),
+                &params.commit,
+                &params.spelling,
+                &git_dir,
+                sink,
+            );
         }
     }
 
@@ -190,6 +212,7 @@ pub fn execute_visit(
                     &row.branch,
                     &entry.path.clone(),
                     &params.commit,
+                    &params.spelling,
                     &git_dir,
                     sink,
                 );
@@ -281,6 +304,7 @@ fn create_sandbox(
                 &params.dirname,
                 &worktree_path,
                 &params.commit,
+                &params.spelling,
                 git_dir,
                 sink,
             );
@@ -478,6 +502,7 @@ fn navigate(
     dirname: &str,
     worktree_path: &Path,
     commit: &str,
+    spelling: &str,
     git_dir: &Path,
     sink: &mut impl ProgressSink,
 ) -> Result<SandboxResult> {
@@ -485,11 +510,27 @@ fn navigate(
         "Sandbox '{dirname}' already exists at '{}', switching to it",
         worktree_path.display()
     ));
+    // Report the worktree's real position, not the caller's freshly-resolved
+    // commit: the two diverge when the spelling is a moving ref
+    // (`origin/master` after a fetch) or when commits were made inside the
+    // sandbox. Landing the shell at X while announcing Y is the lie to avoid;
+    // the sandbox itself deliberately keeps its position (never mutated on
+    // revisit — it may hold uncommitted or committed work).
+    let head = worktree_head(worktree_path);
+    let actual = head.as_deref().unwrap_or(commit);
+    if actual != commit {
+        sink.on_warning(&format!(
+            "Sandbox '{dirname}' sits at {}, but '{spelling}' now resolves to {} — \
+             it keeps its position; remove the sandbox and revisit to take the new one",
+            short_oid(actual),
+            short_oid(commit)
+        ));
+    }
     change_directory(worktree_path)?;
     Ok(SandboxResult {
         dirname: dirname.to_string(),
         worktree_path: worktree_path.to_path_buf(),
-        commit: commit.to_string(),
+        commit: actual.to_string(),
         already_existed: true,
         cd_target: get_current_directory()?,
         git_dir: git_dir.to_path_buf(),
@@ -855,6 +896,76 @@ mod tests {
         .expect("the visit creates its own sandbox");
         assert!(!result.already_existed, "the fork was not matched");
         assert_ne!(result.worktree_path, fork_wt);
+    }
+
+    /// A revisit reports the sandbox's real position, not the freshly
+    /// resolved commit: when the spelling moves (a fetch advancing
+    /// `origin/master`, a re-tagged release), the shell lands in the
+    /// existing worktree — the result must say where that is, and the
+    /// divergence must be called out.
+    #[test]
+    #[serial]
+    fn a_revisit_after_the_spelling_moved_reports_the_sandbox_position() {
+        struct WarningSink {
+            warnings: Vec<String>,
+        }
+        impl ProgressSink for WarningSink {
+            fn on_step(&mut self, _msg: &str) {}
+            fn on_warning(&mut self, msg: &str) {
+                self.warnings.push(msg.to_string());
+            }
+            fn on_debug(&mut self, _msg: &str) {}
+        }
+        impl HookRunner for WarningSink {
+            fn run_hook(&mut self, _ctx: &HookContext) -> Result<HookOutcome> {
+                Ok(HookOutcome {
+                    success: true,
+                    skipped: true,
+                    skip_reason: None,
+                })
+            }
+        }
+
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let (tmp, repo, oid) = repo_with_tag();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let wt = tmp.path().join("v1");
+        execute_visit(
+            &params("v1", &oid, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut NullBridge,
+        )
+        .expect("first visit materializes");
+        std::env::set_current_dir(&repo).unwrap();
+
+        // The spelling moves: model a fetch/re-tag by resolving it to main's
+        // tip on the second visit.
+        let moved = git_out(&repo, &["rev-parse", "HEAD"]);
+        assert_ne!(moved, oid);
+
+        let mut sink = WarningSink {
+            warnings: Vec::new(),
+        };
+        let result = execute_visit(
+            &params("v1", &moved, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut sink,
+        )
+        .expect("revisit navigates");
+
+        assert!(result.already_existed);
+        assert_eq!(result.commit, oid, "reports the worktree's real position");
+        assert!(
+            sink.warnings
+                .iter()
+                .any(|w| w.contains(short_oid(&oid)) && w.contains(short_oid(&moved))),
+            "the divergence is called out: {:?}",
+            sink.warnings
+        );
     }
 
     /// The hook context on the sandbox path is branchless: an empty branch

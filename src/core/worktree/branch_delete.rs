@@ -703,7 +703,7 @@ fn validate_sandbox_target(
     // branch protects.
     if !params.force
         && let Some(pin) = sandbox.pinned_commit.as_deref()
-        && let Some(head) = worktree_head(&sandbox.path)
+        && let Some(head) = super::sandbox::worktree_head(&sandbox.path)
         && head != pin
     {
         return Err(ValidationError {
@@ -823,21 +823,6 @@ mod sandbox_target_tests {
         std::fs::create_dir_all(&wt).unwrap();
         assert!(sandbox_target_by_path(&wt, &HashMap::new()).is_none());
     }
-}
-
-/// `HEAD` of the worktree at `path`, as a full OID. `None` when unreadable —
-/// the pinned check then stays silent rather than blocking removal of a
-/// broken worktree.
-fn worktree_head(path: &Path) -> Option<String> {
-    let out = crate::utils::git_command_at(path)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!oid.is_empty()).then_some(oid)
 }
 
 /// Validate all requested branches. Returns a tuple of (validated, errors).
