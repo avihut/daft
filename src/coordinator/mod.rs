@@ -64,6 +64,11 @@ pub enum CoordinatorRequest {
         tag: Option<String>,
         invocation_prefix: Option<String>,
         older_than_secs: Option<u64>,
+        /// Escalate to SIGKILL instead of SIGTERM. `serde(default)` keeps
+        /// the wire compatible in both directions: an old daemon ignores
+        /// the field (polite SIGTERM), an old client omits it (false).
+        #[serde(default)]
+        kill: bool,
     },
     /// Streaming tail of a job's structured log file. Server emits one
     /// `StreamFrame` envelope per `LogRecord` then a single `StreamEnd`

@@ -1979,7 +1979,7 @@ fn delete_single_branch(
         } else if wt_path.exists() {
             sink.on_step(&format!("Removing worktree at {}...", wt_path.display()));
             sink.on_stage(&stage_key(StageId::RemoveWorktree), StageEvent::Started);
-            match ctx.git.worktree_remove(wt_path, force) {
+            match remove_worktree_completing_orphans(ctx.git, wt_path, force, sink) {
                 Ok(()) => {
                     result.worktree_removed = true;
                     sink.on_step(&format!("Removed worktree '{}'", branch.name));
@@ -2161,6 +2161,51 @@ fn run_removal_hook(
 fn parse_worktree_list(git: &GitCommand) -> Result<Vec<WorktreeListEntry>> {
     let porcelain_output = git.worktree_list_porcelain()?;
     Ok(parse_worktree_list_porcelain(&porcelain_output))
+}
+
+/// Remove a worktree via git, completing the delete by hand when git
+/// unregisters it but fails to clear the directory.
+///
+/// `git worktree remove` clears the working tree and its admin entry as
+/// separate steps: when something wins a file-create race mid-delete
+/// (observed: a warmup build still writing while its fork was removed),
+/// git reports "Directory not empty" — with the worktree already
+/// unregistered. Left there, the directory is invisible to git and daft
+/// alike, so a retry has nothing to act on. Once git has disowned the
+/// path, finishing the delete ourselves is the only way to complete the
+/// removal the target was already validated for. If the registration
+/// state can't be read, or git still lists the worktree, the original
+/// error stands untouched.
+fn remove_worktree_completing_orphans(
+    git: &GitCommand,
+    wt_path: &Path,
+    force: bool,
+    sink: &mut dyn ProgressSink,
+) -> Result<()> {
+    let orig = match git.worktree_remove(wt_path, force) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    let target = std::fs::canonicalize(wt_path).unwrap_or_else(|_| wt_path.to_path_buf());
+    let still_registered = parse_worktree_list(git)
+        .map(|entries| {
+            entries.iter().any(|e| {
+                std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone()) == target
+            })
+        })
+        // Can't tell → assume registered and keep the original error.
+        .unwrap_or(true);
+    if still_registered || !wt_path.exists() {
+        return Err(orig);
+    }
+    sink.on_step(&format!(
+        "git unregistered the worktree but left '{}'; completing the delete",
+        wt_path.display()
+    ));
+    match std::fs::remove_dir_all(wt_path) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(orig.context(format!("the direct delete of the leftover failed too: {e}"))),
+    }
 }
 
 /// Resolve where to cd after deleting the user's current worktree.
@@ -2590,6 +2635,54 @@ mod tests {
                 branch,
             ],
         );
+    }
+
+    /// The half-removed state `remove_worktree_completing_orphans` exists
+    /// for: git has unregistered the worktree (admin entry gone) but the
+    /// directory remains — observed when a dying background build won a
+    /// file-create race during `git worktree remove`. The helper must
+    /// finish the delete instead of erroring against a directory git no
+    /// longer owns.
+    #[test]
+    #[serial]
+    fn an_unregistered_leftover_worktree_dir_is_deleted_directly() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let wt = tmp.path().join("fork");
+        setup_worktree(tmp.path(), "fork-branch", &wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Simulate git's mid-delete unregister: admin entry gone, dir kept.
+        std::fs::remove_dir_all(tmp.path().join(".git/worktrees/fork")).unwrap();
+        assert!(wt.exists());
+
+        let git = GitCommand::new(true);
+        remove_worktree_completing_orphans(&git, &wt, false, &mut crate::core::NullSink)
+            .expect("a disowned directory must still get deleted");
+        assert!(!wt.exists(), "the leftover directory must be gone");
+    }
+
+    /// A still-registered worktree whose removal fails keeps the original
+    /// git error — the direct delete fires only once git has disowned the
+    /// path, never as a way around git's own refusals.
+    #[test]
+    #[serial]
+    fn a_registered_worktree_failure_keeps_the_git_error() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let wt = tmp.path().join("dirty");
+        setup_worktree(tmp.path(), "dirty-branch", &wt);
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // Untracked file: a non-force `git worktree remove` refuses.
+        std::fs::write(wt.join("junk.txt"), "x").unwrap();
+
+        let git = GitCommand::new(true);
+        let err = remove_worktree_completing_orphans(&git, &wt, false, &mut crate::core::NullSink)
+            .expect_err("a registered dirty worktree must keep refusing");
+        assert!(err.to_string().contains("Git worktree remove failed"));
+        assert!(wt.exists(), "the worktree must be untouched");
     }
 
     #[test]

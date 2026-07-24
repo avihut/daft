@@ -1599,8 +1599,14 @@ fn cancel_matching(
 
     match CoordinatorClient::connect(&repo_hash)? {
         Some(mut client) => {
-            let names =
-                client.cancel_matching(hook, worktree, tag, invocation_prefix, older_than_secs)?;
+            let names = client.cancel_matching(
+                hook,
+                worktree,
+                tag,
+                invocation_prefix,
+                older_than_secs,
+                false,
+            )?;
             if names.is_empty() {
                 output.info("No active jobs matched the filter.");
             } else {

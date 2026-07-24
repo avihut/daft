@@ -54,15 +54,30 @@ fn reconcile_active_jobs(_store: &SqliteJobsStore, _repo_hash: &str) -> Result<(
     Ok(())
 }
 
-/// Shared state for tracking running child processes.
-/// Maps job name to the child process PID, allowing cancellation.
-type ChildPidMap = Arc<Mutex<HashMap<String, u32>>>;
+/// Runtime identity of one background job: `(invocation_id, job_name)`.
+///
+/// The display name alone is NOT unique — three worktrees minted together
+/// each run a warmup named `mise dev`, and a name-keyed map made
+/// `CancelMatching` SIGTERM whichever same-named job registered last (the
+/// field failure: removing fork 1 killed fork 3's build while fork 1's
+/// kept writing, so `git worktree remove` died on "Directory not empty").
+/// A job name is unique *within* an invocation (`create_job_dir` keys log
+/// dirs the same way), so the pair pins exactly one process group.
+type JobKey = (String, String);
 
-/// Shared set of job names that have been cancelled individually
+fn job_key(invocation_id: &str, name: &str) -> JobKey {
+    (invocation_id.to_string(), name.to_string())
+}
+
+/// Shared state for tracking running child processes.
+/// Maps [`JobKey`] to the child process PID, allowing cancellation.
+type ChildPidMap = Arc<Mutex<HashMap<JobKey, u32>>>;
+
+/// Shared set of [`JobKey`]s that have been cancelled individually
 /// (as opposed to a global `cancel_all`). Consulted by the post-run
 /// status classifier so per-job cancel records `JobStatus::Cancelled`
 /// instead of `JobStatus::Failed`.
-type CancelledJobs = Arc<Mutex<HashSet<String>>>;
+type CancelledJobs = Arc<Mutex<HashSet<JobKey>>>;
 
 /// State for a coordinator process managing background jobs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -591,14 +606,14 @@ fn run_single_background_job(
     // 5. Set up a one-shot PID channel; register the spawned child's PID
     //    in `child_pids` so the socket listener can SIGTERM it on cancel.
     let (pid_tx, pid_rx) = std::sync::mpsc::channel::<u32>();
-    let job_name_for_register = job.name.clone();
+    let key_for_register = job_key(ctx.invocation_id, &job.name);
     let child_pids_for_register = child_pids.clone();
     let registrar = std::thread::spawn(move || {
         if let Ok(pid) = pid_rx.recv() {
             child_pids_for_register
                 .lock()
                 .unwrap()
-                .insert(job_name_for_register, pid);
+                .insert(key_for_register, pid);
         }
     });
 
@@ -624,7 +639,8 @@ fn run_single_background_job(
     // so the terminal JobRow write can record it. `process_group(0)` makes
     // pid == pgid for every spawned hook job, so the same value is also
     // the PGID that `killpg` would target.
-    let child_pid = child_pids.lock().unwrap().remove(&job.name);
+    let key = job_key(ctx.invocation_id, &job.name);
+    let child_pid = child_pids.lock().unwrap().remove(&key);
 
     // Wait for the log writer thread to finish; recover the next seq for
     // the terminal Status record.
@@ -636,12 +652,12 @@ fn run_single_background_job(
     //    cancellation. Either signal routes the job to Cancelled rather
     //    than Failed.
     let was_cancelled_globally = cancel_all.load(Ordering::Relaxed);
-    let was_cancelled_per_job = cancelled_jobs.lock().unwrap().contains(&job.name);
+    let was_cancelled_per_job = cancelled_jobs.lock().unwrap().contains(&key);
     let was_cancelled = was_cancelled_globally || was_cancelled_per_job;
 
     // Clear the per-job cancellation entry (if any) so a re-invocation of
     // the same job name does not inherit a stale `Cancelled` flag.
-    cancelled_jobs.lock().unwrap().remove(&job.name);
+    cancelled_jobs.lock().unwrap().remove(&key);
 
     let (status, node_status, exit_code) = if was_cancelled {
         (JobStatus::Cancelled, NodeStatus::Skipped, None)
@@ -899,15 +915,10 @@ fn handle_client_connection(
         }
         CoordinatorRequest::CancelAll => {
             cancel_all.store(true, Ordering::Relaxed);
-            let pids: Vec<(String, u32)> = child_pids
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
+            let pids: Vec<u32> = child_pids.lock().unwrap().values().copied().collect();
 
             let mut count = 0;
-            for (name, pid) in &pids {
+            for pid in &pids {
                 // Bg children are process-group leaders (PID == PGID via
                 // setpgid). killpg reaches every descendant — e.g. a `sleep`
                 // grandchild of the wrapping `sh`.
@@ -916,7 +927,6 @@ fn handle_client_connection(
                     nix::sys::signal::Signal::SIGTERM,
                 );
                 count += 1;
-                let _ = name; // used for counting
             }
 
             CoordinatorResponse::Ack {
@@ -946,6 +956,7 @@ fn handle_client_connection(
             tag,
             invocation_prefix,
             older_than_secs,
+            kill,
         } => cancel_matching(
             CancelMatchingArgs {
                 hook: hook.as_deref(),
@@ -954,6 +965,7 @@ fn handle_client_connection(
                 invocation_prefix: invocation_prefix.as_deref(),
                 older_than_secs,
             },
+            kill,
             child_pids,
             cancelled_jobs,
             job_store,
@@ -1016,23 +1028,34 @@ fn cancel_single_job(
     cancelled_jobs: &CancelledJobs,
     _store: &LogStore,
 ) -> CoordinatorResponse {
-    let pids = child_pids.lock().unwrap();
-    if let Some(&pid) = pids.get(name) {
-        cancelled_jobs.lock().unwrap().insert(name.to_string());
+    // The user addresses jobs by display name; the map is keyed by
+    // (invocation, name). Cancel every invocation's instance of the name —
+    // with concurrent same-named jobs there is no principled way to pick
+    // one, and "stop the job called X" plainly means all of them.
+    let matches: Vec<(JobKey, u32)> = child_pids
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((_, n), _)| n == name)
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    if matches.is_empty() {
+        return CoordinatorResponse::Error {
+            code: ErrorCode::JobNotFound,
+            message: format!("Job not found or not running: {name}"),
+        };
+    }
+    for (key, pid) in matches {
+        cancelled_jobs.lock().unwrap().insert(key);
         // The bg child is a process-group leader (PID == PGID via setpgid),
         // so killpg reaches every descendant.
         let _ = nix::sys::signal::killpg(
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGTERM,
         );
-        CoordinatorResponse::Ack {
-            message: format!("Cancelled job: {name}"),
-        }
-    } else {
-        CoordinatorResponse::Error {
-            code: ErrorCode::JobNotFound,
-            message: format!("Job not found or not running: {name}"),
-        }
+    }
+    CoordinatorResponse::Ack {
+        message: format!("Cancelled job: {name}"),
     }
 }
 
@@ -1072,9 +1095,34 @@ fn filter_matching_jobs(
         .collect()
 }
 
+/// Resolve matched job rows to the process groups this coordinator owns.
+///
+/// Pure so the name-collision case is unit-testable: each row resolves
+/// through its own `(invocation_id, name)` key, so two concurrent jobs
+/// that share a display name (three forks' `mise dev`) each land on their
+/// OWN pid — the field failure this replaces looked up by name alone and
+/// signalled whichever same-named job registered last.
+fn resolve_cancel_targets(
+    matched: &[JobRow],
+    pids_snapshot: &HashMap<JobKey, u32>,
+) -> Vec<(JobKey, u32)> {
+    matched
+        .iter()
+        .filter_map(|row| {
+            let key = job_key(&row.invocation_id, &row.name);
+            let pid = *pids_snapshot.get(&key)?;
+            Some((key, pid))
+        })
+        .collect()
+}
+
 /// Cancel every active job whose SQLite `JobRow` matches *all* supplied
 /// predicates (AND, missing-is-wildcard). Looks up the runtime PID via
 /// `child_pids` so we signal exactly the process group that's still alive.
+///
+/// `kill` escalates SIGTERM to SIGKILL — the worktree-removal path sends
+/// it for jobs that outlived the polite cancel and are about to have the
+/// directory deleted from under them.
 ///
 /// Rows the coordinator never wrote (e.g. legacy pre-store invocations)
 /// can't be filtered by the SQL schema, so they fall through unmatched —
@@ -1082,6 +1130,7 @@ fn filter_matching_jobs(
 #[cfg(unix)]
 fn cancel_matching(
     args: CancelMatchingArgs<'_>,
+    kill: bool,
     child_pids: &ChildPidMap,
     cancelled_jobs: &CancelledJobs,
     job_store: Option<&SqliteJobsStore>,
@@ -1115,16 +1164,20 @@ fn cancel_matching(
         let g = child_pids.lock().unwrap();
         g.clone()
     };
+    let signal = if kill {
+        nix::sys::signal::Signal::SIGKILL
+    } else {
+        nix::sys::signal::Signal::SIGTERM
+    };
     let mut names: Vec<String> = Vec::new();
-    for row in &matched {
-        if let Some(&pid) = pids_snapshot.get(&row.name) {
-            cancelled_jobs.lock().unwrap().insert(row.name.clone());
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid as i32),
-                nix::sys::signal::Signal::SIGTERM,
-            );
-            names.push(row.name.clone());
-        }
+    for (key, pid) in resolve_cancel_targets(&matched, &pids_snapshot) {
+        names.push(key.1.clone());
+        cancelled_jobs.lock().unwrap().insert(key);
+        let pgid = nix::unistd::Pid::from_raw(pid as i32);
+        let _ = nix::sys::signal::killpg(pgid, signal);
+        // A governor-frozen (SIGSTOP'd) group holds the termination signal
+        // pending until it resumes — thaw it so the signal can land.
+        let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT);
     }
 
     CoordinatorResponse::Cancelled {
@@ -1817,6 +1870,58 @@ mod tests {
     // `other_repos_are_left_alone`). The thin wrapper in this module is
     // exercised end-to-end via the YAML integration scenarios.
 
+    /// The field failure this pins: three worktrees each running a warmup
+    /// named `mise dev`. A name-keyed PID map made every cancel land on
+    /// whichever same-named job registered last; the composite
+    /// `(invocation, name)` key must route each matched row to its OWN
+    /// process group.
+    #[test]
+    fn resolve_cancel_targets_distinguishes_same_named_jobs() {
+        fn row(name: &str, wt: &str, inv: &str) -> JobRow {
+            JobRow {
+                repo_hash: "rh".into(),
+                invocation_id: inv.into(),
+                name: name.into(),
+                hook_type: "worktree-post-create".into(),
+                worktree: wt.into(),
+                command: "x".into(),
+                working_dir: "/tmp".into(),
+                env: HashMap::new(),
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                status: JobStatus::Running.as_status_str().to_string(),
+                exit_code: None,
+                pid: Some(1),
+                pgid: Some(1),
+                background: true,
+                needs: vec![],
+                tags: vec![],
+                retention_seconds: None,
+                max_log_size_bytes: None,
+            }
+        }
+
+        let pids = HashMap::from([
+            (job_key("inv-fork-1", "mise dev"), 101),
+            (job_key("inv-fork-2", "mise dev"), 102),
+            (job_key("inv-fork-3", "mise dev"), 103),
+        ]);
+
+        // Cancelling fork-1's job must signal PID 101 — not whichever
+        // same-named registration happened to be last.
+        let matched = vec![row("mise dev", "master-fork", "inv-fork-1")];
+        let targets = resolve_cancel_targets(&matched, &pids);
+        assert_eq!(
+            targets,
+            vec![(job_key("inv-fork-1", "mise dev"), 101)],
+            "each row resolves through its own invocation"
+        );
+
+        // A row this coordinator never registered resolves to nothing.
+        let foreign = vec![row("mise dev", "elsewhere", "inv-unknown")];
+        assert!(resolve_cancel_targets(&foreign, &pids).is_empty());
+    }
+
     /// Filter predicates AND together; missing predicates wildcard. Tag
     /// matching is "contains" against the JobRow's `tags` vector.
     #[test]
@@ -2211,7 +2316,10 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
             loop {
                 let snap = pids_probe.lock().unwrap().clone();
-                if snap.contains_key("sleep-job") {
+                if snap.contains_key(&job_key(
+                    "00000000-0000-0000-0000-000000000001",
+                    "sleep-job",
+                )) {
                     return snap;
                 }
                 if std::time::Instant::now() >= deadline {
@@ -2224,12 +2332,10 @@ mod tests {
         let _ = run_single_background_job(&job, &ctx, &store);
 
         let mid = probe.join().unwrap();
+        let key = job_key("00000000-0000-0000-0000-000000000001", "sleep-job");
+        assert!(mid.contains_key(&key), "PID should be registered mid-run");
         assert!(
-            mid.contains_key("sleep-job"),
-            "PID should be registered mid-run"
-        );
-        assert!(
-            !child_pids.lock().unwrap().contains_key("sleep-job"),
+            !child_pids.lock().unwrap().contains_key(&key),
             "PID should be deregistered after completion"
         );
     }
@@ -2267,7 +2373,8 @@ mod tests {
                 // cancel_single_job would no-op because the map was still
                 // empty.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                while !pids.lock().unwrap().contains_key("long-job") {
+                let key = job_key("00000000-0000-0000-0000-000000000002", "long-job");
+                while !pids.lock().unwrap().contains_key(&key) {
                     if std::time::Instant::now() >= deadline {
                         break;
                     }
@@ -2401,10 +2508,10 @@ mod tests {
         // Pre-insert into cancelled_jobs BEFORE running. The cmd will succeed
         // (exit 0), but the classifier will see was_cancelled_per_job and route
         // status to Cancelled. The log must survive.
-        cancelled_jobs
-            .lock()
-            .unwrap()
-            .insert("pre-cancelled".to_string());
+        cancelled_jobs.lock().unwrap().insert(job_key(
+            "00000000-0000-0000-0000-000000000006",
+            "pre-cancelled",
+        ));
 
         let job = JobSpec {
             name: "pre-cancelled".to_string(),
@@ -2614,7 +2721,7 @@ mod tests {
             // we try to cancel. A fixed 200ms sleep raced fork-exec
             // scheduling under heavy parallel-test load.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !pids.lock().unwrap().contains_key("long") {
+            while !pids.lock().unwrap().keys().any(|(_, n)| n == "long") {
                 if std::time::Instant::now() >= deadline {
                     break;
                 }
