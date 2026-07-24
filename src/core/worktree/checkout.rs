@@ -717,9 +717,11 @@ pub fn execute(
     // the command layer, which returns before the `-x` tail and exits
     // non-zero. Under `failMode=warn` the run returns Ok (success: false)
     // and the command proceeds — that outcome is deliberately not captured;
-    // Err propagation is the single abort mechanism.
-    sink.run_hook(&post_hook_ctx)
-        .map_err(|e| super::post_create_failure_error(e, &worktree_path, &params.branch_name))?;
+    // Err propagation is the single abort mechanism. `was_new_branch = false`:
+    // this branch pre-existed, so the recovery hint must not offer to delete it.
+    sink.run_hook(&post_hook_ctx).map_err(|e| {
+        super::post_create_failure_error(e, &worktree_path, &params.branch_name, false)
+    })?;
 
     Ok(CheckoutResult {
         branch_name: params.branch_name.clone(),

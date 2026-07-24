@@ -369,8 +369,31 @@ pub fn execute(
     // non-zero. Under `failMode=warn` the run returns Ok (success: false)
     // and the command proceeds — that outcome is deliberately not captured;
     // Err propagation is the single abort mechanism.
-    sink.run_hook(&post_hook_ctx).map_err(|e| {
-        super::post_create_failure_error(e, &worktree_path, &params.new_branch_name)
+    let post_create_result = sink.run_hook(&post_hook_ctx);
+
+    // The upstream push ran before the hook, so on a post-create abort the
+    // remote state is already mutated — surface it now, because the abort
+    // error below becomes the command's failure and the deferred pre-push
+    // gate bail (#599) a few lines down is never reached (#765 review,
+    // findings 4 & 5).
+    if post_create_result.is_err() {
+        if let Some(message) = &push_gate_error {
+            sink.on_warning(&format!(
+                "the upstream push of '{}' was refused: {message}",
+                params.new_branch_name
+            ));
+        } else if push_set {
+            sink.on_warning(&format!(
+                "note: '{}' was already pushed to '{}' before the hook failed",
+                params.new_branch_name, params.remote_name
+            ));
+        }
+    }
+
+    // `was_new_branch = true`: this command created the branch, so `daft remove`
+    // is a safe cleanup suggestion.
+    post_create_result.map_err(|e| {
+        super::post_create_failure_error(e, &worktree_path, &params.new_branch_name, true)
     })?;
 
     // The worktree is fully set up — now surface a deferred pre-push gate
