@@ -135,6 +135,28 @@ never keeps an identity ink.
   `↓` rows; jobs skipped by their own `skip:`/`only:` conditions leave no trace,
   and a whole phase skipped that way vanishes with them. Background jobs get a
   blue `↻ name  background` receipt — `daft hooks jobs` manages them from there.
+- The `pre-push` gate is git's hook, not daft's — git dispatches it inside
+  `git push` and daft sees one output stream. When that stream is a **hook
+  manager** (lefthook 2.x — every released 2.x version is covered), daft
+  recognizes its line grammar and renders the manager's jobs as first-class rows
+  under the `├─ pre-push hooks` anchor: live spinners as each job's block
+  streams in, one receipt per job with the manager's own names and durations,
+  and a failure dump scoped to the failing job
+  (`error: hook job 'unit tests (related)' failed:`) instead of the whole run.
+  While the phase runs, a dim census row atop the section counts jobs as they
+  appear (`lefthook v2.1.10 · 3 jobs` — lefthook announces no upfront total),
+  and vanishes when the phase settles; in verbose mode the closing note keeps
+  the manager's identity for scrollback
+  (`└ all jobs in 42.4s · lefthook v2.1.10`). Output daft does not recognize — a
+  plain script, husky, an unknown tool — passes through untouched as the single
+  `pre-push` job, exactly as before; jobs the manager never resolved (killed
+  mid-run) settle with the push verdict so no row is left spinning, and the push
+  verdict itself always comes from git's own result, never from recognized
+  output. `daft.hooks.output.parseManagers=false` turns recognition off
+  entirely. `daft sync --push` reports the same structure in its table: the
+  manager's jobs as `-v` sub-rows, the hook line annotated with the manager's
+  identity, and the post-run `Hooks:` report naming the failing job
+  (`pre-push · unit tests (related) failed`) with only that job's output.
 - Pass `-v` — or set `daft.hooks.output.verbose` — to thread each job's log
   under its row. The section anchor gains the hook key and engine version
   (`├─ post-create hooks  worktree-post-create · daft v1.18.1`), and each job's
