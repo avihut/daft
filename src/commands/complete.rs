@@ -482,7 +482,16 @@ fn collect_worktrees(repo: &gix::Repository) -> Vec<(String, std::path::PathBuf)
 }
 
 /// Collect `(branch, RefInfo)` pairs for a given ref prefix via gitoxide.
-fn collect_refs_with_info(repo: &gix::Repository, prefix: &str) -> Vec<(String, RefInfo)> {
+/// `keep` gates by short name BEFORE the commit metadata is peeled —
+/// `ref_commit_info` costs object-DB reads per ref, so callers that only
+/// want a completion-prefix's worth of refs must not pay for the whole
+/// namespace (a repo with thousands of tags would otherwise peel them all
+/// on every Tab keypress).
+fn collect_refs_with_info(
+    repo: &gix::Repository,
+    prefix: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<(String, RefInfo)> {
     let platform = match repo.references() {
         Ok(p) => p,
         Err(_) => return Vec::new(),
@@ -499,6 +508,9 @@ fn collect_refs_with_info(repo: &gix::Repository, prefix: &str) -> Vec<(String, 
             Err(_) => continue,
         };
         let short_name = reference.name().shorten().to_string();
+        if !keep(&short_name) {
+            continue;
+        }
         let info = ref_commit_info(&mut reference);
         result.push((short_name, info));
     }
@@ -507,7 +519,7 @@ fn collect_refs_with_info(repo: &gix::Repository, prefix: &str) -> Vec<(String, 
 
 /// Collect `(branch, RefInfo)` pairs for every local branch.
 fn collect_local_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
-    collect_refs_with_info(repo, "refs/heads/")
+    collect_refs_with_info(repo, "refs/heads/", |_| true)
 }
 
 /// Sandbox worktrees (#53) as completion entries: detached, so invisible to
@@ -541,7 +553,7 @@ fn sandbox_entries(repo: &gix::Repository, prefix: &str) -> Vec<CompletionEntry>
 /// Collect `(branch, RefInfo)` pairs for every remote-tracking
 /// branch across all remotes.
 fn collect_remote_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
-    collect_refs_with_info(repo, "refs/remotes/")
+    collect_refs_with_info(repo, "refs/remotes/", |_| true)
 }
 
 /// Collect the current worktree's branch, if any — used to exclude it
@@ -643,16 +655,16 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         // matching tag must suppress the fetch.
         let claimed: std::collections::HashSet<&str> =
             entries.iter().map(|e| e.name.as_str()).collect();
-        let mut tags: Vec<CompletionEntry> = collect_refs_with_info(repo, "refs/tags/")
-            .into_iter()
-            .filter(|(name, _)| name.starts_with(prefix))
-            .filter(|(name, _)| !claimed.contains(name.as_str()))
-            .map(|(name, info)| CompletionEntry {
-                name,
-                group: CompletionGroup::Local,
-                description: format!("tag \u{b7} {} \u{b7} {}", info.age, info.author),
-            })
-            .collect();
+        let mut tags: Vec<CompletionEntry> = collect_refs_with_info(repo, "refs/tags/", |name| {
+            name.starts_with(prefix) && !claimed.contains(name)
+        })
+        .into_iter()
+        .map(|(name, info)| CompletionEntry {
+            name,
+            group: CompletionGroup::Local,
+            description: format!("tag \u{b7} {} \u{b7} {}", info.age, info.author),
+        })
+        .collect();
         tags.sort_by(|a, b| a.name.cmp(&b.name));
         entries.extend(tags);
         let d_build = t.elapsed();
