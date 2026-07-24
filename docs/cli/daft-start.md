@@ -15,6 +15,7 @@ daft start [OPTIONS] <BRANCH_NAME> [BASE_OR_BRANCH] [BASE]
 daft start <branch> [<base>]                # local
 daft start <repo> <branch> [<base>]         # in another cataloged repo
 daft start --repo <repo> <branch> [<base>]  # explicit / script-safe
+daft start --fork [<base>] [-n N]           # anonymous throwaway worktree(s)
 ```
 
 The local form is equivalent to `git worktree-checkout -b`. All flags are the
@@ -88,6 +89,47 @@ Cross-repo semantics:
   target repo's new worktree; a relative `--at` resolves inside the target
   repo.
 
+## Anonymous forks (--fork)
+
+`daft start --fork` mints a *fork*: an anonymous throwaway worktree pinned
+at a position — detached HEAD, no branch, no tracking, no push, named by
+the system. With `--fork` the positionals reshape to just `[<base>]`
+(defaulting to the current position): the system owns the name, so there is
+no branch slot.
+
+```bash
+daft start --fork                      # fork the current position
+daft start --fork --carry              # ...including uncommitted changes
+daft start master --fork               # fork master's position
+daft start --fork -n 3                 # three private forks, one command
+daft start v1.18.0 --fork -x 'npm ci'  # fork a tag and set it up
+```
+
+Because the name is the system's, **the path is the result**: each created
+worktree's path prints bare on stdout, one per line, while all narration
+goes to stderr. `wt=$(daft start --fork)` is the whole scripting
+integration. A single fork cd's the shell into it; with `-n` greater than
+one there is no single destination and the shell stays put.
+
+Forks are *private*: unlike the canonical sandbox `daft go <commit-ish>`
+opens (shared, idempotent — revisits land in the same worktree), a fork is
+never matched by go's resolution and is reachable only by its printed name.
+That is what makes them safe for parallel agents: three concurrent
+`daft start --fork` invocations mint three distinct worktrees with zero
+coordination — names are claimed atomically by directory creation.
+
+Naming follows `daft.start.forkNaming`:
+
+- `derived` (default) — `<source>-fork`, `<source>-fork-2`, … Self-describing
+  provenance in `daft list`.
+- `memorable` — adjective-noun handles (`brave-otter`), collision-sparse and
+  easier to say and retype.
+
+Remove a fork with `daft remove <name>`. Commits made inside it are
+protected for as long as the worktree exists; removal refuses when HEAD
+moved off the pinned commit until you promote (`daft start <new-branch>`
+from inside the fork — the detached HEAD becomes the base) or force.
+
 ## Coordinated fan-out (--with-related)
 
 `daft start <branch> --with-related` also creates the branch in every repo the
@@ -111,6 +153,8 @@ repos *api's* manifest declares, and the shell lands in api's new worktree.
 |--------|-------------|---------|
 | `--repo <REPO>` | Create the branch in a repository from the catalog (for repo names shadowed by local branches) | |
 | `--with-related` | Also create the branch in every related repo (relations manifest), each based on its own default branch | |
+| `--fork` | Mint an anonymous throwaway worktree pinned at `[<base>]` (defaults to the current position): detached, system-named, no branch, no push; the created path prints on stdout | |
+| `-n, --count <N>` | Create N fork worktrees (requires `--fork`; one path per line on stdout; the shell stays where it is) | `1` |
 | `--local` | Skip all remote operations (no fetch, no push) for this invocation | |
 | `--skip-hooks <SELECTOR>` | Skip hooks this run (`all` \| a hook name like `worktree-post-create` \| `tag:<tag>` \| `<job>`); repeatable/comma-separated | |
 | `-c, --carry` | Apply uncommitted changes from the current worktree to the new one | |

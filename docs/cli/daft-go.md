@@ -27,6 +27,42 @@ With `--start` (or `-s`), if the branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also be
 enabled permanently with `git config daft.go.autoStart true`.
 
+### Points in history (detached sandboxes)
+
+`daft go` accepts any commit-ish, not just branches. A name that resolves to
+a commit but names no branch and no cataloged repo — a tag, a short or full
+SHA, a relative spelling like `HEAD~2`, a remote ref like `origin/master` —
+opens a *sandbox*: a fully set-up worktree pinned at that commit with a
+detached HEAD. Hooks run exactly as for a branch worktree, which is the
+entire point over `git worktree add --detach`: the checkout can actually
+build and serve.
+
+```bash
+daft go v1.18.0                              # inspect an old release
+daft go $(git merge-base HEAD origin/master) # a PR's "before" state
+daft go HEAD~2                               # two commits back, pinned
+```
+
+Visits are idempotent: the first one materializes the canonical sandbox for
+that commit, every later one navigates back to it — whatever the spelling
+(`daft go v1.18.0` and `daft go` with its SHA land in the same worktree).
+Stable spellings name the directory after themselves (`v1.18.0`,
+`origin-master`); position expressions like `HEAD~2` take a hex prefix of
+the commit they resolved to.
+
+Branches and cataloged repos always win the name: the sandbox reading only
+claims inputs that would otherwise be errors. Explicit `-b`/`--start`
+declare branch-creation intent and suppress it entirely, while the ambient
+`daft.go.autoStart` config loses to an existing tag — an existing entity
+beats auto-creation.
+
+Sandboxes appear in `daft list` under their directory name with a dim `○`,
+are skipped by `prune` and `sync`, and are removed with
+`daft remove <name>`. Work committed inside one is protected for as long as
+the worktree exists; promote it to a real branch with `daft start <name>`
+from inside the sandbox. For a private, always-fresh sandbox instead of the
+shared canonical one, see `daft start --fork`.
+
 ### Previous worktree (`-`)
 
 Use `-` as the branch name to switch to the previous worktree, similar to
@@ -82,6 +118,9 @@ daft go -
 # Check out a branch, auto-creating if it doesn't exist
 daft go -s feature/new-idea
 
+# Open a detached sandbox at a tag and build it
+daft go v1.18.0 -x 'npm install'
+
 # Check out and run a command after setup
 daft go feature/auth -x 'npm install'
 
@@ -103,6 +142,10 @@ daft go feature/auth --no-cd
    exist locally. In single-remote mode the `<remote>/` prefix is
    stripped for readability; in multi-remote mode the full
    `<remote>/<branch>` form is preserved.
+
+Sandbox worktrees are offered by directory name in the worktree group
+(annotated `sandbox @ <commit>`), and tags join the local group with a
+`tag` annotation — both are legitimate `go` destinations.
 
 In zsh and fish, each candidate is annotated with the relative time of
 its last commit (e.g. "3 days ago"). In zsh the three groups are

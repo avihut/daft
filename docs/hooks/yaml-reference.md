@@ -252,6 +252,7 @@ lifecycle hooks and `daft run` tasks):
 | `{remote}`          | Remote name (usually `"origin"`)                        |
 | `{job_name}`        | Name of the current job                                 |
 | `{base_branch}`     | Base branch name (for `checkout -b` commands)           |
+| `{commit}`          | Pinned commit OID (anonymous sandbox worktrees only)    |
 | `{repository_url}`  | Repository URL (for `post-clone`)                       |
 | `{default_branch}`  | Default branch name (for `post-clone`)                  |
 
@@ -262,6 +263,13 @@ DNS-label limit. Because it is keyed off the worktree rather than the branch, it
 is unique per worktree and stable even when the worktree is not on a branch —
 use it to keep per-worktree names collision-free, e.g.
 `COMPOSE_PROJECT_NAME: "api-{worktree_slug}"`.
+
+For anonymous sandbox worktrees (`daft go <commit-ish>`, `daft start --fork`)
+the branch variables substitute to the empty string — the contract is "empty
+means no branch" — and `{commit}` (env: `DAFT_COMMIT`) carries the commit the
+sandbox is pinned at. `{worktree_slug}` works unchanged, which makes it the
+right handle for per-worktree resources in hooks that must serve both branch and
+sandbox worktrees.
 
 **Move hooks only** (available when `DAFT_IS_MOVE` is `true`):
 

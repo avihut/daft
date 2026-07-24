@@ -199,6 +199,13 @@ With -s (--start), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also
 be enabled permanently with the daft.go.autoStart git config option.
 
+A name that resolves to a commit but names no branch and no cataloged repo —
+a tag, a SHA, a spelling like `HEAD~2` — opens a detached sandbox worktree
+pinned at that commit: hooks run, no branch is created, and revisits land in
+the same worktree. Explicit -b/--start suppress this reading; remove a
+sandbox with `daft remove <name>`, and promote work committed inside it by
+running `daft start <new-branch>` from within.
+
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See daft-hooks(1) for hook management.
 "#)]
@@ -325,6 +332,17 @@ without a base the branch is based on the target repo's default branch, the
 target repo's hooks run only if it is trusted, and the shell lands in the new
 worktree there. Carry (`-c`) cannot cross repositories; `-x` runs in the
 target worktree.
+
+With --fork, the positionals become just the optional base and daft mints an
+anonymous throwaway worktree pinned at that position instead — detached
+HEAD, no branch, no tracking, no push, named by the system (see
+daft.start.forkNaming: derived or memorable). The created worktree's path
+prints bare on stdout, one per line with `-n <count>`, while narration goes
+to stderr — `wt=$(daft start --fork)` captures it. A single fork cd's the
+shell into it; with several there is no one destination and the shell stays
+put. Remove a fork with `daft remove <name>`; promote work committed inside
+it by running `daft start <new-branch>` from within (a detached HEAD bases
+the new branch on its commit).
 
 With --with-related, the same branch is also created in every repo the
 primary repo's daft.yml `relations:` manifest points at — the entry point

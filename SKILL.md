@@ -213,7 +213,9 @@ root via `git rev-parse --git-common-dir`.
 | `daft go pr:<number>`                                                                                                                        | Check out a GitHub PR or GitLab MR (`mr:<number>`, or a pasted PR/MR URL) into a worktree on its source branch, configured to pull from the PR head. Fork-aware; resolves via the `gh`/`glab` CLI, which must be installed and authenticated (`daft doctor` reports). The platform is detected from the remote (`pr:`/`mr:` are aliases); `daft.forge.platform` overrides for ambiguous remotes. Works cross-repo from anywhere: `daft go <repo> pr:<number>` checks the PR out in that cataloged repo. |
 | `daft go -`                                                                                                                                  | Switch to the previous worktree (`cd -` style toggle)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `daft go -s <branch>`                                                                                                                        | Same, but auto-creates the branch if not found (also `daft.go.autoStart`)                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `daft start <branch> [base]`                                                                                                                 | Create a new branch and worktree from the current or specified base; does not push by default (`daft.checkout.push`); `--local` skips remote even when push is enabled. A leading cataloged-repo name creates the branch in that repo instead — see the Repo Catalog table.                                                                                                                                                                                                                             |
+| `daft go <commit-ish>`                                                                                                                       | Open the canonical detached **sandbox** for a point in history — a tag, SHA, `HEAD~2`, `origin/master` — when the name is no branch and no repo. Idempotent (revisits land in the same worktree), hooks run, no branch exists. See Anonymous Worktrees below.                                                                                                                                                                                                                                           |
+| `daft start <branch> [base]`                                                                                                                 | Create a new branch and worktree from the current or specified base; does not push by default (`daft.checkout.push`); `--local` skips remote even when push is enabled. A leading cataloged-repo name creates the branch in that repo instead — see the Repo Catalog table. From a detached HEAD (inside a sandbox), the new branch bases on that commit — the promotion gesture.                                                                                                                       |
+| `daft start --fork [<base>] [-n N]`                                                                                                          | Mint N private anonymous worktrees pinned at `[<base>]` (default: current position) — detached, system-named, no branch, no push. **The created path(s) print bare on stdout, one per line** — capture them; narration is stderr. See Anonymous Worktrees below.                                                                                                                                                                                                                                        |
 | `daft remove <branch>`                                                                                                                       | Safely delete a branch: its worktree and local branch ref; the remote branch only when `daft.branchDelete.remote` is enabled; `--local` skips remote, `--remote` deletes only the remote branch                                                                                                                                                                                                                                                                                                         |
 | `daft remove -f <branch>`                                                                                                                    | Force-delete bypassing safety checks; for the default branch, removes the worktree only (preserves branch ref and remote)                                                                                                                                                                                                                                                                                                                                                                               |
 | `daft prune [-f] [-v\|-vv]`                                                                                                                  | Remove worktrees whose remote branches were deleted AND that are verified merged (ancestor or squash); gone-but-unmerged branches are kept unless forced. `-v` hook details, `-vv` full sequential                                                                                                                                                                                                                                                                                                      |
@@ -299,6 +301,54 @@ daft start my-feature -x claude
 Use `-x` for finite setup steps. To start a long-running process (a dev server,
 a compose stack, a watcher), define a task and run it on demand with `daft run`
 — see Tasks (`daft run`).
+
+## Anonymous Worktrees (sandboxes and forks)
+
+Worktrees decoupled from branches: detached-HEAD checkouts with hooks run and
+environment set up, living exactly as long as their directory. Two commands
+create them, and choosing between them is a decision rule, not a preference:
+
+- **Visit — `daft go <commit-ish>`** when you need to _look at_ a point in
+  history (build an old release, inspect a tag, reproduce a PR's "before" state)
+  and sharing is fine. Idempotent: the first visit materializes the canonical
+  sandbox for that commit, every later visit — by any spelling — lands in the
+  same worktree, environment warm.
+- **Mint — `daft start --fork [<base>]`** when you need a _private_ worktree to
+  run work in without colliding with anyone (or anything) else, or when you need
+  several. Always fresh: run it twice, get two. Never matched by `go`'s
+  resolution — a fork is reachable only by its printed name.
+
+The fork contract is built for agents: **stdout is the created path** (one per
+line under `-n`), narration is stderr, so capture is the whole integration:
+
+```bash
+wt=$(daft start --fork)                       # one private worktree at HEAD
+wt=$(daft start origin/master --fork)         # ...at master's current position
+daft start --fork -n 3 -x './rebuild.sh'      # three, each built, paths on stdout
+```
+
+Parallel agents each run their own `--fork` — names are claimed atomically, so
+concurrent invocations never collide and need no coordination. Do NOT share one
+worktree between parallel agents, and do NOT fall back to raw
+`git worktree add --detach`: it skips hooks and produces a half-configured
+checkout that cannot build.
+
+Aftercare contract:
+
+- These worktrees have **no branch and no upstream — never push from one.**
+- Remove with `daft remove <name>` (the printed path's basename) when done.
+  Globs work: `daft remove main-fork-*`.
+- Commits made inside are safe while the worktree exists, but die with it:
+  removal refuses when HEAD moved off the pinned commit. To keep the work,
+  promote first — `daft start <new-branch>` from inside the sandbox bases the
+  new branch on the detached HEAD — then remove.
+- Sandboxes show in `daft list` under their directory name with a dim `○`;
+  `prune` and `sync` skip them.
+
+Naming: forks follow `daft.start.forkNaming` — `derived` (default:
+`<source>-fork`, `-fork-2`, …) or `memorable` (`brave-otter`). Visit sandboxes
+name themselves after stable spellings (`v1.18.0`, `origin-master`) and after a
+commit-hex prefix for positional spellings like `HEAD~2`.
 
 ## Merging Across Worktrees (`daft merge`)
 
@@ -690,6 +740,11 @@ All hooks receive: `DAFT_HOOK`, `DAFT_COMMAND`, `DAFT_PROJECT_ROOT`,
 removal hooks `DAFT_REMOVAL_REASON` (`remote-deleted`, `manual`, `ejecting`);
 move hooks `DAFT_IS_MOVE`, `DAFT_OLD_WORKTREE_PATH`, `DAFT_OLD_BRANCH_NAME`.
 
+For anonymous sandbox worktrees `DAFT_BRANCH_NAME` is the empty string (the
+contract is "empty means no branch") and `DAFT_COMMIT` carries the pinned commit
+OID; the `{worktree_slug}` template variable works unchanged and is the right
+per-worktree handle for hooks serving both kinds.
+
 ## Tasks (`daft run`)
 
 Tasks are named, user-invoked job groups — the **serve on demand** half of the
@@ -924,6 +979,10 @@ Valid formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
 `--template '<tera-template>'` renders custom output (`{{ var }}`, `{% for %}`,
 `{% if %}`).
 
+`daft start --fork` has its own fixed stdout contract, no `--format` needed: the
+created worktree path(s), bare, one per line (everything else on stderr).
+`wt=$(daft start --fork)` captures it directly.
+
 **`daft list` output contract**: table columns show branch (`✦` marks the
 default branch), path (relative to cwd), base ahead/behind, file status (`!N`
 conflicted, `+N` staged, `-N` unstaged, `?N` untracked), remote status (`⇡N`
@@ -1020,7 +1079,8 @@ invocation.
 | `daft.checkoutBranch.carry`      | `true`                | Carry uncommitted changes on branch creation                                                                                                                                |
 | `daft.update.args`               | `"--ff-only"`         | Default pull arguments for update (same-branch mode)                                                                                                                        |
 | `daft.prune.cdTarget`            | `"root"`              | Where to cd after pruning (`root` or `default-branch`)                                                                                                                      |
-| `daft.go.autoStart`              | `false`               | Auto-create worktree when branch not found in `daft go`                                                                                                                     |
+| `daft.go.autoStart`              | `false`               | Auto-create worktree when branch not found in `daft go` (an existing tag/commit still wins: it opens a sandbox instead)                                                     |
+| `daft.start.forkNaming`          | `"derived"`           | How `daft start --fork` names sandboxes: `derived` (`<source>-fork`, `-fork-2`, …) or `memorable` (adjective-noun handles)                                                  |
 | `daft.forge.platform`            | (detected)            | Forge platform for `pr:`/`mr:` checkout (`github`, `gitlab`); unset detects from the remote URL                                                                             |
 | `daft.forge.githubCli`           | `"gh"`                | GitHub CLI binary used for PR resolution (Enterprise wrappers)                                                                                                              |
 | `daft.forge.gitlabCli`           | `"glab"`              | GitLab CLI binary used for MR resolution                                                                                                                                    |

@@ -34,6 +34,17 @@ target repo\*(Aqs hooks run only if it is trusted, and the shell lands in the ne
 worktree there. Carry (`\-c`) cannot cross repositories; `\-x` runs in the
 target worktree.
 .PP
+With \-\-fork, the positionals become just the optional base and daft mints an
+anonymous throwaway worktree pinned at that position instead — detached
+HEAD, no branch, no tracking, no push, named by the system (see
+daft.start.forkNaming: derived or memorable). The created worktree\*(Aqs path
+prints bare on stdout, one per line with `\-n <count>`, while narration goes
+to stderr — `wt=$(daft start \-\-fork)` captures it. A single fork cd\*(Aqs the
+shell into it; with several there is no one destination and the shell stays
+put. Remove a fork with `daft remove <name>`; promote work committed inside
+it by running `daft start <new\-branch>` from within (a detached HEAD bases
+the new branch on its commit).
+.PP
 With \-\-with\-related, the same branch is also created in every repo the
 primary repo\*(Aqs daft.yml `relations:` manifest points at — the entry point
 for a coordinated cross\-repo change (pair with `daft exec \-\-related`). The
