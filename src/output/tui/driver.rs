@@ -295,13 +295,20 @@ impl LiveScreen for TuiState {
         // present) + table header row + 1 trailing row for cursor parking
         // + data rows + extra room for late-arriving rows + divider + size
         // summary footer.
-        let table_height = self.sort_summary_rows()
-            + self.live.rows.len() as u16
-            + 2
-            + extra_rows
-            + divider_row
-            + self.size_summary_rows();
-        self.header_height() + table_height + self.footer_height()
+        // Saturating throughout: a large hook-row reservation (verbose sync of
+        // a big fleet) must clamp high, never wrap to a tiny value that would
+        // under-size the inline viewport. Ratatui clamps the result to the
+        // terminal height anyway, so saturation costs nothing.
+        let table_height = self
+            .sort_summary_rows()
+            .saturating_add(self.live.rows.len() as u16)
+            .saturating_add(2)
+            .saturating_add(extra_rows)
+            .saturating_add(divider_row)
+            .saturating_add(self.size_summary_rows());
+        self.header_height()
+            .saturating_add(table_height)
+            .saturating_add(self.footer_height())
     }
 
     fn render(&self, frame: &mut Frame<'_>, final_frame: bool) {
@@ -521,5 +528,9 @@ mod tests {
         );
         assert_eq!(state.viewport_height(0), 2 + 2);
         assert_eq!(state.viewport_height(3), 2 + 2 + 3);
+        // A huge hook-row reservation (verbose sync of a big fleet) must
+        // saturate, not wrap to a tiny value — the old `+` would overflow-panic
+        // in debug and wrap in release, clipping every row (#753 review).
+        assert_eq!(state.viewport_height(u16::MAX), u16::MAX);
     }
 }

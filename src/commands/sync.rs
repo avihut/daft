@@ -766,14 +766,18 @@ fn run_tui(
                 .map(|info| (info.name.clone(), info.owner.clone()))
                 .collect(),
         );
-    // Budget hook + job sub-rows per worktree (2 hooks x ~7 rows each).
-    // Not all worktrees will have hooks, but the ratatui inline viewport
-    // cannot grow after creation, so over-allocate. A recognized hook
-    // manager (#753) turns one opaque pre-push job into its real job list —
-    // lefthook runs of 6-8 jobs are ordinary — so the old ~3-jobs-per-hook
-    // guess now clips real runs.
-    let hook_extra_rows = if args.verbose >= 1 {
-        (worktree_infos.len() as u16) * 16
+    // Budget hook + job sub-rows per worktree. Not all worktrees will have
+    // hooks, but the ratatui inline viewport cannot grow after creation, so
+    // over-allocate. A recognized hook manager (#753) turns one opaque
+    // pre-push job into its real job list — lefthook runs of 6-8 jobs are
+    // ordinary — so 16 rows per worktree covers a realistic run. Saturating:
+    // a fleet large enough to overflow `len * 16` (~4096 worktrees) must clamp
+    // high, never wrap to a tiny value that clips every hook row. Ratatui caps
+    // the viewport at the terminal height regardless, which is the true ceiling
+    // — a run whose sub-rows genuinely exceed the terminal height still clips,
+    // an inherent limit of a fixed inline viewport.
+    let hook_extra_rows: u16 = if args.verbose >= 1 {
+        u16::try_from(worktree_infos.len().saturating_mul(16)).unwrap_or(u16::MAX)
     } else {
         0
     };
@@ -1335,7 +1339,7 @@ fn run_tui(
             columns: tui_columns,
             columns_explicit,
             sort_spec,
-            extra_rows: 5 + hook_extra_rows,
+            extra_rows: hook_extra_rows.saturating_add(5),
             verbosity: args.verbose,
             pin_default_branch: true,
             partition_by_owner: false, // External unowned_start_index drives the partition.
