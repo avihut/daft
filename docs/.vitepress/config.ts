@@ -259,6 +259,10 @@ export default defineConfig({
           },
           { text: "Merging across worktrees", link: "/worktrees/merging" },
           {
+            text: "Anonymous worktrees",
+            link: "/worktrees/anonymous-worktrees",
+          },
+          {
             text: "Checking out pull requests",
             link: "/worktrees/pull-requests",
           },

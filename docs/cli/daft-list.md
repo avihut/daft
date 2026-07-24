@@ -22,7 +22,8 @@ and the remote tracking branch, branch age, and last commit details.
 Each worktree is shown with:
 
 - A `>` marker for the current worktree
-- Branch name, with `✦` for the default branch
+- Name — the branch name, or the directory name for detached sandboxes
+  (marked `○`) — with `✦` for the default branch
 - Relative path from the current directory
 - Ahead/behind counts vs. the base branch (e.g. +3 -1)
 - File status: !N conflicted, +N staged, -N unstaged, ?N untracked
@@ -123,8 +124,8 @@ section per repo. Both forms work from outside any repository.
 | `-r, --remotes` | Also show remote tracking branches | |
 | `-a, --all` | Show all branches (equivalent to `-b -r`) | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.list.stat`, or `summary`) | |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col` | |
-| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `branch`, `path`, `size`, `age`, `owner`, `activity` (aliases: `commit`, `last-commit`). Default: `daft.list.sort` or `+branch`. | |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace mode: `name,path,age`. Modifier mode: `+col,-col` | |
+| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `name`, `path`, `size`, `age`, `owner`, `activity` (aliases: `commit`, `last-commit`). Default: `daft.list.sort` or `+name`. | |
 
 ## Global Options
 
@@ -155,7 +156,7 @@ daft list --format json
 daft list --format json | jq '.[] | select(.unstaged > 0)'
 
 # Show only branch, path, and age columns (replace mode)
-daft list --columns branch,path,age
+daft list --columns name,path,age
 
 # Remove annotation and last-commit from defaults (modifier mode)
 daft list --columns -annotation,-last-commit
@@ -164,7 +165,7 @@ daft list --columns -annotation,-last-commit
 daft list --columns +owner
 
 # Show branch, path, and owner only
-daft list --columns branch,path,owner
+daft list --columns name,path,owner
 
 # List another cataloged repo's worktrees (sugar for --repo api)
 daft list api

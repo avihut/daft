@@ -125,6 +125,14 @@ pub struct WorktreeInfo {
     /// Narrower than "HEAD is detached": a worktree paused mid-operation is
     /// not a sandbox. See [`super::identity`].
     pub is_sandbox: bool,
+    /// This row has no branch to query: a daft sandbox, or a foreign
+    /// detached worktree. Wider than `is_sandbox`, narrower than "HEAD is
+    /// detached" (a recovered worktree has a real ref and stays `false`).
+    /// The live table settles the `FieldSet::BRANCH_KEYED` cells of a
+    /// branchless row as blank at seed — the collector will never stream
+    /// them, and without the settle they shimmer until the whole collection
+    /// completes.
+    pub branchless: bool,
     /// The git operation paused in this worktree, if any. Present for
     /// attached worktrees too — a merge never detaches HEAD.
     pub op: Option<crate::git::op_state::OpKind>,
@@ -172,6 +180,7 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            branchless: false,
             op: None,
             identity_source: None,
             drifted: false,
@@ -211,6 +220,7 @@ impl WorktreeInfo {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            branchless: false,
             op: None,
             identity_source: None,
             drifted: false,
@@ -986,6 +996,7 @@ pub fn collect_worktree_info(
             size_bytes: None,
             working_tree_mtime,
             is_sandbox: identity.is_sandbox,
+            branchless: branch.is_none(),
             op: identity.op,
             identity_source: Some(identity.source),
             drifted: identity.drifted,
@@ -1133,6 +1144,7 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                branchless: false,
                 op: None,
                 identity_source: None,
                 drifted: false,
@@ -1223,6 +1235,7 @@ pub fn collect_branch_info(
                 size_bytes: None,
                 working_tree_mtime: None,
                 is_sandbox: false,
+                branchless: false,
                 op: None,
                 identity_source: None,
                 drifted: false,

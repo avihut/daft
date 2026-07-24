@@ -2,17 +2,18 @@
 .el .ds Aq '
 .TH "daft start" 1  "daft start 1.23.0" 
 .SH NAME
-daft start \- Create a new branch and worktree
+daft start \- Create a new branch and worktree, or a throwaway fork with \-\-fork
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
+\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-\-fork\fR] [\fB\-n\fR|\fB\-\-count\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH|COMMIT\-ISH\fR] [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
 worktree is placed at the project root level as a sibling to other worktrees,
 using the branch name as the directory name.
 .PP
-The new branch is based on the current branch, or on `<base\-branch>` if
-specified. After creating the branch locally, it is pushed to the remote and
+The new branch is based on the current branch, or on `<base>` if specified —
+a branch, or any commit\-ish (a tag, a SHA, a spelling like `HEAD~2`).
+After creating the branch locally, it is pushed to the remote and
 upstream tracking is configured (unless disabled via daft.checkout.push). The
 repo\*(Aqs pre\-push hook runs only when that push introduces new commits; a
 ref\-only push of already\-pushed commits skips it (configurable via
@@ -33,6 +34,17 @@ without a base the branch is based on the target repo\*(Aqs default branch, the
 target repo\*(Aqs hooks run only if it is trusted, and the shell lands in the new
 worktree there. Carry (`\-c`) cannot cross repositories; `\-x` runs in the
 target worktree.
+.PP
+With \-\-fork, the positionals become just the optional base and daft mints an
+anonymous throwaway worktree pinned at that position instead — detached
+HEAD, no branch, no tracking, no push, named by the system (see
+daft.start.forkNaming: derived or memorable). The created worktree\*(Aqs path
+prints bare on stdout, one per line with `\-n <count>`, while narration goes
+to stderr — `wt=$(daft start \-\-fork)` captures it. A single fork cd\*(Aqs the
+shell into it; with several there is no one destination and the shell stays
+put. Remove a fork with `daft remove <name>`; promote work committed inside
+it by running `daft start <new\-branch>` from within (a detached HEAD bases
+the new branch on its commit).
 .PP
 With \-\-with\-related, the same branch is also created in every repo the
 primary repo\*(Aqs daft.yml `relations:` manifest points at — the entry point
@@ -56,6 +68,12 @@ Create the branch in a repository from the catalog (for repo names shadowed by l
 .TP
 \fB\-\-with\-related\fR
 Also create the branch in every related repo (relations manifest), each based on its own default branch
+.TP
+\fB\-\-fork\fR
+Mint an anonymous throwaway worktree pinned at [<base>] (defaults to HEAD): detached, system\-named, no branch, no push; the created path is printed on stdout
+.TP
+\fB\-n\fR, \fB\-\-count\fR \fI<N>\fR
+Create N fork worktrees (one path per line on stdout; the shell stays where it is)
 .TP
 \fB\-c\fR, \fB\-\-carry\fR
 Apply uncommitted changes from the current worktree to the new one
@@ -96,13 +114,13 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-<\fIBRANCH_NAME\fR>
-Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`
+[\fIBRANCH|COMMIT\-ISH\fR]
+Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`; with \-\-fork, the commit\-ish to fork from instead (defaults to HEAD)
 .TP
 [\fIBASE_OR_BRANCH\fR]
-Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`
+Base branch or commit\-ish (defaults to the current branch); or, when it resolves to nothing here, the new branch inside `<repo>`; not used with \-\-fork
 .TP
 [\fIBASE\fR]
-Base branch inside `<repo>` (three\-name form); must exist there
+Base branch or commit\-ish inside `<repo>` (three\-name form); must resolve there; not used with \-\-fork
 .SH VERSION
 v1.23.0

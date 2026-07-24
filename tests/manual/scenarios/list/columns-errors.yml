@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: Unknown column name
-    run: git-worktree-list --columns branch,foo 2>&1
+    run: git-worktree-list --columns name,foo 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
@@ -20,7 +20,7 @@ steps:
         - "unknown column 'foo'"
 
   - name: Mixed mode error
-    run: git-worktree-list --columns branch,+age 2>&1
+    run: git-worktree-list --columns name,+age 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
@@ -28,7 +28,7 @@ steps:
         - "cannot mix"
 
   - name: Duplicate column error
-    run: git-worktree-list --columns branch,path,branch 2>&1
+    run: git-worktree-list --columns name,path,name 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1

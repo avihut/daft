@@ -45,7 +45,7 @@ steps:
 
   - name:
       Owner column reports the recency-weighted plurality author (Me Testuser)
-    run: NO_COLOR=1 git-worktree-list --columns branch,owner 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns name,owner 2>&1
     cwd: "$WORK_DIR/strat-rec-repo/main"
     expect:
       exit_code: 0

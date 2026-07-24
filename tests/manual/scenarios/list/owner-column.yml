@@ -35,7 +35,7 @@ steps:
       exit_code: 0
 
   - name: List with owner column shows author name
-    run: NO_COLOR=1 git-worktree-list --columns branch,owner 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns name,owner 2>&1
     cwd: "$WORK_DIR/test-repo/develop"
     expect:
       exit_code: 0

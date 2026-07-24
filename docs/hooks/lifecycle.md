@@ -57,10 +57,11 @@ YAML jobs and shell script hooks.
 
 ### Worktree (creation and removal hooks)
 
-| Variable             | Description                         |
-| -------------------- | ----------------------------------- |
-| `DAFT_WORKTREE_PATH` | Path to the target worktree         |
-| `DAFT_BRANCH_NAME`   | Branch name for the target worktree |
+| Variable             | Description                                                                     |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `DAFT_WORKTREE_PATH` | Path to the target worktree                                                     |
+| `DAFT_BRANCH_NAME`   | Branch name for the target worktree — the empty string for an anonymous sandbox |
+| `DAFT_COMMIT`        | Pinned commit OID (anonymous sandbox worktrees only)                            |
 
 ### Creation (create hooks only)
 

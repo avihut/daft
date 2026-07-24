@@ -31,7 +31,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
       output_not_contains:
         - "PR"
 
@@ -72,7 +72,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
       output_not_contains:
         - "PR"
 

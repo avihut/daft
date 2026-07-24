@@ -15,14 +15,16 @@
 //! 1. **Attached** — the porcelain names a branch. Always wins.
 //! 2. **Recovered** — HEAD is detached, but an in-progress operation records
 //!    the branch it is replaying ([`crate::git::op_state`]).
-//! 3. **None** — nothing names a branch: a genuine detached checkout.
+//! 3. **Persisted / Sandbox** — daft recorded what the worktree is for: the
+//!    branch it was created for, or (for an anonymous sandbox) its directory
+//!    name. The one tier that can be out of date, which is why it ranks
+//!    below everything live.
+//! 4. **None** — nothing names a branch: a genuine detached checkout.
 //!
 //! The ordering is the whole design. Live git state cannot be stale, so it
 //! outranks anything remembered; and every attached worktree claims its name
 //! before any recovery is attempted, so a recovered name can never displace a
-//! real checkout. (A persisted tier lands between 2 and 3 in a later commit;
-//! it is the only one that can be out of date, which is exactly why it ranks
-//! last.)
+//! real checkout.
 //!
 //! An operation also *explains* a detachment even when it records no branch —
 //! `git am` writes no `head-name`. Such a worktree keeps `(detached)` as its
@@ -44,9 +46,14 @@ pub enum IdentitySource {
     /// HEAD is detached; an in-progress operation records the branch.
     Recovered,
     /// HEAD is detached with nothing to explain it, but daft recorded what
-    /// this worktree is for. The only tier that can be out of date, which is
-    /// why it ranks last.
+    /// this worktree is for. Can be out of date, which is why it ranks
+    /// below everything live.
     Persisted,
+    /// HEAD is detached because daft created this worktree as an anonymous
+    /// sandbox (`daft go <commit-ish>` / `daft start --fork`); the record
+    /// names it after its directory. Same rank as [`Self::Persisted`] —
+    /// the two are one tier carrying two kinds of record.
+    Sandbox,
     /// Nothing names a branch.
     None,
 }
@@ -58,6 +65,7 @@ impl IdentitySource {
             Self::Attached => "attached",
             Self::Recovered => "recovered",
             Self::Persisted => "persisted",
+            Self::Sandbox => "sandbox",
             Self::None => "none",
         }
     }
@@ -151,8 +159,8 @@ pub fn resolve_identities_with(
             if let Some(branch) = &entry.branch {
                 // Cross-check, never an override: a record that disagrees
                 // with a live checkout is the thing that is wrong.
-                let drifted = recorded_branch(records, &entry.path)
-                    .is_some_and(|recorded| recorded != *branch);
+                let drifted =
+                    recorded_row(records, &entry.path).is_some_and(|row| row.branch != *branch);
                 return Some(WorktreeIdentity {
                     name: branch.clone(),
                     branch: Some(branch.clone()),
@@ -168,13 +176,36 @@ pub fn resolve_identities_with(
             let Some(state) = probe_op_state(&entry.path) else {
                 // Nothing live explains this detachment. Fall back to what
                 // daft recorded the worktree was for — the row keeps its
-                // name and its branch-keyed cells, and stays a sandbox,
-                // because being *named* and being *explained* are different
-                // things.
-                return Some(match recorded_branch(records, &entry.path) {
-                    Some(branch) if !claimed.contains(branch.as_str()) => WorktreeIdentity {
-                        name: branch.clone(),
-                        branch: Some(branch),
+                // name and stays a sandbox, because being *named* and being
+                // *explained* are different things.
+                return Some(match recorded_row(records, &entry.path) {
+                    // A deliberate sandbox: the record names it after its
+                    // directory. The name is not a ref, so `branch` stays
+                    // `None` — nothing branch-keyed (ahead/behind, upstream,
+                    // PR linkage) may query it.
+                    Some(row) if row.kind.is_sandbox() => {
+                        if claimed.contains(row.branch.as_str()) {
+                            // An attached checkout owns this name (a branch
+                            // named like the sandbox's directory). Two rows
+                            // must never claim one name.
+                            WorktreeIdentity {
+                                drifted: true,
+                                ..WorktreeIdentity::unnamed(None)
+                            }
+                        } else {
+                            WorktreeIdentity {
+                                name: row.branch.clone(),
+                                branch: None,
+                                source: IdentitySource::Sandbox,
+                                op: None,
+                                is_sandbox: true,
+                                drifted: false,
+                            }
+                        }
+                    }
+                    Some(row) if !claimed.contains(row.branch.as_str()) => WorktreeIdentity {
+                        name: row.branch.clone(),
+                        branch: Some(row.branch.clone()),
                         source: IdentitySource::Persisted,
                         op: None,
                         is_sandbox: true,
@@ -209,16 +240,16 @@ pub fn resolve_identities_with(
         .collect()
 }
 
-/// The branch daft recorded for the worktree at `path`, if any.
-fn recorded_branch(
-    records: &HashMap<String, WorktreeIdentityRow>,
+/// The identity daft recorded for the worktree at `path`, if any.
+fn recorded_row<'a>(
+    records: &'a HashMap<String, WorktreeIdentityRow>,
     path: &std::path::Path,
-) -> Option<String> {
+) -> Option<&'a WorktreeIdentityRow> {
     if records.is_empty() {
         return None;
     }
     let id = super::identity_store::worktree_id_for(path)?;
-    records.get(&id).map(|row| row.branch.clone())
+    records.get(&id)
 }
 
 #[cfg(test)]
@@ -398,8 +429,23 @@ mod tests {
                 branch: branch.into(),
                 worktree_path: String::from("/tmp/") + id,
                 updated_at: chrono::Utc::now(),
+                kind: crate::store::models::WorktreeKind::Branch,
+                source_spelling: None,
+                pinned_commit: None,
             },
         )
+    }
+
+    fn sandbox_record(
+        id: &str,
+        dirname: &str,
+        kind: crate::store::models::WorktreeKind,
+    ) -> (String, WorktreeIdentityRow) {
+        let (key, mut row) = record(id, dirname);
+        row.kind = kind;
+        row.source_spelling = Some("v1.18.0".into());
+        row.pinned_commit = Some("a".repeat(40));
+        (key, row)
     }
 
     /// A linked worktree, so it has a private-gitdir id records can key on.
@@ -510,6 +556,73 @@ mod tests {
 
         assert_eq!(ids[1].as_ref().unwrap().name, "feat/x");
         assert!(!ids[1].as_ref().unwrap().drifted);
+    }
+
+    /// A daft-created sandbox shows its directory name instead of the
+    /// anonymous `(detached)` label — but exposes no branch, because the
+    /// dirname is not a ref and nothing branch-keyed may query it.
+    #[test]
+    fn a_sandbox_record_names_the_row_after_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = linked(tmp.path(), "wt-a");
+        let records = HashMap::from([sandbox_record(
+            "wt-a",
+            "v1.18.0",
+            crate::store::models::WorktreeKind::Canonical,
+        )]);
+
+        let id = resolve_identities_with(&[entry(&wt, None)], &records)
+            .remove(0)
+            .unwrap();
+        assert_eq!(id.name, "v1.18.0");
+        assert_eq!(id.branch, None, "a sandbox name is not a ref");
+        assert_eq!(id.source, IdentitySource::Sandbox);
+        assert!(id.is_sandbox);
+        assert!(!id.drifted);
+    }
+
+    /// Forks are the same display tier as canonical sandboxes — the kind
+    /// matters to resolution and removal, not to naming.
+    #[test]
+    fn a_fork_record_names_the_row_the_same_way() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = linked(tmp.path(), "wt-a");
+        let records = HashMap::from([sandbox_record(
+            "wt-a",
+            "master-fork-2",
+            crate::store::models::WorktreeKind::Fork,
+        )]);
+
+        let id = resolve_identities_with(&[entry(&wt, None)], &records)
+            .remove(0)
+            .unwrap();
+        assert_eq!(id.name, "master-fork-2");
+        assert_eq!(id.source, IdentitySource::Sandbox);
+        assert!(id.is_sandbox);
+    }
+
+    /// A branch attached elsewhere owns its name outright — a sandbox whose
+    /// directory shares the spelling degrades rather than duplicating it.
+    #[test]
+    fn a_sandbox_name_never_duplicates_an_attached_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = linked(tmp.path(), "wt-a");
+        let attached = linked(tmp.path(), "wt-b");
+        let records = HashMap::from([sandbox_record(
+            "wt-a",
+            "v1.18.0",
+            crate::store::models::WorktreeKind::Canonical,
+        )]);
+
+        let ids = resolve_identities_with(
+            &[entry(&sandbox, None), entry(&attached, Some("v1.18.0"))],
+            &records,
+        );
+
+        let degraded = ids[0].as_ref().unwrap();
+        assert_eq!(degraded.name, DETACHED_LABEL);
+        assert!(degraded.drifted, "the collision is worth surfacing");
+        assert_eq!(ids[1].as_ref().unwrap().name, "v1.18.0");
     }
 
     #[test]

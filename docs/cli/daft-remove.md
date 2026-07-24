@@ -20,7 +20,53 @@ force-delete branches regardless of merge status (`git worktree-branch -D`).
 ## Description
 
 Deletes one or more local branches along with their associated worktrees in
-a single operation. Arguments can be branch names or worktree paths.
+a single operation. Arguments can be branch names, worktree paths, or
+sandbox names.
+
+### Sandboxes
+
+Anonymous detached worktrees created by daft — `daft go <commit-ish>`
+sandboxes and `daft start --fork` forks — are removed by their directory
+name or path, exactly like branch worktrees:
+
+```bash
+daft remove v1.18.0          # a tag sandbox, by name
+daft remove main-fork-2      # a fork, by name
+daft remove ../brave-otter   # by path
+daft remove 'main-fork*'     # a wildcard over sandbox names
+```
+
+A branch sharing a sandbox's spelling always wins the name — the sandbox
+reading applies only when no such branch exists. There is no branch or
+remote to delete, so only the worktree goes; pre/post-remove hooks still
+run. Two safety checks replace the branch checks: the worktree must be
+clean, and its HEAD must still sit at the commit the sandbox was pinned at.
+Commits made on a detached HEAD exist nowhere else, so a moved HEAD refuses
+removal — promote the work first with `daft start <new-branch>` from inside
+the sandbox, or pass `-f` to discard it. A detached worktree daft did not
+create (no identity record) keeps the historical refusal and is never
+treated as a sandbox.
+
+### Wildcards
+
+Sandbox names may be given as wildcard patterns: `*` matches any run of
+characters and `?` exactly one. `daft remove 'main-fork*'` sweeps every fork
+minted off main in one command — the natural cleanup after a
+`daft start --fork -n 3` fan-out. Each matched sandbox still passes the
+safety checks above, and one refusal aborts the whole run (fix it or pass
+`-f`).
+
+Patterns match sandbox names only. They never expand to branches — removing
+a branch also deletes its remote, and fleet-scale branch cleanup is
+[daft prune](./git-worktree-prune.md)'s job — and never to paths. A pattern
+that matches no live sandbox aborts the command rather than silently
+removing nothing; if branches did match the pattern, the error names them so
+you can spell them out deliberately.
+
+Quote the pattern (`'main-fork*'`) so your shell passes it through: zsh
+errors on globs that match nothing in the current directory, and an
+unquoted glob that does match local files would rewrite your arguments
+before daft sees them.
 
 When invoked outside any git repository, `daft remove` accepts absolute or
 relative worktree paths and discovers the owning repository from the path

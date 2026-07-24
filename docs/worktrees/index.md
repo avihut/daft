@@ -272,6 +272,9 @@ root and place new worktrees according to the active layout.
   [Running commands across worktrees](/worktrees/running-commands) — `daft exec`
 - **Merge across worktrees:** [Merging across worktrees](/worktrees/merging) —
   `daft merge` from anywhere, octopus, ephemeral targets, PR-style hook gates
+- **Worktrees without branches:**
+  [Anonymous worktrees](/worktrees/anonymous-worktrees) — visit points in
+  history, fan out private forks, merge the results back
 - **Faster typing:** [Shortcuts](/worktrees/shortcuts) — `gwt*` symlink aliases
 - **Recipes:** [Recipes for Worktrees](/recipes/?pillar=worktrees)
 - **Next pillar:** [Hooks](/hooks/) — automate the env-setup-per-worktree

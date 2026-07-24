@@ -253,15 +253,28 @@ pub fn execute(
     // Fallback: check if the worktree directory already exists on disk.
     // This handles cases where the branch association is missing from
     // `git worktree list` (e.g., detached HEAD from an interrupted rebase).
+    // It is also how a revisit reaches a deliberate sandbox sitting at its
+    // layout-default path (`daft go v1.18.0` the second time): the identity
+    // record distinguishes the routine case from the alarming one.
     if worktree_path.exists() && worktree_path.join(".git").is_file() {
         sink.on_step(&format!(
             "Worktree directory '{}' already exists, switching to it",
             worktree_path.display()
         ));
-        sink.on_warning(
-            "Worktree may be in detached HEAD state (e.g., from an interrupted rebase). \
-             Run 'git status' to check, and 'git rebase --abort' or 'git checkout <branch>' to recover.",
-        );
+        match sandbox_record_for(&git_dir, &worktree_path) {
+            Some(row) => {
+                let pin = row
+                    .pinned_commit
+                    .as_deref()
+                    .map(|oid| format!(" (detached @ {})", super::sandbox::short_oid(oid)))
+                    .unwrap_or_default();
+                sink.on_step(&format!("'{}' is a daft sandbox{pin}", row.branch));
+            }
+            None => sink.on_warning(
+                "Worktree may be in detached HEAD state (e.g., from an interrupted rebase). \
+                 Run 'git status' to check, and 'git rebase --abort' or 'git checkout <branch>' to recover.",
+            ),
+        }
         change_directory(&worktree_path)?;
 
         return Ok(CheckoutResult {
@@ -738,6 +751,21 @@ pub fn execute(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// The sandbox identity record for the worktree at `path`, if daft created
+/// it as one. Best-effort: store trouble reads as "not a sandbox", which
+/// only costs the friendlier message.
+fn sandbox_record_for(
+    git_dir: &Path,
+    path: &Path,
+) -> Option<crate::store::models::WorktreeIdentityRow> {
+    let records = super::identity_store::read_identities(git_dir);
+    let id = super::identity_store::worktree_id_for(path)?;
+    records
+        .get(&id)
+        .filter(|row| row.kind.is_sandbox())
+        .cloned()
+}
 
 /// Check if a worktree already exists for the given branch name.
 fn find_existing_worktree_for_branch(

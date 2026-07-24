@@ -1,0 +1,39 @@
+name: Remove dirty sandbox refused
+description:
+  A sandbox with uncommitted changes refuses removal without -D — the same
+  protection branch worktrees get
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, create a sandbox, and dirty it
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git -c tag.gpgSign=false tag v1.0
+      daft go v1.0 --no-cd
+      echo scratch > ../v1.0/scratch.txt
+    expect:
+      exit_code: 0
+
+  - name: Removal without force is refused
+    run: daft remove v1.0 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "uncommitted changes"
+
+  - name: Forced removal succeeds
+    run: daft remove v1.0 -f 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The sandbox worktree is gone
+    run: test -d "$WORK_DIR/test-repo/v1.0"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1

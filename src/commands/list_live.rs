@@ -115,15 +115,14 @@ pub fn run_live(args: Args) -> Result<()> {
         info.is_default_branch = is_default_branch;
         apply_identity(&mut info, &identity);
         info.kind = EntryKind::Worktree;
+        let branchless = info.branchless;
         worktree_infos.push(info);
 
         targets.push(list_stream::CollectorTarget {
             branch_name: branch_display.clone(),
             path: Some(entry.path.clone()),
             kind: EntryKind::Worktree,
-            // "has no branch to query", not "HEAD is detached" — a recovered
-            // worktree has a real ref, so its branch-keyed cells must stream.
-            is_detached: identity.branch.is_none(),
+            is_detached: branchless,
         });
 
         // Recovered branches join the dedup set too, or `--branches` would
@@ -461,8 +460,6 @@ pub fn run_live(args: Args) -> Result<()> {
             .filter(|(idx, row)| {
                 final_state.live.received_patches[*idx].contains(FieldSet::SIZE)
                     && row.info.size_bytes.is_some()
-                    // Sandboxes collide on one slug — don't cache them (review).
-                    && !row.info.is_sandbox
             })
             .filter_map(|(_, row)| {
                 Some((
@@ -511,6 +508,11 @@ fn apply_identity(
     info.op = identity.op;
     info.identity_source = Some(identity.source);
     info.drifted = identity.drifted;
+    // "Has no branch to query", not "HEAD is detached" — a recovered
+    // worktree has a real ref, so its branch-keyed cells must stream. The
+    // same bit drives the collector's per-target skip and the live table's
+    // settle-as-blank seeding of the BRANCH_KEYED cells.
+    info.branchless = identity.branch.is_none();
 }
 
 /// Fields the streaming collector must populate for this view: what the
@@ -524,7 +526,7 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
     for column in columns {
         fields |= match column {
             // Populated by the porcelain seed, never streamed.
-            ListColumn::Annotation | ListColumn::Branch | ListColumn::Path => FieldSet::EMPTY,
+            ListColumn::Annotation | ListColumn::Name | ListColumn::Path => FieldSet::EMPTY,
             ListColumn::Size => FieldSet::SIZE,
             ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
             ListColumn::Changes => FieldSet::CHANGES,
@@ -603,16 +605,32 @@ mod collector_fields_tests {
             Some(crate::core::worktree::identity::IdentitySource::Attached)
         );
         assert!(info.drifted, "drifted must survive the seed copy");
+        assert!(!info.branchless, "a real ref is not branchless");
+
+        // The branchless bit is what settles a sandbox's branch-keyed cells
+        // as blank at seed — a missed copy revives the phantom shimmer.
+        let sandbox = crate::core::worktree::identity::WorktreeIdentity {
+            name: "main-fork".to_string(),
+            branch: None,
+            source: crate::core::worktree::identity::IdentitySource::Sandbox,
+            op: None,
+            is_sandbox: true,
+            drifted: false,
+        };
+        let mut info = crate::core::worktree::list::WorktreeInfo::empty("main-fork");
+        apply_identity(&mut info, &sandbox);
+        assert!(info.branchless, "no branch to query must survive the copy");
+        assert!(info.is_sandbox);
     }
 
     /// The status column's op-less Persisted arm renders `detached @ <sha>`
     /// from `last_commit_hash`, which streams only under LAST_COMMIT. With a
-    /// narrow selection (`--columns status,branch`) the live cell otherwise
+    /// narrow selection (`--columns status,name`) the live cell otherwise
     /// sticks at a bare `detached` forever while the piped path shows the
     /// sha.
     #[test]
     fn status_column_collects_changes_and_last_commit() {
-        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("status,name", CommandKind::List).unwrap();
         let fields = collector_fields(&resolved.columns, None, Stat::Summary);
         assert!(fields.contains(FieldSet::CHANGES | FieldSet::LAST_COMMIT));
     }
@@ -684,7 +702,7 @@ mod collector_fields_tests {
         // base_lines_* even though no base column is rendered.
         let spec = sort("-base", Stat::Lines);
         let fields = collector_fields(
-            &[ListColumn::Branch, ListColumn::Path],
+            &[ListColumn::Name, ListColumn::Path],
             Some(&spec),
             Stat::Lines,
         );
@@ -693,7 +711,7 @@ mod collector_fields_tests {
 
     #[test]
     fn seed_only_view_collects_nothing() {
-        let fields = collector_fields(&[ListColumn::Branch, ListColumn::Path], None, Stat::Summary);
+        let fields = collector_fields(&[ListColumn::Name, ListColumn::Path], None, Stat::Summary);
         assert!(fields.is_empty());
     }
 }

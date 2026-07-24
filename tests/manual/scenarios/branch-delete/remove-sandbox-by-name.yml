@@ -1,0 +1,38 @@
+name: Remove sandbox by name
+description:
+  daft remove <sandbox-name> deletes a daft-created detached sandbox — no branch
+  machinery involved, the worktree simply goes
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a tag sandbox
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git -c tag.gpgSign=false tag v1.0
+      daft go v1.0 --no-cd
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/v1.0"
+
+  - name: Remove the sandbox by its name
+    run: daft remove v1.0 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The sandbox worktree is gone
+    run: test -d "$WORK_DIR/test-repo/v1.0"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: The tag itself survives
+    run: git rev-parse --verify --quiet 'v1.0^{commit}'
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

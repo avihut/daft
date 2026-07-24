@@ -13,6 +13,7 @@ use super::environment::HookContext;
 /// - `{worktree_root}` — project root directory
 /// - `{worktree_slug}` — sanitized worktree name, safe for docker/DNS use
 /// - `{branch}` — alias for `{worktree_branch}`
+/// - `{commit}` — pinned commit OID (branchless sandbox worktrees only)
 /// - `{job_name}` — name of the current job (if provided)
 /// - `{source_worktree}` — source worktree path
 /// - `{git_dir}` — path to .git directory
@@ -42,6 +43,10 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
 
     if let Some(ref base) = ctx.base_branch {
         result = result.replace("{base_branch}", base);
+    }
+
+    if let Some(ref commit) = ctx.commit {
+        result = result.replace("{commit}", commit);
     }
 
     if let Some(ref url) = ctx.repository_url {
@@ -182,6 +187,32 @@ mod tests {
         assert_eq!(result, "git diff main");
     }
 
+    /// `{commit}` substitutes only on the branchless sandbox path; `{branch}`
+    /// there is the empty string by contract.
+    #[test]
+    fn test_commit_substitution_on_the_sandbox_path() {
+        let ctx = HookContext::new(
+            HookType::PostCreate,
+            "checkout",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/main",
+            "/project/v1",
+            "",
+        )
+        .with_commit("abc123d");
+        assert_eq!(
+            substitute("build {commit} on '{branch}'", &ctx, None),
+            "build abc123d on ''"
+        );
+        // Without a commit the placeholder is left alone, like {base_branch}.
+        assert_eq!(
+            substitute("echo {commit}", &make_ctx(), None),
+            "echo {commit}"
+        );
+    }
+
     #[test]
     fn test_worktree_slug_nested_relative_path() {
         // make_ctx: worktree /project/feature/new under root /project.
@@ -243,6 +274,7 @@ mod tests {
             source_worktree: PathBuf::from("/project/old-wt"),
             worktree_path: PathBuf::from("/project/new-wt"),
             branch_name: "feat/new".to_string(),
+            commit: None,
             is_new_branch: false,
             base_branch: None,
             repository_url: None,
@@ -279,6 +311,7 @@ mod tests {
             source_worktree: PathBuf::from("/project/src"),
             worktree_path: PathBuf::from("/project/wt"),
             branch_name: "feat/x".to_string(),
+            commit: None,
             is_new_branch: true,
             base_branch: None,
             repository_url: None,

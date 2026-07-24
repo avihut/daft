@@ -64,6 +64,7 @@ impl CoordinatorClient {
         _tag: Option<&str>,
         _invocation_prefix: Option<&str>,
         _older_than_secs: Option<u64>,
+        _kill: bool,
     ) -> Result<Vec<String>> {
         match self.0 {}
     }
@@ -212,7 +213,8 @@ impl CoordinatorClient {
     }
 
     /// Cancel every active job matching the predicate set. Returns the
-    /// names of the jobs that were signaled.
+    /// names of the jobs that were signaled. `kill` escalates SIGTERM to
+    /// SIGKILL for jobs that survived a polite cancel.
     pub fn cancel_matching(
         &mut self,
         hook: Option<&str>,
@@ -220,6 +222,7 @@ impl CoordinatorClient {
         tag: Option<&str>,
         invocation_prefix: Option<&str>,
         older_than_secs: Option<u64>,
+        kill: bool,
     ) -> Result<Vec<String>> {
         let req = CoordinatorRequest::CancelMatching {
             hook: hook.map(str::to_string),
@@ -227,6 +230,7 @@ impl CoordinatorClient {
             tag: tag.map(str::to_string),
             invocation_prefix: invocation_prefix.map(str::to_string),
             older_than_secs,
+            kill,
         };
         match self.send(&req)? {
             CoordinatorResponse::Cancelled { names, .. } => Ok(names),
@@ -354,7 +358,7 @@ mod tests {
         let stream = UnixStream::connect(&socket_path).unwrap();
         let mut client = CoordinatorClient::from_stream(stream);
         let names = client
-            .cancel_matching(Some("h"), None, None, None, None)
+            .cancel_matching(Some("h"), None, None, None, None, false)
             .unwrap();
         assert_eq!(names, vec!["a", "b"]);
 

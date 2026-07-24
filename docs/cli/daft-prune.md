@@ -29,8 +29,8 @@ after branches have been merged and deleted on the remote.
 | `-v, --verbose` | Increase verbosity (`-v` for hook details, `-vv` for full sequential output) | |
 | `-f, --force` | Force removal of worktrees with uncommitted changes or untracked files | |
 | `--stat <STAT>` | Statistics mode: `summary` or `lines` (default: from git config `daft.prune.stat`, or `summary`) | |
-| `--columns <COLUMNS>` | Columns to display in the summary table (comma-separated). Replace mode: `branch,path,age`. Modifier mode: `+col,-col`. The status column is always shown. | |
-| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `branch`, `path`, `size`, `age`, `owner`, `activity`. Default: `daft.prune.sort` or `+branch`. | |
+| `--columns <COLUMNS>` | Columns to display in the summary table (comma-separated). Replace mode: `name,path,age`. Modifier mode: `+col,-col`. The status column is always shown. | |
+| `--sort <SORT>` | Sort order (comma-separated). `+col` ascending, `-col` descending. Sortable columns: `name`, `path`, `size`, `age`, `owner`, `activity`. Default: `daft.prune.sort` or `+name`. | |
 
 ## Global Options
 

@@ -21,6 +21,7 @@ pub mod fetch;
 pub mod flow_adopt;
 pub mod flow_eject;
 pub mod forge_ref;
+pub mod fork_names;
 pub mod identity;
 pub mod identity_store;
 pub mod info_field;
@@ -39,6 +40,7 @@ pub mod push;
 pub mod rebase;
 pub mod remove_repo;
 pub mod rename;
+pub mod sandbox;
 pub mod sync_dag;
 pub mod temp_worktree;
 

@@ -2,9 +2,9 @@
 .el .ds Aq '
 .TH "daft go" 1  "daft go 1.23.0" 
 .SH NAME
-daft go \- Open a worktree for an existing branch, or create one with \-b
+daft go \- Open a worktree for a branch or commit; create a new branch with \-b
 .SH SYNOPSIS
-\fBdaft go\fR [\fB\-\-repo\fR] [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH_NAME\fR] [\fISECOND\fR] 
+\fBdaft go\fR [\fB\-\-repo\fR] [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH|COMMIT\-ISH\fR] [\fIBRANCH_OR_BASE\fR] 
 .SH DESCRIPTION
 .PP
 Opens a worktree for an existing local or remote branch. The worktree is
@@ -31,7 +31,8 @@ resolves purely against the catalog. Anything resolvable in the current
 repository always wins over a catalog match.
 .PP
 With \-b, creates a new branch and worktree in a single operation. The new
-branch is based on the current branch, or on `<base\-branch>` if specified. It
+branch is based on the current branch, or on `<base>` (a branch or any
+commit\-ish) if specified. It
 is pushed to the remote and upstream tracking is configured; the pre\-push hook
 runs only when that push introduces new commits, skipping ref\-only pushes
 (configurable via daft.checkout.pushVerify, which defaults to the base
@@ -41,6 +42,13 @@ new branches.
 With \-s (\-\-start), if the specified branch does not exist locally or on the
 remote, a new branch and worktree are created automatically. This can also
 be enabled permanently with the daft.go.autoStart git config option.
+.PP
+A name that resolves to a commit but names no branch and no cataloged repo —
+a tag, a SHA, a spelling like `HEAD~2` — opens a detached sandbox worktree
+pinned at that commit: hooks run, no branch is created, and revisits land in
+the same worktree. Explicit \-b/\-\-start suppress this reading; remove a
+sandbox with `daft remove <name>`, and promote work committed inside it by
+running `daft start <new\-branch>` from within.
 .PP
 Lifecycle hooks from .daft/hooks/ are executed if the repository is trusted.
 See daft\-hooks(1) for hook management.
@@ -94,10 +102,10 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-[\fIBRANCH_NAME\fR]
-Branch (or catalog repo) to open; use \*(Aq\-\*(Aq for previous worktree
+[\fIBRANCH|COMMIT\-ISH\fR]
+Branch, commit\-ish, or catalog repo to open; use \*(Aq\-\*(Aq for previous worktree
 .TP
-[\fISECOND\fR]
-Branch inside <repo> when two arguments are given; base branch with \-b
+[\fIBRANCH_OR_BASE\fR]
+Branch inside <repo> when two arguments are given; base branch or commit\-ish with \-b
 .SH VERSION
 v1.23.0

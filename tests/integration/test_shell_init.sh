@@ -784,6 +784,71 @@ test_c_flag_symlink_entry() {
 
 # --- Main Test Runner ---
 
+# #53: `daft start --fork` cd contract through the wrapper — a single fork
+# lands the shell inside the new sandbox; `-n >1` has no single destination
+# and must leave the shell exactly where it was.
+test_fork_cd_through_wrapper() {
+    log "Testing: daft start --fork through wrapper cds into the fork; -n 2 stays put"
+
+    local remote_dir
+    remote_dir=$(create_test_remote "test-fork-wrapper" "main")
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
+    local project_root="$PWD/test-fork-wrapper"
+
+    local out
+    out=$(MAIN_WT="$project_root/main" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$MAIN_WT" || exit 11
+        daft start --fork >/dev/null 2>&1 || exit 12
+        builtin pwd
+    ' 2>&1) || true
+    if [[ "$(basename "$out")" != "main-fork" ]]; then
+        log_error "single fork did not cd the shell into the fork (pwd: $out)"
+        return 1
+    fi
+
+    out=$(MAIN_WT="$project_root/main" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$MAIN_WT" || exit 11
+        daft start --fork -n 2 >/dev/null 2>&1 || exit 12
+        builtin pwd
+    ' 2>&1) || true
+    if [[ "$(basename "$out")" != "main" ]]; then
+        log_error "-n 2 moved the shell (pwd: $out); bulk forks must stay put"
+        return 1
+    fi
+
+    log_success "fork cd contract holds: single fork cds, -n 2 stays put"
+    return 0
+}
+
+# #53: `daft go <tag>` (the sandbox rung) must honor the wrapper's cd
+# contract like any other go destination.
+test_go_tag_sandbox_cd_through_wrapper() {
+    log "Testing: daft go <tag> through wrapper lands shell in the sandbox"
+
+    local remote_dir
+    remote_dir=$(create_test_remote "test-go-tag-wrapper" "main")
+    git-worktree-clone --layout contained "$remote_dir" >/dev/null 2>&1
+    local project_root="$PWD/test-go-tag-wrapper"
+
+    local out
+    out=$(MAIN_WT="$project_root/main" bash -c '
+        eval "$(daft shell-init bash)"
+        builtin cd "$MAIN_WT" || exit 11
+        git -c tag.gpgSign=false tag v9.9 >/dev/null 2>&1 || exit 12
+        daft go v9.9 >/dev/null 2>&1 || exit 13
+        builtin pwd
+    ' 2>&1) || true
+    if [[ "$(basename "$out")" != "v9.9" ]]; then
+        log_error "daft go <tag> did not cd the shell into the sandbox (pwd: $out)"
+        return 1
+    fi
+
+    log_success "daft go <tag> through wrapper lands shell at: $out"
+    return 0
+}
+
 main() {
     setup
 
@@ -818,6 +883,8 @@ main() {
     run_test "remove_same_repo_still_rescues_shell" test_remove_same_repo_still_rescues_shell
     run_test "c_flag_no_arg_through_wrapper_errors_cleanly" test_c_flag_no_arg_through_wrapper_errors_cleanly
     run_test "c_flag_symlink_entry" test_c_flag_symlink_entry
+    run_test "fork_cd_through_wrapper" test_fork_cd_through_wrapper
+    run_test "go_tag_sandbox_cd_through_wrapper" test_go_tag_sandbox_cd_through_wrapper
 
     print_summary
 }

@@ -1,0 +1,29 @@
+name: Start fork memorable naming
+description:
+  daft.start.forkNaming = memorable swaps the derived <branch>-fork names for
+  adjective-noun handles — the path on stdout is still the contract
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and enable memorable naming
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git config daft.start.forkNaming memorable
+    expect:
+      exit_code: 0
+
+  - name: The fork gets a memorable name, not a derived one
+    run: |
+      WT=$(daft start --fork 2>/dev/null)
+      test -d "$WT" || exit 1
+      case "$WT" in
+        *main-fork*) exit 1 ;;
+      esac
+      git -C "$WT" symbolic-ref -q HEAD && exit 1 || exit 0
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

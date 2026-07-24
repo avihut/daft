@@ -14,10 +14,26 @@ remote tracking branches in a single operation. This is the inverse of
 By default, performs a safe delete that checks whether each branch has been
 merged. Use \-f (\-\-force) to force\-delete branches regardless of merge status.
 .PP
-Arguments can be branch names or worktree paths. When a path is given
-(absolute, relative, or "."), the branch checked out in that worktree is
-resolved automatically. This is convenient when you are inside a worktree
-and want to delete it without remembering the branch name.
+Arguments can be branch names, worktree paths, or sandbox names. When a path
+is given (absolute, relative, or "."), the branch checked out in that
+worktree is resolved automatically. This is convenient when you are inside a
+worktree and want to delete it without remembering the branch name.
+.PP
+An anonymous sandbox worktree (`daft go <commit\-ish>` / `daft start \-\-fork`)
+is addressed by its directory name or path; a branch sharing the spelling
+always wins the name. There is no branch to delete, so only the worktree
+goes — after two checks: the worktree is clean, and its HEAD still sits at
+the pinned commit (commits made on a detached HEAD exist nowhere else, so a
+moved HEAD refuses removal until promoted or forced). Detached worktrees
+daft has no record of are refused as before.
+.PP
+Sandbox names may be given as wildcard patterns: `*` matches any run of
+characters and `?` exactly one, so `daft remove \*(Aqmain\-fork*\*(Aq` sweeps every
+fork minted off main in one command. Patterns match sandbox names only —
+never branches (removing a branch also deletes its remote; for fleet\-scale
+branch cleanup use `daft prune`) and never paths. A pattern that matches no
+live sandbox aborts the command. Quote the pattern so your shell does not
+expand or reject it before daft sees it (zsh errors on unmatched globs).
 .PP
 Use \-\-repo <name> to remove branches in another cataloged repository without
 leaving your current directory: `daft remove \-\-repo api feature\-x` deletes
@@ -91,6 +107,6 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 <\fIBRANCHES\fR>
-Branches or worktree paths to delete
+Branches, worktree paths, or sandbox names to delete; sandbox names may use wildcards (*, ?)
 .SH VERSION
 v1.23.0

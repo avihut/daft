@@ -1,0 +1,33 @@
+name: Go --start suppresses the sandbox rung
+description:
+  Explicit --start declares branch-creation intent, so a name that happens to
+  resolve as a tag still creates a branch — the sandbox rung never fires
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Tag the current tip
+    run: git -c tag.gpgSign=false tag v9
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Go --start creates a branch despite the tag
+    run: daft go v9 --start 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/v9"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/v9"
+          branch: v9
+      output_not_contains:
+        - "detached sandbox"

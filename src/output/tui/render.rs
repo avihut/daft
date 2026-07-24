@@ -267,7 +267,7 @@ pub fn render_table(state: &TuiState, frame: &mut Frame, area: Rect) {
             continue;
         }
         match col {
-            Column::Branch => {
+            Column::Name => {
                 for vals in &mut row_vals {
                     vals.branch = truncate_with_ellipsis(&vals.branch, assigned_widths[i]);
                 }
@@ -796,7 +796,7 @@ fn render_cell(
                 ))
             }
         }
-        Column::Branch => Cell::from(vals.branch.clone()),
+        Column::Name => Cell::from(vals.branch.clone()),
         Column::Path => Cell::from(vals.path.clone()),
         Column::Size => {
             if vals.size.is_empty() {
@@ -1205,7 +1205,7 @@ fn format_child_line(
 fn column_plain_text(col: &Column, vals: &ColumnValues) -> String {
     match col {
         Column::BranchStatus => vals.status.clone(),
-        Column::Branch => vals.branch.clone(),
+        Column::Name => vals.branch.clone(),
         Column::Path => vals.path.clone(),
         Column::Size => vals.size.clone(),
         Column::Base => vals.base.clone(),
@@ -1865,8 +1865,7 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         for label in [
-            "Status", "Branch", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Hash",
-            "Commit",
+            "Status", "Name", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Hash", "Commit",
         ] {
             assert!(
                 header.contains(label),
@@ -1910,7 +1909,7 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         for label in [
-            "Branch", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Commit",
+            "Name", "Path", "Base", "Changes", "Remote", "Age", "Owner", "Commit",
         ] {
             assert!(
                 header.contains(label),
@@ -1944,7 +1943,7 @@ mod tests {
             PathBuf::from("/tmp/test"),
             Stat::Summary,
             0,
-            Some(vec![Column::Branch, Column::Path, Column::Size]),
+            Some(vec![Column::Name, Column::Path, Column::Size]),
             true,
             None,
             None::<SortSpec>,

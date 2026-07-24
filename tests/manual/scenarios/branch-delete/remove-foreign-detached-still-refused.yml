@@ -1,0 +1,33 @@
+name: Remove foreign detached worktree still refused
+description:
+  A detached worktree daft did not create has no identity record, so removal
+  keeps the historical refusal — the sandbox path never weakens it
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a raw detached worktree outside daft
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git worktree add --detach ../foreign HEAD
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/foreign"
+
+  - name: Removal by path is refused
+    run: daft remove ../foreign 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "detached HEAD; specify a branch name"
+
+  - name: The worktree survives
+    run: test -d "$WORK_DIR/test-repo/foreign"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

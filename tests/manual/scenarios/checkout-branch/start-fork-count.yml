@@ -1,0 +1,37 @@
+name: Start fork count
+description:
+  daft start --fork -n N mints N fresh forks in one invocation — one path per
+  line on stdout, sequentially suffixed under the derived scheme
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Three forks in one invocation
+    run: daft start --fork -n 3 2>/dev/null
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main-fork"
+        - "$WORK_DIR/test-repo/main-fork-2"
+        - "$WORK_DIR/test-repo/main-fork-3"
+      output_contains:
+        - "main-fork"
+        - "main-fork-2"
+        - "main-fork-3"
+
+  - name: Every fork is detached at the same commit
+    run: |
+      for wt in main-fork main-fork-2 main-fork-3; do
+        test "$(git -C ../$wt rev-parse HEAD)" = "$(git rev-parse HEAD)" || exit 1
+      done
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0

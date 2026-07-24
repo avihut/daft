@@ -63,7 +63,7 @@ Supported formats: json, ndjson, tsv, csv, yaml, toon, markdown. Use
 for details.
 
 Use --columns to select which columns are shown and in what order.
-  Replace mode:  --columns branch,path,age (exact set and order)
+  Replace mode:  --columns name,path,age (exact set and order)
   Modifier mode: --columns -annotation,-last-commit (remove from defaults)
   Add optional:  --columns +size (add disk size column after path)
 Defaults can be set in git config with daft.list.columns.
@@ -92,11 +92,11 @@ with `git config -- daft.list.columns -pr`.
 
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
-  Sort by branch descending:  --sort -branch
+  Sort by name descending:    --sort -name
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, hash, activity, commit (alias:
+Sortable columns: name, path, size, age, owner, hash, activity, commit (alias:
 last-commit). activity considers both commits and uncommitted file changes;
 commit sorts by last commit time only. You can sort by columns not shown in
 the output (e.g. --sort -size without --columns +size). Defaults can be set
@@ -127,8 +127,8 @@ git worktree-list [OPTIONS] [REPO]
 | `-a, --all` | Show all branches (equivalent to -b -r) |  |
 | `--merging` | Only show worktrees with an in-progress merge |  |
 | `--stat <STAT>` | Statistics mode: summary or lines (default: from git config daft.list.stat, or summary) |  |
-| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit |  |
-| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
+| `--columns <COLUMNS>` | Columns to display (comma-separated). Replace: name,path,age. Modify defaults: +col,-col. Available: name, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit |  |
+| `--sort <SORT>` | Sort order (comma-separated). +col ascending, -col descending. Columns: name, path, size, base, changes, remote, age, owner, hash, activity, commit |  |
 | `--repo <REPO>` | List another cataloged repository's worktrees |  |
 | `--all-repos` | List every cataloged repository's worktrees |  |
 

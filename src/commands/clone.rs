@@ -143,7 +143,7 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,base,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: name,base,age. Modify defaults: +col,-col. Available: name, path, size, base, changes, remote, age, annotation, owner, hash, last-commit"
     )]
     columns: Option<String>,
 

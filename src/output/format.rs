@@ -454,8 +454,13 @@ pub fn format_worktree_status(info: &WorktreeInfo) -> String {
         if info.drifted {
             return "drifted".to_string();
         }
-        if info.identity_source == Some(crate::core::worktree::identity::IdentitySource::Persisted)
-        {
+        if matches!(
+            info.identity_source,
+            Some(
+                crate::core::worktree::identity::IdentitySource::Persisted
+                    | crate::core::worktree::identity::IdentitySource::Sandbox
+            )
+        ) {
             return match &info.last_commit_hash {
                 Some(hash) => String::from("detached @ ") + hash,
                 None => "detached".to_string(),

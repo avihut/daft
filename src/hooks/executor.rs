@@ -187,14 +187,15 @@ pub(crate) fn get_hook_source_worktree(ctx: &HookContext) -> PathBuf {
 /// Pick the display target shown alongside the hook name in the rich
 /// hook-box title (e.g. `worktree-pre-remove  on: feature`).
 ///
-/// Worktree-scoped phases get the branch they're acting on so multi-source
+/// Worktree-scoped phases get the worktree label they're acting on — the
+/// branch, or the dirname for branchless sandbox contexts — so multi-source
 /// flows make it obvious which worktree the hooks are touching. Project-
 /// scoped phases (`pre-merge` / `post-merge` / `post-clone`) return `None`
 /// because the title isn't tied to a single worktree.
 pub(crate) fn header_target_for_ctx(ctx: &HookContext) -> Option<&str> {
     match ctx.hook_type {
         HookType::PreCreate | HookType::PostCreate | HookType::PreRemove | HookType::PostRemove => {
-            Some(ctx.branch_name.as_str())
+            Some(ctx.worktree_label())
         }
         HookType::PreMerge | HookType::PostMerge | HookType::PostClone => None,
     }

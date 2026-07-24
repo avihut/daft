@@ -1,0 +1,60 @@
+name: Remove sandboxes by wildcard
+description:
+  daft remove 'main-fork*' expands the pattern over sandbox names — every fork
+  goes in one sweep, while branches whose names also match are never touched and
+  a pattern matching nothing fails closed
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, mint three forks, and add a similarly named branch
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      daft start --fork -n 3 >/dev/null 2>&1
+      git-worktree-checkout -b main-forky
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main-fork"
+        - "$WORK_DIR/test-repo/main-fork-2"
+        - "$WORK_DIR/test-repo/main-fork-3"
+        - "$WORK_DIR/test-repo/main-forky"
+
+  - name: Remove every fork with one pattern
+    run: daft remove 'main-fork*' 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main-fork"
+        - "$WORK_DIR/test-repo/main-fork-2"
+        - "$WORK_DIR/test-repo/main-fork-3"
+
+  - name: The matching branch and its worktree survive
+    run:
+      test -d ../main-forky && git show-ref --verify --quiet
+      refs/heads/main-forky
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: A pattern matching only branches refuses and names them
+    run: daft remove 'main-forky*' 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "matches no sandbox worktrees"
+        - "main-forky"
+        - "never target branches"
+
+  - name: A pattern matching nothing fails closed
+    run: daft remove 'nosuch*' 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "matches no sandbox worktrees"

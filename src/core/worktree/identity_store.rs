@@ -16,7 +16,7 @@
 //! build degrades to "no record" rather than failing a command. Reads never
 //! create the store; only writes do.
 
-use crate::store::models::WorktreeIdentityRow;
+use crate::store::models::{WorktreeIdentityRow, WorktreeKind};
 use crate::store::repos::{WorktreeIdentitiesRepo, with_write_txn};
 use crate::store::{Pool, paths};
 use std::collections::HashMap;
@@ -89,9 +89,46 @@ impl IdentityStore {
             branch: branch.to_string(),
             worktree_path: worktree_path.display().to_string(),
             updated_at: chrono::Utc::now(),
+            kind: WorktreeKind::Branch,
+            source_spelling: None,
+            pinned_commit: None,
         };
         if let Err(e) = self.write(|conn| WorktreeIdentitiesRepo::upsert(conn, &row)) {
             crate::log_debug!("could not record worktree identity: {e}");
+        }
+    }
+
+    /// Record that `worktree_path` is an anonymous sandbox named `dirname`,
+    /// created from `source_spelling` and pinned at `pinned_commit`.
+    ///
+    /// The sandbox counterpart of [`Self::record`]: the directory name goes
+    /// where a branch identity would, and `kind` says which meaning the row
+    /// carries. `Canonical` rows are what `daft go <commit-ish>` matches on a
+    /// revisit; `Fork` rows are never matched by resolution — a fork is
+    /// reachable only by its name.
+    pub fn record_sandbox(
+        &self,
+        worktree_path: &Path,
+        dirname: &str,
+        kind: WorktreeKind,
+        source_spelling: &str,
+        pinned_commit: &str,
+    ) {
+        let Some(worktree_id) = worktree_id_for(worktree_path) else {
+            return;
+        };
+        let row = WorktreeIdentityRow {
+            repo_hash: self.repo_hash.clone(),
+            worktree_id,
+            branch: dirname.to_string(),
+            worktree_path: worktree_path.display().to_string(),
+            updated_at: chrono::Utc::now(),
+            kind,
+            source_spelling: Some(source_spelling.to_string()),
+            pinned_commit: Some(pinned_commit.to_string()),
+        };
+        if let Err(e) = self.write(|conn| WorktreeIdentitiesRepo::upsert(conn, &row)) {
+            crate::log_debug!("could not record sandbox identity: {e}");
         }
     }
 
@@ -114,6 +151,12 @@ impl IdentityStore {
                     branch: branch.to_string(),
                     worktree_path: path.display().to_string(),
                     updated_at: now,
+                    // Observations are of *attached* worktrees, so a fill-in
+                    // is a branch identity; on an existing row the repo layer
+                    // refreshes only path/timestamp, never the kind.
+                    kind: WorktreeKind::Branch,
+                    source_spelling: None,
+                    pinned_commit: None,
                 })
             })
             .collect();
@@ -156,10 +199,38 @@ impl IdentityStore {
     /// that could no longer read the private-gitdir id (the directory was
     /// already gone). Over-broad (two records naming one branch both go) and
     /// blind to drifted rows (the record names the intent, not the checkout),
-    /// which is why [`Self::forget`] prefers the id.
+    /// which is why [`Self::forget`] prefers the id. Branch rows only: a
+    /// sandbox sharing the name is a different worktree.
     pub fn forget_branch(&self, branch: &str) {
         if let Err(e) = self.write(|conn| {
             WorktreeIdentitiesRepo::delete_for_branch(conn, &self.repo_hash, branch).map(|_| ())
+        }) {
+            crate::log_debug!("could not forget worktree identity: {e}");
+        }
+    }
+
+    /// Forget a removed sandbox's record: by captured private-gitdir id when
+    /// one was read before the removal, else by directory name (sandbox rows
+    /// only — the mirror of [`Self::forget`]'s branch fallback).
+    pub fn forget_sandbox(&self, captured_id: Option<&str>, dirname: &str) {
+        if let Some(id) = captured_id {
+            self.forget_id(id);
+            return;
+        }
+        if let Err(e) = self.write(|conn| {
+            WorktreeIdentitiesRepo::delete_sandbox_by_name(conn, &self.repo_hash, dirname)
+                .map(|_| ())
+        }) {
+            crate::log_debug!("could not forget sandbox identity: {e}");
+        }
+    }
+
+    /// Forget the record keyed on `worktree_id`, whatever it names. For
+    /// callers that discover a stale row themselves (a recorded sandbox whose
+    /// worktree is gone) and have no branch or dirname to sweep by.
+    pub fn forget_id(&self, worktree_id: &str) {
+        if let Err(e) = self.write(|conn| {
+            WorktreeIdentitiesRepo::delete(conn, &self.repo_hash, worktree_id).map(|_| ())
         }) {
             crate::log_debug!("could not forget worktree identity: {e}");
         }
@@ -408,6 +479,69 @@ mod tests {
 
         store.forget(None, "feat/x");
         assert!(read_identities(&common).is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn sandbox_records_round_trip_with_kind_and_pin() {
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let (_tmp, common, worktree) = linked_worktree("wt-s");
+        let store = IdentityStore::open(&common).expect("store opens");
+
+        store.record_sandbox(
+            &worktree,
+            "v1.18.0",
+            WorktreeKind::Canonical,
+            "v1.18.0",
+            "abc123def4567890abc123def4567890abc123de",
+        );
+
+        let found = read_identities(&common);
+        let row = &found["wt-s"];
+        assert_eq!(row.branch, "v1.18.0", "the dirname is the identity");
+        assert_eq!(row.kind, WorktreeKind::Canonical);
+        assert_eq!(row.source_spelling.as_deref(), Some("v1.18.0"));
+        assert_eq!(
+            row.pinned_commit.as_deref(),
+            Some("abc123def4567890abc123def4567890abc123de")
+        );
+    }
+
+    /// Sandbox removal sweeps by dirname when no id was captured — and only
+    /// sandbox rows, so a branch sharing the spelling survives.
+    #[test]
+    #[serial]
+    fn forget_sandbox_by_name_spares_the_same_named_branch_record() {
+        let _guard = crate::store::paths::IsolatedStateDir::new();
+        let (tmp, common, wt_branch) = linked_worktree("wt-a");
+        let private_s = common.join("worktrees/wt-s");
+        std::fs::create_dir_all(&private_s).unwrap();
+        let wt_s = tmp.path().join("wt-s");
+        std::fs::create_dir_all(&wt_s).unwrap();
+        std::fs::write(
+            wt_s.join(".git"),
+            String::from("gitdir: ") + private_s.to_str().unwrap() + "\n",
+        )
+        .unwrap();
+        let store = IdentityStore::open(&common).unwrap();
+
+        store.record(&wt_branch, "scratch");
+        store.record_sandbox(
+            &wt_s,
+            "scratch",
+            WorktreeKind::Fork,
+            "HEAD",
+            &"a".repeat(40),
+        );
+
+        store.forget_sandbox(None, "scratch");
+
+        let found = read_identities(&common);
+        assert!(!found.contains_key("wt-s"), "the sandbox record is gone");
+        assert_eq!(
+            found["wt-a"].branch, "scratch",
+            "the like-named branch record survives"
+        );
     }
 
     /// Paths with no private-gitdir id are silently skipped, not errors —

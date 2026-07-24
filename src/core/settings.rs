@@ -123,6 +123,28 @@ impl PushVerify {
     }
 }
 
+/// How `daft start --fork` names the sandboxes it mints (#53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkNaming {
+    /// `<source>-fork`, `<source>-fork-2`, … — self-describing provenance in
+    /// `daft list`. The default.
+    Derived,
+    /// Docker-style adjective-noun names (`brave-otter`) — collision-sparse
+    /// and better *handles* when several sandboxes are alive at once.
+    Memorable,
+}
+
+impl ForkNaming {
+    /// Parse a string value into a ForkNaming.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "derived" => Some(Self::Derived),
+            "memorable" => Some(Self::Memorable),
+            _ => None,
+        }
+    }
+}
+
 /// How `daft sync --push` runs the repo's pre-push hook across branches
 /// (#678). Batched trades per-branch hook semantics for an N→1 resource
 /// cost: one `git push` carries every branch, so the hook runs once with
@@ -282,7 +304,8 @@ pub fn parse_push_timeout(value: &str) -> Option<Option<std::time::Duration>> {
 /// Default values for settings.
 pub mod defaults {
     use super::{
-        GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushHookStrategy, PushVerify,
+        ForkNaming, GovernorJobs, GovernorMode, MemoryReserve, PruneCdTarget, PushHookStrategy,
+        PushVerify,
     };
     use crate::core::worktree::list::Stat;
 
@@ -323,6 +346,9 @@ pub mod defaults {
     /// Default value for checkout.pushVerify setting (follows the base
     /// `daft.pushVerify` when unset).
     pub const CHECKOUT_PUSH_VERIFY: PushVerify = PushVerify::Auto;
+
+    /// Default value for start.forkNaming setting (#53).
+    pub const START_FORK_NAMING: ForkNaming = ForkNaming::Derived;
 
     /// Default value for remote setting.
     pub const REMOTE: &str = "origin";
@@ -469,6 +495,9 @@ pub mod keys {
 
     /// Config key for go.autoStart setting.
     pub const GO_AUTO_START: &str = "daft.go.autoStart";
+
+    /// Config key for start.forkNaming setting (#53).
+    pub const START_FORK_NAMING: &str = "daft.start.forkNaming";
 
     /// Config key for go.fetchOnMiss setting.
     pub const GO_FETCH_ON_MISS: &str = "daft.go.fetchOnMiss";
@@ -680,6 +709,9 @@ pub struct DaftSettings {
     /// Automatically create worktree when branch not found in go command.
     pub go_auto_start: bool,
 
+    /// How `daft start --fork` names its sandboxes (#53).
+    pub start_fork_naming: ForkNaming,
+
     /// Whether `daft go` completion should run `git fetch` when the typed
     /// prefix has no local matches. Controlled by `daft.go.fetchOnMiss`.
     pub go_fetch_on_miss: bool,
@@ -812,6 +844,7 @@ impl Default for DaftSettings {
             multi_remote_default: defaults::MULTI_REMOTE_DEFAULT_REMOTE.to_string(),
             use_gitoxide: defaults::USE_GITOXIDE,
             go_auto_start: defaults::GO_AUTO_START,
+            start_fork_naming: defaults::START_FORK_NAMING,
             go_fetch_on_miss: defaults::GO_FETCH_ON_MISS,
             list_stat: defaults::LIST_STAT,
             sync_stat: defaults::SYNC_STAT,
@@ -937,6 +970,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get(keys::GO_AUTO_START)? {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
+        if let Some(value) = git.config_get(keys::START_FORK_NAMING)?
+            && let Some(naming) = ForkNaming::parse(&value)
+        {
+            settings.start_fork_naming = naming;
         }
 
         if let Some(value) = git.config_get(keys::GO_FETCH_ON_MISS)? {
@@ -1191,6 +1230,12 @@ impl DaftSettings {
 
         if let Some(value) = git.config_get_global(keys::GO_AUTO_START)? {
             settings.go_auto_start = parse_bool(&value, defaults::GO_AUTO_START);
+        }
+
+        if let Some(value) = git.config_get_global(keys::START_FORK_NAMING)?
+            && let Some(naming) = ForkNaming::parse(&value)
+        {
+            settings.start_fork_naming = naming;
         }
 
         if let Some(value) = git.config_get_global(keys::GO_FETCH_ON_MISS)? {

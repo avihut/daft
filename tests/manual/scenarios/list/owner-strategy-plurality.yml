@@ -45,7 +45,7 @@ steps:
       exit_code: 0
 
   - name: Owner column reports the plurality author (Me Testuser)
-    run: NO_COLOR=1 git-worktree-list --columns branch,owner 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns name,owner 2>&1
     cwd: "$WORK_DIR/strat-plur-repo/main"
     expect:
       exit_code: 0

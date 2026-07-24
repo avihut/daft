@@ -1048,15 +1048,59 @@ fn delete_branch(git: &GitCommand, branch_name: &str, sink: &mut dyn ProgressSin
 /// `JobInfo.worktree` carries the branch slug (e.g. "feat/x") set from
 /// `ctx.branch_name` at job-launch time, NOT the filesystem path. Comparing
 /// against a path here would never match.
-/// Cancel any running background jobs for a specific worktree.
+/// How long the polite (SIGTERM) phase of a worktree-removal cancel waits
+/// before escalating to SIGKILL, and how long the SIGKILL phase waits
+/// before giving up. Killing must finish before the caller starts deleting
+/// the directory under the job — a build that outlives the cancel keeps
+/// writing files mid-delete and `git worktree remove` dies on
+/// "Directory not empty" (the field failure that motivated the wait).
+const CANCEL_TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+const CANCEL_KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The next move for the cancel wait-loop, decided from elapsed time alone.
+/// Pure so the escalation ladder is unit-testable without a coordinator.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelWaitAction {
+    /// Keep polling — inside the SIGTERM grace window.
+    Wait,
+    /// SIGTERM grace expired: send the SIGKILL escalation.
+    Escalate,
+    /// Both grace windows expired: warn and let the caller proceed.
+    GiveUp,
+}
+
+fn next_cancel_wait_action(elapsed: std::time::Duration, escalated: bool) -> CancelWaitAction {
+    if elapsed < CANCEL_TERM_GRACE {
+        CancelWaitAction::Wait
+    } else if !escalated {
+        CancelWaitAction::Escalate
+    } else if elapsed < CANCEL_TERM_GRACE + CANCEL_KILL_GRACE {
+        CancelWaitAction::Wait
+    } else {
+        CancelWaitAction::GiveUp
+    }
+}
+
+/// Cancel any running background jobs for a specific worktree and wait for
+/// them to actually die.
 ///
 /// Best-effort: if no coordinator is running or unreachable, errors are
 /// silently dropped so the worktree-removal flow proceeds. Implemented as
 /// a single `CancelMatching { worktree: ... }` IPC call so the coordinator
 /// filters its SQLite-recorded active jobs in one round trip rather than the
 /// previous list-then-cancel-per-name dance.
+///
+/// The wait matters as much as the signal: the caller is about to delete
+/// the worktree directory, and a job that is merely *signalled* keeps
+/// writing until it exits — `git worktree remove` then races the dying
+/// build and fails with "Directory not empty". So when the cancel matched
+/// anything, this polls the coordinator until those jobs leave `Running`,
+/// escalating SIGTERM → SIGKILL after a grace period and giving up (with a
+/// warning) only after the kill grace also expires.
 pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut dyn ProgressSink) {
     use crate::coordinator::client::CoordinatorClient;
+    use crate::coordinator::log_store::JobStatus;
 
     let repo_hash = match crate::core::repo_identity::compute_repo_id() {
         Ok(id) => id,
@@ -1068,16 +1112,55 @@ pub(crate) fn cancel_background_jobs_for_worktree(branch_slug: &str, sink: &mut 
         _ => return,
     };
 
-    match client.cancel_matching(None, Some(branch_slug), None, None, None) {
-        Ok(names) if names.is_empty() => {}
-        Ok(names) => {
-            for name in names {
-                sink.on_step(&format!("Stopped background job '{name}'"));
+    let names = match client.cancel_matching(None, Some(branch_slug), None, None, None, false) {
+        Ok(names) if names.is_empty() => return,
+        Ok(names) => names,
+        Err(e) => {
+            sink.on_warning(&format!(
+                "Failed to cancel background jobs for '{branch_slug}': {e}"
+            ));
+            return;
+        }
+    };
+    for name in &names {
+        sink.on_step(&format!("Stopped background job '{name}'"));
+    }
+
+    // Wait for the signalled jobs to leave `Running` before returning to
+    // the deletion path. Poll failures end the wait rather than block the
+    // removal — the cancel itself stays best-effort.
+    let start = std::time::Instant::now();
+    let mut escalated = false;
+    loop {
+        let still_running = match client.list_jobs() {
+            Ok(jobs) => jobs.into_iter().any(|j| {
+                j.worktree == branch_slug
+                    && matches!(j.status, JobStatus::Running)
+                    && names.contains(&j.name)
+            }),
+            Err(_) => return,
+        };
+        if !still_running {
+            return;
+        }
+        match next_cancel_wait_action(start.elapsed(), escalated) {
+            CancelWaitAction::Wait => std::thread::sleep(CANCEL_POLL_INTERVAL),
+            CancelWaitAction::Escalate => {
+                escalated = true;
+                let _ = client.cancel_matching(None, Some(branch_slug), None, None, None, true);
+                sink.on_step(&format!(
+                    "Background jobs for '{branch_slug}' outlived the polite cancel; killing"
+                ));
+            }
+            CancelWaitAction::GiveUp => {
+                sink.on_warning(&format!(
+                    "Background jobs for '{branch_slug}' are still running; the worktree \
+                     removal may fail — inspect them with `{}`",
+                    crate::daft_cmd("hooks jobs")
+                ));
+                return;
             }
         }
-        Err(e) => sink.on_warning(&format!(
-            "Failed to cancel background jobs for '{branch_slug}': {e}"
-        )),
     }
 }
 
@@ -1156,3 +1239,38 @@ fn cleanup_empty_parent_dirs(
 // not the filesystem path — lives in
 // `coordinator::process::filter_matching_jobs` and is covered by tests
 // in that module (`filter_matching_jobs_combines_predicates_and`).
+
+#[cfg(test)]
+mod cancel_wait_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The escalation ladder that keeps `git worktree remove` from racing
+    /// a signalled-but-alive background build: polite wait → SIGKILL →
+    /// bounded give-up (the removal must never hang on an unkillable job).
+    #[test]
+    fn cancel_wait_ladder_escalates_then_gives_up() {
+        assert_eq!(
+            next_cancel_wait_action(Duration::from_secs(1), false),
+            CancelWaitAction::Wait
+        );
+        assert_eq!(
+            next_cancel_wait_action(CANCEL_TERM_GRACE, false),
+            CancelWaitAction::Escalate
+        );
+        assert_eq!(
+            next_cancel_wait_action(CANCEL_TERM_GRACE + Duration::from_millis(1), true),
+            CancelWaitAction::Wait
+        );
+        assert_eq!(
+            next_cancel_wait_action(CANCEL_TERM_GRACE + CANCEL_KILL_GRACE, true),
+            CancelWaitAction::GiveUp
+        );
+        // An early `escalated` flag with a short clock still just waits —
+        // the ladder is driven by elapsed time, never by call order.
+        assert_eq!(
+            next_cancel_wait_action(Duration::ZERO, true),
+            CancelWaitAction::Wait
+        );
+    }
+}

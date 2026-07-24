@@ -55,11 +55,12 @@ pub fn coordinator_set() -> MigrationSet {
             M::up(include_str!("migrations/007_forge_health.sql")),
             M::up(include_str!("migrations/008_forge_pr_row_fields.sql")),
             M::up(include_str!("migrations/009_worktree_identities.sql")),
+            M::up(include_str!("migrations/010_worktree_identity_kinds.sql")),
         ]),
         // rusqlite_migration's version counter is `migrations.len() as u32`
         // after every migration is applied. Kept as i64 for consistency with
         // the on-disk `user_version` PRAGMA type.
-        current_version: 9,
+        current_version: 10,
     }
 }
 
@@ -327,6 +328,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, "worktree_identities");
+    }
+
+    #[test]
+    fn worktree_identity_kind_columns_exist_after_migration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        let mut conn = connection::open_for_test(&path).unwrap();
+        run(&mut conn, &path).unwrap();
+        // 010 appends the sandbox columns to 009's table.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('worktree_identities')
+                 WHERE name IN ('kind', 'source_spelling', 'pinned_commit')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    /// A row written before 010 must read back as a branch identity: the
+    /// ADD COLUMN default is what upgrades existing stores in place.
+    #[test]
+    fn pre_010_identity_rows_backfill_as_branch_kind() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("db.sqlite");
+        // Not `open_for_test`: that helper migrates a fresh DB to latest,
+        // and this test needs to stop at 009 to plant a legacy row.
+        let mut conn = open_unmigrated(&path);
+
+        // Migrate up to 009 only, insert a legacy row, then finish the run.
+        let through_009 = Migrations::new(vec![
+            M::up(include_str!("migrations/001_initial.sql")),
+            M::up(include_str!("migrations/002_visitor_seeds.sql")),
+            M::up(include_str!("migrations/003_invocation_status.sql")),
+            M::up(include_str!("migrations/004_hook_profiles.sql")),
+            M::up(include_str!("migrations/005_worktree_sizes.sql")),
+            M::up(include_str!("migrations/006_forge_prs.sql")),
+            M::up(include_str!("migrations/007_forge_health.sql")),
+            M::up(include_str!("migrations/008_forge_pr_row_fields.sql")),
+            M::up(include_str!("migrations/009_worktree_identities.sql")),
+        ]);
+        through_009.to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO worktree_identities
+                 (repo_hash, worktree_id, branch, worktree_path, updated_at)
+             VALUES ('r', 'wt-a', 'feat/x', '/tmp/wt-a', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        run(&mut conn, &path).unwrap();
+        let (kind, spelling, pinned): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT kind, source_spelling, pinned_commit
+                 FROM worktree_identities WHERE worktree_id = 'wt-a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "branch");
+        assert_eq!(spelling, None);
+        assert_eq!(pinned, None);
     }
 
     #[test]

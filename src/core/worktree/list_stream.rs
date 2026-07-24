@@ -223,11 +223,20 @@ fn run_worker(
 
     let path = target.path.as_deref();
 
-    // 1. BASE_AHEAD_BEHIND (skip detached) — content-addressed cache by
-    //    (base_sha, head_sha). Falls through to compute on key-resolution
-    //    failure; the wrapper itself skips writing on a None compute result.
+    // A branchless target streams only its path-derived fields. Masking here
+    // (rather than gating each cluster) keeps the skip-list identical to the
+    // BRANCH_KEYED bits the live table settles as blank at seed — the two
+    // sides can't drift apart.
+    let fields = if target.is_detached {
+        fields & !FieldSet::BRANCH_KEYED
+    } else {
+        fields
+    };
+
+    // 1. BASE_AHEAD_BEHIND — content-addressed cache by (base_sha, head_sha).
+    //    Falls through to compute on key-resolution failure; the wrapper
+    //    itself skips writing on a None compute result.
     if fields.contains(FieldSet::BASE_AHEAD_BEHIND)
-        && !target.is_detached
         && let Some(p) = path
     {
         let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
@@ -277,18 +286,16 @@ fn run_worker(
         });
     }
 
-    // 4. BRANCH_AGE (skip detached)
+    // 4. BRANCH_AGE
     if fields.contains(FieldSet::BRANCH_AGE)
-        && !target.is_detached
         && let Some(p) = path
     {
         let v = get_branch_creation_timestamp(&target.branch_name, p);
         emit!(P::BranchAge(v));
     }
 
-    // 5. OWNER (skip detached)
+    // 5. OWNER
     if fields.contains(FieldSet::OWNER)
-        && !target.is_detached
         && let Some(p) = path
     {
         let owner = ownership::resolve_owner_with_fallbacks(
@@ -302,19 +309,17 @@ fn run_worker(
         emit!(P::Owner(owner));
     }
 
-    // 5b. FORGE_REF (skip detached) — a cheap local `branch.<name>.merge` read.
+    // 5b. FORGE_REF — a cheap local `branch.<name>.merge` read.
     if fields.contains(FieldSet::FORGE_REF)
-        && !target.is_detached
         && let Some(p) = path
     {
         emit!(P::ForgeRef(get_forge_branch_ref(&target.branch_name, p)));
     }
 
-    // 6. REMOTE_AHEAD_BEHIND (skip detached) — content-addressed cache by
+    // 6. REMOTE_AHEAD_BEHIND — content-addressed cache by
     //    (head_sha, upstream_sha). The upstream refspec uses the
     //    `<branch>@{upstream}` form so git resolves the configured upstream.
     if fields.contains(FieldSet::REMOTE_AHEAD_BEHIND)
-        && !target.is_detached
         && let Some(p) = path
     {
         let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");
@@ -338,7 +343,6 @@ fn run_worker(
     if matches!(stat, Stat::Lines) {
         // BASE_LINES — content-addressed cache by (base_sha, head_sha).
         if fields.contains(FieldSet::BASE_LINES)
-            && !target.is_detached
             && let Some(p) = path
         {
             let base_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, &ctx.base_branch);
@@ -365,7 +369,6 @@ fn run_worker(
         }
         // REMOTE_LINES — content-addressed cache by (head_sha, upstream_sha).
         if fields.contains(FieldSet::REMOTE_LINES)
-            && !target.is_detached
             && let Some(p) = path
         {
             let head_sha = crate::core::worktree::cell_cache::resolve_ref_sha(p, "HEAD");

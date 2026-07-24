@@ -73,10 +73,13 @@ fn read_inner(repo_hash: &str) -> Option<HashMap<String, (PathBuf, u64)>> {
 
 /// Seed each worktree's Size cell from `cached` (the caller renders it stale),
 /// but only when the cached row's stored path still matches the worktree's
-/// current path. Skips sandboxes (never cached) and any slug now checked out at
-/// a different path — so a reused branch name can't surface the previous
-/// worktree's size. Split out from the command glue so the path-guard is
-/// unit-testable.
+/// current path — so a reused slug (a pruned-then-recreated branch, or a
+/// branch shadowing a like-named sandbox) can't surface a different
+/// worktree's size. Sandboxes seed like any other row: their dirnames are
+/// unique among worktrees, and the path-guard covers the branch∪sandbox
+/// shadowing case (the shared slug degrades to a cache miss for whichever
+/// side wrote second — never a wrong value). Split out from the command glue
+/// so the path-guard is unit-testable.
 pub(crate) fn seed_worktree_sizes(
     infos: &mut [crate::core::worktree::list::WorktreeInfo],
     cached: &HashMap<String, (PathBuf, u64)>,
@@ -85,9 +88,6 @@ pub(crate) fn seed_worktree_sizes(
         let Some(path) = info.path.as_deref() else {
             continue; // local-branch stubs etc. have no worktree to size
         };
-        if info.is_sandbox {
-            continue; // detached sandboxes collide on one slug — never cached
-        }
         if let Some((cached_path, bytes)) = cached.get(&info.name)
             && path == cached_path.as_path()
         {
@@ -243,10 +243,11 @@ mod tests {
     }
 
     /// The seed's path-guard: a cached size is applied only when its stored
-    /// path matches the worktree's current path, and sandboxes are never
-    /// seeded. Pure (no store), so no `IsolatedStateDir`/`serial` needed.
+    /// path matches the worktree's current path — sandboxes included (they
+    /// carry unique dirnames since #53). Pure (no store), so no
+    /// `IsolatedStateDir`/`serial` needed.
     #[test]
-    fn seed_path_guards_reused_slug_and_skips_sandbox() {
+    fn seed_path_guards_reused_slug_and_covers_sandboxes() {
         use crate::core::worktree::list::WorktreeInfo;
 
         let mut infos = vec![
@@ -261,9 +262,17 @@ mod tests {
                 i
             },
             {
-                let mut i = WorktreeInfo::empty("(detached)");
-                i.path = Some(PathBuf::from("/repo/sandbox"));
+                let mut i = WorktreeInfo::empty("main-fork");
+                i.path = Some(PathBuf::from("/repo/main-fork"));
                 i.is_sandbox = true;
+                i.branchless = true;
+                i
+            },
+            {
+                // A branch shadowing a like-named sandbox: the shared slug's
+                // stored path points at the sandbox, so the branch misses.
+                let mut i = WorktreeInfo::empty("shadowed");
+                i.path = Some(PathBuf::from("/repo/shadowed-branch"));
                 i
             },
         ];
@@ -276,10 +285,15 @@ mod tests {
             "feat/stable".to_string(),
             (PathBuf::from("/repo/stable"), 42),
         );
-        // A stale detached row — a sandbox must never be seeded.
+        // A sandbox whose stored path matches — seeds like any branch row.
         cached.insert(
-            "(detached)".to_string(),
-            (PathBuf::from("/repo/sandbox"), 999),
+            "main-fork".to_string(),
+            (PathBuf::from("/repo/main-fork"), 999),
+        );
+        // The shadowed slug's cache row belongs to the sandbox side.
+        cached.insert(
+            "shadowed".to_string(),
+            (PathBuf::from("/repo/shadowed-sandbox"), 7),
         );
 
         seed_worktree_sizes(&mut infos, &cached);
@@ -293,6 +307,14 @@ mod tests {
             Some(42),
             "a matching stored path seeds the cached size"
         );
-        assert_eq!(infos[2].size_bytes, None, "sandboxes are never seeded");
+        assert_eq!(
+            infos[2].size_bytes,
+            Some(999),
+            "a sandbox with a matching stored path seeds"
+        );
+        assert_eq!(
+            infos[3].size_bytes, None,
+            "slug shadowing degrades to a miss, never a wrong value"
+        );
     }
 }
