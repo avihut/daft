@@ -1,0 +1,37 @@
+name: Go autoStart loses to an existing tag
+description:
+  Ambient daft.go.autoStart auto-creates branches for unknown names, but an
+  existing entity beats ambient config — a tag opens its sandbox instead of
+  minting a branch named like it (the catalog rung's own precedent)
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Enable autoStart and tag the tip
+    run: |
+      git config daft.go.autoStart true
+      git -c tag.gpgSign=false tag v2
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Go to the tag opens a sandbox, not a new branch
+    run: daft go v2 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "detached sandbox"
+
+  - name: No branch named after the tag was created
+    run: git show-ref --verify --quiet refs/heads/v2
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1

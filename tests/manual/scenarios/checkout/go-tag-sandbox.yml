@@ -1,0 +1,42 @@
+name: Go tag sandbox
+description:
+  daft go <tag> opens a detached sandbox worktree named after the tag —
+  hooks-ready, pinned at the tag's commit, with no branch attached
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+
+  - name: Tag the current tip
+    run: git -c tag.gpgSign=false tag v1.0
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Go to the tag creates a detached sandbox
+    run: daft go v1.0 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/v1.0"
+      output_contains:
+        - "detached sandbox"
+
+  - name: The sandbox has a detached HEAD
+    run: git symbolic-ref -q HEAD
+    cwd: "$WORK_DIR/test-repo/v1.0"
+    expect:
+      exit_code: 1
+
+  - name: The sandbox is pinned at the tag's commit
+    run: test "$(git rev-parse HEAD)" = "$(git rev-parse 'v1.0^{commit}')"
+    cwd: "$WORK_DIR/test-repo/v1.0"
+    expect:
+      exit_code: 0

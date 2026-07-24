@@ -860,6 +860,57 @@ pub(crate) fn local_base_ref_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Silent probe: does `refs/remotes/<remote>/<name>` exist in the repository
+/// the cwd sits in? The sibling of [`local_branch_exists`], for the sandbox
+/// rung's precedence guard — a remote branch must keep beating a commit-ish
+/// reading even when its spelling fails branch-name validation.
+pub(crate) fn remote_branch_exists(name: &str, remote: &str) -> bool {
+    let Ok(cwd) = get_current_directory() else {
+        return false;
+    };
+    git_command_at(&cwd)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}/{name}"),
+        ])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Resolve `name` to a full commit OID iff it is commit-ish in the
+/// repository the cwd sits in — the probe behind the `daft go <commit-ish>`
+/// sandbox rung. Accepts what `rev-parse <name>^{commit}` accepts: tags,
+/// SHAs, remote-tracking refs, derived spellings like `HEAD~2`.
+///
+/// Dash-guarded: go's positional allows hyphen values, so arbitrary `-…`
+/// strings reach this probe and must never be handed to rev-parse in option
+/// position (`--end-of-options` is belt and braces on top of the guard).
+/// `None` outside any repository.
+pub(crate) fn resolve_commitish(name: &str) -> Option<String> {
+    if name.starts_with('-') {
+        return None;
+    }
+    let cwd = get_current_directory().ok()?;
+    let out = git_command_at(&cwd)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{name}^{{commit}}"),
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!oid.is_empty()).then_some(oid)
+}
+
 /// The canonical git common dir of the repository the cwd sits in — the
 /// identity the catalog keys on. `None` outside any repository.
 fn current_repo_git_common_dir() -> Option<String> {
@@ -1223,7 +1274,44 @@ fn run_in_repo(
     let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
     let mut output = CliOutput::new(config);
 
-    let result = if args.create_branch {
+    // The sandbox rung's early half (#53): spellings like `HEAD~2` or
+    // `@{-1}` can never be branches — `validate_branch_name` rejects them
+    // inside core before any probe could raise BranchNotFound — but they can
+    // resolve to a commit here. Gates mirror the handler arms below: bare
+    // `daft go <name>` only, suppressed by declared branch-creation intent,
+    // and every prior rung probed first. The branch probes are load-bearing
+    // even for "impossible" names: validation rejects anything *containing*
+    // `HEAD`, so a real branch `feature/HEADER-fix` fails it yet must keep
+    // today's validation error rather than become a sandbox pinned at its
+    // own tip.
+    let sandbox_early = if catalog_fallback
+        && !args.create_branch
+        && !args.start
+        && validate_branch_name(&args.branch_name).is_err()
+        && !local_branch_exists(&args.branch_name)
+        && !remote_branch_exists(&args.branch_name, &settings.remote)
+        && lookup_live_repo(&args.branch_name).is_none()
+    {
+        resolve_commitish(&args.branch_name)
+    } else {
+        None
+    };
+
+    let result = if let Some(commit) = sandbox_early {
+        output.result(&format!(
+            "'{}' is not a branch; opening a detached sandbox at {}",
+            args.branch_name,
+            crate::core::worktree::sandbox::short_oid(&commit)
+        ));
+        sandbox_entry(
+            &args,
+            &args.branch_name.clone(),
+            commit,
+            &settings,
+            &git,
+            &mut output,
+        )
+    } else if args.create_branch {
         run_create_branch(&args, &settings, &git, &mut output)
     } else {
         match run_checkout(&args, &settings, &git, &mut output) {
@@ -1246,10 +1334,26 @@ fn run_in_repo(
                 ref remote,
                 fetch_failed,
             }) => {
+                // A daft-created sandbox answers to its directory name —
+                // local-first, like everything in the ladder, so an
+                // established sandbox keeps beating a later-cataloged repo
+                // of the same name. (Sandboxes at their layout-default path
+                // never reach this handler: core's on-disk fallback
+                // navigates first. This arm covers --at-placed ones.)
+                if catalog_fallback
+                    && !args.start
+                    && let Some((dirname, sandbox_path)) = lookup_sandbox_by_name(branch)
+                {
+                    change_directory(&sandbox_path)?;
+                    output.result(&format!("Switched to sandbox '{dirname}'"));
+                    output.cd_path(&sandbox_path);
+                    maybe_show_shell_hint(&mut output)?;
+                    Ok(())
+                }
                 // A live catalog repo beats creating a branch: `daft go api`
                 // means "open the api repo" when no branch `api` exists.
                 // `--start` forces branch creation instead.
-                if catalog_fallback
+                else if catalog_fallback
                     && !args.start
                     && let Some(row) = lookup_live_repo(branch)
                     && std::path::Path::new(&row.path).is_dir()
@@ -1261,25 +1365,46 @@ fn run_in_repo(
                     ));
                     return go_to_repo(&row, None, args.clone(), original_dir, source_worktree);
                 }
-
-                let auto_start = args.start || settings.go_auto_start;
-                if auto_start {
+                // A commit-ish that names no branch and no repo opens a
+                // detached sandbox (#53). After the catalog on purpose: a
+                // repo named `v2` keeps winning over a tag `v2`, because
+                // that input was never an error. Before autoStart on
+                // purpose too: an existing entity beats ambient
+                // auto-creation config (the catalog arm's own precedent) —
+                // without this, `daft go v1.18.0` under autoStart would
+                // create a *branch* named v1.18.0. Explicit --start still
+                // forces the branch reading.
+                else if catalog_fallback
+                    && !args.start
+                    && let Some(commit) = resolve_commitish(branch)
+                {
                     change_directory(&original_dir).ok();
                     output.result(&format!(
-                        "Branch '{branch}' not found, creating new worktree..."
+                        "Branch '{branch}' not found; opening a detached sandbox at {} \
+                         (use --start to create a branch named '{branch}')",
+                        crate::core::worktree::sandbox::short_oid(&commit)
                     ));
-                    run_create_branch(&args, &settings, &git, &mut output)
+                    sandbox_entry(&args, &branch.clone(), commit, &settings, &git, &mut output)
                 } else {
-                    change_directory(&original_dir).ok();
-                    // --at with a non-existent branch requires --start or autoStart
-                    if args.at.is_some() {
-                        anyhow::bail!(
-                            "--at requires --start (or daft.go.autoStart=true) \
+                    let auto_start = args.start || settings.go_auto_start;
+                    if auto_start {
+                        change_directory(&original_dir).ok();
+                        output.result(&format!(
+                            "Branch '{branch}' not found, creating new worktree..."
+                        ));
+                        run_create_branch(&args, &settings, &git, &mut output)
+                    } else {
+                        change_directory(&original_dir).ok();
+                        // --at with a non-existent branch requires --start or autoStart
+                        if args.at.is_some() {
+                            anyhow::bail!(
+                                "--at requires --start (or daft.go.autoStart=true) \
                              when branch '{branch}' does not exist"
-                        );
+                            );
+                        }
+                        render_branch_not_found_error(branch, remote, fetch_failed, &settings);
+                        std::process::exit(1);
                     }
-                    render_branch_not_found_error(branch, remote, fetch_failed, &settings);
-                    std::process::exit(1);
                 }
             }
             Err(checkout::CheckoutError::Other(e)) => Err(e),
@@ -1744,6 +1869,147 @@ fn run_checkout(
     exec_result?;
 
     Ok(result.already_existed)
+}
+
+/// Shared shell for both sandbox-rung entrances (#53): run the visit, then
+/// apply the same --at-navigation guard the branch path applies.
+fn sandbox_entry(
+    args: &Args,
+    spelling: &str,
+    commit: String,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<()> {
+    let already_existed = run_sandbox_visit(args, spelling, commit, settings, git, output)?;
+    if args.at.is_some() && already_existed {
+        anyhow::bail!(
+            "--at cannot be used: sandbox already exists for '{spelling}'. \
+             Use `{}` without --at to navigate to it.",
+            crate::daft_cmd(&format!("go {spelling}"))
+        );
+    }
+    Ok(())
+}
+
+/// The `daft go <commit-ish>` engine's command-layer shell: the sandbox
+/// sibling of [`run_checkout`]. Returns whether an existing sandbox was
+/// navigated to.
+fn run_sandbox_visit(
+    args: &Args,
+    spelling: &str,
+    commit: String,
+    settings: &DaftSettings,
+    git: &GitCommand,
+    output: &mut dyn Output,
+) -> Result<bool> {
+    use crate::core::worktree::sandbox;
+
+    let project_root = get_project_root()?;
+
+    let (resolved_layout, source) = resolve_checkout_layout(git, output);
+    let (layout, should_persist) = interactive_layout_resolution(&resolved_layout, source, output)?;
+    if should_persist && let Ok(git_dir) = get_git_common_dir() {
+        let _ = TrustDatabase::update(|db| {
+            db.set_layout(&git_dir, layout.name.clone());
+            Ok(())
+        });
+    }
+
+    let dirname =
+        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(&commit));
+    let params = sandbox::SandboxParams {
+        spelling: spelling.to_string(),
+        commit,
+        dirname,
+        kind: crate::store::models::WorktreeKind::Canonical,
+        path_preclaimed: false,
+        carry: args.carry,
+        no_carry: args.no_carry,
+        checkout_carry: settings.checkout_carry,
+        remote: args.remote.clone(),
+        remote_name: settings.remote.clone(),
+        multi_remote_enabled: settings.multi_remote_enabled,
+        multi_remote_default: settings.multi_remote_default.clone(),
+        layout: Some(layout),
+        at_path: args.at.clone(),
+    };
+
+    let hooks_config = crate::core::settings::load_hooks_config_with(git)?;
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
+    let executor = HookExecutor::new(hooks_config)?.with_job_filter(
+        crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+    );
+
+    let mut timeline = Timeline::new(
+        TimelineMode::auto(output.is_quiet()),
+        output.is_verbose(),
+        format!("Opening {spelling}"),
+    );
+    timeline.set_verbose_density(hook_output_config.verbose);
+
+    timeline.open_planning("Resolving commit");
+    let visit_result = {
+        let mut bridge = TimelineBridge::new(output, &mut timeline, executor, hook_output_config);
+        sandbox::execute_visit(&params, git, &project_root, &mut bridge)
+    };
+    timeline.abandon_planning();
+    let result = match visit_result {
+        Ok(result) => result,
+        Err(e) => {
+            timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+            return Err(e);
+        }
+    };
+
+    if timeline.region_live() {
+        timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+    }
+    if !timeline.replaces_stdout_record() || result.already_existed {
+        render_sandbox_result(&result, output);
+    }
+
+    // Run exec commands (after hooks, before cd_path)
+    let exec_result = crate::exec::run_exec_commands(&args.exec, output);
+
+    output.cd_path(&result.cd_target);
+    maybe_show_shell_hint(output)?;
+
+    exec_result?;
+
+    Ok(result.already_existed)
+}
+
+/// A daft-created sandbox whose recorded name is `name`, with its live
+/// worktree path. The dirname-addressing tier of go's ladder, for sandboxes
+/// placed off the layout-default path (`--at`); default-placed ones are
+/// navigated by core's on-disk fallback before the ladder ever misses.
+fn lookup_sandbox_by_name(name: &str) -> Option<(String, PathBuf)> {
+    let git_dir = get_git_common_dir().ok()?;
+    let records = crate::core::worktree::identity_store::read_identities(&git_dir);
+    let row = records
+        .values()
+        .find(|r| r.kind.is_sandbox() && r.branch == name)?;
+    let path = PathBuf::from(&row.worktree_path);
+    (path.join(".git").is_file()).then(|| (row.branch.clone(), path))
+}
+
+fn render_sandbox_result(
+    result: &crate::core::worktree::sandbox::SandboxResult,
+    output: &mut dyn Output,
+) {
+    let short = crate::core::worktree::sandbox::short_oid(&result.commit);
+    if result.already_existed {
+        output.result(&format!(
+            "Switched to sandbox '{}' (detached @ {short})",
+            result.dirname
+        ));
+    } else {
+        output.result(&format!(
+            "Prepared sandbox '{}' (detached @ {short})",
+            result.dirname
+        ));
+    }
 }
 
 fn run_create_branch(
