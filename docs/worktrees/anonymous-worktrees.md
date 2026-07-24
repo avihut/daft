@@ -86,12 +86,18 @@ machinery.
 
 ## Cleanup and the pin guard
 
-Remove anonymous worktrees by their directory name (globs work):
+Remove anonymous worktrees by their directory name, one at a time or with a
+wildcard pattern over the whole fleet:
 
 ```bash
 daft remove feature-x-fork-3        # untouched fork: removes cleanly
 daft remove feature-x-fork -f       # fork with new commits: -f required
+daft remove 'feature-x-fork*'       # every fork in one sweep
 ```
+
+Patterns (`*` and `?`) are expanded by daft against sandbox names — they never
+match branches, and a pattern that matches nothing aborts. Quote the pattern so
+your shell passes it through untouched.
 
 Every anonymous worktree records the commit it was created at — its _pin_.
 `daft remove` compares the worktree's HEAD to the pin:

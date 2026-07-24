@@ -17,7 +17,7 @@ use crate::remote::get_default_branch_local;
 use crate::settings::{PruneCdTarget, PushVerify};
 use crate::{get_git_common_dir, get_project_root};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -508,8 +508,27 @@ fn resolve_branch_args(
     sink: &mut dyn ProgressSink,
 ) -> Result<Vec<ResolvedTarget>> {
     let mut resolved = Vec::with_capacity(args.len());
+    // Sandbox dirnames already targeted by an earlier arg or pattern — a
+    // worktree can only be removed once, so overlaps collapse to one target
+    // instead of a doomed second delete.
+    let mut claimed: HashSet<String> = HashSet::new();
 
     for arg in args {
+        // Wildcard tier: `*`/`?` are illegal in git refnames and absent from
+        // sandbox dirnames, so a metachar can only mean a pattern — the
+        // branch-precedence question the dirname tier wrestles with cannot
+        // arise here.
+        if is_wildcard_pattern(arg) {
+            expand_sandbox_pattern(
+                arg,
+                identities,
+                worktree_entries,
+                &mut claimed,
+                &mut resolved,
+                sink,
+            )?;
+            continue;
+        }
         match resolve_single_arg(arg, worktree_entries, project_root) {
             ResolveResult::Branch(name) => {
                 sink.on_step(&format!("Resolved path '{}' to branch '{}'", arg, name));
@@ -527,6 +546,12 @@ fn resolve_branch_args(
                     .then(|| sandbox_target_by_name(arg, identities, worktree_entries))
                     .flatten()
                 {
+                    Some(target) if !claimed.insert(target.dirname.clone()) => {
+                        sink.on_step(&format!(
+                            "Sandbox '{}' already targeted; skipping duplicate",
+                            target.dirname
+                        ));
+                    }
                     Some(target) => {
                         sink.on_step(&format!("Resolved '{arg}' to sandbox worktree"));
                         resolved.push(ResolvedTarget::Sandbox(target));
@@ -536,6 +561,12 @@ fn resolve_branch_args(
             }
             ResolveResult::DetachedHead(path) => {
                 match sandbox_target_by_path(&path, identities) {
+                    Some(target) if !claimed.insert(target.dirname.clone()) => {
+                        sink.on_step(&format!(
+                            "Sandbox '{}' already targeted; skipping duplicate",
+                            target.dirname
+                        ));
+                    }
                     Some(target) => {
                         sink.on_step(&format!(
                             "Resolved path '{arg}' to sandbox '{}'",
@@ -594,6 +625,113 @@ fn sandbox_target_by_name(
         path: recorded,
         pinned_commit: row.pinned_commit.clone(),
     })
+}
+
+/// True when `arg` is a wildcard pattern over sandbox names. Git refuses
+/// `*` and `?` in refnames and the sandbox naming charset excludes them, so
+/// a metachar cannot belong to a branch or sandbox name.
+fn is_wildcard_pattern(arg: &str) -> bool {
+    arg.contains(['*', '?'])
+}
+
+/// Glob-style match over a whole name: `*` matches any run of characters
+/// (including none), `?` matches exactly one, everything else is literal.
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let mut backtrack: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            backtrack = Some((pi, ti));
+            pi += 1;
+        } else if let Some((star, mark)) = backtrack {
+            // The literal run after the last `*` failed — let the star
+            // swallow one more character and retry.
+            backtrack = Some((star, mark + 1));
+            pi = star + 1;
+            ti = mark + 1;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
+
+/// Expand a wildcard argument over the recorded sandbox names into removal
+/// targets.
+///
+/// Patterns deliberately never match branches: removing a branch also
+/// deletes its remote, and fleet-scale branch cleanup is `daft prune`'s
+/// job. A pattern matching no live sandbox fails the whole command — a glob
+/// silently expanding to nothing would turn "remove these" into "remove
+/// nothing".
+fn expand_sandbox_pattern(
+    pattern: &str,
+    identities: &HashMap<String, crate::store::models::WorktreeIdentityRow>,
+    worktree_entries: &[WorktreeListEntry],
+    claimed: &mut HashSet<String>,
+    resolved: &mut Vec<ResolvedTarget>,
+    sink: &mut dyn ProgressSink,
+) -> Result<()> {
+    let mut names: Vec<&str> = identities
+        .values()
+        .filter(|row| row.kind.is_sandbox() && wildcard_match(pattern, &row.branch))
+        .map(|row| row.branch.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+
+    let mut live = 0usize;
+    for name in names {
+        // Stale records (worktree already gone) are not matches.
+        let Some(target) = sandbox_target_by_name(name, identities, worktree_entries) else {
+            continue;
+        };
+        live += 1;
+        if !claimed.insert(target.dirname.clone()) {
+            sink.on_step(&format!(
+                "Sandbox '{name}' already targeted; skipping duplicate"
+            ));
+            continue;
+        }
+        sink.on_step(&format!("Pattern '{pattern}' matched sandbox '{name}'"));
+        resolved.push(ResolvedTarget::Sandbox(target));
+    }
+
+    if live == 0 {
+        let mut branches: Vec<&str> = worktree_entries
+            .iter()
+            .filter_map(|e| e.branch.as_deref())
+            .filter(|b| wildcard_match(pattern, b))
+            .collect();
+        branches.sort_unstable();
+        branches.dedup();
+        if branches.is_empty() {
+            anyhow::bail!(
+                "pattern '{pattern}' matches no sandbox worktrees \
+                 (wildcards match sandbox names, not paths or branches)"
+            );
+        }
+        let noun = if branches.len() == 1 {
+            "branch"
+        } else {
+            "branches"
+        };
+        let list = branches
+            .iter()
+            .map(|b| format!("'{b}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "pattern '{pattern}' matches no sandbox worktrees; it does match {noun} {list} — \
+             wildcards never target branches, name them explicitly"
+        );
+    }
+    Ok(())
 }
 
 /// Try to resolve a single argument as a worktree path.
@@ -822,6 +960,161 @@ mod sandbox_target_tests {
         let wt = tmp.path().join("foreign");
         std::fs::create_dir_all(&wt).unwrap();
         assert!(sandbox_target_by_path(&wt, &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn wildcard_match_covers_star_question_literals_and_backtracking() {
+        assert!(wildcard_match("main-fork*", "main-fork"));
+        assert!(wildcard_match("main-fork*", "main-fork-2"));
+        assert!(!wildcard_match("main-fork*", "main"));
+        assert!(wildcard_match("*", "anything"));
+        assert!(wildcard_match("*-fork-?", "main-fork-2"));
+        assert!(!wildcard_match("*-fork-?", "main-fork-22"));
+        assert!(wildcard_match("*a*b", "xaycb"));
+        assert!(!wildcard_match("*a*b", "xayc"));
+        assert!(wildcard_match("abc", "abc"));
+        assert!(!wildcard_match("abc", "abd"));
+        assert!(wildcard_match("", ""));
+        assert!(!wildcard_match("", "x"));
+        assert!(!wildcard_match("?", ""));
+        assert!(wildcard_match("**", "x"));
+    }
+
+    fn resolved_names(resolved: &[ResolvedTarget]) -> Vec<&str> {
+        resolved
+            .iter()
+            .map(|t| match t {
+                ResolvedTarget::Branch(name) => name.as_str(),
+                ResolvedTarget::Sandbox(s) => s.dirname.as_str(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pattern_expands_to_every_live_matching_sandbox() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut identities = HashMap::new();
+        let mut entries = Vec::new();
+        for name in ["main-fork", "main-fork-2", "v1.0"] {
+            let wt = tmp.path().join(name);
+            std::fs::create_dir_all(&wt).unwrap();
+            let (id, mut row) = sandbox_row(&format!("wt-{name}"), name, &wt);
+            if name.starts_with("main-fork") {
+                row.kind = WorktreeKind::Fork;
+            }
+            identities.insert(id, row);
+            entries.push(detached_entry(&wt));
+        }
+
+        let mut claimed = HashSet::new();
+        let mut resolved = Vec::new();
+        expand_sandbox_pattern(
+            "main-fork*",
+            &identities,
+            &entries,
+            &mut claimed,
+            &mut resolved,
+            &mut crate::core::NullSink,
+        )
+        .expect("pattern with matches expands");
+        assert_eq!(resolved_names(&resolved), ["main-fork", "main-fork-2"]);
+    }
+
+    /// A pattern that matches nothing must abort the command, not quietly
+    /// contribute zero targets.
+    #[test]
+    fn a_pattern_matching_no_sandbox_fails_closed() {
+        let err = expand_sandbox_pattern(
+            "nosuch*",
+            &HashMap::new(),
+            &[],
+            &mut HashSet::new(),
+            &mut Vec::new(),
+            &mut crate::core::NullSink,
+        )
+        .expect_err("no matches must fail");
+        assert!(err.to_string().contains("matches no sandbox worktrees"));
+    }
+
+    /// A record whose worktree is gone is not a match — a pattern over only
+    /// stale records fails closed like any other zero-match pattern.
+    #[test]
+    fn a_pattern_over_only_stale_records_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("main-fork");
+        std::fs::create_dir_all(&wt).unwrap();
+        let identities = HashMap::from([sandbox_row("wt-a", "main-fork", &wt)]);
+
+        // No live worktree entries: the record is stale.
+        let err = expand_sandbox_pattern(
+            "main-fork*",
+            &identities,
+            &[],
+            &mut HashSet::new(),
+            &mut Vec::new(),
+            &mut crate::core::NullSink,
+        )
+        .expect_err("stale-only matches must fail");
+        assert!(err.to_string().contains("matches no sandbox worktrees"));
+    }
+
+    /// Branches a pattern would textually match are named in the error so
+    /// the refusal explains itself — but they are never targeted.
+    #[test]
+    fn a_pattern_matching_only_branches_names_them_in_the_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("main-forky");
+        std::fs::create_dir_all(&wt).unwrap();
+        let attached = WorktreeListEntry {
+            path: wt,
+            branch: Some("main-forky".into()),
+            is_bare: false,
+            is_detached: false,
+        };
+
+        let mut resolved = Vec::new();
+        let err = expand_sandbox_pattern(
+            "main-fork*",
+            &HashMap::new(),
+            &[attached],
+            &mut HashSet::new(),
+            &mut resolved,
+            &mut crate::core::NullSink,
+        )
+        .expect_err("branch-only matches must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("branch 'main-forky'"));
+        assert!(msg.contains("never target branches"));
+        assert!(resolved.is_empty());
+    }
+
+    /// Overlapping patterns (or a pattern over an explicitly named sandbox)
+    /// collapse to one target instead of a doomed second delete.
+    #[test]
+    fn a_pattern_skips_sandboxes_already_targeted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut identities = HashMap::new();
+        let mut entries = Vec::new();
+        for name in ["main-fork", "main-fork-2"] {
+            let wt = tmp.path().join(name);
+            std::fs::create_dir_all(&wt).unwrap();
+            let (id, row) = sandbox_row(&format!("wt-{name}"), name, &wt);
+            identities.insert(id, row);
+            entries.push(detached_entry(&wt));
+        }
+
+        let mut claimed = HashSet::from(["main-fork".to_string()]);
+        let mut resolved = Vec::new();
+        expand_sandbox_pattern(
+            "main-fork*",
+            &identities,
+            &entries,
+            &mut claimed,
+            &mut resolved,
+            &mut crate::core::NullSink,
+        )
+        .expect("live matches expand even when some are claimed");
+        assert_eq!(resolved_names(&resolved), ["main-fork-2"]);
     }
 }
 

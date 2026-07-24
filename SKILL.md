@@ -337,7 +337,9 @@ Aftercare contract:
 
 - These worktrees have **no branch and no upstream — never push from one.**
 - Remove with `daft remove <name>` (the printed path's basename) when done.
-  Globs work: `daft remove main-fork-*`.
+  Wildcards sweep a fleet: `daft remove 'main-fork*'` (quote the pattern — daft
+  expands it against sandbox names; it never matches branches, and a pattern
+  matching nothing errors).
 - Commits made inside are safe while the worktree exists, but die with it:
   removal refuses when HEAD moved off the pinned commit. Two routes keep the
   work. **Promote** when it deserves a branch: `daft start <new-branch>` from

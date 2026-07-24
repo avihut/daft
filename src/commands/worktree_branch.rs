@@ -175,6 +175,14 @@ the pinned commit (commits made on a detached HEAD exist nowhere else, so a
 moved HEAD refuses removal until promoted or forced). Detached worktrees
 daft has no record of are refused as before.
 
+Sandbox names may be given as wildcard patterns: `*` matches any run of
+characters and `?` exactly one, so `daft remove 'main-fork*'` sweeps every
+fork minted off main in one command. Patterns match sandbox names only —
+never branches (removing a branch also deletes its remote; for fleet-scale
+branch cleanup use `daft prune`) and never paths. A pattern that matches no
+live sandbox aborts the command. Quote the pattern so your shell does not
+expand or reject it before daft sees it (zsh errors on unmatched globs).
+
 Use --repo <name> to remove branches in another cataloged repository without
 leaving your current directory: `daft remove --repo api feature-x` deletes
 `feature-x` in the `api` repo. --repo is a flag rather than a positional
@@ -221,7 +229,8 @@ to skip it unconditionally.
 pub struct RemoveArgs {
     #[arg(
         required = true,
-        help = "Branches, worktree paths, or sandbox names to delete"
+        help = "Branches, worktree paths, or sandbox names to delete; \
+                sandbox names may use wildcards (*, ?)"
     )]
     branches: Vec<String>,
 
