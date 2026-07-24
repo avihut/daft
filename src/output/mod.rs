@@ -24,6 +24,7 @@ pub mod deferred_warn;
 pub mod emit;
 pub mod format;
 pub mod hook_progress;
+pub(crate) mod live_line;
 pub mod markdown;
 pub mod outline;
 pub mod pager;

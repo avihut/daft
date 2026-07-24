@@ -749,13 +749,12 @@ impl TimelineCore {
                 render::active_message(&label, annotation.as_deref(), label_width, inks, use_color)
             } else {
                 thread.job.close(&self.mp);
-                let latest = thread.job.output().last().map(|line| {
-                    render::paint(
-                        crate::output::palette::DARK_GREY,
-                        line.trim_end(),
-                        use_color,
-                    )
-                });
+                // Sanitized latest-with-visible-text (#751); an empty tail
+                // falls back to the row's own annotation.
+                let latest = thread
+                    .job
+                    .live_tail()
+                    .map(|line| render::paint(crate::output::palette::DARK_GREY, &line, use_color));
                 render::active_message(
                     &label,
                     latest.as_deref().or(annotation.as_deref()),
@@ -1259,13 +1258,15 @@ impl TimelineCore {
                 .job
                 .roll_window(&self.mp, &thread.styles, cfg.tail_lines, &bar);
         } else {
-            // Default density: the latest line rides the row's annotation, dim.
-            let dim = render::paint(
-                crate::output::palette::DARK_GREY,
-                line.trim_end(),
-                use_color,
-            );
-            let msg = render::active_message(&label, Some(&dim), label_width, inks, use_color);
+            // Default density: the latest line with visible text rides the
+            // row's annotation, dim — sanitized on the way to the bar (#751),
+            // never the raw input line. An all-empty tail passes `None`, not a
+            // color-wrapped blank.
+            let dim = thread
+                .job
+                .live_tail()
+                .map(|l| render::paint(crate::output::palette::DARK_GREY, &l, use_color));
+            let msg = render::active_message(&label, dim.as_deref(), label_width, inks, use_color);
             bar.set_message(msg);
         }
     }

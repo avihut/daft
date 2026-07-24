@@ -258,6 +258,47 @@ mod tests {
     }
 
     #[test]
+    fn block_renderer_sanitizes_live_tail_but_keeps_raw_buffer() {
+        // #751: the block renderer's buffer feeds two audiences. The live tail
+        // bars are padded to terminal width, so they must be sanitized — VS16
+        // (`✔️`) to text presentation, ANSI/`\r` to the shown segment. The
+        // buffer itself stays raw: `finish_job` echoes it to permanent
+        // scrollback, where color and emoji must survive.
+        let config = HookOutputConfig {
+            tail_lines: 3,
+            ..Default::default()
+        };
+        let mut renderer = HookProgressRenderer::new_hidden(&config);
+        renderer.start_job("job", None);
+        renderer.update_job_output("job", "sync hooks: \u{2714}\u{FE0F} ok");
+        renderer.update_job_output("job", "\x1b[32m40%\x1b[0m\rdone");
+        // Raw buffer preserved for the scrollback echo.
+        assert_eq!(
+            renderer.get_buffered_output("job"),
+            &[
+                "sync hooks: \u{2714}\u{FE0F} ok".to_string(),
+                "\x1b[32m40%\x1b[0m\rdone".to_string(),
+            ]
+        );
+        // Live tail bars normalized: no VS16 reaches a padded row, and the
+        // `\r` rewrite resolves to its final segment.
+        let live = renderer.get_tail_line_messages("job");
+        assert!(
+            live.iter().all(|m| !m.contains('\u{FE0F}')),
+            "VS16 must not reach a live tail bar: {live:?}"
+        );
+        assert!(
+            live.iter().any(|m| m == "sync hooks: \u{2714} ok"),
+            "text presentation survives on the live bar: {live:?}"
+        );
+        assert!(
+            live.iter().any(|m| m == "done"),
+            "`\\r` rewrite resolves to the final segment: {live:?}"
+        );
+        renderer.finish_job_success("job", Duration::from_secs(1));
+    }
+
+    #[test]
     fn description_bar_is_tracked_for_removal() {
         // Regression guard (#651): the description bar must live in JobState
         // so remove_job_bars can mp.remove it. Untracked, its last handle
