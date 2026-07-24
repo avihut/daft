@@ -62,7 +62,9 @@ steps:
     expect: { exit_code: 0 }
 
   - name: push is blocked with the verdict intact
-    run: git-worktree-push 2>&1
+    # `daft push`, not `git-worktree-push`: CI's binary setup creates only a
+    # subset of the multicall symlinks, so the symlink spelling is a race.
+    run: daft push 2>&1
     cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
     expect:
       exit_code: 1
