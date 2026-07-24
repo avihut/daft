@@ -613,11 +613,22 @@ repo's git-level `pre-push` hook (native `.git/hooks` or `core.hooksPath`
 managers like lefthook/husky/pre-commit), reported as a `pre-push` phase. A
 failing hook blocks the push and the command exits non-zero — any worktree it
 created is still completed and usable, and the error names the recovery command.
-Exception: the automatic upstream push on `daft start`/`daft go -b` runs the
-hook only when it introduces new commits; a ref-only push skips it
-(`daft.checkout.pushVerify`: `auto` default, `always`, `never`). Pass
-`--no-verify` to the pushing command to skip the hook once. `--skip-hooks` does
-NOT affect git-level hooks — it only filters daft's own jobs.
+Exceptions — pushes that provably carry no content skip the hook by default
+(`daft.pushVerify`: `auto` default, `always`, `never`): the automatic upstream
+push on `daft start`/`daft go -b` runs the hook only when it introduces new
+commits, and remote-branch deletes (`daft remove` with remote deletion on,
+`daft rename`'s old-name cleanup, `daft merge`'s post-merge cleanup,
+`daft multi-remote move --delete-old`) skip it outright since a delete pushes
+zero objects. Set `daft.pushVerify always` when pre-push hooks enforce ref
+policy (e.g. protected-branch delete guards); `daft.checkout.pushVerify`
+overrides the base for the upstream push alone. Note that `never` is
+unconditional, unlike `auto`/`always` which decide per push: setting
+`daft.pushVerify never` to quiet deletes also disarms the hook on an upstream
+push that does carry commits, so re-arm it with `daft.checkout.pushVerify auto`.
+Pass `--no-verify` to the pushing command to skip the hook once — every pushing
+command accepts it except `daft merge`, whose cleanup delete is governed by
+`daft.pushVerify` alone. `--skip-hooks` does NOT affect git-level hooks — it
+only filters daft's own jobs.
 
 To push a branch from outside its worktree with the hook still running in the
 RIGHT tree, use `daft push <branch>`: it resolves the branch's worktree and runs
@@ -990,7 +1001,8 @@ invocation.
 | `daft.remote`                    | `"origin"`            | Default remote name                                                                                                                                                         |
 | `daft.checkout.fetch`            | `false`               | Fetch from remote before checking out an existing branch                                                                                                                    |
 | `daft.checkout.push`             | `false`               | Push new branches to remote after creation                                                                                                                                  |
-| `daft.checkout.pushVerify`       | `"auto"`              | Run git pre-push hooks on the automatic upstream push (`auto`, `always`, `never`)                                                                                           |
+| `daft.pushVerify`                | `"auto"`              | Base: run git pre-push hooks on daft's suppressible pushes — remote-branch deletes and the upstream push (`auto`, `always`, `never`; `never` is unconditional)              |
+| `daft.checkout.pushVerify`       | `daft.pushVerify`     | Checkout-scoped override of `daft.pushVerify` for the automatic upstream push                                                                                               |
 | `daft.branchDelete.remote`       | `false`               | Delete the remote branch when removing a local branch                                                                                                                       |
 | `daft.checkout.upstream`         | `true`                | Set upstream tracking                                                                                                                                                       |
 | `daft.checkout.carry`            | `false`               | Carry uncommitted changes on checkout                                                                                                                                       |

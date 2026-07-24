@@ -137,6 +137,13 @@ records are updated accordingly.
 Options like --set-upstream can update the branch's tracking configuration
 to match the new remote organization.
 
+--push honors the repo's pre-push hook; the --delete-old delete pushes no
+content and skips it by default (configurable via daft.pushVerify: auto,
+always, or never). daft.pushVerify is the base setting every daft push reads,
+so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify to
+skip both unconditionally.
+
 ```
 daft multi-remote move [OPTIONS] <BRANCH>
 ```

@@ -17,6 +17,11 @@ Multiple sources invoke git\*(Aqs octopus strategy, announced explicitly.
 .PP
 Finish commands (\-\-abort, \-\-continue, \-\-quit) take an optional positional
 <worktree|branch>; default to the current worktree\*(Aqs branch.
+.PP
+When post\-merge cleanup deletes a merged branch\*(Aqs remote ref (enabled via
+daft.branchDelete.remote), that delete pushes no content, so the repo\*(Aqs
+pre\-push hook is skipped by default. Set daft.pushVerify to always for hooks
+that gate deletes by ref name; merge has no per\-invocation bypass.
 .SH OPTIONS
 .TP
 \fB\-\-into\fR \fI<TARGET>\fR

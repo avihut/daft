@@ -1,8 +1,10 @@
-name: branch-delete's remote delete is gated by the pre-push hook
+name: pushVerify=always keeps the pre-push gate on remote-branch deletes
 description:
-  "A failing pre-push hook gates the remote-branch delete (remote deletes are
-  pushes too): the command reports the failure and exits non-zero, and the
-  remote branch survives. --no-verify bypasses the gate."
+  "Remote deletes skip the pre-push hook by default (#747), but
+  daft.pushVerify=always re-arms the gate — the escape hatch for ref-policy
+  hooks that gate deletes by ref name: the command reports the failure and exits
+  non-zero, and the remote branch survives. --no-verify still bypasses the gate
+  silently."
 
 repos:
   - name: delete-gate-repo
@@ -16,12 +18,13 @@ steps:
       dirs_exist:
         - "$WORK_DIR/delete-gate-repo/main"
 
-  - name: Install a failing pre-push hook via core.hooksPath
+  - name: Install a failing pre-push hook and re-arm the delete gate
     run: |
       mkdir -p $WORK_DIR/test-hooks
       printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
       chmod +x $WORK_DIR/test-hooks/pre-push
       git config core.hooksPath $WORK_DIR/test-hooks
+      git config daft.pushVerify always
     cwd: "$WORK_DIR/delete-gate-repo/main"
     expect: { exit_code: 0 }
 
@@ -45,6 +48,8 @@ steps:
     cwd: "$WORK_DIR/delete-gate-repo/main"
     expect:
       exit_code: 0
+      output_not_contains:
+        - "Skipping pre-push hook"
 
   - name: The remote branch is gone
     run: git ls-remote --heads origin 2>/dev/null

@@ -47,6 +47,14 @@ are deleted.
 
 Pre-remove and post-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See git-daft(1) for hook management.
+
+When remote deletion is enabled, the remote-branch delete pushes no content,
+so the repo's pre-push hook is skipped by default (configurable via
+daft.pushVerify: auto, always, or never; use always for hooks that gate
+deletes by ref name). daft.pushVerify is the base setting every daft push
+reads, so setting it also affects the branch-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify
+to skip it unconditionally.
 "#)]
 pub struct Args {
     #[arg(required = true, help = "Branches to delete (names or worktree paths)")]
@@ -114,6 +122,7 @@ fn run_branch_delete(args: &Args, output: &mut dyn Output, settings: &DaftSettin
         remote_only: args.remote,
         keep_local_branch: false,
         no_verify: args.no_verify,
+        push_verify: settings.push_verify,
         prune_cd_target: settings.prune_cd_target,
         command_label: "branch-delete".to_string(),
         skip_merge_validation: false,

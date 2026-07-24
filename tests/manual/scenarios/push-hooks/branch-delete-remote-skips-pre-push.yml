@@ -1,0 +1,81 @@
+name: remote-branch deletes skip the pre-push hook by default
+description:
+  "A remote-branch delete pushes no content, so under the default
+  pushVerify=auto the repo's pre-push hook has nothing to gate and is skipped
+  (#747): a hook that would fail loudly does not block the remote delete, the
+  remote branch is deleted, the command exits zero, and the skip is reported in
+  verbose mode. Hook-less repos render no phantom skip line."
+
+repos:
+  - name: delete-skip-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_DELETE_SKIP_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/delete-skip-repo/main"
+
+  - name: Create a merged branch on the remote and check out its worktree
+    run: |
+      git push --quiet origin main:feature/merged-case
+      git-worktree-checkout feature/merged-case
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/delete-skip-repo/feature/merged-case"
+
+  - name: Hook-less remote delete renders no phantom skip line
+    run: git-worktree-branch -d develop --remote --verbose 2>&1
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Skipping pre-push hook"
+
+  - name: Install a failing pre-push hook via core.hooksPath
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      printf '#!/bin/sh\necho "GATE SAYS NO" >&2\nexit 1\n' > $WORK_DIR/test-hooks/pre-push
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect: { exit_code: 0 }
+
+  - name: daft remove deletes the remote branch without running the hook
+    run: |
+      git config daft.branchDelete.remote true
+      daft remove feature/merged-case --verbose 2>&1
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Skipping pre-push hook (a remote-branch delete pushes no content)"
+      output_not_contains:
+        - "GATE SAYS NO"
+      files_not_exist:
+        - "$WORK_DIR/delete-skip-repo/feature/merged-case/README.md"
+
+  - name: Both remote branches were deleted through the failing hook
+    run: git ls-remote --heads origin 2>/dev/null
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["feature/merged-case", "develop"]
+
+  - name: A remote-only delete skips the hook without verbose too
+    run: git-worktree-branch -d feature/test-feature --remote 2>&1
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["GATE SAYS NO"]
+
+  - name: The last remote branch is gone
+    run: git ls-remote --heads origin 2>/dev/null
+    cwd: "$WORK_DIR/delete-skip-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains: ["feature/test-feature"]

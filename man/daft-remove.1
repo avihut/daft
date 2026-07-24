@@ -41,6 +41,14 @@ deleted.
 .PP
 Pre\-remove and post\-remove lifecycle hooks are executed for each worktree
 removal if the repository is trusted. See daft\-hooks(1) for hook management.
+.PP
+When remote deletion is enabled, the remote\-branch delete pushes no content,
+so the repo\*(Aqs pre\-push hook is skipped by default (configurable via
+daft.pushVerify: auto, always, or never; use always for hooks that gate
+deletes by ref name). daft.pushVerify is the base setting every daft push
+reads, so setting it also affects the branch\-creation upstream push;
+daft.checkout.pushVerify overrides it for that push alone. Pass \-\-no\-verify
+to skip it unconditionally.
 .SH OPTIONS
 .TP
 \fB\-f\fR, \fB\-\-force\fR
