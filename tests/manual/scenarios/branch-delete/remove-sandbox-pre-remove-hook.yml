@@ -1,0 +1,64 @@
+name: Sandbox removal fires pre-remove hooks
+description: >
+  daft remove on a sandbox worktree fires worktree-pre-remove hooks from the
+  sandbox itself, under the branchless contract - DAFT_BRANCH_NAME is empty and
+  DAFT_COMMIT carries the pinned commit. The #53 field find was the rail
+  resolving hook rows by branch name, which made these runs look skipped for
+  sandbox targets; the marker files prove the hook fires inside the sandbox.
+
+repos:
+  - name: test-repo
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Sandbox pre-remove hook test"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-pre-remove:
+          jobs:
+            - name: marker
+              run: |
+                echo "ran-in $(pwd)" >> "${WORK_DIR}/hook-markers.txt"
+                echo "DAFT_BRANCH_NAME=[${DAFT_BRANCH_NAME}]" >> "${WORK_DIR}/hook-env.txt"
+                echo "DAFT_COMMIT=[${DAFT_COMMIT}]" >> "${WORK_DIR}/hook-env.txt"
+
+steps:
+  - name: Clone and trust the repository
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd $WORK_DIR/test-repo/main
+      daft hooks trust --force 2>&1
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Mint a fork sandbox
+    run: daft start --fork
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main-fork"
+
+  - name: Remove the sandbox — the pre-remove hook runs inside it
+    run: daft remove main-fork 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo/main-fork"
+      files_exist:
+        - "$WORK_DIR/hook-markers.txt"
+
+  - name: The hook ran in the sandbox under the branchless contract
+    run: |
+      grep -q "ran-in .*/main-fork" "$WORK_DIR/hook-markers.txt" &&
+      grep -q "DAFT_BRANCH_NAME=\[\]" "$WORK_DIR/hook-env.txt" &&
+      grep -Eq "DAFT_COMMIT=\[[0-9a-f]{40}\]" "$WORK_DIR/hook-env.txt"
+    expect:
+      exit_code: 0

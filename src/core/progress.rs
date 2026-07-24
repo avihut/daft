@@ -457,12 +457,17 @@ impl HookRunner for TimelineBridge<'_> {
         use crate::core::stage::StageId;
 
         // Embedded path: the region is live and the plan has a row for this
-        // hook phase (scoped by the context's branch when the plan is
-        // multi-branch). The presenter is lazy — the row expands into the
-        // hook block only if the executor actually starts the phase.
+        // hook phase (scoped by the target's display name when the plan is
+        // multi-branch). Resolution must use `worktree_label()`, not
+        // `branch_name`: sandbox targets run hooks under the branchless
+        // contract (`branch_name` is `""`) while their plan rows are scoped
+        // by dirname — an empty scope can never claim such a row, leaving
+        // the hook to run invisibly and the row to drop as unresolved. The
+        // presenter is lazy — the row expands into the hook block only if
+        // the executor actually starts the phase.
         let embed_key = StageId::for_hook_type(ctx.hook_type)
             .filter(|_| self.timeline.region_live())
-            .and_then(|id| self.timeline.resolve_key(id, Some(&ctx.branch_name)));
+            .and_then(|id| self.timeline.resolve_key(id, Some(ctx.worktree_label())));
 
         if let Some(key) = embed_key {
             let presenter: Arc<dyn JobPresenter> =
@@ -683,6 +688,86 @@ mod tests {
             output.entries()
         );
         timeline.finish("Removed in 0.1s");
+    }
+
+    /// Regression test (#53): `daft remove` scopes its per-target hook rows
+    /// by the target's display name — for sandboxes the dirname — while the
+    /// hook context carries `branch_name = ""` (the branchless contract).
+    /// Resolving the embed row by `branch_name` could never claim a
+    /// dirname-scoped row: the hook ran invisibly through the no-row
+    /// fallback and the planned row stayed unresolved — silently dropped on
+    /// success, a false `(not run)` receipt on abort. Resolution must go
+    /// through `worktree_label()`.
+    #[test]
+    fn sandbox_hook_row_is_claimed_despite_branchless_context() {
+        use crate::core::stage::{PlanCommit, Row, StageId, StepKey, StepSpec};
+        use crate::output::OutputConfig;
+        use crate::output::timeline::{Timeline, TimelineMode};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let worktree = tmp.path().join("master-fork");
+        std::fs::create_dir_all(&worktree).expect("create worktree dir");
+        std::fs::write(
+            worktree.join("daft.yml"),
+            "hooks:\n  worktree-pre-remove:\n    jobs:\n      - name: ok\n        run: \"true\"\n",
+        )
+        .expect("write daft.yml");
+
+        let hooks_config = HooksConfig {
+            user_directory: tmp.path().join("user-hooks"),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(hooks_config)
+            .expect("create executor")
+            .with_bypass_trust(true);
+
+        let mut output = TestOutput::with_config(OutputConfig::new(false, false));
+        let mut timeline = Timeline::new(
+            TimelineMode::Interactive { color: false },
+            false,
+            "Removing master-fork",
+        );
+        let term = indicatif::InMemoryTerm::new(60, 100);
+        timeline.set_test_draw_target(indicatif::ProgressDrawTarget::term_like(Box::new(
+            term.clone(),
+        )));
+        // The plan scopes the hook row by the sandbox dirname, exactly as
+        // `branch_delete::build_plan` does for every target.
+        timeline.commit_plan(PlanCommit::new(vec![Row::Step(StepSpec::new(
+            StepKey::scoped(StageId::PreRemoveHooks, "master-fork"),
+        ))]));
+        assert!(timeline.region_live());
+
+        let ctx = HookContext::new(
+            HookType::PreRemove,
+            "test-remove",
+            tmp.path().to_path_buf(),
+            // A real directory: the invocation record hashes this path.
+            tmp.path().to_path_buf(),
+            "origin",
+            tmp.path().join("master"),
+            worktree,
+            // Branchless: sandbox targets carry no branch name.
+            "",
+        )
+        .with_state_dir(tmp.path());
+        let outcome = {
+            let mut bridge = TimelineBridge::new(
+                &mut output,
+                &mut timeline,
+                executor,
+                HookOutputConfig::default(),
+            );
+            bridge.run_hook(&ctx).expect("run_hook")
+        };
+        assert!(!outcome.skipped, "the daft.yml hook must run");
+        timeline.finish("Removed in 0.1s");
+        let contents = term.contents();
+        assert!(
+            contents.contains("pre-remove hooks"),
+            "the dirname-scoped row must be claimed by the branchless hook \
+             context, not dropped as unresolved:\n{contents}"
+        );
     }
 
     /// The consolidation prompts fire during validation, under the live
