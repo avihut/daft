@@ -46,6 +46,7 @@ pub mod config_merge;
 mod environment;
 mod executor;
 pub mod job_adapter;
+pub mod manager_output;
 pub mod move_hooks;
 pub mod template;
 pub mod tracking;

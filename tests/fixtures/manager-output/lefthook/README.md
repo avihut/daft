@@ -47,6 +47,12 @@ Each version directory has the 5-scenario matrix:
 | `no-color-fail.txt` | `NO_COLOR=1` | fail   | fail glyph per era                                                            |
 | `serial-pass.txt`   | colour       | pass   | `parallel: false`; also carries the `sync hooks:` noise line in most captures |
 
+`v2.0.0/` and `v2.1.10/` additionally have `with-skips-pass.txt`: jobs skipped
+by `skip: true` and by a non-matching `glob:` produce thin-bar notices
+(`│  <job> (skip) <reason>`, U+2502 — not the thick U+2503 block header) right
+after the banner, and skipped jobs never appear in the summary. The shape is
+identical at both ends of the 2.x line.
+
 `v2.1.10/` additionally has:
 
 | Fixture                   | What it exercises                                                                                                                                                                                                                   |
@@ -72,6 +78,7 @@ ANSI-stripped and rstripped (spaces + `\r`), in emission order:
 │ [🥊 ]lefthook  vX.Y.Z   hook:  <hook> │  ← banner text   (spacing varies by era: \s+)
 ╰────────╯                                ← banner bottom (corners U+2570/U+256F)
 sync hooks: ✔️[ ](pre-push)                ← optional noise, when lefthook re-syncs hooks
+│  <job name> (skip) <reason>              ← skip notices (thin bar U+2502); absent from summary
 
 ┃  <job name> ❯                            ← job block header (U+2503 … U+276F)
 [blank]                                    ←   ≤2.1.6 emits a blank line here

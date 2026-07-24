@@ -1,0 +1,15 @@
+╭────────────────────────────────────╮
+│ 🥊 lefthook v2.0.0  hook: pre-push │
+╰────────────────────────────────────╯
+│  skipped-by-flag (skip) by condition
+│  skipped-by-glob (skip) no matching push files
+┃  runs ❯ 
+
+runs ok
+
+                                      
+  ────────────────────────────────────
+summary: (done in 0.13 seconds)       
+✔️ runs (0.13 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   26d05e9..f3df992  master -> master
