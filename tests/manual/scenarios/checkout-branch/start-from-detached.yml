@@ -1,0 +1,39 @@
+name: Start from a detached sandbox promotes its commits
+description:
+  daft start <name> from inside a sandbox bases the new branch on the detached
+  HEAD — the promotion gesture that rescues work minted anonymously
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, open a tag sandbox, and commit inside it
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git -c tag.gpgSign=false tag v1.0
+      daft go v1.0 --no-cd
+      cd ../v1.0
+      git -c user.name=Test -c user.email=test@test.com commit --allow-empty -m "work in sandbox"
+    expect:
+      exit_code: 0
+
+  - name: Promote the sandbox's position into a real branch
+    run: daft start promoted --local 2>&1
+    cwd: "$WORK_DIR/test-repo/v1.0"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/promoted"
+      is_git_worktree:
+        - dir: "$WORK_DIR/test-repo/promoted"
+          branch: promoted
+
+  - name: The promoted branch carries the sandbox's commit
+    run: git -C "$WORK_DIR/test-repo/promoted" log -1 --format=%s
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "work in sandbox"

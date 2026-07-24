@@ -433,9 +433,24 @@ fn resolve_base_branch(
         }
         None => {
             sink.on_step("Base branch not specified, using current branch...");
-            let current = git.symbolic_ref_short_head()?;
-            sink.on_step(&format!("Using current branch as base: '{current}'"));
-            Ok(current)
+            match git.symbolic_ref_short_head() {
+                Ok(current) => {
+                    sink.on_step(&format!("Using current branch as base: '{current}'"));
+                    Ok(current)
+                }
+                // A detached HEAD has no current branch — base on the commit
+                // instead. This is the promotion gesture for sandboxes (#53):
+                // `daft start <name>` from inside one mints a branch carrying
+                // everything committed there.
+                Err(_) => {
+                    let oid = git.rev_parse("HEAD")?;
+                    sink.on_step(&format!(
+                        "Detached HEAD; using commit {} as base",
+                        &oid[..oid.len().min(12)]
+                    ));
+                    Ok(oid)
+                }
+            }
         }
     }
 }

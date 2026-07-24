@@ -4,7 +4,7 @@
 .SH NAME
 daft start \- Create a new branch and worktree
 .SH SYNOPSIS
-\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIBRANCH_NAME\fR> [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
+\fBdaft start\fR [\fB\-\-repo\fR] [\fB\-\-with\-related\fR] [\fB\-\-fork\fR] [\fB\-n\fR|\fB\-\-count\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH_NAME\fR] [\fIBASE_OR_BRANCH\fR] [\fIBASE\fR] 
 .SH DESCRIPTION
 .PP
 Creates a new branch and a corresponding worktree in a single operation. The
@@ -57,6 +57,12 @@ Create the branch in a repository from the catalog (for repo names shadowed by l
 \fB\-\-with\-related\fR
 Also create the branch in every related repo (relations manifest), each based on its own default branch
 .TP
+\fB\-\-fork\fR
+Mint an anonymous throwaway worktree pinned at [<base>] (defaults to HEAD): detached, system\-named, no branch, no push; the created path is printed on stdout
+.TP
+\fB\-n\fR, \fB\-\-count\fR \fI<N>\fR
+Create N fork worktrees (one path per line on stdout; the shell stays where it is)
+.TP
 \fB\-c\fR, \fB\-\-carry\fR
 Apply uncommitted changes from the current worktree to the new one
 .TP
@@ -96,8 +102,8 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .TP
-<\fIBRANCH_NAME\fR>
-Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`
+[\fIBRANCH_NAME\fR]
+Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`; with \-\-fork, the base position instead
 .TP
 [\fIBASE_OR_BRANCH\fR]
 Base branch (defaults to the current branch); or, when it names no ref here, the new branch inside `<repo>`

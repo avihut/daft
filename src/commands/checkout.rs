@@ -25,7 +25,7 @@ use crate::{
 use anyhow::Result;
 use clap::Parser;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser, Clone)]
@@ -345,9 +345,10 @@ See daft-hooks(1) for hook management.
 pub struct StartArgs {
     #[arg(
         value_name = "BRANCH_NAME",
-        help = "Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`"
+        required_unless_present = "fork",
+        help = "Name for the new branch; or a cataloged repo to create it in, with `daft start <repo> <branch> [base]`; with --fork, the base position instead"
     )]
-    first: String,
+    first: Option<String>,
 
     #[arg(
         value_name = "BASE_OR_BRANCH",
@@ -373,6 +374,23 @@ pub struct StartArgs {
         help = "Also create the branch in every related repo (relations manifest), each based on its own default branch"
     )]
     with_related: bool,
+
+    #[arg(
+        long = "fork",
+        conflicts_with_all = ["repo", "with_related"],
+        help = "Mint an anonymous throwaway worktree pinned at [<base>] (defaults to HEAD): detached, system-named, no branch, no push; the created path is printed on stdout"
+    )]
+    fork: bool,
+
+    #[arg(
+        short = 'n',
+        long = "count",
+        value_name = "N",
+        requires = "fork",
+        conflicts_with = "at",
+        help = "Create N fork worktrees (one path per line on stdout; the shell stays where it is)"
+    )]
+    count: Option<u32>,
 
     #[arg(
         short = 'c',
@@ -613,8 +631,21 @@ pub fn run_start() -> Result<()> {
     raw[0] = "daft start".to_string();
     let start_args = StartArgs::parse_from(raw);
 
+    // With --fork the positional grammar reshapes to just [<base>] — the
+    // system owns the name, so there is no branch slot (#53). Handled before
+    // the branch grammar so `daft start fork` (a legal branch name) keeps
+    // meaning the branch.
+    if start_args.fork {
+        let (base, count) = decode_fork_grammar(&start_args)?;
+        return run_start_fork(start_args, base, count);
+    }
+
+    let first = start_args
+        .first
+        .clone()
+        .expect("clap enforces the first positional unless --fork");
     let routing = decode_start_grammar(
-        start_args.first.clone(),
+        first,
         start_args.second.clone(),
         start_args.third.clone(),
         start_args.repo.clone(),
@@ -659,6 +690,300 @@ pub fn run_start() -> Result<()> {
             guessed,
         } => run_start_cross(start_args, repo, branch, base, guessed),
     }
+}
+
+/// Decode the `--fork` reshape of `daft start`'s positionals: exactly
+/// `[<base>]`, plus the count. The clap-level rules (`-n` requires `--fork`
+/// and conflicts with `--at`; `--fork` conflicts with `--repo` /
+/// `--with-related`) have already run by the time this is called.
+fn decode_fork_grammar(args: &StartArgs) -> Result<(Option<String>, u32)> {
+    if args.second.is_some() || args.third.is_some() {
+        anyhow::bail!(
+            "--fork takes at most one <base> (usage: `{}`)",
+            crate::daft_cmd("start --fork [<base>] [-n N]")
+        );
+    }
+    if args.first.as_deref() == Some("-") {
+        anyhow::bail!("'-' is not a base for --fork");
+    }
+    let count = args.count.unwrap_or(1);
+    if count == 0 {
+        anyhow::bail!("-n/--count must be at least 1");
+    }
+    if args.carry && count > 1 {
+        anyhow::bail!(
+            "--carry cannot fan out across -n {count} forks: a stash is consumed by the \
+             first pop (fork once with --carry, or drop --carry)"
+        );
+    }
+    Ok((args.first.clone(), count))
+}
+
+/// The `daft start --fork` engine (#53): mint `count` anonymous detached
+/// worktrees at a position. Always fresh — never reuses, never touches refs.
+///
+/// Output contract: each created worktree's path prints bare on stdout — the
+/// system chose the name, so the path IS the result — and narration goes to
+/// stderr. With `count == 1` the shell cd's into the fork; with more there is
+/// no one "there" and the shell stays put. Partial failure is best-effort:
+/// successes keep their printed paths, failures are named on stderr, and the
+/// exit is nonzero.
+fn run_start_fork(args: StartArgs, base: Option<String>, count: u32) -> Result<()> {
+    use crate::core::worktree::{fork_names, sandbox};
+
+    init_logging(args.verbose);
+    if !is_git_repository()? {
+        anyhow::bail!("Not inside a Git repository");
+    }
+    crate::catalog::touch_current_repo();
+    let original_dir = get_current_directory()?;
+    let source_worktree = get_current_worktree_path().ok();
+
+    let git = GitCommand::new(args.quiet);
+    let settings = DaftSettings::load_with(&git)?;
+    let git = git.with_gitoxide(settings.use_gitoxide);
+
+    // Bulk minting has no single destination — autocd only for one fork.
+    let autocd = settings.autocd && !args.no_cd && count == 1;
+    let config = OutputConfig::with_autocd(args.quiet, args.verbose, autocd);
+    let mut output = CliOutput::new(config);
+
+    let spelling = base.unwrap_or_else(|| "HEAD".to_string());
+    let Some(commit) = resolve_commitish(&spelling) else {
+        anyhow::bail!("'{spelling}' does not resolve to a commit here");
+    };
+    if !output.is_quiet() {
+        output.notice(&format!(
+            "Forking {spelling} @ {}",
+            sandbox::short_oid(&commit)
+        ));
+    }
+
+    let project_root = get_project_root()?;
+    let (resolved_layout, source) = resolve_checkout_layout(&git, &mut output);
+    let (layout, should_persist) =
+        interactive_layout_resolution(&resolved_layout, source, &mut output)?;
+    if should_persist && let Ok(git_dir) = get_git_common_dir() {
+        let _ = TrustDatabase::update(|db| {
+            db.set_layout(&git_dir, layout.name.clone());
+            Ok(())
+        });
+    }
+
+    let hooks_config = crate::core::settings::load_hooks_config_with(&git)?;
+    let hook_output_config = hooks_config.output.with_cli_verbose(output.is_verbose());
+
+    // The candidate stream the claim loop draws from.
+    let mut candidates: Box<dyn Iterator<Item = String>> = match settings.start_fork_naming {
+        crate::settings::ForkNaming::Derived => {
+            let stem = fork_stem(&spelling, &commit, &git);
+            Box::new((0u32..).map(move |i| match i {
+                0 => format!("{stem}-fork"),
+                _ => format!("{stem}-fork-{}", i + 1),
+            }))
+        }
+        crate::settings::ForkNaming::Memorable => {
+            Box::new(fork_names::candidates(fork_name_seed()))
+        }
+    };
+
+    let mut completed: Vec<sandbox::SandboxResult> = Vec::new();
+    let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
+
+    for _ in 0..count {
+        // Each fork resolves and creates from where the user stood — the
+        // previous iteration left the cwd inside its fork.
+        change_directory(&original_dir)?;
+
+        let (dirname, claimed_path) = claim_fork_dir(
+            candidates.as_mut(),
+            args.at.as_deref(),
+            &layout,
+            &project_root,
+        )?;
+
+        let params = sandbox::SandboxParams {
+            spelling: spelling.clone(),
+            commit: commit.clone(),
+            dirname: dirname.clone(),
+            kind: crate::store::models::WorktreeKind::Fork,
+            path_preclaimed: true,
+            carry: args.carry,
+            // Ambient carry cannot fan out (a stash is consumed by the first
+            // pop); the explicit --carry × -n combination bailed at decode.
+            no_carry: args.no_carry || count > 1,
+            checkout_carry: settings.checkout_carry,
+            remote: args.remote.clone(),
+            remote_name: settings.remote.clone(),
+            multi_remote_enabled: settings.multi_remote_enabled,
+            multi_remote_default: settings.multi_remote_default.clone(),
+            layout: Some(layout.clone()),
+            at_path: args.at.clone(),
+        };
+
+        let executor = HookExecutor::new(hooks_config.clone())?.with_job_filter(
+            crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks),
+        );
+        let mut timeline = Timeline::new(
+            TimelineMode::auto(output.is_quiet()),
+            output.is_verbose(),
+            format!("Forking {dirname}"),
+        );
+        timeline.set_verbose_density(hook_output_config.verbose);
+        timeline.open_planning("Pinning commit");
+        let create_result = {
+            let mut bridge = TimelineBridge::new(
+                &mut output,
+                &mut timeline,
+                executor,
+                hook_output_config.clone(),
+            );
+            sandbox::execute_create(&params, &git, &project_root, &mut bridge)
+        };
+        timeline.abandon_planning();
+        match create_result {
+            Ok(result) => {
+                if timeline.region_live() {
+                    timeline.finish(&format!("Ready in {}", timeline.elapsed_display()));
+                }
+                // The path is the record: bare on stdout, exactly once, in
+                // every mode (rail, plain, quiet, redirected).
+                output.raw(&format!("{}\n", result.worktree_path.display()));
+                // Per-fork exec, inside the fork (core chdir'd there). A
+                // failed command marks this fork failed; the worktree stays.
+                if !args.exec.is_empty()
+                    && let Err(e) = crate::exec::run_exec_commands(&args.exec, &mut output)
+                {
+                    failures.push((dirname.clone(), e));
+                }
+                completed.push(result);
+            }
+            Err(e) => {
+                timeline.abort(&format!("Failed after {}", timeline.elapsed_display()));
+                // A failed create can leave the claimed (still empty)
+                // directory behind; release the name.
+                let _ = std::fs::remove_dir(&claimed_path);
+                failures.push((dirname, e));
+            }
+        }
+    }
+
+    if count == 1
+        && failures.is_empty()
+        && let Some(result) = completed.last()
+    {
+        // Stay inside the fork (the cwd already is) and honor the wrapper's
+        // cd contract.
+        output.cd_path(&result.cd_target);
+        maybe_show_shell_hint(&mut output)?;
+        if let Some(src) = source_worktree
+            && let Ok(git_dir) = get_git_common_dir()
+        {
+            let _ = previous::save(&git_dir, &src);
+        }
+    } else {
+        change_directory(&original_dir)?;
+    }
+
+    for (name, e) in &failures {
+        output.warning(&format!("fork '{name}': {e:#}"));
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("{} of {count} fork(s) failed", failures.len());
+    }
+    Ok(())
+}
+
+/// The derived-scheme stem: what a fork is named after. An explicit base
+/// keeps its own (nameable) spelling; a bare `--fork` forks "here" and is
+/// named after the current branch — or the commit, when detached.
+fn fork_stem(spelling: &str, commit: &str, git: &GitCommand) -> String {
+    use crate::core::worktree::sandbox;
+    if spelling == "HEAD" {
+        git.symbolic_ref_short_head()
+            .ok()
+            .map(|b| b.replace('/', "-"))
+            .unwrap_or_else(|| sandbox::derived_dirname(commit))
+    } else {
+        sandbox::sandbox_dirname(spelling).unwrap_or_else(|| sandbox::derived_dirname(commit))
+    }
+}
+
+/// Entropy for memorable fork names: time × pid, no new dependency.
+/// Uniqueness is enforced by the mkdir claim, never by this seed.
+fn fork_name_seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ ((std::process::id() as u64) << 17)
+}
+
+/// Claim a directory for a fork by creating it — mkdir is the atomic lock
+/// that lets parallel invocations mint names with zero coordination. `--at`
+/// claims exactly the given path (no suffixing a user-chosen name); the
+/// naming scheme's candidate stream is consulted otherwise.
+fn claim_fork_dir(
+    candidates: &mut dyn Iterator<Item = String>,
+    at: Option<&Path>,
+    layout: &crate::core::layout::Layout,
+    project_root: &Path,
+) -> Result<(String, PathBuf)> {
+    if let Some(at) = at {
+        let dirname = at
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("--at path has no directory name"))?
+            .to_string_lossy()
+            .into_owned();
+        if let Some(parent) = at.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        return match std::fs::create_dir(at) {
+            Ok(()) => Ok((dirname, at.to_path_buf())),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!("directory '{}' already exists", at.display())
+            }
+            Err(e) => anyhow::bail!("could not create '{}': {e}", at.display()),
+        };
+    }
+
+    for _ in 0..100 {
+        let Some(dirname) = candidates.next() else {
+            break;
+        };
+        let path = fork_path_for(&dirname, layout, project_root)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok((dirname, path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => anyhow::bail!("could not create '{}': {e}", path.display()),
+        }
+    }
+    anyhow::bail!("could not find a free fork name after 100 attempts")
+}
+
+/// The layout path a fork named `dirname` will occupy — the same computation
+/// the sandbox core performs, so the claimed directory and the created
+/// worktree always agree.
+fn fork_path_for(
+    dirname: &str,
+    layout: &crate::core::layout::Layout,
+    project_root: &Path,
+) -> Result<PathBuf> {
+    let effective_root = if layout.needs_wrapper() {
+        project_root
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| project_root.to_path_buf())
+    } else {
+        project_root.to_path_buf()
+    };
+    let ctx = crate::multi_remote::path::build_template_context(&effective_root, dirname);
+    layout.worktree_path(&ctx)
 }
 
 /// How a `daft start` invocation routes after grammar decode.
@@ -2515,7 +2840,8 @@ mod start_grammar_tests {
         full.extend_from_slice(argv);
         let a = StartArgs::try_parse_from(full).expect("argv should parse");
         decode_start_grammar(
-            a.first,
+            a.first
+                .expect("grammar tests always pass a first positional"),
             a.second,
             a.third,
             a.repo,
@@ -2837,6 +3163,100 @@ mod start_grammar_tests {
                 also_live_repo: false
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod fork_grammar_tests {
+    use super::*;
+
+    fn parse(argv: &[&str]) -> StartArgs {
+        let mut full = vec!["daft start"];
+        full.extend_from_slice(argv);
+        StartArgs::try_parse_from(full).expect("argv should parse")
+    }
+
+    fn parse_err(argv: &[&str]) -> String {
+        let mut full = vec!["daft start"];
+        full.extend_from_slice(argv);
+        match StartArgs::try_parse_from(full) {
+            Ok(_) => panic!("argv {argv:?} should be rejected by clap"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn bare_fork_defaults_to_head_and_one() {
+        let args = parse(&["--fork"]);
+        let (base, count) = decode_fork_grammar(&args).unwrap();
+        assert_eq!(base, None);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn the_first_positional_becomes_the_base() {
+        let args = parse(&["--fork", "v1.2"]);
+        let (base, count) = decode_fork_grammar(&args).unwrap();
+        assert_eq!(base.as_deref(), Some("v1.2"));
+        assert_eq!(count, 1);
+        // Flag order does not matter.
+        let args = parse(&["master", "--fork", "-n", "3"]);
+        let (base, count) = decode_fork_grammar(&args).unwrap();
+        assert_eq!(base.as_deref(), Some("master"));
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn two_positionals_are_rejected() {
+        let args = parse(&["--fork", "a", "b"]);
+        let err = decode_fork_grammar(&args).unwrap_err().to_string();
+        assert!(err.contains("at most one <base>"), "{err}");
+    }
+
+    #[test]
+    fn dash_is_not_a_base() {
+        let args = parse(&["--fork", "--", "-"]);
+        assert!(decode_fork_grammar(&args).is_err());
+    }
+
+    #[test]
+    fn zero_count_is_rejected() {
+        let args = parse(&["--fork", "-n", "0"]);
+        let err = decode_fork_grammar(&args).unwrap_err().to_string();
+        assert!(err.contains("at least 1"), "{err}");
+    }
+
+    #[test]
+    fn explicit_carry_cannot_fan_out() {
+        let args = parse(&["--fork", "-c", "-n", "2"]);
+        let err = decode_fork_grammar(&args).unwrap_err().to_string();
+        assert!(err.contains("--carry cannot fan out"), "{err}");
+        // A single fork carries fine.
+        let args = parse(&["--fork", "-c"]);
+        assert!(decode_fork_grammar(&args).is_ok());
+    }
+
+    #[test]
+    fn clap_level_conflicts_hold() {
+        // -n requires --fork.
+        assert!(parse_err(&["feat-x", "-n", "2"]).contains("--fork"));
+        // -n conflicts with --at (one path cannot hold N worktrees).
+        assert!(!parse_err(&["--fork", "-n", "2", "--at", "p"]).is_empty());
+        // --fork conflicts with the cross-repo and fan-out forms.
+        assert!(!parse_err(&["--fork", "--repo", "api"]).is_empty());
+        assert!(!parse_err(&["--fork", "--with-related"]).is_empty());
+        // A branch name is still required without --fork.
+        assert!(!parse_err(&[]).is_empty());
+    }
+
+    /// The non-fork grammar is byte-identical: the positional Option-ization
+    /// must not loosen anything.
+    #[test]
+    fn plain_start_still_requires_the_branch_positional() {
+        let args = parse(&["feat-x", "main"]);
+        assert_eq!(args.first.as_deref(), Some("feat-x"));
+        assert_eq!(args.second.as_deref(), Some("main"));
+        assert!(!args.fork);
     }
 }
 
