@@ -247,8 +247,14 @@ fn run_push(
         None
     };
     // A recognized hook manager's jobs render as first-class rows (#753);
-    // unrecognized streams keep today's synthetic pre-push job.
-    let presenter = ManagerRoutingPresenter::wrap_if_enabled(&hook_output_config, presenter);
+    // unrecognized streams keep today's synthetic pre-push job. Seeding the
+    // roster from the pushing worktree's config makes every job visible from
+    // the moment the manager engages, not only when it completes.
+    let presenter = ManagerRoutingPresenter::wrap_if_enabled(
+        &hook_output_config,
+        Some(cwd.as_path()),
+        presenter,
+    );
 
     let resolve_key = StepKey::new(StageId::ResolveWorktree);
     let push_key = StepKey::new(StageId::Push);

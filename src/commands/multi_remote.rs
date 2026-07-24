@@ -710,9 +710,11 @@ fn cmd_move(
                 crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config),
             );
             // A recognized hook manager's jobs render as first-class rows
-            // (#753); unrecognized streams keep today's synthetic job.
+            // (#753), seeded from the moved worktree's config; unrecognized
+            // streams keep today's synthetic job.
             crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
                 &hook_output_config,
+                Some(new_path.as_path()),
                 p,
             )
         } else {

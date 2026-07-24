@@ -1880,9 +1880,12 @@ fn run_create_branch_core(
         None
     };
     // A recognized hook manager's jobs render as first-class rows (#753);
-    // unrecognized streams keep today's synthetic pre-push job.
+    // unrecognized streams keep today's synthetic pre-push job. No roster seed:
+    // the pushed worktree is created inside checkout_branch::execute and its
+    // path is not in scope here — jobs reveal as the manager completes them.
     let push_presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
         &hook_output_config,
+        None,
         push_presenter,
     );
 

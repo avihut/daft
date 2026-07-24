@@ -1920,10 +1920,11 @@ fn execute_push_batch_task(
             None
         };
     // A recognized hook manager's jobs land as job sub-rows on the
-    // representative branch's row (#753); unrecognized streams keep
-    // today's single opaque pre-push job.
+    // representative branch's row (#753), seeded from that worktree's config;
+    // unrecognized streams keep today's single opaque pre-push job.
     let presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_when(
         parse_managers,
+        Some(cwd.as_path()),
         presenter,
     );
     let results = push::push_batched(
@@ -2076,9 +2077,11 @@ fn execute_push_task(
             None
         };
     // A recognized hook manager's jobs land as job sub-rows under this
-    // branch's pre-push hook row (#753).
+    // branch's pre-push hook row (#753), seeded from this worktree's config so
+    // every job is visible before it completes.
     let presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_when(
         parse_managers,
+        Some(target_path.as_path()),
         presenter,
     );
 
@@ -2678,9 +2681,13 @@ fn run_push_phase(
                 crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config),
             );
             // A recognized hook manager's jobs render as first-class rows
-            // (#753); unrecognized streams keep today's synthetic job.
+            // (#753); unrecognized streams keep today's synthetic job. No
+            // roster seed here: this fleet path pushes many worktrees through
+            // one presenter, so there is no single config to seed from — jobs
+            // reveal as each manager completes them.
             crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
                 &hook_output_config,
+                None,
                 p,
             )
         } else {

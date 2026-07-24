@@ -39,6 +39,7 @@ use crate::executor::presenter::JobPresenter;
 use crate::hooks::manager_output::{Detector, DetectorEnd, DetectorStep, ManagerEvent};
 use crate::settings::HookOutputConfig;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -58,9 +59,19 @@ struct RoutingState {
     held_start: Option<HeldStart>,
     engaged: bool,
     declined: bool,
-    /// Recognized job names in appearance order (also the census seed).
+    /// Every job row that has appeared: the config-seeded roster (#753) plus
+    /// any stream-only job. The census counts these; the sweep settles the
+    /// ones the summary never resolved.
     started: Vec<String>,
-    /// Recognized jobs the manager's summary has resolved.
+    /// Jobs seeded up front from the manager's config (a subset of `started`).
+    /// Kept distinct so a seeded-but-never-run job settles as skipped instead
+    /// of borrowing a passing hook's verdict.
+    seeded: Vec<String>,
+    /// Jobs the stream actually mentioned running (a block header flushed). A
+    /// seeded job absent here never ran — a glob/condition skip or an
+    /// over-listing config.
+    appeared: Vec<String>,
+    /// Jobs the manager's summary (or a skip notice) has resolved.
     resolved: Vec<String>,
 }
 
@@ -72,6 +83,8 @@ impl RoutingState {
             engaged: false,
             declined: false,
             started: Vec::new(),
+            seeded: Vec::new(),
+            appeared: Vec::new(),
             resolved: Vec::new(),
         }
     }
@@ -82,33 +95,49 @@ impl RoutingState {
 pub struct ManagerRoutingPresenter {
     inner: Arc<dyn JobPresenter>,
     state: Mutex<RoutingState>,
+    /// The pushing worktree's root, when the call site can supply it — the
+    /// directory whose lefthook config names the jobs to seed (#753). `None`
+    /// disables seeding: jobs then reveal as the manager completes them.
+    roster_dir: Option<PathBuf>,
 }
 
 impl ManagerRoutingPresenter {
+    /// Wrap without a roster seed — jobs reveal as the manager completes them.
     pub fn wrap(inner: Arc<dyn JobPresenter>) -> Arc<Self> {
+        Self::wrap_seeded(inner, None)
+    }
+
+    /// Wrap, seeding the job roster from `roster_dir` when one is given.
+    pub fn wrap_seeded(inner: Arc<dyn JobPresenter>, roster_dir: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             inner,
             state: Mutex::new(RoutingState::fresh()),
+            roster_dir,
         })
     }
 
-    /// Wrap `presenter` when `daft.hooks.output.parseManagers` allows it.
-    /// The knob is the kill switch back to today's synthetic-job rendering.
+    /// Wrap `presenter` when `daft.hooks.output.parseManagers` allows it,
+    /// seeding the job roster from `roster_dir` when one is given. The knob is
+    /// the kill switch back to today's synthetic-job rendering.
     pub fn wrap_if_enabled(
         config: &HookOutputConfig,
+        roster_dir: Option<&Path>,
         presenter: Option<Arc<dyn JobPresenter>>,
     ) -> Option<Arc<dyn JobPresenter>> {
-        Self::wrap_when(config.parse_managers, presenter)
+        Self::wrap_when(config.parse_managers, roster_dir, presenter)
     }
 
     /// [`Self::wrap_if_enabled`] for call sites that carry the resolved knob
     /// as a bare flag (sync's task workers thread it into their closures).
     pub fn wrap_when(
         enabled: bool,
+        roster_dir: Option<&Path>,
         presenter: Option<Arc<dyn JobPresenter>>,
     ) -> Option<Arc<dyn JobPresenter>> {
         match presenter {
-            Some(inner) if enabled => Some(Self::wrap(inner)),
+            Some(inner) if enabled => {
+                Some(Self::wrap_seeded(inner, roster_dir.map(Path::to_path_buf)))
+            }
             other => other,
         }
     }
@@ -126,11 +155,38 @@ impl ManagerRoutingPresenter {
         }
     }
 
+    /// Seed the manager's job roster as pending rows the moment it engages, so
+    /// long-running jobs are visible before they complete (#753). lefthook's
+    /// buffered output reveals a job only when it *finishes*, so without this a
+    /// slow job would be invisible for its whole run. Display-only: the rows
+    /// resolve from the stream (or the sweep), and the push verdict stays
+    /// `PushIo`-derived. No-op without a `roster_dir` or when the config names
+    /// nothing (an unreadable/unknown config → the stream reveals jobs as
+    /// before).
+    fn seed_roster(&self, state: &mut RoutingState, manager: &str, hook: Option<&str>) {
+        let Some(dir) = self.roster_dir.as_deref() else {
+            return;
+        };
+        let roster = crate::hooks::manager_output::roster(manager, dir, hook.unwrap_or_default());
+        if roster.is_empty() {
+            return;
+        }
+        // One grow-only width seed for the whole roster, then a live row each.
+        self.inner.on_jobs_planned(&roster);
+        for name in roster {
+            self.inner.on_job_start(&name, None, None);
+            state.started.push(name.clone());
+            state.seeded.push(name);
+        }
+    }
+
     fn translate(&self, state: &mut RoutingState, events: Vec<ManagerEvent>) {
         for event in events {
             match event {
                 ManagerEvent::Engaged {
-                    manager, version, ..
+                    manager,
+                    version,
+                    hook,
                 } => {
                     state.engaged = true;
                     // The synthetic job never materializes on the engaged
@@ -138,14 +194,22 @@ impl ManagerRoutingPresenter {
                     state.held_start = None;
                     self.inner
                         .on_manager_engaged(None, manager, version.as_deref());
+                    self.seed_roster(state, manager, hook.as_deref());
                 }
                 ManagerEvent::JobStarted { name } => {
-                    state.started.push(name.clone());
-                    // Grow-only width seeding: receipts persist immediately,
-                    // so renderers must learn the widest name as soon as it
-                    // is known, not after it resolves.
-                    self.inner.on_jobs_planned(&state.started);
-                    self.inner.on_job_start(&name, None, None);
+                    // A block header flushed: the job ran. Record that so the
+                    // sweep can tell run-but-unresolved from never-run.
+                    state.appeared.push(name.clone());
+                    // A seeded job already has its live row — the flush means
+                    // it finished (its output follows), not a second start.
+                    if !state.seeded.contains(&name) {
+                        state.started.push(name.clone());
+                        // Grow-only width seeding: receipts persist
+                        // immediately, so renderers must learn the widest name
+                        // as soon as it is known, not after it resolves.
+                        self.inner.on_jobs_planned(&state.started);
+                        self.inner.on_job_start(&name, None, None);
+                    }
                 }
                 ManagerEvent::JobOutput { name, line } => {
                     self.inner.on_job_output(&name, &line);
@@ -153,6 +217,9 @@ impl ManagerRoutingPresenter {
                 ManagerEvent::JobSkipped { name, reason } => {
                     self.inner
                         .on_job_skipped(&name, &reason, Duration::ZERO, false, None);
+                    // Settled: the sweep must not re-resolve it (it may be in
+                    // the seeded roster).
+                    state.resolved.push(name);
                 }
                 ManagerEvent::JobResolved { name, ok, duration } => {
                     state.resolved.push(name.clone());
@@ -205,7 +272,18 @@ impl ManagerRoutingPresenter {
             .cloned()
             .collect();
         for name in unresolved {
+            // A seeded job the stream never mentioned did not run (a glob or
+            // condition skip that printed no notice, or an over-listing
+            // config). On a passing hook it settles as skipped rather than
+            // borrowing the green; on a failed or cancelled phase every
+            // unresolved row follows the verdict, since a job in flight when
+            // the manager died has no known outcome.
+            let never_ran = state.seeded.contains(&name) && !state.appeared.contains(&name);
             match verdict {
+                GateVerdict::Success if never_ran => {
+                    self.inner
+                        .on_job_skipped(&name, "not run", Duration::ZERO, false, None);
+                }
                 GateVerdict::Success => self.inner.on_job_success(&name, Duration::ZERO),
                 GateVerdict::Failure => self.inner.on_job_failure(&name, Duration::ZERO),
                 GateVerdict::Cancelled => self.inner.on_job_cancelled(&name, Duration::ZERO),
@@ -868,6 +946,7 @@ mod tests {
         config.parse_managers = false;
         let presenter = ManagerRoutingPresenter::wrap_if_enabled(
             &config,
+            None,
             Some(recording.clone() as Arc<dyn JobPresenter>),
         )
         .expect("presenter preserved");
@@ -882,7 +961,218 @@ mod tests {
                 format!("output:{GATE_JOB}:{BANNER}"),
             ]
         );
-        assert!(ManagerRoutingPresenter::wrap_if_enabled(&config, None).is_none());
+        assert!(ManagerRoutingPresenter::wrap_if_enabled(&config, None, None).is_none());
+    }
+
+    // ── roster seeding (#753) ─────────────────────────────────────────────
+
+    /// A temp repo directory holding a lefthook config with the given
+    /// `pre-push` command names, for the seeding tests.
+    fn seed_dir(commands: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut yaml = String::from("pre-push:\n  parallel: true\n  commands:\n");
+        for name in commands {
+            yaml.push_str(&format!("    {name}:\n      run: true\n"));
+        }
+        std::fs::write(dir.path().join("lefthook.yml"), yaml).expect("write config");
+        dir
+    }
+
+    fn seeded_wrapper(
+        inner: Arc<dyn JobPresenter>,
+        dir: &tempfile::TempDir,
+    ) -> Arc<ManagerRoutingPresenter> {
+        ManagerRoutingPresenter::wrap_seeded(inner, Some(dir.path().to_path_buf()))
+    }
+
+    #[test]
+    fn the_roster_seeds_every_job_the_moment_the_manager_engages() {
+        // The headline fix: a long job (`slow`) is visible from engagement,
+        // not only when its block finally flushes. Here only `fast` produces a
+        // block before the summary; `slow` must still have a row from t=0.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["fast", "slow"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "┃  fast ❯ ",
+            "fast done",
+            "summary: (done in 5.0 seconds)",
+            "✔️ fast (0.2 seconds)",
+            "✔️ slow (4.9 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_success(GATE_JOB, Duration::from_secs(5));
+
+        let events = recording.events();
+        let engaged = events
+            .iter()
+            .position(|e| e.starts_with("manager_engaged"))
+            .expect("engaged");
+        let fast_start = events
+            .iter()
+            .position(|e| e == "start:fast:-")
+            .expect("fast row");
+        let slow_start = events
+            .iter()
+            .position(|e| e == "start:slow:-")
+            .expect("slow row");
+        // Both rows appear right after engagement — before any block flush.
+        let fast_output = events
+            .iter()
+            .position(|e| e == "output:fast:fast done")
+            .expect("fast output");
+        assert!(
+            engaged < slow_start && slow_start < fast_output,
+            "{events:?}"
+        );
+        assert!(
+            engaged < fast_start && fast_start < fast_output,
+            "{events:?}"
+        );
+        // The census sees both up front, and neither is started twice.
+        assert!(
+            events.contains(&"planned:fast,slow".to_string()),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|e| *e == "start:fast:-").count(),
+            1,
+            "a seeded job must not restart when its block flushes: {events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|e| e.starts_with("success:")).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_seeded_job_the_run_skips_flips_to_skipped_not_the_verdict() {
+        // `only-rs` is seeded but lefthook skips it (glob) — the leading skip
+        // notice must resolve it as skipped, and it must not also be swept.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["always", "only-rs"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "│  only-rs (skip) no matching push files",
+            "┃  always ❯ ",
+            "always done",
+            "summary: (done in 0.2 seconds)",
+            "✔️ always (0.17 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_success(GATE_JOB, Duration::from_secs(1));
+
+        let events = recording.events();
+        assert!(
+            events.contains(&"skipped:only-rs:no matching push files".to_string()),
+            "{events:?}"
+        );
+        // Seeded once, skipped once, and never swept into a success/failure.
+        assert_eq!(events.iter().filter(|e| *e == "start:only-rs:-").count(), 1);
+        assert!(
+            !events
+                .iter()
+                .any(|e| e == "success:only-rs" || e == "failure:only-rs"),
+            "a skipped job must not also be swept by the verdict: {events:?}"
+        );
+        assert!(events.contains(&"success:always".to_string()));
+    }
+
+    #[test]
+    fn a_seeded_phantom_settles_skipped_on_a_passing_hook() {
+        // The config over-lists (`ghost` exists in lefthook.yml but the run
+        // never touches it — e.g. a silent condition skip). On a passing hook
+        // it must settle as skipped, never borrow the green.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["real", "ghost"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "┃  real ❯ ",
+            "real done",
+            "summary: (done in 0.2 seconds)",
+            "✔️ real (0.17 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_success(GATE_JOB, Duration::from_secs(1));
+
+        let events = recording.events();
+        assert!(events.contains(&"success:real".to_string()), "{events:?}");
+        assert!(
+            events.contains(&"skipped:ghost:not run".to_string()),
+            "an unrun seeded job settles as skipped, not success: {events:?}"
+        );
+        assert!(
+            !events.contains(&"success:ghost".to_string()),
+            "a phantom must not borrow the passing verdict: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_hook_settles_an_unrun_seeded_job_with_the_verdict() {
+        // On failure the fate of a never-run seeded job is unknown; it follows
+        // the phase verdict rather than being labelled skipped.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["ran", "never"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [BANNER, "┃  ran ❯ ", "boom"] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_failure(GATE_JOB, Duration::from_secs(1));
+
+        let events = recording.events();
+        assert!(events.contains(&"failure:ran".to_string()), "{events:?}");
+        assert!(events.contains(&"failure:never".to_string()), "{events:?}");
+        assert!(
+            !events.iter().any(|e| e.contains("skipped:never")),
+            "a failed phase does not relabel an unrun job as skipped: {events:?}"
+        );
+    }
+
+    #[test]
+    fn seeding_with_no_config_falls_back_to_reveal_on_completion() {
+        // A dir without a lefthook config seeds nothing: identical to the
+        // unseeded path — jobs appear as their blocks flush.
+        let recording = Recording::arc();
+        let empty = tempfile::tempdir().expect("tempdir");
+        let wrapper = ManagerRoutingPresenter::wrap_seeded(
+            recording.clone(),
+            Some(empty.path().to_path_buf()),
+        );
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "┃  fmt ❯ ",
+            "fmt done",
+            "summary: (done in 0.1 seconds)",
+            "✔️ fmt (0.1 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_success(GATE_JOB, Duration::from_secs(1));
+
+        let events = recording.events();
+        // No pre-seeded rows: fmt's start comes with its block, as today.
+        assert!(
+            !events.iter().any(|e| e.starts_with("planned:"))
+                || events.contains(&"planned:fmt".to_string())
+        );
+        let start = events.iter().position(|e| e == "start:fmt:-").expect("fmt");
+        let output = events
+            .iter()
+            .position(|e| e == "output:fmt:fmt done")
+            .expect("out");
+        assert!(start < output, "fmt starts with its block: {events:?}");
+        assert_eq!(events.iter().filter(|e| *e == "start:fmt:-").count(), 1);
     }
 
     // ── lifecycle nesting ─────────────────────────────────────────────────
