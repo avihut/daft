@@ -32,18 +32,18 @@ pub struct TuiPresenter {
     start: Mutex<Option<Instant>>,
     /// Whether any job has failed during this phase.
     has_failure: Mutex<bool>,
-    /// Accumulated output from jobs (merged stdout+stderr via `on_job_output`).
-    ///
-    /// The generic runner streams both stdout and stderr lines through the same
-    /// `on_job_output` callback, so this contains the merged output stream.
-    output: Mutex<String>,
-    /// Per-job output, in arrival order. With a recognized manager (#753)
-    /// each entry is one manager job's own lines; on the plain path there is
-    /// a single entry mirroring `output`.
+    /// Per-job output, in arrival order (merged stdout+stderr — the runner
+    /// streams both through `on_job_output`). With a recognized manager (#753)
+    /// each entry is one manager job's own block; on the plain path there is a
+    /// single `pre-push` entry holding the whole stream. The merged view a
+    /// failure report may fall back to is reconstructed by joining these, so
+    /// one buffer suffices — the old parallel merged `String` was pure
+    /// overhead that double-buffered every hook's output (#753 review).
     job_outputs: Mutex<Vec<(String, String)>>,
-    /// The first job that failed — the failure report scopes to its lines
-    /// instead of dumping every passing job's output.
-    failing_job: Mutex<Option<String>>,
+    /// The jobs that failed, in failure order. The report header names the
+    /// first; the dump carries every one of their buffers, so a run where two
+    /// jobs fail shows both — not just the first (#753 review).
+    failing_jobs: Mutex<Vec<String>>,
 }
 
 impl TuiPresenter {
@@ -62,37 +62,54 @@ impl TuiPresenter {
             hook_type: hook_type.into(),
             start: Mutex::new(None),
             has_failure: Mutex::new(false),
-            output: Mutex::new(String::new()),
             job_outputs: Mutex::new(Vec::new()),
-            failing_job: Mutex::new(None),
+            failing_jobs: Mutex::new(Vec::new()),
         })
     }
 
-    /// Return the accumulated output, or `None` if empty.
+    /// The merged output stream, reconstructed by joining every job's buffer
+    /// in arrival order. `None` when nothing was captured. On the plain
+    /// (declined) path there is a single `pre-push` entry, so this is the
+    /// whole stream verbatim; with a recognized manager it is the jobs'
+    /// blocks concatenated.
     fn take_output(&self) -> Option<String> {
-        let output = self.output.lock().expect("TuiPresenter output poisoned");
-        if output.is_empty() {
+        let jobs = self
+            .job_outputs
+            .lock()
+            .expect("TuiPresenter job_outputs poisoned");
+        let merged: Vec<&str> = jobs
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .filter(|text| !text.is_empty())
+            .collect();
+        if merged.is_empty() {
             None
         } else {
-            Some(output.clone())
+            Some(merged.join("\n"))
         }
     }
 
-    /// The failure report's output: the failing job's own lines when a
-    /// recognized manager named it (#753), the whole merged stream
-    /// otherwise. Falls back to the full stream when the failing job's
-    /// buffer is empty — a silent failure still deserves whatever context
-    /// the stream has.
-    fn take_failure_output(&self, failing_job: Option<&str>) -> Option<String> {
-        if let Some(job) = failing_job {
+    /// The failure report's output: every failing job's own lines, in failure
+    /// order, when a recognized manager named them (#753) — passing jobs'
+    /// output stays out. Falls back to the whole merged stream when no failing
+    /// job produced any lines (a silent failure still deserves context).
+    fn take_failure_output(&self, failing_jobs: &[String]) -> Option<String> {
+        if !failing_jobs.is_empty() {
             let jobs = self
                 .job_outputs
                 .lock()
                 .expect("TuiPresenter job_outputs poisoned");
-            if let Some((_, text)) = jobs.iter().find(|(name, _)| name == job)
-                && !text.is_empty()
-            {
-                return Some(text.clone());
+            let scoped: Vec<String> = failing_jobs
+                .iter()
+                .filter_map(|failed| {
+                    jobs.iter()
+                        .find(|(name, _)| name == failed)
+                        .map(|(_, text)| text.clone())
+                        .filter(|text| !text.is_empty())
+                })
+                .collect();
+            if !scoped.is_empty() {
+                return Some(scoped.join("\n"));
             }
         }
         self.take_output()
@@ -120,15 +137,9 @@ impl JobPresenter for TuiPresenter {
     }
 
     fn on_job_output(&self, name: &str, line: &str) {
-        // Accumulate output for failure reporting — the merged stream and
-        // the per-job cut (#753 scopes the report to the failing job).
-        let mut output = self.output.lock().expect("TuiPresenter output poisoned");
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(line);
-        drop(output);
-
+        // Accumulate per-job output for a scoped failure report (#753). The
+        // merged stream a fallback needs is reconstructed from these buffers,
+        // so a single per-job store suffices — no parallel merged String.
         let mut jobs = self
             .job_outputs
             .lock()
@@ -160,10 +171,15 @@ impl JobPresenter for TuiPresenter {
             .has_failure
             .lock()
             .expect("TuiPresenter has_failure poisoned") = true;
-        self.failing_job
-            .lock()
-            .expect("TuiPresenter failing_job poisoned")
-            .get_or_insert_with(|| name.to_string());
+        {
+            let mut failing = self
+                .failing_jobs
+                .lock()
+                .expect("TuiPresenter failing_jobs poisoned");
+            if !failing.iter().any(|job| job == name) {
+                failing.push(name.to_string());
+            }
+        }
 
         let _ = self.sender.send(DagEvent::JobCompleted {
             branch_name: self.branch_name.clone(),
@@ -217,13 +233,15 @@ impl JobPresenter for TuiPresenter {
             .lock()
             .expect("TuiPresenter has_failure poisoned");
 
-        let failing_job = self
-            .failing_job
+        let failing_jobs = self
+            .failing_jobs
             .lock()
-            .expect("TuiPresenter failing_job poisoned")
+            .expect("TuiPresenter failing_jobs poisoned")
             .clone();
+        // The report header names the first failure; the dump carries them all.
+        let failing_job = failing_jobs.first().cloned();
         let output = if has_failure {
-            self.take_failure_output(failing_job.as_deref())
+            self.take_failure_output(&failing_jobs)
         } else {
             None
         };
@@ -525,6 +543,51 @@ mod tests {
             } => {
                 assert_eq!(failing_job.as_deref(), Some("mute"));
                 assert_eq!(output.as_deref(), Some("fmt clean"));
+            }
+            other => panic!("expected HookCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_report_carries_every_failing_job_not_just_the_first() {
+        // lefthook runs all jobs to completion by default, so two can fail in
+        // one run. The report must show both blocks — narrowing to the first
+        // failure dropped the second job's output entirely (#753 review).
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
+
+        presenter.on_phase_start("pre-push", None);
+        presenter.on_job_start("fmt", None, None);
+        presenter.on_job_output("fmt", "fmt clean");
+        presenter.on_job_success("fmt", Duration::from_millis(100));
+        presenter.on_job_start("clippy", None, None);
+        presenter.on_job_output("clippy", "clippy: error[E0001] here");
+        presenter.on_job_failure("clippy", Duration::from_millis(200));
+        presenter.on_job_start("tests", None, None);
+        presenter.on_job_output("tests", "tests: FAILED at bar.rs:7");
+        presenter.on_job_failure("tests", Duration::from_millis(300));
+        presenter.on_phase_complete(Duration::from_secs(1));
+
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        match events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted")
+        {
+            DagEvent::HookCompleted {
+                output,
+                failing_job,
+                ..
+            } => {
+                // The header names the first failure.
+                assert_eq!(failing_job.as_deref(), Some("clippy"));
+                let text = output.as_ref().expect("failure carries output");
+                // Both failing jobs' output rides the report; the passing
+                // job's does not.
+                assert!(text.contains("error[E0001]"), "clippy's lines: {text}");
+                assert!(text.contains("FAILED at bar.rs:7"), "tests' lines: {text}");
+                assert!(!text.contains("fmt clean"), "passing output leaked: {text}");
             }
             other => panic!("expected HookCompleted, got {other:?}"),
         }
