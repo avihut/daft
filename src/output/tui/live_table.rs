@@ -98,16 +98,14 @@ impl LiveTable {
         // the default branch row in `daft prune` / `daft sync`). Synthesized
         // open-PR rows are seed-final by definition — everything they show
         // came from the forge cache and no collector targets them — so every
-        // cell is marked received (blank means blank, not loading).
+        // cell is marked received (blank means blank, not loading). A
+        // branchless row (sandbox / foreign detached) additionally settles
+        // its BRANCH_KEYED cells: the collector masks those out for it, so
+        // without this they'd shimmer until the whole collection completes
+        // and only then read as blank.
         let received_patches = seed
             .iter()
-            .map(|info| {
-                if info.kind == EntryKind::ForgePr {
-                    FieldSet::ALL
-                } else {
-                    cfg.seeded_fields
-                }
-            })
+            .map(|info| Self::seed_received(info, cfg.seeded_fields))
             .collect();
         let rows: Vec<WorktreeRow> = seed.into_iter().map(WorktreeRow::idle).collect();
         // A cell is stale when the caller pre-populated its value (only SIZE
@@ -337,17 +335,30 @@ impl LiveTable {
     /// should extend this API rather than rely on the default.
     pub fn push_row(&mut self, info: WorktreeInfo) {
         // Synthesized open-PR rows are seed-final wherever they enter (see
-        // `new`); other dynamic rows start all-loading as documented above.
-        let received = if info.kind == EntryKind::ForgePr {
-            FieldSet::ALL
-        } else {
-            FieldSet::EMPTY
-        };
+        // `new`); other dynamic rows start all-loading as documented above,
+        // minus the cells the collector could never patch for them.
+        let received = Self::seed_received(&info, FieldSet::EMPTY);
         self.rows.push(WorktreeRow::idle(info));
         self.received_patches.push(received);
         // Dynamically-discovered rows carry no cache seed, so no field is
         // stale — keep the vector length in lockstep with `received_patches`.
         self.stale_fields.push(FieldSet::EMPTY);
+    }
+
+    /// The received-at-seed bits for a row: `base` (the fields this view's
+    /// collector won't stream at all) plus the bits it will never patch for
+    /// this particular row — everything for a seed-final ForgePr row, the
+    /// `BRANCH_KEYED` cells for a branchless one (the collector masks them
+    /// out per-target; see `list_stream::run_worker`).
+    fn seed_received(info: &WorktreeInfo, base: FieldSet) -> FieldSet {
+        if info.kind == EntryKind::ForgePr {
+            return FieldSet::ALL;
+        }
+        if info.branchless {
+            base | FieldSet::BRANCH_KEYED
+        } else {
+            base
+        }
     }
 }
 
@@ -407,6 +418,49 @@ mod tests {
         assert!(!t.collection_complete);
         t.apply_event(&DagEvent::WorktreeInfoCollectionDone);
         assert!(t.collection_complete);
+    }
+
+    /// A branchless row (sandbox / foreign detached) settles its
+    /// branch-keyed cells at seed: the collector never streams them, so
+    /// without the settle they'd shimmer until the whole collection
+    /// completes and only then read as blank (#53).
+    #[test]
+    fn branchless_rows_settle_branch_keyed_cells_at_seed() {
+        let mut sandbox = info("main-fork");
+        sandbox.is_sandbox = true;
+        sandbox.branchless = true;
+        let t = LiveTable::new(vec![info("feat/x"), sandbox], cfg());
+        let idx =
+            |t: &LiveTable, name: &str| t.rows.iter().position(|r| r.info.name == name).unwrap();
+        let b = idx(&t, "feat/x");
+        let s = idx(&t, "main-fork");
+
+        // Path-derived cells stream for both rows...
+        assert!(t.is_cell_loading(b, FieldSet::CHANGES));
+        assert!(t.is_cell_loading(s, FieldSet::CHANGES));
+        assert!(t.is_cell_loading(s, FieldSet::SIZE));
+        // ...branch-keyed cells load only where a branch exists.
+        assert!(t.is_cell_loading(b, FieldSet::BASE_AHEAD_BEHIND));
+        assert!(!t.is_cell_loading(s, FieldSet::BASE_AHEAD_BEHIND));
+        assert!(!t.is_cell_loading(s, FieldSet::OWNER));
+        assert!(!t.is_cell_loading(s, FieldSet::FORGE_REF));
+    }
+
+    /// Dynamically-pushed branchless rows get the same settle as seeded
+    /// ones — `push_row` shares the seeding rule with `new`.
+    #[test]
+    fn push_row_settles_branch_keyed_cells_for_branchless_rows() {
+        let mut t = LiveTable::new(vec![info("feat/x")], cfg());
+        let mut sandbox = info("brave-otter");
+        sandbox.branchless = true;
+        t.push_row(sandbox);
+        let s = t
+            .rows
+            .iter()
+            .position(|r| r.info.name == "brave-otter")
+            .unwrap();
+        assert!(!t.is_cell_loading(s, FieldSet::BASE_AHEAD_BEHIND));
+        assert!(t.is_cell_loading(s, FieldSet::CHANGES));
     }
 
     #[test]

@@ -28,6 +28,22 @@ impl FieldSet {
     /// Fields whose values can change after a `git fetch`.
     pub const REMOTE_DERIVED: Self = Self(Self::REMOTE_AHEAD_BEHIND.0 | Self::REMOTE_LINES.0);
 
+    /// Fields keyed by a branch name. A branchless target (a sandbox, or any
+    /// worktree with no branch to query) has no value for these: the
+    /// streaming collector masks them out of its request, and the live table
+    /// pre-marks them received at seed so the cells read as blank instead of
+    /// shimmering until the whole collection completes. One constant serves
+    /// both sides so the skip-list and the settle-list cannot drift.
+    pub const BRANCH_KEYED: Self = Self(
+        Self::BASE_AHEAD_BEHIND.0
+            | Self::REMOTE_AHEAD_BEHIND.0
+            | Self::BRANCH_AGE.0
+            | Self::OWNER.0
+            | Self::BASE_LINES.0
+            | Self::REMOTE_LINES.0
+            | Self::FORGE_REF.0,
+    );
+
     /// Fields whose values can change after any per-branch task
     /// (Update / Rebase / Push). Used by the orchestrator for post-task
     /// re-runs.
@@ -146,6 +162,34 @@ mod tests {
         let requested = FieldSet::CHANGES | FieldSet::OWNER;
         assert_eq!(requested | !requested, FieldSet::ALL);
         assert_eq!(!FieldSet::EMPTY, FieldSet::ALL);
+    }
+
+    #[test]
+    fn branch_keyed_covers_exactly_the_branchless_skips() {
+        // The collector computes these from a branch name — a branchless
+        // target can't stream them, so they must all be in the mask...
+        for member in [
+            FieldSet::BASE_AHEAD_BEHIND,
+            FieldSet::REMOTE_AHEAD_BEHIND,
+            FieldSet::BRANCH_AGE,
+            FieldSet::OWNER,
+            FieldSet::BASE_LINES,
+            FieldSet::REMOTE_LINES,
+            FieldSet::FORGE_REF,
+        ] {
+            assert!(FieldSet::BRANCH_KEYED.contains(member));
+        }
+        // ...while path-derived fields stream for every worktree, branch or
+        // not, and must never be masked.
+        for member in [
+            FieldSet::CHANGES,
+            FieldSet::LAST_COMMIT,
+            FieldSet::CHANGES_LINES,
+            FieldSet::SIZE,
+            FieldSet::MTIME,
+        ] {
+            assert!(!FieldSet::BRANCH_KEYED.contains(member));
+        }
     }
 
     #[test]

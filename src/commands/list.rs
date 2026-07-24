@@ -583,11 +583,11 @@ fn run_blocking(args: Args) -> Result<()> {
         && let Ok(repo_hash) =
             crate::core::repo_identity::compute_repo_id_from_common_dir(&git_common_dir)
     {
+        // Sandboxes cache like branches: their dirnames are unique worktree
+        // names since #53, and the seed's path-guard covers the
+        // branch∪sandbox slug-shadowing case.
         let fresh = infos
             .iter()
-            // Sandboxes all report name "(detached)" and would collide on the
-            // (repo_hash, branch_slug) cache key — don't cache them (review).
-            .filter(|info| !info.is_sandbox)
             .filter_map(|info| Some((info.name.clone(), info.path.clone()?, info.size_bytes?)));
         crate::commands::size_cache::persist_worktree_sizes(&repo_hash, fresh);
     }
@@ -1865,6 +1865,7 @@ mod tests {
             size_bytes: None,
             working_tree_mtime: None,
             is_sandbox: false,
+            branchless: false,
             op: None,
             identity_source: None,
             drifted: false,
@@ -1928,6 +1929,7 @@ mod tests {
             size_bytes: Some(1024),
             working_tree_mtime: None,
             is_sandbox: false,
+            branchless: false,
             op: None,
             identity_source: None,
             drifted: false,
