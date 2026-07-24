@@ -1,31 +1,40 @@
 //! Queries against the `worktree_identities` table (a worktree's intended branch).
 
 use crate::store::error::Result;
-use crate::store::models::WorktreeIdentityRow;
+use crate::store::models::{WorktreeIdentityRow, WorktreeKind};
 use crate::store::repos::invocations::parse_rfc3339;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct WorktreeIdentitiesRepo;
 
 impl WorktreeIdentitiesRepo {
-    /// Record what branch a worktree is for. The latest observation wins:
-    /// a worktree's intent changes when it is renamed or re-purposed, and
-    /// there is no first-seen worth preserving.
+    /// Record what a worktree is for. The latest observation wins: a
+    /// worktree's intent changes when it is renamed or re-purposed, and
+    /// there is no first-seen worth preserving. Rewrites the whole row —
+    /// including `kind` — so re-purposing a sandbox into a branch worktree
+    /// (or the reverse) leaves no stale sandbox metadata behind.
     pub fn upsert(conn: &Connection, row: &WorktreeIdentityRow) -> Result<()> {
         conn.execute(
             "INSERT INTO worktree_identities
-                 (repo_hash, worktree_id, branch, worktree_path, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+                 (repo_hash, worktree_id, branch, worktree_path, updated_at,
+                  kind, source_spelling, pinned_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(repo_hash, worktree_id) DO UPDATE SET
-                 branch        = excluded.branch,
-                 worktree_path = excluded.worktree_path,
-                 updated_at    = excluded.updated_at",
+                 branch          = excluded.branch,
+                 worktree_path   = excluded.worktree_path,
+                 updated_at      = excluded.updated_at,
+                 kind            = excluded.kind,
+                 source_spelling = excluded.source_spelling,
+                 pinned_commit   = excluded.pinned_commit",
             params![
                 row.repo_hash,
                 row.worktree_id,
                 row.branch,
                 row.worktree_path,
                 row.updated_at.to_rfc3339(),
+                row.kind.as_str(),
+                row.source_spelling,
+                row.pinned_commit,
             ],
         )?;
         Ok(())
@@ -46,8 +55,9 @@ impl WorktreeIdentitiesRepo {
     pub fn observe(conn: &Connection, row: &WorktreeIdentityRow) -> Result<()> {
         conn.execute(
             "INSERT INTO worktree_identities
-                 (repo_hash, worktree_id, branch, worktree_path, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+                 (repo_hash, worktree_id, branch, worktree_path, updated_at,
+                  kind, source_spelling, pinned_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(repo_hash, worktree_id) DO UPDATE SET
                  worktree_path = excluded.worktree_path,
                  updated_at    = excluded.updated_at",
@@ -57,6 +67,9 @@ impl WorktreeIdentitiesRepo {
                 row.branch,
                 row.worktree_path,
                 row.updated_at.to_rfc3339(),
+                row.kind.as_str(),
+                row.source_spelling,
+                row.pinned_commit,
             ],
         )?;
         Ok(())
@@ -69,7 +82,8 @@ impl WorktreeIdentitiesRepo {
     ) -> Result<Option<WorktreeIdentityRow>> {
         let row = conn
             .query_row(
-                "SELECT repo_hash, worktree_id, branch, worktree_path, updated_at
+                "SELECT repo_hash, worktree_id, branch, worktree_path, updated_at,
+                        kind, source_spelling, pinned_commit
                  FROM worktree_identities
                  WHERE repo_hash = ?1 AND worktree_id = ?2",
                 params![repo_hash, worktree_id],
@@ -83,7 +97,8 @@ impl WorktreeIdentitiesRepo {
     /// The list reads the whole set once rather than querying per worktree.
     pub fn list_for_repo(conn: &Connection, repo_hash: &str) -> Result<Vec<WorktreeIdentityRow>> {
         let mut stmt = conn.prepare(
-            "SELECT repo_hash, worktree_id, branch, worktree_path, updated_at
+            "SELECT repo_hash, worktree_id, branch, worktree_path, updated_at,
+                    kind, source_spelling, pinned_commit
              FROM worktree_identities
              WHERE repo_hash = ?1
              ORDER BY worktree_id ASC",
@@ -108,10 +123,27 @@ impl WorktreeIdentitiesRepo {
     /// it. Removal paths know the branch they are deleting, not the
     /// private-gitdir id — git has usually already unregistered the worktree
     /// by the time they can clean up.
+    ///
+    /// Branch rows only: a sandbox whose directory name happens to match a
+    /// deleted branch is a different worktree and must survive the sweep.
     pub fn delete_for_branch(conn: &Connection, repo_hash: &str, branch: &str) -> Result<usize> {
         let n = conn.execute(
-            "DELETE FROM worktree_identities WHERE repo_hash = ?1 AND branch = ?2",
+            "DELETE FROM worktree_identities
+             WHERE repo_hash = ?1 AND branch = ?2 AND kind = 'branch'",
             params![repo_hash, branch],
+        )?;
+        Ok(n)
+    }
+
+    /// Forget a sandbox by its directory-name identity — the removal
+    /// fallback when the private-gitdir id could no longer be read. The
+    /// mirror image of [`Self::delete_for_branch`]: sandbox rows only, so a
+    /// branch named like the sandbox survives.
+    pub fn delete_sandbox_by_name(conn: &Connection, repo_hash: &str, name: &str) -> Result<usize> {
+        let n = conn.execute(
+            "DELETE FROM worktree_identities
+             WHERE repo_hash = ?1 AND branch = ?2 AND kind IN ('canonical', 'fork')",
+            params![repo_hash, name],
         )?;
         Ok(n)
     }
@@ -119,12 +151,16 @@ impl WorktreeIdentitiesRepo {
 
 fn row_to_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeIdentityRow> {
     let updated_at_str: String = row.get("updated_at")?;
+    let kind_str: String = row.get("kind")?;
     Ok(WorktreeIdentityRow {
         repo_hash: row.get("repo_hash")?,
         worktree_id: row.get("worktree_id")?,
         branch: row.get("branch")?,
         worktree_path: row.get("worktree_path")?,
         updated_at: parse_rfc3339(&updated_at_str, "updated_at")?,
+        kind: WorktreeKind::parse(&kind_str),
+        source_spelling: row.get("source_spelling")?,
+        pinned_commit: row.get("pinned_commit")?,
     })
 }
 
@@ -154,7 +190,18 @@ mod tests {
             // repos-no-format), and the grep does not exempt test code.
             worktree_path: String::from("/tmp/wt/") + worktree_id,
             updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            kind: WorktreeKind::Branch,
+            source_spelling: None,
+            pinned_commit: None,
         }
+    }
+
+    fn sandbox(worktree_id: &str, name: &str, kind: WorktreeKind) -> WorktreeIdentityRow {
+        let mut row = sample(worktree_id, name);
+        row.kind = kind;
+        row.source_spelling = Some("v1.18.0".into());
+        row.pinned_commit = Some("a".repeat(40));
+        row
     }
 
     #[test]
@@ -314,5 +361,96 @@ mod tests {
             .map(|r| r.branch)
             .collect();
         assert_eq!(remaining, vec!["feat/y"]);
+    }
+
+    /// A sandbox and a branch row round-trip their kind and sandbox fields.
+    #[test]
+    fn sandbox_rows_round_trip_kind_spelling_and_pin() {
+        let (_tmp, conn) = fresh_db();
+        let row = sandbox("wt-s", "v1.18.0", WorktreeKind::Canonical);
+        WorktreeIdentitiesRepo::upsert(&conn, &row).unwrap();
+        assert_eq!(
+            WorktreeIdentitiesRepo::get(&conn, "repo", "wt-s").unwrap(),
+            Some(row)
+        );
+    }
+
+    /// The gate this migration exists for: removing a branch named like a
+    /// sandbox's directory must not take the sandbox's record with it.
+    #[test]
+    fn delete_for_branch_spares_a_same_named_sandbox() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::upsert(&conn, &sample("wt-a", "scratch")).unwrap();
+        WorktreeIdentitiesRepo::upsert(&conn, &sandbox("wt-s", "scratch", WorktreeKind::Fork))
+            .unwrap();
+
+        assert_eq!(
+            WorktreeIdentitiesRepo::delete_for_branch(&conn, "repo", "scratch").unwrap(),
+            1,
+            "only the branch row goes"
+        );
+        let row = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-s")
+            .unwrap()
+            .expect("the sandbox record survives");
+        assert_eq!(row.kind, WorktreeKind::Fork);
+    }
+
+    /// And the mirror image: forgetting a sandbox by name spares a branch
+    /// that happens to share the spelling.
+    #[test]
+    fn delete_sandbox_by_name_spares_a_same_named_branch() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::upsert(&conn, &sample("wt-a", "scratch")).unwrap();
+        WorktreeIdentitiesRepo::upsert(&conn, &sandbox("wt-s", "scratch", WorktreeKind::Canonical))
+            .unwrap();
+
+        assert_eq!(
+            WorktreeIdentitiesRepo::delete_sandbox_by_name(&conn, "repo", "scratch").unwrap(),
+            1
+        );
+        let row = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-a")
+            .unwrap()
+            .expect("the branch record survives");
+        assert_eq!(row.kind, WorktreeKind::Branch);
+    }
+
+    /// Observation refreshes path/timestamp but never rewrites what the row
+    /// *is* — including its kind and sandbox metadata.
+    #[test]
+    fn observation_never_rewrites_kind_or_sandbox_fields() {
+        let (_tmp, conn) = fresh_db();
+        let row = sandbox("wt-s", "v1.18.0", WorktreeKind::Canonical);
+        WorktreeIdentitiesRepo::upsert(&conn, &row).unwrap();
+
+        let mut observed = sample("wt-s", "some-branch");
+        observed.worktree_path = "/tmp/wt/moved".into();
+        WorktreeIdentitiesRepo::observe(&conn, &observed).unwrap();
+
+        let read = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-s")
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.kind, WorktreeKind::Canonical, "kind is intent");
+        assert_eq!(read.branch, "v1.18.0", "so is the name");
+        assert_eq!(read.source_spelling.as_deref(), Some("v1.18.0"));
+        assert!(read.pinned_commit.is_some());
+        assert_eq!(read.worktree_path, "/tmp/wt/moved", "the path refreshes");
+    }
+
+    /// A deliberate upsert re-purposes a sandbox into a branch worktree and
+    /// leaves no sandbox metadata behind (doctor --fix relies on this).
+    #[test]
+    fn upsert_repurposes_a_sandbox_into_a_branch_row() {
+        let (_tmp, conn) = fresh_db();
+        WorktreeIdentitiesRepo::upsert(&conn, &sandbox("wt-s", "v1.18.0", WorktreeKind::Fork))
+            .unwrap();
+        WorktreeIdentitiesRepo::upsert(&conn, &sample("wt-s", "feat/adopted")).unwrap();
+
+        let read = WorktreeIdentitiesRepo::get(&conn, "repo", "wt-s")
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.kind, WorktreeKind::Branch);
+        assert_eq!(read.branch, "feat/adopted");
+        assert_eq!(read.source_spelling, None);
+        assert_eq!(read.pinned_commit, None);
     }
 }

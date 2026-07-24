@@ -28,5 +28,5 @@ pub use job::JobRow;
 pub use repo_policy::RepoPolicyRow;
 pub use repo_size::RepoSizeRow;
 pub use visitor_seed::VisitorSeedRow;
-pub use worktree_identity::WorktreeIdentityRow;
+pub use worktree_identity::{WorktreeIdentityRow, WorktreeKind};
 pub use worktree_size::WorktreeSizeRow;
