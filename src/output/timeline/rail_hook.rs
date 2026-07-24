@@ -89,6 +89,18 @@ pub struct RailHookRenderer {
     finished: Vec<JobResultEntry>,
     /// Running max of started job names; live bars re-pad when it grows.
     name_width: usize,
+    /// The recognized hook manager's identity (`lefthook v2.1.10`), set by
+    /// [`Self::set_manager_engaged`]. Rides the census bar while the phase
+    /// runs and the verbose close note for scrollback.
+    manager_fact: Option<String>,
+    /// The census: one dim live row atop the section's job spinners showing
+    /// the manager fact plus how many jobs have appeared. The manager
+    /// announces no upfront total, so the count is jobs-so-far, never `n/m`.
+    /// Removed (never persisted) when the phase settles — the receipts and
+    /// close note are the scrollback record.
+    census: Option<ProgressBar>,
+    /// Jobs started since engagement — the census count.
+    census_seen: usize,
 }
 
 impl RailHookRenderer {
@@ -134,6 +146,56 @@ impl RailHookRenderer {
             failed: HashSet::new(),
             finished: Vec::new(),
             name_width: 0,
+            manager_fact: None,
+            census: None,
+            census_seen: 0,
+        }
+    }
+
+    /// A hook manager engaged on the gate stream (#753): raise the census —
+    /// a dim live row above the job spinners carrying the manager's identity
+    /// and a running jobs-so-far count. Created here, before any job row
+    /// exists, so `insert_before(anchor)` seats it at the top of the
+    /// section's live stack; removed at `print_summary`, never persisted.
+    pub fn set_manager_engaged(&mut self, manager: &str, version: Option<&str>) {
+        let fact = match version {
+            Some(version) => format!("{manager} v{version}"),
+            None => manager.to_string(),
+        };
+        self.manager_fact = Some(fact);
+        if self.quiet || self.census.is_some() {
+            self.refresh_census();
+            return;
+        }
+        let bar = self
+            .mp
+            .insert_before(&self.anchor, ProgressBar::new_spinner());
+        bar.set_style(self.job_style.clone());
+        bar.enable_steady_tick(Duration::from_millis(80));
+        self.census = Some(bar);
+        self.refresh_census();
+    }
+
+    /// Recompose the census message: `lefthook v2.1.10 · 3 jobs`, all grey —
+    /// chrome, not a competitor to the job rows.
+    fn refresh_census(&self) {
+        let (Some(bar), Some(fact)) = (&self.census, &self.manager_fact) else {
+            return;
+        };
+        let text = match self.census_seen {
+            0 => fact.clone(),
+            1 => format!("{fact} \u{b7} 1 job"),
+            n => format!("{fact} \u{b7} {n} jobs"),
+        };
+        bar.set_message(render::paint(GREY, &text, self.use_color));
+    }
+
+    /// Drop the census bar (phase settled). The receipts and the verbose
+    /// close note carry the record; a persisted census would double it.
+    fn remove_census(&mut self) {
+        if let Some(bar) = self.census.take() {
+            bar.disable_steady_tick();
+            self.mp.remove(&bar);
         }
     }
 
@@ -201,6 +263,8 @@ impl RailHookRenderer {
             annotation: description.map(str::to_string),
         };
         self.jobs.insert(name.to_string(), state);
+        self.census_seen += 1;
+        self.refresh_census();
         self.grow_width_to(name.chars().count());
         self.refresh_bar(name);
         if let Some(state) = self.jobs.get(name) {
@@ -401,15 +465,19 @@ impl RailHookRenderer {
     /// row. Verbose: the legacy summary's one surviving fact, the phase
     /// total, closes the section as a recessed `└` note — the section's own
     /// rail end (always with the total; the 1s threshold is for row
-    /// durations, not the relocated "done in").
-    pub fn print_summary(&self, total_duration: Duration) {
+    /// durations, not the relocated "done in"). A recognized manager's
+    /// identity rides the note (`· lefthook v2.1.10`) — the census bar that
+    /// carried it live is removed here, never persisted.
+    pub fn print_summary(&mut self, total_duration: Duration) {
+        self.remove_census();
         if !self.verbose.get() || self.finished.is_empty() {
             return;
         }
-        let note = render::section_close(
-            &format!("all jobs in {}", format_duration(total_duration)),
-            self.use_color,
-        );
+        let mut close = format!("all jobs in {}", format_duration(total_duration));
+        if let Some(fact) = &self.manager_fact {
+            close.push_str(&format!(" \u{b7} {fact}"));
+        }
+        let note = render::section_close(&close, self.use_color);
         self.mp
             .println(self.tucked(render::gutter(&note, self.use_color)))
             .ok();
@@ -1098,7 +1166,7 @@ mod tests {
 
     #[test]
     fn closing_note_skips_empty_phases_and_succinct_mode() {
-        let (r, term, _h) = harness_with(verbose_config(), None, false);
+        let (mut r, term, _h) = harness_with(verbose_config(), None, false);
         r.print_summary(Duration::from_secs(3));
         assert_eq!(term.contents(), "", "no jobs — no note");
         let (mut r, term, _h) = harness(None, false);
@@ -1117,6 +1185,76 @@ mod tests {
         let (mut r, term, _h) = harness_with(verbose_config(), None, false);
         r.finish_job_skipped("lint", "skip: true", Duration::ZERO, false, None);
         assert_eq!(term.contents(), "");
+    }
+
+    // ── the manager census (#753) ─────────────────────────────────────────
+
+    #[test]
+    fn census_rides_engagement_and_counts_appearing_jobs() {
+        let (mut r, term, _h) = harness(None, false);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        assert!(
+            term.contents().contains("lefthook v2.1.10"),
+            "the census names the manager before any job: {}",
+            term.contents()
+        );
+        r.start_job("fmt", None);
+        r.start_job("clippy", None);
+        assert!(
+            term.contents().contains("lefthook v2.1.10 \u{b7} 2 jobs"),
+            "the census counts jobs so far (no upfront total exists): {}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn census_never_persists_and_the_verbose_close_note_carries_the_fact() {
+        let (mut r, term, _h) = harness_with(verbose_config(), None, false);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.finish_job_success("fmt", Duration::from_millis(300));
+        r.print_summary(Duration::from_millis(3000));
+        let contents = term.contents();
+        assert!(
+            !contents.contains("\u{b7} 1 job"),
+            "the census is live-only chrome — it must not persist: {contents}"
+        );
+        assert!(
+            contents.ends_with("\u{2502}  \u{2514}  all jobs in 3.0s \u{b7} lefthook v2.1.10"),
+            "the close note is the fact's scrollback record: {contents}"
+        );
+    }
+
+    #[test]
+    fn succinct_keeps_its_no_summary_contract_with_a_manager_engaged() {
+        let (mut r, term, _h) = harness(None, false);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        r.finish_job_success("fmt", Duration::from_millis(300));
+        r.print_summary(Duration::from_secs(3));
+        assert!(r.census.is_none(), "settle removes the census bar");
+        // Succinct prints no close note, so the frozen InMemoryTerm frame
+        // still shows the removed bar until something draws (in prod the
+        // rail footer ticker redraws within one tick). Force the next draw
+        // and assert the census is gone from it.
+        r.println("post");
+        assert_eq!(
+            term.contents(),
+            "\u{2502}  \u{2713}  fmt\n\u{2502}  post",
+            "succinct: receipts only — census removed, no close note"
+        );
+    }
+
+    #[test]
+    fn quiet_raises_no_census_bar() {
+        let (mut r, term, _h) = harness(None, true);
+        r.set_manager_engaged("lefthook", Some("2.1.10"));
+        r.start_job("fmt", None);
+        assert!(
+            !term.contents().contains("lefthook"),
+            "quiet suppresses the census like all hook chrome: {}",
+            term.contents()
+        );
     }
 
     #[test]

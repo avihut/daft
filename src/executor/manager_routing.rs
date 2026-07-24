@@ -119,11 +119,15 @@ impl ManagerRoutingPresenter {
     fn translate(&self, state: &mut RoutingState, events: Vec<ManagerEvent>) {
         for event in events {
             match event {
-                ManagerEvent::Engaged { .. } => {
+                ManagerEvent::Engaged {
+                    manager, version, ..
+                } => {
                     state.engaged = true;
                     // The synthetic job never materializes on the engaged
                     // path; the manager's own jobs are the story now.
                     state.held_start = None;
+                    self.inner
+                        .on_manager_engaged(None, manager, version.as_deref());
                 }
                 ManagerEvent::JobStarted { name } => {
                     state.started.push(name.clone());
@@ -374,6 +378,13 @@ mod tests {
         fn on_jobs_planned(&self, names: &[String]) {
             self.log(format!("planned:{}", names.join(",")));
         }
+        fn on_manager_engaged(&self, scope: Option<&str>, manager: &str, version: Option<&str>) {
+            self.log(format!(
+                "manager_engaged:{}:{manager}:{}",
+                scope.unwrap_or("-"),
+                version.unwrap_or("-")
+            ));
+        }
         fn on_phase_complete(&self, _total: Duration) {
             self.log("phase_complete".to_string());
         }
@@ -414,6 +425,9 @@ mod tests {
             recording.events(),
             vec![
                 "phase_start:pre-push".to_string(),
+                // The engagement fact precedes every job event — renderers
+                // raise their census before the first row appears.
+                "manager_engaged:-:lefthook:2.1.10".to_string(),
                 "planned:fmt".to_string(),
                 "start:fmt:-".to_string(),
                 "output:fmt:fmt output line".to_string(),

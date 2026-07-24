@@ -72,6 +72,14 @@ pub trait JobPresenter: Send + Sync {
     /// later `needs:` wave. Default: ignore.
     fn on_jobs_planned(&self, _names: &[String]) {}
 
+    /// A hook manager was recognized on a job's output stream (#753): the
+    /// jobs that follow are the manager's, routed as first-class events.
+    /// `scope` is `None` on the pre-push gate path (the phase itself is the
+    /// manager run) or the owning job's name when a manager runs inside a
+    /// lifecycle job. Renderers may surface the fact (the rail's census row
+    /// and close note); everything else ignores it. Default: ignore.
+    fn on_manager_engaged(&self, _scope: Option<&str>, _manager: &str, _version: Option<&str>) {}
+
     /// A phase has completed. Display the summary.
     fn on_phase_complete(&self, total_duration: Duration);
 

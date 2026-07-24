@@ -109,10 +109,20 @@ impl EmbedRenderer {
         }
     }
 
-    fn print_summary(&self, total_duration: Duration) {
+    fn print_summary(&mut self, total_duration: Duration) {
         match self {
             Self::Block(r) => r.print_summary(total_duration),
             Self::Rail(r) => r.print_summary(total_duration),
+        }
+    }
+
+    /// A recognized hook manager on the gate stream (#753). The rail raises
+    /// its census row; the block renderer's banner and summary already frame
+    /// the jobs, so it ignores the fact.
+    fn set_manager_engaged(&mut self, manager: &str, version: Option<&str>) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.set_manager_engaged(manager, version),
         }
     }
 
@@ -352,6 +362,12 @@ impl JobPresenter for CliPresenter {
         }
         if let Some(r) = ready(&mut self.lock()) {
             r.seed_name_width(width);
+        }
+    }
+
+    fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.set_manager_engaged(manager, version);
         }
     }
 
