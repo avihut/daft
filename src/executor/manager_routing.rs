@@ -73,6 +73,12 @@ struct RoutingState {
     appeared: Vec<String>,
     /// Jobs the manager's summary (or a skip notice) has resolved.
     resolved: Vec<String>,
+    /// The manager printed its summary (`PhaseDone`). This distinguishes a
+    /// manager that ran to a clean report — where a seeded job it never
+    /// mentioned was *deliberately* not run (a piped stop after an earlier
+    /// failure, a silent condition/glob skip) — from one killed mid-run, where
+    /// an unresolved job's fate is genuinely unknown.
+    summary_seen: bool,
 }
 
 impl RoutingState {
@@ -86,6 +92,7 @@ impl RoutingState {
             seeded: Vec::new(),
             appeared: Vec::new(),
             resolved: Vec::new(),
+            summary_seen: false,
         }
     }
 }
@@ -237,10 +244,11 @@ impl ManagerRoutingPresenter {
                         self.inner.on_job_failure(&name, duration);
                     }
                 }
-                // The rail's section close renders from the real
-                // `on_phase_complete`; the manager's own total is surfaced
-                // by the engaged annotation (separate change).
-                ManagerEvent::PhaseDone => {}
+                // The summary opened: the manager ran to a clean report. The
+                // rail's section close still renders from the real
+                // `on_phase_complete`; this only records that any seeded job
+                // still unresolved was deliberately not run, not killed.
+                ManagerEvent::PhaseDone => state.summary_seen = true,
             }
         }
     }
@@ -280,20 +288,27 @@ impl ManagerRoutingPresenter {
             .collect();
         for name in unresolved {
             // A seeded job the stream never mentioned did not run (a glob or
-            // condition skip that printed no notice, or an over-listing
-            // config). On a passing hook it settles as skipped rather than
-            // borrowing the green; on a failed or cancelled phase every
-            // unresolved row follows the verdict, since a job in flight when
-            // the manager died has no known outcome.
+            // condition skip that printed no notice, a piped stop after an
+            // earlier failure, or an over-listing config). It settles as "not
+            // run" whenever we can be sure it simply didn't run: the manager
+            // reached its summary (a clean report — a failing piped run stops
+            // at the first failure and omits the rest, so painting them red
+            // reports one failure as many), or the phase passed (the hook
+            // completed). Only a non-success verdict *without* a summary
+            // (manager killed mid-run) leaves an unresolved job's fate unknown,
+            // and there it follows the verdict — it may be the one in flight.
             let never_ran = state.seeded.contains(&name) && !state.appeared.contains(&name);
-            match verdict {
-                GateVerdict::Success if never_ran => {
-                    self.inner
-                        .on_job_skipped(&name, "not run", Duration::ZERO, false, None);
+            let did_not_run =
+                never_ran && (state.summary_seen || matches!(verdict, GateVerdict::Success));
+            if did_not_run {
+                self.inner
+                    .on_job_skipped(&name, "not run", Duration::ZERO, false, None);
+            } else {
+                match verdict {
+                    GateVerdict::Success => self.inner.on_job_success(&name, Duration::ZERO),
+                    GateVerdict::Failure => self.inner.on_job_failure(&name, Duration::ZERO),
+                    GateVerdict::Cancelled => self.inner.on_job_cancelled(&name, Duration::ZERO),
                 }
-                GateVerdict::Success => self.inner.on_job_success(&name, Duration::ZERO),
-                GateVerdict::Failure => self.inner.on_job_failure(&name, Duration::ZERO),
-                GateVerdict::Cancelled => self.inner.on_job_cancelled(&name, Duration::ZERO),
             }
             state.resolved.push(name);
         }
@@ -1192,6 +1207,49 @@ mod tests {
         assert!(
             !events.iter().any(|e| e.contains("skipped:never")),
             "a failed phase does not relabel an unrun job as skipped: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_piped_stop_marks_downstream_seeded_jobs_not_run_not_failed() {
+        // Piped lefthook stops at the first failure but still prints its
+        // summary. A seeded job the summary never mentioned (it never ran)
+        // must settle "not run", not red — one failure is not many (#753
+        // review). The distinguishing signal from a killed manager is the
+        // summary: here it is present, so the omission is authoritative.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["fmt", "clippy", "tests"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "┃  fmt ❯ ",
+            "boom: fmt failed",
+            "summary: (done in 0.3 seconds)",
+            "🥊 fmt (0.30 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_failure(GATE_JOB, Duration::from_secs(1));
+
+        let events = recording.events();
+        // fmt ran and failed — it keeps its own red verdict.
+        assert!(events.contains(&"failure:fmt".to_string()), "{events:?}");
+        // clippy and tests never ran (the piped stop); the summary accounts
+        // for that, so they read "not run", never red.
+        assert!(
+            events.contains(&"skipped:clippy:not run".to_string()),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&"skipped:tests:not run".to_string()),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e == "failure:clippy" || e == "failure:tests"),
+            "downstream never-run jobs must not be painted red: {events:?}"
         );
     }
 
