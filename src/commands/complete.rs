@@ -188,10 +188,12 @@ fn complete(
         ("daft-remove", _) => {
             let repo_flag = std::env::var("DAFT_COMPLETE_REPO_FLAG").unwrap_or_default();
             if repo_flag.is_empty() {
-                Ok(format_entries_as_strings(&complete_rich_branches(
-                    word,
-                    &CONFIG_REMOVE,
-                )?))
+                let mut entries = complete_rich_branches(word, &CONFIG_REMOVE)?;
+                // Sandboxes are removal targets addressed by dirname (#53).
+                if let Ok(repo) = discover_repo() {
+                    entries.extend(sandbox_entries(&repo, word));
+                }
+                Ok(format_entries_as_strings(&entries))
             } else {
                 Ok(format_entries_as_strings(&cross_repo_branches(
                     &repo_flag, word,
@@ -508,6 +510,34 @@ fn collect_local_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
     collect_refs_with_info(repo, "refs/heads/")
 }
 
+/// Sandbox worktrees (#53) as completion entries: detached, so invisible to
+/// every branch collection, yet immediate navigation/removal targets by
+/// directory name. Read from the identity records; a record whose worktree
+/// is gone is skipped.
+fn sandbox_entries(repo: &gix::Repository, prefix: &str) -> Vec<CompletionEntry> {
+    let records = crate::core::worktree::identity_store::read_identities(repo.common_dir());
+    let mut entries: Vec<CompletionEntry> = records
+        .values()
+        .filter(|r| r.kind.is_sandbox())
+        .filter(|r| r.branch.starts_with(prefix))
+        .filter(|r| {
+            std::path::Path::new(&r.worktree_path)
+                .join(".git")
+                .is_file()
+        })
+        .map(|r| CompletionEntry {
+            name: r.branch.clone(),
+            group: CompletionGroup::Worktree,
+            description: match r.pinned_commit.as_deref() {
+                Some(pin) => format!("sandbox @ {}", &pin[..pin.len().min(7)]),
+                None => "sandbox".to_string(),
+            },
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
 /// Collect `(branch, RefInfo)` pairs for every remote-tracking
 /// branch across all remotes.
 fn collect_remote_branches(repo: &gix::Repository) -> Vec<(String, RefInfo)> {
@@ -591,7 +621,7 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
         let d_current = t.elapsed();
 
         let t = Instant::now();
-        let entries = build_rich_completions(
+        let mut entries = build_rich_completions(
             &worktrees,
             &local,
             &remote,
@@ -603,6 +633,28 @@ pub(crate) fn complete_daft_go(prefix: &str, fetch_on_miss: bool) -> Result<Vec<
             &columns,
             &statuses,
         );
+        // Sandbox worktrees (#53): detached, so invisible to every branch
+        // collection above, yet immediate navigation targets by dirname.
+        entries.extend(sandbox_entries(repo, prefix));
+        // Tags: `daft go <tag>` opens the tag's sandbox, so tags are
+        // legitimate destinations. They ride the `local` group — a local
+        // ref without a worktree — with a description that says what they
+        // are. Counted before the fetch-on-miss decision on purpose: a
+        // matching tag must suppress the fetch.
+        let claimed: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.name.as_str()).collect();
+        let mut tags: Vec<CompletionEntry> = collect_refs_with_info(repo, "refs/tags/")
+            .into_iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .filter(|(name, _)| !claimed.contains(name.as_str()))
+            .map(|(name, info)| CompletionEntry {
+                name,
+                group: CompletionGroup::Local,
+                description: format!("tag \u{b7} {} \u{b7} {}", info.age, info.author),
+            })
+            .collect();
+        tags.sort_by(|a, b| a.name.cmp(&b.name));
+        entries.extend(tags);
         let d_build = t.elapsed();
 
         if timings {
