@@ -678,7 +678,7 @@ pub fn execute_yaml_hook_with_rc(
     {
         let mut coord_state =
             crate::coordinator::process::CoordinatorState::new(&repo_hash, &invocation_id)
-                .with_metadata(&trigger_command, hook_name, &ctx.branch_name)
+                .with_metadata(&trigger_command, hook_name, ctx.worktree_label())
                 .with_prefailed(prefailed_bg);
         for spec in bg_specs {
             coord_state.add_job(spec);

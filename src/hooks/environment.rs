@@ -216,6 +216,22 @@ impl HookContext {
         self
     }
 
+    /// The label background-job invocations are registered under — and the
+    /// label removal cancels by. Branch worktrees use the branch name; a
+    /// branchless sandbox (empty `branch_name`) uses the worktree's
+    /// directory name, matching how `daft remove` addresses it. Registering
+    /// under the empty string would orphan a sandbox's jobs: nothing ever
+    /// cancels the `""` label.
+    pub fn worktree_label(&self) -> &str {
+        if !self.branch_name.is_empty() {
+            return &self.branch_name;
+        }
+        self.worktree_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+    }
+
     /// Set the repository URL (for clone operations).
     pub fn with_repository_url(mut self, url: impl Into<String>) -> Self {
         self.repository_url = Some(url.into());
@@ -369,6 +385,28 @@ mod tests {
             "/project/feature/new",
             "feature/new",
         )
+    }
+
+    /// Branch worktrees label their background-job invocations by branch
+    /// name; a branchless sandbox labels them by the worktree's directory
+    /// name — the same key `daft remove` cancels by. An empty label would
+    /// orphan the sandbox's jobs on removal (#53 review).
+    #[test]
+    fn worktree_label_falls_back_to_the_dirname_for_branchless_contexts() {
+        let branch_ctx = make_test_context();
+        assert_eq!(branch_ctx.worktree_label(), "feature/new");
+
+        let sandbox_ctx = HookContext::new(
+            HookType::PostCreate,
+            "checkout",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/main",
+            "/project/origin-master",
+            "",
+        );
+        assert_eq!(sandbox_ctx.worktree_label(), "origin-master");
     }
 
     #[test]
