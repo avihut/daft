@@ -18,7 +18,10 @@ use crate::{
             push::{PushAction, push_with_hooks},
         },
     },
-    executor::{cli_presenter::CliPresenter, presenter::JobPresenter},
+    executor::{
+        cli_presenter::CliPresenter, manager_routing::ManagerRoutingPresenter,
+        presenter::JobPresenter,
+    },
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
@@ -243,6 +246,9 @@ fn run_push(
     } else {
         None
     };
+    // A recognized hook manager's jobs render as first-class rows (#753);
+    // unrecognized streams keep today's synthetic pre-push job.
+    let presenter = ManagerRoutingPresenter::wrap_if_enabled(&hook_output_config, presenter);
 
     let resolve_key = StepKey::new(StageId::ResolveWorktree);
     let push_key = StepKey::new(StageId::Push);

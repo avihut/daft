@@ -736,6 +736,12 @@ fn run_branch_delete(
         } else {
             None
         };
+    // A recognized hook manager's jobs render as first-class rows (#753);
+    // unrecognized streams keep today's synthetic pre-push job.
+    let push_presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
+        &hook_output_config,
+        push_presenter,
+    );
 
     if interactive {
         // The rail opens immediately; validation runs under the planning
