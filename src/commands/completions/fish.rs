@@ -142,7 +142,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
             ("annotation", "Annotation markers"),
             // list-only; filtered out below for sync/prune.
             ("status", "Paused operation and conflicts"),
-            ("branch", "Branch name"),
+            ("name", "Branch or sandbox name"),
             ("path", "Worktree path"),
             ("size", "Disk size of worktree"),
             ("base", "Ahead/behind base branch"),
@@ -166,7 +166,7 @@ pub(super) fn generate_fish_completion_string(command_name: &str) -> Result<Stri
 
         output.push_str("\n# Sort column completions for --sort\n");
         let sort_columns = [
-            ("branch", "Sort by branch name"),
+            ("name", "Sort by name"),
             ("path", "Sort by worktree path"),
             ("size", "Sort by disk size"),
             ("base", "Sort by total base divergence"),

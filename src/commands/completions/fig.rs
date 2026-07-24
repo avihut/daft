@@ -248,7 +248,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                     ("annotation", "Annotation markers"),
                     // list-only; filtered out below for sync/prune.
                     ("status", "Paused operation and conflicts"),
-                    ("branch", "Branch name"),
+                    ("name", "Branch or sandbox name"),
                     ("path", "Worktree path"),
                     ("size", "Disk size of worktree"),
                     ("base", "Ahead/behind base branch"),
@@ -284,7 +284,7 @@ pub(super) fn generate_fig_completion_string(command_name: &str) -> Result<Strin
                 })
             } else if has_columns && long == "--sort" {
                 let sort_defs = [
-                    ("branch", "Sort by branch name"),
+                    ("name", "Sort by name"),
                     ("path", "Sort by worktree path"),
                     ("size", "Sort by disk size"),
                     ("base", "Sort by total base divergence"),

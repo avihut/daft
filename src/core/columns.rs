@@ -21,7 +21,7 @@ trait SelectableColumn: Copy + Eq + Hash + FromStr<Err = String> {
 }
 
 /// Family-specific wording for the mixed-mode error — flags say
-/// `--columns branch,path`, config values say `age,path`.
+/// `--columns name,path`, config values say `age,path`.
 struct ModeExamples {
     replace: &'static str,
     modifier: &'static str,
@@ -145,8 +145,9 @@ pub enum ListColumn {
     /// Paused git operation and conflict state, spelled out. Opt-in — the
     /// annotation column carries the same state as glyphs by default.
     Status,
-    /// Branch name.
-    Branch,
+    /// Worktree name: the branch name for branch worktrees, the directory
+    /// name for detached sandboxes.
+    Name,
     /// Worktree path.
     Path,
     /// Disk size of the worktree folder.
@@ -175,7 +176,7 @@ impl ListColumn {
         &[
             ListColumn::Annotation,
             ListColumn::Status,
-            ListColumn::Branch,
+            ListColumn::Name,
             ListColumn::Path,
             ListColumn::Size,
             ListColumn::Base,
@@ -198,7 +199,7 @@ impl ListColumn {
     pub fn list_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
-            ListColumn::Branch,
+            ListColumn::Name,
             ListColumn::Path,
             ListColumn::Base,
             ListColumn::Changes,
@@ -220,7 +221,7 @@ impl ListColumn {
     pub fn tui_defaults() -> &'static [ListColumn] {
         &[
             ListColumn::Annotation,
-            ListColumn::Branch,
+            ListColumn::Name,
             ListColumn::Path,
             ListColumn::Base,
             ListColumn::Changes,
@@ -234,7 +235,7 @@ impl ListColumn {
 
     pub fn clone_defaults() -> &'static [ListColumn] {
         &[
-            ListColumn::Branch,
+            ListColumn::Name,
             ListColumn::Path,
             ListColumn::Base,
             ListColumn::Age,
@@ -249,7 +250,7 @@ impl ListColumn {
             // Before Branch: state reads first, identity second — the same
             // order the annotation glyphs already sit in.
             Self::Status => 2,
-            Self::Branch => 3,
+            Self::Name => 3,
             Self::Path => 4,
             Self::Size => 5,
             Self::Base => 6,
@@ -268,7 +269,7 @@ impl ListColumn {
         match self {
             Self::Annotation => "annotation",
             Self::Status => "status",
-            Self::Branch => "branch",
+            Self::Name => "name",
             Self::Path => "path",
             Self::Size => "size",
             Self::Base => "base",
@@ -305,7 +306,7 @@ impl FromStr for ListColumn {
         match s.trim().to_lowercase().as_str() {
             "annotation" => Ok(Self::Annotation),
             "status" => Ok(Self::Status),
-            "branch" => Ok(Self::Branch),
+            "name" => Ok(Self::Name),
             "path" => Ok(Self::Path),
             "size" => Ok(Self::Size),
             "base" => Ok(Self::Base),
@@ -377,7 +378,7 @@ impl ColumnSelection {
             input,
             defaults,
             ModeExamples {
-                replace: "--columns branch,path,age",
+                replace: "--columns name,path,age",
                 modifier: "--columns -annotation,-remote",
             },
             |name| Self::check_unsupported_token(name, command),
@@ -715,7 +716,7 @@ mod tests {
             "annotation".parse::<ListColumn>().unwrap(),
             ListColumn::Annotation
         );
-        assert_eq!("branch".parse::<ListColumn>().unwrap(), ListColumn::Branch);
+        assert_eq!("name".parse::<ListColumn>().unwrap(), ListColumn::Name);
         assert_eq!("path".parse::<ListColumn>().unwrap(), ListColumn::Path);
         assert_eq!("size".parse::<ListColumn>().unwrap(), ListColumn::Size);
         assert_eq!("base".parse::<ListColumn>().unwrap(), ListColumn::Base);
@@ -758,20 +759,20 @@ mod tests {
 
     #[test]
     fn test_replace_mode() {
-        let resolved = ColumnSelection::parse("branch,path,age", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("name,path,age", CommandKind::List).unwrap();
         assert_eq!(
             resolved.columns,
-            vec![ListColumn::Branch, ListColumn::Path, ListColumn::Age]
+            vec![ListColumn::Name, ListColumn::Path, ListColumn::Age]
         );
         assert!(resolved.explicit);
     }
 
     #[test]
     fn test_replace_mode_custom_order() {
-        let resolved = ColumnSelection::parse("age,branch,path", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("age,name,path", CommandKind::List).unwrap();
         assert_eq!(
             resolved.columns,
-            vec![ListColumn::Age, ListColumn::Branch, ListColumn::Path]
+            vec![ListColumn::Age, ListColumn::Name, ListColumn::Path]
         );
         assert!(resolved.explicit);
     }
@@ -838,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_modifier_add_idempotent() {
-        let resolved = ColumnSelection::parse("+branch,+path", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("+name,+path", CommandKind::List).unwrap();
         assert_eq!(resolved.columns, ListColumn::list_defaults().to_vec());
     }
 
@@ -850,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_mixed_mode_error() {
-        let err = ColumnSelection::parse("branch,+age", CommandKind::List).unwrap_err();
+        let err = ColumnSelection::parse("name,+age", CommandKind::List).unwrap_err();
         assert!(err.contains("cannot mix"), "Got: {err}");
     }
 
@@ -867,34 +868,34 @@ mod tests {
 
     #[test]
     fn test_unknown_column_error() {
-        let err = ColumnSelection::parse("branch,foo", CommandKind::List).unwrap_err();
+        let err = ColumnSelection::parse("name,foo", CommandKind::List).unwrap_err();
         assert!(err.contains("unknown column 'foo'"), "Got: {err}");
     }
 
     #[test]
     fn test_duplicate_replace_error() {
-        let err = ColumnSelection::parse("branch,path,branch", CommandKind::List).unwrap_err();
+        let err = ColumnSelection::parse("name,path,name", CommandKind::List).unwrap_err();
         assert!(err.contains("duplicate"), "Got: {err}");
     }
 
     #[test]
     fn test_duplicate_modifier_idempotent() {
-        let resolved = ColumnSelection::parse("+branch,+branch", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("+name,+name", CommandKind::List).unwrap();
         assert_eq!(resolved.columns, ListColumn::list_defaults().to_vec());
     }
 
     #[test]
     fn test_whitespace_trimmed() {
-        let resolved = ColumnSelection::parse("branch , path , age", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("name , path , age", CommandKind::List).unwrap();
         assert_eq!(
             resolved.columns,
-            vec![ListColumn::Branch, ListColumn::Path, ListColumn::Age]
+            vec![ListColumn::Name, ListColumn::Path, ListColumn::Age]
         );
     }
 
     #[test]
     fn test_status_on_sync_errors() {
-        let err = ColumnSelection::parse("status,branch", CommandKind::Sync).unwrap_err();
+        let err = ColumnSelection::parse("status,name", CommandKind::Sync).unwrap_err();
         assert!(err.contains("cannot be controlled"), "Got: {err}");
     }
 
@@ -909,14 +910,11 @@ mod tests {
     /// column, so the token stays rejected for them.
     #[test]
     fn test_status_selectable_on_list_only() {
-        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
-        assert_eq!(
-            resolved.columns,
-            vec![ListColumn::Status, ListColumn::Branch]
-        );
+        let resolved = ColumnSelection::parse("status,name", CommandKind::List).unwrap();
+        assert_eq!(resolved.columns, vec![ListColumn::Status, ListColumn::Name]);
 
         for command in [CommandKind::Sync, CommandKind::Prune, CommandKind::Clone] {
-            let err = ColumnSelection::parse("status,branch", command).unwrap_err();
+            let err = ColumnSelection::parse("status,name", command).unwrap_err();
             assert!(err.contains("cannot be controlled"), "Got: {err}");
             assert!(
                 err.contains("daft list"),
@@ -935,14 +933,14 @@ mod tests {
             .iter()
             .position(|c| *c == ListColumn::Status)
             .expect("status column added");
-        let branch = resolved
+        let name = resolved
             .columns
             .iter()
-            .position(|c| *c == ListColumn::Branch)
-            .expect("branch column present");
+            .position(|c| *c == ListColumn::Name)
+            .expect("name column present");
         assert!(
-            status < branch,
-            "status must precede branch, got {:?}",
+            status < name,
+            "status must precede name, got {:?}",
             resolved.columns
         );
         // And it is opt-in: absent from the defaults.
@@ -956,7 +954,7 @@ mod tests {
         assert!(ListColumn::tui_defaults().contains(&ListColumn::Pr));
         let sync = ColumnSelection::parse("+pr", CommandKind::Sync).unwrap();
         assert!(sync.columns.contains(&ListColumn::Pr));
-        let prune = ColumnSelection::parse("pr,branch", CommandKind::Prune).unwrap();
+        let prune = ColumnSelection::parse("pr,name", CommandKind::Prune).unwrap();
         assert!(prune.columns.contains(&ListColumn::Pr));
         // Removing it works the same as on list.
         let removed = ColumnSelection::parse("-pr", CommandKind::Sync).unwrap();

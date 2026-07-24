@@ -15,8 +15,8 @@ pub enum Column {
     /// Paused git operation and conflict state, in words. The opt-in
     /// `daft list --columns +status` column.
     BranchStatus,
-    /// Branch name.
-    Branch,
+    /// Worktree name: branch name, or sandbox dirname for detached sandboxes.
+    Name,
     /// Worktree path.
     Path,
     /// Disk size of worktree. Opt-in only (requires `--columns +size`); not in
@@ -50,7 +50,7 @@ impl Column {
             Self::Status => "Status",
             Self::Annotation => "",
             Self::BranchStatus => "Status",
-            Self::Branch => "Branch",
+            Self::Name => "Name",
             Self::Path => "Path",
             Self::Size => "Size",
             Self::Base => "Base",
@@ -69,7 +69,7 @@ impl Column {
         match lc {
             ListColumn::Annotation => Column::Annotation,
             ListColumn::Status => Column::BranchStatus,
-            ListColumn::Branch => Column::Branch,
+            ListColumn::Name => Column::Name,
             ListColumn::Path => Column::Path,
             ListColumn::Size => Column::Size,
             ListColumn::Base => Column::Base,
@@ -91,7 +91,7 @@ impl Column {
             Self::Status => None,
             Self::Annotation => Some(ListColumn::Annotation),
             Self::BranchStatus => Some(ListColumn::Status),
-            Self::Branch => Some(ListColumn::Branch),
+            Self::Name => Some(ListColumn::Name),
             Self::Path => Some(ListColumn::Path),
             Self::Size => Some(ListColumn::Size),
             Self::Base => Some(ListColumn::Base),
@@ -113,7 +113,7 @@ impl Column {
 pub(super) const ALL_COLUMNS: &[Column] = &[
     Column::Status,
     Column::Annotation,
-    Column::Branch,
+    Column::Name,
     Column::Path,
     Column::Base,
     Column::Changes,
@@ -196,7 +196,7 @@ pub(super) fn column_content_width(
             // is painted from the same value, so the two cannot disagree.
             Column::Annotation => annotation_slots.width() as u16,
             Column::BranchStatus => v.status.chars().count() as u16,
-            Column::Branch => v.branch.len() as u16,
+            Column::Name => v.branch.len() as u16,
             Column::Path => v.path.len() as u16,
             Column::Size => v.size.len() as u16,
             Column::Base => v.base.len() as u16,
@@ -238,7 +238,7 @@ const COLUMN_SPACING: u16 = 2;
 
 /// Adjust per-column natural widths so the table fits in `available` width.
 ///
-/// Shrinks the widest of {Branch, Path, LastCommit} down to per-column
+/// Shrinks the widest of {Name, Path, LastCommit} down to per-column
 /// minimums until the table fits, mirroring `tabled::Width::truncate(...)
 /// .priority(Priority::max(true))` from the blocking renderer. Returns the
 /// natural widths unchanged when they already fit.
@@ -260,7 +260,7 @@ pub(super) fn fit_widths_to_available(
 
     let shrink_min = |c: Column| -> Option<u16> {
         match c {
-            Column::Branch => Some(BRANCH_MIN_WIDTH),
+            Column::Name => Some(BRANCH_MIN_WIDTH),
             Column::Path => Some(PATH_MIN_WIDTH),
             Column::LastCommit => Some(LAST_COMMIT_MIN),
             _ => None,
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn fit_widths_passthrough_when_total_fits() {
-        let cols = vec![Column::Branch, Column::Path, Column::Age];
+        let cols = vec![Column::Name, Column::Path, Column::Age];
         let natural = vec![20, 30, 4];
         let out = fit_widths_to_available(&cols, &natural, 200);
         assert_eq!(out, natural);
@@ -367,7 +367,7 @@ mod tests {
         // Branch=80, Path=60, total+spacing = 142. Available = 100.
         // Path is wider, should be shrunk first; Branch shrinks once Path
         // catches it.
-        let cols = vec![Column::Branch, Column::Path];
+        let cols = vec![Column::Name, Column::Path];
         let natural = vec![80, 60];
         let out = fit_widths_to_available(&cols, &natural, 100);
         let total: u16 = out.iter().sum::<u16>() + 2;
@@ -380,7 +380,7 @@ mod tests {
     fn fit_widths_shrinks_lastcommit_too() {
         // LastCommit is the widest, so it should be shrunk first when the
         // table doesn't fit.
-        let cols = vec![Column::Branch, Column::Path, Column::LastCommit];
+        let cols = vec![Column::Name, Column::Path, Column::LastCommit];
         let natural = vec![20, 20, 200];
         let out = fit_widths_to_available(&cols, &natural, 100);
         let total: u16 = out.iter().sum::<u16>() + 4; // 2 gaps = 4
@@ -396,7 +396,7 @@ mod tests {
     fn fit_widths_lastcommit_keeps_room_when_branch_path_huge() {
         // Branch=200, Path=200, LastCommit=80. Total way over. The widest-first
         // policy should shrink Branch and Path before touching LastCommit.
-        let cols = vec![Column::Branch, Column::Path, Column::LastCommit];
+        let cols = vec![Column::Name, Column::Path, Column::LastCommit];
         let natural = vec![200, 200, 80];
         let out = fit_widths_to_available(&cols, &natural, 160);
         let total: u16 = out.iter().sum::<u16>() + 4;
@@ -414,7 +414,7 @@ mod tests {
     fn fit_widths_stops_at_minimums() {
         // Even an absurdly narrow terminal shouldn't shrink Branch/Path below
         // their minimum widths.
-        let cols = vec![Column::Branch, Column::Path];
+        let cols = vec![Column::Name, Column::Path];
         let natural = vec![100, 100];
         let out = fit_widths_to_available(&cols, &natural, 10);
         assert_eq!(out[0], BRANCH_MIN_WIDTH);

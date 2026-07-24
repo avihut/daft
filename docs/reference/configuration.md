@@ -145,7 +145,7 @@ Run `daft doctor` to check whether `gh`/`glab` are installed and authenticated.
 | --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `daft.list.stat`            | `"summary"` | Default statistics mode for list command (`summary` or `lines`)                                                                                                                                              |
 | `daft.list.columns`         |             | Default column selection for list command (e.g., `branch,path,age` or `+size,-annotation`)                                                                                                                   |
-| `daft.list.sort`            |             | Default sort order for list command (e.g., `+branch`, `-activity`, `+owner,-size`). Sortable: branch, path, size, age, owner, activity                                                                       |
+| `daft.list.sort`            |             | Default sort order for list command (e.g., `+name`, `-activity`, `+owner,-size`). Sortable: name, path, size, age, owner, activity                                                                           |
 | `daft.list.sizeConcurrency` |             | Max concurrent directory-size walks for `--columns +size` on both `daft list` and `daft repo list`. Default: CPU count. Lower on slow/network filesystems. The `DAFT_SIZE_WALK_JOBS` env var overrides this. |
 
 ## Prune Settings
@@ -155,7 +155,7 @@ Run `daft doctor` to check whether `gh`/`glab` are installed and authenticated.
 | `daft.prune.cdTarget` | `"root"`    | Where to cd after pruning the current worktree. Values: `root` (project root) or `default-branch` (default branch worktree) |
 | `daft.prune.stat`     | `"summary"` | Default statistics mode for prune command (`summary` or `lines`)                                                            |
 | `daft.prune.columns`  |             | Default column selection for prune command                                                                                  |
-| `daft.prune.sort`     |             | Default sort order for prune command (e.g., `+branch`, `-activity`)                                                         |
+| `daft.prune.sort`     |             | Default sort order for prune command (e.g., `+name`, `-activity`)                                                           |
 
 ## Sync Settings
 
@@ -163,7 +163,7 @@ Run `daft doctor` to check whether `gh`/`glab` are installed and authenticated.
 | ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daft.sync.stat`             | `"summary"`    | Default statistics mode for sync command (`summary` or `lines`)                                                                                                                                               |
 | `daft.sync.columns`          |                | Default column selection for sync command                                                                                                                                                                     |
-| `daft.sync.sort`             |                | Default sort order for sync command (e.g., `+branch`, `-activity`)                                                                                                                                            |
+| `daft.sync.sort`             |                | Default sort order for sync command (e.g., `+name`, `-activity`)                                                                                                                                              |
 | `daft.sync.pushTimeout`      | `"30m"`        | Wall-clock budget per push unit (git + pre-push hook). A hung hook is torn down and the push fails with a hint; `off` (or `0`) disables                                                                       |
 | `daft.sync.pushHookStrategy` | `"per-branch"` | Pre-push hook cadence for `sync --push`: `per-branch` runs the hook once per branch; `batched` pushes every branch in one `git push` so the hook fires once with all refs (one refusal fails the whole batch) |
 

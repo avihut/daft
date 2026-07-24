@@ -30,7 +30,7 @@ steps:
       exit_code: 0
 
   - name: Owner column shows the reflog creator for the fresh branch
-    run: NO_COLOR=1 git-worktree-list --branches --columns branch,owner 2>&1
+    run: NO_COLOR=1 git-worktree-list --branches --columns name,owner 2>&1
     cwd: "$WORK_DIR/reflog-repo/main"
     expect:
       exit_code: 0

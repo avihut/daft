@@ -524,7 +524,7 @@ fn collector_fields(columns: &[ListColumn], sort_spec: Option<&SortSpec>, stat: 
     for column in columns {
         fields |= match column {
             // Populated by the porcelain seed, never streamed.
-            ListColumn::Annotation | ListColumn::Branch | ListColumn::Path => FieldSet::EMPTY,
+            ListColumn::Annotation | ListColumn::Name | ListColumn::Path => FieldSet::EMPTY,
             ListColumn::Size => FieldSet::SIZE,
             ListColumn::Base => FieldSet::BASE_AHEAD_BEHIND,
             ListColumn::Changes => FieldSet::CHANGES,
@@ -607,12 +607,12 @@ mod collector_fields_tests {
 
     /// The status column's op-less Persisted arm renders `detached @ <sha>`
     /// from `last_commit_hash`, which streams only under LAST_COMMIT. With a
-    /// narrow selection (`--columns status,branch`) the live cell otherwise
+    /// narrow selection (`--columns status,name`) the live cell otherwise
     /// sticks at a bare `detached` forever while the piped path shows the
     /// sha.
     #[test]
     fn status_column_collects_changes_and_last_commit() {
-        let resolved = ColumnSelection::parse("status,branch", CommandKind::List).unwrap();
+        let resolved = ColumnSelection::parse("status,name", CommandKind::List).unwrap();
         let fields = collector_fields(&resolved.columns, None, Stat::Summary);
         assert!(fields.contains(FieldSet::CHANGES | FieldSet::LAST_COMMIT));
     }
@@ -684,7 +684,7 @@ mod collector_fields_tests {
         // base_lines_* even though no base column is rendered.
         let spec = sort("-base", Stat::Lines);
         let fields = collector_fields(
-            &[ListColumn::Branch, ListColumn::Path],
+            &[ListColumn::Name, ListColumn::Path],
             Some(&spec),
             Stat::Lines,
         );
@@ -693,7 +693,7 @@ mod collector_fields_tests {
 
     #[test]
     fn seed_only_view_collects_nothing() {
-        let fields = collector_fields(&[ListColumn::Branch, ListColumn::Path], None, Stat::Summary);
+        let fields = collector_fields(&[ListColumn::Name, ListColumn::Path], None, Stat::Summary);
         assert!(fields.is_empty());
     }
 }

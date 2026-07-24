@@ -18,17 +18,17 @@ steps:
       exit_code: 0
       output_contains:
         - "Hash"
-        - "Branch"
+        - "Name"
         - "Commit"
 
   - name: Hash column in replace mode
-    run: NO_COLOR=1 git-worktree-list --columns=branch,hash 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns=name,hash 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
         - "Hash"
-        - "Branch"
+        - "Name"
       output_not_contains:
         - "Path"
         - "Age"

@@ -90,7 +90,7 @@ Supported formats: json, ndjson, tsv, csv, yaml, toon, markdown. Use
 for details.
 
 Use --columns to select which columns are shown and in what order.
-  Replace mode:  --columns branch,path,age (exact set and order)
+  Replace mode:  --columns name,path,age (exact set and order)
   Modifier mode: --columns -annotation,-last-commit (remove from defaults)
   Add optional:  --columns +size (add disk size column after path)
 Defaults can be set in git config with daft.list.columns.
@@ -119,11 +119,11 @@ with `git config -- daft.list.columns -pr`.
 
 Use --sort to control the sort order. Prefix with + for ascending (default) or
 - for descending. Multiple columns can be comma-separated for multi-level sort.
-  Sort by branch descending:  --sort -branch
+  Sort by name descending:    --sort -name
   Sort by owner then size:    --sort +owner,-size
   Most recent activity first: --sort -activity
 
-Sortable columns: branch, path, size, age, owner, hash, activity, commit (alias:
+Sortable columns: name, path, size, age, owner, hash, activity, commit (alias:
 last-commit). activity considers both commits and uncommitted file changes;
 commit sorts by last commit time only. You can sort by columns not shown in
 the output (e.g. --sort -size without --columns +size). Defaults can be set
@@ -185,13 +185,13 @@ pub struct Args {
 
     #[arg(
         long,
-        help = "Columns to display (comma-separated). Replace: branch,path,age. Modify defaults: +col,-col. Available: branch, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit"
+        help = "Columns to display (comma-separated). Replace: name,path,age. Modify defaults: +col,-col. Available: name, path, size, base, changes, remote, pr, age, annotation, status, owner, hash, last-commit"
     )]
     pub(crate) columns: Option<String>,
 
     #[arg(
         long,
-        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: branch, path, size, base, changes, remote, age, owner, hash, activity, commit"
+        help = "Sort order (comma-separated). +col ascending, -col descending. Columns: name, path, size, base, changes, remote, age, owner, hash, activity, commit"
     )]
     pub(crate) sort: Option<String>,
 
@@ -724,7 +724,7 @@ fn run_blocking(args: Args) -> Result<()> {
 
 /// Determine which logical column groups are active for emit output.
 struct EmitColumns {
-    branch: bool,
+    name: bool,
     annotation: bool,
     status: bool,
     path: bool,
@@ -747,7 +747,7 @@ impl EmitColumns {
         let has = |col: ListColumn| is_default || selected.contains(&col);
         let has_lines = stat == Stat::Lines;
         Self {
-            branch: has(ListColumn::Branch),
+            name: has(ListColumn::Name),
             annotation: has(ListColumn::Annotation),
             // Opt-in like size/hash (explicit selection only, never in
             // defaults): the composed text is presentation, but a selection
@@ -773,7 +773,7 @@ impl EmitColumns {
 
     fn headers(&self) -> Vec<String> {
         let mut h = Vec::new();
-        if self.branch {
+        if self.name {
             h.push("kind".into());
             h.push("name".into());
         }
@@ -864,7 +864,7 @@ fn build_emit_table(
     for info in infos {
         let mut row: Vec<Cell> = Vec::new();
 
-        if cols.branch {
+        if cols.name {
             let kind_str = match info.kind {
                 EntryKind::Worktree => "worktree",
                 EntryKind::LocalBranch => "branch",
@@ -1439,7 +1439,7 @@ fn print_table(
         .map(|c| {
             let label = match c {
                 ListColumn::Status => "Status",
-                ListColumn::Branch => "Branch",
+                ListColumn::Name => "Name",
                 ListColumn::Path => "Path",
                 ListColumn::Size => "Size",
                 ListColumn::Base => "Base",
@@ -1502,7 +1502,7 @@ fn print_table(
             .iter()
             .map(|(_, c)| match c {
                 ListColumn::Status => row.status.as_str(),
-                ListColumn::Branch => row.name.as_str(),
+                ListColumn::Name => row.name.as_str(),
                 ListColumn::Path => row.path.as_str(),
                 ListColumn::Size => row.size.as_str(),
                 ListColumn::Base => row.base.as_str(),
@@ -1697,7 +1697,7 @@ mod tests {
         // Removing it, or naming other columns, is not asking for it.
         assert!(!pr_explicitly_selected("-pr"));
         assert!(!pr_explicitly_selected("+size"));
-        assert!(!pr_explicitly_selected("branch,path"));
+        assert!(!pr_explicitly_selected("name,path"));
         // Token match, not substring match.
         assert!(!pr_explicitly_selected("prune"));
     }
@@ -1749,7 +1749,7 @@ mod tests {
             std::path::Path::new("/tmp/proj"),
             std::path::Path::new("/tmp/proj"),
             Stat::Summary,
-            &[ListColumn::Branch, ListColumn::Status],
+            &[ListColumn::Name, ListColumn::Status],
             0,
             None,
         );
@@ -1933,7 +1933,7 @@ mod tests {
             drifted: false,
             forge_ref: None,
         };
-        let selected = &[ListColumn::Branch, ListColumn::Path, ListColumn::Size];
+        let selected = &[ListColumn::Name, ListColumn::Path, ListColumn::Size];
         let table = build_emit_table(
             &[info],
             std::path::Path::new("/tmp/proj"),
@@ -1964,7 +1964,7 @@ mod tests {
         // is computed against the post-filter column list, then offset by 1
         // when the annotation column is shown.
         let cols = &[
-            ListColumn::Branch,
+            ListColumn::Name,
             ListColumn::Path,
             ListColumn::Size,
             ListColumn::Age,
@@ -1975,7 +1975,7 @@ mod tests {
 
     #[test]
     fn size_column_index_is_none_when_size_unselected() {
-        let cols = &[ListColumn::Branch, ListColumn::Path];
+        let cols = &[ListColumn::Name, ListColumn::Path];
         assert_eq!(size_column_index(cols, false), None);
         assert_eq!(size_column_index(cols, true), None);
     }
@@ -1985,7 +1985,7 @@ mod tests {
         // Annotation in selected_columns is filtered out before col_headers
         // is built, so the visible position of Size shifts down by one when
         // Annotation appears earlier in the list.
-        let cols = &[ListColumn::Annotation, ListColumn::Branch, ListColumn::Size];
+        let cols = &[ListColumn::Annotation, ListColumn::Name, ListColumn::Size];
         // show_annotations=false: annotation column not shown, Size is at 1.
         assert_eq!(size_column_index(cols, false), Some(1));
         // show_annotations=true: leading annotation column adds 1.

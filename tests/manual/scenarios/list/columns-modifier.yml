@@ -17,7 +17,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
         - "Path"
 
   - name: Remove multiple columns
@@ -28,7 +28,7 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
         - "Path"
         - "Base"
         - "Changes"

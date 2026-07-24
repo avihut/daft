@@ -12,7 +12,7 @@ steps:
       exit_code: 0
 
   - name: Set columns config
-    run: git config daft.list.columns "branch,path"
+    run: git config daft.list.columns "name,path"
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
@@ -23,18 +23,18 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
         - "Path"
       output_not_contains:
         - "Base"
         - "Changes"
 
   - name: CLI flag overrides config
-    run: NO_COLOR=1 git-worktree-list --columns branch,path,age 2>&1
+    run: NO_COLOR=1 git-worktree-list --columns name,path,age 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
-        - "Branch"
+        - "Name"
         - "Path"
         - "Age"

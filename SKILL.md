@@ -1041,17 +1041,17 @@ states instead (green/red/yellow, purple merged, dim closed). The cache
 refreshes in the background via `daft update`/`daft sync` and on listing with
 the column; prefer `--format json` (`pr_state`, `ci_status`, `pr_url` fields —
 present in the default schema even when the table hides the column) over parsing
-glyphs. Two modes — replace (`--columns branch,path,age`: exactly those, in
-order) and modifier (`--columns +size,-age`: adjust defaults; auto-detected when
-every entry starts with `+`/`-`). The `status` column is always pinned on
+glyphs. Two modes — replace (`--columns name,path,age`: exactly those, in order)
+and modifier (`--columns +size,-age`: adjust defaults; auto-detected when every
+entry starts with `+`/`-`). The `status` column is always pinned on
 `sync`/`prune`. Persistent defaults: `git config daft.<cmd>.columns`.
 
-**Sorting (`--sort`)** on `list`/`sync`/`prune`: columns `branch`, `path`,
-`size`, `age`, `owner`, `hash`, `activity`, `commit`; prefix `+` ascending
-(default) / `-` descending; comma-separate for multi-level
-(`--sort +owner,-size`). `activity` counts committed and uncommitted changes;
-`commit` (alias `last-commit`) only commit time. Sorting by hidden columns
-works. Persistent defaults: `git config daft.<cmd>.sort`.
+**Sorting (`--sort`)** on `list`/`sync`/`prune`: columns `name`, `path`, `size`,
+`age`, `owner`, `hash`, `activity`, `commit`; prefix `+` ascending (default) /
+`-` descending; comma-separate for multi-level (`--sort +owner,-size`).
+`activity` counts committed and uncommitted changes; `commit` (alias
+`last-commit`) only commit time. Sorting by hidden columns works. Persistent
+defaults: `git config daft.<cmd>.sort`.
 
 **Caches**: `daft list` writes content-addressed JSON caches under
 `<git-common-dir>/.daft/cache/` — safe to delete at any time; daft re-populates.

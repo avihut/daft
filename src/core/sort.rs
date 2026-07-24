@@ -12,8 +12,8 @@ use std::cmp::Ordering;
 /// A column that can be used in a `--sort` specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SortColumn {
-    /// Sort by branch name (case-insensitive).
-    Branch,
+    /// Sort by worktree name (case-insensitive).
+    Name,
     /// Sort by worktree path.
     Path,
     /// Sort by disk size.
@@ -42,7 +42,7 @@ pub enum SortColumn {
 impl SortColumn {
     /// All valid CLI sort column names, for use in error messages.
     pub fn valid_names() -> &'static str {
-        "branch, path, size, base, changes, remote, age, owner, hash, activity, commit (alias: last-commit)"
+        "name, path, size, base, changes, remote, age, owner, hash, activity, commit (alias: last-commit)"
     }
 
     /// Map this sort column to the corresponding display column, if any.
@@ -51,7 +51,7 @@ impl SortColumn {
     /// working tree mtime) that doesn't correspond to a single display column.
     pub fn to_list_column(self) -> Option<ListColumn> {
         match self {
-            Self::Branch => Some(ListColumn::Branch),
+            Self::Name => Some(ListColumn::Name),
             Self::Path => Some(ListColumn::Path),
             Self::Size => Some(ListColumn::Size),
             Self::Age => Some(ListColumn::Age),
@@ -68,7 +68,7 @@ impl SortColumn {
     /// Human-readable display name for this sort column.
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Branch => "Branch",
+            Self::Name => "Name",
             Self::Path => "Path",
             Self::Size => "Size",
             Self::Base => "Base",
@@ -85,7 +85,7 @@ impl SortColumn {
     /// Parse a sort column name (case-insensitive).
     fn parse(name: &str) -> Result<Self, String> {
         match name.trim().to_lowercase().as_str() {
-            "branch" => Ok(Self::Branch),
+            "name" => Ok(Self::Name),
             "path" => Ok(Self::Path),
             "size" => Ok(Self::Size),
             "age" => Ok(Self::Age),
@@ -125,7 +125,7 @@ impl SortKey {
     /// `None` values always sort last, regardless of sort direction.
     fn compare(&self, a: &WorktreeInfo, b: &WorktreeInfo, stat: Stat) -> Ordering {
         match self.column {
-            SortColumn::Branch => {
+            SortColumn::Name => {
                 // Branch name is always present, just apply direction directly.
                 let ord = a.name.to_lowercase().cmp(&b.name.to_lowercase());
                 self.apply_direction(ord)
@@ -285,11 +285,11 @@ pub struct SortSpec {
 }
 
 impl SortSpec {
-    /// The default sort: branch name ascending, summary stat mode.
+    /// The default sort: name ascending, summary stat mode.
     pub fn default_sort() -> Self {
         Self {
             keys: vec![SortKey {
-                column: SortColumn::Branch,
+                column: SortColumn::Name,
                 direction: SortDirection::Ascending,
             }],
             stat: Stat::Summary,
@@ -304,8 +304,8 @@ impl SortSpec {
     /// # Examples
     ///
     /// ```text
-    /// "branch"            → branch ascending
-    /// "+branch,-size"     → branch ascending, then size descending
+    /// "name"              → name ascending
+    /// "+name,-size"       → name ascending, then size descending
     /// "-activity"         → last commit timestamp descending (most recent first)
     /// "commit"            → alias for activity ascending
     /// ```
@@ -455,7 +455,7 @@ impl SortSpec {
         let mut acc = FieldSet::EMPTY;
         for key in &self.keys {
             acc |= match key.column {
-                SortColumn::Branch => FieldSet::EMPTY,
+                SortColumn::Name => FieldSet::EMPTY,
                 SortColumn::Path => FieldSet::EMPTY,
                 SortColumn::Size => FieldSet::SIZE,
                 SortColumn::Age => FieldSet::BRANCH_AGE,
@@ -530,21 +530,21 @@ mod tests {
 
     #[test]
     fn test_parse_single_column_no_prefix() {
-        let spec = SortSpec::parse("branch").unwrap();
+        let spec = SortSpec::parse("name").unwrap();
         assert_eq!(spec.keys.len(), 1);
-        assert_eq!(spec.keys[0].column, SortColumn::Branch);
+        assert_eq!(spec.keys[0].column, SortColumn::Name);
         assert_eq!(spec.keys[0].direction, SortDirection::Ascending);
     }
 
     #[test]
     fn test_parse_ascending_prefix() {
-        let spec = SortSpec::parse("+branch").unwrap();
+        let spec = SortSpec::parse("+name").unwrap();
         assert_eq!(spec.keys[0].direction, SortDirection::Ascending);
     }
 
     #[test]
     fn test_parse_descending_prefix() {
-        let spec = SortSpec::parse("-branch").unwrap();
+        let spec = SortSpec::parse("-name").unwrap();
         assert_eq!(spec.keys[0].direction, SortDirection::Descending);
     }
 
@@ -583,17 +583,17 @@ mod tests {
 
     #[test]
     fn test_parse_case_insensitive() {
-        let spec = SortSpec::parse("Branch").unwrap();
-        assert_eq!(spec.keys[0].column, SortColumn::Branch);
+        let spec = SortSpec::parse("Name").unwrap();
+        assert_eq!(spec.keys[0].column, SortColumn::Name);
         let spec = SortSpec::parse("SIZE").unwrap();
         assert_eq!(spec.keys[0].column, SortColumn::Size);
     }
 
     #[test]
     fn test_parse_whitespace_trimmed() {
-        let spec = SortSpec::parse(" branch , -size ").unwrap();
+        let spec = SortSpec::parse(" name , -size ").unwrap();
         assert_eq!(spec.keys.len(), 2);
-        assert_eq!(spec.keys[0].column, SortColumn::Branch);
+        assert_eq!(spec.keys[0].column, SortColumn::Name);
         assert_eq!(spec.keys[1].column, SortColumn::Size);
     }
 
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_parse_duplicate_column_error() {
-        let err = SortSpec::parse("branch,-branch").unwrap_err();
+        let err = SortSpec::parse("name,-name").unwrap_err();
         assert!(err.contains("duplicate"), "Got: {err}");
     }
 
@@ -678,7 +678,7 @@ mod tests {
     fn test_default_sort() {
         let spec = SortSpec::default_sort();
         assert_eq!(spec.keys.len(), 1);
-        assert_eq!(spec.keys[0].column, SortColumn::Branch);
+        assert_eq!(spec.keys[0].column, SortColumn::Name);
         assert_eq!(spec.keys[0].direction, SortDirection::Ascending);
     }
 
@@ -687,24 +687,24 @@ mod tests {
     #[test]
     fn test_needs_size_true() {
         assert!(SortSpec::parse("size").unwrap().needs_size());
-        assert!(SortSpec::parse("branch,-size").unwrap().needs_size());
+        assert!(SortSpec::parse("name,-size").unwrap().needs_size());
     }
 
     #[test]
     fn test_needs_size_false() {
-        assert!(!SortSpec::parse("branch").unwrap().needs_size());
+        assert!(!SortSpec::parse("name").unwrap().needs_size());
         assert!(!SortSpec::parse("activity").unwrap().needs_size());
     }
 
     #[test]
     fn test_needs_mtime_true() {
         assert!(SortSpec::parse("activity").unwrap().needs_mtime());
-        assert!(SortSpec::parse("branch,activity").unwrap().needs_mtime());
+        assert!(SortSpec::parse("name,activity").unwrap().needs_mtime());
     }
 
     #[test]
     fn test_needs_mtime_false() {
-        assert!(!SortSpec::parse("branch").unwrap().needs_mtime());
+        assert!(!SortSpec::parse("name").unwrap().needs_mtime());
         assert!(!SortSpec::parse("commit").unwrap().needs_mtime());
         assert!(!SortSpec::parse("last-commit").unwrap().needs_mtime());
     }
@@ -712,8 +712,8 @@ mod tests {
     // ── Sorting tests ──────────────────────────────────────────────────
 
     #[test]
-    fn test_sort_by_branch_ascending() {
-        let spec = SortSpec::parse("branch").unwrap();
+    fn test_sort_by_name_ascending() {
+        let spec = SortSpec::parse("name").unwrap();
         let mut infos = vec![info("charlie"), info("alpha"), info("bravo")];
         spec.sort(&mut infos);
         let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
@@ -721,8 +721,8 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_by_branch_descending() {
-        let spec = SortSpec::parse("-branch").unwrap();
+    fn test_sort_by_name_descending() {
+        let spec = SortSpec::parse("-name").unwrap();
         let mut infos = vec![info("charlie"), info("alpha"), info("bravo")];
         spec.sort(&mut infos);
         let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_sort_by_branch_case_insensitive() {
-        let spec = SortSpec::parse("branch").unwrap();
+        let spec = SortSpec::parse("name").unwrap();
         let mut infos = vec![info("Charlie"), info("alpha"), info("Bravo")];
         spec.sort(&mut infos);
         let names: Vec<&str> = infos.iter().map(|i| i.name.as_str()).collect();
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_compare_method() {
-        let spec = SortSpec::parse("-branch").unwrap();
+        let spec = SortSpec::parse("-name").unwrap();
         let a = info("alpha");
         let b = info("bravo");
         assert_eq!(spec.compare(&a, &b), Ordering::Greater);
@@ -987,7 +987,7 @@ mod required_fields_tests {
     #[test]
     fn branch_path_hash_require_no_dynamic_fields() {
         // These sort by data already present from porcelain.
-        assert_eq!(fields_for("branch"), FieldSet::EMPTY);
+        assert_eq!(fields_for("name"), FieldSet::EMPTY);
         assert_eq!(fields_for("path"), FieldSet::EMPTY);
         assert_eq!(fields_for("hash"), FieldSet::LAST_COMMIT);
     }

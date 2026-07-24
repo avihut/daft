@@ -113,7 +113,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         if command_name == "git-worktree-list" {
             output.push_str("            'status:Paused operation and conflicts'\n");
         }
-        output.push_str("            'branch:Branch name'\n");
+        output.push_str("            'name:Branch or sandbox name'\n");
         output.push_str("            'path:Worktree path'\n");
         output.push_str("            'size:Disk size of worktree'\n");
         output.push_str("            'base:Ahead/behind base branch'\n");
@@ -128,7 +128,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         if command_name == "git-worktree-list" {
             output.push_str("            '+status:Add operation status'\n");
         }
-        output.push_str("            '+branch:Add branch name'\n");
+        output.push_str("            '+name:Add branch or sandbox name'\n");
         output.push_str("            '+path:Add worktree path'\n");
         output.push_str("            '+size:Add disk size of worktree'\n");
         output.push_str("            '+base:Add ahead/behind base branch'\n");
@@ -143,7 +143,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         if command_name == "git-worktree-list" {
             output.push_str("            '-status:Remove operation status'\n");
         }
-        output.push_str("            '-branch:Remove branch name'\n");
+        output.push_str("            '-name:Remove branch or sandbox name'\n");
         output.push_str("            '-path:Remove worktree path'\n");
         output.push_str("            '-size:Remove disk size of worktree'\n");
         output.push_str("            '-base:Remove ahead/behind base branch'\n");
@@ -163,7 +163,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("    if [[ \"$prev_word\" == \"--sort\" ]]; then\n");
         output.push_str("        local -a sort_values\n");
         output.push_str("        sort_values=(\n");
-        output.push_str("            'branch:Sort by branch name'\n");
+        output.push_str("            'name:Sort by name'\n");
         output.push_str("            'path:Sort by worktree path'\n");
         output.push_str("            'size:Sort by disk size'\n");
         output.push_str("            'base:Sort by total base divergence'\n");
@@ -175,7 +175,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output
             .push_str("            'activity:Sort by overall activity (commits + uncommitted)'\n");
         output.push_str("            'commit:Sort by last commit time only'\n");
-        output.push_str("            '+branch:Sort by branch name ascending'\n");
+        output.push_str("            '+name:Sort by name ascending'\n");
         output.push_str("            '+path:Sort by worktree path ascending'\n");
         output.push_str("            '+size:Sort by disk size ascending'\n");
         output.push_str("            '+base:Sort by total base divergence ascending'\n");
@@ -186,7 +186,7 @@ pub(super) fn generate_zsh_completion_string(command_name: &str) -> Result<Strin
         output.push_str("            '+hash:Sort by commit hash ascending'\n");
         output.push_str("            '+activity:Sort by overall activity ascending'\n");
         output.push_str("            '+commit:Sort by last commit time ascending'\n");
-        output.push_str("            '-branch:Sort by branch name descending'\n");
+        output.push_str("            '-name:Sort by name descending'\n");
         output.push_str("            '-path:Sort by worktree path descending'\n");
         output.push_str("            '-size:Sort by disk size descending'\n");
         output.push_str("            '-base:Sort by total base divergence descending'\n");

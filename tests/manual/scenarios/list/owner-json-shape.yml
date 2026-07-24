@@ -38,7 +38,7 @@ steps:
       exit_code: 0
 
   - name: JSON output has owner_name and owner_email as flat fields
-    run: NO_COLOR=1 git-worktree-list --format json --columns branch,owner
+    run: NO_COLOR=1 git-worktree-list --format json --columns name,owner
     cwd: "$WORK_DIR/json-shape-repo/develop"
     expect:
       exit_code: 0
