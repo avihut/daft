@@ -95,7 +95,7 @@ jobs:
       'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -115,7 +115,7 @@ jobs:
   release-env-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Check release workflow builds with DAFT_BUILD_RELEASE
         run: scripts/check-release-build-env.sh
@@ -131,7 +131,7 @@ jobs:
       'true' || needs.changes.outputs.lockfile == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -140,7 +140,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       - name: Run cargo-deny
         run: mise run deny
@@ -168,7 +168,7 @@ jobs:
       # full short name and bare `cargo-cooldown` silently no-ops.
       MISE_DISABLE_TOOLS: cargo:cargo-cooldown
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -179,7 +179,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       # mise installs the toolchain pinned in mise.toml (rust = "1.95") and
       # exports RUSTUP_TOOLCHAIN, overriding the dtolnay-installed `stable`.
@@ -217,7 +217,7 @@ jobs:
       # identical override on `lint` for the full rationale.
       MISE_DISABLE_TOOLS: cargo:cargo-cooldown
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -226,7 +226,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mise
-        uses: jdx/mise-action@v4.2.0
+        uses: jdx/mise-action@v4.2.1
 
       - name: Run Rust unit tests
         run: mise run test:unit
@@ -244,7 +244,7 @@ jobs:
       'true' || needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust 1.95 (MSRV)
         uses: dtolnay/rust-toolchain@1.95.0
@@ -275,7 +275,7 @@ jobs:
       'true' || needs.changes.outputs.xtask == 'true')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -295,7 +295,7 @@ jobs:
       needs.changes.outputs.man == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -388,7 +388,7 @@ jobs:
       needs.changes.outputs.xtask == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -476,7 +476,7 @@ jobs:
         suite: [bash, yaml]
 
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Git
         run: |
@@ -583,7 +583,7 @@ jobs:
       'true' || needs.changes.outputs.man == 'true')
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
