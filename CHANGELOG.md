@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.23.1](https://github.com/avihut/daft/compare/v1.23.0...v1.23.1) - 2026-07-24
+
+
+### Bug Fixes
+
+- Skip pre-push hooks on remote-branch deletes (#754)
 ## [1.23.0](https://github.com/avihut/daft/compare/v1.22.0...v1.23.0) - 2026-07-20
 
 
