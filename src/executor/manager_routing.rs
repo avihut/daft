@@ -210,6 +210,13 @@ impl ManagerRoutingPresenter {
                         self.inner.on_jobs_planned(&state.started);
                         self.inner.on_job_start(&name, None, None);
                     }
+                    // In lefthook's default (buffered) mode the block flushes
+                    // when the job completes, so this is a real-time "finished
+                    // running" signal: settle the row to the neutral grey `✓`
+                    // now, ahead of the summary's confirmed verdict. (Under
+                    // `follow: true` the header prints at job start — the row
+                    // settles early and the summary self-corrects.)
+                    self.inner.on_manager_job_flushed(&name);
                 }
                 ManagerEvent::JobOutput { name, line } => {
                     self.inner.on_job_output(&name, &line);
@@ -701,6 +708,9 @@ mod tests {
                 version.unwrap_or("-")
             ));
         }
+        fn on_manager_job_flushed(&self, name: &str) {
+            self.log(format!("flushed:{name}"));
+        }
         fn on_child_job_start(&self, parent: &str, name: &str) {
             self.log(format!("child_start:{parent}:{name}"));
         }
@@ -754,10 +764,14 @@ mod tests {
             vec![
                 "phase_start:pre-push".to_string(),
                 // The engagement fact precedes every job event — renderers
-                // raise their census before the first row appears.
+                // fold the manager into the section header before the first
+                // row appears.
                 "manager_engaged:-:lefthook:2.1.10".to_string(),
                 "planned:fmt".to_string(),
                 "start:fmt:-".to_string(),
+                // The block header flushed at completion (#753): a done-pending
+                // signal, right after the row is revealed, ahead of the verdict.
+                "flushed:fmt".to_string(),
                 "output:fmt:fmt output line".to_string(),
                 "output:fmt:".to_string(),
                 "success:fmt".to_string(),
@@ -1046,6 +1060,49 @@ mod tests {
             events.iter().filter(|e| e.starts_with("success:")).count(),
             2
         );
+    }
+
+    #[test]
+    fn a_block_flush_emits_the_done_pending_signal_ahead_of_the_verdict() {
+        // #753: the block header flushes at the job's completion in default
+        // piped mode, so a `flushed` signal must reach the presenter before
+        // the summary — that is what lets a live row settle to the grey ✓ in
+        // real time. Only `fast` flushes a block here; `slow` resolves from
+        // the summary alone and so has no flush signal.
+        let recording = Recording::arc();
+        let dir = seed_dir(&["fast", "slow"]);
+        let wrapper = seeded_wrapper(recording.clone(), &dir);
+        gate_start(&wrapper);
+        for line in [
+            BANNER,
+            "┃  fast ❯ ",
+            "fast done",
+            "summary: (done in 5.0 seconds)",
+            "✔️ fast (0.2 seconds)",
+            "✔️ slow (4.9 seconds)",
+        ] {
+            wrapper.on_job_output(GATE_JOB, line);
+        }
+        wrapper.on_job_success(GATE_JOB, Duration::from_secs(5));
+
+        let events = recording.events();
+        let fast_flush = events
+            .iter()
+            .position(|e| e == "flushed:fast")
+            .expect("fast's block flush signals done-pending");
+        let fast_success = events
+            .iter()
+            .position(|e| e == "success:fast")
+            .expect("fast's verdict");
+        assert!(
+            fast_flush < fast_success,
+            "the flush signal precedes the summary verdict: {events:?}"
+        );
+        assert!(
+            !events.contains(&"flushed:slow".to_string()),
+            "slow never flushed a block before the summary — no early signal: {events:?}"
+        );
+        assert!(events.contains(&"success:slow".to_string()), "{events:?}");
     }
 
     #[test]

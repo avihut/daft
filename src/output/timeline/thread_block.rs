@@ -135,6 +135,11 @@ pub(super) struct ThreadedJob {
     /// Whether the elapsed counter currently occupies the annotation slot —
     /// set by the promoter ticker, cleared when output arrives.
     promoted: Arc<AtomicBool>,
+    /// Set when a recognized manager's block for this job flushes (#753): the
+    /// job finished running, verdict still pending. The promoter reads it so a
+    /// straggler tick composes the grey `✓` done face, never the elapsed
+    /// counter — the row can't flicker back to a timer once it's done.
+    done_pending: Arc<AtomicBool>,
 }
 
 impl ThreadedJob {
@@ -150,6 +155,7 @@ impl ThreadedJob {
             output_seen: Arc::new(AtomicBool::new(false)),
             resolved: Arc::new(AtomicBool::new(false)),
             promoted: Arc::new(AtomicBool::new(false)),
+            done_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -218,10 +224,29 @@ impl ThreadedJob {
     /// Note that output has arrived: the elapsed-counter answer to "is this
     /// silent job alive?" retires once real output does the answering. Returns
     /// whether the counter was currently promoted (so the caller repaints the
-    /// row's resting message). Verbose only — succinct never promotes.
+    /// row's resting message). Both densities now run the ticker for a silent
+    /// job (#753), so both un-promote here.
     pub(super) fn mark_output_seen(&self) -> bool {
         self.output_seen.store(true, Ordering::SeqCst);
         self.promoted.swap(false, Ordering::SeqCst)
+    }
+
+    /// Mark the job's block as flushed (#753): it finished running, verdict
+    /// pending. A live promoter reads this on its next tick and holds the grey
+    /// `✓` done face instead of the elapsed counter, so no straggler tick can
+    /// repaint a timer over a done row.
+    pub(super) fn mark_done_pending(&self) {
+        self.done_pending.store(true, Ordering::SeqCst);
+    }
+
+    /// The done-pending flag, for a promoter closure to consult each tick.
+    pub(super) fn done_pending_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.done_pending)
+    }
+
+    /// Whether the job's block has flushed (finished running, verdict pending).
+    pub(super) fn is_done_pending(&self) -> bool {
+        self.done_pending.load(Ordering::SeqCst)
     }
 
     /// Grow the live window one bar per line until it caps at `tail_lines`,

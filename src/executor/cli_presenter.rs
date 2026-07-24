@@ -116,13 +116,24 @@ impl EmbedRenderer {
         }
     }
 
-    /// A recognized hook manager on the gate stream (#753). The rail raises
-    /// its census row; the block renderer's banner and summary already frame
-    /// the jobs, so it ignores the fact.
+    /// A recognized hook manager on the gate stream (#753). The rail folds the
+    /// manager + version into its section header; the block renderer's banner
+    /// and summary already frame the jobs, so it ignores the fact.
     fn set_manager_engaged(&mut self, manager: &str, version: Option<&str>) {
         match self {
             Self::Block(_) => {}
             Self::Rail(r) => r.set_manager_engaged(manager, version),
+        }
+    }
+
+    /// A recognized manager's block for `name` flushed — it finished running,
+    /// verdict pending (#753). The rail settles the row to the neutral grey
+    /// `✓`; the block renderer prints the job's block inline as it arrives, so
+    /// there is no live row to settle.
+    fn mark_done_pending(&mut self, name: &str) {
+        match self {
+            Self::Block(_) => {}
+            Self::Rail(r) => r.mark_done_pending(name),
         }
     }
 
@@ -385,6 +396,12 @@ impl JobPresenter for CliPresenter {
     fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
         if let Some(r) = ready(&mut self.lock()) {
             r.set_manager_engaged(manager, version);
+        }
+    }
+
+    fn on_manager_job_flushed(&self, name: &str) {
+        if let Some(r) = ready(&mut self.lock()) {
+            r.mark_done_pending(name);
         }
     }
 

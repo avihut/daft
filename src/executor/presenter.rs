@@ -76,9 +76,21 @@ pub trait JobPresenter: Send + Sync {
     /// jobs that follow are the manager's, routed as first-class events.
     /// `scope` is `None` on the pre-push gate path (the phase itself is the
     /// manager run) or the owning job's name when a manager runs inside a
-    /// lifecycle job. Renderers may surface the fact (the rail's census row
-    /// and close note); everything else ignores it. Default: ignore.
+    /// lifecycle job. Renderers may surface the fact (the rail folds it into
+    /// the section header); everything else ignores it. Default: ignore.
     fn on_manager_engaged(&self, _scope: Option<&str>, _manager: &str, _version: Option<&str>) {}
+
+    /// A recognized manager's output block for `name` flushed (#753). In
+    /// lefthook's default (buffered) piped mode a job's block flushes at its
+    /// completion, so this is a real-time "finished running" signal — ahead of
+    /// the verdict, which the manager stamps only in its end-of-run summary.
+    /// A live renderer stops the row's spinner and shows a neutral grey `✓`
+    /// done-pending face; the summary later persists the confirmed `✓`/`✗`
+    /// with the official duration. Display only — never a `JobResult`, never
+    /// the verdict or exit policy. (Under `follow: true` the block header
+    /// prints at job *start*; the row settles early there and the summary
+    /// self-corrects — a rare, opt-in mode.) Default: ignore.
+    fn on_manager_job_flushed(&self, _name: &str) {}
 
     /// A recognized manager running *inside* a lifecycle job reported one of
     /// its own jobs (#753). Children are presentation only: they never carry
