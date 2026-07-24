@@ -40,6 +40,24 @@ impl FleetOutcome {
     }
 }
 
+/// The canonical `git_common_dir` of the repository the cwd is in, formatted
+/// as the catalog stores it — `None` when the cwd is outside any repository.
+///
+/// Current-repo-last fleet ordering and `daft remove --repo <the-repo-I-am-in>`
+/// detection both key off this. Sharing one implementation keeps them from
+/// disagreeing about which catalog row is "here" — a disagreement that, on the
+/// remove path, is exactly what would strand a shell in a deleted worktree.
+pub fn current_repo_git_common_dir() -> Option<String> {
+    let git_dir = crate::core::repo::get_git_common_dir().ok()?;
+    Some(
+        git_dir
+            .canonicalize()
+            .unwrap_or(git_dir)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// Run `action` inside every repo in `scope`. Prints a `── name ──` header
 /// between repos on multi-repo runs, warns on skips (never silent), and
 /// reports each failure as it happens. `current_repo_last` reorders the
@@ -71,12 +89,7 @@ pub fn for_each_repo(
         }
     };
 
-    if current_repo_last && let Ok(git_dir) = crate::core::repo::get_git_common_dir() {
-        let canonical = git_dir
-            .canonicalize()
-            .unwrap_or(git_dir)
-            .to_string_lossy()
-            .into_owned();
+    if current_repo_last && let Some(canonical) = current_repo_git_common_dir() {
         rows.sort_by_key(|row| row.git_common_dir == canonical);
     }
 

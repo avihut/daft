@@ -1,7 +1,7 @@
 use super::{
     allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
-    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
-    value_taking_flags,
+    extract_flags, get_command_for_name, repo_flag_capture, uses_fetch_on_miss,
+    uses_rich_completions, value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -218,11 +218,24 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     // sole surviving candidate is a bare pr:/mr: syntax token, suppress the
     // trailing space so the accepted token stays glued to the number the
     // user types next.
+    // `_init_completion` splits the current word on COMP_WORDBREAKS by default.
+    // Two candidate chars must stay glued into $cur: ':' for pr:/mr: forge
+    // targets (stripped afterward via __ltrim_colon_completions), and '=' so
+    // `--repo=<name>` arrives as one word for the positional scan (#749) instead
+    // of splitting into `--repo` `=` `<name>` and mis-capturing the value.
+    // Exclude whichever apply — the set is additive because `daft-go` needs both.
     let takes_forge_targets = matches!(command_name, "git-worktree-checkout" | "daft-go");
-    let init_completion = if takes_forge_targets {
-        "_init_completion -n : || return"
+    let mut wordbreak_keep = String::new();
+    if takes_forge_targets {
+        wordbreak_keep.push(':');
+    }
+    if command_has_repo_flag(command_name) {
+        wordbreak_keep.push('=');
+    }
+    let init_completion = if wordbreak_keep.is_empty() {
+        "_init_completion || return".to_string()
     } else {
-        "_init_completion || return"
+        format!("_init_completion -n {wordbreak_keep} || return")
     };
     let ltrim_post = if takes_forge_targets {
         "        declare -F __ltrim_colon_completions >/dev/null && __ltrim_colon_completions \"$cur\"\n        if [[ ${#COMPREPLY[@]} -eq 1 && ( \"${COMPREPLY[0]}\" == \"pr:\" || \"${COMPREPLY[0]}\" == \"mr:\" ) ]]; then\n            compopt -o nospace 2>/dev/null || true\n        fi\n"
@@ -288,11 +301,25 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     // at position 1; pass it via env — the __complete protocol only carries
     // the current word. `$__first` is the first *positional*, not words[1],
     // so a leading flag can't masquerade as the repo name.
-    let env_prefix = match command_name {
-        "daft-go" => r#"DAFT_COMPLETE_GO_FIRST="$__first" "#,
-        "daft-start" => r#"DAFT_COMPLETE_START_FIRST="$__first" "#,
-        _ => "",
-    };
+    // Additive, not either/or: a command can need both hand-offs, and
+    // dropping one here silently breaks that slot's completion.
+    let mut env_prefix = String::new();
+    match command_name {
+        "daft-go" => env_prefix.push_str(r#"DAFT_COMPLETE_GO_FIRST="$__first" "#),
+        "daft-start" => env_prefix.push_str(r#"DAFT_COMPLETE_START_FIRST="$__first" "#),
+        _ => {}
+    }
+    // Commands that take --repo forward its value so slots after it complete
+    // against the *target* repo rather than the caller's (#749).
+    if command_has_repo_flag(command_name) {
+        env_prefix.push_str(r#"DAFT_COMPLETE_REPO_FLAG="$__repo" "#);
+    }
+
+    // Captured in the same scan that counts positionals: the flag may sit
+    // anywhere before the cursor, in either spelling. Reading `__i + 1` is safe
+    // because the value-skip below has not advanced past it yet. zsh uses the
+    // byte-identical snippet, so it lives in one shared helper (#749).
+    let (repo_decl, repo_capture) = repo_flag_capture(command_name);
 
     // Positional slots are counted, not taken from $cword: flags and their
     // values sit in `words` too, so `daft start -q <TAB>` is still slot 1.
@@ -300,12 +327,12 @@ fn generate_bash_rich_completion(command_name: &str) -> String {
     let position_pre = format!(
         r#"    local -a __posargs=()
     local __i=1 __w
-    while [[ $__i -lt $cword ]]; do
+{repo_decl}    while [[ $__i -lt $cword ]]; do
         __w="${{words[$__i]}}"
         case "$__w" in
             --) ;;
             -*)
-                case " {value_flags} " in
+{repo_capture}                case " {value_flags} " in
                     *" ${{__w%%=*}} "*)
                         [[ "$__w" == *=* ]] || __i=$((__i + 1))
                         ;;

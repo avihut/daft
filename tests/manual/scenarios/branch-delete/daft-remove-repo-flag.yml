@@ -1,0 +1,98 @@
+name: Daft remove targets another cataloged repo with --repo
+description:
+  daft remove --repo <name> removes branches in another cataloged repo from
+  inside a different repo and from outside any repo, announces the destination
+  before acting, fails closed on a bad catalog entry, and never reinterprets the
+  positional slot as a repo name.
+
+repos:
+  - name: test-repo-a
+    use_fixture: standard-remote
+  - name: test-repo-b
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone both repos and give B a worktree to remove
+    run: |
+      cd $WORK_DIR
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_A
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO_B
+      cd $WORK_DIR/test-repo-b
+      git-worktree-checkout -b feature/in-b
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+        - "$WORK_DIR/test-repo-b/feature/in-b"
+
+  - name: --repo removes in the other repo and announces the destination
+    run: daft remove --repo test-repo-b feature/in-b -f 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "Removing branch 'feature/in-b' in 'test-repo-b'"
+      files_not_exist:
+        - "$WORK_DIR/test-repo-b/feature/in-b"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: Recreate a worktree in B to remove from outside any repo
+    run: |
+      cd $WORK_DIR/test-repo-b
+      git-worktree-checkout -b feature/again
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/feature/again"
+
+  - name: --repo works from outside any repository
+    run: daft remove --repo test-repo-b feature/again -f 2>&1
+    cwd: "$WORK_DIR"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo-b/feature/again"
+
+  - name: An unknown repo name fails closed rather than removing locally
+    run: daft remove --repo zzz-not-a-repo main -f 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "zzz-not-a-repo"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/main"
+
+  - name: --repo combined with a worktree path is rejected as contradictory
+    run: daft remove --repo test-repo-b "$WORK_DIR/test-repo-b/main" -f 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "already identifies its repository"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/main"
+
+  - name: Give A two branches whose names collide with a repo name
+    run: |
+      cd $WORK_DIR/test-repo-a
+      git-worktree-checkout -b test-repo-b
+      git-worktree-checkout -b feature/local
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo-a/test-repo-b"
+        - "$WORK_DIR/test-repo-a/feature/local"
+
+  - name:
+      Positional slot is never reinterpreted as a repo — both are local branches
+    run: daft remove test-repo-b feature/local -f 2>&1
+    cwd: "$WORK_DIR/test-repo-a/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-repo-a/test-repo-b"
+        - "$WORK_DIR/test-repo-a/feature/local"
+      dirs_exist:
+        - "$WORK_DIR/test-repo-b/main"

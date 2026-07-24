@@ -167,6 +167,16 @@ Arguments can be branch names or worktree paths. When a path is given
 resolved automatically. This is convenient when you are inside a worktree
 and want to delete it without remembering the branch name.
 
+Use --repo <name> to remove branches in another cataloged repository without
+leaving your current directory: `daft remove --repo api feature-x` deletes
+`feature-x` in the `api` repo. --repo is a flag rather than a positional
+because the positional slot is a required list of branches or paths; a repo
+guessed there could delete a local branch and its remote by mistake. A --repo
+removal never relocates your shell (your cwd stays valid) and runs
+non-interactively (see the refined-daft-files note below). Combining --repo
+with a worktree path is rejected — the path already identifies its own
+repository.
+
 Safety checks prevent accidental data loss. The command refuses to delete a
 branch that:
 
@@ -175,7 +185,9 @@ branch that:
   - is out of sync with its remote tracking branch
   - has refined untracked daft files (daft.yml / daft.local.yml edited since
     daft seeded them) that the default branch's worktree does not cover —
-    consolidate with daft-file(1) merge, or answer the interactive prompt
+    consolidate with daft-file(1) merge, or (for a local removal) answer the
+    interactive prompt; a --repo removal has no prompt and aborts instead,
+    so consolidate or pass -f up front
 
 Use -f to override these safety checks. Forcing DISCARDS refined untracked
 daft files — they are stashed under `<git-common-dir>/.daft/discarded/<branch>/`
@@ -225,11 +237,36 @@ pub struct RemoveArgs {
     )]
     no_verify: bool,
 
+    #[arg(
+        long = "repo",
+        value_name = "REPO",
+        help = "Remove branches in another cataloged repository"
+    )]
+    repo: Option<String>,
+
     #[arg(short, long, help = "Operate quietly; suppress progress reporting")]
     quiet: bool,
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     verbose: bool,
+}
+
+/// How a `daft remove` invocation reached its target repository.
+///
+/// Two behaviors key off this rather than off `--repo` directly, because
+/// `--repo <the-repo-you-are-standing-in>` resolves back to [`Self::Local`]:
+/// the flag names a repository, it does not by itself mean "elsewhere".
+enum RemoveScope {
+    /// The repository the cwd is in (reached directly, by worktree path, or
+    /// by a `--repo` that names that same repository).
+    Local,
+    /// Another cataloged repository, entered via `--repo` (#749). Carries the
+    /// directory the shell was in *before* we chdir'd into the target, so the
+    /// cd-rescue can tell whether this removal deleted the ground the user is
+    /// standing on (see the emission gate in `run_branch_delete`).
+    CrossRepo {
+        shell_cwd: Option<std::path::PathBuf>,
+    },
 }
 
 /// Entry point for `daft remove`.
@@ -240,13 +277,22 @@ pub fn run_remove() -> Result<()> {
 
     init_logging(remove_args.verbose);
 
-    // When invoked outside a git repository, allow operating on worktree paths
-    // by discovering the owning repo from the first existing path argument and
-    // chdir-ing to its project root. All path arguments are canonicalized first
-    // so the subsequent chdir doesn't break their resolution.
-    if !is_git_repository()? {
-        prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;
-    }
+    // Everything below is cwd-driven, so reaching another repository is done
+    // by entering it first — the same trick `prepare_out_of_repo_paths` plays
+    // for path arguments. Both must land before `DaftSettings::load()`, which
+    // reads the repo-local config of whatever directory we end up in.
+    let scope = match remove_args.repo.clone() {
+        // `--repo <name>`: exec-shape targeting by catalog name (#749).
+        Some(needle) => enter_repo_by_name(&needle, &remove_args)?,
+        // No `--repo`. Inside a repo this is an ordinary local removal; from
+        // outside one, the owning repo is discovered from a path argument.
+        None => {
+            if !is_git_repository()? {
+                prepare_out_of_repo_paths(&mut remove_args.branches, "daft remove")?;
+            }
+            RemoveScope::Local
+        }
+    };
 
     let settings = DaftSettings::load()?;
     let config = OutputConfig::with_autocd(remove_args.quiet, remove_args.verbose, settings.autocd);
@@ -260,9 +306,93 @@ pub fn run_remove() -> Result<()> {
         remove_args.remote,
         "-f/--force",
         remove_args.no_verify,
+        scope,
         &mut output,
         &settings,
     )
+}
+
+/// Resolve `--repo <needle>` through the catalog, announce the destination,
+/// and enter it unless it is the repository the user is already in.
+///
+/// Fails closed by construction: [`crate::catalog::resolve_repo_arg`] errors on
+/// a store failure, an unknown name, a tombstoned entry, or a recorded path
+/// that no longer exists. A cross-repo removal must never be reinterpreted as
+/// a local one — that would turn a catalog outage into a deletion in the wrong
+/// repository.
+fn enter_repo_by_name(needle: &str, args: &RemoveArgs) -> Result<RemoveScope> {
+    reject_path_args_with_repo(&args.branches, needle)?;
+
+    let row = crate::catalog::resolve_repo_arg(needle)?;
+
+    // Announce the resolved destination before any work happens — a removal
+    // aimed somewhere other than "here" must be impossible to miss (`-q` opts
+    // out). Its own CliOutput, with autocd off: this line is never a cd hint.
+    let subject = if args.branches.len() == 1 {
+        format!("branch '{}'", args.branches[0])
+    } else {
+        format!("{} branches", args.branches.len())
+    };
+    let mut announce = CliOutput::new(OutputConfig::with_autocd(args.quiet, args.verbose, false));
+    announce.result(&format!(
+        "Removing {} in '{}' ({})",
+        subject, row.name, row.path
+    ));
+
+    if resolves_to_current_repo(&row) {
+        return Ok(RemoveScope::Local);
+    }
+
+    // Capture where the shell is standing before we leave it: the cd-rescue in
+    // `run_branch_delete` uses this to distinguish a genuine cross-repo removal
+    // (cwd stays valid, never relocate) from `--repo` naming the repo the user
+    // is actually in but misread as elsewhere (cwd removed, must rescue).
+    let shell_cwd = std::env::current_dir().ok();
+    crate::utils::change_directory(std::path::Path::new(&row.path))?;
+    Ok(RemoveScope::CrossRepo { shell_cwd })
+}
+
+/// Whether `row` names the repository the cwd is already inside.
+///
+/// `--repo <current-repo>` must behave exactly like a plain local removal.
+/// Entering the project root would move the cwd out of the worktree being
+/// removed, and the cd-redirect that rescues the user's shell is derived from
+/// the cwd — so treating "here" as cross-repo would strand them in a deleted
+/// directory. Identity is keyed off the canonical git-common-dir via
+/// [`crate::catalog::fleet::current_repo_git_common_dir`] — the same helper the
+/// current-repo-last fleet ordering uses, so the two never disagree about which
+/// catalog row is "here"; being outside any repository reads as "not current".
+fn resolves_to_current_repo(row: &crate::store::models::CatalogRepoRow) -> bool {
+    crate::catalog::fleet::current_repo_git_common_dir()
+        .is_some_and(|canonical| canonical == row.git_common_dir)
+}
+
+/// Reject path-spelled positionals when `--repo` already names the target.
+///
+/// A worktree path identifies its own repository, so pairing the two is
+/// contradictory — reject it rather than picking a winner. The test is
+/// deliberately *spelling*-based rather than an on-disk probe: worktree
+/// directories are named after their branches, so `daft remove --repo api
+/// feat/foo` run from a repo that happens to have a `feat/foo` worktree would
+/// otherwise be rejected for naming a perfectly ordinary branch. Bare names
+/// stay branch names and are matched against the target repo's worktrees after
+/// the chdir, where that resolution is meaningful.
+fn reject_path_args_with_repo(branches: &[String], needle: &str) -> Result<()> {
+    for arg in branches {
+        let path_spelled = arg.starts_with('/')
+            || arg.starts_with('~')
+            || arg == "."
+            || arg == ".."
+            || arg.starts_with("./")
+            || arg.starts_with("../");
+        if path_spelled {
+            anyhow::bail!(
+                "'{arg}' is a worktree path, which already identifies its repository\n  \
+                 tip: drop --repo to remove by path, or pass branch names to remove in '{needle}'"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Prepare a path-accepting daft command (currently `daft remove` and `daft
@@ -480,11 +610,42 @@ fn run_with_args(args: Args) -> Result<()> {
             args.remote,
             "-D/--force",
             args.no_verify,
+            // The legacy `git worktree-branch -d/-D` form has no `--repo`.
+            RemoveScope::Local,
             &mut output,
             &settings,
         )?;
     }
     Ok(())
+}
+
+/// Whether the shell that launched a cross-repo removal needs relocating.
+///
+/// True only when we captured its pre-chdir directory *and* that directory is
+/// now gone — the removal deleted the ground it was standing on. A shell we
+/// couldn't locate (`None`), or one whose directory still exists, is left where
+/// it is: a cross-repo removal must never relocate a still-valid cwd (that is
+/// the whole reason cross-repo suppresses the redirect), and the rescue is
+/// reserved for `--repo` naming the repo the user is actually in, misread as
+/// elsewhere by a `GIT_*`-perturbed probe (#749). Checking the cwd directly,
+/// rather than trusting the scope classification, is what makes a
+/// misclassification unable to strand the user.
+fn cross_repo_shell_stranded(shell_cwd: Option<&std::path::Path>) -> bool {
+    shell_cwd.is_some_and(|cwd| matches!(cwd.try_exists(), Ok(false)))
+}
+
+/// Hand the shell a new working directory after its own was removed: through
+/// the wrapper's `DAFT_CD_FILE` when active, otherwise a `Run \`cd …\`` hint so
+/// users without the wrapper still recover.
+fn emit_cd_redirect(output: &mut dyn Output, cd_target: &std::path::Path) {
+    if std::env::var(CD_FILE_ENV).is_ok() {
+        output.cd_path(cd_target);
+    } else {
+        output.result(&format!(
+            "Run `cd {}` (your previous working directory was removed)",
+            cd_target.display()
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -496,6 +657,7 @@ fn run_branch_delete(
     remote_only: bool,
     force_flag_label: &str,
     no_verify: bool,
+    scope: RemoveScope,
     output: &mut dyn Output,
     settings: &DaftSettings,
 ) -> Result<()> {
@@ -586,6 +748,18 @@ fn run_branch_delete(
     let exec_result = {
         let mut bridge =
             TimelineBridge::new(output, &mut timeline, executor, hook_output_config.clone());
+        // A cross-repo removal must not stop on daft's own consolidation
+        // prompt: the Repo-Aware Command Grammar routes fleet-style forms
+        // non-interactively, and a keypress here would ask about refined daft
+        // files in a repo the user isn't standing in. Suppressing hands that
+        // decision to the `ConsolidationPrompter` default — always Abort — so
+        // the removal refuses with the usual `daft file merge` / `-f` guidance
+        // instead. This governs daft's prompt only: a remote-delete pre-push
+        // hook or a git credential helper can still prompt, exactly as one
+        // would for a local removal.
+        if matches!(scope, RemoveScope::CrossRepo { .. }) {
+            bridge = bridge.without_prompts();
+        }
         let witness = crate::commands::forge_cache::merged_witness(
             &GitCommand::new(true).with_gitoxide(settings.use_gitoxide),
         );
@@ -664,15 +838,36 @@ fn run_branch_delete(
         }
     }
 
-    // Write the cd target for the shell wrapper
-    if let Some(ref cd_target) = result.cd_target {
-        if std::env::var(CD_FILE_ENV).is_ok() {
-            output.cd_path(cd_target);
-        } else {
-            output.result(&format!(
-                "Run `cd {}` (your previous working directory was removed)",
-                cd_target.display()
-            ));
+    // Write the cd target for the shell wrapper.
+    //
+    // Rescue the shell only when the directory it is standing in was actually
+    // removed. For a local removal that is exactly what `result.cd_target`
+    // reports: the core detects its own current worktree and resolves a
+    // fallback before deleting it. A cross-repo removal differs on both counts
+    // — the shell is normally in another repository whose cwd stays valid (so
+    // relocating it would be user-hostile), and the core ran from the *target*
+    // root, so its current-worktree detection (which also matches by branch
+    // name) is no proxy for the shell's fate and `cd_target` is usually `None`.
+    // The one cross-repo case that still needs rescuing is `--repo` naming the
+    // repo the user is actually in, misread as elsewhere by a `GIT_*`-perturbed
+    // probe (#749): there the shell's own directory is gone. Detect that
+    // directly — has the captured pre-chdir cwd survived? — rather than trusting
+    // the scope, so a misclassification can never strand the user.
+    match &scope {
+        RemoveScope::Local => {
+            if let Some(ref cd_target) = result.cd_target {
+                emit_cd_redirect(output, cd_target);
+            }
+        }
+        RemoveScope::CrossRepo { shell_cwd } => {
+            if cross_repo_shell_stranded(shell_cwd.as_deref())
+                && let Some(target) = result
+                    .cd_target
+                    .clone()
+                    .or_else(|| std::env::current_dir().ok())
+            {
+                emit_cd_redirect(output, &target);
+            }
         }
     }
 
@@ -786,4 +981,37 @@ fn run_rename_inner(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cross_repo_shell_stranded;
+
+    // The cross-repo cd-rescue keys off whether the shell's own directory
+    // survived the removal, not off the scope classification. That is what
+    // guarantees the two opposing failures never happen (#749): a genuine
+    // cross-repo removal must not relocate a still-valid shell, and a same-repo
+    // removal misread as cross-repo must still rescue a shell whose worktree it
+    // just deleted.
+    #[test]
+    fn cross_repo_shell_stranded_only_when_captured_cwd_is_gone() {
+        // No captured cwd → nothing to rescue, and never relocate on a guess.
+        assert!(!cross_repo_shell_stranded(None));
+
+        let scratch = tempfile::tempdir().unwrap();
+
+        // The shell's directory still exists → leave it put (anti-teleport):
+        // this is the ordinary cross-repo case, cwd in another repo, untouched.
+        let intact = scratch.path().join("still-here");
+        std::fs::create_dir(&intact).unwrap();
+        assert!(!cross_repo_shell_stranded(Some(&intact)));
+
+        // The shell's directory was removed under it → rescue (anti-strand):
+        // `--repo <self>` misclassified as cross-repo, worktree now gone.
+        let removed = scratch.path().join("deleted-worktree");
+        std::fs::create_dir(&removed).unwrap();
+        assert!(!cross_repo_shell_stranded(Some(&removed)));
+        std::fs::remove_dir(&removed).unwrap();
+        assert!(cross_repo_shell_stranded(Some(&removed)));
+    }
 }

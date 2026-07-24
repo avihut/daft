@@ -180,11 +180,24 @@ fn complete(
         // addressable for log lookup and re-clone.
         ("repo-name", _) => Ok(format_entries_as_strings(&complete_repo_names(word))),
 
-        // daft-remove: worktree + local completions for deletion
-        ("daft-remove", _) => Ok(format_entries_as_strings(&complete_rich_branches(
-            word,
-            &CONFIG_REMOVE,
-        )?)),
+        // daft-remove: worktree + local completions for deletion. When
+        // `--repo <name>` is already on the line (the shell passes it via
+        // DAFT_COMPLETE_REPO_FLAG), the removal targets that repo, so Tab
+        // offers *its* branches — the cwd repo's would be wrong answers on a
+        // destructive verb (#749).
+        ("daft-remove", _) => {
+            let repo_flag = std::env::var("DAFT_COMPLETE_REPO_FLAG").unwrap_or_default();
+            if repo_flag.is_empty() {
+                Ok(format_entries_as_strings(&complete_rich_branches(
+                    word,
+                    &CONFIG_REMOVE,
+                )?))
+            } else {
+                Ok(format_entries_as_strings(&cross_repo_branches(
+                    &repo_flag, word,
+                )))
+            }
+        }
 
         // daft-rename: worktree-only completions
         ("daft-rename", _) => Ok(format_entries_as_strings(&complete_rich_branches(
@@ -814,40 +827,74 @@ fn start_second_slot(first: &str) -> StartSecondSlot {
 /// its default completion (and stays forge-free: the create-family guard
 /// rejects basing a new branch on a PR ref).
 fn complete_go_second(first_word: &str, prefix: &str) -> Vec<CompletionEntry> {
-    if first_word.is_empty() {
-        return Vec::new();
-    }
-    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
-        return Vec::new();
-    };
-    let Ok(Some(row)) = catalog.resolve_live_name(first_word) else {
+    let Some(row) = live_catalog_repo(first_word) else {
         return Vec::new();
     };
     let root = std::path::Path::new(&row.path);
-    if !root.is_dir() {
-        return Vec::new();
-    }
-    let mut entries = go_second_branches(root, &row.name, prefix);
+    let mut entries = repo_branch_entries(root, &row.name, prefix, true);
     entries.extend(complete_forge_targets(prefix, Some(root)));
     entries
 }
 
-/// The branch half of [`complete_go_second`]: local + remote branch names of
-/// the repo at `root`, deduped, described by the repo's catalog name.
-fn go_second_branches(
+/// Branches of the catalog repo named by a `--repo <name>` already on the
+/// command line, which the shell snippets pass via `DAFT_COMPLETE_REPO_FLAG`.
+///
+/// A miss completes *nothing* rather than falling back to the cwd repo:
+/// offering the caller's branches for a removal aimed elsewhere would suggest
+/// names that don't exist in the target — on a destructive verb.
+fn cross_repo_branches(needle: &str, prefix: &str) -> Vec<CompletionEntry> {
+    let Some(row) = live_catalog_repo(needle) else {
+        return Vec::new();
+    };
+    // Local heads only: `daft remove` deletes local branches, and even
+    // `--remote` names the local branch whose upstream is being deleted.
+    repo_branch_entries(std::path::Path::new(&row.path), &row.name, prefix, false)
+}
+
+/// Resolve a catalog repo needle to a live, on-disk entry for completion.
+///
+/// Resolves through the same [`Catalog::resolve`](crate::catalog::Catalog::resolve)
+/// precedence the command itself uses (`resolve_repo_arg`): name → uuid →
+/// canonical path / git-common-dir → removed name. Matching by name alone would
+/// leave the uuid and path spellings — which the command will happily execute —
+/// completing nothing.
+///
+/// Holds the hot-path contract in one place: silent on every failure. An empty
+/// needle, a dead store, an unknown or tombstoned name, or a recorded path
+/// that no longer exists all yield `None` — never an error, never stderr. The
+/// tombstone and path-exists filters mirror the bar `resolve_repo_arg` enforces
+/// before it will operate, so completion offers a target iff the command would
+/// act on it.
+fn live_catalog_repo(needle: &str) -> Option<crate::store::models::CatalogRepoRow> {
+    if needle.is_empty() {
+        return None;
+    }
+    let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
+        return None;
+    };
+    let Ok(Some(row)) = catalog.resolve(needle) else {
+        return None;
+    };
+    if row.removed_at.is_some() {
+        return None;
+    }
+    std::path::Path::new(&row.path).is_dir().then_some(row)
+}
+
+/// Branch names of the repo at `root`, deduped, described by the repo's
+/// catalog name. `include_remote` widens the set to remote-tracking branches
+/// for slots that accept them (`go <repo> <branch>`).
+fn repo_branch_entries(
     root: &std::path::Path,
     repo_name: &str,
     prefix: &str,
+    include_remote: bool,
 ) -> Vec<CompletionEntry> {
-    let Ok(out) = crate::utils::git_command_at(root)
-        .args([
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads",
-            "refs/remotes",
-        ])
-        .output()
-    else {
+    let mut globs = vec!["for-each-ref", "--format=%(refname)", "refs/heads"];
+    if include_remote {
+        globs.push("refs/remotes");
+    }
+    let Ok(out) = crate::utils::git_command_at(root).args(&globs).output() else {
         return Vec::new();
     };
     if !out.status.success() {
