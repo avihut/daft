@@ -1,0 +1,85 @@
+name: push keeps its gate verdict when a recognized lefthook job fails
+description:
+  "The #753 guard that matters most: a failing lefthook run engages the
+  recognizer, which consumes the manager's banner and summary lines — but the
+  push verdict must stay derived from the subprocess result, never from
+  recognized events. The push is blocked, the exit code is non-zero, the bail
+  keeps the pre-push verdict language and the --no-verify hint, and the branch
+  never reaches the remote."
+
+repos:
+  - name: push-gate-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_PUSH_GATE_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/push-gate-repo/main"
+
+  - name: Checkout the feature branch
+    run: git-worktree-checkout feature/test-feature
+    cwd: "$WORK_DIR/push-gate-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Commit a change on the feature branch
+    run: |
+      echo "change" > change.txt
+      git add change.txt
+      GIT_AUTHOR_EMAIL="me@example.com" GIT_COMMITTER_EMAIL="me@example.com" \
+        git commit -m "Change"
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: Install a hook that emits a failing lefthook run
+    run: |
+      mkdir -p $WORK_DIR/test-hooks
+      cat > $WORK_DIR/test-hooks/pre-push <<'HOOK'
+      #!/bin/sh
+      printf '╭─────────────────────────────────────────╮\n'
+      printf '│ 🥊 lefthook v9.9.9-test  hook: pre-push │\n'
+      printf '╰─────────────────────────────────────────╯\n'
+      printf '┃  fmt ❯ \n'
+      printf 'fmt clean\n'
+      printf '\n'
+      printf '┃  unit tests (related) ❯ \n'
+      printf 'FAILED assertion at foo.rs:12\n'
+      printf '\n'
+      printf 'exit status 1\n'
+      printf '  ────────────────────────────────────\n'
+      printf 'summary: (done in 0.42 seconds)\n'
+      printf '✔️ fmt (0.20 seconds)\n'
+      printf '🥊 unit tests (related) (0.42 seconds)\n'
+      echo "LEFTHOOK-GATE-REFUSED" >&2
+      exit 1
+      HOOK
+      chmod +x $WORK_DIR/test-hooks/pre-push
+      git config core.hooksPath $WORK_DIR/test-hooks
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect: { exit_code: 0 }
+
+  - name: push is blocked with the verdict intact
+    run: git-worktree-push 2>&1
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect:
+      exit_code: 1
+      output_contains:
+        # The hook's stderr rides the failure (PushIo, not recognized
+        # events) — proof the recognizer consumed stdout without touching
+        # the verdict path.
+        - "LEFTHOOK-GATE-REFUSED"
+        # #599's verdict language and bypass hint survive engagement.
+        - "pre-push hook"
+        - "--no-verify"
+
+  - name: The remote branch was not updated
+    run: |
+      git fetch origin 2>/dev/null
+      git rev-list --count origin/feature/test-feature..feature/test-feature
+    cwd: "$WORK_DIR/push-gate-repo/feature/test-feature"
+    expect:
+      exit_code: 0
+      output_contains: ["1"]
