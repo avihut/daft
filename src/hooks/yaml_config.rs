@@ -159,6 +159,13 @@ pub struct HookDef {
     /// Legacy alias for jobs (commands map).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commands: Option<HashMap<String, CommandDef>>,
+
+    /// Failure mode for this hook: `abort` (fatal) or `warn` (report and
+    /// continue). Committed here it is a repo-wide default; a git-config
+    /// `daft.hooks.<hookName>.failMode` overrides it (see the executor's
+    /// `resolve_fail_mode`). Has no effect on `tasks:` entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_mode: Option<super::FailMode>,
 }
 
 /// Target operating system for platform constraints.
@@ -515,6 +522,47 @@ hooks:
             Some(RunCommand::Simple(s)) => assert_eq!(s, "echo \"hello\""),
             other => panic!("Expected Simple, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fail_mode_deserializes_case_insensitively() {
+        use crate::hooks::FailMode;
+
+        // The git-config `failMode` surface is case-insensitive
+        // (FailMode::parse lowercases), so a committed `daft.yml fail_mode:`
+        // must accept the same spellings. Critically, a mis-cased value must
+        // NOT fail the whole YamlConfig deserialize — that would silently drop
+        // every hook for the operation to the legacy-script fallback.
+        for (spelling, expected) in [
+            ("abort", FailMode::Abort),
+            ("Abort", FailMode::Abort),
+            ("ABORT", FailMode::Abort),
+            ("warn", FailMode::Warn),
+            ("WARN", FailMode::Warn),
+        ] {
+            let yaml = format!(
+                "hooks:\n  worktree-post-create:\n    fail_mode: {spelling}\n    \
+                 jobs:\n      - run: \"true\"\n"
+            );
+            let config: YamlConfig = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("{spelling:?} should parse, got: {e}"));
+            assert_eq!(
+                config.hooks["worktree-post-create"].fail_mode,
+                Some(expected),
+                "{spelling:?} should deserialize to {expected}"
+            );
+        }
+
+        // A genuine typo still errors — loudly, naming the bad value — rather
+        // than being silently accepted.
+        let err = serde_yaml::from_str::<YamlConfig>(
+            "hooks:\n  worktree-post-create:\n    fail_mode: abrot\n    jobs:\n      - run: \"true\"\n",
+        )
+        .expect_err("a non-abort/warn value must fail to parse");
+        assert!(
+            err.to_string().contains("abrot"),
+            "error should name the bad value: {err}"
+        );
     }
 
     #[test]

@@ -1,0 +1,74 @@
+name: Committed daft.yml fail_mode is a default that git config overrides
+description:
+  "A committed `fail_mode: warn` on worktree-post-create makes a failing hook
+  non-fatal (exit 0, -x runs), overriding the #765 abort default with no git
+  config at all. A local `git config daft.hooks.worktreePostCreate.failMode
+  abort` then wins over the committed value: the hook aborts creation again,
+  skips -x, and keeps the worktree on disk (#768 precedence: git > daft.yml >
+  default)."
+
+repos:
+  - name: test-pc-failmode
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# Post-create fail_mode yaml test"
+        commits:
+          - message: "Initial commit"
+      - name: feat-warn-yaml
+        from: main
+      - name: feat-git-abort
+        from: main
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          fail_mode: warn
+          jobs:
+            - name: setup
+              run: exit 1
+
+steps:
+  - name: Clone the repository
+    run: git-worktree-clone --layout contained $REMOTE_TEST_PC_FAILMODE
+    expect:
+      exit_code: 0
+
+  - name: Trust the repository
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-pc-failmode/main"
+    expect:
+      exit_code: 0
+
+  - name:
+      Committed fail_mode=warn makes the failing hook non-fatal (-x runs, exit
+      0)
+    run: git-worktree-checkout feat-warn-yaml -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pc-failmode/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "continuing anyway"
+      files_exist:
+        - "$WORK_DIR/test-pc-failmode/feat-warn-yaml/exec-marker.txt"
+
+  - name:
+      A local git failMode=abort is set to override the committed daft.yml value
+    run: git config daft.hooks.worktreePostCreate.failMode abort
+    cwd: "$WORK_DIR/test-pc-failmode/main"
+    expect:
+      exit_code: 0
+
+  - name: Under git abort the hook aborts creation, skips -x, keeps the worktree
+    run: git-worktree-checkout feat-git-abort -x 'touch exec-marker.txt' 2>&1
+    cwd: "$WORK_DIR/test-pc-failmode/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "worktree-post-create hook failed"
+        - "created and kept"
+      files_not_exist:
+        - "$WORK_DIR/test-pc-failmode/feat-git-abort/exec-marker.txt"
+      dirs_exist:
+        - "$WORK_DIR/test-pc-failmode/feat-git-abort"

@@ -17,6 +17,44 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Resolve a hook's effective fail mode from the two sources that can set it.
+///
+/// Precedence is **git wins**: a git-config `daft.hooks.<hook>.failMode`
+/// (recorded in `hook_config.fail_mode_from_git`) overrides a committed
+/// `daft.yml fail_mode:`, which in turn overrides the hook-type default. When
+/// git did not set the value, `hook_config.fail_mode` still holds that default,
+/// so the committed YAML value is used if present and the default otherwise.
+fn resolve_fail_mode(hook_config: &HookConfig, yaml: Option<FailMode>) -> FailMode {
+    if hook_config.fail_mode_from_git {
+        hook_config.fail_mode
+    } else {
+        yaml.unwrap_or(hook_config.fail_mode)
+    }
+}
+
+/// Build a warning when an *unparseable* git-config `failMode` is silently
+/// overridden by a committed `daft.yml fail_mode:`.
+///
+/// Under "git wins", a present git value is expected to override the committed
+/// one — but a typo (`abrot`) does not parse, so it is ignored and the YAML
+/// value wins instead. Left silent, someone who ran `git config … failMode
+/// abrot` to restore local gating would believe they had, while a failing
+/// gating hook is quietly downgraded to the committed `warn`. Scoped to the
+/// exact harm: only fires when a YAML value is actually present to be
+/// overridden. Returns `None` (no warning) otherwise.
+fn unparsed_git_fail_mode_warning(
+    hook_config: &HookConfig,
+    yaml: Option<FailMode>,
+) -> Option<String> {
+    match (&hook_config.fail_mode_git_unparsed, yaml) {
+        (Some(bad), Some(yaml_mode)) => Some(format!(
+            "Ignoring invalid git config failMode {bad:?} (expected \"abort\" or \"warn\"); \
+             using the committed daft.yml fail_mode: {yaml_mode}"
+        )),
+        _ => None,
+    }
+}
+
 /// Result of a hook execution.
 #[derive(Debug, Clone)]
 pub struct HookResult {
@@ -279,23 +317,23 @@ impl HookExecutor {
         let hook_source_worktree = get_hook_source_worktree(ctx);
 
         // Try YAML config first. `try_yaml_hook` returns:
-        // * `Ok(Some(result))` when the YAML hook was run (including failed
-        //   runs — the caller translates those to Err-or-warn based on the
-        //   configured fail mode below).
+        // * `Ok(Some((result, fail_mode)))` when the YAML hook was run
+        //   (including failed runs — the caller translates those to Err-or-warn
+        //   based on the resolved fail mode below).
         // * `Ok(None)` when no YAML config applies to this hook type.
         // * `Err(_)` only when YAML loading/parsing itself failed — an
         //   infrastructure error that we treat as "fall back to legacy"
         //   rather than a hook-semantic failure.
         match self.try_yaml_hook(ctx, &hook_source_worktree, hook_config, output, &presenter) {
-            Ok(Some(result)) => {
+            Ok(Some((result, fail_mode))) => {
                 // The YAML hook was invoked. If the hook itself failed
                 // (exit != 0) and was not skipped, translate per its
-                // configured fail mode — Abort bails, Warn logs and
+                // resolved fail mode — Abort bails, Warn logs and
                 // returns a success-ish HookResult so the caller can
                 // continue. Skipped or successful results pass through
                 // unchanged.
                 if !result.success && !result.skipped {
-                    return self.handle_hook_failure(ctx.hook_type, hook_config, result, output);
+                    return self.handle_hook_failure(ctx.hook_type, fail_mode, result, output);
                 }
                 return Ok(result);
             }
@@ -313,7 +351,7 @@ impl HookExecutor {
 
     /// Try to execute a hook via YAML configuration.
     ///
-    /// Returns `Ok(Some(result))` if YAML config exists and defines this
+    /// Returns `Ok(Some((result, fail_mode)))` if YAML config exists and defines this
     /// hook — including failed runs. Failure translation (Abort-vs-Warn)
     /// is the caller's responsibility via `handle_hook_failure`.
     /// Returns `Ok(None)` if no YAML config or no definition for this
@@ -323,10 +361,10 @@ impl HookExecutor {
         &self,
         ctx: &HookContext,
         hook_source_worktree: &Path,
-        _hook_config: &HookConfig,
+        hook_config: &HookConfig,
         output: &mut dyn Output,
         presenter: &Arc<dyn JobPresenter>,
-    ) -> Result<Option<HookResult>> {
+    ) -> Result<Option<(HookResult, FailMode)>> {
         let yaml_config = if ctx.hook_type == HookType::PreCreate {
             // For PreCreate, the target worktree doesn't exist yet.
             // Load config from the target branch via git show, falling back
@@ -359,6 +397,19 @@ impl HookExecutor {
             }
         };
 
+        // Resolve the effective fail mode now, while both the git-derived
+        // `hook_config` and the parsed `hook_def` are in scope. Threaded through
+        // every `Ok(Some(...))` exit below so the caller can translate a failure
+        // per the resolved mode.
+        let effective_fail_mode = resolve_fail_mode(hook_config, hook_def.fail_mode);
+
+        // Surface an unparseable git `failMode` that is being silently
+        // overridden by the committed value, so the misconfiguration is visible
+        // rather than a quiet gating downgrade.
+        if let Some(msg) = unparsed_git_fail_mode_warning(hook_config, hook_def.fail_mode) {
+            output.warning(&msg);
+        }
+
         // Check trust level (unless bypassed by explicit invocation)
         if !self.bypass_trust {
             let trust_level = self.get_verified_trust_level(&ctx.git_dir, output);
@@ -380,14 +431,20 @@ impl HookExecutor {
                     output.debug(&format!(
                         "Skipping {hook_name} YAML hooks: repository not trusted"
                     ));
-                    return Ok(Some(HookResult::skipped("Repository not trusted")));
+                    return Ok(Some((
+                        HookResult::skipped("Repository not trusted"),
+                        effective_fail_mode,
+                    )));
                 }
                 TrustLevel::Prompt => {
                     let prompt_msg =
                         format!("Repository has YAML hook config for '{hook_name}'. Execute?");
                     if let Some(ref callback) = self.prompt_callback {
                         if !callback(&prompt_msg) {
-                            return Ok(Some(HookResult::skipped("User declined hook execution")));
+                            return Ok(Some((
+                                HookResult::skipped("User declined hook execution"),
+                                effective_fail_mode,
+                            )));
                         }
                     } else {
                         output.warning(&format!(
@@ -395,7 +452,10 @@ impl HookExecutor {
                             crate::daft_cmd("hooks trust")
                         ));
                         trust_skip::record_skip(ctx, SKIP_REASON_PROMPT_UNAVAILABLE);
-                        return Ok(Some(HookResult::skipped("No permission callback")));
+                        return Ok(Some((
+                            HookResult::skipped("No permission callback"),
+                            effective_fail_mode,
+                        )));
                     }
                 }
                 TrustLevel::Allow => {}
@@ -431,12 +491,12 @@ impl HookExecutor {
         let result =
             yaml_executor::execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)?;
 
-        // Return the raw result — failure translation (Abort → Err, Warn →
-        // logged-and-continue) is the caller's responsibility via
-        // `handle_hook_failure` in `execute`. Doing it here would
-        // misclassify Abort-mode hook failures as "YAML config load error"
+        // Return the raw result plus the resolved fail mode — failure
+        // translation (Abort → Err, Warn → logged-and-continue) is the caller's
+        // responsibility via `handle_hook_failure` in `execute`. Doing it here
+        // would misclassify Abort-mode hook failures as "YAML config load error"
         // at the outer dispatch and silently fall back to legacy scripts.
-        Ok(Some(result))
+        Ok(Some((result, effective_fail_mode)))
     }
 
     /// Execute legacy script-based hooks.
@@ -580,7 +640,12 @@ impl HookExecutor {
                 failed.stdout.clone(),
                 failed.stderr.clone(),
             );
-            return self.handle_hook_failure(ctx.hook_type, hook_config, hook_result, output);
+            return self.handle_hook_failure(
+                ctx.hook_type,
+                hook_config.fail_mode,
+                hook_result,
+                output,
+            );
         }
 
         Ok(HookResult::success())
@@ -620,17 +685,17 @@ impl HookExecutor {
         }
     }
 
-    /// Handle a hook failure based on the fail mode.
+    /// Handle a hook failure based on the resolved fail mode.
     fn handle_hook_failure(
         &self,
         hook_type: HookType,
-        config: &HookConfig,
+        fail_mode: FailMode,
         result: HookResult,
         output: &mut dyn Output,
     ) -> Result<HookResult> {
         let exit_code = result.exit_code.unwrap_or(-1);
 
-        match config.fail_mode {
+        match fail_mode {
             FailMode::Abort => {
                 output.error(&format!(
                     "{} hook failed with exit code {}",
@@ -790,6 +855,57 @@ mod tests {
         }
 
         hook_path
+    }
+
+    #[test]
+    fn resolve_fail_mode_git_beats_yaml_beats_default() {
+        // PostCreate defaults to Abort; git has not set the value.
+        let mut cfg = HookConfig::new(HookType::PostCreate);
+        assert_eq!(cfg.fail_mode, FailMode::Abort);
+        assert!(!cfg.fail_mode_from_git);
+
+        // git unset + yaml set → the committed daft.yml value wins over the default.
+        assert_eq!(
+            resolve_fail_mode(&cfg, Some(FailMode::Warn)),
+            FailMode::Warn
+        );
+        // git unset + yaml unset → the hook-type default.
+        assert_eq!(resolve_fail_mode(&cfg, None), FailMode::Abort);
+
+        // git set (even to the type default) → git config wins over daft.yml.
+        cfg.fail_mode = FailMode::Abort;
+        cfg.fail_mode_from_git = true;
+        assert_eq!(
+            resolve_fail_mode(&cfg, Some(FailMode::Warn)),
+            FailMode::Abort
+        );
+        assert_eq!(resolve_fail_mode(&cfg, None), FailMode::Abort);
+    }
+
+    #[test]
+    fn unparsed_git_fail_mode_warns_only_when_overriding_a_committed_value() {
+        let mut cfg = HookConfig::new(HookType::PreMerge);
+
+        // No unparseable git value recorded → never warns.
+        assert!(unparsed_git_fail_mode_warning(&cfg, Some(FailMode::Warn)).is_none());
+        assert!(unparsed_git_fail_mode_warning(&cfg, None).is_none());
+
+        // A present-but-unparseable git value (e.g. a `failMode abrot` typo)...
+        cfg.fail_mode_git_unparsed = Some("abrot".to_string());
+
+        // ...with a committed daft.yml value being silently overridden → warn,
+        // naming the bad value. This is the precise harm: the user believes
+        // their git override re-gated the hook, but the committed value wins.
+        let msg = unparsed_git_fail_mode_warning(&cfg, Some(FailMode::Warn))
+            .expect("must warn when a committed value silently wins over a bad git value");
+        assert!(
+            msg.contains("abrot"),
+            "warning should name the bad value: {msg}"
+        );
+
+        // ...but with no committed value nothing is being overridden (the
+        // default applies either way), so stay quiet to avoid noise.
+        assert!(unparsed_git_fail_mode_warning(&cfg, None).is_none());
     }
 
     #[test]

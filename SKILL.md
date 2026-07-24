@@ -381,7 +381,9 @@ worktree stays on disk. Fix the cause, then
 `daft hooks run worktree-post-create` from inside that worktree to finish setup
 — do not treat the worktree as missing.
 `git config daft.hooks.worktreePostCreate.failMode warn` opts back into
-continue-on-failure.
+continue-on-failure; a repo can also commit `fail_mode: warn` (or `abort`) on a
+hook in `daft.yml` to ship that default to every clone, with the git config
+taking precedence over the committed value.
 
 `pre-merge` aborts the merge on failure; `post-merge` warns but never rolls
 back. Both expose `DAFT_MERGE_*` env vars: `SOURCES`, `TARGET_BRANCH`,

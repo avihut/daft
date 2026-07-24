@@ -150,6 +150,10 @@ git config daft.hooks.worktreePostCreate.failMode warn
 git config daft.hooks.worktreePreCreate.failMode warn
 ```
 
+A repo can also **commit** a hook's default fail mode in `daft.yml` via
+`fail_mode:` (`abort` or `warn`), shipping it to every clone; the git config
+above still takes precedence.
+
 Hook failures during moves produce **warnings**, not errors. The move operation
 (rename, transform, adopt) always completes. This prevents a broken hook from
 leaving the worktree in a half-moved state.
@@ -191,6 +195,10 @@ git config daft.hooks.preMerge.failMode warn
 # Restore the default abort behavior
 git config --unset daft.hooks.preMerge.failMode
 ```
+
+The same choice can be **committed** in `daft.yml`
+(`hooks.pre-merge.fail_mode: warn`) to ship it to every clone; a local
+`git config` override still takes precedence.
 
 With `failMode=warn`, a failing pre-merge hook prints
 `pre-merge hook failed with exit code N (continuing anyway)` and the merge

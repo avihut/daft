@@ -63,9 +63,11 @@ the new worktree while the compiler grinds.
 `cargo build` would try to download crates that the parallel fetch is already
 pulling.
 
-The default fail mode for `worktree-post-create` is `warn`, so a failed warmup
-never blocks worktree creation. That's the right default — a warmup is an
-optimization, and an optimization that occasionally fails is still a net win.
+Because `warmup-build` runs in the background, a failed warmup never blocks
+worktree creation — a detached job's exit status doesn't gate the command.
+(Foreground `worktree-post-create` jobs default to `abort`; commit
+`fail_mode: warn` on the hook in `daft.yml` to make a foreground failure
+non-fatal instead.)
 
 ## Variants
 

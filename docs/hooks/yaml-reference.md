@@ -156,8 +156,36 @@ hooks:
 | `skip`         | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions)) |
 | `only`         | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions)) |
 | `jobs`         | list                 |         | Jobs to execute                                                            |
+| `fail_mode`    | `abort` / `warn`     | varies  | Behavior when this hook fails (see [Failure mode](#failure-mode))          |
 
 Only one of `parallel`, `piped`, or `follow` can be set at a time.
+
+### Failure mode
+
+`fail_mode` controls what happens when a hook exits non-zero:
+
+- `abort` — the failure is fatal and the daft operation stops.
+- `warn` — the failure is reported and the operation continues.
+
+Defaults are per hook type: `worktree-pre-create`, `worktree-post-create`, and
+`pre-merge` default to `abort`; every other hook defaults to `warn`. Committing
+`fail_mode:` ships that choice to every clone, so a repo can mark a best-effort
+hook (a warmup, an optional setup step) non-fatal for everyone.
+
+A local git config `daft.hooks.<hookName>.failMode` overrides the committed
+value, so a developer can always change the mode on their own machine:
+
+```bash
+git config daft.hooks.worktreePostCreate.failMode warn
+```
+
+Both `fail_mode:` and the git config accept `abort` or `warn`
+case-insensitively. If the git config holds an unrecognized value, daft ignores
+it (the committed `fail_mode:` or the default applies) and prints a warning, so
+a typo does not silently change the failure behavior.
+
+`fail_mode` has no effect under `tasks:` — `daft run` stops on the first failing
+job regardless.
 
 ## Job entries
 

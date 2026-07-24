@@ -177,6 +177,10 @@ fails, opt into warn-and-continue:
 git config daft.hooks.worktreePostCreate.failMode warn
 ```
 
+To ship that choice to every clone instead of setting it per machine, commit
+`fail_mode: warn` on the `worktree-post-create` hook in `daft.yml` (a local
+`git config` override still takes precedence).
+
 ## Where to next
 
 - **[Background warmup](/recipes/background-warmup)** — once deps are installed,
