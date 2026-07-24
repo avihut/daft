@@ -162,7 +162,7 @@ pub struct Args {
 #[derive(Parser)]
 #[command(name = "daft go")]
 #[command(version = crate::VERSION)]
-#[command(about = "Open a worktree for an existing branch, or create one with -b")]
+#[command(about = "Open a worktree for a branch or commit; create a new branch with -b")]
 #[command(long_about = r#"
 Opens a worktree for an existing local or remote branch. The worktree is
 placed at the project root level as a sibling to other worktrees, using the
@@ -211,7 +211,7 @@ See daft-hooks(1) for hook management.
 "#)]
 pub struct GoArgs {
     #[arg(
-        help = "Branch (or catalog repo) to open; use '-' for previous worktree",
+        help = "Branch, commit-ish, or catalog repo to open; use '-' for previous worktree",
         allow_hyphen_values = true,
         required_unless_present = "repo"
     )]
@@ -304,7 +304,7 @@ pub struct GoArgs {
 #[derive(Parser)]
 #[command(name = "daft start")]
 #[command(version = crate::VERSION)]
-#[command(about = "Create a new branch and worktree")]
+#[command(about = "Create a new branch and worktree, or a throwaway fork with --fork")]
 #[command(long_about = r#"
 Creates a new branch and a corresponding worktree in a single operation. The
 worktree is placed at the project root level as a sibling to other worktrees,

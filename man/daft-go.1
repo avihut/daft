@@ -2,7 +2,7 @@
 .el .ds Aq '
 .TH "daft go" 1  "daft go 1.23.0" 
 .SH NAME
-daft go \- Open a worktree for an existing branch, or create one with \-b
+daft go \- Open a worktree for a branch or commit; create a new branch with \-b
 .SH SYNOPSIS
 \fBdaft go\fR [\fB\-\-repo\fR] [\fB\-b\fR|\fB\-\-create\-branch\fR] [\fB\-s\fR|\fB\-\-start\fR] [\fB\-c\fR|\fB\-\-carry\fR] [\fB\-\-no\-carry\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-no\-cd\fR] [\fB\-x\fR|\fB\-\-exec\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-@\fR|\fB\-\-at\fR] [\fB\-\-local\fR] [\fB\-\-no\-verify\fR] [\fB\-\-skip\-hooks\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIBRANCH_NAME\fR] [\fISECOND\fR] 
 .SH DESCRIPTION
@@ -102,7 +102,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 Print version
 .TP
 [\fIBRANCH_NAME\fR]
-Branch (or catalog repo) to open; use \*(Aq\-\*(Aq for previous worktree
+Branch, commit\-ish, or catalog repo to open; use \*(Aq\-\*(Aq for previous worktree
 .TP
 [\fISECOND\fR]
 Branch inside <repo> when two arguments are given; base branch with \-b
