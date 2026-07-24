@@ -1,0 +1,16 @@
+[38;2;56;56;56m╭─────────────────────[m[38;2;56;56;56m─────────────────╮[m
+[38;2;56;56;56m│[m 🥊 lefthook  v2.1.7  hook:  [1mpre-push[m [38;2;56;56;56m│[m
+[38;2;56;56;56m╰─────────────────────[m[38;2;56;56;56m─────────────────╯[m
+sync hooks: ✔️(pre-push)
+┃  first ❯ 
+first ran
+
+┃  second ❯ 
+second ran
+
+[38;2;56;56;56m  ────────────────────────────────────[m
+summary: (done in 0.45 seconds)
+✔️ first (0.33 seconds)
+✔️ second (0.12 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   a0cc246..b9efe21  master -> master

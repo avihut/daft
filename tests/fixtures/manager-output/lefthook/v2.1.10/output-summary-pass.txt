@@ -1,0 +1,5 @@
+summary: (done in 0.21 seconds)
+✔️ alpha (0.15 seconds)
+✔️ beta (0.21 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   4b441d8..26d05e9  master -> master

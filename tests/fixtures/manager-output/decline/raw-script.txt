@@ -1,0 +1,6 @@
+Running pre-push checks...
+  -> cargo fmt --check
+  -> cargo test
+All checks passed.
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+ + 519dfa3...df7a62a master -> master (forced update)

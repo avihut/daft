@@ -1,0 +1,24 @@
+╭─────────────────────────────────────╮
+│ lefthook  v2.1.10   hook:  [1mpre-push[m │
+╰─────────────────────────────────────╯
+┃  fmt ❯ 
+fmt output line
+
+┃  typecheck ❯ 
+typecheck ok
+
+┃  clippy ❯ 
+clippy output line
+
+┃  unit tests (related) ❯ 
+running unit tests
+test result ok
+
+[38;2;56;56;56m  ────────────────────────────────────[m
+summary: (done in 0.27 seconds)
+✓ fmt (0.16 seconds)
+✓ typecheck (0.17 seconds)
+✓ clippy (0.23 seconds)
+✓ unit tests (related) (0.27 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   f70fbe0..5cf61e0  master -> master

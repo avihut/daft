@@ -1,0 +1,19 @@
+╭────────────────────────────────────╮
+│ 🥊 lefthook v2.0.0  hook: pre-push │
+╰────────────────────────────────────╯
+sync hooks: ✔️ (pre-push)
+┃  first ❯ 
+
+first ran
+
+┃  second ❯ 
+
+second ran
+
+                                      
+  ────────────────────────────────────
+summary: (done in 0.45 seconds)       
+✔️ first (0.33 seconds)
+✔️ second (0.12 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   f3827a2..76ad1aa  master -> master

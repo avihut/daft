@@ -1,0 +1,23 @@
+╭─────────────────────────────────╮
+│ lefthook v2.1.6  hook: pre-push │
+╰─────────────────────────────────╯
+┃  fmt ❯ 
+
+fmt ok
+
+┃  typecheck ❯ 
+
+typecheck ok
+
+┃  unit tests (related) ❯ 
+
+FAILED assertion at foo.rs:12
+test bar ... FAIL
+
+exit status 1                                      
+  ────────────────────────────────────
+summary: (done in 0.27 seconds)       
+✓ fmt (0.15 seconds)
+✓ typecheck (0.18 seconds)
+✗ unit tests (related) (0.27 seconds)
+error: failed to push some refs to '/tmp/daft-lefthook-cap.P5eOgG/remote.git'

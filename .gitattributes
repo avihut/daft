@@ -1,0 +1,5 @@
+# Captured hook-manager output fixtures are byte-exact evidence: they carry
+# raw ANSI and, in old lefthook versions, CRLF line endings that the stream
+# recognizer must tolerate. Exempt them from any text/eol normalization so a
+# clone with core.autocrlf=true cannot silently rewrite what was captured.
+tests/fixtures/manager-output/** -text

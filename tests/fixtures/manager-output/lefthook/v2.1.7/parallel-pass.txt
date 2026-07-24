@@ -1,0 +1,24 @@
+[38;2;56;56;56m╭─────────────────────[m[38;2;56;56;56m─────────────────╮[m
+[38;2;56;56;56m│[m 🥊 lefthook  v2.1.7  hook:  [1mpre-push[m [38;2;56;56;56m│[m
+[38;2;56;56;56m╰─────────────────────[m[38;2;56;56;56m─────────────────╯[m
+┃  fmt ❯ 
+fmt output line
+
+┃  typecheck ❯ 
+typecheck ok
+
+┃  clippy ❯ 
+clippy output line
+
+┃  unit tests (related) ❯ 
+running unit tests
+test result ok
+
+[38;2;56;56;56m  ────────────────────────────────────[m
+summary: (done in 0.27 seconds)
+✔️ fmt (0.16 seconds)
+✔️ typecheck (0.17 seconds)
+✔️ clippy (0.22 seconds)
+✔️ unit tests (related) (0.27 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   3781142..b12c2d6  master -> master

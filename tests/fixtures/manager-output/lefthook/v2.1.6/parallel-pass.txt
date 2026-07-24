@@ -1,0 +1,29 @@
+╭────────────────────────────────────╮
+│ 🥊 lefthook v2.1.6  hook: pre-push │
+╰────────────────────────────────────╯
+┃  fmt ❯ 
+
+fmt output line
+
+┃  typecheck ❯ 
+
+typecheck ok
+
+┃  clippy ❯ 
+
+clippy output line
+
+┃  unit tests (related) ❯ 
+
+running unit tests
+test result ok
+
+                                      
+  ────────────────────────────────────
+summary: (done in 0.25 seconds)       
+✔️ fmt (0.17 seconds)
+✔️ typecheck (0.18 seconds)
+✔️ clippy (0.21 seconds)
+✔️ unit tests (related) (0.25 seconds)
+To /tmp/daft-lefthook-cap.P5eOgG/remote.git
+   d01c6d2..769b4b5  master -> master
