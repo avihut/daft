@@ -645,8 +645,23 @@ pub enum DagEvent {
         duration: Duration,
         /// Exit code from the hook process, if available.
         exit_code: Option<i32>,
-        /// Captured stdout+stderr, only stored on failure/warning.
+        /// Captured output, only stored on failure/warning. When
+        /// `failing_job` is set this is scoped to that job's own lines
+        /// (#753); otherwise it is the whole merged stream.
         output: Option<String>,
+        /// The job whose failure sank the hook, when one is known — a
+        /// recognized manager names its jobs, so the report can say which
+        /// one failed instead of dumping the whole run.
+        failing_job: Option<String>,
+    },
+    /// A hook manager (lefthook) was recognized on a hook's output stream
+    /// (#753): the JobStarted/JobCompleted events that follow are the
+    /// manager's own jobs.
+    ManagerEngaged {
+        branch_name: String,
+        hook_type: DagHookPhase,
+        manager: String,
+        version: Option<String>,
     },
     /// A job started running within a hook.
     JobStarted {

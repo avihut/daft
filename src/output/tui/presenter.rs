@@ -37,6 +37,13 @@ pub struct TuiPresenter {
     /// The generic runner streams both stdout and stderr lines through the same
     /// `on_job_output` callback, so this contains the merged output stream.
     output: Mutex<String>,
+    /// Per-job output, in arrival order. With a recognized manager (#753)
+    /// each entry is one manager job's own lines; on the plain path there is
+    /// a single entry mirroring `output`.
+    job_outputs: Mutex<Vec<(String, String)>>,
+    /// The first job that failed — the failure report scopes to its lines
+    /// instead of dumping every passing job's output.
+    failing_job: Mutex<Option<String>>,
 }
 
 impl TuiPresenter {
@@ -56,6 +63,8 @@ impl TuiPresenter {
             start: Mutex::new(None),
             has_failure: Mutex::new(false),
             output: Mutex::new(String::new()),
+            job_outputs: Mutex::new(Vec::new()),
+            failing_job: Mutex::new(None),
         })
     }
 
@@ -67,6 +76,26 @@ impl TuiPresenter {
         } else {
             Some(output.clone())
         }
+    }
+
+    /// The failure report's output: the failing job's own lines when a
+    /// recognized manager named it (#753), the whole merged stream
+    /// otherwise. Falls back to the full stream when the failing job's
+    /// buffer is empty — a silent failure still deserves whatever context
+    /// the stream has.
+    fn take_failure_output(&self, failing_job: Option<&str>) -> Option<String> {
+        if let Some(job) = failing_job {
+            let jobs = self
+                .job_outputs
+                .lock()
+                .expect("TuiPresenter job_outputs poisoned");
+            if let Some((_, text)) = jobs.iter().find(|(name, _)| name == job)
+                && !text.is_empty()
+            {
+                return Some(text.clone());
+            }
+        }
+        self.take_output()
     }
 }
 
@@ -90,13 +119,29 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_job_output(&self, _name: &str, line: &str) {
-        // Accumulate output for failure reporting.
+    fn on_job_output(&self, name: &str, line: &str) {
+        // Accumulate output for failure reporting — the merged stream and
+        // the per-job cut (#753 scopes the report to the failing job).
         let mut output = self.output.lock().expect("TuiPresenter output poisoned");
         if !output.is_empty() {
             output.push('\n');
         }
         output.push_str(line);
+        drop(output);
+
+        let mut jobs = self
+            .job_outputs
+            .lock()
+            .expect("TuiPresenter job_outputs poisoned");
+        match jobs.iter_mut().rfind(|(job, _)| job == name) {
+            Some((_, text)) => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(line);
+            }
+            None => jobs.push((name.to_string(), line.to_string())),
+        }
     }
 
     fn on_job_success(&self, name: &str, duration: Duration) {
@@ -115,6 +160,10 @@ impl JobPresenter for TuiPresenter {
             .has_failure
             .lock()
             .expect("TuiPresenter has_failure poisoned") = true;
+        self.failing_job
+            .lock()
+            .expect("TuiPresenter failing_job poisoned")
+            .get_or_insert_with(|| name.to_string());
 
         let _ = self.sender.send(DagEvent::JobCompleted {
             branch_name: self.branch_name.clone(),
@@ -168,8 +217,13 @@ impl JobPresenter for TuiPresenter {
             .lock()
             .expect("TuiPresenter has_failure poisoned");
 
+        let failing_job = self
+            .failing_job
+            .lock()
+            .expect("TuiPresenter failing_job poisoned")
+            .clone();
         let output = if has_failure {
-            self.take_output()
+            self.take_failure_output(failing_job.as_deref())
         } else {
             None
         };
@@ -186,6 +240,16 @@ impl JobPresenter for TuiPresenter {
             duration,
             exit_code: None,
             output,
+            failing_job,
+        });
+    }
+
+    fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
+        let _ = self.sender.send(DagEvent::ManagerEngaged {
+            branch_name: self.branch_name.clone(),
+            hook_type: self.hook_type,
+            manager: manager.to_string(),
+            version: version.map(str::to_string),
         });
     }
 
@@ -259,11 +323,13 @@ mod tests {
                 duration,
                 exit_code,
                 output,
+                failing_job,
             } => {
                 assert_eq!(branch_name, "main");
                 assert_eq!(hook_type, HookType::PostClone.into());
                 assert!(success);
                 assert!(!warned);
+                assert!(failing_job.is_none());
                 // Duration should be non-negative (close to zero in tests).
                 assert!(duration.as_secs() < 5);
                 assert!(exit_code.is_none());
@@ -337,6 +403,103 @@ mod tests {
                 assert!(text.contains("error: network timeout"));
             }
             other => panic!("expected HookCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_output_scopes_to_the_failing_manager_job() {
+        // A recognized manager (#753) routes per-job output through the
+        // wrapper; the report must carry only the failing job's lines, not
+        // every passing job's output — and name the job.
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
+
+        presenter.on_phase_start("pre-push", None);
+        presenter.on_job_start("fmt", None, None);
+        presenter.on_job_output("fmt", "fmt clean");
+        presenter.on_job_success("fmt", Duration::from_millis(300));
+        presenter.on_job_start("unit tests (related)", None, None);
+        presenter.on_job_output("unit tests (related)", "FAILED assertion at foo.rs:12");
+        presenter.on_job_output("unit tests (related)", "exit status 1");
+        presenter.on_job_failure("unit tests (related)", Duration::from_millis(500));
+        presenter.on_phase_complete(Duration::from_secs(1));
+
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        let completed = events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted");
+        match completed {
+            DagEvent::HookCompleted {
+                output,
+                failing_job,
+                ..
+            } => {
+                assert_eq!(failing_job.as_deref(), Some("unit tests (related)"));
+                let text = output.as_ref().expect("failure carries output");
+                assert!(text.contains("FAILED assertion"), "{text}");
+                assert!(
+                    !text.contains("fmt clean"),
+                    "passing jobs' output must not ride the report: {text}"
+                );
+            }
+            other => panic!("expected HookCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn silent_failing_job_falls_back_to_the_whole_stream() {
+        // The failing job printed nothing: its empty buffer must not erase
+        // the report — fall back to the merged stream for context.
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
+
+        presenter.on_phase_start("pre-push", None);
+        presenter.on_job_start("fmt", None, None);
+        presenter.on_job_output("fmt", "fmt clean");
+        presenter.on_job_success("fmt", Duration::from_millis(300));
+        presenter.on_job_failure("mute", Duration::from_millis(100));
+        presenter.on_phase_complete(Duration::from_secs(1));
+
+        drop(presenter);
+        let events: Vec<DagEvent> = rx.try_iter().collect();
+        match events
+            .iter()
+            .find(|e| matches!(e, DagEvent::HookCompleted { .. }))
+            .expect("should receive HookCompleted")
+        {
+            DagEvent::HookCompleted {
+                output,
+                failing_job,
+                ..
+            } => {
+                assert_eq!(failing_job.as_deref(), Some("mute"));
+                assert_eq!(output.as_deref(), Some("fmt clean"));
+            }
+            other => panic!("expected HookCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manager_engagement_forwards_as_a_dag_event() {
+        let (tx, rx) = mpsc::channel();
+        let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
+
+        presenter.on_manager_engaged(None, "lefthook", Some("2.1.10"));
+
+        match rx.try_recv().expect("should receive ManagerEngaged") {
+            DagEvent::ManagerEngaged {
+                branch_name,
+                manager,
+                version,
+                ..
+            } => {
+                assert_eq!(branch_name, "feat/x");
+                assert_eq!(manager, "lefthook");
+                assert_eq!(version.as_deref(), Some("2.1.10"));
+            }
+            other => panic!("expected ManagerEngaged, got {other:?}"),
         }
     }
 

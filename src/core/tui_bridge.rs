@@ -112,6 +112,7 @@ impl HookRunner for TuiBridge {
                     duration: std::time::Duration::ZERO,
                     exit_code: None,
                     output: Some(format!("{e:#}")),
+                    failing_job: None,
                 });
 
                 Ok(HookOutcome {

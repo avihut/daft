@@ -766,11 +766,14 @@ fn run_tui(
                 .map(|info| (info.name.clone(), info.owner.clone()))
                 .collect(),
         );
-    // Budget hook + job sub-rows per worktree (2 hooks x ~3 jobs each).
+    // Budget hook + job sub-rows per worktree (2 hooks x ~7 rows each).
     // Not all worktrees will have hooks, but the ratatui inline viewport
-    // cannot grow after creation, so over-allocate.
+    // cannot grow after creation, so over-allocate. A recognized hook
+    // manager (#753) turns one opaque pre-push job into its real job list —
+    // lefthook runs of 6-8 jobs are ordinary — so the old ~3-jobs-per-hook
+    // guess now clips real runs.
     let hook_extra_rows = if args.verbose >= 1 {
-        (worktree_infos.len() as u16) * 8
+        (worktree_infos.len() as u16) * 16
     } else {
         0
     };
@@ -828,6 +831,9 @@ fn run_tui(
         None
     };
     let shared_hook_present = shared_hook_path.is_some();
+    // Manager-output recognition (#753) — resolved once, threaded into the
+    // push task workers alongside the other shared flags.
+    let shared_parse_managers = hooks_config.output.parse_managers;
 
     // Resource governor plan (#678): resolved from flags + config here,
     // constructed inside the orchestrator once the DAG's push-task count
@@ -1202,6 +1208,7 @@ fn run_tui(
                             shared_force_with_lease,
                             shared_no_verify,
                             shared_hook_present,
+                            shared_parse_managers,
                             &tx_for_tasks,
                             outcomes,
                             &task_cancel,
@@ -1233,6 +1240,7 @@ fn run_tui(
                             shared_force_with_lease,
                             shared_no_verify,
                             shared_hook_present,
+                            shared_parse_managers,
                             &tx_for_tasks,
                             outcomes,
                             &task_cancel,
@@ -1420,10 +1428,20 @@ fn run_tui(
                 .exit_code
                 .map(|c| format!("exit {c}"))
                 .unwrap_or_else(|| "error".to_string());
+            // A recognized manager names the job that sank the hook (#753);
+            // the output below is scoped to it. Suppressed when the job IS
+            // the hook (the plain single-job path) — no stutter.
+            let job_clause = entry
+                .failing_job
+                .as_deref()
+                .filter(|job| *job != entry.hook_type.hook_name())
+                .map(|job| format!(" \u{b7} {job}"))
+                .unwrap_or_default();
             eprintln!(
-                "  {}: {} {} ({}, {}ms)",
+                "  {}: {}{} {} ({}, {}ms)",
                 entry.branch_name,
                 entry.hook_type.hook_name(),
+                job_clause,
                 status_word,
                 exit_str,
                 entry.duration.as_millis(),
@@ -1790,6 +1808,7 @@ fn execute_push_batch_task(
     force_with_lease: bool,
     no_verify: bool,
     hook_present: bool,
+    parse_managers: bool,
     tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
     branch_outcomes: &HashSet<TaskOutcome>,
     cancel: &Arc<CancelFlag>,
@@ -1900,6 +1919,13 @@ fn execute_push_batch_task(
         } else {
             None
         };
+    // A recognized hook manager's jobs land as job sub-rows on the
+    // representative branch's row (#753); unrecognized streams keep
+    // today's single opaque pre-push job.
+    let presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_when(
+        parse_managers,
+        presenter,
+    );
     let results = push::push_batched(
         &git,
         &cwd,
@@ -1979,6 +2005,7 @@ fn execute_push_task(
     force_with_lease: bool,
     no_verify: bool,
     hook_present: bool,
+    parse_managers: bool,
     tx: &std::sync::mpsc::Sender<sync_dag::DagEvent>,
     branch_outcomes: &HashSet<TaskOutcome>,
     cancel: &Arc<CancelFlag>,
@@ -2048,6 +2075,12 @@ fn execute_push_task(
         } else {
             None
         };
+    // A recognized hook manager's jobs land as job sub-rows under this
+    // branch's pre-push hook row (#753).
+    let presenter = crate::executor::manager_routing::ManagerRoutingPresenter::wrap_when(
+        parse_managers,
+        presenter,
+    );
 
     let mut sink = NullSink;
     let result = push::push_single_worktree(
@@ -2637,11 +2670,19 @@ fn run_push_phase(
     let hook_present = git.pre_push_hook_exists(&project_root);
     let presenter: Option<Arc<dyn crate::executor::presenter::JobPresenter>> =
         if hook_present && !no_verify {
-            let p: Arc<dyn crate::executor::presenter::JobPresenter> =
-                crate::executor::cli_presenter::CliPresenter::auto(
-                    &crate::settings::HookOutputConfig::default(),
-                );
-            Some(p)
+            // The repo's configured output settings, not defaults — this
+            // site used `HookOutputConfig::default()` and silently ignored
+            // the user's `daft.hooks.output.*` config.
+            let hook_output_config = crate::core::settings::load_hooks_config_with(&git)?.output;
+            let p: Option<Arc<dyn crate::executor::presenter::JobPresenter>> = Some(
+                crate::executor::cli_presenter::CliPresenter::auto(&hook_output_config),
+            );
+            // A recognized hook manager's jobs render as first-class rows
+            // (#753); unrecognized streams keep today's synthetic job.
+            crate::executor::manager_routing::ManagerRoutingPresenter::wrap_if_enabled(
+                &hook_output_config,
+                p,
+            )
         } else {
             None
         };

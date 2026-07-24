@@ -97,8 +97,17 @@ impl ManagerRoutingPresenter {
         config: &HookOutputConfig,
         presenter: Option<Arc<dyn JobPresenter>>,
     ) -> Option<Arc<dyn JobPresenter>> {
+        Self::wrap_when(config.parse_managers, presenter)
+    }
+
+    /// [`Self::wrap_if_enabled`] for call sites that carry the resolved knob
+    /// as a bare flag (sync's task workers thread it into their closures).
+    pub fn wrap_when(
+        enabled: bool,
+        presenter: Option<Arc<dyn JobPresenter>>,
+    ) -> Option<Arc<dyn JobPresenter>> {
         match presenter {
-            Some(inner) if config.parse_managers => Some(Self::wrap(inner)),
+            Some(inner) if enabled => Some(Self::wrap(inner)),
             other => other,
         }
     }

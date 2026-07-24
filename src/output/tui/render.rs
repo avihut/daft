@@ -1041,7 +1041,7 @@ fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -
         ),
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("  {prefix} "),
             Style::default().add_modifier(Modifier::DIM),
@@ -1050,8 +1050,17 @@ fn format_hook_line(sub: &super::state::HookSubRow, prefix: &str, tick: usize) -
             format!("{name} "),
             Style::default().fg(Color::Indexed(styles::ACCENT_COLOR_INDEX)),
         ),
-        status_span,
-    ])
+    ];
+    // A recognized manager's identity (#753): the job sub-rows below are
+    // its jobs — say whose. Dim, so it reads as provenance, not status.
+    if let Some(manager) = &sub.manager {
+        spans.push(Span::styled(
+            format!("\u{b7} {manager} "),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    spans.push(status_span);
+    Line::from(spans)
 }
 
 /// Format a job sub-row as a full-width line with nested tree indentation.

@@ -572,6 +572,7 @@ fn run_remove_hook_best_effort(
             duration: std::time::Duration::ZERO,
             exit_code: None,
             output: Some(format!("{e:#}")),
+            failing_job: None,
         });
     }
 }

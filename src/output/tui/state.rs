@@ -69,6 +69,10 @@ pub struct HookSubRow {
     pub hook_type: DagHookPhase,
     pub status: HookSubStatus,
     pub job_sub_rows: Vec<JobSubRow>,
+    /// The recognized hook manager's identity (`lefthook v2.1.10`, #753):
+    /// the job sub-rows below are the manager's own jobs. Rendered as a dim
+    /// annotation on the hook line.
+    pub manager: Option<String>,
 }
 
 /// Status of a single job sub-row within a hook (for -v mode).
@@ -96,7 +100,11 @@ pub struct HookSummaryEntry {
     pub warned: bool,
     pub duration: Duration,
     pub exit_code: Option<i32>,
+    /// Scoped to `failing_job`'s lines when set (#753); the whole capture
+    /// otherwise.
     pub output: Option<String>,
+    /// The manager job whose failure sank the hook, when one is known.
+    pub failing_job: Option<String>,
 }
 
 /// Accumulated resource-governor visibility (#678), surfaced as a one-line
@@ -408,6 +416,7 @@ impl TuiState {
                             hook_type: *hook_type,
                             status: HookSubStatus::Running,
                             job_sub_rows: Vec::new(),
+                            manager: None,
                         });
                     }
                 }
@@ -420,6 +429,7 @@ impl TuiState {
                 duration,
                 exit_code,
                 output,
+                failing_job,
             } => {
                 let show_sub_rows = self.show_hook_sub_rows;
                 if let Some(row) = self.find_row_mut(branch_name) {
@@ -455,6 +465,26 @@ impl TuiState {
                         duration: *duration,
                         exit_code: *exit_code,
                         output: output.clone(),
+                        failing_job: failing_job.clone(),
+                    });
+                }
+            }
+            DagEvent::ManagerEngaged {
+                branch_name,
+                hook_type,
+                manager,
+                version,
+            } => {
+                if self.show_hook_sub_rows
+                    && let Some(row) = self.find_row_mut(branch_name)
+                    && let Some(hook_sub) = row
+                        .hook_sub_rows
+                        .iter_mut()
+                        .rfind(|s| s.hook_type == *hook_type)
+                {
+                    hook_sub.manager = Some(match version {
+                        Some(version) => format!("{manager} v{version}"),
+                        None => manager.clone(),
                     });
                 }
             }
@@ -1276,6 +1306,7 @@ mod tests {
             duration: Duration::from_millis(100),
             exit_code: Some(1),
             output: Some("warning output".into()),
+            failing_job: None,
         });
         let row = state
             .live
@@ -1301,6 +1332,7 @@ mod tests {
             duration: Duration::from_millis(50),
             exit_code: Some(0),
             output: None,
+            failing_job: None,
         });
         let row = state
             .live
@@ -1344,6 +1376,7 @@ mod tests {
             duration: dur,
             exit_code: Some(0),
             output: None,
+            failing_job: None,
         });
 
         let row = state
@@ -1356,6 +1389,61 @@ mod tests {
         assert_eq!(
             row.hook_sub_rows[0].status,
             HookSubStatus::Succeeded(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn manager_engaged_annotates_the_hook_sub_row() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::ManagerEngaged {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            manager: "lefthook".into(),
+            version: Some("2.1.10".into()),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].manager.as_deref(),
+            Some("lefthook v2.1.10"),
+            "the hook line names whose jobs follow"
+        );
+    }
+
+    #[test]
+    fn failing_job_rides_the_hook_summary() {
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::HookCompleted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            success: false,
+            warned: true,
+            duration: Duration::from_millis(500),
+            exit_code: None,
+            output: Some("FAILED assertion".into()),
+            failing_job: Some("unit tests (related)".into()),
+        });
+
+        assert_eq!(state.hook_summaries.len(), 1);
+        assert_eq!(
+            state.hook_summaries[0].failing_job.as_deref(),
+            Some("unit tests (related)"),
+            "the post-TUI report can name the job that sank the hook"
         );
     }
 
