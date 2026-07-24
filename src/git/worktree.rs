@@ -67,6 +67,34 @@ impl GitCommand {
         Ok(())
     }
 
+    /// `git worktree add --detach <path> <commit-ish>` — a worktree pinned at
+    /// a commit with no branch attached (an anonymous sandbox).
+    ///
+    /// Callers pass the resolved full OID, never the user's spelling: rev
+    /// syntax has already been resolved by then, and a symbolic spelling like
+    /// `origin/master` would make git print misleading tracking hints.
+    pub fn worktree_add_detached(&self, path: &Path, commitish: &str) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "add", "--detach"]);
+
+        if self.quiet {
+            cmd.arg("--quiet");
+        }
+
+        cmd.arg(path).arg(commitish);
+
+        let output = cmd
+            .output()
+            .context("Failed to execute git worktree add command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git worktree add failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn worktree_add_orphan(&self, path: &Path, branch_name: &str) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.args(["worktree", "add", "--orphan"]);

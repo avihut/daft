@@ -39,6 +39,7 @@ pub mod push;
 pub mod rebase;
 pub mod remove_repo;
 pub mod rename;
+pub mod sandbox;
 pub mod sync_dag;
 pub mod temp_worktree;
 

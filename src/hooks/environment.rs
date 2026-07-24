@@ -35,8 +35,14 @@ pub struct HookContext {
     /// Target worktree (being created or removed).
     pub worktree_path: PathBuf,
 
-    /// Branch name (for the target worktree).
+    /// Branch name (for the target worktree). Empty for a branchless
+    /// (anonymous sandbox) worktree — the contract is "empty string means no
+    /// branch", and `commit` carries the identity instead.
     pub branch_name: String,
+
+    /// The commit a branchless worktree is pinned at (full OID). Set by the
+    /// sandbox creation/removal paths; `None` for ordinary branch worktrees.
+    pub commit: Option<String>,
 
     /// Whether the branch is newly created.
     pub is_new_branch: bool,
@@ -127,6 +133,7 @@ impl HookContext {
             source_worktree: source_worktree.into(),
             worktree_path: worktree_path.into(),
             branch_name: branch_name.into(),
+            commit: None,
             is_new_branch: false,
             base_branch: None,
             repository_url: None,
@@ -203,6 +210,12 @@ impl HookContext {
         self
     }
 
+    /// Set the pinned commit (for branchless sandbox worktrees).
+    pub fn with_commit(mut self, commit: impl Into<String>) -> Self {
+        self.commit = Some(commit.into());
+        self
+    }
+
     /// Set the repository URL (for clone operations).
     pub fn with_repository_url(mut self, url: impl Into<String>) -> Self {
         self.repository_url = Some(url.into());
@@ -254,6 +267,11 @@ impl HookEnvironment {
         // Worktree-specific variables
         env.set("DAFT_WORKTREE_PATH", ctx.worktree_path.display());
         env.set("DAFT_BRANCH_NAME", &ctx.branch_name);
+        // Branchless (sandbox) worktrees: DAFT_BRANCH_NAME is "" and the
+        // pinned commit carries the identity.
+        if let Some(ref commit) = ctx.commit {
+            env.set("DAFT_COMMIT", commit);
+        }
 
         // Creation-specific variables
         env.set(
@@ -422,6 +440,34 @@ mod tests {
         assert_eq!(env.get("DAFT_BASE_BRANCH"), Some("main"));
     }
 
+    /// The branchless (sandbox) contract: DAFT_BRANCH_NAME is the empty
+    /// string and DAFT_COMMIT carries the pinned OID. Ordinary branch
+    /// contexts emit no DAFT_COMMIT at all.
+    #[test]
+    fn test_hook_environment_branchless_sandbox_context() {
+        let ctx = HookContext::new(
+            HookType::PostCreate,
+            "checkout",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/main",
+            "/project/v1",
+            "",
+        )
+        .with_commit("abc123def4567890abc123def4567890abc123de");
+        let env = HookEnvironment::from_context(&ctx);
+
+        assert_eq!(env.get("DAFT_BRANCH_NAME"), Some(""));
+        assert_eq!(
+            env.get("DAFT_COMMIT"),
+            Some("abc123def4567890abc123def4567890abc123de")
+        );
+
+        let branch_env = HookEnvironment::from_context(&make_test_context());
+        assert_eq!(branch_env.get("DAFT_COMMIT"), None);
+    }
+
     #[test]
     fn test_hook_environment_clone_vars() {
         let ctx = HookContext::new(
@@ -550,6 +596,7 @@ mod tests {
             source_worktree: PathBuf::from("/project/old-wt"),
             worktree_path: PathBuf::from("/project/new-wt"),
             branch_name: "feat/new-name".to_string(),
+            commit: None,
             is_new_branch: false,
             base_branch: None,
             repository_url: None,
@@ -586,6 +633,7 @@ mod tests {
             source_worktree: PathBuf::from("/project/src-wt"),
             worktree_path: PathBuf::from("/project/new-wt"),
             branch_name: "feat/new".to_string(),
+            commit: None,
             is_new_branch: true,
             base_branch: None,
             repository_url: None,
