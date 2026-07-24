@@ -19,6 +19,16 @@ Arguments can be branch names or worktree paths. When a path is given
 resolved automatically. This is convenient when you are inside a worktree
 and want to delete it without remembering the branch name.
 .PP
+Use \-\-repo <name> to remove branches in another cataloged repository without
+leaving your current directory: `daft remove \-\-repo api feature\-x` deletes
+`feature\-x` in the `api` repo. \-\-repo is a flag rather than a positional
+because the positional slot is a required list of branches or paths; a repo
+guessed there could delete a local branch and its remote by mistake. A \-\-repo
+removal never relocates your shell (your cwd stays valid) and runs
+non\-interactively (see the refined\-daft\-files note below). Combining \-\-repo
+with a worktree path is rejected — the path already identifies its own
+repository.
+.PP
 Safety checks prevent accidental data loss. The command refuses to delete a
 branch that:
 .PP
@@ -27,7 +37,9 @@ branch that:
   \- is out of sync with its remote tracking branch
   \- has refined untracked daft files (daft.yml / daft.local.yml edited since
     daft seeded them) that the default branch\*(Aqs worktree does not cover —
-    consolidate with daft\-file(1) merge, or answer the interactive prompt
+    consolidate with daft\-file(1) merge, or (for a local removal) answer the
+    interactive prompt; a \-\-repo removal has no prompt and aborts instead,
+    so consolidate or pass \-f up front
 .PP
 Use \-f to override these safety checks. Forcing DISCARDS refined untracked
 daft files — they are stashed under `<git\-common\-dir>/.daft/discarded/<branch>/`

@@ -902,6 +902,12 @@ _init_completion() {
 source <(daft completions bash 2>/dev/null)
 drive() { COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); COMPREPLY=(); _daft 2>/dev/null; }
 
+# NOTE: drive() hands COMP_WORDS pre-split, so the `--repo=webclient` case here
+# arrives already glued into one word and exercises only the capture logic (the
+# `*=*` branch), NOT bash's readline splitting on `=`. That real split — and
+# that the generator emits `_init_completion -n =` to prevent it — is covered
+# with teeth by the `bash_repo_flag_commands_keep_equals_out_of_wordbreaks` unit
+# test; this drive would pass even without the `-n =` fix (#749).
 drive daft remove --repo webclient "";   spaced="${COMPREPLY[*]}"
 drive daft remove --repo=webclient "";   equals="${COMPREPLY[*]}"
 if [[ "$spaced" == *only-in-webclient* && "$equals" == *only-in-webclient* ]]; then

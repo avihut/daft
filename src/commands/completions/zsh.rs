@@ -1,7 +1,7 @@
 use super::{
     allows_path_completion, command_has_repo_flag, command_has_repo_positional, emit_formats_for,
-    extract_flags, get_command_for_name, uses_fetch_on_miss, uses_rich_completions,
-    value_taking_flags,
+    extract_flags, get_command_for_name, repo_flag_capture, uses_fetch_on_miss,
+    uses_rich_completions, value_taking_flags,
 };
 use anyhow::{Context, Result};
 
@@ -368,25 +368,10 @@ fn generate_zsh_rich_completion(command_name: &str) -> String {
     }
 
     // Captured in the same scan that counts positionals: the flag may sit
-    // anywhere before the cursor, in either spelling. Reading `__i + 1` is
-    // safe because the value-skip below has not advanced past it yet.
-    let repo_capture = if command_has_repo_flag(command_name) {
-        r#"                if [[ "${__w%%=*}" == "--repo" ]]; then
-                    if [[ "$__w" == *=* ]]; then
-                        __repo="${__w#*=}"
-                    else
-                        __repo="${words[$((__i + 1))]:-}"
-                    fi
-                fi
-"#
-    } else {
-        ""
-    };
-    let repo_decl = if command_has_repo_flag(command_name) {
-        "    local __repo=\"\"\n"
-    } else {
-        ""
-    };
+    // anywhere before the cursor, in either spelling. Reading `__i + 1` is safe
+    // because the value-skip below has not advanced past it yet. bash uses the
+    // byte-identical snippet, so it lives in one shared helper (#749).
+    let (repo_decl, repo_capture) = repo_flag_capture(command_name);
 
     // Positional slots are counted, not derived from $CURRENT: flags and
     // their values sit in `words` too, so `daft start -q <TAB>` is slot 1.

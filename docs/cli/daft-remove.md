@@ -36,10 +36,14 @@ daft remove --repo api feature-x
 
 The resolved destination is announced before any work begins. Because the
 removal happens elsewhere, your current directory stays valid and your shell
-is never relocated. Combining `--repo` with a worktree path is an error --
-the path already identifies its own repository. There is no `--all-repos`
-form; removing one branch across every repository is rarely intended, and
-fleet-wide cleanup is [daft prune](./git-worktree-prune.md)'s job.
+is never relocated. A `--repo` removal also runs non-interactively: a branch
+whose refined daft files would normally raise a consolidation prompt aborts
+instead, with the usual guidance to consolidate with `daft file merge` or pass
+`-f` up front -- it never waits on a keypress about a repository you are not
+standing in. Combining `--repo` with a worktree path is an error -- the path
+already identifies its own repository. There is no `--all-repos` form; removing
+one branch across every repository is rarely intended, and fleet-wide cleanup
+is [daft prune](./git-worktree-prune.md)'s job.
 
 Note that `--repo` is a flag rather than a positional. `daft remove api
 feature-x` always means "remove the branches `api` and `feature-x` in the

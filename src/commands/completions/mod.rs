@@ -131,6 +131,30 @@ pub(super) fn command_has_repo_flag(command_name: &str) -> bool {
     )
 }
 
+/// The `(decl, capture)` shell snippet — verbatim in bash and zsh — that reads a
+/// `--repo <name>` / `--repo=<name>` value during the positional-counting scan,
+/// so slots after the flag complete against the target repo (#749). `decl` is a
+/// `local __repo` declaration; `capture` is the in-loop block. Returns
+/// `("", "")` for commands without a `--repo` flag. Both shells share one copy
+/// so the two can never drift; the `=` spelling relies on the current word not
+/// splitting on `=` (bash: `_init_completion -n =`; zsh: `words` never splits).
+pub(super) fn repo_flag_capture(command_name: &str) -> (&'static str, &'static str) {
+    if !command_has_repo_flag(command_name) {
+        return ("", "");
+    }
+    (
+        "    local __repo=\"\"\n",
+        r#"                if [[ "${__w%%=*}" == "--repo" ]]; then
+                    if [[ "$__w" == *=* ]]; then
+                        __repo="${__w#*=}"
+                    else
+                        __repo="${words[$((__i + 1))]:-}"
+                    fi
+                fi
+"#,
+    )
+}
+
 /// Whether a command's first positional is an optional cataloged-repo name
 /// (`daft list [<repo>]`, positional sugar for `--repo`), completed via
 /// `daft __complete repo-name`. Per the repo-aware command grammar
@@ -980,6 +1004,60 @@ mod tests {
         assert!(
             fish.contains("go list update exec prune start remove' -l repo"),
             "fish must complete --repo values for remove"
+        );
+    }
+
+    /// bash's `_init_completion` splits the current word on COMP_WORDBREAKS,
+    /// which includes `=` by default. Without `-n =`, `--repo=api <TAB>` splits
+    /// into `--repo` `=` `api` and the positional scan captures `=` as the repo
+    /// value (#749). This asserts the generator emits the `-n =` that keeps
+    /// `--repo=x` glued — a guard the `COMP_WORDS`-synthesizing drive tests
+    /// cannot provide, since hand-built word arrays never exercise splitting.
+    /// The exclusion set is additive: `daft-go` needs both `:` (forge) and `=`.
+    ///
+    /// Scoped to the rich commands that run the positional `--repo` capture
+    /// scan; the non-rich `--repo` commands (list, prune) have only repo-name
+    /// value completion and no word-splitting exposure, so they are excluded.
+    #[test]
+    fn bash_repo_flag_commands_keep_equals_out_of_wordbreaks() {
+        // Every rich `--repo` command that captures the flag value must keep
+        // `=` glued so `--repo=x` reads as one word.
+        for cmd in [
+            "daft-remove",
+            "daft-start",
+            "git-worktree-fetch",
+            "git-worktree-exec",
+        ] {
+            assert!(
+                uses_rich_completions(cmd) && command_has_repo_flag(cmd),
+                "{cmd} must be a rich --repo command for this guard to apply"
+            );
+            let script = bash::generate_bash_completion_string(cmd).expect("bash gen");
+            assert!(
+                script.contains("_init_completion -n = || return"),
+                "{cmd} bash completion must pass `-n =` so `--repo=x` is not split on `=`"
+            );
+        }
+
+        // daft-go carries both forge targets (`:`) and a `--repo` flag (`=`);
+        // the exclusion set must union, not replace.
+        let go = bash::generate_bash_completion_string("daft-go").expect("bash gen");
+        assert!(
+            go.contains("_init_completion -n := || return"),
+            "daft-go must keep both `:` and `=` out of the wordbreaks"
+        );
+
+        // A forge command with no `--repo` flag keeps `:` only — `=` must not
+        // be applied where it is not needed.
+        let checkout =
+            bash::generate_bash_completion_string("git-worktree-checkout").expect("bash gen");
+        assert!(
+            checkout.contains("_init_completion -n : || return"),
+            "git-worktree-checkout keeps `:` for forge targets"
+        );
+        assert!(
+            !checkout.contains("-n :="),
+            "git-worktree-checkout has no --repo flag, so `=` must not be excluded"
         );
     }
 

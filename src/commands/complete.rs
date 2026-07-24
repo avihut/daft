@@ -851,11 +851,20 @@ fn cross_repo_branches(needle: &str, prefix: &str) -> Vec<CompletionEntry> {
     repo_branch_entries(std::path::Path::new(&row.path), &row.name, prefix, false)
 }
 
-/// Resolve a catalog repo name to a live, on-disk entry for completion.
+/// Resolve a catalog repo needle to a live, on-disk entry for completion.
+///
+/// Resolves through the same [`Catalog::resolve`](crate::catalog::Catalog::resolve)
+/// precedence the command itself uses (`resolve_repo_arg`): name → uuid →
+/// canonical path / git-common-dir → removed name. Matching by name alone would
+/// leave the uuid and path spellings — which the command will happily execute —
+/// completing nothing.
 ///
 /// Holds the hot-path contract in one place: silent on every failure. An empty
 /// needle, a dead store, an unknown or tombstoned name, or a recorded path
-/// that no longer exists all yield `None` — never an error, never stderr.
+/// that no longer exists all yield `None` — never an error, never stderr. The
+/// tombstone and path-exists filters mirror the bar `resolve_repo_arg` enforces
+/// before it will operate, so completion offers a target iff the command would
+/// act on it.
 fn live_catalog_repo(needle: &str) -> Option<crate::store::models::CatalogRepoRow> {
     if needle.is_empty() {
         return None;
@@ -863,9 +872,12 @@ fn live_catalog_repo(needle: &str) -> Option<crate::store::models::CatalogRepoRo
     let Ok(Some(catalog)) = crate::catalog::Catalog::open_ro() else {
         return None;
     };
-    let Ok(Some(row)) = catalog.resolve_live_name(needle) else {
+    let Ok(Some(row)) = catalog.resolve(needle) else {
         return None;
     };
+    if row.removed_at.is_some() {
+        return None;
+    }
     std::path::Path::new(&row.path).is_dir().then_some(row)
 }
 
