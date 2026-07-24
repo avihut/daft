@@ -120,19 +120,26 @@ layout transform, or adopt). They are available in all four move phases.
 Each hook type has a default fail mode that determines what happens when a hook
 exits with a non-zero status:
 
-| Hook                  | Default Fail Mode | Behavior                              |
-| --------------------- | ----------------- | ------------------------------------- |
-| `worktree-pre-create` | `abort`           | Operation is cancelled                |
-| All others            | `warn`            | Warning is shown, operation continues |
+| Hook                   | Default Fail Mode | Behavior                                                                                         |
+| ---------------------- | ----------------- | ------------------------------------------------------------------------------------------------ |
+| `worktree-pre-create`  | `abort`           | Operation is cancelled                                                                           |
+| `worktree-post-create` | `abort`           | Creation command exits non-zero and skips its `-x`/`--exec` commands; the worktree stays on disk |
+| `pre-merge`            | `abort`           | Merge is aborted                                                                                 |
+| All others             | `warn`            | Warning is shown, operation continues                                                            |
+
+A failed `worktree-post-create` aborts because the `-x`/`--exec` commands (and
+anything else scripted after the creation command) almost always depend on what
+the hook just set up — installed dependencies, a written `.env`, a build.
+Continuing would run them against a half-set-up worktree and exit `0`. The
+worktree itself is deliberately kept so you can inspect or repair it; the error
+names the path and how to re-run the hook.
 
 Override per-hook:
 
 ```bash
-# Make post-create hooks abort on failure
-git config daft.hooks.worktreePostCreate.failMode abort
-
-# Make pre-create hooks just warn
-git config daft.hooks.worktreePreCreate.failMode warn
+# Let creation commands continue past a failing post-create hook
+# (runs -x, warns, exits 0)
+git config daft.hooks.worktreePostCreate.failMode warn
 ```
 
 Hook failures during moves produce **warnings**, not errors. The move operation

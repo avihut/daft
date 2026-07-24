@@ -160,17 +160,22 @@ the thing daft hooks are meant to give you.
 
 ## Tuning the failure mode
 
-By default, `worktree-post-create` failures **warn**: the worktree is created
-even if install fails, leaving you with a half-set-up worktree to retry from. To
-make a failed install abort creation instead:
+By default, a `worktree-post-create` failure **aborts** the creation command: it
+exits non-zero and skips any `-x`/`--exec` commands, so nothing downstream runs
+against a worktree whose install failed. The worktree itself is still created
+and kept — after a flaky install (registry timeout, slow mirror), fix the cause
+and finish setup from inside it:
 
 ```bash
-git config daft.hooks.worktreePostCreate.failMode abort
+daft hooks run worktree-post-create
 ```
 
-The default is `warn` because flaky installs (registry timeouts, slow mirrors)
-are usually recoverable by re-running, and you'd rather have a worktree to retry
-from than no worktree at all.
+If you'd rather worktree creation always report success even when the install
+fails, opt into warn-and-continue:
+
+```bash
+git config daft.hooks.worktreePostCreate.failMode warn
+```
 
 ## Where to next
 

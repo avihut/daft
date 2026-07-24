@@ -375,6 +375,14 @@ During `daft clone`, `post-clone` fires first (one-time repo bootstrap), then
 `worktree-post-create` (per-worktree setup) — so `post-clone` can install
 foundational tools the per-worktree hooks depend on.
 
+A failing `worktree-post-create` aborts the creation command by default: the
+command exits non-zero and skips its `-x`/`--exec` commands, but the new
+worktree stays on disk. Fix the cause, then
+`daft hooks run worktree-post-create` from inside that worktree to finish setup
+— do not treat the worktree as missing.
+`git config daft.hooks.worktreePostCreate.failMode warn` opts back into
+continue-on-failure.
+
 `pre-merge` aborts the merge on failure; `post-merge` warns but never rolls
 back. Both expose `DAFT_MERGE_*` env vars: `SOURCES`, `TARGET_BRANCH`,
 `TARGET_PATH`, `MODE` (`merge`/`ff`/`squash`/`octopus`), `STRATEGY`,
