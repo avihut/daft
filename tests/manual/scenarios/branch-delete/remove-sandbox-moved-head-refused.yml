@@ -1,0 +1,41 @@
+name: Remove sandbox with moved HEAD refused
+description:
+  Commits made on a sandbox's detached HEAD exist nowhere else — removal refuses
+  with the promotion hint until forced
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone, create a sandbox, and commit inside it
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git -c tag.gpgSign=false tag v1.0
+      daft go v1.0 --no-cd
+      cd ../v1.0
+      git -c user.name=Test -c user.email=test@test.com commit --allow-empty -m "work in sandbox"
+    expect:
+      exit_code: 0
+
+  - name: Removal without force is refused with the promotion hint
+    run: daft remove v1.0 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "moved off its pinned commit"
+        - "daft start"
+
+  - name: Forced removal succeeds
+    run: daft remove v1.0 -f 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The sandbox worktree is gone
+    run: test -d "$WORK_DIR/test-repo/v1.0"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1

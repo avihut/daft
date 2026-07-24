@@ -1,0 +1,32 @@
+name: Remove sandbox by path
+description:
+  A sandbox can be removed by its worktree path, exactly like a branch worktree
+  — the identity record is what tells it apart from a foreign detached checkout
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone and create a tag sandbox
+    run: |
+      git-worktree-clone --layout contained $REMOTE_TEST_REPO
+      cd test-repo/main
+      git -c tag.gpgSign=false tag v1.0
+      daft go v1.0 --no-cd
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/v1.0"
+
+  - name: Remove the sandbox by path
+    run: daft remove ../v1.0 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: The sandbox worktree is gone
+    run: test -d "$WORK_DIR/test-repo/v1.0"
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1

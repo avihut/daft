@@ -160,6 +160,14 @@ struct ValidatedBranch {
     merged_via: Option<crate::core::worktree::forge_ref::ForgeBranchRef>,
     /// What to do with the worktree's untracked daft files before removal.
     daft_files: DaftFilePlan,
+    /// A daft-created sandbox (#53): `name` is the directory name, there is
+    /// no branch to delete (`worktree_only` is also set), hooks get the
+    /// branchless context, and identity cleanup goes through the sandbox
+    /// forget path.
+    is_sandbox: bool,
+    /// The sandbox's pinned commit, threaded through for the removal hooks'
+    /// `DAFT_COMMIT`. `None` for branch targets.
+    pinned_commit: Option<String>,
 }
 
 /// Resolved-at-validation decision for the worktree's untracked daft files.
@@ -185,6 +193,25 @@ enum ResolveResult {
     PassThrough,
     /// Argument matched a worktree but it has no branch (detached HEAD).
     DetachedHead(PathBuf),
+}
+
+/// One removal target after argument resolution: a branch, or a daft-created
+/// sandbox (#53). Foreign detached worktrees resolve to neither — they keep
+/// the historical refusal.
+enum ResolvedTarget {
+    Branch(String),
+    Sandbox(SandboxTarget),
+}
+
+/// A sandbox removal target: identified by its directory name, with the
+/// provenance the safety checks need.
+struct SandboxTarget {
+    dirname: String,
+    path: PathBuf,
+    /// The commit the sandbox was pinned at when created. `None` when the
+    /// record predates the pin or was written without one — the moved-HEAD
+    /// check then has nothing to compare and stays silent.
+    pinned_commit: Option<String>,
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -228,9 +255,18 @@ pub fn execute(
         }
     }
 
-    // Resolve arguments: each arg can be a branch name or a worktree path.
-    let resolved =
-        resolve_branch_args(&params.branches, &worktree_entries, &ctx.project_root, sink)?;
+    // Resolve arguments: each arg can be a branch name, a worktree path, or
+    // a sandbox name. The identity records are what tell a daft-created
+    // sandbox apart from a foreign detached worktree.
+    let identities = crate::core::worktree::identity_store::read_identities(&ctx.git_dir);
+    let resolved = resolve_branch_args(
+        &params.branches,
+        &worktree_entries,
+        &ctx.project_root,
+        &identities,
+        &git,
+        sink,
+    )?;
 
     // Detect current worktree context for is_current_worktree flagging.
     let current_wt_path = git.get_current_worktree_path().ok();
@@ -413,7 +449,9 @@ fn build_plan(
         let remote_in_scope = params.delete_remote || params.remote_only;
         if !params.keep_local_branch {
             if branch.worktree_only {
-                let text = if remote_in_scope {
+                let text = if branch.is_sandbox {
+                    "sandbox \u{2014} no branch to delete"
+                } else if remote_in_scope {
                     "branch and remote kept (default branch)"
                 } else {
                     "branch kept (default branch)"
@@ -453,38 +491,109 @@ pub(crate) fn display_path(path: &Path) -> String {
 
 // ── Argument resolution ────────────────────────────────────────────────────
 
-/// Resolve each argument to a branch name.
+/// Resolve each argument to a removal target.
 ///
 /// Arguments can be:
 ///   - A branch name (passed through as-is if no worktree path matches)
 ///   - A worktree path (absolute or relative to cwd, including ".")
+///   - A sandbox's directory name or path (#53), recognized through the
+///     identity records — a foreign detached worktree matches none of these
+///     and keeps the historical refusal.
 fn resolve_branch_args(
     args: &[String],
     worktree_entries: &[WorktreeListEntry],
     project_root: &Path,
+    identities: &HashMap<String, crate::store::models::WorktreeIdentityRow>,
+    git: &GitCommand,
     sink: &mut dyn ProgressSink,
-) -> Result<Vec<String>> {
+) -> Result<Vec<ResolvedTarget>> {
     let mut resolved = Vec::with_capacity(args.len());
 
     for arg in args {
         match resolve_single_arg(arg, worktree_entries, project_root) {
             ResolveResult::Branch(name) => {
                 sink.on_step(&format!("Resolved path '{}' to branch '{}'", arg, name));
-                resolved.push(name);
+                resolved.push(ResolvedTarget::Branch(name));
             }
             ResolveResult::PassThrough => {
-                resolved.push(arg.clone());
+                // Dirname tier: a name that is not a branch but is a recorded
+                // sandbox targets the sandbox. Branch precedence is
+                // load-bearing — a branch sharing a sandbox's spelling must
+                // keep meaning the branch.
+                let is_branch = git
+                    .show_ref_exists(&format!("refs/heads/{arg}"))
+                    .unwrap_or(false);
+                match (!is_branch)
+                    .then(|| sandbox_target_by_name(arg, identities, worktree_entries))
+                    .flatten()
+                {
+                    Some(target) => {
+                        sink.on_step(&format!("Resolved '{arg}' to sandbox worktree"));
+                        resolved.push(ResolvedTarget::Sandbox(target));
+                    }
+                    None => resolved.push(ResolvedTarget::Branch(arg.clone())),
+                }
             }
             ResolveResult::DetachedHead(path) => {
-                anyhow::bail!(
-                    "worktree at '{}' has a detached HEAD; specify a branch name instead",
-                    path.display()
-                );
+                match sandbox_target_by_path(&path, identities) {
+                    Some(target) => {
+                        sink.on_step(&format!(
+                            "Resolved path '{arg}' to sandbox '{}'",
+                            target.dirname
+                        ));
+                        resolved.push(ResolvedTarget::Sandbox(target));
+                    }
+                    // Not a daft sandbox: keep the historical protection for
+                    // detached worktrees daft has no record of.
+                    None => anyhow::bail!(
+                        "worktree at '{}' has a detached HEAD; specify a branch name instead",
+                        path.display()
+                    ),
+                }
             }
         }
     }
 
     Ok(resolved)
+}
+
+/// The sandbox target for a detached worktree at `path`, if the identity
+/// records say daft created it as one.
+fn sandbox_target_by_path(
+    path: &Path,
+    identities: &HashMap<String, crate::store::models::WorktreeIdentityRow>,
+) -> Option<SandboxTarget> {
+    let id = crate::core::worktree::identity_store::worktree_id_for(path)?;
+    let row = identities.get(&id).filter(|row| row.kind.is_sandbox())?;
+    Some(SandboxTarget {
+        dirname: row.branch.clone(),
+        path: path.to_path_buf(),
+        pinned_commit: row.pinned_commit.clone(),
+    })
+}
+
+/// The sandbox target recorded under `name`, if its worktree is still a live
+/// detached entry.
+fn sandbox_target_by_name(
+    name: &str,
+    identities: &HashMap<String, crate::store::models::WorktreeIdentityRow>,
+    worktree_entries: &[WorktreeListEntry],
+) -> Option<SandboxTarget> {
+    let row = identities
+        .values()
+        .find(|row| row.kind.is_sandbox() && row.branch == name)?;
+    let recorded = PathBuf::from(&row.worktree_path);
+    let canonical = std::fs::canonicalize(&recorded).ok()?;
+    let live = worktree_entries.iter().any(|e| {
+        e.branch.is_none()
+            && !e.is_bare
+            && std::fs::canonicalize(&e.path).is_ok_and(|p| p == canonical)
+    });
+    live.then(|| SandboxTarget {
+        dirname: row.branch.clone(),
+        path: recorded,
+        pinned_commit: row.pinned_commit.clone(),
+    })
 }
 
 /// Try to resolve a single argument as a worktree path.
@@ -558,6 +667,179 @@ fn try_resolve_relative_to_root(
 
 // ── Validation ─────────────────────────────────────────────────────────────
 
+/// Validate a sandbox removal target: it must be clean (unless forced) and
+/// still sitting at its pinned commit (unless forced) — commits made on a
+/// detached HEAD die with the worktree, so a moved HEAD refuses with the
+/// promotion hint rather than silently unreaching someone's work.
+fn validate_sandbox_target(
+    ctx: &BranchDeleteContext,
+    sandbox: &SandboxTarget,
+    params: &BranchDeleteParams,
+    current_wt_path: Option<&PathBuf>,
+    sink: &mut dyn ProgressSink,
+) -> Result<ValidatedBranch, ValidationError> {
+    // Clean: the same protection branch worktrees get from Check 3.
+    if !params.force {
+        match ctx.git.has_uncommitted_changes_in(&sandbox.path) {
+            Ok(true) => {
+                return Err(ValidationError {
+                    branch: sandbox.dirname.clone(),
+                    message: "has uncommitted changes in worktree (use -D to force)".to_string(),
+                });
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return Err(ValidationError {
+                    branch: sandbox.dirname.clone(),
+                    message: format!(
+                        "failed to check for uncommitted changes: {e} (use -D to force)"
+                    ),
+                });
+            }
+        }
+    }
+
+    // Pinned: a sandbox that moved off its creation commit holds work no
+    // branch protects.
+    if !params.force
+        && let Some(pin) = sandbox.pinned_commit.as_deref()
+        && let Some(head) = worktree_head(&sandbox.path)
+        && head != pin
+    {
+        return Err(ValidationError {
+            branch: sandbox.dirname.clone(),
+            message: format!(
+                "has moved off its pinned commit ({} \u{2192} {}); commits made inside it \
+                 may become unreachable after removal — promote them with `{}` from inside \
+                 the sandbox first, or use {} to remove anyway",
+                &pin[..pin.len().min(7)],
+                &head[..head.len().min(7)],
+                crate::daft_cmd("start <new-branch>"),
+                params.force_flag_label
+            ),
+        });
+    }
+
+    // Path comparison only: `current_branch` is meaningless on a detached
+    // HEAD, and a like-named branch elsewhere must not mark this row current.
+    let is_current = current_wt_path.is_some_and(|current| {
+        &sandbox.path == current
+            || std::fs::canonicalize(&sandbox.path).ok() == std::fs::canonicalize(current).ok()
+    });
+
+    sink.on_step(&format!("Sandbox '{}' passed validation", sandbox.dirname));
+
+    Ok(ValidatedBranch {
+        name: sandbox.dirname.clone(),
+        worktree_path: Some(sandbox.path.clone()),
+        remote_name: None,
+        remote_branch_name: None,
+        is_current_worktree: is_current,
+        // No branch to delete: reuse the worktree-only skips of the remote
+        // and local-branch steps.
+        worktree_only: true,
+        merged_into: None,
+        merged_via: None,
+        daft_files: DaftFilePlan::Nothing,
+        is_sandbox: true,
+        pinned_commit: sandbox.pinned_commit.clone(),
+    })
+}
+
+#[cfg(test)]
+mod sandbox_target_tests {
+    use super::*;
+    use crate::store::models::{WorktreeIdentityRow, WorktreeKind};
+
+    fn sandbox_row(id: &str, dirname: &str, path: &Path) -> (String, WorktreeIdentityRow) {
+        (
+            id.to_string(),
+            WorktreeIdentityRow {
+                repo_hash: "repo".into(),
+                worktree_id: id.into(),
+                branch: dirname.into(),
+                worktree_path: path.display().to_string(),
+                updated_at: chrono::Utc::now(),
+                kind: WorktreeKind::Canonical,
+                source_spelling: Some(dirname.into()),
+                pinned_commit: Some("a".repeat(40)),
+            },
+        )
+    }
+
+    fn detached_entry(path: &Path) -> WorktreeListEntry {
+        WorktreeListEntry {
+            path: path.to_path_buf(),
+            branch: None,
+            is_bare: false,
+            is_detached: true,
+        }
+    }
+
+    #[test]
+    fn a_recorded_sandbox_with_a_live_detached_entry_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("v1");
+        std::fs::create_dir_all(&wt).unwrap();
+        let identities = HashMap::from([sandbox_row("wt-a", "v1", &wt)]);
+
+        let target = sandbox_target_by_name("v1", &identities, &[detached_entry(&wt)])
+            .expect("resolves to the sandbox");
+        assert_eq!(target.dirname, "v1");
+        assert_eq!(
+            target.pinned_commit.as_deref(),
+            Some("a".repeat(40).as_str())
+        );
+    }
+
+    /// A record whose worktree is gone (or was never detached) must not
+    /// resolve — the arg falls through to the branch path and its
+    /// "branch not found" error.
+    #[test]
+    fn a_stale_or_attached_record_does_not_resolve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("v1");
+        std::fs::create_dir_all(&wt).unwrap();
+        let identities = HashMap::from([sandbox_row("wt-a", "v1", &wt)]);
+
+        // No live entry at all.
+        assert!(sandbox_target_by_name("v1", &identities, &[]).is_none());
+        // The entry at that path is attached to a branch.
+        let attached = WorktreeListEntry {
+            path: wt.clone(),
+            branch: Some("v1".into()),
+            is_bare: false,
+            is_detached: false,
+        };
+        assert!(sandbox_target_by_name("v1", &identities, &[attached]).is_none());
+    }
+
+    /// A detached worktree daft has no record of is foreign: by path it must
+    /// resolve to nothing so the historical refusal fires.
+    #[test]
+    fn a_foreign_detached_worktree_has_no_sandbox_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("foreign");
+        std::fs::create_dir_all(&wt).unwrap();
+        assert!(sandbox_target_by_path(&wt, &HashMap::new()).is_none());
+    }
+}
+
+/// `HEAD` of the worktree at `path`, as a full OID. `None` when unreadable —
+/// the pinned check then stays silent rather than blocking removal of a
+/// broken worktree.
+fn worktree_head(path: &Path) -> Option<String> {
+    let out = crate::utils::git_command_at(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!oid.is_empty()).then_some(oid)
+}
+
 /// Validate all requested branches. Returns a tuple of (validated, errors).
 ///
 /// Each branch goes through up to 5 checks:
@@ -570,7 +852,7 @@ fn try_resolve_relative_to_root(
 #[allow(clippy::too_many_arguments)]
 fn validate_branches(
     ctx: &BranchDeleteContext,
-    branches: &[String],
+    targets: &[ResolvedTarget],
     params: &BranchDeleteParams,
     worktree_map: &HashMap<String, PathBuf>,
     current_wt_path: Option<&PathBuf>,
@@ -589,7 +871,20 @@ fn validate_branches(
     let mut validated = Vec::new();
     let mut errors = Vec::new();
 
-    'branches: for branch in branches {
+    'branches: for target in targets {
+        // Sandboxes run their own three checks (registered, clean, pinned);
+        // everything branch-shaped continues into the 6-check body below.
+        let branch = match target {
+            ResolvedTarget::Branch(name) => name,
+            ResolvedTarget::Sandbox(sandbox) => {
+                sink.on_step(&format!("Validating sandbox '{}'...", sandbox.dirname));
+                match validate_sandbox_target(ctx, sandbox, params, current_wt_path, sink) {
+                    Ok(v) => validated.push(v),
+                    Err(err) => errors.push(err),
+                }
+                continue;
+            }
+        };
         sink.on_step(&format!("Validating branch '{branch}'..."));
 
         // Remote-only mode: skip local branch checks entirely.
@@ -624,6 +919,8 @@ fn validate_branches(
                 merged_into: None,
                 merged_via: None,
                 daft_files: DaftFilePlan::Nothing,
+                is_sandbox: false,
+                pinned_commit: None,
             });
             continue;
         }
@@ -700,6 +997,8 @@ fn validate_branches(
                     merged_into: None,
                     merged_via: None,
                     daft_files: DaftFilePlan::Nothing,
+                    is_sandbox: false,
+                    pinned_commit: None,
                 });
                 continue;
             }
@@ -887,6 +1186,8 @@ fn validate_branches(
             merged_into,
             merged_via,
             daft_files,
+            is_sandbox: false,
+            pinned_commit: None,
         });
     }
 
@@ -1235,7 +1536,7 @@ fn delete_single_branch(
             HookType::PreRemove,
             ctx,
             wt_path,
-            &branch.name,
+            branch,
             command_label,
             sink,
         );
@@ -1497,7 +1798,7 @@ fn delete_single_branch(
             HookType::PostRemove,
             ctx,
             wt_path,
-            &branch.name,
+            branch,
             command_label,
             sink,
         );
@@ -1514,7 +1815,14 @@ fn delete_single_branch(
         && let Some(store) =
             crate::core::worktree::identity_store::IdentityStore::open(&ctx.git_dir)
     {
-        store.forget(identity_id.as_deref(), &branch.name);
+        // Sandboxes go through the sandbox forget path: its by-name fallback
+        // sweeps only sandbox rows, so a branch sharing the spelling keeps
+        // its record (and vice versa on the branch path).
+        if branch.is_sandbox {
+            store.forget_sandbox(identity_id.as_deref(), &branch.name);
+        } else {
+            store.forget(identity_id.as_deref(), &branch.name);
+        }
     }
 
     result
@@ -1523,15 +1831,20 @@ fn delete_single_branch(
 // ── Hook execution ─────────────────────────────────────────────────────────
 
 /// Run a lifecycle hook (pre-remove or post-remove) for a worktree.
+///
+/// Sandbox targets get the branchless contract: `DAFT_BRANCH_NAME` is the
+/// empty string and `DAFT_COMMIT` carries the pinned OID — the dirname is
+/// not a branch and must not masquerade as one in hook environments.
 fn run_removal_hook(
     hook_type: HookType,
     ctx: &BranchDeleteContext,
     worktree_path: &Path,
-    branch_name: &str,
+    branch: &ValidatedBranch,
     command_label: &str,
     sink: &mut (impl ProgressSink + HookRunner),
 ) {
-    let hook_ctx = HookContext::new(
+    let branch_name = if branch.is_sandbox { "" } else { &branch.name };
+    let mut hook_ctx = HookContext::new(
         hook_type,
         command_label,
         &ctx.project_root,
@@ -1542,15 +1855,19 @@ fn run_removal_hook(
         branch_name,
     )
     .with_removal_reason(RemovalReason::Manual);
+    if let Some(pin) = branch.pinned_commit.as_deref() {
+        hook_ctx = hook_ctx.with_commit(pin);
+    }
 
     if let Err(e) = sink.run_hook(&hook_ctx) {
         sink.on_warning(&format!(
-            "{} hook failed for {branch_name}: {e}",
+            "{} hook failed for {}: {e}",
             match hook_type {
                 HookType::PreRemove => "Pre-remove",
                 HookType::PostRemove => "Post-remove",
                 _ => "Hook",
-            }
+            },
+            branch.name
         ));
     }
 }
@@ -1653,6 +1970,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         let params = BranchDeleteParams {
             branches: vec![".".to_string()],
@@ -1693,6 +2012,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         let params = |delete_remote: bool| BranchDeleteParams {
             branches: vec!["feat-x".to_string()],
@@ -1760,6 +2081,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         assert_eq!(vb.name, "feature/test");
         assert!(vb.worktree_path.is_some());
@@ -1779,6 +2102,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         assert!(vb.worktree_path.is_none());
         assert!(vb.remote_name.is_none());
@@ -1797,6 +2122,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         assert!(vb.worktree_only);
         assert!(vb.worktree_path.is_some());
@@ -2200,6 +2527,8 @@ mod tests {
             merged_into: None,
             merged_via: None,
             daft_files: DaftFilePlan::Nothing,
+            is_sandbox: false,
+            pinned_commit: None,
         };
         let params = BranchDeleteParams {
             branches: vec!["feat-x".to_string()],

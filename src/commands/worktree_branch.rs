@@ -211,7 +211,10 @@ daft.checkout.pushVerify overrides it for that push alone. Pass --no-verify
 to skip it unconditionally.
 "#)]
 pub struct RemoveArgs {
-    #[arg(required = true, help = "Branches or worktree paths to delete")]
+    #[arg(
+        required = true,
+        help = "Branches, worktree paths, or sandbox names to delete"
+    )]
     branches: Vec<String>,
 
     #[arg(
