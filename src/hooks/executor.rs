@@ -1159,6 +1159,67 @@ mod tests {
     }
 
     #[test]
+    fn post_create_failure_aborts_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\nexit 1");
+
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
+        let mut trust_db = TrustDatabase::default();
+        trust_db.set_trust_level(&ctx.git_dir, TrustLevel::Allow);
+        let executor = HookExecutor::with_trust_db(HooksConfig::default(), trust_db);
+        let mut output = TestOutput::default();
+
+        // #765: a failed post-create aborts (Err) under the default config,
+        // so the creation command skips its `-x` tail and exits non-zero.
+        let err = executor
+            .execute(&ctx, &mut output, NullPresenter::arc())
+            .expect_err("post-create failure must abort by default");
+        assert!(
+            err.to_string().contains("worktree-post-create hook failed"),
+            "unexpected abort message: {err}"
+        );
+    }
+
+    #[test]
+    fn post_create_failure_warn_mode_continues() {
+        let temp_dir = tempdir().unwrap();
+        let worktree = temp_dir.path().join("main");
+        fs::create_dir_all(&worktree).unwrap();
+
+        create_test_hook(&worktree, "worktree-post-create", "#!/bin/bash\nexit 1");
+
+        let ctx = test_ctx_with_state(temp_dir.path(), &worktree, HookType::PostCreate, "main");
+
+        let mut config = HooksConfig::default();
+        config.worktree_post_create.fail_mode = FailMode::Warn;
+        let mut trust_db = TrustDatabase::default();
+        trust_db.set_trust_level(&ctx.git_dir, TrustLevel::Allow);
+        let executor = HookExecutor::with_trust_db(config, trust_db);
+        let mut output = TestOutput::default();
+
+        // `failMode=warn` is the #765 opt-out: the failure is reported but
+        // the run returns Ok so the creation command continues (runs `-x`,
+        // exits 0).
+        let result = executor
+            .execute(&ctx, &mut output, NullPresenter::arc())
+            .expect("warn mode must not abort");
+        assert!(!result.success);
+        assert!(!result.skipped);
+        assert!(
+            output
+                .warnings()
+                .iter()
+                .any(|w| w.contains("continuing anyway")),
+            "warn mode should announce it is continuing: {:?}",
+            output.warnings()
+        );
+    }
+
+    #[test]
     fn test_get_hook_source_worktree_post_remove_non_move_uses_source() {
         let ctx = HookContext::new(
             HookType::PostRemove,

@@ -10,7 +10,7 @@ use crate::core::worktree::ports::NoopStageRunner;
 use crate::core::worktree::push::{
     HookVerdict, PushAction, PushPayload, push_with_hooks, resolve_pre_push_plan,
 };
-use crate::core::{HookOutcome, HookRunner, ProgressSink};
+use crate::core::{HookRunner, ProgressSink};
 use crate::executor::presenter::JobPresenter;
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
@@ -72,7 +72,6 @@ pub struct CheckoutBranchResult {
     pub push_set: bool,
     pub push_skipped: bool,
     pub git_dir: PathBuf,
-    pub post_hook_outcome: HookOutcome,
 }
 
 /// Execute the checkout-branch operation.
@@ -365,7 +364,14 @@ pub fn execute(
     .with_new_branch(true)
     .with_base_branch(&base_branch);
 
-    let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
+    // A failed post-create aborts by default (#765): the Err propagates to
+    // the command layer, which returns before the `-x` tail and exits
+    // non-zero. Under `failMode=warn` the run returns Ok (success: false)
+    // and the command proceeds — that outcome is deliberately not captured;
+    // Err propagation is the single abort mechanism.
+    sink.run_hook(&post_hook_ctx).map_err(|e| {
+        super::post_create_failure_error(e, &worktree_path, &params.new_branch_name)
+    })?;
 
     // The worktree is fully set up — now surface a deferred pre-push gate
     // refusal as the command's failure (#599 acceptance: non-zero exit).
@@ -383,7 +389,6 @@ pub fn execute(
         push_set,
         push_skipped,
         git_dir,
-        post_hook_outcome,
     })
 }
 

@@ -53,7 +53,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/dag 2>&1
     cwd: "$WORK_DIR/test-retry-dag/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: List jobs — a completed, b failed
     run: daft hooks jobs 2>&1

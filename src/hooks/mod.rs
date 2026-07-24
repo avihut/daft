@@ -209,6 +209,12 @@ impl HookType {
             // Pre-create and pre-merge hooks should abort by default
             // (setup / safety rails must succeed before the operation).
             HookType::PreCreate | HookType::PreMerge => FailMode::Abort,
+            // Post-create aborts by default too (#765): it gates the
+            // `-x`/`--exec` tail and the command's exit code. Continuing
+            // would run exec commands against a half-set-up worktree and
+            // exit 0 on a failed setup. `failMode=warn` opts back into
+            // continue-on-failure.
+            HookType::PostCreate => FailMode::Abort,
             // All other hooks warn by default (don't block operations)
             _ => FailMode::Warn,
         }
@@ -699,8 +705,11 @@ mod tests {
     #[test]
     fn test_hook_type_default_fail_mode() {
         assert_eq!(HookType::PreCreate.default_fail_mode(), FailMode::Abort);
-        assert_eq!(HookType::PostCreate.default_fail_mode(), FailMode::Warn);
+        // Post-create aborts by default (#765): it gates the `-x` tail and
+        // the creation command's exit code.
+        assert_eq!(HookType::PostCreate.default_fail_mode(), FailMode::Abort);
         assert_eq!(HookType::PreRemove.default_fail_mode(), FailMode::Warn);
+        assert_eq!(HookType::PostRemove.default_fail_mode(), FailMode::Warn);
     }
 
     #[test]
@@ -729,7 +738,7 @@ mod tests {
         assert!(config.worktree_pre_create.enabled);
         assert_eq!(config.worktree_pre_create.fail_mode, FailMode::Abort);
         assert!(config.worktree_post_create.enabled);
-        assert_eq!(config.worktree_post_create.fail_mode, FailMode::Warn);
+        assert_eq!(config.worktree_post_create.fail_mode, FailMode::Abort);
     }
 
     #[test]
@@ -765,6 +774,10 @@ mod tests {
 
         let config = HookConfig::new(HookType::PostCreate);
         assert!(config.enabled);
+        assert_eq!(config.fail_mode, FailMode::Abort);
+
+        let config = HookConfig::new(HookType::PostRemove);
+        assert!(config.enabled);
         assert_eq!(config.fail_mode, FailMode::Warn);
     }
 
@@ -777,6 +790,10 @@ mod tests {
         );
         assert_eq!(
             config.get_hook_config(HookType::PostCreate).fail_mode,
+            FailMode::Abort
+        );
+        assert_eq!(
+            config.get_hook_config(HookType::PostRemove).fail_mode,
             FailMode::Warn
         );
     }

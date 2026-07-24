@@ -4,7 +4,7 @@
 
 use crate::core::layout::{Layout, auto_gitignore_if_needed};
 use crate::core::stage::{PlanCommit, Row, StageEvent, StageId, StepKey, StepSpec};
-use crate::core::{HookOutcome, HookRunner, ProgressSink};
+use crate::core::{HookRunner, ProgressSink};
 use crate::git::GitCommand;
 use crate::hooks::{HookContext, HookType};
 use crate::multi_remote::path::{
@@ -159,7 +159,6 @@ pub struct CheckoutResult {
     pub upstream_set: bool,
     pub upstream_skipped: bool,
     pub git_dir: PathBuf,
-    pub post_hook_outcome: HookOutcome,
 }
 
 /// Execute the checkout operation.
@@ -248,11 +247,6 @@ pub fn execute(
             upstream_set: false,
             upstream_skipped: true,
             git_dir,
-            post_hook_outcome: HookOutcome {
-                success: true,
-                skipped: true,
-                skip_reason: None,
-            },
         });
     }
 
@@ -280,11 +274,6 @@ pub fn execute(
             upstream_set: false,
             upstream_skipped: true,
             git_dir,
-            post_hook_outcome: HookOutcome {
-                success: true,
-                skipped: true,
-                skip_reason: None,
-            },
         });
     }
 
@@ -724,7 +713,13 @@ pub fn execute(
     )
     .with_new_branch(false);
 
-    let post_hook_outcome = sink.run_hook(&post_hook_ctx)?;
+    // A failed post-create aborts by default (#765): the Err propagates to
+    // the command layer, which returns before the `-x` tail and exits
+    // non-zero. Under `failMode=warn` the run returns Ok (success: false)
+    // and the command proceeds — that outcome is deliberately not captured;
+    // Err propagation is the single abort mechanism.
+    sink.run_hook(&post_hook_ctx)
+        .map_err(|e| super::post_create_failure_error(e, &worktree_path, &params.branch_name))?;
 
     Ok(CheckoutResult {
         branch_name: params.branch_name.clone(),
@@ -736,7 +731,6 @@ pub fn execute(
         upstream_set,
         upstream_skipped,
         git_dir,
-        post_hook_outcome,
     })
 }
 

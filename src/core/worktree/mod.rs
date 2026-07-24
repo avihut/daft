@@ -63,6 +63,31 @@ impl Default for WorktreeConfig {
 /// identically wherever the row appears.
 pub(crate) const FETCH_FAILED_REASON: &str = "failed \u{2014} continuing with local refs";
 
+/// Wrap a failed `worktree-post-create` run with the state the user is left
+/// in. Post-create failure aborts the creation command by default (#765):
+/// the `Err` built here propagates to the command layer, which returns
+/// before its `-x`/`--exec` tail and exits non-zero — but the worktree
+/// already exists and is deliberately kept on disk (a partially-populated
+/// `.env`/`node_modules` may be worth inspecting or repairing, and removal
+/// is one `remove` away). Shared by the two creation cores.
+pub(crate) fn post_create_failure_error(
+    err: anyhow::Error,
+    worktree_path: &std::path::Path,
+    branch_name: &str,
+) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{err}\n  \
+         The worktree was created and kept at '{path}'; any -x/--exec commands were skipped.\n  \
+         tip: fix the hook and re-run it from that worktree with `{rerun}`, or remove the \
+         worktree with `{remove}`.\n  \
+         To continue past post-create failures instead: \
+         `git config daft.hooks.worktreePostCreate.failMode warn`",
+        path = worktree_path.display(),
+        rerun = crate::daft_cmd("hooks run worktree-post-create"),
+        remove = crate::daft_cmd(&format!("remove {branch_name}")),
+    )
+}
+
 /// Resolve the planned Carry row (#651): a clean tree resolves silently —
 /// the row vanishes — an applied stash completes, and a conflicted one
 /// fails with the recovery hint. Shared by the two creation cores, whose
@@ -89,5 +114,26 @@ pub(crate) fn resolve_carry_row(
                 detail: "stash conflicts \u{2014} run git stash pop".to_string(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod post_create_failure_tests {
+    #[test]
+    fn message_names_state_and_recovery() {
+        let err = super::post_create_failure_error(
+            anyhow::anyhow!("worktree-post-create hook failed with exit code 1"),
+            std::path::Path::new("/tmp/wt/feat-x"),
+            "feat-x",
+        );
+        let msg = err.to_string();
+        // The original failure stays first…
+        assert!(msg.contains("worktree-post-create hook failed with exit code 1"));
+        // …followed by the state the user is left in and every recovery path.
+        assert!(msg.contains("created and kept at '/tmp/wt/feat-x'"));
+        assert!(msg.contains("-x/--exec commands were skipped"));
+        assert!(msg.contains("hooks run worktree-post-create"));
+        assert!(msg.contains("remove feat-x"));
+        assert!(msg.contains("daft.hooks.worktreePostCreate.failMode warn"));
     }
 }

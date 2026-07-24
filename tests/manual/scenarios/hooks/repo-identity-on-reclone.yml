@@ -40,7 +40,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/rx 2>&1
     cwd: "$WORK_DIR/test-reclone-id/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: List jobs — should show the failed invocation
     run: daft hooks jobs --all 2>&1

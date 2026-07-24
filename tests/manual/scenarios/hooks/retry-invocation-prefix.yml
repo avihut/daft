@@ -38,7 +38,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/inv 2>&1
     cwd: "$WORK_DIR/test-retry-inv/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: Retry using --inv flag with a short prefix from the listing
     run: |

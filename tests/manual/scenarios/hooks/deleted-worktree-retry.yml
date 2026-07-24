@@ -38,7 +38,9 @@ steps:
     run: env -u DAFT_TESTING git-worktree-checkout feature/ephemeral 2>&1
     cwd: "$WORK_DIR/test-deleted-retry/main"
     expect:
-      exit_code: 0
+      # Post-create failure aborts the command by default (#765); the
+      # worktree is kept and the failed invocation is still recorded.
+      exit_code: 1
 
   - name: Remove the worktree
     run: daft remove feature/ephemeral --force 2>&1
