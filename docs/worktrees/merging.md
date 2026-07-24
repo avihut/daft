@@ -82,6 +82,18 @@ daft merge feature/hotfix --into release/1.2 --adopt-target
 On success the ephemeral worktree is promoted to a permanent worktree at the
 configured layout. On conflict it stays put so you can resolve in place.
 
+## Fork worktrees as sources
+
+Sources are any commit-ish, not just branches — so anonymous fork worktrees
+merge back by naming their HEAD:
+
+```bash
+daft merge worktrees/feature-x-fork/HEAD --into feature-x
+```
+
+See [Anonymous worktrees](/worktrees/anonymous-worktrees) for the full
+fan-out-and-merge-back workflow.
+
 ## Hook gates
 
 `pre-merge` and `post-merge` hooks fire around the operation, with

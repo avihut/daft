@@ -118,6 +118,10 @@ That is what makes them safe for parallel agents: three concurrent
 `daft start --fork` invocations mint three distinct worktrees with zero
 coordination — names are claimed atomically by directory creation.
 
+The full loop — fork a branch's position several times, commit in each, then
+merge the keepers back with `daft merge worktrees/<dirname>/HEAD` — is walked
+through in [Anonymous worktrees](/worktrees/anonymous-worktrees).
+
 Naming follows `daft.start.forkNaming`:
 
 - `derived` (default) — `<source>-fork`, `<source>-fork-2`, … Self-describing

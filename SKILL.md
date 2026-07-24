@@ -339,9 +339,16 @@ Aftercare contract:
 - Remove with `daft remove <name>` (the printed path's basename) when done.
   Globs work: `daft remove main-fork-*`.
 - Commits made inside are safe while the worktree exists, but die with it:
-  removal refuses when HEAD moved off the pinned commit. To keep the work,
-  promote first — `daft start <new-branch>` from inside the sandbox bases the
-  new branch on the detached HEAD — then remove.
+  removal refuses when HEAD moved off the pinned commit. Two routes keep the
+  work. **Promote** when it deserves a branch: `daft start <new-branch>` from
+  inside the sandbox bases the new branch on the detached HEAD. **Merge back**
+  when adopting it into the branch you forked from: a fork's HEAD is a legal
+  merge source, spelled `worktrees/<dirname>/HEAD` — so
+  `daft merge worktrees/<dirname>/HEAD --into <branch>` adopts one fork, several
+  sources octopus-merge a fleet at once, and `git cherry-pick <sha>` adopts
+  single commits. After either route the commits are reachable elsewhere, so
+  `daft remove <dirname> -f` is safe — the `-f` acknowledges the moved pin,
+  which removal cannot verify on its own.
 - Sandboxes show in `daft list` under their directory name with a dim `○`;
   `prune` and `sync` skip them.
 
