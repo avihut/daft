@@ -45,7 +45,7 @@
 //! | `daft.hooks.output.tailLines` | `6` | Rolling output tail lines per job (0 = none) |
 //! | `daft.hooks.output.verbose` | `false` | Show skipped jobs and their reasons |
 //! | `daft.hooks.<hookName>.enabled` | `true` | Enable/disable specific hook |
-//! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn). Defaults: `worktreePreCreate`, `worktreePostCreate`, `preMerge` abort; all others warn |
+//! | `daft.hooks.<hookName>.failMode` | varies | Behavior on hook failure (abort/warn). Also settable per-hook in `daft.yml` via `fail_mode:`; this git-config value takes precedence over the committed one. Defaults: `worktreePreCreate`, `worktreePostCreate`, `preMerge` abort; all others warn |
 //!
 //! # Example
 //!
@@ -1723,6 +1723,10 @@ fn load_hook_type_config(
         && let Some(mode) = FailMode::parse(&value)
     {
         hook_config.fail_mode = mode;
+        // A parsed git value takes precedence over any committed
+        // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`). An
+        // unparseable value is ignored, leaving the daft.yml value free to win.
+        hook_config.fail_mode_from_git = true;
     }
 
     Ok(())
@@ -1762,6 +1766,10 @@ fn load_hook_type_config_global(
         && let Some(mode) = FailMode::parse(&value)
     {
         hook_config.fail_mode = mode;
+        // A parsed git value takes precedence over any committed
+        // `daft.yml fail_mode:` (see the executor's `resolve_fail_mode`). An
+        // unparseable value is ignored, leaving the daft.yml value free to win.
+        hook_config.fail_mode_from_git = true;
     }
 
     Ok(())
@@ -1986,6 +1994,107 @@ mod tests {
         assert!(
             DaftSettings::load_global().unwrap().use_gitoxide,
             "control: global config reads true, so false above came from local"
+        );
+    }
+
+    /// #768: a git-config hook `failMode` must resolve into `HookConfig` with
+    /// `fail_mode_from_git = true` from BOTH loaders — the local (effective)
+    /// one that drives checkout, and the global-only one that drives clone /
+    /// repo-remove. That flag is what gives git config precedence over a
+    /// committed `daft.yml fail_mode:`, so an implementer who sets it in one
+    /// loader but not the other would break clone-time precedence silently.
+    /// A hook with no git override keeps the flag false.
+    #[test]
+    #[serial_test::serial]
+    fn git_fail_mode_sets_from_git_flag_in_both_loaders() {
+        // Restore cwd + git-config env vars on the way out (panic or not).
+        struct Restore {
+            cwd: Option<std::path::PathBuf>,
+            global: Option<std::ffi::OsString>,
+            nosystem: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(cwd) = &self.cwd {
+                    let _ = std::env::set_current_dir(cwd);
+                }
+                unsafe {
+                    restore_var("GIT_CONFIG_GLOBAL", self.global.take());
+                    restore_var("GIT_CONFIG_NOSYSTEM", self.nosystem.take());
+                }
+            }
+        }
+        unsafe fn restore_var(key: &str, prev: Option<std::ffi::OsString>) {
+            match prev {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        let _restore = Restore {
+            cwd: std::env::current_dir().ok(),
+            global: std::env::var_os("GIT_CONFIG_GLOBAL"),
+            nosystem: std::env::var_os("GIT_CONFIG_NOSYSTEM"),
+        };
+
+        // Isolate global + system git config into a temp file (CLAUDE.md
+        // Critical Rule #1), starting empty so the local phase sees no global
+        // failMode.
+        let home = tempfile::tempdir().unwrap();
+        let global_cfg = home.path().join("gitconfig-global");
+        std::fs::write(&global_cfg, "").unwrap();
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &global_cfg);
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
+
+        // A repo whose LOCAL config flips post-create failMode to warn (the
+        // type default is abort, #765, so warn is an observable override).
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::utils::git_command_at(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "daft.hooks.worktreePostCreate.failMode", "warn"]);
+
+        std::env::set_current_dir(&repo_path).unwrap();
+
+        // Local (effective) loader: the repo-local value resolves and is
+        // flagged as git-set; an untouched hook keeps the flag false.
+        let local = load_hooks_config_with(&GitCommand::new(true)).unwrap();
+        assert_eq!(local.worktree_post_create.fail_mode, FailMode::Warn);
+        assert!(
+            local.worktree_post_create.fail_mode_from_git,
+            "a git-set failMode must flag fail_mode_from_git (local loader)"
+        );
+        assert!(
+            !local.post_clone.fail_mode_from_git,
+            "a hook with no git override must leave the flag false"
+        );
+
+        // Global-only loader (clone / repo-remove path): the SAME flag must be
+        // set from the global scope, or clone-time precedence breaks silently.
+        git(&[
+            "config",
+            "--file",
+            global_cfg.to_str().unwrap(),
+            "daft.hooks.worktreePostCreate.failMode",
+            "warn",
+        ]);
+        let global = load_hooks_config_global().unwrap();
+        assert_eq!(global.worktree_post_create.fail_mode, FailMode::Warn);
+        assert!(
+            global.worktree_post_create.fail_mode_from_git,
+            "load_hooks_config_global must also set fail_mode_from_git"
         );
     }
 

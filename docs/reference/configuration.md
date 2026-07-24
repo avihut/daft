@@ -303,6 +303,12 @@ Default fail modes:
 - `preMerge`: `abort` (gates the merge)
 - All others: `warn` (don't block operations)
 
+A hook's fail mode can also be committed per-hook in `daft.yml` via `fail_mode:`
+(`abort` or `warn`), which ships a repo-wide default to every clone. The git
+config above takes precedence, so a developer can still override the committed
+value on their own machine. See the
+[YAML reference](/hooks/yaml-reference#failure-mode).
+
 ### Hook Output Settings
 
 | Key                            | Default | Description                                                                                                                                                                  |

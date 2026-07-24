@@ -159,6 +159,13 @@ pub struct HookDef {
     /// Legacy alias for jobs (commands map).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commands: Option<HashMap<String, CommandDef>>,
+
+    /// Failure mode for this hook: `abort` (fatal) or `warn` (report and
+    /// continue). Committed here it is a repo-wide default; a git-config
+    /// `daft.hooks.<hookName>.failMode` overrides it (see the executor's
+    /// `resolve_fail_mode`). Has no effect on `tasks:` entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_mode: Option<super::FailMode>,
 }
 
 /// Target operating system for platform constraints.

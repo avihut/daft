@@ -138,6 +138,7 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
         only,
         jobs,
         commands,
+        fail_mode,
     } = overlay;
 
     let mut merged = base;
@@ -166,6 +167,9 @@ pub fn merge_hook_defs(base: HookDef, overlay: HookDef) -> HookDef {
     }
     if only.is_some() {
         merged.only = only;
+    }
+    if fail_mode.is_some() {
+        merged.fail_mode = fail_mode;
     }
 
     // Jobs: merge named jobs by name, append unnamed
@@ -527,6 +531,7 @@ fn merge3_hook_defs(
         only: b_only,
         jobs: b_jobs,
         commands: b_commands,
+        fail_mode: b_fail_mode,
     } = base;
 
     HookDef {
@@ -594,6 +599,13 @@ fn merge3_hook_defs(
             b_commands,
             &ours.commands,
             &theirs.commands,
+            tally,
+        ),
+        fail_mode: pick3(
+            &format!("{prefix}.fail_mode"),
+            b_fail_mode,
+            &ours.fail_mode,
+            &theirs.fail_mode,
             tally,
         ),
     }
@@ -981,6 +993,19 @@ mod tests {
         };
         let merged = merge_hook_defs(HookDef::default(), overlay);
         assert_eq!(merged.background, Some(true));
+    }
+
+    #[test]
+    fn merge_hook_defs_preserves_fail_mode() {
+        use crate::hooks::FailMode;
+        // `fail_mode` is a scalar that must survive the overlay merge like the
+        // others, so `extends`/overlays can carry a committed failure mode.
+        let overlay = HookDef {
+            fail_mode: Some(FailMode::Abort),
+            ..Default::default()
+        };
+        let merged = merge_hook_defs(HookDef::default(), overlay);
+        assert_eq!(merged.fail_mode, Some(FailMode::Abort));
     }
 
     // ── merge3 ───────────────────────────────────────────────────────

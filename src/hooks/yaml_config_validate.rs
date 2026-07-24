@@ -91,6 +91,13 @@ pub fn validate_config(config: &YamlConfig) -> Result<ValidationResult> {
                 "tasks do not support the legacy 'commands:' form; use 'jobs:'",
             );
         }
+        if task_def.fail_mode.is_some() {
+            result.warn(
+                format!("tasks.{task_name}"),
+                "'fail_mode' has no effect on tasks (daft run exits on the first \
+                 job failure); it applies to lifecycle hooks only",
+            );
+        }
         validate_hook_def("tasks", task_name, task_def, &mut result);
     }
 

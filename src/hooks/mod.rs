@@ -64,6 +64,7 @@ pub use executor::{HookExecutor, HookResult};
 pub use trust::{TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 
 use crate::settings::HookOutputConfig;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
 
@@ -249,7 +250,8 @@ impl fmt::Display for HookType {
 }
 
 /// Behavior when a hook fails (non-zero exit code).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FailMode {
     /// Abort the operation if the hook fails.
     Abort,
@@ -285,6 +287,12 @@ pub struct HookConfig {
     pub enabled: bool,
     /// Behavior when the hook fails.
     pub fail_mode: FailMode,
+    /// Whether `fail_mode` was set explicitly via git config (rather than left
+    /// at the hook-type default). Lets the executor give a git-config
+    /// `failMode` precedence over a committed `daft.yml fail_mode:`, while a
+    /// git value left unset lets the `daft.yml` value win over the default.
+    /// See `executor::resolve_fail_mode`.
+    pub fail_mode_from_git: bool,
 }
 
 impl HookConfig {
@@ -293,6 +301,7 @@ impl HookConfig {
         Self {
             enabled: true,
             fail_mode: hook_type.default_fail_mode(),
+            fail_mode_from_git: false,
         }
     }
 }
