@@ -134,12 +134,20 @@ Continuing would run them against a half-set-up worktree and exit `0`. The
 worktree itself is deliberately kept so you can inspect or repair it; the error
 names the path and how to re-run the hook.
 
+A `worktree-pre-create` hook is a gate: it runs before `git worktree add`, so a
+non-zero exit cancels creation and nothing is left on disk. Downgrading it to
+`warn` runs the gate but ignores its veto — the worktree is created anyway.
+
 Override per-hook:
 
 ```bash
 # Let creation commands continue past a failing post-create hook
 # (runs -x, warns, exits 0)
 git config daft.hooks.worktreePostCreate.failMode warn
+
+# Create the worktree even when the pre-create gate fails
+# (creates it anyway, warns, exits 0)
+git config daft.hooks.worktreePreCreate.failMode warn
 ```
 
 Hook failures during moves produce **warnings**, not errors. The move operation

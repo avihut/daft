@@ -208,10 +208,11 @@ pub fn execute(
     .with_new_branch(true)
     .with_base_branch(&base_branch);
 
-    let hook_outcome = sink.run_hook(&hook_ctx)?;
-    if !hook_outcome.success && !hook_outcome.skipped {
-        anyhow::bail!("Pre-create hook failed");
-    }
+    // Fail mode is honored inside the executor (#767): the default `Abort`
+    // bails here via `?`; `warn` returns `Ok(success: false)` and creation
+    // continues — symmetric with every other hook. Do not re-add a guard that
+    // force-aborts the `warn` case.
+    sink.run_hook(&hook_ctx)?;
 
     sink.on_step(&format!(
         "Creating worktree at '{}' with new branch '{}' from '{}'",
