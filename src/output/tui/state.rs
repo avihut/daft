@@ -491,10 +491,16 @@ impl TuiState {
             DagEvent::ManagerEngaged {
                 branch_name,
                 hook_type,
+                parent_job,
                 manager,
                 version,
             } => {
-                if self.show_hook_sub_rows
+                // Only the hook-level (gate) manager labels the hook. A manager
+                // nested inside one lifecycle job (`parent_job` set) must not
+                // relabel the whole hook and its sibling jobs — its jobs
+                // already surface as that job's children.
+                if parent_job.is_none()
+                    && self.show_hook_sub_rows
                     && let Some(row) = self.find_row_mut(branch_name)
                     && let Some(hook_sub) = row
                         .hook_sub_rows
@@ -1493,6 +1499,7 @@ mod tests {
         state.apply_event(&DagEvent::ManagerEngaged {
             branch_name: "feat/a".into(),
             hook_type: DagHookPhase::PrePush,
+            parent_job: None,
             manager: "lefthook".into(),
             version: Some("2.1.10".into()),
         });
@@ -1507,6 +1514,37 @@ mod tests {
             row.hook_sub_rows[0].manager.as_deref(),
             Some("lefthook v2.1.10"),
             "the hook line names whose jobs follow"
+        );
+    }
+
+    #[test]
+    fn a_nested_manager_does_not_relabel_the_whole_hook() {
+        // A manager recognized inside one lifecycle job (`parent_job` set)
+        // must not stamp its identity on the hook line and its sibling jobs
+        // (#753 review). Its jobs surface as that job's children instead.
+        let mut state = make_verbose_test_state();
+
+        state.apply_event(&DagEvent::HookStarted {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+        });
+        state.apply_event(&DagEvent::ManagerEngaged {
+            branch_name: "feat/a".into(),
+            hook_type: DagHookPhase::PrePush,
+            parent_job: Some("setup".into()),
+            manager: "lefthook".into(),
+            version: Some("2.1.10".into()),
+        });
+
+        let row = state
+            .live
+            .rows
+            .iter()
+            .find(|w| w.info.name == "feat/a")
+            .unwrap();
+        assert_eq!(
+            row.hook_sub_rows[0].manager, None,
+            "a job-nested manager must not label the hook itself"
         );
     }
 

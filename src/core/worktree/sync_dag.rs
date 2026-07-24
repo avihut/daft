@@ -656,10 +656,14 @@ pub enum DagEvent {
     },
     /// A hook manager (lefthook) was recognized on a hook's output stream
     /// (#753): the JobStarted/JobCompleted events that follow are the
-    /// manager's own jobs.
+    /// manager's own jobs. `parent_job` is `None` for the hook-level (gate)
+    /// manager whose identity labels the whole hook, and `Some(job)` for a
+    /// manager recognized *inside* one lifecycle job — which must not relabel
+    /// the hook or its sibling jobs (its jobs surface as that job's children).
     ManagerEngaged {
         branch_name: String,
         hook_type: DagHookPhase,
+        parent_job: Option<String>,
         manager: String,
         version: Option<String>,
     },

@@ -262,10 +262,11 @@ impl JobPresenter for TuiPresenter {
         });
     }
 
-    fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
+    fn on_manager_engaged(&self, scope: Option<&str>, manager: &str, version: Option<&str>) {
         let _ = self.sender.send(DagEvent::ManagerEngaged {
             branch_name: self.branch_name.clone(),
             hook_type: self.hook_type,
+            parent_job: scope.map(str::to_string),
             manager: manager.to_string(),
             version: version.map(str::to_string),
         });
@@ -598,16 +599,18 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let presenter = TuiPresenter::new(tx, "feat/x", DagHookPhase::PrePush);
 
-        presenter.on_manager_engaged(None, "lefthook", Some("2.1.10"));
+        presenter.on_manager_engaged(Some("setup"), "lefthook", Some("2.1.10"));
 
         match rx.try_recv().expect("should receive ManagerEngaged") {
             DagEvent::ManagerEngaged {
                 branch_name,
+                parent_job,
                 manager,
                 version,
                 ..
             } => {
                 assert_eq!(branch_name, "feat/x");
+                assert_eq!(parent_job.as_deref(), Some("setup"), "scope is carried");
                 assert_eq!(manager, "lefthook");
                 assert_eq!(version.as_deref(), Some("2.1.10"));
             }

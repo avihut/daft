@@ -393,8 +393,13 @@ impl JobPresenter for CliPresenter {
         }
     }
 
-    fn on_manager_engaged(&self, _scope: Option<&str>, manager: &str, version: Option<&str>) {
-        if let Some(r) = ready(&mut self.lock()) {
+    fn on_manager_engaged(&self, scope: Option<&str>, manager: &str, version: Option<&str>) {
+        // Only the hook-level (gate) manager labels the section header. A
+        // manager nested inside one lifecycle job (`scope` set) must not
+        // relabel the whole section — its jobs surface as that job's children.
+        if scope.is_none()
+            && let Some(r) = ready(&mut self.lock())
+        {
             r.set_manager_engaged(manager, version);
         }
     }
