@@ -21,6 +21,10 @@ use super::environment::HookContext;
 /// - `{base_branch}` — base branch name (if set)
 /// - `{repository_url}` — repository URL (if set)
 /// - `{default_branch}` — default branch name (if set)
+///
+/// `{changed_files}` is NOT handled here: it expands to a per-job filtered
+/// file list, so the job adapter substitutes it after glob filtering (see
+/// [`crate::hooks::changed_files::CHANGED_FILES_TEMPLATE`]).
 pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> String {
     let mut result = command.to_string();
 

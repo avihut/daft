@@ -176,9 +176,17 @@ pub fn execute_yaml_hook_with_rc(
     let filter = cfg.filter;
     let presenter = cfg.presenter;
     let repo_log = cfg.repo_log;
+
+    // The operation's changed-file source (None for hook types without one).
+    // Constructed up front — it resolves lazily, so fires with no file-aware
+    // jobs or `changed:` rules never pay for a diff.
+    let changed_files_provider =
+        crate::hooks::changed_files::ChangedFilesProvider::for_hook(ctx, working_dir);
+    let changed_files = changed_files_provider.as_ref();
+
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip
-        && let Some(info) = super::conditions::should_skip(skip, working_dir)
+        && let Some(info) = super::conditions::should_skip(skip, working_dir, changed_files)?
     {
         output.debug(&format!("Skipping {hook_name}: {}", info.reason));
         return Ok(if info.ran_command {
@@ -188,7 +196,7 @@ pub fn execute_yaml_hook_with_rc(
         });
     }
     if let Some(ref only) = hook_def.only
-        && let Some(info) = super::conditions::should_only_skip(only, working_dir)
+        && let Some(info) = super::conditions::should_only_skip(only, working_dir, changed_files)?
     {
         output.debug(&format!("Skipping {hook_name}: {}", info.reason));
         return Ok(if info.ran_command {
@@ -407,6 +415,8 @@ pub fn execute_yaml_hook_with_rc(
         hook_background: hook_def.background,
         repo_log,
         default_timeout: cfg.default_job_timeout,
+        changed_files,
+        hook_exclude: hook_def.exclude.as_deref().unwrap_or(&[]),
     };
     let (specs, mut skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
@@ -415,7 +425,7 @@ pub fn execute_yaml_hook_with_rc(
         source_dir,
         working_dir,
         &adapter,
-    );
+    )?;
 
     // Fold `--skip-hooks` exclusions into the skipped-job set so the
     // persistence loop below records them (visible via `daft hooks jobs`)

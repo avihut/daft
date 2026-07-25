@@ -140,7 +140,10 @@ pub struct HookDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_tags: Option<Vec<String>>,
 
-    /// Glob patterns to exclude at hook level.
+    /// Glob patterns excluded from every file-aware job in this hook —
+    /// appended to each job's own `exclude:` list. Does not by itself make a
+    /// job file-aware (a job with no `glob:`/`exclude:`/`files:` and no
+    /// `{changed_files}` template ignores it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
 
@@ -278,6 +281,27 @@ impl PlatformRunCommand {
     }
 }
 
+/// A value that can be a single string or a list of strings.
+///
+/// Used by glob-pattern fields (`glob:`, `changed:`) so the one-pattern case
+/// reads without list syntax.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrList {
+    Single(String),
+    List(Vec<String>),
+}
+
+impl StringOrList {
+    /// Return the values as a slice.
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            StringOrList::Single(v) => std::slice::from_ref(v),
+            StringOrList::List(v) => v,
+        }
+    }
+}
+
 /// A single job definition within a hook.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -313,6 +337,37 @@ pub struct JobDef {
     /// Tags for this job (for filtering).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+
+    /// Glob patterns selecting the changed files this job cares about.
+    ///
+    /// A single pattern or a list. Patterns match repository-root-relative
+    /// paths with standard doublestar semantics (`**` spans zero or more
+    /// directories, `*` never crosses `/`, braces expand) and ignore
+    /// `root:`. The file list comes from the hook's operation (for merge
+    /// hooks: the files the sources changed relative to the target) or the
+    /// job's own `files:` command. When no changed file matches, the job is
+    /// skipped. Declaring `glob:` on a hook type with no changed-file
+    /// source and no `files:` is a configuration error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glob: Option<StringOrList>,
+
+    /// Glob patterns removed from this job's changed-file list (see `glob`).
+    ///
+    /// Applied after `glob:` selection; hook-level `exclude:` patterns are
+    /// appended. `exclude:` alone (no `glob:`) selects every changed file
+    /// outside the excluded paths — the job is skipped when nothing else
+    /// changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
+
+    /// Shell command producing this job's file list, replacing the hook's
+    /// own changed-file source.
+    ///
+    /// Runs via `sh -c` in the hook's working directory and must emit one
+    /// repository-root-relative path per line. An empty result skips the
+    /// job; a non-zero exit fails the hook.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
 
     /// Skip condition.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,6 +493,10 @@ pub struct SkipRuleStructured {
     /// Skip if this command exits 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Skip if any changed file matches these glob patterns (same matching
+    /// semantics and changed-file source as the job-level `glob:` field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<StringOrList>,
     /// Human-readable description of why this skip rule exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
@@ -479,6 +538,11 @@ pub struct OnlyRuleStructured {
     /// Only run if this command exits 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Only run if at least one changed file matches these glob patterns
+    /// (same matching semantics and changed-file source as the job-level
+    /// `glob:` field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<StringOrList>,
     /// Human-readable description of why this only rule exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
@@ -746,6 +810,97 @@ hooks:
                 }
             }
             other => panic!("Expected Rules, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_job_glob_string_and_list_forms() {
+        let yaml = r#"
+hooks:
+  pre-merge:
+    exclude:
+      - "**/*.lock"
+    jobs:
+      - name: single
+        run: cargo check
+        glob: "src/**"
+      - name: many
+        run: lint {changed_files}
+        glob:
+          - "*.{js,ts}"
+          - "web/**"
+        exclude:
+          - "web/generated/**"
+      - name: custom
+        run: verify
+        files: "git ls-files src"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let hook = &config.hooks["pre-merge"];
+        assert_eq!(
+            hook.exclude.as_deref(),
+            Some(&["**/*.lock".to_string()][..])
+        );
+
+        let jobs = hook.jobs.as_ref().unwrap();
+        match jobs[0].glob.as_ref().unwrap() {
+            StringOrList::Single(s) => assert_eq!(s, "src/**"),
+            other => panic!("expected Single, got {other:?}"),
+        }
+        match jobs[1].glob.as_ref().unwrap() {
+            StringOrList::List(l) => assert_eq!(l, &["*.{js,ts}", "web/**"]),
+            other => panic!("expected List, got {other:?}"),
+        }
+        assert_eq!(
+            jobs[1].exclude.as_deref(),
+            Some(&["web/generated/**".to_string()][..])
+        );
+        assert_eq!(jobs[2].files.as_deref(), Some("git ls-files src"));
+    }
+
+    #[test]
+    fn test_changed_rule_parses_in_skip_and_only() {
+        let yaml = r#"
+hooks:
+  pre-merge:
+    jobs:
+      - name: docs-gate
+        run: build-docs
+        only:
+          - changed: "docs/**"
+      - name: heavy
+        run: heavy-check
+        skip:
+          - changed:
+              - "*.md"
+              - "docs/**"
+            desc: docs-only change
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let jobs = config.hooks["pre-merge"].jobs.as_ref().unwrap();
+
+        match jobs[0].only.as_ref().unwrap() {
+            OnlyCondition::Rules(rules) => match &rules[0] {
+                OnlyRule::Structured(s) => match s.changed.as_ref().unwrap() {
+                    StringOrList::Single(p) => assert_eq!(p, "docs/**"),
+                    other => panic!("expected Single, got {other:?}"),
+                },
+                other => panic!("expected Structured, got {other:?}"),
+            },
+            other => panic!("expected Rules, got {other:?}"),
+        }
+        match jobs[1].skip.as_ref().unwrap() {
+            SkipCondition::Rules(rules) => match &rules[0] {
+                SkipRule::Structured(s) => {
+                    match s.changed.as_ref().unwrap() {
+                        StringOrList::List(l) => assert_eq!(l, &["*.md", "docs/**"]),
+                        other => panic!("expected List, got {other:?}"),
+                    }
+                    assert_eq!(s.desc.as_deref(), Some("docs-only change"));
+                }
+                other => panic!("expected Structured, got {other:?}"),
+            },
+            other => panic!("expected Rules, got {other:?}"),
         }
     }
 

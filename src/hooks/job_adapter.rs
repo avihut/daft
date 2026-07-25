@@ -6,10 +6,12 @@
 //! RC-file sourcing, template substitution) happens here so that the
 //! executor never needs to know about hook configuration details.
 
+use super::changed_files::{CHANGED_FILES_TEMPLATE, ChangedFilesProvider, FileFilter};
 use super::config_merge::merge_log_configs;
 use crate::executor::{JobSpec, LogConfig};
 use crate::hooks::environment::{HookContext, HookEnvironment};
 use crate::hooks::yaml_config::JobDef;
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -245,6 +247,14 @@ pub struct JobAdapterContext<'a> {
     /// use `Some(JobSpec::DEFAULT_TIMEOUT)` (the `Default`); `daft run` tasks
     /// pass `None` so long-running processes aren't force-killed.
     pub default_timeout: Option<std::time::Duration>,
+    /// The operation's changed-file source, consulted by file-aware jobs
+    /// (`glob:`/`exclude:`/`{changed_files}`) and `changed:` rules. `None`
+    /// for hook types with no changed set — a file-aware job there is a
+    /// config error unless it brings its own `files:` command.
+    pub changed_files: Option<&'a ChangedFilesProvider>,
+    /// Hook-level `exclude:` patterns, appended to every file-aware job's
+    /// exclude set. Never makes a job file-aware by itself.
+    pub hook_exclude: &'a [String],
 }
 
 impl Default for JobAdapterContext<'_> {
@@ -256,6 +266,8 @@ impl Default for JobAdapterContext<'_> {
             hook_background: None,
             repo_log: None,
             default_timeout: Some(JobSpec::DEFAULT_TIMEOUT),
+            changed_files: None,
+            hook_exclude: &[],
         }
     }
 }
@@ -265,6 +277,7 @@ impl Default for JobAdapterContext<'_> {
 /// Each [`JobDef`] is resolved into a concrete command string, merged
 /// environment, and working directory. This function handles:
 /// - Command resolution (run, script, runner, args, platform-specific variants)
+/// - Changed-file filtering (`glob:`/`exclude:`/`files:`, `{changed_files}`)
 /// - Environment variable merging (hook env + per-job env)
 /// - Working directory resolution (job `root` relative to base working dir)
 /// - RC file sourcing (prepends `source <rc> &&` to commands)
@@ -272,6 +285,10 @@ impl Default for JobAdapterContext<'_> {
 ///
 /// Jobs with platform-specific `run` maps that have no entry for the
 /// current OS are silently excluded.
+///
+/// Errors are configuration or resolution failures that must abort the hook
+/// (malformed glob, `changed:`/`glob:` without a changed-file source, a
+/// failing `files:` command) — never conditions a skip can express.
 ///
 /// **Note:** Group jobs (`job.group.is_some()`) are skipped in this
 /// initial implementation. They will be handled when the yaml_executor
@@ -283,7 +300,7 @@ pub fn yaml_jobs_to_specs(
     source_dir: &str,
     working_dir: &Path,
     adapter: &JobAdapterContext<'_>,
-) -> (Vec<JobSpec>, Vec<SkippedJob>) {
+) -> Result<(Vec<JobSpec>, Vec<SkippedJob>)> {
     let rc = adapter.rc;
     let hook_background = adapter.hook_background;
     let repo_log = adapter.repo_log;
@@ -318,7 +335,8 @@ pub fn yaml_jobs_to_specs(
         }
 
         if let Some(ref skip) = job.skip
-            && let Some(info) = super::conditions::should_skip(skip, working_dir)
+            && let Some(info) =
+                super::conditions::should_skip(skip, working_dir, adapter.changed_files)?
         {
             skipped.push(SkippedJob {
                 name,
@@ -329,7 +347,8 @@ pub fn yaml_jobs_to_specs(
         }
 
         if let Some(ref only) = job.only
-            && let Some(info) = super::conditions::should_only_skip(only, working_dir)
+            && let Some(info) =
+                super::conditions::should_only_skip(only, working_dir, adapter.changed_files)?
         {
             skipped.push(SkippedJob {
                 name,
@@ -340,6 +359,18 @@ pub fn yaml_jobs_to_specs(
         }
 
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
+
+        let cmd = match apply_file_filter(job, &name, &cmd, ctx, working_dir, adapter)? {
+            FileFilterOutcome::Run(cmd) => cmd,
+            FileFilterOutcome::Skip(reason) => {
+                skipped.push(SkippedJob {
+                    name,
+                    background: declared_background,
+                    reason,
+                });
+                continue;
+            }
+        };
 
         let cmd = match rc {
             Some(rc_path) => format!("source {rc_path} && {cmd}"),
@@ -392,7 +423,98 @@ pub fn yaml_jobs_to_specs(
         spec.needs.retain(|n| !skipped_names.contains(n.as_str()));
     }
 
-    (kept, skipped)
+    Ok((kept, skipped))
+}
+
+/// Outcome of the changed-file stage for one job: run with the (possibly
+/// `{changed_files}`-expanded) command, or skip with a reason.
+enum FileFilterOutcome {
+    Run(String),
+    Skip(String),
+}
+
+/// Apply the job's changed-file declaration, if any.
+///
+/// A job is *file-aware* when it declares `glob:`, `exclude:`, or `files:`,
+/// or its resolved command uses `{changed_files}`. For such a job the file
+/// list is resolved (the job's own `files:` command, else the hook's
+/// operation source), filtered by `glob:` plus the combined job- and
+/// hook-level `exclude:` patterns, and:
+/// - an empty result is a first-class skip (mirroring the boundary rule:
+///   nothing this job cares about changed — even when the command references
+///   no file template);
+/// - a non-empty result replaces `{changed_files}` with the shell-quoted,
+///   space-joined list.
+///
+/// Everything else is an error: file-awareness without any source, a
+/// malformed pattern, a failing `files:` command, or an unresolvable
+/// operation diff. A gate filter must fail loudly, never silently run (or
+/// silently skip) the wrong set.
+fn apply_file_filter(
+    job: &JobDef,
+    name: &str,
+    cmd: &str,
+    ctx: &HookContext,
+    working_dir: &Path,
+    adapter: &JobAdapterContext<'_>,
+) -> Result<FileFilterOutcome> {
+    let uses_template = cmd.contains(CHANGED_FILES_TEMPLATE);
+    let file_aware =
+        job.glob.is_some() || job.exclude.is_some() || job.files.is_some() || uses_template;
+    if !file_aware {
+        return Ok(FileFilterOutcome::Run(cmd.to_string()));
+    }
+
+    let files: Vec<String> = if let Some(ref files_cmd) = job.files {
+        let files_cmd = super::template::substitute(files_cmd, ctx, Some(name));
+        super::changed_files::run_files_command(&files_cmd, working_dir)
+            .with_context(|| format!("job '{name}': files: command failed"))?
+    } else if let Some(provider) = adapter.changed_files {
+        provider
+            .files()
+            .with_context(|| format!("job '{name}'"))?
+            .to_vec()
+    } else {
+        let hook_label = ctx
+            .task_name
+            .as_deref()
+            .unwrap_or_else(|| ctx.hook_type.yaml_name());
+        bail!(
+            "job '{name}': glob:/exclude:/{{changed_files}} need a changed-file source, \
+             and '{hook_label}' does not provide one — add a `files:` command to the job \
+             or drop the file filter"
+        );
+    };
+
+    let include: Vec<String> = job
+        .glob
+        .as_ref()
+        .map(|g| g.as_slice().to_vec())
+        .unwrap_or_default();
+    let mut exclude: Vec<String> = job.exclude.clone().unwrap_or_default();
+    exclude.extend(adapter.hook_exclude.iter().cloned());
+    let filter = FileFilter::new(&include, &exclude).with_context(|| format!("job '{name}'"))?;
+    let matched = filter.filter(&files);
+
+    if matched.is_empty() {
+        let reason = if include.is_empty() && exclude.is_empty() {
+            // No patterns — the source itself came back empty.
+            if job.files.is_some() {
+                "skip: files: command returned no files".to_string()
+            } else {
+                "skip: no changed files".to_string()
+            }
+        } else {
+            filter.empty_reason()
+        };
+        return Ok(FileFilterOutcome::Skip(reason));
+    }
+
+    Ok(FileFilterOutcome::Run(if uses_template {
+        cmd.replace(CHANGED_FILES_TEMPLATE, &crate::utils::quote_argv(&matched))
+    } else {
+        cmd.to_string()
+    }))
 }
 
 /// Convert legacy hook script paths into [`JobSpec`] values.
@@ -487,7 +609,8 @@ mod tests {
             ".daft",
             Path::new("/project"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 1);
         let s = &specs[0];
@@ -537,7 +660,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
         assert!(
             kept.is_empty(),
             "platform-mismatched job should be excluded"
@@ -566,7 +690,8 @@ mod tests {
                 rc: Some("~/.bashrc"),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].command, "source ~/.bashrc && cargo build");
@@ -589,7 +714,8 @@ mod tests {
             ".daft",
             Path::new("/project"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 1);
         assert_eq!(
@@ -623,7 +749,8 @@ mod tests {
             ".daft",
             Path::new("/project"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 1);
         let env = &specs[0].env;
@@ -656,7 +783,8 @@ mod tests {
             ".daft",
             Path::new("/project"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         let env = &specs[0].env;
         assert_eq!(env.get("COMPOSE_PROJECT_NAME").unwrap(), "api-feature-new");
@@ -684,7 +812,8 @@ mod tests {
             ".daft",
             Path::new("/project"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs[0].env.get("SOME_COMPUTED").unwrap(), "{branch}");
     }
@@ -713,7 +842,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 2);
         assert!(specs[0].needs.is_empty());
@@ -735,7 +865,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "(unnamed)");
@@ -772,7 +903,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1, "group job should be excluded");
         assert_eq!(kept[0].name, "normal");
@@ -807,7 +939,8 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert!(kept.is_empty());
         assert_eq!(skipped.len(), 1);
@@ -832,7 +965,8 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert!(kept.is_empty());
         assert_eq!(skipped.len(), 1);
@@ -861,7 +995,8 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert!(kept.is_empty());
         assert_eq!(skipped.len(), 1);
@@ -890,7 +1025,8 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         assert!(skipped.is_empty());
@@ -927,7 +1063,8 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].name, "dependent");
@@ -961,11 +1098,368 @@ mod tests {
             "/src",
             std::path::Path::new("/work"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert!(kept.is_empty());
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].reason, "only: false");
+    }
+
+    // ── changed-file filtering (glob / exclude / files) ─────────────────
+
+    use crate::hooks::changed_files::ChangedFilesProvider;
+    use crate::hooks::yaml_config::StringOrList;
+
+    fn provider(files: &[&str]) -> ChangedFilesProvider {
+        ChangedFilesProvider::preresolved(files.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn glob_job(name: &str, run: &str, glob: &[&str]) -> JobDef {
+        JobDef {
+            name: Some(name.to_string()),
+            run: Some(RunCommand::Simple(run.to_string())),
+            glob: Some(StringOrList::List(
+                glob.iter().map(|s| s.to_string()).collect(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn glob_job_skipped_when_no_changed_file_matches() {
+        let ctx = make_ctx();
+        let p = provider(&["docs/index.md", "README.md"]);
+        let jobs = vec![glob_job("build", "cargo check", &["src/**", "Cargo.*"])];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "build");
+        assert_eq!(
+            skipped[0].reason,
+            "skip: no changed files match src/**, Cargo.*"
+        );
+    }
+
+    #[test]
+    fn glob_job_runs_when_a_changed_file_matches() {
+        let ctx = make_ctx();
+        let p = provider(&["src/lib.rs", "docs/index.md"]);
+        let jobs = vec![glob_job("build", "cargo check", &["src/**"])];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(kept.len(), 1);
+        assert!(skipped.is_empty());
+        assert_eq!(kept[0].command, "cargo check");
+    }
+
+    #[test]
+    fn changed_files_template_expands_to_quoted_filtered_list() {
+        let ctx = make_ctx();
+        let p = provider(&["src/a.rs", "src/with space.rs", "docs/x.md"]);
+        let jobs = vec![glob_job("lint", "lint {changed_files}", &["src/**"])];
+
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].command, "lint src/a.rs 'src/with space.rs'");
+    }
+
+    #[test]
+    fn bare_changed_files_template_with_empty_change_set_skips() {
+        let ctx = make_ctx();
+        let p = provider(&[]);
+        let jobs = vec![JobDef {
+            name: Some("fmt".into()),
+            run: Some(RunCommand::Simple("fmt {changed_files}".into())),
+            ..Default::default()
+        }];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped[0].reason, "skip: no changed files");
+    }
+
+    #[test]
+    fn files_command_overrides_the_hook_source() {
+        let ctx = make_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        // The hook source would say docs-only; the job's own files: command
+        // wins and produces a matching file.
+        let p = provider(&["docs/index.md"]);
+        let jobs = vec![JobDef {
+            name: Some("own-list".into()),
+            run: Some(RunCommand::Simple("check {changed_files}".into())),
+            files: Some("printf 'src/gen.rs\\n'".into()),
+            glob: Some(StringOrList::Single("src/**".into())),
+            ..Default::default()
+        }];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            dir.path(),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(skipped.is_empty());
+        assert_eq!(kept[0].command, "check src/gen.rs");
+    }
+
+    #[test]
+    fn empty_files_command_output_skips_with_its_own_reason() {
+        let ctx = make_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = vec![JobDef {
+            name: Some("nothing".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            files: Some("true".into()),
+            ..Default::default()
+        }];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            dir.path(),
+            &JobAdapterContext::default(),
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        assert_eq!(skipped[0].reason, "skip: files: command returned no files");
+    }
+
+    #[test]
+    fn failing_files_command_is_an_error_not_a_skip() {
+        let ctx = make_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = vec![JobDef {
+            name: Some("broken".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            files: Some("exit 7".into()),
+            ..Default::default()
+        }];
+
+        let err = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            dir.path(),
+            &JobAdapterContext::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("broken"), "{err:#}");
+    }
+
+    #[test]
+    fn glob_without_any_source_is_a_loud_config_error() {
+        // A lifecycle hook (no provider) whose job declares glob: and brings
+        // no files: command must fail the fire, never silently run or skip.
+        let ctx = make_ctx();
+        let jobs = vec![glob_job("gated", "echo hi", &["src/**"])];
+
+        let err = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext::default(),
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("gated"), "{msg}");
+        assert!(msg.contains("worktree-post-create"), "{msg}");
+        assert!(msg.contains("files:"), "{msg}");
+    }
+
+    #[test]
+    fn invalid_glob_pattern_is_an_error_naming_the_job() {
+        let ctx = make_ctx();
+        let p = provider(&["src/lib.rs"]);
+        let jobs = vec![glob_job("bad", "true", &["src/[oops"])];
+
+        let err = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bad"), "{msg}");
+        assert!(msg.contains("src/[oops"), "{msg}");
+    }
+
+    #[test]
+    fn exclude_only_job_skips_on_docs_only_change_set() {
+        // The docs-only pattern: exclude alone selects "anything else", so a
+        // change set fully inside the excludes skips the job.
+        let ctx = make_ctx();
+        let p = provider(&["docs/guide.md", "README.md"]);
+        let jobs = vec![JobDef {
+            name: Some("build".into()),
+            run: Some(RunCommand::Simple("cargo check".into())),
+            exclude: Some(vec!["docs/**".into(), "*.md".into()]),
+            ..Default::default()
+        }];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        assert_eq!(
+            skipped[0].reason,
+            "skip: all changed files excluded by docs/**, *.md"
+        );
+    }
+
+    #[test]
+    fn hook_level_exclude_appends_to_file_aware_jobs_only() {
+        let ctx = make_ctx();
+        let p = provider(&["docs/guide.md"]);
+        let hook_exclude = vec!["docs/**".to_string()];
+        let jobs = vec![
+            // File-aware: glob matches the doc file, but the hook-level
+            // exclude removes it → skip.
+            glob_job("aware", "true", &["**/*.md"]),
+            // Not file-aware: hook-level exclude alone must not skip it.
+            JobDef {
+                name: Some("plain".into()),
+                run: Some(RunCommand::Simple("true".into())),
+                ..Default::default()
+            },
+        ];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                hook_exclude: &hook_exclude,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "plain");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "aware");
+        assert_eq!(
+            skipped[0].reason,
+            "skip: no changed files match **/*.md (excluding docs/**)"
+        );
+    }
+
+    #[test]
+    fn glob_skip_feeds_needs_stripping_like_other_skips() {
+        let ctx = make_ctx();
+        let p = provider(&["docs/x.md"]);
+        let jobs = vec![
+            glob_job("build", "true", &["src/**"]),
+            JobDef {
+                name: Some("test".into()),
+                run: Some(RunCommand::Simple("true".into())),
+                needs: Some(vec!["build".into()]),
+                ..Default::default()
+            },
+        ];
+
+        let (kept, skipped) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/tmp"),
+            &JobAdapterContext {
+                changed_files: Some(&p),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(skipped[0].name, "build");
+        assert_eq!(kept.len(), 1);
+        assert!(
+            kept[0].needs.is_empty(),
+            "needs on a glob-skipped dep must be stripped"
+        );
     }
 
     // ── scripts_to_specs ────────────────────────────────────────────────
@@ -994,7 +1488,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(specs.len(), 1);
         assert!(specs[0].background);
         assert_eq!(specs[0].background_output, Some(BackgroundOutput::Silent));
@@ -1113,7 +1608,8 @@ mod tests {
                 repo_log: Some(&repo_log),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         let lc = kept[0]
@@ -1158,7 +1654,8 @@ mod tests {
                 repo_log: Some(&repo_log),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         let lc = kept[0].log_config.as_ref().unwrap();
@@ -1200,7 +1697,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         let lc = kept[0].log_config.as_ref().unwrap();
@@ -1225,7 +1723,8 @@ mod tests {
             ".daft",
             Path::new("/tmp"),
             &JobAdapterContext::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(kept.len(), 1);
         assert!(kept[0].log_config.is_none());

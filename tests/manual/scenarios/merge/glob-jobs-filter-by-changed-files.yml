@@ -1,0 +1,92 @@
+name: Pre-merge jobs filter by changed files (glob)
+description:
+  "A pre-merge job carrying glob: patterns runs only when the merge's change set
+  (three-dot target...source) touches a matching file. A docs-only track must
+  skip the src/**-gated job with a first-class reason recorded in the log store,
+  while a code track runs it — and {changed_files} in the run command expands to
+  the filtered, repo-root-relative file list."
+
+repos:
+  - name: test-glob-gate
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# glob gate"
+          - path: src/lib.rs
+            content: "pub fn base() {}"
+        commits:
+          - message: "Initial commit"
+      - name: docs-only
+        from: main
+        files:
+          - path: docs/guide.md
+            content: "docs change"
+        commits:
+          - message: "Docs-only change"
+      - name: code-change
+        from: main
+        files:
+          - path: src/feature.rs
+            content: "pub fn feature() {}"
+        commits:
+          - message: "Code change"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: build-gate
+              glob: "src/**"
+              run: touch "$DAFT_MERGE_TARGET_PATH/.build-gate-ran"
+            - name: echo-files
+              glob:
+                - "src/**"
+              run: echo {changed_files} > "$DAFT_MERGE_TARGET_PATH/.gate-files"
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_GLOB_GATE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-glob-gate/main"
+
+  - name: Docs-only merge — src/** gate is skipped, merge proceeds
+    run: daft merge docs-only --no-edit 2>&1
+    cwd: "$WORK_DIR/test-glob-gate/main"
+    expect:
+      exit_code: 0
+      files_not_exist:
+        - "$WORK_DIR/test-glob-gate/main/.build-gate-ran"
+        - "$WORK_DIR/test-glob-gate/main/.gate-files"
+
+  - name: Skip reason is recorded as a first-class skip
+    run: daft hooks jobs logs build-gate 2>&1
+    cwd: "$WORK_DIR/test-glob-gate/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "build-gate"
+        - "no changed files match src/**"
+        - "SKIPPED"
+
+  - name: Code merge — the gate runs and {changed_files} expands
+    run: daft merge code-change --no-edit 2>&1
+    cwd: "$WORK_DIR/test-glob-gate/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-glob-gate/main/.build-gate-ran"
+        - "$WORK_DIR/test-glob-gate/main/.gate-files"
+
+  - name: The expanded file list is the filtered repo-root-relative set
+    run: cat "$WORK_DIR/test-glob-gate/main/.gate-files"
+    cwd: "$WORK_DIR/test-glob-gate/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "src/feature.rs"
+      output_not_contains:
+        - "docs/guide.md"
+        - "README.md"

@@ -605,11 +605,38 @@ skip:
   - env: SKIP_HOOKS # Skip if env var is truthy
   - run: "test -f .skip-hooks" # Skip if command exits 0
     desc: "Skip file exists" # Human-readable reason
+  - changed: "docs/**" # Skip if a changed file matches (merge hooks)
 
 only:
   - env: DEPLOY_ENABLED # Only run when env var is set
   - ref: "main" # Only run on main branch
+  - changed: "src/**" # Only run when a matching file changed
 ```
+
+### Changed-File Job Filters (glob)
+
+A job can gate itself on what the operation changed. For merge hooks the changed
+set is the files the sources changed relative to the target (`target...source`);
+other hook types need a `files:` command.
+
+```yaml
+hooks:
+  pre-merge:
+    jobs:
+      - name: build-check
+        glob: ["src/**", "Cargo.*"] # run only when these changed
+        run: cargo check --all-targets
+      - name: lint-changed
+        glob: "*.{js,ts}"
+        exclude: ["web/generated/**"] # exclude wins over glob
+        run: eslint {changed_files} # expands to the filtered list
+```
+
+Patterns match repository-root-relative paths (doublestar rules: `**` spans zero
+or more directories, `*` stops at `/`; `root:` is ignored). When nothing
+matches, the job is **skipped** with a recorded reason — a docs-only merge skips
+the build ring. `glob:`/`exclude:`/`{changed_files}` on a hook type with no
+changed set and no `files:` command is a loud configuration error.
 
 ### Trust Management
 
