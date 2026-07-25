@@ -26,6 +26,7 @@ pub mod format;
 pub mod hook_progress;
 pub(crate) mod live_line;
 pub mod markdown;
+pub mod notice;
 pub mod outline;
 pub mod pager;
 pub(crate) mod palette;

@@ -293,7 +293,13 @@ fn resolve_job_address(
     let worktree = addr.worktree.as_deref().unwrap_or(current_worktree);
     let invocations = store.list_invocations_for_worktree(worktree)?;
 
-    if invocations.is_empty() {
+    // An empty worktree-scoped list is NOT the end of the search when the
+    // user named no worktree: merge hooks record under the TARGET branch, so
+    // the worktree the user is standing in legitimately has no invocations
+    // of its own while the job they are asking about exists elsewhere. The
+    // bare-name fallback below is exactly for that case — bailing here made
+    // it unreachable in the situation it was added for.
+    if invocations.is_empty() && (addr.worktree.is_some() || addr.invocation_prefix.is_some()) {
         anyhow::bail!("No invocations found for worktree '{worktree}'.");
     }
 
@@ -1034,7 +1040,19 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     } else if let Some(ref wt) = args.worktree {
         store.list_invocations_for_worktree(wt)?
     } else {
-        store.list_invocations_for_worktree(&current_worktree)?
+        // Default scope is this worktree — but merge hooks record under the
+        // TARGET branch, so the worktree a user runs `daft merge --into main`
+        // from has no invocations of its own. Falling back to the whole repo
+        // is what makes the failure breadcrumb
+        // (`daft hooks jobs --last --hook pre-merge`) resolve to the gate run
+        // it points at instead of "No background job history found."
+        // Worktree-scoped results still win whenever they exist.
+        let scoped = store.list_invocations_for_worktree(&current_worktree)?;
+        if scoped.is_empty() {
+            store.list_invocations()?
+        } else {
+            scoped
+        }
     };
 
     // Apply --hook filter.

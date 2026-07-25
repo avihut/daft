@@ -740,19 +740,36 @@ pub fn run() -> Result<()> {
         .as_deref()
         .and_then(|t| git.resolve_worktree_path(t, &project_root).ok())
         .unwrap_or_else(|| source_worktree.clone());
+    // If EITHER merge hook is declared, plan rows for BOTH.
+    //
+    // The probe and the executor can legitimately read different trees: the
+    // probe resolves the target's worktree (falling back to the current
+    // one), while the executor loads config from wherever the merge actually
+    // lands — which for a target with no worktree is an ephemeral checkout
+    // that does not exist yet and cannot be probed. When the plan omitted a
+    // stage the executor then fired, `resolve_key` returned `None` and the
+    // presenter installed no renderer at all while the region held the
+    // terminal: the jobs ran and finished with no rows, no output, no
+    // failure tails. Planning both rows makes that unreachable — an unfired
+    // planned row simply vanishes, which is the cheap direction to be wrong
+    // in.
     let declared_merge_hooks: Vec<HookType> =
         match crate::hooks::yaml_config_loader::load_merged_config(&hook_probe_root) {
-            Ok(Some(cfg)) => [HookType::PreMerge, HookType::PostMerge]
-                .into_iter()
-                .filter(|ht| {
+            Ok(Some(cfg)) => {
+                let any_declared = [HookType::PreMerge, HookType::PostMerge].iter().any(|ht| {
                     cfg.hooks
                         .get(ht.yaml_name())
                         .map(|d| {
                             !crate::hooks::yaml_config_loader::get_effective_jobs(d).is_empty()
                         })
                         .unwrap_or(false)
-                })
-                .collect(),
+                });
+                if any_declared {
+                    vec![HookType::PreMerge, HookType::PostMerge]
+                } else {
+                    Vec::new()
+                }
+            }
             _ => Vec::new(),
         };
     let mut timeline: Option<Timeline> = None;
@@ -770,6 +787,14 @@ pub fn run() -> Result<()> {
                 .map(|stage| Row::Step(StepSpec::new(StepKey::new(stage))))
                 .collect();
             tl.commit_plan(PlanCommit::new(rows));
+            // Out-of-band notices from core (gate lane waits, policy override
+            // announcements, the octopus herald) must go through the region
+            // or the region's next repaint erases them — and the lane wait is
+            // precisely the message that explains a merge which looks hung.
+            let notice_handle = tl.handle();
+            crate::output::notice::set_sink(Box::new(move |msg| {
+                notice_handle.suspend(|| eprintln!("{msg}"));
+            }));
             timeline = Some(tl);
         }
     }
@@ -1014,6 +1039,8 @@ pub fn run() -> Result<()> {
             Ok(outcome) if !outcome.failed => tl.finish(&format!("Done in {elapsed}")),
             _ => tl.finish(&format!("Finished in {elapsed}")),
         }
+        // The region is gone; later notices must not try to suspend it.
+        crate::output::notice::clear_sink();
     }
     // Dump captured git output to stderr after the spinner stops (avoids
     // carriage-return mangling). On failure, always dump; on success, only

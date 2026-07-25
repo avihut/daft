@@ -75,11 +75,13 @@ impl GateLane {
                 .ok()
                 .and_then(|_| serde_json::from_str::<Holder>(&contents).ok());
             match holder {
-                Some(h) => eprintln!(
+                Some(h) => crate::output::notice::notice(&format!(
                     "waiting for the merge gate lane — held by a merge in {} (pid {})",
                     h.worktree, h.pid
+                )),
+                None => crate::output::notice::notice(
+                    "waiting for the merge gate lane — held by another merge",
                 ),
-                None => eprintln!("waiting for the merge gate lane — held by another merge"),
             }
             file.lock_exclusive()
                 .with_context(|| format!("failed to lock gate lane {}", lock_path.display()))?;

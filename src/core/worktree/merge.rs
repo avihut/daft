@@ -1389,7 +1389,7 @@ fn resolve_gate_policy_at(policy_root: &Path, overrides: GateOverrides) -> Resul
         overrides,
     );
     for line in announcements {
-        eprintln!("{line}");
+        crate::output::notice::notice(&line);
     }
     Ok(gate)
 }
@@ -1762,7 +1762,7 @@ pub fn execute_start(
     // Stderr keeps progress output out of stdout (reserved for the final
     // "Merge complete." / "Already up to date." result line).
     if let Some(msg) = announcement(&params.sources, &resolved.branch) {
-        eprintln!("{msg}");
+        crate::output::notice::notice(&msg);
     }
 
     // Cross-worktree detection: target worktree is not the current worktree.
