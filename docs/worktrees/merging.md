@@ -101,9 +101,58 @@ fan-out-and-merge-back workflow.
 `pre-merge` hook that exits non-zero aborts the merge — full tests, integration
 checks, or security gates can run before code leaves the branch.
 
+```yaml
+# daft.yml
+merge:
+  ff: only # source must already contain the target's tip
+  source_worktree: clean # and its worktree must exist, with no dirty files
+
+hooks:
+  pre-merge:
+    jobs:
+      - name: test
+        run: cargo test --workspace
+        root: "{merge_source_path}"
+      - name: integration
+        run: cargo test --test integration
+        root: "{merge_source_path}"
+        tags: [deep]
+```
+
+The `merge:` block is what makes those checks mean something. Under `ff: only`,
+a merge whose source does not already contain the target's tip is refused — so
+the merge is a fast-forward and the tree the jobs tested is exactly the tree
+that lands. daft re-verifies that at the moment the ref moves: if the source
+advanced while the gate was running, the merge refuses instead of landing code
+no check ever saw. Rebase the source and run it again.
+
+`root: "{merge_source_path}"` runs each job in the source worktree, reusing its
+warm build caches instead of rebuilding in the target.
+
+Slow jobs can carry a tag and be dropped for a quick iteration:
+
+```bash
+daft merge feature/api --skip-tag deep
+```
+
+`--skip-tag` and `--skip-hooks` skip _jobs_, never _policy_ — the fast-forward
+and clean-source requirements hold no matter which jobs you skip. To relax
+policy you have to say so explicitly, per invocation, with `--no-ff-only` or
+`--source-worktree any`.
+
+When a job fails, the merge aborts and names the invocation to inspect:
+
+```bash
+daft hooks jobs --last --hook pre-merge  # what ran, what failed, output inline
+daft hooks jobs logs test                # the full log
+```
+
 This is the [PR-check-parity boundary](/hooks/) of the hooks-as-boundaries
-thesis. See [Lifecycle hooks → Merge hooks](/hooks/lifecycle#merge-hooks) for
-env vars, fail modes, and config.
+thesis, and it is worth keeping literal: the jobs in your gate should be the
+same checks your forge requires on a pull request. See
+[Merge gate parity](/recipes/merge-gate-parity) for keeping the two in step, and
+[Lifecycle hooks → Merge hooks](/hooks/lifecycle#merge-hooks) for env vars, fail
+modes, and config.
 
 ## Where to next
 
