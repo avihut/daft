@@ -1368,7 +1368,15 @@ fn resolve_gate_policy(
         .clone()
         .or_else(|| git.get_current_worktree_path().ok())
         .unwrap_or_else(|| project_root.to_path_buf());
-    let cfg = crate::hooks::yaml_config_loader::load_merged_config(&policy_root)
+    resolve_gate_policy_at(&policy_root, params.gate_overrides)
+}
+
+/// Load and resolve gate policy from a specific directory's config.
+///
+/// Split out of [`resolve_gate_policy`] so the finish path (`--continue`)
+/// can ask the same question without a [`StartParams`] to hand.
+fn resolve_gate_policy_at(policy_root: &Path, overrides: GateOverrides) -> Result<GatePolicy> {
+    let cfg = crate::hooks::yaml_config_loader::load_merged_config(policy_root)
         .with_context(|| format!("failed to load daft config in '{}'", policy_root.display()))?;
     let pre_merge_hooks_configured = cfg
         .as_ref()
@@ -1378,12 +1386,43 @@ fn resolve_gate_policy(
     let (gate, announcements) = gate_from_config_and_overrides(
         cfg.as_ref().and_then(|c| c.merge.as_ref()),
         pre_merge_hooks_configured,
-        params.gate_overrides,
+        overrides,
     );
     for line in announcements {
         eprintln!("{line}");
     }
     Ok(gate)
+}
+
+/// Read the source commits of an in-progress merge from `MERGE_HEAD`.
+///
+/// One SHA per line (several for an octopus). Returns an empty vec when the
+/// file is absent, which the caller treats as "nothing to re-verify".
+fn read_merge_heads(worktree: &Path) -> Result<Vec<String>> {
+    let git_dir = resolve_worktree_git_dir(worktree)?;
+    let merge_head = git_dir.join("MERGE_HEAD");
+    match std::fs::read_to_string(&merge_head) {
+        Ok(contents) => Ok(contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("failed to read '{}'", merge_head.display())),
+    }
+}
+
+/// Whether the index still has unmerged (conflicted) entries.
+///
+/// `git ls-files -u` lists one line per unmerged stage; empty stdout means
+/// every conflict has been resolved and staged.
+fn has_unmerged_paths(worktree: &Path) -> Result<bool> {
+    let output = crate::utils::git_command_at(worktree)
+        .args(["ls-files", "-u"])
+        .output()
+        .context("failed to probe the index for unmerged paths")?;
+    Ok(!output.stdout.is_empty())
 }
 
 /// Enforce the gate policy before any merge work begins.
@@ -3026,6 +3065,21 @@ pub fn execute_finish(
                 FinishMode::Quit => "--quit",
             };
 
+            // Re-certify before `--continue` lands the resolved tree (#775).
+            //
+            // The gate's promise is that the tested tree is the landed tree.
+            // A conflicted merge breaks that by construction: the human edits
+            // the working tree to resolve, so the tree about to be committed
+            // is one no ring has ever seen. Comparing SHAs cannot detect this
+            // — the source did not move, the *resolution* is new — so the
+            // only honest answer is to run the rings again, here, against the
+            // tree that is actually about to become a commit.
+            //
+            // Abort and quit are untouched: they move no ref.
+            if matches!(params.mode, FinishMode::Continue) {
+                run_pre_merge_gate_for_continue(&path, &resolved, params, git, runner)?;
+            }
+
             let (out, err) = user_facing_git_stdio();
             let status = Command::new("git")
                 .args(["merge", flag])
@@ -3050,6 +3104,69 @@ pub fn execute_finish(
         _ => unreachable!("non-merge op passed detect filter"),
     }
     Ok(())
+}
+
+/// Re-run the `pre-merge` gate before `daft merge --continue` commits a
+/// hand-resolved tree.
+///
+/// No-ops when the repo configures no pre-merge hooks (nothing to certify)
+/// and when conflicts are still unresolved — in that case `git merge
+/// --continue` is about to fail with its own, better error, and running a
+/// test suite against conflict markers would only bury it.
+///
+/// Otherwise: take the lane (a concurrent gated merge must not interleave
+/// with this landing either), then fire the hooks. Their cwd is the target
+/// worktree, which is exactly where the resolved tree lives.
+fn run_pre_merge_gate_for_continue(
+    path: &Path,
+    resolved: &ResolvedTarget,
+    params: &FinishParams,
+    git: &GitCommand,
+    runner: &mut dyn HookRunner,
+) -> Result<()> {
+    let gate = resolve_gate_policy_at(path, GateOverrides::default())?;
+    if !gate.pre_merge_hooks_configured {
+        return Ok(());
+    }
+
+    if has_unmerged_paths(path)? {
+        return Ok(());
+    }
+
+    let merge_heads = read_merge_heads(path)?;
+    if merge_heads.is_empty() {
+        return Ok(());
+    }
+
+    let repo_hash =
+        crate::core::repo_identity::compute_repo_id_from_common_dir(&crate::get_git_common_dir()?)?;
+    let _gate_lane = crate::governor::lane::GateLane::acquire(&repo_hash, path)?;
+
+    let cross_worktree = git
+        .get_current_worktree_path()
+        .map(|cwd| cwd != *path)
+        .unwrap_or(false);
+    let target_sha = rev_parse_at(path, &format!("refs/heads/{}", resolved.branch)).ok();
+
+    // MERGE_HEAD holds SHAs, not the names the user typed; naming the
+    // commits is the honest rendering of what is being landed.
+    let sources: Vec<String> = merge_heads.clone();
+    let mut ctx = MergeHookContext::for_pre_with_shas(
+        &sources,
+        resolved,
+        &params.commit_flags,
+        false,
+        cross_worktree,
+        &merge_heads,
+    );
+    if let Some(sha) = target_sha {
+        ctx = ctx.with_target_sha(&sha);
+    }
+
+    runner.fire_pre_merge(&ctx).context(
+        "the pre-merge gate rejected the conflict-resolved tree; \
+         fix it and re-run `--continue`, or abort the merge",
+    )
 }
 
 /// Handle a finish command (abort/continue/quit) for an in-progress rebase.
@@ -6314,6 +6431,192 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("octopus merge refused"), "{msg}");
         assert!(msg.contains("one source at a time"), "{msg}");
+    }
+
+    /// Counts pre-merge fires and can be told to reject.
+    struct CountingRunner {
+        pre_fires: usize,
+        reject: bool,
+    }
+
+    impl HookRunner for CountingRunner {
+        fn fire_pre_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            self.pre_fires += 1;
+            if self.reject {
+                anyhow::bail!("ring says no");
+            }
+            Ok(())
+        }
+        fn fire_post_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `git commit -m` with a test identity, in `dir`.
+    fn commit_all(dir: &Path, msg: &str) {
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(dir)
+            .args(["commit", "-q", "-m", msg])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    /// Drive a repo into a real conflicted merge state in `main`.
+    ///
+    /// Returns the main worktree path. Both branches touch the same line, so
+    /// `git merge` leaves MERGE_HEAD plus an unmerged index.
+    fn conflicted_repo(root: &Path) -> PathBuf {
+        init_repo(root);
+        std::fs::write(root.join("f.txt"), "base\n").unwrap();
+        git_quiet(root, &["add", "f.txt"]);
+        commit_all(root, "base file");
+
+        git_quiet(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("f.txt"), "feature\n").unwrap();
+        git_quiet(root, &["add", "f.txt"]);
+        commit_all(root, "feature edit");
+
+        git_quiet(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("f.txt"), "main\n").unwrap();
+        git_quiet(root, &["add", "f.txt"]);
+        commit_all(root, "main edit");
+
+        // Conflict on purpose; exit status is expected to be non-zero.
+        let _ = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(root)
+            .args(["merge", "feature"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        root.to_path_buf()
+    }
+
+    /// `--continue` must re-certify the hand-resolved tree.
+    ///
+    /// The gate's promise is tested-tree == landed-tree. A conflict
+    /// resolution is by construction a tree no job has seen, and no SHA
+    /// comparison can detect that, so the jobs must run again here.
+    #[test]
+    #[serial]
+    fn continue_reruns_the_pre_merge_gate_on_the_resolved_tree() {
+        let _iso = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = conflicted_repo(tmp.path());
+        write_pre_merge_config(tmp.path());
+        std::env::set_current_dir(&root).unwrap();
+
+        // Resolve the conflict by hand, as a user would.
+        std::fs::write(root.join("f.txt"), "resolved by hand\n").unwrap();
+        git_quiet(&root, &["add", "f.txt"]);
+
+        let git = GitCommand::new(false);
+        let mut runner = CountingRunner {
+            pre_fires: 0,
+            reject: false,
+        };
+        let params = FinishParams {
+            worktree: None,
+            mode: FinishMode::Continue,
+            commit_flags: EffectiveFlags::default(),
+        };
+        execute_finish(&params, &git, tmp.path(), &mut runner).unwrap();
+
+        assert_eq!(
+            runner.pre_fires, 1,
+            "--continue must re-run the pre-merge gate against the resolved tree"
+        );
+    }
+
+    /// A failing ring on `--continue` leaves the merge conflicted rather
+    /// than landing the tree it just rejected.
+    #[test]
+    #[serial]
+    fn continue_refuses_to_land_when_the_regate_fails() {
+        let _iso = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = conflicted_repo(tmp.path());
+        write_pre_merge_config(tmp.path());
+        std::env::set_current_dir(&root).unwrap();
+
+        std::fs::write(root.join("f.txt"), "resolved by hand\n").unwrap();
+        git_quiet(&root, &["add", "f.txt"]);
+
+        let git = GitCommand::new(false);
+        let mut runner = CountingRunner {
+            pre_fires: 0,
+            reject: true,
+        };
+        let params = FinishParams {
+            worktree: None,
+            mode: FinishMode::Continue,
+            commit_flags: EffectiveFlags::default(),
+        };
+        let err = execute_finish(&params, &git, tmp.path(), &mut runner)
+            .expect_err("a failing re-gate must abort --continue");
+        assert!(format!("{err:#}").contains("rejected the conflict-resolved tree"));
+
+        // Still mid-merge: nothing landed.
+        assert!(
+            matches!(
+                detect_in_progress(&root).unwrap(),
+                Some(InProgressOp::Merge)
+            ),
+            "the merge must stay conflicted when the re-gate fails"
+        );
+    }
+
+    /// Unresolved conflicts must not trigger the rings — `git merge
+    /// --continue` is about to emit its own, better error and a test suite
+    /// run against conflict markers would only bury it.
+    #[test]
+    #[serial]
+    fn continue_skips_the_regate_while_conflicts_are_unresolved() {
+        let _iso = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = conflicted_repo(tmp.path());
+        write_pre_merge_config(tmp.path());
+        std::env::set_current_dir(&root).unwrap();
+
+        assert!(
+            has_unmerged_paths(&root).unwrap(),
+            "fixture should still have unmerged paths"
+        );
+
+        let git = GitCommand::new(false);
+        let mut runner = CountingRunner {
+            pre_fires: 0,
+            reject: false,
+        };
+        let params = FinishParams {
+            worktree: None,
+            mode: FinishMode::Continue,
+            commit_flags: EffectiveFlags::default(),
+        };
+        let _ = execute_finish(&params, &git, tmp.path(), &mut runner);
+        assert_eq!(
+            runner.pre_fires, 0,
+            "rings must not run against an unresolved tree"
+        );
+    }
+
+    #[test]
+    fn read_merge_heads_returns_the_in_progress_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = conflicted_repo(tmp.path());
+        let heads = read_merge_heads(&root).unwrap();
+        assert_eq!(heads.len(), 1, "one source in MERGE_HEAD: {heads:?}");
+        assert_eq!(heads[0].len(), 40, "expected a full SHA: {}", heads[0]);
     }
 
     /// A hook runner that advances the source branch during the pre-merge

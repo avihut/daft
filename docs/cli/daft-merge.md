@@ -334,10 +334,14 @@ configuration): `--ff-only` / `--source-worktree clean` supply the policy on
 repos that don't commit it, and `--no-ff-only` / `--source-worktree any`
 relax a committed policy for one merge — each override is announced.
 
-Known limitation: `--continue` (resuming after a conflict) does not re-run
-the landing re-verification. Under `ff: only` this path is unreachable — a
-fast-forward-equivalent merge cannot conflict; conflicts are resolved during
-the track's own rebase, before the gate.
+`--continue` (resuming after a conflict) re-runs the `pre-merge` jobs before
+committing. A conflict resolution is a tree no job has seen — the human
+edited it — so comparing SHAs cannot certify it and the jobs run again,
+against the resolved tree, in the target worktree. They run under the same
+gate lane as a normal merge. If a job fails, the merge stays in its
+conflicted state: fix the tree and re-run `--continue`, or `--abort`.
+
+`--abort` and `--quit` skip this: they move no ref.
 
 ## Hooks
 
