@@ -118,8 +118,17 @@ pub struct YamlConfig {
 /// `--source-worktree any`), never by ambient configuration; the YAML
 /// deliberately has no relax spellings, so overlays can add strictness but
 /// cannot remove it.
+/// Unknown keys are REFUSED here, deliberately diverging from the tolerant
+/// parsing the rest of this schema uses. Everywhere else an unrecognized key
+/// is forward-compatibility slack: an old binary meets a new key and ignores
+/// it. Here the same slack is a silent policy hole — `source-worktree: clean`
+/// (kebab instead of snake) or `ffOnly: only` deserializes to an all-`None`
+/// block, `gate_from_config_and_overrides` computes "no policy", and every
+/// merge lands ungated while the repo believes a boundary is enforced. A
+/// typo must be louder than the thing it disables, so the config fails to
+/// load instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MergeConfig {
     /// Fast-forward condition (git's `merge.ff`): `only` refuses any merge
     /// whose source does not already contain the target tip. Combined with
@@ -946,6 +955,30 @@ hooks: {}
         let err = serde_yaml::from_str::<YamlConfig>("merge:\n  ff: never\n")
             .expect_err("unknown ff value must fail to parse");
         assert!(err.to_string().contains("never"), "{err}");
+    }
+
+    /// A mistyped policy KEY must fail to load, not deserialize to "no
+    /// policy". Unknown keys are tolerated everywhere else in this schema;
+    /// inside `merge:` they would silently disable the gate the repo thinks
+    /// it committed.
+    #[test]
+    fn test_merge_gate_policy_rejects_unknown_keys_loudly() {
+        // Kebab-case instead of the snake_case field name.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  source-worktree: clean\n")
+            .expect_err("a mistyped policy key must not parse to an empty policy");
+        assert!(err.to_string().contains("source-worktree"), "{err}");
+
+        // camelCase instead of snake_case.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  ffOnly: only\n")
+            .expect_err("a mistyped policy key must not parse to an empty policy");
+        assert!(err.to_string().contains("ffOnly"), "{err}");
+
+        // The correct spellings still load.
+        let cfg: YamlConfig =
+            serde_yaml::from_str("merge:\n  ff: only\n  source_worktree: clean\n").unwrap();
+        let merge = cfg.merge.expect("merge block should parse");
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, Some(SourceWorktreePolicy::Clean));
     }
 
     #[test]

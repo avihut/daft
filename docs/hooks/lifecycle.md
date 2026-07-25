@@ -88,7 +88,7 @@ YAML jobs and shell script hooks.
 | Variable                    | Value                                                                                                                               |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `DAFT_MERGE_SOURCES`        | Space-separated list of source refs (branches/commits being merged)                                                                 |
-| `DAFT_MERGE_SOURCE_SHAS`    | Newline-separated SHA per source, captured before any merge work began                                                              |
+| `DAFT_MERGE_SOURCE_SHAS`    | Newline-separated commit SHA per source, captured before any merge work began (an annotated tag is peeled to its commit)            |
 | `DAFT_MERGE_SOURCE_PATHS`   | Newline-separated worktree path per source, aligned with `DAFT_MERGE_SOURCE_SHAS`; a worktree-less source contributes an empty line |
 | `DAFT_MERGE_SOURCE_PATH`    | The single source's worktree path when there is exactly one source and it has a worktree; empty otherwise                           |
 | `DAFT_MERGE_TARGET_BRANCH`  | Name of the branch being merged into                                                                                                |

@@ -123,13 +123,22 @@ fn resolve(source: &Source) -> Result<Vec<String>> {
     }
 }
 
-/// `git diff --name-only --no-renames <target>...<source>` in `worktree`.
+/// `git diff --name-only -z --no-renames <target>...<source>` in `worktree`.
 /// Paths come back repository-root-relative regardless of cwd, which is the
 /// coordinate system every glob pattern uses.
+///
+/// `-z` is load-bearing, not a micro-optimization. Without it git applies
+/// `core.quotePath` (on by default) and C-quotes any path containing a
+/// non-ASCII or control byte: `src/café.rs` arrives as the literal
+/// `"src/caf\303\251.rs"`, quotes included. That string matches no glob, so
+/// the job filtered on `src/**` reports "no changed files match" and skips —
+/// a gate silently passing green on the one change it was configured to
+/// check. `-z` emits raw NUL-delimited paths, which also removes the
+/// newline-in-filename ambiguity that line parsing can never resolve.
 fn diff_merge_range(worktree: &Path, target: &str, source: &str) -> Result<Vec<String>> {
     let range = format!("{target}...{source}");
     let output = crate::utils::git_command_at(worktree)
-        .args(["diff", "--name-only", "--no-renames", &range])
+        .args(["diff", "--name-only", "-z", "--no-renames", &range])
         .output()
         .with_context(|| format!("failed to run git diff for '{range}'"))?;
     if !output.status.success() {
@@ -138,7 +147,19 @@ fn diff_merge_range(worktree: &Path, target: &str, source: &str) -> Result<Vec<S
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(parse_file_lines(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_nul_delimited(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Split `git`'s `-z` output into paths. Entries are NUL-terminated, so the
+/// final split yields an empty trailing element that is dropped along with
+/// any other empties.
+fn parse_nul_delimited(raw: &str) -> Vec<String> {
+    raw.split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Run a job's `files:` command via `sh -c` in `dir`, expecting one

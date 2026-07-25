@@ -1079,11 +1079,22 @@ pub fn detect_in_progress_state(path: &Path) -> Option<InProgressState> {
 /// skips failed rev-parse), and that strictness is intentional: if a source
 /// ref can't be resolved here, it won't resolve in `git merge` either and we
 /// want the error to be legible before any state is touched.
-pub fn capture_source_shas(sources: &[String], git: &GitCommand) -> Result<Vec<String>> {
+///
+/// Resolution goes through [`rev_parse_at`] — the SAME resolver
+/// [`verify_gate_at_landing`] uses — and that is load-bearing, not incidental.
+/// The landing re-check compares these strings byte-for-byte against a fresh
+/// resolution to decide whether the track advanced mid-gate. Two resolvers
+/// that disagree for any reason turn a legitimate merge into a permanent
+/// refusal: a bare `git rev-parse <tag>` yields the tag object's SHA while
+/// `--verify <tag>^{commit}` yields the peeled commit, so an annotated tag as
+/// merge source aborted every gated merge and re-running reproduced it
+/// forever. Peeling and env-scrubbing on both sides keeps the comparison
+/// meaningful. If you change one, change the other.
+pub fn capture_source_shas(sources: &[String], repo_dir: &Path) -> Result<Vec<String>> {
     sources
         .iter()
         .map(|src| {
-            git.rev_parse(src)
+            rev_parse_at(repo_dir, src)
                 .with_context(|| format!("failed to resolve source ref '{}' — does it exist?", src))
         })
         .collect()
@@ -1582,6 +1593,41 @@ pub fn execute_start(
     // vs. target branch name, which needs no path).
     validate_distinct(&params.sources, &resolved)?;
 
+    // Gate policy (#775): resolve the committed `merge:` config + flag
+    // overrides. Resolution reads config only — no repository state — so it
+    // is safe to do before the lane, and it is what tells us whether a lane
+    // is needed at all.
+    let gate = resolve_gate_policy(params, &resolved, git, project_root)?;
+
+    // Serialize gated merges per repository (the cross-process lane): two
+    // concurrent gates certify racing trees and corrupt any fixed scratch
+    // state their rings share.
+    //
+    // Acquired BEFORE every check that observes repository state. A merge
+    // that validated the target while another merge held the lane is
+    // certifying a snapshot that the lane holder is actively invalidating:
+    // by the time it wakes, the "clean" target it approved may be mid-merge
+    // with a conflicted tree, and the target tip it pinned is stale. Waiting
+    // first makes every check below describe the repository this merge will
+    // actually act on. Held until this merge returns — covering the safety
+    // rails, the hook run, and the landing.
+    let _gate_lane = if gate.pre_merge_hooks_configured {
+        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(
+            &crate::get_git_common_dir()?,
+        )?;
+        let lane_worktree = resolved
+            .path
+            .clone()
+            .or_else(|| git.get_current_worktree_path().ok())
+            .unwrap_or_else(|| project_root.to_path_buf());
+        Some(crate::governor::lane::GateLane::acquire(
+            &repo_hash,
+            &lane_worktree,
+        )?)
+    } else {
+        None
+    };
+
     // Filesystem-state checks only apply when a worktree exists. For a
     // ref-only target there is no MERGE_HEAD to find and no working tree to
     // be dirty, so these rails are skipped — Slice 9's FF-plumbing path
@@ -1659,33 +1705,7 @@ pub fn execute_start(
     // treats rev-parse failures as "not an ancestor") — by this point we know
     // at least one source is not already merged, so a resolution failure here
     // is a real problem the user needs to see.
-    let source_shas = capture_source_shas(&params.sources, git)?;
-
-    // Gate policy (#775): resolve the committed `merge:` config + flag
-    // overrides, then enforce it before any state is touched. Re-verified at
-    // the landing sites after the pre-merge hooks run.
-    let gate = resolve_gate_policy(params, &resolved, git, project_root)?;
-
-    // Serialize gated merges per repository (the cross-process lane): two
-    // concurrent gates certify racing trees and corrupt any fixed scratch
-    // state their rings share. Held from before the policy checks until this
-    // merge returns — covering the hook run AND the landing.
-    let _gate_lane = if gate.pre_merge_hooks_configured {
-        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(
-            &crate::get_git_common_dir()?,
-        )?;
-        let lane_worktree = resolved
-            .path
-            .clone()
-            .or_else(|| git.get_current_worktree_path().ok())
-            .unwrap_or_else(|| project_root.to_path_buf());
-        Some(crate::governor::lane::GateLane::acquire(
-            &repo_hash,
-            &lane_worktree,
-        )?)
-    } else {
-        None
-    };
+    let source_shas = capture_source_shas(&params.sources, project_root)?;
 
     enforce_gate_preflight(
         &gate,
@@ -4943,35 +4963,66 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn capture_source_shas_returns_sha_for_known_branch() {
-        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         create_branch(tmp.path(), "feat-a");
 
-        let git = GitCommand::new(false);
-        // Set cwd so GitCommand runs in the right repo.
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        let sha = capture_source_shas(&["feat-a".to_string()], &git).unwrap();
+        let sha = capture_source_shas(&["feat-a".to_string()], tmp.path()).unwrap();
         assert_eq!(sha.len(), 1);
         // SHA should be a 40-char hex string.
         assert_eq!(sha[0].len(), 40, "expected a full SHA, got '{}'", sha[0]);
     }
 
     #[test]
-    #[serial]
     fn capture_source_shas_errors_on_unknown_ref() {
-        let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
 
-        let git = GitCommand::new(false);
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        let result = capture_source_shas(&["no-such-branch".to_string()], &git);
+        let result = capture_source_shas(&["no-such-branch".to_string()], tmp.path());
         assert!(result.is_err(), "expected error for unknown ref");
+    }
+
+    /// An annotated tag as merge source must survive the landing re-check.
+    ///
+    /// The capture side and the landing side must peel identically: a bare
+    /// `git rev-parse v1.0` returns the *tag object's* SHA while
+    /// `rev-parse --verify v1.0^{commit}` returns the commit it points at.
+    /// When the two sides disagreed, every gated merge from an annotated tag
+    /// aborted with "source advanced while the merge gate ran" and re-running
+    /// reproduced it forever.
+    #[test]
+    fn annotated_tag_source_resolves_identically_at_capture_and_landing() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        create_branch(tmp.path(), "feat-a");
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(tmp.path())
+            .args(["tag", "-a", "v1.0", "feat-a", "-m", "release"])
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        let captured = capture_source_shas(&["v1.0".to_string()], tmp.path()).unwrap();
+        let at_landing = rev_parse_at(tmp.path(), "v1.0").unwrap();
+        assert_eq!(
+            captured[0], at_landing,
+            "capture and landing must resolve an annotated tag to the same SHA, \
+             otherwise the landing re-check aborts every gated merge from a tag"
+        );
+
+        // And the peeled value really is the commit, not the tag object.
+        let branch_sha = capture_source_shas(&["feat-a".to_string()], tmp.path()).unwrap();
+        assert_eq!(
+            captured[0], branch_sha[0],
+            "an annotated tag must peel to the commit its branch points at"
+        );
     }
 
     #[test]
