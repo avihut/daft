@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-\-source\-worktree\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -118,6 +118,25 @@ Remove the source worktree and delete the source branch. The local/remote behavi
 .TP
 \fB\-\-keep\-branch\fR
 Explicit keep — for canceling a config\-set `merge.cleanup = remove\-branch`
+.TP
+\fB\-\-ff\-only\fR
+Require the merge to be fast\-forward\-equivalent: the source must already contain the target\*(Aqs tip. Supplies `merge: ff: only` when daft.yml lacks it; matches it when committed
+.TP
+\fB\-\-no\-ff\-only\fR
+Allow a non\-fast\-forward merge for this invocation, overriding a committed `merge: ff: only` policy (announced when it does)
+.TP
+\fB\-\-source\-worktree\fR \fI<STATE>\fR
+Required state of the source branch\*(Aqs worktree: `clean` refuses a missing or dirty source worktree (supplies `merge: source_worktree: clean`); `any` relaxes a committed `clean` for this invocation
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+clean: Require a checked\-out, clean source worktree
+.IP \(bu 2
+any: No requirement on the source worktree (relaxes a committed `clean` for this invocation)
+.RE
 .TP
 \fB\-\-set\-default\fR
 Write the resolved style/cleanup choices to `git config \-\-local` after the merge succeeds

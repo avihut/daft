@@ -77,6 +77,7 @@ pub struct Args {
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
+            "ff_only", "no_ff_only", "source_worktree",
         ],
     )]
     pub abort: bool,
@@ -99,6 +100,7 @@ pub struct Args {
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
+            "ff_only", "no_ff_only", "source_worktree",
         ],
     )]
     pub continue_merge: bool,
@@ -119,6 +121,7 @@ pub struct Args {
             "stat", "no_stat",
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
+            "ff_only", "no_ff_only", "source_worktree",
         ],
     )]
     pub quit: bool,
@@ -260,6 +263,24 @@ pub struct Args {
     /// Explicit keep — for canceling a config-set `merge.cleanup = remove-branch`.
     #[arg(long = "keep-branch", conflicts_with = "remove_branch")]
     pub keep_branch: bool,
+
+    // --- Gate policy (mirrors the committed `merge:` block in daft.yml) ---
+    /// Require the merge to be fast-forward-equivalent: the source must already
+    /// contain the target's tip. Supplies `merge: ff: only` when daft.yml lacks
+    /// it; matches it when committed.
+    #[arg(long = "ff-only", conflicts_with = "no_ff_only")]
+    pub ff_only: bool,
+
+    /// Allow a non-fast-forward merge for this invocation, overriding a
+    /// committed `merge: ff: only` policy (announced when it does).
+    #[arg(long = "no-ff-only", conflicts_with = "ff_only")]
+    pub no_ff_only: bool,
+
+    /// Required state of the source branch's worktree: `clean` refuses a
+    /// missing or dirty source worktree (supplies `merge: source_worktree:
+    /// clean`); `any` relaxes a committed `clean` for this invocation.
+    #[arg(long = "source-worktree", value_name = "STATE", value_enum)]
+    pub source_worktree: Option<crate::core::worktree::merge::SourceWorktreeArg>,
 
     // --- Defaults persistence ---
     /// Write the resolved style/cleanup choices to `git config --local` after
@@ -625,6 +646,16 @@ pub fn run() -> Result<()> {
         adopt,
         require_clean_target: settings.merge_require_clean_target,
         cleanup_intent,
+        gate_overrides: crate::core::worktree::merge::GateOverrides {
+            ff_only: if args.ff_only {
+                Some(true)
+            } else if args.no_ff_only {
+                Some(false)
+            } else {
+                None
+            },
+            source_worktree: args.source_worktree,
+        },
     };
     // Build the MergeHookRunner used to fire pre-merge / post-merge hooks
     // from inside `execute_start`. Holding the executor + output here (in

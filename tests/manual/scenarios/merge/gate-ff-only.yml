@@ -1,0 +1,64 @@
+name: Committed merge.ff=only gates stale sources
+description:
+  "A committed `merge: ff: only` policy admits a source that contains the target
+  tip, refuses one that does not (the track must rebase first), and is relaxed
+  per invocation — loudly — by --no-ff-only."
+
+repos:
+  - name: test-ff-gate
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# ff gate"
+        commits:
+          - message: "Initial commit"
+      - name: track-a
+        from: main
+        files:
+          - path: a.txt
+            content: "a"
+        commits:
+          - message: "Track A work"
+      - name: track-b
+        from: main
+        files:
+          - path: b.txt
+            content: "b"
+        commits:
+          - message: "Track B work"
+    daft_yml: |
+      merge:
+        ff: only
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_FF_GATE
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-ff-gate/main"
+
+  - name: Current track passes the gate
+    run: daft merge track-a --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-gate/main"
+    expect:
+      exit_code: 0
+
+  - name: Stale track is refused with the rebase remediation
+    run: daft merge track-b --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-gate/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "requires fast-forward"
+        - "rebase the track onto 'main'"
+
+  - name: --no-ff-only relaxes the committed policy loudly
+    run: daft merge track-b --no-ff-only --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-gate/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "gate: --no-ff-only overrides committed merge.ff=only"

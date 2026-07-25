@@ -76,6 +76,9 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `-y, --yes` | Auto-accept interactive prompts. Implies --adopt-target when neither --adopt-target nor --no-adopt-target is supplied. Future-proofs any new prompts we add |  |
 | `-r, --remove-branch` | Remove the source worktree and delete the source branch. The local/remote behavior follows `branch.deleteRemote` (defaults to local-only) |  |
 | `--keep-branch` | Explicit keep — for canceling a config-set `merge.cleanup = remove-branch` |  |
+| `--ff-only` | Require the merge to be fast-forward-equivalent: the source must already contain the target's tip. Supplies `merge: ff: only` when daft.yml lacks it; matches it when committed |  |
+| `--no-ff-only` | Allow a non-fast-forward merge for this invocation, overriding a committed `merge: ff: only` policy (announced when it does) |  |
+| `--source-worktree <STATE>` | Required state of the source branch's worktree: `clean` refuses a missing or dirty source worktree (supplies `merge: source_worktree: clean`); `any` relaxes a committed `clean` for this invocation |  |
 | `--set-default` | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 

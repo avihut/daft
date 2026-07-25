@@ -88,6 +88,10 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations: Option<Vec<crate::catalog::relations::RelationEntry>>,
 
+    /// Committed merge gate policy (see [`MergeConfig`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge: Option<MergeConfig>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 
@@ -101,6 +105,54 @@ pub struct YamlConfig {
     /// stays strict. See #708.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tasks: HashMap<String, HookDef>,
+}
+
+/// Committed merge gate policy — the top-level `merge:` block.
+///
+/// The local equivalent of a branch-protection rule: team policy on what
+/// `daft merge` may land, named in git's own vocabulary (the section mirrors
+/// gitconfig's `[merge]`). Enforced natively by the merge command — before
+/// the pre-merge hooks fire AND re-verified at the moment the ref moves — so
+/// the tree the gate tested is the tree that lands. Policy is relaxed only
+/// by explicit per-invocation flags (`--no-ff-only`,
+/// `--source-worktree any`), never by ambient configuration; the YAML
+/// deliberately has no relax spellings, so overlays can add strictness but
+/// cannot remove it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MergeConfig {
+    /// Fast-forward condition (git's `merge.ff`): `only` refuses any merge
+    /// whose source does not already contain the target tip. Combined with
+    /// pre-merge hooks running in the source worktree, this is what makes
+    /// the tested tree equal the landed tree regardless of merge style.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ff: Option<FfPolicy>,
+
+    /// Requirement on the source branch's worktree: `clean` refuses to merge
+    /// a source whose worktree is missing or has uncommitted changes, so the
+    /// gate certifies the committed tree — not a dirty working tree the
+    /// merge would not include.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_worktree: Option<SourceWorktreePolicy>,
+}
+
+/// `merge.ff` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FfPolicy {
+    /// Refuse merges that cannot fast-forward.
+    Only,
+}
+
+/// `merge.source_worktree` values. Intentionally has no `any` spelling —
+/// relaxing a committed `clean` is a per-invocation decision
+/// (`--source-worktree any`), never something an overlay config can do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceWorktreePolicy {
+    /// The source must have a checked-out worktree with no uncommitted
+    /// changes.
+    Clean,
 }
 
 /// Output setting: either a list of hook names or false to suppress.
@@ -856,6 +908,39 @@ hooks:
             Some(&["web/generated/**".to_string()][..])
         );
         assert_eq!(jobs[2].files.as_deref(), Some("git ls-files src"));
+    }
+
+    #[test]
+    fn test_merge_gate_policy_parses() {
+        let yaml = r#"
+merge:
+  ff: only
+  source_worktree: clean
+hooks: {}
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let merge = config.merge.unwrap();
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, Some(SourceWorktreePolicy::Clean));
+
+        // Partial blocks parse; absent keys stay None.
+        let config: YamlConfig = serde_yaml::from_str("merge:\n  ff: only\n").unwrap();
+        let merge = config.merge.unwrap();
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, None);
+    }
+
+    #[test]
+    fn test_merge_gate_policy_rejects_unknown_values_loudly() {
+        // `any` is deliberately NOT a YAML spelling — relaxing policy is a
+        // per-invocation flag decision, so an overlay config cannot do it.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  source_worktree: any\n")
+            .expect_err("'any' must not be accepted in config");
+        assert!(err.to_string().contains("any"), "{err}");
+
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  ff: never\n")
+            .expect_err("unknown ff value must fail to parse");
+        assert!(err.to_string().contains("never"), "{err}");
     }
 
     #[test]

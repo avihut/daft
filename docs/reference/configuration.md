@@ -213,6 +213,13 @@ canonical reference for these keys is the
 successful merge, so a failed or conflicted merge never silently changes your
 defaults.
 
+These git-config keys are the **personal** layer — style preferences on your
+machine. Team merge _policy_ (fast-forward requirement, clean-source
+requirement) is committed in `daft.yml` under a top-level `merge:` block and is
+deliberately not relaxable from git config — only explicit per-invocation flags
+(`--no-ff-only`, `--source-worktree any`) can override it. See
+[Merge gate policy](/reference/cli/daft-merge#merge-gate-policy).
+
 ### Default squash + cleanup recipe
 
 To make `daft merge <source>` always squash and remove the source branch on

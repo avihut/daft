@@ -408,6 +408,28 @@ Pitfalls to communicate to the user:
 `pre-merge` and `post-merge` hooks fire around the merge with `DAFT_MERGE_*` env
 vars (see Hook Types below).
 
+### Merge Gate Policy
+
+A repo can commit a merge quality boundary in `daft.yml` — enforced natively by
+`daft merge`, before pre-merge hooks fire and re-verified when the ref moves (so
+the tree the hooks tested is the tree that lands):
+
+```yaml
+merge:
+  ff: only # refuse merges that cannot fast-forward
+  source_worktree: clean # source worktree must exist and be clean
+```
+
+The gated workflow is rebase-first: rebase the track onto the target, let the
+pre-merge rings run, then `daft merge` (now fast-forward-equivalent). With
+pre-merge hooks configured, octopus merges are refused — one track at a time.
+Flags mirror the config: `--ff-only` / `--source-worktree clean` supply the
+policy on unconfigured repos; `--no-ff-only` / `--source-worktree any` relax a
+committed policy for one invocation (announced). If a merge is refused with
+"advanced while the merge gate ran", the track moved mid-gate — re-run the
+merge. These refusals are policy, not errors to work around; do not retry with
+relax flags unless the user explicitly decides to override team policy.
+
 ## Hooks System (daft.yml)
 
 Hooks automate worktree lifecycle events, configured in a `daft.yml` file at the

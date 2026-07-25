@@ -32,20 +32,21 @@ Additionally:
 
 ## Top-level keys
 
-| Field              | Type        | Description                                                              |
-| ------------------ | ----------- | ------------------------------------------------------------------------ |
-| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                          |
-| `colors`           | bool        | Enable/disable colored output                                            |
-| `no_tty`           | bool        | Disable TTY detection                                                    |
-| `rc`               | string      | Shell RC file to source before running hooks                             |
-| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for |
-| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                |
-| `source_dir`       | string      | Directory for script files (default: `".daft"`)                          |
-| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`) |
-| `hooks`            | map         | Hook definitions, keyed by hook name                                     |
-| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))               |
-| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))          |
-| `relations`        | list        | Related repositories (see [Relations](#relations))                       |
+| Field              | Type        | Description                                                               |
+| ------------------ | ----------- | ------------------------------------------------------------------------- |
+| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                           |
+| `colors`           | bool        | Enable/disable colored output                                             |
+| `no_tty`           | bool        | Disable TTY detection                                                     |
+| `rc`               | string      | Shell RC file to source before running hooks                              |
+| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for  |
+| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                 |
+| `source_dir`       | string      | Directory for script files (default: `".daft"`)                           |
+| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)  |
+| `hooks`            | map         | Hook definitions, keyed by hook name                                      |
+| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                |
+| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))           |
+| `relations`        | list        | Related repositories (see [Relations](#relations))                        |
+| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy)) |
 
 ## Relations
 
@@ -72,6 +73,29 @@ hand — they resolve names, paths, or URLs to the portable remote URL and edit
 only the `relations:` block. Consumed by `daft exec --related`,
 `daft start --with-related`, and `daft repo info`. Older daft versions ignore
 the key.
+
+## Merge gate policy
+
+A top-level `merge:` block commits team policy on what `daft merge` may land —
+the local equivalent of a branch protection rule, in git's own vocabulary:
+
+```yaml
+merge:
+  ff: only # refuse merges that cannot fast-forward
+  source_worktree: clean # source worktree must exist and be clean
+```
+
+| Field             | Values  | Description                                                     |
+| ----------------- | ------- | --------------------------------------------------------------- |
+| `ff`              | `only`  | Refuse any merge whose source does not contain the target's tip |
+| `source_worktree` | `clean` | Refuse a source with a missing or dirty worktree                |
+
+Enforced natively by `daft merge` (before pre-merge hooks fire, re-verified when
+the ref moves) and relaxed only by explicit per-invocation flags
+(`--no-ff-only`, `--source-worktree any`) — the YAML deliberately has no relax
+spellings, so an overlay config can tighten policy but never loosen it. See
+[Merge gate policy](/reference/cli/daft-merge#merge-gate-policy) for the full
+semantics, including the single-source rule pre-merge hooks activate.
 
 ## Tasks
 

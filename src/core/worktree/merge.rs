@@ -70,6 +70,58 @@ pub struct StartParams {
     /// the marker on a successful commit. `None` means no cleanup was
     /// requested (or the path is `--no-commit`).
     pub cleanup_intent: Option<MergeIntentTemplate>,
+    /// Per-invocation gate-policy flags (`--ff-only` / `--no-ff-only` /
+    /// `--source-worktree`). Each supplies the policy when the committed
+    /// `merge:` config lacks it and overrides the config when present; see
+    /// [`resolve_gate_policy`].
+    pub gate_overrides: GateOverrides,
+}
+
+/// Per-invocation gate-policy flag state, threaded from the CLI.
+///
+/// `None` everywhere means "no flag — the committed `merge:` config decides".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GateOverrides {
+    /// `--ff-only` (`Some(true)`) / `--no-ff-only` (`Some(false)`).
+    pub ff_only: Option<bool>,
+    /// `--source-worktree <clean|any>`.
+    pub source_worktree: Option<SourceWorktreeArg>,
+}
+
+/// `--source-worktree` values. Unlike the YAML policy enum
+/// ([`SourceWorktreePolicy`], which only spells `clean`), the flag also
+/// accepts `any` — the loud, per-invocation relax of a committed `clean`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum SourceWorktreeArg {
+    /// Require a checked-out, clean source worktree.
+    Clean,
+    /// No requirement on the source worktree (relaxes a committed `clean`
+    /// for this invocation).
+    Any,
+}
+
+/// The resolved merge gate policy for one invocation: committed `merge:`
+/// config combined with per-invocation flag overrides, plus whether pre-merge
+/// hooks are configured (which activates the single-source rule and the
+/// landing source-pin re-check).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GatePolicy {
+    /// Refuse merges whose source does not already contain the target tip.
+    pub ff_only: bool,
+    /// Refuse merges whose source worktree is missing or dirty.
+    pub source_worktree_clean: bool,
+    /// The effective daft.yml declares pre-merge hook jobs. Activates the
+    /// single-source rule (a gate certifies one track at a time) and the
+    /// landing re-check that the source did not advance while hooks ran.
+    pub pre_merge_hooks_configured: bool,
+}
+
+impl GatePolicy {
+    /// Whether any landing-time re-verification is needed.
+    fn verifies_at_landing(&self) -> bool {
+        self.ff_only || self.pre_merge_hooks_configured
+    }
 }
 
 /// Template for the cleanup intent marker, provided by the command layer
@@ -96,6 +148,7 @@ impl Default for StartParams {
             adopt: AdoptChoice::default(),
             require_clean_target: true,
             cleanup_intent: None,
+            gate_overrides: GateOverrides::default(),
         }
     }
 }
@@ -1192,6 +1245,266 @@ pub fn conflicted_files(worktree: &Path) -> Result<Vec<String>> {
     Ok(parse_conflicted_files_from_porcelain(&porcelain))
 }
 
+/// Pure half of gate-policy resolution: combine the committed `merge:`
+/// config with per-invocation flag overrides.
+///
+/// Returns the effective policy plus announcement lines for every flag that
+/// FLIPS a committed value (supplying a policy the config lacks is silent —
+/// the user just typed it; overriding team policy is said out loud).
+pub fn gate_from_config_and_overrides(
+    cfg: Option<&crate::hooks::yaml_config::MergeConfig>,
+    pre_merge_hooks_configured: bool,
+    overrides: GateOverrides,
+) -> (GatePolicy, Vec<String>) {
+    use crate::hooks::yaml_config::{FfPolicy, SourceWorktreePolicy};
+
+    let cfg_ff_only = matches!(cfg.and_then(|m| m.ff), Some(FfPolicy::Only));
+    let cfg_source_clean = matches!(
+        cfg.and_then(|m| m.source_worktree),
+        Some(SourceWorktreePolicy::Clean)
+    );
+
+    let ff_only = overrides.ff_only.unwrap_or(cfg_ff_only);
+    let source_worktree_clean = match overrides.source_worktree {
+        Some(SourceWorktreeArg::Clean) => true,
+        Some(SourceWorktreeArg::Any) => false,
+        None => cfg_source_clean,
+    };
+
+    let mut announcements = Vec::new();
+    if cfg_ff_only && overrides.ff_only == Some(false) {
+        announcements
+            .push("gate: --no-ff-only overrides committed merge.ff=only for this merge".into());
+    }
+    if cfg_source_clean && matches!(overrides.source_worktree, Some(SourceWorktreeArg::Any)) {
+        announcements.push(
+            "gate: --source-worktree any overrides committed merge.source_worktree=clean \
+             for this merge"
+                .into(),
+        );
+    }
+
+    (
+        GatePolicy {
+            ff_only,
+            source_worktree_clean,
+            pre_merge_hooks_configured,
+        },
+        announcements,
+    )
+}
+
+/// Resolve the merge gate policy for this invocation.
+///
+/// The committed policy is read from the **target worktree's** effective
+/// daft.yml when the target has one (the same tree the hook executor reads
+/// hook config from), else from the invoking worktree — so a ref-only target
+/// is still gated by the config of the tree driving the merge. A config that
+/// fails to load fails the merge: a broken policy file must never silently
+/// mean "no policy".
+///
+/// Override announcements are printed to stderr here (same channel as the
+/// octopus announcement).
+fn resolve_gate_policy(
+    params: &StartParams,
+    resolved: &ResolvedTarget,
+    git: &GitCommand,
+    project_root: &Path,
+) -> Result<GatePolicy> {
+    let policy_root = resolved
+        .path
+        .clone()
+        .or_else(|| git.get_current_worktree_path().ok())
+        .unwrap_or_else(|| project_root.to_path_buf());
+    let cfg = crate::hooks::yaml_config_loader::load_merged_config(&policy_root)
+        .with_context(|| format!("failed to load daft config in '{}'", policy_root.display()))?;
+    let pre_merge_hooks_configured = cfg
+        .as_ref()
+        .and_then(|c| c.hooks.get("pre-merge"))
+        .map(|h| !crate::hooks::yaml_config_loader::get_effective_jobs(h).is_empty())
+        .unwrap_or(false);
+    let (gate, announcements) = gate_from_config_and_overrides(
+        cfg.as_ref().and_then(|c| c.merge.as_ref()),
+        pre_merge_hooks_configured,
+        params.gate_overrides,
+    );
+    for line in announcements {
+        eprintln!("{line}");
+    }
+    Ok(gate)
+}
+
+/// Enforce the gate policy before any merge work begins.
+///
+/// Runs after the up-to-date short-circuit and SHA capture, before the
+/// pre-merge hook fires — every refusal lands with zero state touched.
+fn enforce_gate_preflight(
+    gate: &GatePolicy,
+    params: &StartParams,
+    resolved: &ResolvedTarget,
+    target_sha: &str,
+    source_shas: &[String],
+    git: &GitCommand,
+    project_root: &Path,
+) -> Result<()> {
+    // Single-source rule: a hook gate certifies one track at a time. An
+    // octopus merge would run the rings once against N tracks and land a
+    // tree none of them tested.
+    if gate.pre_merge_hooks_configured && params.sources.len() > 1 {
+        anyhow::bail!(
+            "octopus merge refused: pre-merge hooks gate this repository, and a gate \
+             certifies one source at a time; merge each track separately"
+        );
+    }
+
+    if gate.ff_only {
+        if params.sources.len() > 1 {
+            anyhow::bail!(
+                "gate requires fast-forward (merge.ff=only), which is impossible with \
+                 {} sources; merge each track separately",
+                params.sources.len()
+            );
+        }
+        for (source, source_sha) in params.sources.iter().zip(source_shas) {
+            let contains_target = git
+                .merge_base_is_ancestor(target_sha, source_sha)
+                .unwrap_or(false);
+            if !contains_target {
+                anyhow::bail!(
+                    "gate requires fast-forward (merge.ff=only): '{}' does not contain the \
+                     tip of '{}' — rebase the track onto '{}' first, then re-run the merge \
+                     (or pass --no-ff-only to override the committed policy)",
+                    source,
+                    resolved.branch,
+                    resolved.branch,
+                );
+            }
+        }
+    }
+
+    if gate.source_worktree_clean {
+        for source in &params.sources {
+            let path = git
+                .resolve_worktree_path(source, project_root)
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "gate requires a clean source worktree (merge.source_worktree=clean): \
+                     '{}' has no checked-out worktree; run `{}` first \
+                     (or pass --source-worktree any to override the committed policy)",
+                        source,
+                        crate::daft_cmd(&format!("go {source}")),
+                    )
+                })?;
+            if git.has_uncommitted_changes_in(&path)? {
+                anyhow::bail!(
+                    "gate requires a clean source worktree (merge.source_worktree=clean): \
+                     '{}' has uncommitted changes in '{}'; commit or stash them \
+                     (or pass --source-worktree any to override the committed policy)",
+                    source,
+                    path.display(),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Re-verify the gate at the moment of landing — after the pre-merge hooks
+/// ran, immediately before the ref-moving phase.
+///
+/// Two checks, each tied to the policy that makes it meaningful:
+/// * **Source pin** (pre-merge hooks configured): every source must still
+///   resolve to the SHA captured before the hooks ran. Hooks take arbitrary
+///   time; a track that advanced mid-gate means the rings certified a tree
+///   that is no longer what would land.
+/// * **Ancestry** (`ff: only`): the source must contain the target's tip as
+///   of *now* — a target that advanced during the gate re-opens the very gap
+///   the policy exists to close.
+///
+/// Uses raw git plumbing against `repo_dir` (any directory of the repo)
+/// rather than [`GitCommand`] so all three landing paths — target worktree,
+/// ref-only, ephemeral — share one helper.
+fn verify_gate_at_landing(
+    gate: &GatePolicy,
+    sources: &[String],
+    expected_shas: &[String],
+    target_branch: &str,
+    repo_dir: &Path,
+) -> Result<()> {
+    if !gate.verifies_at_landing() {
+        return Ok(());
+    }
+
+    if gate.pre_merge_hooks_configured {
+        for (source, expected) in sources.iter().zip(expected_shas) {
+            let now = rev_parse_at(repo_dir, source)?;
+            if now != *expected {
+                anyhow::bail!(
+                    "source '{}' advanced while the merge gate ran ({} → {}); the gate \
+                     certified a tree that is no longer the track's tip — re-run the merge",
+                    source,
+                    &expected[..12.min(expected.len())],
+                    &now[..12.min(now.len())],
+                );
+            }
+        }
+    }
+
+    if gate.ff_only {
+        let target_now = rev_parse_at(repo_dir, &format!("refs/heads/{target_branch}"))?;
+        for (source, source_sha) in sources.iter().zip(expected_shas) {
+            if !is_ancestor_at(repo_dir, &target_now, source_sha)? {
+                anyhow::bail!(
+                    "target '{}' advanced while the merge gate ran and '{}' no longer \
+                     contains its tip; rebase the track onto '{}' and re-run the merge",
+                    target_branch,
+                    source,
+                    target_branch,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// `git rev-parse <rev>` in `repo_dir` with inherited `GIT_*` cleared.
+fn rev_parse_at(repo_dir: &Path, rev: &str) -> Result<String> {
+    let output = crate::utils::git_command_at(repo_dir)
+        .args(["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+        .output()
+        .with_context(|| format!("failed to run git rev-parse for '{rev}'"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to resolve '{}': {}",
+            rev,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// `git merge-base --is-ancestor <ancestor> <descendant>` in `repo_dir`.
+fn is_ancestor_at(repo_dir: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let status = crate::utils::git_command_at(repo_dir)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to run git merge-base --is-ancestor")?;
+    Ok(status.success())
+}
+
+/// Derived per-invocation state threaded from [`execute_start`] into the
+/// dispatch paths, bundled so the path functions stay under the argument
+/// limit as invocation-scoped facts accrue.
+struct StartCtx<'a> {
+    source_shas: &'a [String],
+    cross_worktree: bool,
+    gate: GatePolicy,
+}
+
 /// Execute a merge against the resolved target.
 ///
 /// Resolves the target (explicit `--into` value or current worktree) through
@@ -1300,6 +1613,20 @@ pub fn execute_start(
     // is a real problem the user needs to see.
     let source_shas = capture_source_shas(&params.sources, git)?;
 
+    // Gate policy (#775): resolve the committed `merge:` config + flag
+    // overrides, then enforce it before any state is touched. Re-verified at
+    // the landing sites after the pre-merge hooks run.
+    let gate = resolve_gate_policy(params, &resolved, git, project_root)?;
+    enforce_gate_preflight(
+        &gate,
+        params,
+        &resolved,
+        &target_sha,
+        &source_shas,
+        git,
+        project_root,
+    )?;
+
     // Announce octopus before invoking git so users see the strategy name even
     // if git's octopus refuses with a conflict. Single-source merges emit
     // nothing — `git merge <source>` is the plain case and needs no herald.
@@ -1319,19 +1646,14 @@ pub fn execute_start(
         _ => false,
     };
 
+    let ctx = StartCtx {
+        source_shas: &source_shas,
+        cross_worktree,
+        gate,
+    };
     match resolved.path.clone() {
-        Some(path) => {
-            execute_start_in_worktree(params, &resolved, path, cross_worktree, &source_shas, hooks)
-        }
-        None => execute_start_ref_only(
-            params,
-            git,
-            project_root,
-            &resolved,
-            &source_shas,
-            cross_worktree,
-            hooks,
-        ),
+        Some(path) => execute_start_in_worktree(params, &resolved, path, &ctx, hooks),
+        None => execute_start_ref_only(params, git, project_root, &resolved, &ctx, hooks),
     }
 }
 
@@ -1414,10 +1736,11 @@ fn execute_start_in_worktree(
     params: &StartParams,
     resolved: &ResolvedTarget,
     path: PathBuf,
-    cross_worktree: bool,
-    source_shas: &[String],
+    ctx: &StartCtx<'_>,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
+    let source_shas = ctx.source_shas;
+    let cross_worktree = ctx.cross_worktree;
     // Build the pre-merge env-var context. This is the worktree-backed
     // path, so `is_ephemeral = false`.
     let pre_ctx = MergeHookContext::for_pre_with_shas(
@@ -1430,6 +1753,18 @@ fn execute_start_in_worktree(
     );
     // `fire_pre_merge` failure aborts the merge before any state is touched.
     hooks.fire_pre_merge(&pre_ctx)?;
+
+    // The hooks ran for an arbitrary duration; re-verify the gate before the
+    // first ref-moving phase so the tree they certified is the tree that
+    // lands. Placed before the rebase phase deliberately: the rebase phase
+    // rewrites the source ref itself, which would false-trip the source pin.
+    verify_gate_at_landing(
+        &ctx.gate,
+        &params.sources,
+        source_shas,
+        &resolved.branch,
+        &path,
+    )?;
 
     // Rebase phase: for Rebase / RebaseMerge styles, replay source's commits
     // onto target's tip before invoking the merge phase. Single-source only;
@@ -1744,10 +2079,11 @@ fn execute_start_ref_only(
     git: &GitCommand,
     project_root: &Path,
     resolved: &ResolvedTarget,
-    source_shas: &[String],
-    cross_worktree: bool,
+    ctx: &StartCtx<'_>,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
+    let source_shas = ctx.source_shas;
+    let cross_worktree = ctx.cross_worktree;
     let target_branch = resolved.branch.as_str();
     if params.sources.len() != 1 {
         anyhow::bail!(
@@ -1792,6 +2128,17 @@ fn execute_start_ref_only(
             source_shas,
         );
         hooks.fire_pre_merge(&pre_ctx)?;
+
+        // Re-verify the gate after the hooks ran, immediately before the ref
+        // moves. `project_root` stands in for a worktree — plumbing queries
+        // only need any directory of this repository.
+        verify_gate_at_landing(
+            &ctx.gate,
+            &params.sources,
+            source_shas,
+            target_branch,
+            project_root,
+        )?;
 
         advance_ref_via_plumbing(git, target_branch, &source_sha)?;
         let short = &source_sha[..12.min(source_sha.len())];
@@ -1843,15 +2190,7 @@ fn execute_start_ref_only(
         );
     }
 
-    execute_ephemeral_merge(
-        params,
-        git,
-        project_root,
-        resolved,
-        source_shas,
-        cross_worktree,
-        hooks,
-    )
+    execute_ephemeral_merge(params, git, project_root, resolved, ctx, hooks)
 }
 
 /// Materialize an ephemeral worktree for a ref-only target, run the merge
@@ -1879,10 +2218,11 @@ fn execute_ephemeral_merge(
     git: &GitCommand,
     project_root: &Path,
     resolved: &ResolvedTarget,
-    source_shas: &[String],
-    cross_worktree: bool,
+    ctx: &StartCtx<'_>,
     hooks: &mut dyn HookRunner,
 ) -> Result<StartOutcome> {
+    let source_shas = ctx.source_shas;
+    let cross_worktree = ctx.cross_worktree;
     let target_branch = resolved.branch.as_str();
     let bare_root = crate::get_git_common_dir()
         .context("failed to locate bare git directory for ephemeral worktree")?;
@@ -1918,6 +2258,20 @@ fn execute_ephemeral_merge(
         // pre-merge aborted the merge. Clean up the ephemeral worktree we
         // just created so a failed hook doesn't leave state behind.
         // Best-effort: surface the hook error regardless of cleanup result.
+        let _ = crate::core::worktree::temp_worktree::remove(&temp_path);
+        return Err(e);
+    }
+
+    // Re-verify the gate after the hooks ran, before the merge phase moves
+    // the ref. On refusal, remove the ephemeral worktree like the hook-abort
+    // path above — nothing has landed yet.
+    if let Err(e) = verify_gate_at_landing(
+        &ctx.gate,
+        &params.sources,
+        source_shas,
+        target_branch,
+        &temp_path,
+    ) {
         let _ = crate::core::worktree::temp_worktree::remove(&temp_path);
         return Err(e);
     }
@@ -4940,6 +5294,7 @@ mod tests {
             adopt: AdoptChoice::default(),
             require_clean_target: false,
             cleanup_intent: None,
+            gate_overrides: GateOverrides::default(),
         };
         let outcome =
             execute_start(&params, &git, tmp.path(), &mut runner).expect("merge succeeds");
@@ -5032,6 +5387,7 @@ mod tests {
             adopt: AdoptChoice::default(),
             require_clean_target: false,
             cleanup_intent: None,
+            gate_overrides: GateOverrides::default(),
         };
         let _ = execute_start(&params, &git, tmp.path(), &mut runner);
 
@@ -5487,5 +5843,304 @@ mod tests {
             Some(InProgressState::Rebase),
             "detect_in_progress_state must follow gitdir indirection"
         );
+    }
+
+    // ── Gate policy (#775): resolution matrix ─────────────────────────────
+
+    use crate::hooks::yaml_config::{FfPolicy, MergeConfig, SourceWorktreePolicy};
+
+    fn cfg(ff: bool, clean: bool) -> MergeConfig {
+        MergeConfig {
+            ff: ff.then_some(FfPolicy::Only),
+            source_worktree: clean.then_some(SourceWorktreePolicy::Clean),
+        }
+    }
+
+    #[test]
+    fn gate_defaults_off_without_config_or_flags() {
+        let (gate, notes) = gate_from_config_and_overrides(None, false, GateOverrides::default());
+        assert_eq!(gate, GatePolicy::default());
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn gate_config_supplies_policy() {
+        let (gate, notes) =
+            gate_from_config_and_overrides(Some(&cfg(true, true)), true, GateOverrides::default());
+        assert!(gate.ff_only);
+        assert!(gate.source_worktree_clean);
+        assert!(gate.pre_merge_hooks_configured);
+        assert!(notes.is_empty(), "config-supplied policy is silent");
+    }
+
+    #[test]
+    fn gate_flags_supply_policy_when_config_absent() {
+        let overrides = GateOverrides {
+            ff_only: Some(true),
+            source_worktree: Some(SourceWorktreeArg::Clean),
+        };
+        let (gate, notes) = gate_from_config_and_overrides(None, false, overrides);
+        assert!(gate.ff_only);
+        assert!(gate.source_worktree_clean);
+        assert!(
+            notes.is_empty(),
+            "supplying a policy the config lacks is not an override"
+        );
+    }
+
+    #[test]
+    fn gate_flags_override_config_with_announcement() {
+        let overrides = GateOverrides {
+            ff_only: Some(false),
+            source_worktree: Some(SourceWorktreeArg::Any),
+        };
+        let (gate, notes) =
+            gate_from_config_and_overrides(Some(&cfg(true, true)), false, overrides);
+        assert!(!gate.ff_only);
+        assert!(!gate.source_worktree_clean);
+        assert_eq!(
+            notes.len(),
+            2,
+            "each flipped policy is announced: {notes:?}"
+        );
+        assert!(notes[0].contains("--no-ff-only"), "{notes:?}");
+        assert!(notes[1].contains("--source-worktree any"), "{notes:?}");
+    }
+
+    #[test]
+    fn gate_flag_matching_config_is_silent() {
+        let overrides = GateOverrides {
+            ff_only: Some(true),
+            source_worktree: Some(SourceWorktreeArg::Clean),
+        };
+        let (gate, notes) =
+            gate_from_config_and_overrides(Some(&cfg(true, true)), false, overrides);
+        assert!(gate.ff_only && gate.source_worktree_clean);
+        assert!(notes.is_empty());
+    }
+
+    // ── Gate policy (#775): enforcement against real repositories ─────────
+
+    /// Repo with `main` and a `feature` worktree carrying one commit on top;
+    /// cwd moved into the main worktree (the merge target). Returns the
+    /// feature worktree path.
+    fn gate_repo(tmp: &Path) -> PathBuf {
+        init_repo(tmp);
+        let feat_wt = tmp.join("feat");
+        setup_worktree(tmp, "feature", &feat_wt);
+        git_quiet(
+            &feat_wt,
+            &["commit", "--allow-empty", "-q", "-m", "feature work"],
+        );
+        std::env::set_current_dir(tmp).unwrap();
+        feat_wt
+    }
+
+    fn gate_params(sources: &[&str], overrides: GateOverrides) -> StartParams {
+        StartParams {
+            sources: sources.iter().map(|s| s.to_string()).collect(),
+            target: None,
+            flags: EffectiveFlags {
+                style: MergeStyle::Rebase,
+                ..EffectiveFlags::default()
+            },
+            require_clean_target: false,
+            gate_overrides: overrides,
+            ..StartParams::default()
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn gate_ff_only_refuses_stale_source() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let _feat = gate_repo(tmp.path());
+        // Advance main independently so feature no longer contains its tip.
+        git_quiet(
+            tmp.path(),
+            &["commit", "--allow-empty", "-q", "-m", "main moves on"],
+        );
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = gate_params(
+            &["feature"],
+            GateOverrides {
+                ff_only: Some(true),
+                ..Default::default()
+            },
+        );
+        let err = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect_err("stale source must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("requires fast-forward"), "{msg}");
+        assert!(msg.contains("rebase the track"), "{msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn gate_ff_only_allows_current_source() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let _feat = gate_repo(tmp.path());
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = gate_params(
+            &["feature"],
+            GateOverrides {
+                ff_only: Some(true),
+                ..Default::default()
+            },
+        );
+        let outcome = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect("current source passes the gate");
+        assert!(!outcome.failed);
+    }
+
+    #[test]
+    #[serial]
+    fn gate_source_worktree_clean_refuses_dirty_source() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let feat_wt = gate_repo(tmp.path());
+        std::fs::write(feat_wt.join("uncommitted.txt"), "dirty\n").unwrap();
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = gate_params(
+            &["feature"],
+            GateOverrides {
+                source_worktree: Some(SourceWorktreeArg::Clean),
+                ..Default::default()
+            },
+        );
+        let err = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect_err("dirty source must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("uncommitted changes"), "{msg}");
+        assert!(msg.contains("--source-worktree any"), "{msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn gate_source_worktree_clean_refuses_missing_worktree() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        // A branch with commits but no worktree.
+        git_quiet(tmp.path(), &["branch", "loose", "HEAD"]);
+        git_quiet(tmp.path(), &["checkout", "-q", "loose"]);
+        git_quiet(
+            tmp.path(),
+            &["commit", "--allow-empty", "-q", "-m", "loose work"],
+        );
+        git_quiet(tmp.path(), &["checkout", "-q", "main"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = gate_params(
+            &["loose"],
+            GateOverrides {
+                source_worktree: Some(SourceWorktreeArg::Clean),
+                ..Default::default()
+            },
+        );
+        let err = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect_err("worktree-less source must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no checked-out worktree"), "{msg}");
+    }
+
+    /// Write a daft.yml with a pre-merge job into the target worktree so
+    /// `resolve_gate_policy` sees pre-merge hooks configured.
+    fn write_pre_merge_config(root: &Path) {
+        std::fs::write(
+            root.join("daft.yml"),
+            "hooks:\n  pre-merge:\n    jobs:\n      - name: gate\n        run: \"true\"\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn gate_single_source_rule_refuses_octopus_when_hooks_configured() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let _feat = gate_repo(tmp.path());
+        let feat2 = tmp.path().join("feat2");
+        setup_worktree(tmp.path(), "feature2", &feat2);
+        git_quiet(
+            &feat2,
+            &["commit", "--allow-empty", "-q", "-m", "feature2 work"],
+        );
+        write_pre_merge_config(tmp.path());
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let mut params = gate_params(&["feature", "feature2"], GateOverrides::default());
+        // Octopus is incompatible with rebase style; use the default merge
+        // style so the refusal we hit is the gate's, not the style check's.
+        params.flags.style = MergeStyle::Merge;
+        let err = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect_err("octopus into a hook-gated repo must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("octopus merge refused"), "{msg}");
+        assert!(msg.contains("one source at a time"), "{msg}");
+    }
+
+    /// A hook runner that advances the source branch during the pre-merge
+    /// fire — the TOCTOU the landing re-check exists to catch.
+    struct SourceMovingRunner {
+        source_wt: PathBuf,
+    }
+
+    impl HookRunner for SourceMovingRunner {
+        fn fire_pre_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            git_quiet(
+                &self.source_wt,
+                &["commit", "--allow-empty", "-q", "-m", "sneaked in mid-gate"],
+            );
+            Ok(())
+        }
+        fn fire_post_merge(&mut self, _: &MergeHookContext) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn gate_landing_recheck_refuses_source_advanced_during_hooks() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let feat_wt = gate_repo(tmp.path());
+        write_pre_merge_config(tmp.path());
+
+        let git = GitCommand::new(false);
+        let mut runner = SourceMovingRunner { source_wt: feat_wt };
+        let params = gate_params(&["feature"], GateOverrides::default());
+        let err = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect_err("a source that advanced mid-gate must be refused at landing");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("advanced while the merge gate ran"), "{msg}");
+        assert!(msg.contains("re-run the merge"), "{msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn gate_landing_recheck_passes_when_nothing_moved() {
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let _feat = gate_repo(tmp.path());
+        write_pre_merge_config(tmp.path());
+
+        let git = GitCommand::new(false);
+        let mut runner = NullHookRunner;
+        let params = gate_params(&["feature"], GateOverrides::default());
+        let outcome = execute_start(&params, &git, tmp.path(), &mut runner)
+            .expect("an unmoved source lands normally through the re-check");
+        assert!(!outcome.failed);
     }
 }

@@ -71,6 +71,9 @@ that are unique to daft merge or that shape the cross-worktree workflow.
 | `--no-commit`             | After `--squash`, stage the changes without creating a commit. Incompatible with `-r`.                                                                             |
 | `-s, --strategy <STRAT>`  | Merge strategy (`recursive`, `ours`, `octopus`, etc.).                                                                                                             |
 | `-X, --strategy-option`   | Strategy-specific option (repeatable).                                                                                                                             |
+| `--ff-only`               | Gate: require the source to already contain the target's tip (supplies `merge: ff: only` when daft.yml lacks it).                                                  |
+| `--no-ff-only`            | Gate: allow a non-fast-forward merge this once, overriding a committed `merge: ff: only` (announced).                                                              |
+| `--source-worktree <S>`   | Gate: `clean` requires a checked-out, clean source worktree; `any` relaxes a committed `clean` this once (announced).                                              |
 
 ## Examples
 
@@ -294,6 +297,44 @@ If you have scripts or habits using the v1.9 flag names, here is the mapping:
 | `-rb`                  | `-r`                    | New `-r` removes both worktree and branch.                      |
 | `daft.merge.ff`        | `daft.merge.style`      | Set to `merge`, `squash`, `rebase`, or `rebase-merge`.          |
 | `daft.merge.postMerge.removeSourceWorktree` + `daft.merge.postMerge.alsoRemoveSourceBranch` | `daft.merge.cleanup` | Set to `keep` or `remove-branch`. |
+
+## Merge gate policy
+
+A repository can commit a merge quality boundary in `daft.yml` — the local
+equivalent of a branch protection rule, named in git's own vocabulary:
+
+```yaml
+merge:
+  ff: only # refuse merges that cannot fast-forward
+  source_worktree: clean # gate certifies the committed tree
+```
+
+- **`ff: only`** refuses any merge whose source does not already contain the
+  target's tip. The workflow is rebase-first: rebase the track onto the
+  target, let the pre-merge rings run against that exact tree, then merge —
+  which is then fast-forward-equivalent, so the tested tree is the landed
+  tree regardless of merge style.
+- **`source_worktree: clean`** refuses a source whose worktree is missing or
+  has uncommitted changes, so what the rings test is the committed tip, not
+  a dirty working tree the merge would not include.
+- **Single-source rule** (implicit): when `pre-merge` hooks are configured,
+  octopus merges are refused — a gate certifies one track at a time.
+
+Policy is enforced natively by the command — before the pre-merge hooks fire,
+and **re-verified at the moment the ref moves**: if the source or target
+advanced while the hooks ran, the merge refuses with a re-run hint. This
+closes the check-then-land race that hooks alone cannot (they only run
+before). The checks are independent of `--skip-hooks`.
+
+Per-invocation control is by explicit flags only (never by ambient
+configuration): `--ff-only` / `--source-worktree clean` supply the policy on
+repos that don't commit it, and `--no-ff-only` / `--source-worktree any`
+relax a committed policy for one merge — each override is announced.
+
+Known limitation: `--continue` (resuming after a conflict) does not re-run
+the landing re-verification. Under `ff: only` this path is unreachable — a
+fast-forward-equivalent merge cannot conflict; conflicts are resolved during
+the track's own rebase, before the gate.
 
 ## Hooks
 
