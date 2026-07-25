@@ -593,21 +593,24 @@ A job can contain a nested group with its own execution mode:
 Available in job `run`/`script` commands and in job `env:` values, for lifecycle
 hooks and `daft run` tasks alike:
 
-| Variable              | Description                              |
-| --------------------- | ---------------------------------------- |
-| `{branch}`            | Target branch name                       |
-| `{worktree_path}`     | Path to the target worktree              |
-| `{worktree_root}`     | Project root directory                   |
-| `{worktree_slug}`     | Sanitized worktree name (`[a-z0-9-]`)    |
-| `{source_worktree}`   | Path to the source worktree              |
-| `{git_dir}`           | Path to the `.git` directory             |
-| `{remote}`            | Remote name (usually `origin`)           |
-| `{job_name}`          | Name of the current job                  |
-| `{base_branch}`       | Base branch (branch-creating commands)   |
-| `{repository_url}`    | Repository URL (post-clone)              |
-| `{default_branch}`    | Default branch name (post-clone)         |
-| `{old_worktree_path}` | Previous worktree path (move hooks only) |
-| `{old_branch}`        | Previous branch name (move hooks only)   |
+| Variable              | Description                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `{branch}`            | Target branch name                                                                                                                                     |
+| `{worktree_path}`     | Path to the target worktree                                                                                                                            |
+| `{worktree_root}`     | Project root directory                                                                                                                                 |
+| `{worktree_slug}`     | Sanitized worktree name (`[a-z0-9-]`)                                                                                                                  |
+| `{source_worktree}`   | Path to the source worktree                                                                                                                            |
+| `{git_dir}`           | Path to the `.git` directory                                                                                                                           |
+| `{remote}`            | Remote name (usually `origin`)                                                                                                                         |
+| `{job_name}`          | Name of the current job                                                                                                                                |
+| `{base_branch}`       | Base branch (branch-creating commands)                                                                                                                 |
+| `{repository_url}`    | Repository URL (post-clone)                                                                                                                            |
+| `{default_branch}`    | Default branch name (post-clone)                                                                                                                       |
+| `{old_worktree_path}` | Previous worktree path (move hooks only)                                                                                                               |
+| `{old_branch}`        | Previous branch name (move hooks only)                                                                                                                 |
+| `{merge_source_path}` | Merge hooks: source worktree path (single worktree-backed source); legal in `root:` to run rings in the source worktree, fail-closed when unresolvable |
+| `{merge_target_path}` | Merge hooks: target worktree path                                                                                                                      |
+| `{changed_files}`     | File-aware jobs: the filtered changed-file list, shell-quoted                                                                                          |
 
 `{worktree_slug}` is the worktree's name relative to the project root,
 lowercased and reduced to `[a-z0-9-]` (max 63 chars) — safe for `docker compose`

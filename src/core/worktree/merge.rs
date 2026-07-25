@@ -738,6 +738,47 @@ impl MergeHookContext {
         Self::for_pre_with_shas(sources, target, flags, is_ephemeral, cross_worktree, &[])
     }
 
+    /// Add the symmetric side of the merge context: where each source lives.
+    ///
+    /// One entry per source, aligned with `DAFT_MERGE_SOURCE_SHAS` ordering;
+    /// `None` (no checked-out worktree) becomes an empty entry. Sets:
+    /// * `DAFT_MERGE_SOURCE_PATHS` — newline-joined, one line per source
+    ///   (a worktree-less source contributes an empty line);
+    /// * `DAFT_MERGE_SOURCE_PATH` — the single source's worktree path when
+    ///   there is exactly one source AND it has a worktree, else empty.
+    ///
+    /// Together with `DAFT_MERGE_TARGET_PATH`, jobs choose where to run —
+    /// the machinery never assumes a side.
+    pub fn with_source_paths(mut self, source_paths: &[Option<PathBuf>]) -> Self {
+        let joined = source_paths
+            .iter()
+            .map(|p| {
+                p.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.env.insert("DAFT_MERGE_SOURCE_PATHS".into(), joined);
+        let single = match source_paths {
+            [Some(p)] => p.display().to_string(),
+            _ => String::new(),
+        };
+        self.env.insert("DAFT_MERGE_SOURCE_PATH".into(), single);
+        self
+    }
+
+    /// Pin the target branch's tip as of gate start (`DAFT_MERGE_TARGET_SHA`).
+    ///
+    /// Post-merge hooks inherit it, so a changed-files range computed after
+    /// the ref moved still describes what the merge changed — `target...source`
+    /// against the pinned tip instead of an empty diff against the new one.
+    pub fn with_target_sha(mut self, target_sha: &str) -> Self {
+        self.env
+            .insert("DAFT_MERGE_TARGET_SHA".into(), target_sha.to_string());
+        self
+    }
+
     /// Extend a pre context with post-outcome fields, consuming `self`.
     ///
     /// Overrides any pre-existing values for the post-only keys; other keys
@@ -1501,6 +1542,13 @@ fn is_ancestor_at(repo_dir: &Path, ancestor: &str, descendant: &str) -> Result<b
 /// limit as invocation-scoped facts accrue.
 struct StartCtx<'a> {
     source_shas: &'a [String],
+    /// Each source's worktree path (`None` when the source has no checked-out
+    /// worktree), aligned with `source_shas`. Feeds the symmetric merge-hook
+    /// context (`DAFT_MERGE_SOURCE_PATH(S)`).
+    source_paths: &'a [Option<PathBuf>],
+    /// The target branch tip as resolved at gate start, pinned into the hook
+    /// env (`DAFT_MERGE_TARGET_SHA`).
+    target_sha: &'a str,
     cross_worktree: bool,
     gate: GatePolicy,
 }
@@ -1646,8 +1694,19 @@ pub fn execute_start(
         _ => false,
     };
 
+    // Resolve each source's worktree (best-effort — a ref-only source is a
+    // normal case) for the symmetric hook context: jobs get BOTH sides'
+    // locations and choose where to run.
+    let source_paths: Vec<Option<PathBuf>> = params
+        .sources
+        .iter()
+        .map(|s| git.resolve_worktree_path(s, project_root).ok())
+        .collect();
+
     let ctx = StartCtx {
         source_shas: &source_shas,
+        source_paths: &source_paths,
+        target_sha: &target_sha,
         cross_worktree,
         gate,
     };
@@ -1750,7 +1809,9 @@ fn execute_start_in_worktree(
         false,
         cross_worktree,
         source_shas,
-    );
+    )
+    .with_source_paths(ctx.source_paths)
+    .with_target_sha(ctx.target_sha);
     // `fire_pre_merge` failure aborts the merge before any state is touched.
     hooks.fire_pre_merge(&pre_ctx)?;
 
@@ -2126,7 +2187,9 @@ fn execute_start_ref_only(
             false,
             cross_worktree,
             source_shas,
-        );
+        )
+        .with_source_paths(ctx.source_paths)
+        .with_target_sha(ctx.target_sha);
         hooks.fire_pre_merge(&pre_ctx)?;
 
         // Re-verify the gate after the hooks ran, immediately before the ref
@@ -2253,7 +2316,9 @@ fn execute_ephemeral_merge(
         true,
         cross_worktree,
         source_shas,
-    );
+    )
+    .with_source_paths(ctx.source_paths)
+    .with_target_sha(ctx.target_sha);
     if let Err(e) = hooks.fire_pre_merge(&pre_ctx) {
         // pre-merge aborted the merge. Clean up the ephemeral worktree we
         // just created so a failed hook doesn't leave state behind.
@@ -5842,6 +5907,90 @@ mod tests {
             detect_in_progress_state(&linked_worktree),
             Some(InProgressState::Rebase),
             "detect_in_progress_state must follow gitdir indirection"
+        );
+    }
+
+    // ── Symmetric merge context (#775): source paths + pinned target sha ──
+
+    #[test]
+    fn with_source_paths_single_worktree_backed_source() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false)
+            .with_source_paths(&[Some(PathBuf::from("/p/feat"))])
+            .with_target_sha("abc123");
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATH").map(String::as_str),
+            Some("/p/feat")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATHS").map(String::as_str),
+            Some("/p/feat")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_TARGET_SHA").map(String::as_str),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn with_source_paths_single_worktree_less_source_is_empty() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let ctx = MergeHookContext::for_pre(&["loose".into()], &target, &flags, false, false)
+            .with_source_paths(&[None]);
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATH").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATHS").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn with_source_paths_multi_source_keeps_alignment_and_no_singular() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let sources = vec!["a".into(), "b".into(), "c".into()];
+        let ctx = MergeHookContext::for_pre(&sources, &target, &flags, false, false)
+            .with_source_paths(&[
+                Some(PathBuf::from("/p/a")),
+                None,
+                Some(PathBuf::from("/p/c")),
+            ]);
+        // One line per source, empty line for the worktree-less middle one —
+        // alignment with DAFT_MERGE_SOURCE_SHAS is the contract.
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATHS").map(String::as_str),
+            Some("/p/a\n\n/p/c")
+        );
+        // The singular var only resolves for exactly-one-worktree-backed-source.
+        assert_eq!(
+            ctx.env.get("DAFT_MERGE_SOURCE_PATH").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn post_context_inherits_source_paths_and_target_sha() {
+        let flags = EffectiveFlags::default();
+        let target = target_with_worktree("main", "/p/main");
+        let post = MergeHookContext::for_pre(&["feat".into()], &target, &flags, false, false)
+            .with_source_paths(&[Some(PathBuf::from("/p/feat"))])
+            .with_target_sha("abc123")
+            .extend_for_post(PostOutcome::Success {
+                commit_sha: "def456".into(),
+            });
+        assert_eq!(
+            post.env.get("DAFT_MERGE_SOURCE_PATH").map(String::as_str),
+            Some("/p/feat")
+        );
+        assert_eq!(
+            post.env.get("DAFT_MERGE_TARGET_SHA").map(String::as_str),
+            Some("abc123"),
+            "post inherits the PINNED pre-merge target tip"
         );
     }
 

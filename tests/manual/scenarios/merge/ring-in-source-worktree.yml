@@ -1,0 +1,63 @@
+name: A pre-merge ring runs in the source worktree via root templating
+description:
+  "The rebase-first gate shape: a pre-merge job with root: '{merge_source_path}'
+  executes with its cwd inside the SOURCE worktree — warm caches, the exact tree
+  being certified — while the hook itself is configured and fired from the
+  target."
+
+repos:
+  - name: test-ring
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# ring"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: ring
+              root: "{merge_source_path}"
+              run: pwd > "$DAFT_MERGE_TARGET_PATH/.ring-cwd"
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_RING
+    expect:
+      exit_code: 0
+
+  - name: Materialize the source worktree
+    run: daft go feature
+    cwd: "$WORK_DIR/test-ring/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-ring/feature"
+
+  - name: Merge — the ring fires in the source worktree
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ring/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-ring/main/.ring-cwd"
+
+  - name: The ring's cwd was the source worktree
+    run: cat "$WORK_DIR/test-ring/main/.ring-cwd"
+    cwd: "$WORK_DIR/test-ring/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "test-ring/feature"
+      output_not_contains:
+        - "test-ring/main"

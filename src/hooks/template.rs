@@ -21,6 +21,15 @@ use super::environment::HookContext;
 /// - `{base_branch}` — base branch name (if set)
 /// - `{repository_url}` — repository URL (if set)
 /// - `{default_branch}` — default branch name (if set)
+/// - `{merge_source_path}` — the merge source's worktree path (merge hooks
+///   with exactly one worktree-backed source)
+/// - `{merge_target_path}` — the merge target's worktree path (merge hooks
+///   with a worktree-backed target)
+///
+/// The merge templates substitute only when the corresponding
+/// `DAFT_MERGE_*_PATH` env var is present AND non-empty; otherwise the
+/// placeholder is left intact so callers with fail-closed semantics (job
+/// `root:`) can detect and refuse it rather than running somewhere wrong.
 ///
 /// `{changed_files}` is NOT handled here: it expands to a per-job filtered
 /// file list, so the job adapter substitutes it after glob filtering (see
@@ -59,6 +68,18 @@ pub fn substitute(command: &str, ctx: &HookContext, job_name: Option<&str>) -> S
 
     if let Some(ref branch) = ctx.default_branch {
         result = result.replace("{default_branch}", branch);
+    }
+
+    // Merge-context paths, sourced from the extra env the merge command
+    // threads in. Empty means "no such worktree" and leaves the placeholder
+    // for the caller's fail-closed handling.
+    for (template, env_key) in [
+        ("{merge_source_path}", "DAFT_MERGE_SOURCE_PATH"),
+        ("{merge_target_path}", "DAFT_MERGE_TARGET_PATH"),
+    ] {
+        if let Some(value) = ctx.extra_env.get(env_key).filter(|v| !v.is_empty()) {
+            result = result.replace(template, value);
+        }
     }
 
     // Move-specific templates
@@ -214,6 +235,42 @@ mod tests {
         assert_eq!(
             substitute("echo {commit}", &make_ctx(), None),
             "echo {commit}"
+        );
+    }
+
+    #[test]
+    fn merge_path_templates_substitute_from_extra_env() {
+        let extra: std::collections::BTreeMap<String, String> = [
+            ("DAFT_MERGE_SOURCE_PATH".to_string(), "/p/feat".to_string()),
+            ("DAFT_MERGE_TARGET_PATH".to_string(), "/p/main".to_string()),
+        ]
+        .into();
+        let ctx = make_ctx().with_extra_env(extra);
+        assert_eq!(
+            substitute(
+                "test {merge_source_path} into {merge_target_path}",
+                &ctx,
+                None
+            ),
+            "test /p/feat into /p/main"
+        );
+    }
+
+    #[test]
+    fn merge_path_templates_stay_intact_when_absent_or_empty() {
+        // Absent: no merge context at all.
+        assert_eq!(
+            substitute("cd {merge_source_path}", &make_ctx(), None),
+            "cd {merge_source_path}"
+        );
+        // Present but empty (no worktree / multi-source): also left intact —
+        // callers with fail-closed semantics detect the placeholder.
+        let extra: std::collections::BTreeMap<String, String> =
+            [("DAFT_MERGE_SOURCE_PATH".to_string(), String::new())].into();
+        let ctx = make_ctx().with_extra_env(extra);
+        assert_eq!(
+            substitute("cd {merge_source_path}", &ctx, None),
+            "cd {merge_source_path}"
         );
     }
 

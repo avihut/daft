@@ -1,0 +1,47 @@
+name: An unresolvable merge-path root fails the hook closed
+description:
+  "A job with root: '{merge_source_path}' when the source has no checked-out
+  worktree must ABORT the merge with a configuration error — never silently run
+  the job in the hook's own cwd. Undefined directory means refuse, not guess."
+
+repos:
+  - name: test-fail-closed
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# fail closed"
+        commits:
+          - message: "Initial commit"
+      - name: loose
+        from: main
+        files:
+          - path: l.txt
+            content: "l"
+        commits:
+          - message: "Loose work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: ring
+              root: "{merge_source_path}"
+              run: touch "$DAFT_MERGE_TARGET_PATH/.ring-ran"
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_FAIL_CLOSED
+    expect:
+      exit_code: 0
+
+  - name: Merging a worktree-less source refuses at spec build
+    run: daft merge loose --no-edit 2>&1
+    cwd: "$WORK_DIR/test-fail-closed/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "ring"
+        - "undefined directory"
+      files_not_exist:
+        - "$WORK_DIR/test-fail-closed/main/.ring-ran"

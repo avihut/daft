@@ -120,6 +120,28 @@ impl HookResult {
         }
     }
 
+    /// Create a failed result for an execution-preparation error — the config
+    /// parsed and named this hook, but the fire could not be set up (invalid
+    /// glob pattern, unresolvable `root:` template, failing `files:` command,
+    /// broken changed-file source, …).
+    ///
+    /// Distinct from a config *load* error on purpose: a load error falls
+    /// back to legacy script hooks, while a preparation error is a hook
+    /// failure routed through the hook's fail mode — a configured gate must
+    /// never silently degrade to "no hooks ran".
+    pub fn config_error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: message.into(),
+            skipped: false,
+            skip_reason: None,
+            skip_ran_command: false,
+            platform_skip: false,
+        }
+    }
+
     /// Create a result for a platform skip (OS-keyed run with no matching variant).
     ///
     /// Platform skips are completely silent — no output, not even a skip message.
@@ -498,8 +520,19 @@ impl HookExecutor {
             cancel: None,
             trigger_label: None,
         };
-        let result =
-            yaml_executor::execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)?;
+        // An Err from the yaml executor here is an execution-preparation
+        // failure (invalid glob, unresolvable root: template, failing files:
+        // command, …), NOT a config-load error: the config parsed and named
+        // this hook. Propagating it as Err would hit the outer dispatch's
+        // load-error arm and silently fall back to legacy scripts — skipping
+        // a configured gate. Fold it into a failed HookResult instead so it
+        // flows through the same fail-mode translation as a failing job.
+        let result = match yaml_executor::execute_yaml_hook_with_rc(
+            hook_name, hook_def, ctx, output, &cfg,
+        ) {
+            Ok(result) => result,
+            Err(e) => HookResult::config_error(format!("{e:#}")),
+        };
 
         // Return the raw result plus the resolved fail mode — failure
         // translation (Abort → Err, Warn → logged-and-continue) is the caller's

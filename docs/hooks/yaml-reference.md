@@ -319,22 +319,24 @@ Job `run`/`script` commands **and** job `env:` values support template variables
 that are replaced with values from the execution context (this applies to both
 lifecycle hooks and `daft run` tasks):
 
-| Variable            | Description                                                                                                                                     |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{branch}`          | Target branch name (alias for `{worktree_branch}`)                                                                                              |
-| `{worktree_path}`   | Path to the target worktree                                                                                                                     |
-| `{worktree_root}`   | Project root directory                                                                                                                          |
-| `{worktree_slug}`   | Sanitized worktree name — `[a-z0-9-]`, capped at 63                                                                                             |
-| `{worktree_branch}` | Target branch name                                                                                                                              |
-| `{source_worktree}` | Path to the source worktree (where command was invoked)                                                                                         |
-| `{git_dir}`         | Path to the `.git` directory                                                                                                                    |
-| `{remote}`          | Remote name (usually `"origin"`)                                                                                                                |
-| `{job_name}`        | Name of the current job                                                                                                                         |
-| `{base_branch}`     | Base branch name (for `checkout -b` commands)                                                                                                   |
-| `{commit}`          | Pinned commit OID (anonymous sandbox worktrees only)                                                                                            |
-| `{repository_url}`  | Repository URL (for `post-clone`)                                                                                                               |
-| `{default_branch}`  | Default branch name (for `post-clone`)                                                                                                          |
-| `{changed_files}`   | The job's filtered changed-file list, shell-quoted (file-aware jobs only; see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
+| Variable              | Description                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{branch}`            | Target branch name (alias for `{worktree_branch}`)                                                                                              |
+| `{worktree_path}`     | Path to the target worktree                                                                                                                     |
+| `{worktree_root}`     | Project root directory                                                                                                                          |
+| `{worktree_slug}`     | Sanitized worktree name — `[a-z0-9-]`, capped at 63                                                                                             |
+| `{worktree_branch}`   | Target branch name                                                                                                                              |
+| `{source_worktree}`   | Path to the source worktree (where command was invoked)                                                                                         |
+| `{git_dir}`           | Path to the `.git` directory                                                                                                                    |
+| `{remote}`            | Remote name (usually `"origin"`)                                                                                                                |
+| `{job_name}`          | Name of the current job                                                                                                                         |
+| `{base_branch}`       | Base branch name (for `checkout -b` commands)                                                                                                   |
+| `{commit}`            | Pinned commit OID (anonymous sandbox worktrees only)                                                                                            |
+| `{repository_url}`    | Repository URL (for `post-clone`)                                                                                                               |
+| `{default_branch}`    | Default branch name (for `post-clone`)                                                                                                          |
+| `{changed_files}`     | The job's filtered changed-file list, shell-quoted (file-aware jobs only; see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
+| `{merge_source_path}` | Merge hooks: the source's worktree path (single worktree-backed source only)                                                                    |
+| `{merge_target_path}` | Merge hooks: the target's worktree path                                                                                                         |
 
 `{worktree_slug}` is the worktree's path relative to the project root (falling
 back to the directory name), lowercased with every run of non-`[a-z0-9]`
@@ -350,6 +352,23 @@ means no branch" — and `{commit}` (env: `DAFT_COMMIT`) carries the commit the
 sandbox is pinned at. `{worktree_slug}` works unchanged, which makes it the
 right handle for per-worktree resources in hooks that must serve both branch and
 sandbox worktrees.
+
+The merge-path templates resolve only when the corresponding worktree exists
+(`{merge_source_path}` additionally requires exactly one source). They are legal
+in `root:` — the canonical gate shape runs each ring in the source worktree:
+
+```yaml
+hooks:
+  pre-merge:
+    jobs:
+      - name: build-check
+        root: "{merge_source_path}"
+        run: cargo check --all-targets
+```
+
+`root:` resolution is fail-closed: a `{merge_…}` template that cannot resolve
+(worktree-less source, multiple sources, non-merge hook) aborts the hook rather
+than running the job in the hook's own directory.
 
 **Move hooks only** (available when `DAFT_IS_MOVE` is `true`):
 

@@ -33,6 +33,9 @@ repos:
                   echo "mode=$DAFT_MERGE_MODE"
                   echo "cross=$DAFT_MERGE_CROSS_WORKTREE"
                   echo "ephemeral=$DAFT_MERGE_EPHEMERAL"
+                  echo "srcpath=$DAFT_MERGE_SOURCE_PATH"
+                  echo "srcpaths=$DAFT_MERGE_SOURCE_PATHS"
+                  test -n "$DAFT_MERGE_TARGET_SHA" && echo "target_sha=present"
                 } > "$DAFT_MERGE_TARGET_PATH/.pre-merge-env"
         post-merge:
           jobs:
@@ -74,6 +77,9 @@ steps:
         - "mode=merge"
         - "cross=true"
         - "ephemeral=false"
+        - "srcpath=/"
+        - "test-repo/feature/test-feature"
+        - "target_sha=present"
 
   - name: Verify post-merge env-var sentinel
     run: cat "$WORK_DIR/test-repo/main/.post-merge-env"

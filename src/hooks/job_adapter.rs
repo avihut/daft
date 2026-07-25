@@ -391,8 +391,24 @@ pub fn yaml_jobs_to_specs(
             );
         }
 
+        // `root:` supports template variables (e.g. `{merge_source_path}` to
+        // run a merge ring in the source worktree). Resolution is
+        // FAIL-CLOSED: a `{merge_…}` placeholder that survives substitution
+        // (no worktree for the source, multiple sources, a non-merge hook)
+        // aborts the hook — a gate job must never silently run in the wrong
+        // directory. An absolute substituted root replaces the base entirely
+        // (`PathBuf::join` semantics).
         let wd = if let Some(ref root) = job.root {
-            working_dir.join(root)
+            let resolved_root = super::template::substitute(root, ctx, Some(&name));
+            if resolved_root.contains("{merge_") {
+                bail!(
+                    "job '{name}': root: '{root}' references a merge worktree path that is \
+                     not available here (the source has no worktree, the merge has multiple \
+                     sources, or this is not a merge hook) — refusing to run the job in an \
+                     undefined directory"
+                );
+            }
+            working_dir.join(resolved_root)
         } else {
             working_dir.to_path_buf()
         };
@@ -1459,6 +1475,102 @@ mod tests {
         assert!(
             kept[0].needs.is_empty(),
             "needs on a glob-skipped dep must be stripped"
+        );
+    }
+
+    // ── root: templating (fail-closed merge paths) ──────────────────────
+
+    fn merge_hook_ctx(source_path: &str) -> HookContext {
+        let extra: std::collections::BTreeMap<String, String> = [(
+            "DAFT_MERGE_SOURCE_PATH".to_string(),
+            source_path.to_string(),
+        )]
+        .into();
+        HookContext::new(
+            HookType::PreMerge,
+            "merge",
+            "/project",
+            "/project/.git",
+            "origin",
+            "/project/main",
+            "/project/main",
+            "main",
+        )
+        .with_extra_env(extra)
+    }
+
+    #[test]
+    fn root_merge_source_path_template_resolves_to_absolute_root() {
+        let ctx = merge_hook_ctx("/project/feat");
+        let jobs = vec![JobDef {
+            name: Some("ring".into()),
+            run: Some(RunCommand::Simple("cargo check".into())),
+            root: Some("{merge_source_path}".into()),
+            ..Default::default()
+        }];
+
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/project/main"),
+            &JobAdapterContext::default(),
+        )
+        .unwrap();
+
+        // Absolute substituted root replaces the base (PathBuf::join).
+        assert_eq!(kept[0].working_dir, PathBuf::from("/project/feat"));
+    }
+
+    #[test]
+    fn root_merge_template_unresolvable_fails_closed() {
+        // Empty DAFT_MERGE_SOURCE_PATH (no worktree / multi-source): the
+        // placeholder survives substitution and the hook must abort, never
+        // silently run the job in the hook's own cwd.
+        let ctx = merge_hook_ctx("");
+        let jobs = vec![JobDef {
+            name: Some("ring".into()),
+            run: Some(RunCommand::Simple("cargo check".into())),
+            root: Some("{merge_source_path}".into()),
+            ..Default::default()
+        }];
+
+        let err = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/project/main"),
+            &JobAdapterContext::default(),
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("ring"), "{msg}");
+        assert!(msg.contains("undefined directory"), "{msg}");
+    }
+
+    #[test]
+    fn root_plain_relative_path_still_joins() {
+        let ctx = merge_hook_ctx("/project/feat");
+        let jobs = vec![JobDef {
+            name: Some("sub".into()),
+            run: Some(RunCommand::Simple("true".into())),
+            root: Some("packages/core".into()),
+            ..Default::default()
+        }];
+        let (kept, _) = yaml_jobs_to_specs(
+            &jobs,
+            &ctx,
+            &HashMap::new(),
+            ".daft",
+            Path::new("/project/main"),
+            &JobAdapterContext::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            kept[0].working_dir,
+            PathBuf::from("/project/main/packages/core")
         );
     }
 

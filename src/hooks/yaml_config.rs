@@ -383,6 +383,11 @@ pub struct JobDef {
     pub args: Option<String>,
 
     /// Working directory (relative to worktree root).
+    ///
+    /// Supports template variables; an absolute result (e.g. from
+    /// `{merge_source_path}`) replaces the base entirely. A `{merge_…}`
+    /// template that cannot resolve fails the hook rather than silently
+    /// running the job in the hook's own cwd.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
 
