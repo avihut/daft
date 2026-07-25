@@ -41,6 +41,7 @@ use crate::core::worktree::sync_dag::{
     ThrottleReason,
 };
 use crate::git::cancel::{CancelFlag, UnitClock};
+use crate::governor::ports::UnitClass;
 use crate::store::models::{GovernorEventRow, HookProfileRow};
 use domain::{ContainAction, Controller, GovernorParams, HoldReason, HookProfile, ResourceSample};
 use ports::{ProfileKey, ProfileStore, ResourceProbe};
@@ -263,15 +264,23 @@ pub fn for_job_run(
     }
 }
 
-/// Content hash over the run's resolved job commands — the job-level
-/// profile identity (same non-security `DefaultHasher` caveat as
-/// [`hook_script_hash`]).
+/// Content hash over the run's job NAMES — the job-level profile identity
+/// (same non-security `DefaultHasher` caveat as [`hook_script_hash`]).
+///
+/// Names, not commands, and that is the whole point. A learned profile is
+/// only useful if the same phase hashes the same way on the next run, and
+/// resolved commands do not: `{changed_files}` expands to a different file
+/// list on every merge, and the rc prefix (`source … &&`) rides along too.
+/// Keying on the expansion meant a merge gate never matched its own stored
+/// profile, so `is_light()` never applied and every run paid cold-start
+/// admission forever. Job names are stable across runs and already scoped
+/// by repo + stage in [`ports::ProfileKey`].
 #[cfg(unix)]
 fn commands_hash(specs: &[crate::executor::JobSpec]) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for spec in specs {
-        spec.command.hash(&mut hasher);
+        spec.name.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }
@@ -765,7 +774,7 @@ fn kill_unit(shared: &Shared, label: &str) {
 impl Governor {
     /// The one admission decision, keyed by unit label (for the throttle
     /// event log). Both port impls delegate here.
-    fn admit_labeled(&self, label: &str) -> AdmitDecision {
+    fn admit_labeled(&self, label: &str, class: UnitClass) -> AdmitDecision {
         let running = self.shared.admitted.load(Ordering::Relaxed);
         let sample = *self.shared.latest.lock().unwrap();
         let now_ms = self.shared.now_ms();
@@ -781,6 +790,7 @@ impl Governor {
             running,
             &sample,
             predicted_peak,
+            class,
         );
         match decision {
             Ok(()) => {
@@ -819,7 +829,7 @@ impl Governor {
 
 impl ports::WorkAdmission for Governor {
     fn try_admit(&self, unit: &ports::WorkUnit<'_>) -> AdmitDecision {
-        self.admit_labeled(unit.label)
+        self.admit_labeled(unit.label, unit.class)
     }
 
     fn release(&self, _unit: &ports::WorkUnit<'_>) {
@@ -836,7 +846,10 @@ impl DagGovernor for Governor {
             TaskId::PushBatch => "(batched push)",
             _ => return AdmitDecision::Admit,
         };
-        self.admit_labeled(label)
+        // Sync's push units are background work by definition — the
+        // classification that keeps its admission behavior identical to
+        // before the foreground exemption existed.
+        self.admit_labeled(label, UnitClass::Background)
     }
 
     fn release(&self, task: &SyncTask) {

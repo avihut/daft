@@ -5,6 +5,8 @@
 //! clocks, no syscalls, no I/O. The shell ([`crate::governor::SyncGovernor`])
 //! probes the system, stamps monotonic time, and applies the decisions.
 
+use crate::governor::ports::UnitClass;
+
 /// A point-in-time reading of system memory, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResourceSample {
@@ -385,6 +387,7 @@ impl Controller {
         running: usize,
         sample: &ResourceSample,
         predicted_peak: Option<u64>,
+        class: UnitClass,
     ) -> Result<(), HoldReason> {
         // Liveness: something must always run. This outranks even the
         // post-kill cooldown — a single huge push cycles through the
@@ -401,7 +404,25 @@ impl Controller {
         if running >= self.params.cap {
             return Err(HoldReason::AtCap);
         }
-        if running >= self.target {
+
+        // The AIMD ramp is a *learning* device: start narrow, widen while the
+        // machine stays green. That is right for a background fan-out
+        // measured in minutes and wrong for a foreground phase a person is
+        // sitting in front of — there it is pure latency, paid on every
+        // invocation and never amortized. An eight-job parallel hook would
+        // ramp up from two, spending seconds in admission before any work
+        // starts, to protect a machine the memory checks below already
+        // protect.
+        //
+        // Foreground units are therefore bounded by cap and live memory
+        // only — still strictly more protection than the
+        // `available_parallelism()` bound those phases had before the
+        // governor existed. Background units keep the full ramp, and sync's
+        // units are Background, so its behavior is unchanged by
+        // construction.
+        let ramped = matches!(class, UnitClass::Background);
+
+        if ramped && running >= self.target {
             return Err(HoldReason::AtTarget);
         }
         if self.pressure != Pressure::Green {
@@ -411,7 +432,8 @@ impl Controller {
         if sample.mem_available.saturating_sub(self.params.reserve) <= peak {
             return Err(HoldReason::Memory);
         }
-        if let Some(last) = self.last_admit_ms
+        if ramped
+            && let Some(last) = self.last_admit_ms
             && now_ms.saturating_sub(last) < self.params.stagger_ms
         {
             return Err(HoldReason::Stagger);
@@ -444,7 +466,7 @@ mod tests {
 
     /// Ticks until green, spaced admissions — the plain happy path.
     fn admit_ok(c: &mut Controller, now_ms: u64, running: usize) -> Result<(), HoldReason> {
-        c.try_admit(now_ms, running, &sample(20), None)
+        c.try_admit(now_ms, running, &sample(20), None, UnitClass::Background)
     }
 
     #[test]
@@ -453,7 +475,10 @@ mod tests {
         // Even under red pressure with no headroom at all.
         c.tick(&sample(1), 4);
         assert_eq!(c.pressure(), Pressure::Red);
-        assert!(c.try_admit(0, 0, &sample(1), Some(64 * GIB)).is_ok());
+        assert!(
+            c.try_admit(0, 0, &sample(1), Some(64 * GIB), UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -493,11 +518,14 @@ mod tests {
         // 4 GiB available − 2 GiB reserve = 2 GiB headroom; a 6 GiB hook
         // must hold even though pressure reads green.
         assert_eq!(
-            c.try_admit(1_000, 1, &tight, Some(6 * GIB)),
+            c.try_admit(1_000, 1, &tight, Some(6 * GIB), UnitClass::Background),
             Err(HoldReason::Memory)
         );
         // A 1 GiB hook fits.
-        assert!(c.try_admit(1_000, 1, &tight, Some(GIB)).is_ok());
+        assert!(
+            c.try_admit(1_000, 1, &tight, Some(GIB), UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -509,7 +537,10 @@ mod tests {
             mem_available: 2 * GIB + 400 * (1 << 20),
             ..sample(20)
         };
-        assert_eq!(c.try_admit(0, 1, &tight, None), Err(HoldReason::Memory));
+        assert_eq!(
+            c.try_admit(0, 1, &tight, None, UnitClass::Background),
+            Err(HoldReason::Memory)
+        );
     }
 
     #[test]
@@ -693,6 +724,61 @@ mod tests {
         assert_eq!(c.contain(&impossible), None);
     }
 
+    /// Foreground admission is bounded by cap and memory, never by the AIMD
+    /// ramp.
+    ///
+    /// The ramp starts at 2 and widens over green sampler ticks. For a
+    /// background fan-out that is a feature; for a hook phase someone is
+    /// waiting on it is latency charged on every single invocation — the
+    /// third job of a parallel hook would sit in `AtTarget` for seconds
+    /// before starting, protecting a machine the memory checks already
+    /// protect.
+    #[test]
+    fn foreground_units_skip_the_ramp_but_not_cap_or_memory() {
+        let mut c = controller();
+
+        // Background: the ramp holds the third unit at the initial target.
+        assert!(
+            c.try_admit(0, 2, &sample(20), None, UnitClass::Background)
+                .is_err(),
+            "background admission must respect the AIMD target"
+        );
+
+        // Foreground: same state, admitted — and no stagger hold on the
+        // immediately-following unit either.
+        assert!(
+            c.try_admit(0, 2, &sample(20), None, UnitClass::ForegroundInteractive)
+                .is_ok(),
+            "foreground admission must not wait on the ramp"
+        );
+        assert!(
+            c.try_admit(0, 3, &sample(20), None, UnitClass::ForegroundInteractive)
+                .is_ok(),
+            "foreground admission must not wait on the stagger window"
+        );
+
+        // The bounds that still apply: cap...
+        assert_eq!(
+            c.try_admit(0, 8, &sample(20), None, UnitClass::ForegroundInteractive),
+            Err(HoldReason::AtCap),
+            "foreground admission is still capped"
+        );
+
+        // ...and live memory headroom.
+        let tight = sample(3);
+        assert_eq!(
+            c.try_admit(
+                0,
+                1,
+                &tight,
+                Some(6 * GIB),
+                UnitClass::ForegroundInteractive
+            ),
+            Err(HoldReason::Memory),
+            "foreground admission still refuses when memory is short"
+        );
+    }
+
     #[test]
     fn foreground_counts_toward_min_one_runner() {
         let mut c = controller();
@@ -798,17 +884,26 @@ mod tests {
         c.tick(&sample(20), 1);
         c.note_kill(1_000);
         assert_eq!(
-            c.try_admit(2_000, 1, &sample(20), None),
+            c.try_admit(2_000, 1, &sample(20), None, UnitClass::Background),
             Err(HoldReason::KillCooldown)
         );
         // Cooldown over.
         assert!(
-            c.try_admit(1_000 + KILL_COOLDOWN_MS, 1, &sample(20), None)
-                .is_ok()
+            c.try_admit(
+                1_000 + KILL_COOLDOWN_MS,
+                1,
+                &sample(20),
+                None,
+                UnitClass::Background
+            )
+            .is_ok()
         );
         // Zero running always admits, even inside a cooldown.
         c.note_kill(10_000);
-        assert!(c.try_admit(10_500, 0, &sample(20), None).is_ok());
+        assert!(
+            c.try_admit(10_500, 0, &sample(20), None, UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -863,12 +958,19 @@ mod tests {
         c.tick(&sample(20), 0);
         for running in 0..8 {
             assert!(
-                c.try_admit(0, running, &sample(20), Some(40 << 20)).is_ok(),
+                c.try_admit(
+                    0,
+                    running,
+                    &sample(20),
+                    Some(40 << 20),
+                    UnitClass::Background
+                )
+                .is_ok(),
                 "launch {running} must admit with no stagger"
             );
         }
         assert_eq!(
-            c.try_admit(0, 8, &sample(20), Some(40 << 20)),
+            c.try_admit(0, 8, &sample(20), Some(40 << 20), UnitClass::Background),
             Err(HoldReason::AtCap)
         );
     }
