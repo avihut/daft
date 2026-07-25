@@ -4,7 +4,7 @@
 .SH NAME
 daft\-run \- Run a named task defined in daft.yml
 .SH SYNOPSIS
-\fBdaft\-run\fR [\fB\-\-list\fR] [\fB\-\-job\fR] [\fB\-\-tag\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITASK\fR] 
+\fBdaft\-run\fR [\fB\-\-list\fR] [\fB\-\-job\fR] [\fB\-\-tag\fR] [\fB\-\-skip\-tag\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITASK\fR] 
 .SH DESCRIPTION
 Run a named task from the current worktree\*(Aqs daft.yml.
 .PP
@@ -23,6 +23,9 @@ Run only the named job within the task
 .TP
 \fB\-\-tag\fR \fI<TAG>\fR
 Run only jobs carrying this tag (repeatable)
+.TP
+\fB\-\-skip\-tag\fR \fI<TAG>\fR
+Skip jobs carrying this tag, plus their dependents (repeatable)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

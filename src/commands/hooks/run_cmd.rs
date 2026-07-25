@@ -82,11 +82,16 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
         output.info("");
     }
 
-    // Build job filter
+    // Build job filter. `--skip-tag T` routes through the same exclude
+    // machinery as `--skip-hooks tag:T` (cascade + attribution).
     let filter = JobFilter {
         only_job_name: args.job.clone(),
         only_tags: args.tag.clone(),
-        ..Default::default()
+        skip: crate::hooks::job_adapter::SkipSelectors {
+            tags: args.skip_tag.clone(),
+            raw: args.skip_tag.iter().map(|t| format!("tag:{t}")).collect(),
+            ..Default::default()
+        },
     };
 
     // Dry-run: preview jobs without executing
@@ -101,6 +106,16 @@ pub(super) fn cmd_run(args: &HooksRunArgs, output: &mut dyn Output) -> Result<()
                 } else {
                     true
                 }
+            });
+        }
+
+        // Apply --skip-tag exclusion (direct matches; the real run also
+        // excludes dependents via the skip cascade).
+        if !args.skip_tag.is_empty() {
+            jobs.retain(|job| {
+                job.tags
+                    .as_ref()
+                    .is_none_or(|tags| !tags.iter().any(|t| args.skip_tag.contains(t)))
             });
         }
 

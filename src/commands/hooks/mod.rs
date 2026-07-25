@@ -408,8 +408,20 @@ pub(super) struct HooksRunArgs {
     pub job: Option<String>,
 
     /// Run only jobs with this tag (repeatable, matches any)
-    #[arg(long, help = "Run only jobs with this tag (repeatable)")]
+    #[arg(
+        long,
+        visible_alias = "only-tag",
+        help = "Run only jobs with this tag (repeatable)"
+    )]
     pub tag: Vec<String>,
+
+    /// Skip jobs carrying this tag, plus their dependents (repeatable)
+    #[arg(
+        long = "skip-tag",
+        value_name = "TAG",
+        help = "Skip jobs with this tag, plus their dependents (repeatable)"
+    )]
+    pub skip_tag: Vec<String>,
 
     /// Preview what would run without executing
     #[arg(long, help = "Preview what would run without executing")]

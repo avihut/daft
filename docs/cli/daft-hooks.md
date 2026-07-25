@@ -186,6 +186,7 @@ daft hooks run [OPTIONS] [HOOK_TYPE]
 |--------|-------------|----------|
 | `--job <JOB>` | Run only the named job |  |
 | `--tag <TAG>` | Run only jobs with this tag (repeatable) |  |
+| `--skip-tag <TAG>` | Skip jobs with this tag, plus their dependents (repeatable) |  |
 | `--dry-run` | Preview what would run without executing |  |
 | `-v, --verbose` | Show verbose output including skipped jobs |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |

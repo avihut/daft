@@ -78,6 +78,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
+            "skip_hooks", "skip_tag", "only_tag",
         ],
     )]
     pub abort: bool,
@@ -101,6 +102,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
+            "skip_hooks", "skip_tag", "only_tag",
         ],
     )]
     pub continue_merge: bool,
@@ -122,6 +124,7 @@ pub struct Args {
             "adopt_target", "no_adopt_target", "yes",
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
+            "skip_hooks", "skip_tag", "only_tag",
         ],
     )]
     pub quit: bool,
@@ -281,6 +284,28 @@ pub struct Args {
     /// clean`); `any` relaxes a committed `clean` for this invocation.
     #[arg(long = "source-worktree", value_name = "STATE", value_enum)]
     pub source_worktree: Option<crate::core::worktree::merge::SourceWorktreeArg>,
+
+    // --- Hook selection (pre-merge / post-merge jobs; policy is unaffected) ---
+    /// Skip hooks this run. Repeatable / comma-separated.
+    /// Selectors: `all`, a hook name (`pre-merge`, …), `tag:<tag>`, or a job
+    /// name (plus its dependents). Gate policy checks are never skipped.
+    #[arg(
+        long = "skip-hooks",
+        value_name = "SELECTOR",
+        value_delimiter = ',',
+        help = "Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated"
+    )]
+    pub skip_hooks: Vec<String>,
+
+    /// Skip hook jobs carrying TAG, plus their dependents (repeatable).
+    /// Sugar for `--skip-hooks tag:<TAG>` — e.g. `--skip-tag deep` for a
+    /// fast gate pass.
+    #[arg(long = "skip-tag", value_name = "TAG")]
+    pub skip_tag: Vec<String>,
+
+    /// Run only hook jobs carrying TAG (repeatable).
+    #[arg(long = "only-tag", value_name = "TAG")]
+    pub only_tag: Vec<String>,
 
     // --- Defaults persistence ---
     /// Write the resolved style/cleanup choices to `git config --local` after
@@ -788,6 +813,19 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Hook-job selection: `--skip-hooks` selectors plus the tag sugar
+    // (`--skip-tag T` == `--skip-hooks tag:T`) and the include side
+    // (`--only-tag`). Applies to pre-merge/post-merge JOBS only — the gate
+    // policy checks run in core regardless.
+    let hook_filter = {
+        let mut f = crate::hooks::yaml_executor::JobFilter::skipping(&args.skip_hooks);
+        f.skip.tags.extend(args.skip_tag.iter().cloned());
+        f.skip
+            .raw
+            .extend(args.skip_tag.iter().map(|t| format!("tag:{t}")));
+        f.only_tags = args.only_tag.clone();
+        f
+    };
     let outcome_result = {
         let mut runner = MergeHookRunner::new(
             &mut output,
@@ -795,6 +833,7 @@ pub fn run() -> Result<()> {
             git_dir,
             settings.remote.clone(),
             source_worktree.clone(),
+            hook_filter,
         )?;
         match (&prop_source, &prop_target) {
             (Some(_), Some(prop_tgt)) if !consolidation.is_empty() => {
@@ -1373,9 +1412,10 @@ impl<'a> MergeHookRunner<'a> {
         git_dir: PathBuf,
         remote: String,
         source_worktree: PathBuf,
+        filter: crate::hooks::yaml_executor::JobFilter,
     ) -> Result<Self> {
         let hooks_config = load_hooks_config()?;
-        let executor = HookExecutor::new(hooks_config)?;
+        let executor = HookExecutor::new(hooks_config)?.with_job_filter(filter);
         Ok(Self {
             executor,
             output,

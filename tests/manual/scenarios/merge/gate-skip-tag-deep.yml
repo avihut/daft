@@ -1,0 +1,82 @@
+name: Tag selection on merge — --skip-tag and --only-tag pick the rings
+description:
+  "The fast/deep gate split: rings tagged deep are skipped with --skip-tag deep
+  (recorded as an attributed requested-skip, not silently dropped) and selected
+  exclusively with --only-tag deep. Gate policy is untouched by the selection
+  flags."
+
+repos:
+  - name: test-tag-gate
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# tag gate"
+        commits:
+          - message: "Initial commit"
+      - name: track-a
+        from: main
+        files:
+          - path: a.txt
+            content: "a"
+        commits:
+          - message: "Track A work"
+      - name: track-b
+        from: main
+        files:
+          - path: b.txt
+            content: "b"
+        commits:
+          - message: "Track B work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: fast-ring
+              run: touch "$DAFT_MERGE_TARGET_PATH/.fast-ran"
+            - name: deep-ring
+              tags: [deep]
+              run: touch "$DAFT_MERGE_TARGET_PATH/.deep-ran"
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_TAG_GATE
+    expect:
+      exit_code: 0
+
+  - name: Fast pass — --skip-tag deep runs only the fast ring
+    run: daft merge track-a --skip-tag deep --no-edit 2>&1
+    cwd: "$WORK_DIR/test-tag-gate/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-tag-gate/main/.fast-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-tag-gate/main/.deep-ran"
+
+  - name: The deep skip is recorded with requested attribution
+    run: daft hooks jobs logs deep-ring 2>&1
+    cwd: "$WORK_DIR/test-tag-gate/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "deep-ring"
+        - "requested (--skip-hooks)"
+        - "SKIPPED"
+
+  - name: Reset sentinels
+    run: rm -f .fast-ran .deep-ran
+    cwd: "$WORK_DIR/test-tag-gate/main"
+    expect:
+      exit_code: 0
+
+  - name: Deep-only pass — --only-tag deep runs only the deep ring
+    run: daft merge track-b --only-tag deep --no-edit 2>&1
+    cwd: "$WORK_DIR/test-tag-gate/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-tag-gate/main/.deep-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-tag-gate/main/.fast-ran"

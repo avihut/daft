@@ -79,6 +79,9 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--ff-only` | Require the merge to be fast-forward-equivalent: the source must already contain the target's tip. Supplies `merge: ff: only` when daft.yml lacks it; matches it when committed |  |
 | `--no-ff-only` | Allow a non-fast-forward merge for this invocation, overriding a committed `merge: ff: only` policy (announced when it does) |  |
 | `--source-worktree <STATE>` | Required state of the source branch's worktree: `clean` refuses a missing or dirty source worktree (supplies `merge: source_worktree: clean`); `any` relaxes a committed `clean` for this invocation |  |
+| `--skip-hooks <SELECTOR>` | Skip hooks this run (all | <hook> | tag:<tag> | <job>); repeatable/comma-separated |  |
+| `--skip-tag <TAG>` | Skip hook jobs carrying TAG, plus their dependents (repeatable). Sugar for `--skip-hooks tag:<TAG>` — e.g. `--skip-tag deep` for a fast gate pass |  |
+| `--only-tag <TAG>` | Run only hook jobs carrying TAG (repeatable) |  |
 | `--set-default` | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
 

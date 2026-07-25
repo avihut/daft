@@ -706,14 +706,20 @@ bootstrapping worktrees that predate the hooks config.
 ### Skipping Hooks Per-Invocation (`--skip-hooks`)
 
 The worktree-creating commands (`daft start`, `daft go`, `daft clone`,
-`daft adopt`) accept `--skip-hooks` to exclude jobs for one run (repeatable or
-comma-separated):
+`daft adopt`) and `daft merge` accept `--skip-hooks` to exclude jobs for one run
+(repeatable or comma-separated):
 
 ```bash
 daft start feat/x --skip-hooks all           # skip every hook
 daft start feat/x --skip-hooks tag:heavy,lint # skip tagged + named jobs
 daft clone <url> --skip-hooks post-clone     # clone, run worktree hooks only
+daft merge feat/x --skip-tag deep --no-edit  # fast gate pass (tag sugar)
 ```
+
+`--skip-tag <TAG>` (on `merge`, `run`, and `hooks run`) is sugar for
+`--skip-hooks tag:<TAG>`; `--only-tag <TAG>` is the include side (alias of
+`--tag` on `run`/`hooks run`). On `daft merge` the selection filters hook JOBS
+only — the committed gate policy checks always run.
 
 Selectors: `all`/`*`, `<hook>` (a whole hook by its canonical `daft.yml` key,
 e.g. `worktree-post-create`), `tag:<tag>`, `<name>` (a job), `job:<name>`

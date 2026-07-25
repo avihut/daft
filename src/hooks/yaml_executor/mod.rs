@@ -2144,6 +2144,70 @@ mod tests {
     }
 
     #[test]
+    fn skip_tag_beats_only_tag_on_overlap() {
+        // A job matching BOTH the include side (--only-tag) and the exclude
+        // side (--skip-tag) is excluded: the skip cascade runs first, so the
+        // exclude wins and the job renders as an attributed skip.
+        let hook_def = HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("fast-ring".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    tags: Some(vec!["gate".into()]),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("deep-ring".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    tags: Some(vec!["gate".into(), "deep".into()]),
+                    ..Default::default()
+                },
+            ]),
+            parallel: Some(false),
+            ..Default::default()
+        };
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            only_tags: vec!["gate".into()],
+            skip: crate::hooks::job_adapter::SkipSelectors {
+                tags: vec!["deep".into()],
+                raw: vec!["tag:deep".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+        assert!(!result.skipped, "the fast ring still runs");
+        let events = recorder.events();
+        assert!(
+            events.iter().any(|e| e == "success:fast-ring"),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.starts_with("skipped:deep-ring:") && e.contains("requested")),
+            "the overlapping job must be an attributed requested-skip: {events:?}"
+        );
+        assert!(!events.iter().any(|e| e == "start:deep-ring"), "{events:?}");
+    }
+
+    #[test]
     fn skip_unmatched_selector_warns_not_errors() {
         let hook_def = skip_example_hook();
         let (ctx, dir) = make_ctx_with_dir();

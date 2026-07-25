@@ -74,6 +74,9 @@ that are unique to daft merge or that shape the cross-worktree workflow.
 | `--ff-only`               | Gate: require the source to already contain the target's tip (supplies `merge: ff: only` when daft.yml lacks it).                                                  |
 | `--no-ff-only`            | Gate: allow a non-fast-forward merge this once, overriding a committed `merge: ff: only` (announced).                                                              |
 | `--source-worktree <S>`   | Gate: `clean` requires a checked-out, clean source worktree; `any` relaxes a committed `clean` this once (announced).                                              |
+| `--skip-hooks <SEL>`      | Skip pre/post-merge hook jobs (`all`, a hook name, `tag:<tag>`, or a job name plus dependents). Gate policy is never skipped.                                      |
+| `--skip-tag <TAG>`        | Skip hook jobs carrying TAG plus their dependents (repeatable) — e.g. `--skip-tag deep` for a fast gate pass.                                                      |
+| `--only-tag <TAG>`        | Run only hook jobs carrying TAG (repeatable).                                                                                                                      |
 
 ## Examples
 
