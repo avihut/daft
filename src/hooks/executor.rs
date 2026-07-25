@@ -292,6 +292,15 @@ impl HookExecutor {
         self
     }
 
+    /// Replace the job filter between fires.
+    ///
+    /// `daft merge` needs this: `--only-tag` narrows *the gate*, so it must
+    /// apply to `pre-merge` and not to `post-merge`, whose jobs the user
+    /// never tagged.
+    pub fn set_job_filter(&mut self, filter: JobFilter) {
+        self.job_filter = filter;
+    }
+
     /// Plan-time mirror of [`Self::execute`]'s discovery: whether this hook
     /// phase has anything discoverable to run from `hook_source_worktree` —
     /// a YAML definition, legacy scripts, or deprecated files pending

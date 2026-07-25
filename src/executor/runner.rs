@@ -590,11 +590,17 @@ fn execute_single_job_supervised(
 
         // Merge the jobserver pair only when present — the common ungoverned
         // path must not pay a per-job env clone.
+        //
+        // The job's own declaration wins. A job that pins
+        // `env: {MAKEFLAGS: "-j1"}` did so to keep a memory-hungry native
+        // build serial; overriding it with the governor's `-jN` reproduces
+        // exactly the OOM the pin was added to prevent. The jobserver is a
+        // default for jobs that expressed no opinion.
         let merged_env;
         let env = match jobserver_env {
             Some((key, value)) => {
                 let mut e = job.env.clone();
-                e.insert(key.clone(), value.clone());
+                e.entry(key.clone()).or_insert_with(|| value.clone());
                 merged_env = e;
                 &merged_env
             }
@@ -1640,6 +1646,61 @@ mod tests {
                 r.stdout
             );
         }
+        run.governor.shutdown();
+    }
+
+    /// A job that declares its own `MAKEFLAGS` keeps it.
+    ///
+    /// `env: {MAKEFLAGS: "-j1"}` is how a job says "this native build must
+    /// stay serial or it OOMs". The jobserver is a default for jobs with no
+    /// opinion, not an override of one.
+    #[cfg(unix)]
+    #[test]
+    fn jobserver_does_not_override_a_job_declared_makeflags() {
+        use crate::git::cancel::CancelFlag;
+        use crate::governor::domain::GovernorParams;
+
+        let governor = crate::governor::Governor::spawn(
+            Box::new(GreenProbe),
+            None,
+            None,
+            Arc::new(CancelFlag::new()),
+            |first| GovernorParams::new(4, first.mem_total / 10),
+        );
+        let run = crate::governor::GovernedRun {
+            governor,
+            jobserver: crate::governor::jobserver::Jobserver::create(4),
+        };
+        assert!(run.jobserver.is_some(), "jobserver must construct in tests");
+
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let mut pinned = make_job("pinned", "echo MF=$MAKEFLAGS");
+        pinned.env.insert("MAKEFLAGS".into(), "-j1".into());
+        let jobs = vec![pinned, make_job("free", "echo MF=$MAKEFLAGS")];
+
+        let results = run_jobs_governed(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            None,
+            Some(&run),
+        )
+        .unwrap();
+
+        let pinned = results.iter().find(|r| r.name == "pinned").unwrap();
+        assert!(
+            pinned.stdout.contains("MF=-j1") && !pinned.stdout.contains("jobserver-auth"),
+            "a job's own MAKEFLAGS must win over the jobserver: {}",
+            pinned.stdout
+        );
+
+        let free = results.iter().find(|r| r.name == "free").unwrap();
+        assert!(
+            free.stdout.contains("--jobserver-auth=fifo:"),
+            "a job with no opinion still gets the jobserver: {}",
+            free.stdout
+        );
         run.governor.shutdown();
     }
 

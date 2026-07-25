@@ -400,6 +400,10 @@ pub fn yaml_jobs_to_specs(
 
         let cmd = super::yaml_executor::resolve_command(job, ctx, Some(&name), source_dir);
 
+        // Recorded before substitution: the filtered list is injected below,
+        // after which the marker is gone.
+        let injects_changed_files = cmd.contains(CHANGED_FILES_TEMPLATE);
+
         let cmd = match apply_file_filter(job, &name, &cmd, ctx, working_dir, adapter)? {
             FileFilterOutcome::Run(cmd) => cmd,
             FileFilterOutcome::Skip(reason) => {
@@ -453,6 +457,26 @@ pub fn yaml_jobs_to_specs(
         } else {
             working_dir.to_path_buf()
         };
+
+        // `{changed_files}` yields repository-root-relative paths — the
+        // coordinate system every glob pattern uses — so the job has to run
+        // where those paths resolve. A `root:` naming a worktree root (what
+        // `root: "{merge_source_path}"` gives) is fine; a subdirectory is
+        // not: `root: web` with `glob: "web/**"` hands eslint
+        // `web/src/a.ts` from cwd `<repo>/web`, which looks for
+        // `web/web/src/a.ts` and fails on exactly the changes the job was
+        // written to lint. Refuse at spec-build time rather than rebasing
+        // silently — the same fail-closed stance as the `root:` templating
+        // check above.
+        if injects_changed_files && wd != working_dir && !is_repository_root(&wd) {
+            bail!(
+                "job '{name}': {{changed_files}} expands to repository-root-relative \
+                 paths, but root: '{}' runs the job in a subdirectory where they do not \
+                 resolve — drop the root:, point it at a worktree root, or give the job \
+                 its own list with `files:`",
+                job.root.as_deref().unwrap_or_default()
+            );
+        }
 
         kept.push(JobSpec {
             name,
@@ -618,6 +642,12 @@ fn merge_job_log(per_job: Option<LogConfig>, repo: Option<&LogConfig>) -> Option
     }
 }
 
+/// Whether `dir` is the root of a git worktree — `.git` present, as either
+/// a directory (main worktree) or a file (linked worktree).
+fn is_repository_root(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +666,59 @@ mod tests {
             "/project/feature/new",
             "feature/new",
         )
+    }
+
+    /// `{changed_files}` under a subdirectory `root:` must be refused, not
+    /// silently handed paths that do not resolve from the job's cwd.
+    #[test]
+    fn changed_files_under_a_subdirectory_root_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("web")).unwrap();
+
+        let jobs = vec![JobDef {
+            name: Some("lint".into()),
+            run: Some(RunCommand::Simple("eslint {changed_files}".into())),
+            root: Some("web".into()),
+            files: Some("echo web/src/a.ts".into()),
+            ..Default::default()
+        }];
+        let ctx = make_ctx();
+        let adapter = JobAdapterContext::default();
+        let err = yaml_jobs_to_specs(&jobs, &ctx, &HashMap::new(), ".daft", tmp.path(), &adapter)
+            .expect_err("a subdirectory root with {changed_files} must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("repository-root-relative"), "{msg}");
+        assert!(msg.contains("files:"), "{msg}");
+    }
+
+    /// The shipped idiom — a `root:` that is itself a worktree root — keeps
+    /// working, because repo-relative paths resolve there.
+    #[test]
+    fn changed_files_under_a_worktree_root_is_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let source_wt = tmp.path().join("source-wt");
+        std::fs::create_dir_all(source_wt.join(".git")).unwrap();
+
+        let jobs = vec![JobDef {
+            name: Some("lint".into()),
+            run: Some(RunCommand::Simple("eslint {changed_files}".into())),
+            root: Some(source_wt.to_string_lossy().into_owned()),
+            files: Some("echo src/a.ts".into()),
+            ..Default::default()
+        }];
+        let ctx = make_ctx();
+        let adapter = JobAdapterContext::default();
+        let (specs, _) =
+            yaml_jobs_to_specs(&jobs, &ctx, &HashMap::new(), ".daft", tmp.path(), &adapter)
+                .expect("an absolute worktree root must be accepted");
+        assert_eq!(specs.len(), 1);
+        assert!(
+            specs[0].command.contains("src/a.ts"),
+            "{}",
+            specs[0].command
+        );
     }
 
     // ── yaml_jobs_to_specs ──────────────────────────────────────────────

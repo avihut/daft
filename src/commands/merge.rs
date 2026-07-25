@@ -879,9 +879,14 @@ pub fn run() -> Result<()> {
         f.skip
             .raw
             .extend(args.skip_tag.iter().map(|t| format!("tag:{t}")));
-        f.only_tags = args.only_tag.clone();
         f
     };
+    // `--only-tag` narrows THE GATE, so it is applied to pre-merge alone.
+    // Applied to post-merge as well, a tag that only exists on gate jobs
+    // filtered post-merge's list to empty, which the executor treats as a
+    // config error ("no jobs matching tags") and post-merge's Warn fail
+    // mode then printed on every otherwise-successful merge.
+    let only_tags = args.only_tag.clone();
     let timeline_handle = timeline.as_ref().map(|tl| tl.handle());
     let outcome_result = {
         let mut runner = MergeHookRunner::new(
@@ -891,6 +896,7 @@ pub fn run() -> Result<()> {
             settings.remote.clone(),
             source_worktree.clone(),
             hook_filter,
+            only_tags,
             hooks_output_config.clone(),
             timeline_handle,
         )?;
@@ -1466,6 +1472,10 @@ fn fire_worktree_post_create_hook(
 /// (e.g., ephemeral promotion switches the path mid-merge).
 struct MergeHookRunner<'a> {
     executor: HookExecutor,
+    /// The skip-only filter — what post-merge sees.
+    base_filter: crate::hooks::yaml_executor::JobFilter,
+    /// `--only-tag` selectors, layered on for the pre-merge fire only.
+    only_tags: Vec<String>,
     output: &'a mut dyn Output,
     project_root: PathBuf,
     git_dir: PathBuf,
@@ -1488,13 +1498,16 @@ impl<'a> MergeHookRunner<'a> {
         remote: String,
         source_worktree: PathBuf,
         filter: crate::hooks::yaml_executor::JobFilter,
+        only_tags: Vec<String>,
         output_config: HookOutputConfig,
         timeline: Option<TimelineHandle>,
     ) -> Result<Self> {
         let hooks_config = load_hooks_config()?;
-        let executor = HookExecutor::new(hooks_config)?.with_job_filter(filter);
+        let executor = HookExecutor::new(hooks_config)?.with_job_filter(filter.clone());
         Ok(Self {
             executor,
+            base_filter: filter,
+            only_tags,
             output,
             project_root,
             git_dir,
@@ -1554,7 +1567,16 @@ impl<'a> MergeHookRunner<'a> {
 
 impl<'a> HookRunner for MergeHookRunner<'a> {
     fn fire_pre_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
-        self.fire(HookType::PreMerge, ctx)
+        if !self.only_tags.is_empty() {
+            let mut f = self.base_filter.clone();
+            f.only_tags = self.only_tags.clone();
+            self.executor.set_job_filter(f);
+        }
+        let result = self.fire(HookType::PreMerge, ctx);
+        // Restore the skip-only filter so post-merge is not narrowed by a
+        // tag that only exists on gate jobs.
+        self.executor.set_job_filter(self.base_filter.clone());
+        result
     }
 
     fn fire_post_merge(&mut self, ctx: &MergeHookContext) -> Result<()> {
