@@ -457,6 +457,41 @@ test_flag_extraction_consistency() {
     fi
 }
 
+# Test: merge's gate flags reach every hand-maintained generator
+#
+# `daft merge`'s flag list is hardcoded in bash.rs / zsh.rs / fish.rs /
+# fig.rs — clap introspection does not reach it. When the gate flags landed
+# in #775 they were regenerated into the man page and the CLI docs but not
+# into these four strings, so `daft merge --ff<Tab>` completed nothing and
+# the whole gate-policy surface was undiscoverable from the shell. Nothing
+# caught it; this does.
+test_merge_gate_flags_in_all_shells() {
+    run_test "merge gate flags present in bash/zsh/fish completions"
+
+    local missing=""
+    local shell flag needle out
+    for shell in bash zsh fish; do
+        out=$("$DAFT_BIN" completions "$shell" 2>&1)
+        for flag in ff-only no-ff-only source-worktree skip-tag only-tag; do
+            # fish declares long options as `-l ff-only`, without the dashes.
+            if [[ "$shell" == "fish" ]]; then
+                needle="-l $flag"
+            else
+                needle="--$flag"
+            fi
+            if ! grep -q -- "$needle" <<< "$out"; then
+                missing="$missing $shell:$flag"
+            fi
+        done
+    done
+
+    if [[ -z "$missing" ]]; then
+        pass_test
+    else
+        fail_test "merge gate flags missing from completions:$missing"
+    fi
+}
+
 # Test: shell-init bash includes completions
 test_shell_init_includes_bash_completions() {
     run_test "shell-init bash output includes completion functions"
@@ -1004,6 +1039,7 @@ main() {
     test_zsh_git_subcommand_registration
     test_all_commands_generate
     test_flag_extraction_consistency
+    test_merge_gate_flags_in_all_shells
     test_forge_target_completion
     test_bash_forge_colon_handling
 

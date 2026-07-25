@@ -1068,6 +1068,57 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
             args: None,
         },
         FigOption {
+            name: FigName::Single("--ff-only".into()),
+            description: "Require the merge to be a fast-forward (gate policy)".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--no-ff-only".into()),
+            description: "Relax a committed ff: only policy for this merge".into(),
+            args: None,
+        },
+        FigOption {
+            name: FigName::Single("--source-worktree".into()),
+            description: "Source worktree requirement (gate policy): clean | any".into(),
+            args: Some(FigOptionArg {
+                suggestions: Some(vec![
+                    FigSuggestion {
+                        name: "clean".into(),
+                        description: "Source worktree must exist and be clean".into(),
+                    },
+                    FigSuggestion {
+                        name: "any".into(),
+                        description: "Relax the committed clean-source requirement".into(),
+                    },
+                ]),
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--skip-hooks".into()),
+            description: "Skip hook jobs by selector (never policy)".into(),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--skip-tag".into()),
+            description: "Skip hook jobs carrying TAG".into(),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--only-tag".into()),
+            description: "Run only pre-merge jobs carrying TAG".into(),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
+        },
+        FigOption {
             name: FigName::Single("-m".into()),
             description: "Commit message for the merge commit".into(),
             args: Some(FigOptionArg {
