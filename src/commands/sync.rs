@@ -1843,7 +1843,12 @@ fn execute_push_batch_task(
     // the push of every healthy branch. Branches without an upstream report the
     // per-branch skip; a tracking-remote lookup error is a real failure.
     let excluded = push_skip.lock().unwrap().clone();
-    let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit("(batched push)")));
+    let governor_unit = governor.map(|gov| {
+        Arc::new(gov.begin_unit(
+            "(batched push)",
+            crate::governor::ports::UnitClass::Background,
+        ))
+    });
     let git = attach_push_supervision(
         GitCommand::new(false)
             .with_gitoxide(settings.use_gitoxide)
@@ -2042,7 +2047,9 @@ fn execute_push_task(
     // unit's lifetime (drop = gone); attach_push_supervision hands the governor
     // the git-push root pid for the sampler + containment tiers, arms the
     // per-unit wall clock, and exports the jobserver env.
-    let governor_unit = governor.map(|gov| Arc::new(gov.begin_unit(branch_name)));
+    let governor_unit = governor.map(|gov| {
+        Arc::new(gov.begin_unit(branch_name, crate::governor::ports::UnitClass::Background))
+    });
     let git = attach_push_supervision(
         GitCommand::new(false)
             .with_gitoxide(settings.use_gitoxide)

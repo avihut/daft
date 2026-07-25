@@ -171,9 +171,12 @@ impl HookProfile {
 /// One admitted unit as the containment policy sees it (#678 stage 3).
 #[derive(Debug, Clone)]
 pub struct UnitView {
-    /// Opaque unit identity (the push's branch name).
-    pub branch: String,
-    /// The unit's `git push` root pid is known — freeze/kill can reach it.
+    /// Opaque unit identity (a push's branch name, a hook job's label).
+    pub label: String,
+    /// What kind of work this is — [`UnitClass::ForegroundInteractive`]
+    /// units are never freeze or kill candidates.
+    pub class: crate::governor::ports::UnitClass,
+    /// The unit's root pid is known — freeze/kill can reach it.
     pub has_pid: bool,
     /// Admission timestamp (same origin as `now_ms`); larger = newer.
     pub started_ms: u64,
@@ -184,12 +187,12 @@ pub struct UnitView {
 /// A containment action for the shell to apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainAction {
-    /// SIGSTOP the unit's descendants (never its git-push leader).
-    Freeze { branch: String },
+    /// SIGSTOP the unit's descendants (never its group leader).
+    Freeze { label: String },
     /// SIGCONT what a freeze stopped.
-    Thaw { branch: String },
+    Thaw { label: String },
     /// SIGKILL the unit's tree; the executor requeues its task.
-    Kill { branch: String },
+    Kill { label: String },
 }
 
 /// Deterministic admission state machine: slow-start + AIMD over a
@@ -293,18 +296,24 @@ impl Controller {
 
     /// Containment decision for this tick (#678 stage 3) — at most one
     /// action, applied by the shell. Policy: after sustained red, freeze
-    /// the newest unfrozen unit that has a pid, but never the last
-    /// unfrozen runner; a unit still frozen once red has outlasted
-    /// [`FREEZE_GRACE_MS`] is killed (the executor requeues it); green
-    /// thaws the most recently frozen unit, one per tick.
+    /// the newest unfrozen [`UnitClass::Background`] unit that has a pid,
+    /// but never the last unfrozen runner; a unit still frozen once red has
+    /// outlasted [`FREEZE_GRACE_MS`] is killed (the executor requeues it);
+    /// green thaws the most recently frozen unit, one per tick.
+    ///
+    /// [`UnitClass::ForegroundInteractive`] units are exempt from the whole
+    /// ladder — the user is waiting on them, so stopping one is a hung
+    /// terminal, and the flat job runner has no requeue for a kill. They
+    /// still count toward the min-one-runner check (they ARE runners).
     pub fn contain(&self, units: &[UnitView]) -> Option<ContainAction> {
+        use crate::governor::ports::UnitClass;
         match self.pressure {
             Pressure::Green => units
                 .iter()
                 .filter(|u| u.frozen_for_ms.is_some())
                 .min_by_key(|u| u.frozen_for_ms)
                 .map(|u| ContainAction::Thaw {
-                    branch: u.branch.clone(),
+                    label: u.label.clone(),
                 }),
             Pressure::Yellow => None,
             Pressure::Red => {
@@ -312,14 +321,15 @@ impl Controller {
                 // grace becomes a kill — even for the last unit: killed
                 // work is requeued and re-admitted, while a unit left
                 // frozen under red would hold its slot (and possibly
-                // locks and an open ssh session) forever.
+                // locks and an open ssh session) forever. Only Background
+                // units can be frozen, so only Background units can expire.
                 if let Some(expired) = units
                     .iter()
-                    .filter(|u| u.has_pid)
+                    .filter(|u| u.has_pid && u.class == UnitClass::Background)
                     .find(|u| u.frozen_for_ms.is_some_and(|ms| ms >= FREEZE_GRACE_MS))
                 {
                     return Some(ContainAction::Kill {
-                        branch: expired.branch.clone(),
+                        label: expired.label.clone(),
                     });
                 }
                 if self.red_streak < FREEZE_RED_TICKS {
@@ -334,10 +344,10 @@ impl Controller {
                 }
                 unfrozen
                     .into_iter()
-                    .filter(|u| u.has_pid)
+                    .filter(|u| u.has_pid && u.class == UnitClass::Background)
                     .max_by_key(|u| u.started_ms)
                     .map(|u| ContainAction::Freeze {
-                        branch: u.branch.clone(),
+                        label: u.label.clone(),
                     })
             }
         }
@@ -620,9 +630,10 @@ mod tests {
         assert_eq!(c.target(), 3);
     }
 
-    fn unit(branch: &str, started_ms: u64, frozen_for_ms: Option<u64>) -> UnitView {
+    fn unit(label: &str, started_ms: u64, frozen_for_ms: Option<u64>) -> UnitView {
         UnitView {
-            branch: branch.into(),
+            label: label.into(),
+            class: crate::governor::ports::UnitClass::Background,
             has_pid: true,
             started_ms,
             frozen_for_ms,
@@ -633,6 +644,66 @@ mod tests {
     fn make_red(c: &mut Controller, running: usize) {
         c.tick(&sample(1), running);
         c.tick(&sample(1), running);
+    }
+
+    fn fg_unit(label: &str, started_ms: u64) -> UnitView {
+        UnitView {
+            class: crate::governor::ports::UnitClass::ForegroundInteractive,
+            ..unit(label, started_ms, None)
+        }
+    }
+
+    #[test]
+    fn sustained_red_prefers_background_over_newer_foreground() {
+        let mut c = controller();
+        make_red(&mut c, 3);
+        // The foreground unit is the NEWEST — the usual freeze pick — but
+        // class outranks recency: the background unit freezes instead.
+        let units = [
+            unit("bg-old", 100, None),
+            unit("bg-new", 200, None),
+            fg_unit("fg-ring", 300),
+        ];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Freeze {
+                label: "bg-new".into()
+            })
+        );
+    }
+
+    #[test]
+    fn foreground_units_are_never_frozen_or_killed() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        // Only foreground units running: red produces NO action — a stopped
+        // foreground unit is a hung terminal, and there is no requeue.
+        let units = [fg_unit("ring-a", 100), fg_unit("ring-b", 200)];
+        assert_eq!(c.contain(&units), None);
+
+        // Even a frozen-looking foreground unit past the grace (cannot
+        // happen — FG is never frozen — but the kill arm must not pick it).
+        let impossible = [
+            UnitView {
+                frozen_for_ms: Some(FREEZE_GRACE_MS + 500),
+                ..fg_unit("fg-weird", 100)
+            },
+            unit("runner", 200, None),
+        ];
+        assert_eq!(c.contain(&impossible), None);
+    }
+
+    #[test]
+    fn foreground_counts_toward_min_one_runner() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        // One FG + one BG unfrozen: two runners, so the BG unit may freeze
+        // (the FG one keeps making progress).
+        let units = [fg_unit("fg", 100), unit("bg", 200, None)];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Freeze { label: "bg".into() })
+        );
     }
 
     #[test]
@@ -651,7 +722,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Freeze {
-                branch: "new".into()
+                label: "new".into()
             })
         );
         // A pid-less newest is skipped in favor of the next newest.
@@ -660,7 +731,7 @@ mod tests {
         assert_eq!(
             c.contain(&no_pid_new),
             Some(ContainAction::Freeze {
-                branch: "mid".into()
+                label: "mid".into()
             })
         );
     }
@@ -687,7 +758,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Kill {
-                branch: "frozen".into()
+                label: "frozen".into()
             })
         );
         // Under grace: still held frozen, not killed (and "runner" alone
@@ -707,7 +778,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Thaw {
-                branch: "second-frozen".into()
+                label: "second-frozen".into()
             })
         );
         // Yellow holds: no thaw, no freeze.

@@ -27,6 +27,7 @@ pub mod adapters;
 pub mod domain;
 #[cfg(unix)]
 pub mod jobserver;
+pub mod lane;
 pub mod ports;
 
 use std::collections::HashMap;
@@ -62,11 +63,14 @@ pub fn hook_script_hash(path: &std::path::Path) -> Option<String> {
 /// headroom for the faster containment decisions of stage 3.
 const TICK: Duration = Duration::from_millis(250);
 
-/// A push unit the governor tracks from admission to completion.
+/// A work unit the governor tracks from admission to completion.
 struct UnitEntry {
-    branch: String,
-    /// Root pid of the unit's `git push` (group leader under
-    /// `SupervisionMode::Isolated`); attached shortly after spawn.
+    label: String,
+    /// What kind of work this is — decides freeze/kill eligibility.
+    class: ports::UnitClass,
+    /// Root pid of the unit's process-group leader (the `git push` under
+    /// `SupervisionMode::Isolated`, a job's `sh -c`); attached shortly
+    /// after spawn.
     pid: Option<u32>,
     /// Wall-clock start, for the profile's per-run duration.
     started: Instant,
@@ -100,11 +104,14 @@ struct ProfilePersistence {
 /// Admission-defer bookkeeping for the event log.
 #[derive(Default)]
 struct ThrottleLog {
-    /// Branch → first deferral of its current wait.
+    /// Unit label → first deferral of its current wait.
     since: HashMap<String, Instant>,
-    /// Resolved waits: (branch, held duration).
+    /// Resolved waits: (label, held duration).
     held: Vec<(String, Duration)>,
-    /// Containment actions taken: (kind, branch, detail ms, rss bytes).
+    /// Containment actions taken: (kind, label, detail ms, rss bytes).
+    ///
+    /// Labels land in the `governor_events.branch` column — the column name
+    /// is historical (sync pushes were the first units); no schema change.
     actions: Vec<(&'static str, String, Option<u64>, Option<u64>)>,
 }
 
@@ -142,19 +149,133 @@ impl Shared {
     }
 }
 
-/// The dynamic resource governor for one sync run's push phase.
+/// The dynamic resource governor for one run's governed phase — a sync's
+/// push fan-out or a hook/task run's parallel foreground jobs.
 ///
-/// Construct with [`SyncGovernor::spawn`], hand it to the DAG executor via
-/// `with_governor`, register each push through [`SyncGovernor::begin_unit`],
-/// and call [`SyncGovernor::shutdown`] after the executor returns.
-pub struct SyncGovernor {
+/// Construct with [`Governor::spawn`] (or [`for_job_run`] for hook runs),
+/// hand it to the consumer (the sync DAG executor via `with_governor`, the
+/// job runner via `GovernedRun`), register each unit through
+/// [`Governor::begin_unit`], and call [`Governor::shutdown`] after the run.
+pub struct Governor {
     shared: Arc<Shared>,
     tick_thread: Mutex<Option<JoinHandle<()>>>,
     stop: Arc<AtomicBool>,
     persisted: AtomicBool,
 }
 
-impl SyncGovernor {
+/// The governor's original, sync-flavored name — kept as an alias so the
+/// sync assembly reads unchanged.
+pub type SyncGovernor = Governor;
+
+/// A governed job run for the generic executor (#775): the governor (memory-
+/// aware admission + profiling) plus an optional jobserver whose env bounds
+/// intra-job build parallelism.
+pub struct GovernedRun {
+    pub governor: Arc<Governor>,
+    #[cfg(unix)]
+    pub jobserver: Option<jobserver::Jobserver>,
+}
+
+impl GovernedRun {
+    /// The jobserver env pair to merge into each governed job, if any.
+    pub fn jobserver_env(&self) -> Option<(String, String)> {
+        #[cfg(unix)]
+        {
+            self.jobserver.as_ref().map(|j| j.env())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+}
+
+/// Construct the governor for a hook/task run's parallel foreground phase,
+/// or `None` when governing doesn't apply: non-unix, `daft.governor.mode
+/// off`, fewer than two jobs (nothing to fan out), or unreadable settings.
+///
+/// The profile key is `(repo_hash, stage, hash-of-resolved-commands)` —
+/// job-level identity over migration 004's existing PK, no schema change.
+/// Unlike sync (where the jobserver is gated independently of the
+/// admission plan), the job-run jobserver rides along only when the
+/// governor itself engages — the flat runner has no separate jobserver seam.
+pub fn for_job_run(
+    repo_hash: &str,
+    stage: &str,
+    specs: &[crate::executor::JobSpec],
+) -> Option<GovernedRun> {
+    #[cfg(not(unix))]
+    {
+        let _ = (repo_hash, stage, specs);
+        None
+    }
+    #[cfg(unix)]
+    {
+        use crate::core::settings::{DaftSettings, GovernorMode};
+
+        if specs.len() < 2 {
+            return None;
+        }
+        let settings = DaftSettings::load().ok()?;
+        if settings.governor_mode == GovernorMode::Off {
+            return None;
+        }
+
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let cap = settings.governor_jobs.effective(cores);
+        let reserve = settings.governor_memory_reserve;
+
+        let profiles = {
+            let hook_hash = commands_hash(specs);
+            adapters::SqliteProfileStore::open_for_repo(repo_hash).map(|store| {
+                (
+                    Box::new(store) as Box<dyn ports::ProfileStore>,
+                    ports::ProfileKey {
+                        repo_hash: repo_hash.to_string(),
+                        stage: stage.to_string(),
+                        hook_hash,
+                    },
+                )
+            })
+        };
+
+        let governor = Governor::spawn(
+            adapters::build_probe(),
+            profiles,
+            None,
+            Arc::new(CancelFlag::new()),
+            |first| GovernorParams::new(cap, reserve.resolve(first.mem_total)),
+        );
+
+        let js = if settings.governor_jobserver == GovernorMode::Auto {
+            jobserver::Jobserver::create(cores)
+        } else {
+            None
+        };
+
+        Some(GovernedRun {
+            governor,
+            jobserver: js,
+        })
+    }
+}
+
+/// Content hash over the run's resolved job commands — the job-level
+/// profile identity (same non-security `DefaultHasher` caveat as
+/// [`hook_script_hash`]).
+#[cfg(unix)]
+fn commands_hash(specs: &[crate::executor::JobSpec]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for spec in specs {
+        spec.command.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+impl Governor {
     /// Probe once (seeding the controller and resolving `params_of` against
     /// real machine totals), load the hook's learned profile if
     /// `profiles` is given, then start the sampling thread.
@@ -217,13 +338,18 @@ impl SyncGovernor {
         self.persist();
     }
 
-    /// Register a push unit that is about to spawn its `git push`.
-    /// Dropping the guard deregisters the unit and folds its observed
-    /// peak + wall time into the run's profile aggregate.
-    pub fn begin_unit(&self, branch: &str) -> UnitGuard {
+    /// Register a work unit that is about to spawn its process. Dropping
+    /// the guard deregisters the unit and folds its observed peak + wall
+    /// time into the run's profile aggregate.
+    ///
+    /// Sync pushes register as [`ports::UnitClass::Background`] (today's
+    /// freeze/kill-eligible behavior, unchanged); foreground hook jobs as
+    /// [`ports::UnitClass::ForegroundInteractive`].
+    pub fn begin_unit(&self, label: &str, class: ports::UnitClass) -> UnitGuard {
         let started_ms = self.shared.now_ms();
         self.shared.units.lock().unwrap().push(UnitEntry {
-            branch: branch.to_string(),
+            label: label.to_string(),
+            class,
             pid: None,
             started: Instant::now(),
             started_ms,
@@ -234,7 +360,7 @@ impl SyncGovernor {
         });
         UnitGuard {
             shared: Arc::clone(&self.shared),
-            branch: branch.to_string(),
+            label: label.to_string(),
         }
     }
 
@@ -311,10 +437,10 @@ impl Drop for SyncGovernor {
     }
 }
 
-/// Follows one push unit's lifetime (RAII: drop = unit gone).
+/// Follows one work unit's lifetime (RAII: drop = unit gone).
 pub struct UnitGuard {
     shared: Arc<Shared>,
-    branch: String,
+    label: String,
 }
 
 impl UnitGuard {
@@ -322,7 +448,7 @@ impl UnitGuard {
     /// callback threaded through `GitCommand::with_push_supervision`).
     pub fn attach_pid(&self, pid: u32) {
         let mut units = self.shared.units.lock().unwrap();
-        if let Some(unit) = units.iter_mut().find(|u| u.branch == self.branch) {
+        if let Some(unit) = units.iter_mut().find(|u| u.label == self.label) {
             unit.pid = Some(pid);
         }
     }
@@ -331,7 +457,7 @@ impl UnitGuard {
     /// it (frozen time must not count against `daft.sync.pushTimeout`).
     pub fn attach_clock(&self, clock: Arc<UnitClock>) {
         let mut units = self.shared.units.lock().unwrap();
-        if let Some(unit) = units.iter_mut().find(|u| u.branch == self.branch) {
+        if let Some(unit) = units.iter_mut().find(|u| u.label == self.label) {
             unit.clock = Some(clock);
         }
     }
@@ -342,7 +468,7 @@ impl UnitGuard {
         let units = self.shared.units.lock().unwrap();
         units
             .iter()
-            .find(|u| u.branch == self.branch)
+            .find(|u| u.label == self.label)
             .is_some_and(|u| u.killed.load(Ordering::SeqCst))
     }
 }
@@ -353,7 +479,7 @@ impl Drop for UnitGuard {
             let mut units = self.shared.units.lock().unwrap();
             units
                 .iter()
-                .position(|u| u.branch == self.branch)
+                .position(|u| u.label == self.label)
                 .map(|pos| units.remove(pos))
         };
         if let Some(unit) = removed {
@@ -445,7 +571,7 @@ fn thaw_all(shared: &Shared) {
             .filter_map(|u| {
                 u.frozen
                     .take()
-                    .map(|f| (u.branch.clone(), f, u.clock.clone()))
+                    .map(|f| (u.label.clone(), f, u.clock.clone()))
             })
             .collect()
     };
@@ -473,14 +599,14 @@ fn apply_containment(shared: &Shared) {
         units
             .iter()
             .filter(|u| u.frozen.is_some())
-            .filter_map(|u| u.pid.map(|pid| (u.branch.clone(), pid)))
+            .filter_map(|u| u.pid.map(|pid| (u.label.clone(), pid)))
             .collect()
     };
     for (branch, pid) in frozen_roots {
         let mut stragglers = BTreeSet::new();
         if process_tree::freeze_descendants(pid, &mut stragglers) > 0 {
             let mut units = shared.units.lock().unwrap();
-            if let Some(unit) = units.iter_mut().find(|u| u.branch == branch)
+            if let Some(unit) = units.iter_mut().find(|u| u.label == branch)
                 && let Some(frozen) = &mut unit.frozen
             {
                 frozen.pids.append(&mut stragglers);
@@ -498,7 +624,8 @@ fn apply_containment(shared: &Shared) {
         units
             .iter()
             .map(|u| domain::UnitView {
-                branch: u.branch.clone(),
+                label: u.label.clone(),
+                class: u.class,
                 has_pid: u.pid.is_some(),
                 started_ms: u.started_ms,
                 frozen_for_ms: u
@@ -510,20 +637,20 @@ fn apply_containment(shared: &Shared) {
     };
     let action = shared.controller.lock().unwrap().contain(&views);
     match action {
-        Some(ContainAction::Freeze { branch }) => freeze_unit(shared, &branch),
-        Some(ContainAction::Thaw { branch }) => thaw_unit(shared, &branch),
-        Some(ContainAction::Kill { branch }) => kill_unit(shared, &branch),
+        Some(ContainAction::Freeze { label }) => freeze_unit(shared, &label),
+        Some(ContainAction::Thaw { label }) => thaw_unit(shared, &label),
+        Some(ContainAction::Kill { label }) => kill_unit(shared, &label),
         None => {}
     }
 }
 
 #[cfg(unix)]
-fn freeze_unit(shared: &Shared, branch: &str) {
+fn freeze_unit(shared: &Shared, label: &str) {
     use crate::git::process_tree;
 
     let (pid, clock) = {
         let units = shared.units.lock().unwrap();
-        let Some(unit) = units.iter().find(|u| u.branch == branch) else {
+        let Some(unit) = units.iter().find(|u| u.label == label) else {
             return;
         };
         (unit.pid, unit.clock.clone())
@@ -537,7 +664,7 @@ fn freeze_unit(shared: &Shared, branch: &str) {
     process_tree::freeze_descendants(pid, &mut stopped);
     {
         let mut units = shared.units.lock().unwrap();
-        match units.iter_mut().find(|u| u.branch == branch) {
+        match units.iter_mut().find(|u| u.label == label) {
             Some(unit) if unit.frozen.is_none() => {
                 unit.frozen = Some(FrozenUnit {
                     pids: stopped,
@@ -563,26 +690,26 @@ fn freeze_unit(shared: &Shared, branch: &str) {
         .lock()
         .unwrap()
         .actions
-        .push(("freeze", branch.to_string(), None, None));
+        .push(("freeze", label.to_string(), None, None));
     notify(
         shared,
         DagEvent::TaskThrottled {
             phase: OperationPhase::Push,
-            branch_name: branch.to_string(),
+            branch_name: label.to_string(),
             reason: ThrottleReason::Frozen,
         },
     );
 }
 
 #[cfg(unix)]
-fn thaw_unit(shared: &Shared, branch: &str) {
+fn thaw_unit(shared: &Shared, label: &str) {
     use crate::git::process_tree;
 
     let thawed = {
         let mut units = shared.units.lock().unwrap();
         units
             .iter_mut()
-            .find(|u| u.branch == branch)
+            .find(|u| u.label == label)
             .and_then(|u| u.frozen.take().map(|f| (f, u.clock.clone())))
     };
     let Some((frozen, clock)) = thawed else {
@@ -595,7 +722,7 @@ fn thaw_unit(shared: &Shared, branch: &str) {
     let frozen_ms = u64::try_from(frozen.since.elapsed().as_millis()).unwrap_or(u64::MAX);
     shared.throttle.lock().unwrap().actions.push((
         "thaw",
-        branch.to_string(),
+        label.to_string(),
         Some(frozen_ms),
         None,
     ));
@@ -603,16 +730,16 @@ fn thaw_unit(shared: &Shared, branch: &str) {
         shared,
         DagEvent::TaskResumed {
             phase: OperationPhase::Push,
-            branch_name: branch.to_string(),
+            branch_name: label.to_string(),
         },
     );
 }
 
 #[cfg(unix)]
-fn kill_unit(shared: &Shared, branch: &str) {
+fn kill_unit(shared: &Shared, label: &str) {
     let (pid, killed, peak_rss) = {
         let units = shared.units.lock().unwrap();
-        let Some(unit) = units.iter().find(|u| u.branch == branch) else {
+        let Some(unit) = units.iter().find(|u| u.label == label) else {
             return;
         };
         (unit.pid, Arc::clone(&unit.killed), unit.peak_rss)
@@ -628,21 +755,16 @@ fn kill_unit(shared: &Shared, branch: &str) {
     shared.controller.lock().unwrap().note_kill(shared.now_ms());
     shared.throttle.lock().unwrap().actions.push((
         "kill_requeue",
-        branch.to_string(),
+        label.to_string(),
         None,
         Some(peak_rss),
     ));
 }
 
-impl DagGovernor for SyncGovernor {
-    fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
-        let branch: &str = match &task.id {
-            TaskId::Push(branch) => branch,
-            // The batch is one unit; its throttle log keys on a synthetic
-            // name (its branch_name is deliberately empty for the TUI).
-            TaskId::PushBatch => "(batched push)",
-            _ => return AdmitDecision::Admit,
-        };
+impl Governor {
+    /// The one admission decision, keyed by unit label (for the throttle
+    /// event log). Both port impls delegate here.
+    fn admit_labeled(&self, label: &str) -> AdmitDecision {
         let running = self.shared.admitted.load(Ordering::Relaxed);
         let sample = *self.shared.latest.lock().unwrap();
         let now_ms = self.shared.now_ms();
@@ -662,10 +784,10 @@ impl DagGovernor for SyncGovernor {
         match decision {
             Ok(()) => {
                 self.shared.admitted.fetch_add(1, Ordering::Relaxed);
-                // Close the branch's throttle window for the event log.
+                // Close the label's throttle window for the event log.
                 let mut log = self.shared.throttle.lock().unwrap();
-                if let Some(since) = log.since.remove(branch) {
-                    log.held.push((branch.to_string(), since.elapsed()));
+                if let Some(since) = log.since.remove(label) {
+                    log.held.push((label.to_string(), since.elapsed()));
                 }
                 AdmitDecision::Admit
             }
@@ -675,7 +797,7 @@ impl DagGovernor for SyncGovernor {
                     .lock()
                     .unwrap()
                     .since
-                    .entry(branch.to_string())
+                    .entry(label.to_string())
                     .or_insert_with(Instant::now);
                 AdmitDecision::Defer(match reason {
                     HoldReason::AtCap => DeferReason::ClassCap,
@@ -688,9 +810,37 @@ impl DagGovernor for SyncGovernor {
         }
     }
 
+    /// Return the slot a successful admission reserved.
+    fn release_slot(&self) {
+        self.shared.admitted.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl ports::WorkAdmission for Governor {
+    fn try_admit(&self, unit: &ports::WorkUnit<'_>) -> AdmitDecision {
+        self.admit_labeled(unit.label)
+    }
+
+    fn release(&self, _unit: &ports::WorkUnit<'_>) {
+        self.release_slot();
+    }
+}
+
+impl DagGovernor for Governor {
+    fn try_admit(&self, task: &SyncTask) -> AdmitDecision {
+        let label: &str = match &task.id {
+            TaskId::Push(branch) => branch,
+            // The batch is one unit; its throttle log keys on a synthetic
+            // name (its branch_name is deliberately empty for the TUI).
+            TaskId::PushBatch => "(batched push)",
+            _ => return AdmitDecision::Admit,
+        };
+        self.admit_labeled(label)
+    }
+
     fn release(&self, task: &SyncTask) {
         if matches!(task.id, TaskId::Push(_) | TaskId::PushBatch) {
-            self.shared.admitted.fetch_sub(1, Ordering::Relaxed);
+            self.release_slot();
         }
     }
 }
@@ -791,7 +941,7 @@ mod tests {
             Arc::new(CancelFlag::new()),
             |_| GovernorParams::new(2, 2 * GIB),
         );
-        let guard = governor.begin_unit("feat/a");
+        let guard = governor.begin_unit("feat/a", ports::UnitClass::Background);
         guard.attach_pid(4242);
         {
             let units = governor.shared.units.lock().unwrap();
@@ -894,7 +1044,7 @@ mod tests {
         );
         // One unit admits and runs…
         assert_eq!(governor.try_admit(&push_task("a")), AdmitDecision::Admit);
-        let guard = governor.begin_unit("a");
+        let guard = governor.begin_unit("a", ports::UnitClass::Background);
         // …the second is deferred while "a" holds its slot (6 GiB headroom
         // cannot fit the 10 GiB learned peak), opening a throttle window.
         assert!(matches!(
@@ -936,7 +1086,7 @@ mod tests {
             Arc::clone(&cancel),
             |_| GovernorParams::new(4, 2 * GIB),
         );
-        let guard = governor.begin_unit("a");
+        let guard = governor.begin_unit("a", ports::UnitClass::Background);
         drop(guard);
         cancel.escalate();
         governor.shutdown();
@@ -977,11 +1127,11 @@ mod tests {
         // Two admitted units with (nonexistent) pids: the freeze sweep
         // finds no live descendants — the unit is still marked frozen and
         // its clock pauses, which is what this test observes.
-        let unit_a = governor.begin_unit("feat/a");
+        let unit_a = governor.begin_unit("feat/a", ports::UnitClass::Background);
         unit_a.attach_pid(u32::MAX - 1);
         let clock_a = Arc::new(UnitClock::new(Duration::from_secs(3600)));
         unit_a.attach_clock(Arc::clone(&clock_a));
-        let unit_b = governor.begin_unit("feat/b");
+        let unit_b = governor.begin_unit("feat/b", ports::UnitClass::Background);
         unit_b.attach_pid(u32::MAX - 2);
         let clock_b = Arc::new(UnitClock::new(Duration::from_millis(1)));
         unit_b.attach_clock(Arc::clone(&clock_b));

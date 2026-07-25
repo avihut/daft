@@ -773,6 +773,14 @@ machine swap. Each push unit also gets a wall-clock budget
 `daft.sync.pushHookStrategy batched` pushes every branch in one `git push` so
 the hook fires once with all refs (one refusal fails the whole batch).
 
+The same governor covers parallel hook/task job phases (post-create fan-outs, a
+merge gate's parallel rings): admission caps the fan-out, a shared jobserver
+bounds intra-job build parallelism, and foreground jobs are never frozen or
+killed. Gated merges additionally serialize per repository through a
+cross-process lane — a second `daft merge` prints
+`waiting for the merge gate lane — held by ...` and proceeds when the first
+finishes; that wait is expected coordination, not a hang.
+
 ### Move Hooks
 
 When a worktree moves (`daft rename`, `daft layout transform`, `daft adopt`),

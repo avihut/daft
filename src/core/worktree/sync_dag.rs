@@ -744,27 +744,10 @@ pub enum JobCompletionStatus {
     Skipped,
 }
 
-/// Admission decision returned by [`DagGovernor::try_admit`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdmitDecision {
-    /// Run the task now. The governor reserved a slot; the executor pairs
-    /// this with exactly one [`DagGovernor::release`] when the task leaves
-    /// the running set.
-    Admit,
-    /// Keep the task in the ready queue and re-check admission later.
-    Defer(DeferReason),
-}
-
-/// Why the governor deferred a ready task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeferReason {
-    /// The concurrency cap for the task's class is reached.
-    ClassCap,
-    /// Not enough memory headroom to admit another hook-bearing push.
-    MemoryPressure,
-    /// A governor kill just happened; waiting out the post-kill cooldown.
-    KillCooldown,
-}
+// The admission vocabulary is the governor's neutral port surface (shared
+// with executor-level job governing, #775); re-exported here so sync's
+// existing imports keep reading naturally.
+pub use crate::governor::ports::{AdmitDecision, DeferReason};
 
 /// How the governor is holding a task back (payload of
 /// [`DagEvent::TaskThrottled`]).
@@ -781,17 +764,10 @@ pub enum ThrottleReason {
 
 /// Admission gate consulted by [`DagExecutor`] before it runs a ready task.
 ///
-/// Contract (the executor relies on every point):
-/// - `try_admit` returning [`AdmitDecision::Admit`] reserves one slot and is
-///   paired with exactly one [`DagGovernor::release`]; returning
-///   [`AdmitDecision::Defer`] must be side-effect-free.
-/// - Task classes the governor does not manage are always admitted.
-/// - A governor that currently tracks zero admitted units must admit — this
-///   is the executor's liveness guarantee (workers re-check admission on a
-///   timeout, so an all-deferred ready queue with nothing running would
-///   otherwise never make progress).
-/// - Both methods are called with the executor's internal lock held: they
-///   must return promptly and never call back into the executor.
+/// The thin sync-side adapter over the governor's neutral admission port
+/// ([`crate::governor::ports::WorkAdmission`]) — same contract, `SyncTask`-
+/// typed so the executor never builds descriptors. Additional sync-specific
+/// point: task classes the governor does not manage are always admitted.
 pub trait DagGovernor: Send + Sync {
     /// Decide whether `task` may start now.
     fn try_admit(&self, task: &SyncTask) -> AdmitDecision;

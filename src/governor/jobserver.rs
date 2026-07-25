@@ -18,7 +18,8 @@
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 
-/// A fifo-style jobserver living for one sync push phase.
+/// A fifo-style jobserver living for one governed phase (a sync push
+/// fan-out or a hook run's parallel jobs).
 ///
 /// The fifo is pre-filled with `slots - 1` tokens (make convention: every
 /// client owns one implicit job slot and reads tokens only for *extra*
@@ -26,7 +27,7 @@ use std::path::PathBuf;
 /// so client opens never block, the writer so returned tokens are never
 /// lost to an empty-reader EOF. The backing tempdir (0700) is removed on
 /// drop.
-pub struct PushJobserver {
+pub struct Jobserver {
     _dir: tempfile::TempDir,
     fifo: PathBuf,
     slots: usize,
@@ -34,7 +35,7 @@ pub struct PushJobserver {
     _writer: OwnedFd,
 }
 
-impl PushJobserver {
+impl Jobserver {
     /// Create a jobserver advertising `slots` jobs. `None` on any failure —
     /// the export is an optimization, never a reason to fail a push.
     pub fn create(slots: usize) -> Option<Self> {
@@ -91,13 +92,17 @@ impl PushJobserver {
     }
 }
 
+/// The jobserver's original, sync-flavored name — kept as an alias so the
+/// sync assembly reads unchanged.
+pub type PushJobserver = Jobserver;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn creates_fifo_with_n_minus_one_tokens_and_env() {
-        let server = PushJobserver::create(4).expect("jobserver");
+        let server = Jobserver::create(4).expect("jobserver");
         let (key, value) = server.env();
         assert_eq!(key, "MAKEFLAGS");
         assert!(value.starts_with("-j4 --jobserver-auth=fifo:"), "{value}");
@@ -128,7 +133,7 @@ mod tests {
 
     #[test]
     fn single_slot_pool_has_no_tokens_but_valid_env() {
-        let server = PushJobserver::create(1).expect("jobserver");
+        let server = Jobserver::create(1).expect("jobserver");
         assert!(server.env().1.starts_with("-j1 "));
         assert!(server.read_token_nonblocking().is_none());
     }

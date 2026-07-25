@@ -1665,6 +1665,28 @@ pub fn execute_start(
     // overrides, then enforce it before any state is touched. Re-verified at
     // the landing sites after the pre-merge hooks run.
     let gate = resolve_gate_policy(params, &resolved, git, project_root)?;
+
+    // Serialize gated merges per repository (the cross-process lane): two
+    // concurrent gates certify racing trees and corrupt any fixed scratch
+    // state their rings share. Held from before the policy checks until this
+    // merge returns — covering the hook run AND the landing.
+    let _gate_lane = if gate.pre_merge_hooks_configured {
+        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(
+            &crate::get_git_common_dir()?,
+        )?;
+        let lane_worktree = resolved
+            .path
+            .clone()
+            .or_else(|| git.get_current_worktree_path().ok())
+            .unwrap_or_else(|| project_root.to_path_buf());
+        Some(crate::governor::lane::GateLane::acquire(
+            &repo_hash,
+            &lane_worktree,
+        )?)
+    } else {
+        None
+    };
+
     enforce_gate_preflight(
         &gate,
         params,
@@ -6216,6 +6238,9 @@ mod tests {
     #[test]
     #[serial]
     fn gate_single_source_rule_refuses_octopus_when_hooks_configured() {
+        // Hooks-configured merges acquire the gate lane, which resolves the
+        // daft state dir — isolate it so the test never touches the real one.
+        let _iso = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let _feat = gate_repo(tmp.path());
@@ -6262,6 +6287,7 @@ mod tests {
     #[test]
     #[serial]
     fn gate_landing_recheck_refuses_source_advanced_during_hooks() {
+        let _iso = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let feat_wt = gate_repo(tmp.path());
@@ -6280,6 +6306,7 @@ mod tests {
     #[test]
     #[serial]
     fn gate_landing_recheck_passes_when_nothing_moved() {
+        let _iso = crate::store::paths::IsolatedStateDir::new();
         let _cwd = CwdGuard::new();
         let tmp = tempfile::tempdir().unwrap();
         let _feat = gate_repo(tmp.path());

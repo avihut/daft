@@ -604,13 +604,28 @@ pub fn execute_yaml_hook_with_rc(
 
     // Execute foreground jobs via the generic runner (cancel-aware for tasks;
     // `cfg.cancel` is None for every hook caller, so behavior is unchanged).
-    let fg_results = crate::executor::runner::run_jobs_with_cancel(
+    // Governed foreground fan-out (#775): a parallel phase runs under the
+    // resource governor when `daft.governor.mode` allows — memory-aware
+    // admission caps the fan-out, the jobserver bounds intra-job build
+    // parallelism, and per-job peaks feed the learned profile. Sequential
+    // and piped phases have nothing to admit and stay ungoverned.
+    let governed = if matches!(exec_mode, crate::executor::ExecutionMode::Parallel) {
+        crate::governor::for_job_run(&repo_hash, hook_name, &fg_specs)
+    } else {
+        None
+    };
+    let fg_results = crate::executor::runner::run_jobs_governed(
         &fg_specs,
         exec_mode,
         presenter,
         Some(&fg_sink),
         cfg.cancel,
+        governed.as_ref(),
     )?;
+    // Stop the sampler and persist learned profiles before moving on.
+    if let Some(run) = &governed {
+        run.governor.shutdown();
+    }
 
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
