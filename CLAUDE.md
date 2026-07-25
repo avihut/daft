@@ -75,6 +75,29 @@ IMPORTANT: Every bug fix must include a regression test that reproduces the
 issue. Add a YAML scenario in `tests/manual/scenarios/` or a unit test that
 fails without the fix and passes with it.
 
+## Quality Gates: CI ↔ Merge-Gate Parity
+
+Three surfaces enforce the same boundary: `.github/workflows/test.yml` (what
+"green" means on master), `mise run ci` (the local simulation — every CI job
+must be reachable through a `mise run` task), and the `pre-merge` rings in
+`daft.yml` (`daft merge` refuses to land while one is red). **Add, remove, or
+rename a check in one, change all three in the same PR** — a check that lives
+only in CI makes `daft merge` a false green; one that lives only in the gate
+never blocks a contributor who doesn't merge through daft.
+
+Rings invoke the same `mise run` task as the CI job they mirror, so a local
+refusal names the check that would have failed on GitHub;
+`merge: { ff: only, source_worktree: clean }` is what makes that mean anything —
+the tree the rings tested is the tree that lands. Slow rings (integration
+matrix, MSRV, Windows) get `tags: [deep]` and are dropped per invocation with
+`--skip-tag deep`, never trimmed from the gate to make it feel fast;
+`--skip-hooks` / `--skip-tag` skip _rings_, never _policy_. Never weaken a gate
+to make a merge pass — fix the check or the code.
+
+This repo's own rings land with #387 (`docs/hooks/yaml-reference.md` for ring
+config) — until then, still add the `mise run` task when you add a CI job.
+`claude-pr-review.yml` is out of the parity set: Critical Rule #3 governs it.
+
 ## Profiling
 
 Benchmarking (prove a change is faster) uses the existing `mise run bench:*` /
