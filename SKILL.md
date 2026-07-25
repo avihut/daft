@@ -703,6 +703,16 @@ daft hooks run worktree-post-create --verbose    # Show skipped jobs + reasons
 Use cases: re-running after a failure, iterating during hook development,
 bootstrapping worktrees that predate the hooks config.
 
+Post-hoc navigation: a failed hook prints an inspect breadcrumb
+(`daft hooks jobs --last --hook <type>`). `daft hooks jobs --last [N]` shows the
+newest invocation(s), `--failed` narrows to failing ones (sugar for
+`--status failed`; `--status` values are validated at parse time), failed jobs
+show their last output lines inline under the listing, and
+`daft hooks jobs logs <job>` resolves a bare job name to its newest invocation
+anywhere in the repo. On an interactive terminal, a gated `daft merge` renders
+its pre/post-merge hooks as live rail sections (same `v` verbose toggle as
+exec/run) instead of hiding them behind the spinner.
+
 ### Skipping Hooks Per-Invocation (`--skip-hooks`)
 
 The worktree-creating commands (`daft start`, `daft go`, `daft clone`,

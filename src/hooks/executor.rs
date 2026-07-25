@@ -72,6 +72,10 @@ pub struct HookResult {
     pub skip_reason: Option<String>,
     /// Whether the skip evaluation involved running a command check.
     pub skip_ran_command: bool,
+    /// The log-store invocation id this fire was recorded under, when one
+    /// was minted (yaml hooks past the hook-level skip gate). Lets failure
+    /// paths print an inspect breadcrumb pointing at the exact invocation.
+    pub invocation_id: Option<String>,
     /// Whether the skip was due to a platform mismatch (OS-keyed run with no matching variant).
     /// Platform skips are completely silent — no output, not even a skip message.
     pub platform_skip: bool,
@@ -88,6 +92,7 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -102,6 +107,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -116,6 +122,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: true,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -138,6 +145,7 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -155,6 +163,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some("platform skip".to_string()),
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: true,
         }
     }
@@ -169,8 +178,15 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
+    }
+
+    /// Stamp the log-store invocation id this result was recorded under.
+    pub fn with_invocation(mut self, invocation_id: &str) -> Self {
+        self.invocation_id = Some(invocation_id.to_string());
+        self
     }
 }
 
@@ -738,6 +754,18 @@ impl HookExecutor {
     ) -> Result<HookResult> {
         let exit_code = result.exit_code.unwrap_or(-1);
 
+        // Breadcrumb into the recorded invocation: the listing (newest
+        // first, hook-filtered) plus the per-job log drill-down.
+        let inspect = result.invocation_id.as_ref().map(|_| {
+            format!(
+                "inspect: {}",
+                crate::daft_cmd(&format!(
+                    "hooks jobs --last --hook {}",
+                    hook_type.yaml_name()
+                ))
+            )
+        });
+
         match fail_mode {
             FailMode::Abort => {
                 output.error(&format!(
@@ -746,6 +774,9 @@ impl HookExecutor {
                 ));
                 if !result.stderr.is_empty() {
                     output.error(&format!("Hook stderr: {}", result.stderr.trim()));
+                }
+                if let Some(inspect) = inspect {
+                    output.info(&inspect);
                 }
                 anyhow::bail!("{} hook failed with exit code {}", hook_type, exit_code);
             }
@@ -756,6 +787,9 @@ impl HookExecutor {
                 ));
                 if !result.stderr.is_empty() {
                     output.warning(&format!("Hook stderr: {}", result.stderr.trim()));
+                }
+                if let Some(inspect) = inspect {
+                    output.info(&inspect);
                 }
                 Ok(result)
             }

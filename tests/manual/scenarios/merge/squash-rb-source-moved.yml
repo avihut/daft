@@ -1,7 +1,11 @@
-name: --squash -r refuses cleanup when source ref moved
+name: --squash -r source moved mid-gate refuses at landing
 description:
-  "Source branch tip moved between merge start and cleanup; cleanup refuses to
-  avoid losing work; commit stays on target."
+  "Source branch tip moved while the pre-merge hooks ran. Since #775 the landing
+  re-verification catches this BEFORE anything lands (strictly stronger than the
+  historical cleanup-stability refusal this scenario used to assert): the merge
+  refuses, no squash commit is created, and the source worktree/branch survive
+  untouched. The cleanup stability check still guards the hook-less editor
+  window (covered by unit tests)."
 
 repos:
   - name: test-repo
@@ -42,20 +46,21 @@ steps:
     cwd: "$WORK_DIR/test-repo"
     expect: { exit_code: 0 }
 
-  - name: --squash --no-edit -r should refuse cleanup but keep commit
+  - name: --squash --no-edit -r refuses at landing, before anything lands
     run: git-worktree-merge feature/test-feature --squash --no-edit -r 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 1
       output_contains:
-        - "moved during merge"
+        - "advanced while the merge gate ran"
+        - "re-run the merge"
 
-  - name: Verify squash commit landed on main (commit not rolled back)
+  - name: Verify NO squash commit landed on main
     run: git -C $WORK_DIR/test-repo/main log --oneline -1 main
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
-      output_contains: ["Squashed commit"]
+      output_not_contains: ["Squashed commit"]
 
   - name: Verify source worktree NOT removed (cleanup didn't run)
     run: test -d $WORK_DIR/test-repo/feature/test-feature && echo "wt_present"

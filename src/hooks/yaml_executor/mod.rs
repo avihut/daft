@@ -306,6 +306,7 @@ pub fn execute_yaml_hook_with_rc(
                     hook_def.background,
                 ),
                 reason: crate::hooks::job_adapter::SkipCause::Requested.reason(),
+                kind: crate::hooks::job_adapter::SkipKind::Tag,
             });
         }
         jobs.clear();
@@ -354,6 +355,14 @@ pub fn execute_yaml_hook_with_rc(
                                     job.background,
                                     hook_def.background,
                                 ),
+                                kind: match cause {
+                                    crate::hooks::job_adapter::SkipCause::Requested => {
+                                        crate::hooks::job_adapter::SkipKind::Tag
+                                    }
+                                    crate::hooks::job_adapter::SkipCause::DependsOn(_) => {
+                                        crate::hooks::job_adapter::SkipKind::NotRun
+                                    }
+                                },
                                 reason: cause.reason(),
                             });
                             false
@@ -546,7 +555,7 @@ pub fn execute_yaml_hook_with_rc(
             }
             presenter.on_phase_complete(std::time::Duration::ZERO);
         }
-        return Ok(HookResult::skipped("All jobs skipped"));
+        return Ok(HookResult::skipped("All jobs skipped").with_invocation(&invocation_id));
     }
 
     // Partition into foreground and background phases.
@@ -630,7 +639,7 @@ pub fn execute_yaml_hook_with_rc(
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
         presenter.on_phase_complete(hook_start.elapsed());
-        return job_results_to_hook_result(&fg_results);
+        return job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // If a cancellation was raised during the foreground phase, never dispatch
@@ -648,7 +657,7 @@ pub fn execute_yaml_hook_with_rc(
             fg_sink.on_job_runner_skipped(spec, "cancelled");
         }
         presenter.on_phase_complete(hook_start.elapsed());
-        return job_results_to_hook_result(&fg_results);
+        return job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Detect BG jobs whose ORIGINAL (pre-partition) `needs:` referenced a
@@ -687,7 +696,7 @@ pub fn execute_yaml_hook_with_rc(
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
-        return job_results_to_hook_result(&all_results);
+        return job_results_to_hook_result(&all_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Register background jobs in the presenter (live progress + summary)
@@ -743,13 +752,13 @@ pub fn execute_yaml_hook_with_rc(
         )?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
-        return job_results_to_hook_result(&all_results);
+        return job_results_to_hook_result(&all_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Convert foreground results to HookResult (background jobs are now
     // running in the forked coordinator and do not affect the hook outcome).
     #[cfg(unix)]
-    job_results_to_hook_result(&fg_results)
+    job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id))
 }
 
 /// Run background jobs inline (no coordinator), synthesizing `Skipped`

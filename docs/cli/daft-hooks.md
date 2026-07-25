@@ -282,6 +282,8 @@ daft hooks jobs [OPTIONS]
 | `--all` | Show jobs across all worktrees |  |
 | `--worktree <WORKTREE>` | Filter to a specific worktree (can be deleted) |  |
 | `--status <STATUS>` | Filter to invocations containing jobs with this status |  |
+| `--failed` | Only invocations containing failed jobs (same as --status failed) |  |
+| `--last <N>` | Show only the N most recent invocations (after other filters) |  |
 | `--hook <HOOK_FILTER>` | Filter to invocations of this hook type |  |
 | `--repo <REPO>` | Target repo by catalog name, path, or uuid (default: the current repo). Removed repos resolve too — their logs are retained |  |
 | `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |

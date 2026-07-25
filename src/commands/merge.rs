@@ -9,6 +9,7 @@
 use crate::{
     core::{
         CommandBridge,
+        stage::{PlanCommit, Row, StageId, StepKey, StepSpec},
         worktree::merge::{HookRunner, MergeHookContext},
     },
     executor::cli_presenter::CliPresenter,
@@ -17,7 +18,10 @@ use crate::{
     hooks::{HookContext, HookExecutor, HookType},
     is_git_repository,
     logging::init_logging,
-    output::{CliOutput, Output, OutputConfig},
+    output::{
+        CliOutput, Output, OutputConfig,
+        timeline::{Timeline, TimelineHandle, TimelineMode},
+    },
     settings::{DaftSettings, HookOutputConfig, load_hooks_config},
 };
 use anyhow::Result;
@@ -719,7 +723,59 @@ pub fn run() -> Result<()> {
             target_label
         )
     };
-    output.start_spinner(&spinner_label);
+
+    // Plan-execute rail (#775): when the target's config declares merge
+    // hooks, the gate renders as first-class rail sections (live job rows,
+    // tails, the `v` verbose toggle) instead of hiding behind the spinner —
+    // and the presenter honors the repo's hook output config rather than
+    // `HookOutputConfig::default()`. Editor-opening merges keep the spinner:
+    // $EDITOR needs the terminal to itself, and the gated workflow passes
+    // --no-edit/-m anyway.
+    let hooks_output_config = load_hooks_config()
+        .map(|c| c.output)
+        .unwrap_or_default()
+        .with_cli_verbose(args.verbose);
+    let hook_probe_root = params
+        .target
+        .as_deref()
+        .and_then(|t| git.resolve_worktree_path(t, &project_root).ok())
+        .unwrap_or_else(|| source_worktree.clone());
+    let declared_merge_hooks: Vec<HookType> =
+        match crate::hooks::yaml_config_loader::load_merged_config(&hook_probe_root) {
+            Ok(Some(cfg)) => [HookType::PreMerge, HookType::PostMerge]
+                .into_iter()
+                .filter(|ht| {
+                    cfg.hooks
+                        .get(ht.yaml_name())
+                        .map(|d| {
+                            !crate::hooks::yaml_config_loader::get_effective_jobs(d).is_empty()
+                        })
+                        .unwrap_or(false)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+    let mut timeline: Option<Timeline> = None;
+    if !declared_merge_hooks.is_empty() && !params.flags.would_open_editor() {
+        let mut tl = Timeline::new(
+            TimelineMode::auto(false),
+            args.verbose,
+            spinner_label.trim_end_matches("...").to_string(),
+        );
+        tl.set_verbose_density(hooks_output_config.verbose);
+        if tl.is_interactive() {
+            let rows: Vec<Row> = declared_merge_hooks
+                .iter()
+                .filter_map(|ht| StageId::for_hook_type(*ht))
+                .map(|stage| Row::Step(StepSpec::new(StepKey::new(stage))))
+                .collect();
+            tl.commit_plan(PlanCommit::new(rows));
+            timeline = Some(tl);
+        }
+    }
+    if timeline.is_none() {
+        output.start_spinner(&spinner_label);
+    }
     // Resolve propagation participants for visitor-config daft files.
     //
     // Propagation always flows FROM the source branch's worktree INTO the
@@ -826,6 +882,7 @@ pub fn run() -> Result<()> {
         f.only_tags = args.only_tag.clone();
         f
     };
+    let timeline_handle = timeline.as_ref().map(|tl| tl.handle());
     let outcome_result = {
         let mut runner = MergeHookRunner::new(
             &mut output,
@@ -834,6 +891,8 @@ pub fn run() -> Result<()> {
             settings.remote.clone(),
             source_worktree.clone(),
             hook_filter,
+            hooks_output_config.clone(),
+            timeline_handle,
         )?;
         match (&prop_source, &prop_target) {
             (Some(_), Some(prop_tgt)) if !consolidation.is_empty() => {
@@ -941,6 +1000,15 @@ pub fn run() -> Result<()> {
         }
     };
     output.finish_spinner();
+    // Close the rail (if one was planned) before any terminal prints — the
+    // footer is the gate's receipt; merge's own status line follows.
+    if let Some(mut tl) = timeline {
+        let elapsed = tl.elapsed_display();
+        match &outcome_result {
+            Ok(outcome) if !outcome.failed => tl.finish(&format!("Done in {elapsed}")),
+            _ => tl.finish(&format!("Finished in {elapsed}")),
+        }
+    }
     // Dump captured git output to stderr after the spinner stops (avoids
     // carriage-return mangling). On failure, always dump; on success, only
     // dump when --verbose is set.
@@ -1403,9 +1471,16 @@ struct MergeHookRunner<'a> {
     git_dir: PathBuf,
     remote: String,
     source_worktree: PathBuf,
+    /// The repo's hook output configuration (verbose density, manager
+    /// parsing) — previously `HookOutputConfig::default()`, which ignored it.
+    output_config: HookOutputConfig,
+    /// When the merge planned a rail, hook fires embed under their stage
+    /// rows; `None` falls back to the standalone block presenter.
+    timeline: Option<TimelineHandle>,
 }
 
 impl<'a> MergeHookRunner<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         output: &'a mut dyn Output,
         project_root: PathBuf,
@@ -1413,6 +1488,8 @@ impl<'a> MergeHookRunner<'a> {
         remote: String,
         source_worktree: PathBuf,
         filter: crate::hooks::yaml_executor::JobFilter,
+        output_config: HookOutputConfig,
+        timeline: Option<TimelineHandle>,
     ) -> Result<Self> {
         let hooks_config = load_hooks_config()?;
         let executor = HookExecutor::new(hooks_config)?.with_job_filter(filter);
@@ -1423,6 +1500,8 @@ impl<'a> MergeHookRunner<'a> {
             git_dir,
             remote,
             source_worktree,
+            output_config,
+            timeline,
         })
     }
 
@@ -1458,7 +1537,12 @@ impl<'a> MergeHookRunner<'a> {
 
     fn fire(&mut self, hook_type: HookType, merge_ctx: &MergeHookContext) -> Result<()> {
         let ctx = self.build_ctx(hook_type, merge_ctx);
-        let presenter = CliPresenter::auto(&HookOutputConfig::default());
+        let presenter = match (&self.timeline, StageId::for_hook_type(hook_type)) {
+            (Some(handle), Some(stage)) => {
+                CliPresenter::embedded_for_stage(&self.output_config, handle.clone(), stage)
+            }
+            _ => CliPresenter::auto(&self.output_config),
+        };
         // `execute` returns Err when a hook fails AND its fail mode is
         // Abort. pre-merge defaults to Abort, post-merge to Warn, so the
         // trait method's "Err aborts" contract is honored by the

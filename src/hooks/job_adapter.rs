@@ -15,6 +15,41 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Why-category of a pre-execution skip — the typed half of the skip
+/// taxonomy. The human-readable `reason` string carries the detail; the
+/// kind is what machine consumers (structured emit) and styling switch on.
+/// Defined here, at the production site, so the taxonomy cannot drift from
+/// the strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipKind {
+    /// No changed file matched the job's `glob:`/`exclude:`/`files:` set.
+    Glob,
+    /// A `skip:`/`only:` condition held (env, ref, run, changed, bool).
+    Condition,
+    /// Requested by selection (`--skip-hooks`, `--skip-tag`).
+    Tag,
+    /// The job's platform constraint doesn't match this machine.
+    Platform,
+    /// Not run for a structural reason (an excluded dependency).
+    NotRun,
+    /// Declared in a shape the executor refuses (e.g. `group:`).
+    ConfigError,
+}
+
+impl SkipKind {
+    /// Stable machine token for structured output.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SkipKind::Glob => "glob",
+            SkipKind::Condition => "condition",
+            SkipKind::Tag => "tag",
+            SkipKind::Platform => "platform",
+            SkipKind::NotRun => "not-run",
+            SkipKind::ConfigError => "config-error",
+        }
+    }
+}
+
 /// A job that was declared in YAML but filtered out before execution.
 ///
 /// Produced by `yaml_jobs_to_specs` alongside the kept `JobSpec`s so the
@@ -24,6 +59,7 @@ pub struct SkippedJob {
     pub name: String,
     pub background: bool,
     pub reason: String,
+    pub kind: SkipKind,
 }
 
 /// Resolve a job's effective `background:` flag: the job's own setting wins,
@@ -318,6 +354,7 @@ pub fn yaml_jobs_to_specs(
                 background: declared_background,
                 reason: "skip: group jobs are not yet supported by the generic executor"
                     .to_string(),
+                kind: SkipKind::ConfigError,
             });
             continue;
         }
@@ -330,6 +367,7 @@ pub fn yaml_jobs_to_specs(
                     "skip: platform-specific run has no entry for {}",
                     std::env::consts::OS
                 ),
+                kind: SkipKind::Platform,
             });
             continue;
         }
@@ -342,6 +380,7 @@ pub fn yaml_jobs_to_specs(
                 name,
                 background: declared_background,
                 reason: info.reason,
+                kind: SkipKind::Condition,
             });
             continue;
         }
@@ -354,6 +393,7 @@ pub fn yaml_jobs_to_specs(
                 name,
                 background: declared_background,
                 reason: info.reason,
+                kind: SkipKind::Condition,
             });
             continue;
         }
@@ -367,6 +407,7 @@ pub fn yaml_jobs_to_specs(
                     name,
                     background: declared_background,
                     reason,
+                    kind: SkipKind::Glob,
                 });
                 continue;
             }
