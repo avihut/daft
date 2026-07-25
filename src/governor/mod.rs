@@ -203,10 +203,11 @@ pub fn for_job_run(
     repo_hash: &str,
     stage: &str,
     specs: &[crate::executor::JobSpec],
+    state_dir: Option<&std::path::Path>,
 ) -> Option<GovernedRun> {
     #[cfg(not(unix))]
     {
-        let _ = (repo_hash, stage, specs);
+        let _ = (repo_hash, stage, specs, state_dir);
         None
     }
     #[cfg(unix)]
@@ -229,7 +230,7 @@ pub fn for_job_run(
 
         let profiles = {
             let hook_hash = commands_hash(specs);
-            adapters::SqliteProfileStore::open_for_repo(repo_hash).map(|store| {
+            adapters::SqliteProfileStore::open_for_repo_in(state_dir, repo_hash).map(|store| {
                 (
                     Box::new(store) as Box<dyn ports::ProfileStore>,
                     ports::ProfileKey {

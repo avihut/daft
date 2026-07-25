@@ -619,7 +619,7 @@ pub fn execute_yaml_hook_with_rc(
     // parallelism, and per-job peaks feed the learned profile. Sequential
     // and piped phases have nothing to admit and stay ungoverned.
     let governed = if matches!(exec_mode, crate::executor::ExecutionMode::Parallel) {
-        crate::governor::for_job_run(&repo_hash, hook_name, &fg_specs)
+        crate::governor::for_job_run(&repo_hash, hook_name, &fg_specs, ctx.state_dir.as_deref())
     } else {
         None
     };
@@ -1235,6 +1235,60 @@ mod tests {
         assert!(
             !leaked.exists(),
             "must not leak a UUID dir into the real state dir: {}",
+            leaked.display()
+        );
+    }
+
+    /// Same contract, for the governor's profile store.
+    ///
+    /// A parallel phase (two or more foreground jobs — the hook default)
+    /// engages `for_job_run`, which opens the per-repo coordinator DB to
+    /// read and write learned profiles. That open must honor `ctx.state_dir`
+    /// exactly like the LogStore beside it; when it didn't, every unit test
+    /// firing a parallel hook created a `jobs/<repo_hash>/coordinator.db`
+    /// under the developer's real state dir and tripped `xtask
+    /// real-state-guard`.
+    #[test]
+    fn test_governed_parallel_phase_honors_state_dir_override() {
+        let hook_def = HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("one".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("two".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+
+        execute_yaml_hook(
+            "test-hook",
+            &hook_def,
+            &ctx,
+            &mut output,
+            ".daft",
+            Path::new("/tmp"),
+            &HookOutputConfig::default(),
+        )
+        .unwrap();
+
+        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(dir.path())
+            .expect("daft-id should have been written into ctx.git_dir");
+        let leaked = crate::daft_state_dir()
+            .expect("daft_state_dir resolves")
+            .join("jobs")
+            .join(&repo_hash)
+            .join("coordinator.db");
+        assert!(
+            !leaked.exists(),
+            "the governor's profile store must not open a DB in the real state dir: {}",
             leaked.display()
         );
     }

@@ -19,7 +19,21 @@ pub struct SqliteProfileStore {
 impl SqliteProfileStore {
     /// Open (creating/migrating if needed) the coordinator DB for a repo.
     pub fn open_for_repo(repo_hash: &str) -> Option<Self> {
-        let db_path = crate::store::paths::for_repo(repo_hash).ok()?;
+        Self::open_for_repo_in(None, repo_hash)
+    }
+
+    /// Same, but rooted at an explicit state dir when the caller has one.
+    ///
+    /// Hook runs carry a state dir on their context (tests point it at a
+    /// tempdir); honoring it here is what keeps a governed hook from writing
+    /// the developer's real `~/.local/state/daft` during `mise run
+    /// test:unit`. `None` means "resolve the real one", which is what the
+    /// sync path wants.
+    pub fn open_for_repo_in(state_dir: Option<&std::path::Path>, repo_hash: &str) -> Option<Self> {
+        let db_path = match state_dir {
+            Some(base) => crate::store::paths::for_repo_under(base, repo_hash).ok()?,
+            None => crate::store::paths::for_repo(repo_hash).ok()?,
+        };
         let pool = Pool::open(&db_path).ok()?;
         Some(Self { pool })
     }
