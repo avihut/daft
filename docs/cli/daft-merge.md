@@ -442,7 +442,7 @@ daft merge track --no-edit --format json
 
 The exit code is unchanged by the flag: a refused or failed merge still exits
 non-zero, so a wrapper reading only exit codes behaves exactly as before. See
-[Output Formats](../reference/output-formats.md#the-merge-verdict) for every
+[Output Formats](/reference/output-formats#the-merge-verdict) for every
 `status` value, the refusal tokens, and how the invocation ids join to
 `daft hooks jobs`.
 
