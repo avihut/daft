@@ -711,7 +711,10 @@ show their last output lines inline under the listing, and
 `daft hooks jobs logs <job>` resolves a bare job name to its newest invocation
 anywhere in the repo. On an interactive terminal, a gated `daft merge` renders
 its pre/post-merge hooks as live rail sections (same `v` verbose toggle as
-exec/run) instead of hiding them behind the spinner.
+exec/run) instead of hiding them behind the spinner. Non-interactively, prefer
+`daft merge --format json`: it reports the gate's verdict, why it refused, and
+the job rows in one document instead of prose you would have to parse — see
+Machine-Readable Output.
 
 ### Skipping Hooks Per-Invocation (`--skip-hooks`)
 
@@ -1058,11 +1061,25 @@ non-interactive runs print a copy-pasteable hint. It never touches the tracked
 ## Machine-Readable Output
 
 Commands emitting structured output via `--format`: flat-list (`list`,
-`hooks trust list`, `layout list`), document (`release-notes`), matrix
-(`shared status`), sectioned (`multi-remote status`, `hooks run` listing mode).
-Valid formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
+`hooks jobs`, `hooks trust list`, `layout list`, `repo list`), document
+(`release-notes`, `repo info`), matrix (`shared status`), sectioned (`merge`,
+`multi-remote status`, `hooks run` listing mode). Valid formats: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
 `--template '<tera-template>'` renders custom output (`{{ var }}`, `{% for %}`,
-`{% if %}`).
+`{% if %}`). Document and sectioned payloads support only `json`, `yaml`,
+`toon`, `markdown` — the row formats have no rows to fill.
+
+**`daft merge --format json`** (start mode only; the finish modes reject it)
+returns sections `verdict`, `sources`, `conflicts` (only when conflicted), and
+`jobs` (the gate's per-job rows). Branch on `verdict[0].status`: `landed`,
+`up-to-date`, `squash-staged` exit 0; `refused` (gate policy stopped it, repo
+untouched — `verdict[0].refusal` names which policy), `gate-failed` (a check
+came back red; read the `jobs` section), `conflicted`, `commit-aborted`, and
+`failed` exit 1. A merge that landed but whose cleanup was refused reports
+`landed` with `cleanup: "refused"` and still exits 1. `pre_merge_invocation`
+joins to `daft hooks jobs --last --hook pre-merge --format json` for the full
+job detail and logs. The flag never changes the exit code — checking `$?` alone
+stays valid.
 
 `daft start --fork` has its own fixed stdout contract, no `--format` needed: the
 created worktree path(s), bare, one per line (everything else on stderr).

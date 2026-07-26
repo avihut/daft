@@ -893,7 +893,7 @@ _daft() {
             return 0
         fi
         if [[ "$cur" == -* ]]; then
-            local flags="--into --abort --continue --quit --adopt-target --no-adopt-target -y --yes --merge --squash --rebase --rebase-merge -r --remove-branch --keep-branch --set-default -m -F --file --edit --no-edit --cleanup --commit --no-commit --signoff --no-signoff -s --strategy -X --strategy-option -S --gpg-sign --no-gpg-sign --verify-signatures --no-verify-signatures --allow-unrelated-histories --stat -n --no-stat --ff-only --no-ff-only --source-worktree --skip-hooks --skip-tag --only-tag -v --verbose -h --help -V --version"
+            local flags="--into --abort --continue --quit --adopt-target --no-adopt-target -y --yes --merge --squash --rebase --rebase-merge -r --remove-branch --keep-branch --set-default -m -F --file --edit --no-edit --cleanup --commit --no-commit --signoff --no-signoff -s --strategy -X --strategy-option -S --gpg-sign --no-gpg-sign --verify-signatures --no-verify-signatures --allow-unrelated-histories --stat -n --no-stat --ff-only --no-ff-only --source-worktree --skip-hooks --skip-tag --only-tag --format --template --no-headers -v --verbose -h --help -V --version"
             COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
             return 0
         fi

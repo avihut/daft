@@ -1119,6 +1119,44 @@ fn build_fig_merge_subcommand(name: &str) -> FigSubcommand {
             }),
         },
         FigOption {
+            name: FigName::Single("--format".into()),
+            description: "Machine-readable verdict (start mode only)".into(),
+            args: Some(FigOptionArg {
+                suggestions: Some(vec![
+                    FigSuggestion {
+                        name: "json".into(),
+                        description: "Pretty-printed JSON document".into(),
+                    },
+                    FigSuggestion {
+                        name: "yaml".into(),
+                        description: "YAML document".into(),
+                    },
+                    FigSuggestion {
+                        name: "toon".into(),
+                        description: "TOON, token-compact".into(),
+                    },
+                    FigSuggestion {
+                        name: "markdown".into(),
+                        description: "Markdown tables".into(),
+                    },
+                ]),
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--template".into()),
+            description: "Render the verdict with a Tera template".into(),
+            args: Some(FigOptionArg {
+                suggestions: None,
+                template: None,
+            }),
+        },
+        FigOption {
+            name: FigName::Single("--no-headers".into()),
+            description: "Omit header row (tsv/csv only)".into(),
+            args: None,
+        },
+        FigOption {
             name: FigName::Single("-m".into()),
             description: "Commit message for the merge commit".into(),
             args: Some(FigOptionArg {

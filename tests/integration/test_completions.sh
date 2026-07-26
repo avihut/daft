@@ -466,13 +466,16 @@ test_flag_extraction_consistency() {
 # the whole gate-policy surface was undiscoverable from the shell. Nothing
 # caught it; this does.
 test_merge_gate_flags_in_all_shells() {
-    run_test "merge gate flags present in bash/zsh/fish completions"
+    run_test "merge gate and format flags present in bash/zsh/fish completions"
 
     local missing=""
     local shell flag needle out
     for shell in bash zsh fish; do
         out=$("$DAFT_BIN" completions "$shell" 2>&1)
-        for flag in ff-only no-ff-only source-worktree skip-tag only-tag; do
+        # Gate policy plus the machine-output flags. clap introspection does
+        # not reach `daft merge`, so every one of these is hand-maintained in
+        # bash.rs/zsh.rs/fish.rs/fig.rs and silently absent if forgotten.
+        for flag in ff-only no-ff-only source-worktree skip-tag only-tag format template no-headers; do
             # fish declares long options as `-l ff-only`, without the dashes.
             if [[ "$shell" == "fish" ]]; then
                 needle="-l $flag"
@@ -488,7 +491,7 @@ test_merge_gate_flags_in_all_shells() {
     if [[ -z "$missing" ]]; then
         pass_test
     else
-        fail_test "merge gate flags missing from completions:$missing"
+        fail_test "merge flags missing from completions:$missing"
     fi
 }
 

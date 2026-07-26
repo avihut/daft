@@ -77,6 +77,8 @@ that are unique to daft merge or that shape the cross-worktree workflow.
 | `--skip-hooks <SEL>`      | Skip pre/post-merge hook jobs (`all`, a hook name, `tag:<tag>`, or a job name plus dependents). Gate policy is never skipped.                                      |
 | `--skip-tag <TAG>`        | Skip hook jobs carrying TAG plus their dependents (repeatable) — e.g. `--skip-tag deep` for a fast gate pass.                                                      |
 | `--only-tag <TAG>`        | Run only hook jobs carrying TAG (repeatable).                                                                                                                      |
+| `--format <FORMAT>`       | Machine-readable verdict: `json`, `yaml`, `toon`, or `markdown`. Start mode only. Mutually exclusive with `--template`.                                             |
+| `--template <STR>`        | Render the verdict with a Tera template. Mutually exclusive with `--format`.                                                                                       |
 
 ## Examples
 
@@ -412,6 +414,40 @@ Updated repository defaults: merge.style=squash, merge.cleanup=remove-branch
 
 Pass `--verbose` to dump git's full output to stderr alongside the styled step
 lines. Useful for diagnosing unexpected merge behavior.
+
+### Machine-readable output
+
+`--format json|yaml|toon|markdown` replaces everything above with a single
+document on stdout: the verdict, the sources it certified, any conflicted
+paths, and the gate's per-job rows. Human status lines are suppressed — stdout
+belongs to the payload — while warnings and error reports stay on stderr.
+
+```bash
+daft merge track --no-edit --format json
+```
+
+```json
+{
+  "verdict": [
+    {
+      "status": "refused",
+      "refusal": "not-fast-forward",
+      "target_branch": "main",
+      "pre_merge_invocation": null
+    }
+  ],
+  "sources": [{ "source": "track", "sha": "a2bfa6b5a04b" }]
+}
+```
+
+The exit code is unchanged by the flag: a refused or failed merge still exits
+non-zero, so a wrapper reading only exit codes behaves exactly as before. See
+[Output Formats](../reference/output-formats.md#the-merge-verdict) for every
+`status` value, the refusal tokens, and how the invocation ids join to
+`daft hooks jobs`.
+
+Start mode only. `--abort`, `--continue`, and `--quit` reject the flag at parse
+time rather than accepting it and emitting nothing.
 
 ## Cleanup hooks
 
