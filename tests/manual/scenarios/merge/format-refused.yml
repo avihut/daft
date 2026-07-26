@@ -85,6 +85,11 @@ steps:
     run: daft merge --abort --format json 2>&1
     cwd: "$WORK_DIR/test-merge-fmt-refused/main"
     expect:
+      # Exit 2 is clap's parse error — reached before any merge state is
+      # inspected. The message must name BOTH flags: a bare "cannot be used
+      # with" would also pass on some unrelated clap conflict, and dropping
+      # the conflict declaration would exit 1 ("no merge in progress")
+      # instead, which this pins against.
       exit_code: 2
       output_contains:
-        - "cannot be used with"
+        - "'--abort' cannot be used with '--format <FORMAT>'"
