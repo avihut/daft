@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.24.0](https://github.com/avihut/daft/compare/v1.23.0...v1.24.0) - 2026-07-26
+
+
+### Bug Fixes
+
+- **hooks**: Honor failMode=warn for worktree-pre-create (#771)
+- **output**: Stop VS16 emoji in child output ghosting live rail rows (#763)
+- Skip pre-push hooks on remote-branch deletes (#754)
+
+
+### Features
+
+- Local merge quality gates (#776)
+- Anonymous worktrees via go <commit-ish> and start --fork (#769)
+- **hooks**: Render lefthook manager output as first-class hook structure (#772)
+- **hooks**: Add tracked daft.yml fail_mode: key for hook failure mode (#774)
+- **hooks**: Abort on worktree-post-create failure by default (#766)
+- **remove**: Repo-aware targeting via --repo (#762)
 ## [1.23.0](https://github.com/avihut/daft/compare/v1.22.0...v1.23.0) - 2026-07-20
 
 
