@@ -124,6 +124,87 @@ impl GatePolicy {
     }
 }
 
+/// Why the gate refused, as a value rather than prose to scrape.
+///
+/// Refusals reach the command layer as an `anyhow::Error`, whose payload is a
+/// human sentence. `--format` has to report *which* policy refused, and
+/// matching on that sentence would make the structured output a parser for
+/// English — the exact coupling machine output exists to remove. So the kind
+/// travels alongside the message and the command layer downcasts for it
+/// ([`GateRefusal::from_error`]). Same shape as `PostCreateHookFailed`
+/// (`core/worktree/mod.rs`), which carries recovery state out the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateRefusalKind {
+    /// Pre-merge hooks gate this repo and more than one source was named:
+    /// one gate run cannot certify N tracks.
+    OctopusWithHooks,
+    /// `ff: only` with multiple sources — fast-forward is impossible by
+    /// construction, refused before any ancestry is computed.
+    MultiSourceNotFastForward,
+    /// `ff: only`: the source does not contain the target tip.
+    NotFastForward,
+    /// `source_worktree: clean`: the source has no checked-out worktree.
+    SourceWorktreeMissing,
+    /// `source_worktree: clean`: the source worktree has uncommitted changes.
+    SourceWorktreeDirty,
+    /// Landing re-check: the source moved while the gate ran, so the rings
+    /// certified a tree that is no longer the track's tip.
+    SourceAdvancedDuringGate,
+    /// Landing re-check: the target moved while the gate ran and the source
+    /// no longer contains its tip.
+    TargetAdvancedDuringGate,
+}
+
+impl GateRefusalKind {
+    /// Stable machine token for `--format` payloads.
+    ///
+    /// These strings are part of the output contract: consumers branch on
+    /// them, so renaming one is a breaking change even though nothing in
+    /// this crate reads them back.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GateRefusalKind::OctopusWithHooks => "octopus-with-hooks",
+            GateRefusalKind::MultiSourceNotFastForward => "multi-source-not-fast-forward",
+            GateRefusalKind::NotFastForward => "not-fast-forward",
+            GateRefusalKind::SourceWorktreeMissing => "source-worktree-missing",
+            GateRefusalKind::SourceWorktreeDirty => "source-worktree-dirty",
+            GateRefusalKind::SourceAdvancedDuringGate => "source-advanced-during-gate",
+            GateRefusalKind::TargetAdvancedDuringGate => "target-advanced-during-gate",
+        }
+    }
+}
+
+/// A gate refusal: the typed [`GateRefusalKind`] plus the human message.
+#[derive(Debug)]
+pub struct GateRefusal {
+    pub kind: GateRefusalKind,
+    message: String,
+}
+
+impl GateRefusal {
+    /// Recover the refusal from an error chain, if it is one.
+    ///
+    /// Walks the chain rather than downcasting the head so a refusal that
+    /// picked up `.context(...)` on the way out is still recognized.
+    pub fn from_error(err: &anyhow::Error) -> Option<&GateRefusal> {
+        err.chain().find_map(|e| e.downcast_ref::<GateRefusal>())
+    }
+}
+
+impl std::fmt::Display for GateRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for GateRefusal {}
+
+/// Build a gate refusal error. The message is what the user reads; the kind
+/// is what `--format` reports.
+fn refuse(kind: GateRefusalKind, message: String) -> anyhow::Error {
+    anyhow::Error::new(GateRefusal { kind, message })
+}
+
 /// Template for the cleanup intent marker, provided by the command layer
 /// before `source_shas` are available.
 ///
@@ -1442,33 +1523,39 @@ fn enforce_gate_preflight(
     // octopus merge would run the rings once against N tracks and land a
     // tree none of them tested.
     if gate.pre_merge_hooks_configured && params.sources.len() > 1 {
-        anyhow::bail!(
+        return Err(refuse(
+            GateRefusalKind::OctopusWithHooks,
             "octopus merge refused: pre-merge hooks gate this repository, and a gate \
              certifies one source at a time; merge each track separately"
-        );
+                .to_string(),
+        ));
     }
 
     if gate.ff_only {
         if params.sources.len() > 1 {
-            anyhow::bail!(
-                "gate requires fast-forward (merge.ff=only), which is impossible with \
-                 {} sources; merge each track separately",
-                params.sources.len()
-            );
+            return Err(refuse(
+                GateRefusalKind::MultiSourceNotFastForward,
+                format!(
+                    "gate requires fast-forward (merge.ff=only), which is impossible with \
+                     {} sources; merge each track separately",
+                    params.sources.len()
+                ),
+            ));
         }
         for (source, source_sha) in params.sources.iter().zip(source_shas) {
             let contains_target = git
                 .merge_base_is_ancestor(target_sha, source_sha)
                 .unwrap_or(false);
             if !contains_target {
-                anyhow::bail!(
-                    "gate requires fast-forward (merge.ff=only): '{}' does not contain the \
-                     tip of '{}' — rebase the track onto '{}' first, then re-run the merge \
-                     (or pass --no-ff-only to override the committed policy)",
-                    source,
-                    resolved.branch,
-                    resolved.branch,
-                );
+                return Err(refuse(
+                    GateRefusalKind::NotFastForward,
+                    format!(
+                        "gate requires fast-forward (merge.ff=only): '{}' does not contain the \
+                         tip of '{}' — rebase the track onto '{}' first, then re-run the merge \
+                         (or pass --no-ff-only to override the committed policy)",
+                        source, resolved.branch, resolved.branch,
+                    ),
+                ));
             }
         }
     }
@@ -1478,22 +1565,28 @@ fn enforce_gate_preflight(
             let path = git
                 .resolve_worktree_path(source, project_root)
                 .map_err(|_| {
-                    anyhow::anyhow!(
-                        "gate requires a clean source worktree (merge.source_worktree=clean): \
-                     '{}' has no checked-out worktree; run `{}` first \
-                     (or pass --source-worktree any to override the committed policy)",
-                        source,
-                        crate::daft_cmd(&format!("go {source}")),
+                    refuse(
+                        GateRefusalKind::SourceWorktreeMissing,
+                        format!(
+                            "gate requires a clean source worktree (merge.source_worktree=clean): \
+                             '{}' has no checked-out worktree; run `{}` first \
+                             (or pass --source-worktree any to override the committed policy)",
+                            source,
+                            crate::daft_cmd(&format!("go {source}")),
+                        ),
                     )
                 })?;
             if git.has_uncommitted_changes_in(&path)? {
-                anyhow::bail!(
-                    "gate requires a clean source worktree (merge.source_worktree=clean): \
-                     '{}' has uncommitted changes in '{}'; commit or stash them \
-                     (or pass --source-worktree any to override the committed policy)",
-                    source,
-                    path.display(),
-                );
+                return Err(refuse(
+                    GateRefusalKind::SourceWorktreeDirty,
+                    format!(
+                        "gate requires a clean source worktree (merge.source_worktree=clean): \
+                         '{}' has uncommitted changes in '{}'; commit or stash them \
+                         (or pass --source-worktree any to override the committed policy)",
+                        source,
+                        path.display(),
+                    ),
+                ));
             }
         }
     }
@@ -1531,13 +1624,16 @@ fn verify_gate_at_landing(
         for (source, expected) in sources.iter().zip(expected_shas) {
             let now = rev_parse_at(repo_dir, source)?;
             if now != *expected {
-                anyhow::bail!(
-                    "source '{}' advanced while the merge gate ran ({} → {}); the gate \
-                     certified a tree that is no longer the track's tip — re-run the merge",
-                    source,
-                    &expected[..12.min(expected.len())],
-                    &now[..12.min(now.len())],
-                );
+                return Err(refuse(
+                    GateRefusalKind::SourceAdvancedDuringGate,
+                    format!(
+                        "source '{}' advanced while the merge gate ran ({} → {}); the gate \
+                         certified a tree that is no longer the track's tip — re-run the merge",
+                        source,
+                        &expected[..12.min(expected.len())],
+                        &now[..12.min(now.len())],
+                    ),
+                ));
             }
         }
     }
@@ -1546,13 +1642,14 @@ fn verify_gate_at_landing(
         let target_now = rev_parse_at(repo_dir, &format!("refs/heads/{target_branch}"))?;
         for (source, source_sha) in sources.iter().zip(expected_shas) {
             if !is_ancestor_at(repo_dir, &target_now, source_sha)? {
-                anyhow::bail!(
-                    "target '{}' advanced while the merge gate ran and '{}' no longer \
-                     contains its tip; rebase the track onto '{}' and re-run the merge",
-                    target_branch,
-                    source,
-                    target_branch,
-                );
+                return Err(refuse(
+                    GateRefusalKind::TargetAdvancedDuringGate,
+                    format!(
+                        "target '{}' advanced while the merge gate ran and '{}' no longer \
+                         contains its tip; rebase the track onto '{}' and re-run the merge",
+                        target_branch, source, target_branch,
+                    ),
+                ));
             }
         }
     }
@@ -6289,6 +6386,15 @@ mod tests {
         }
     }
 
+    /// The typed kind a refusal carries, or `None` when the error was not a
+    /// gate refusal at all. Every refusal assertion below pairs the message
+    /// check with a kind check: the message is what the user reads, the kind
+    /// is what `--format` reports, and they are allowed to drift only
+    /// deliberately.
+    fn refusal_kind(err: &anyhow::Error) -> Option<GateRefusalKind> {
+        GateRefusal::from_error(err).map(|r| r.kind)
+    }
+
     #[test]
     #[serial]
     fn gate_ff_only_refuses_stale_source() {
@@ -6315,6 +6421,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("requires fast-forward"), "{msg}");
         assert!(msg.contains("rebase the track"), "{msg}");
+        assert_eq!(refusal_kind(&err), Some(GateRefusalKind::NotFastForward));
     }
 
     #[test]
@@ -6360,6 +6467,10 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("uncommitted changes"), "{msg}");
         assert!(msg.contains("--source-worktree any"), "{msg}");
+        assert_eq!(
+            refusal_kind(&err),
+            Some(GateRefusalKind::SourceWorktreeDirty)
+        );
     }
 
     #[test]
@@ -6391,6 +6502,57 @@ mod tests {
             .expect_err("worktree-less source must be refused");
         let msg = format!("{err:#}");
         assert!(msg.contains("no checked-out worktree"), "{msg}");
+        assert_eq!(
+            refusal_kind(&err),
+            Some(GateRefusalKind::SourceWorktreeMissing)
+        );
+    }
+
+    #[test]
+    fn refusals_survive_context_wrapping_and_others_are_not_refusals() {
+        // `from_error` walks the chain rather than downcasting the head:
+        // execute_start's callers add `.context(...)` on the way out, and a
+        // refusal that lost its kind there would silently degrade the
+        // `--format` payload to an untyped failure.
+        let wrapped = refuse(
+            GateRefusalKind::NotFastForward,
+            "gate requires fast-forward".to_string(),
+        )
+        .context("while merging 'feature' into 'main'");
+        assert_eq!(
+            refusal_kind(&wrapped),
+            Some(GateRefusalKind::NotFastForward)
+        );
+        // The context is still what the user reads first.
+        assert!(format!("{wrapped:#}").contains("while merging"));
+
+        // A plain error is not a refusal — the command layer must report it
+        // as a failure, not invent a policy that refused.
+        let plain = anyhow::anyhow!("git merge exited 128");
+        assert_eq!(refusal_kind(&plain), None);
+    }
+
+    #[test]
+    fn refusal_kind_tokens_are_unique_and_kebab_case() {
+        // These strings are the output contract; a duplicate or a stray
+        // underscore would ship as a consumer-visible bug.
+        let kinds = [
+            GateRefusalKind::OctopusWithHooks,
+            GateRefusalKind::MultiSourceNotFastForward,
+            GateRefusalKind::NotFastForward,
+            GateRefusalKind::SourceWorktreeMissing,
+            GateRefusalKind::SourceWorktreeDirty,
+            GateRefusalKind::SourceAdvancedDuringGate,
+            GateRefusalKind::TargetAdvancedDuringGate,
+        ];
+        let tokens: std::collections::BTreeSet<&str> = kinds.iter().map(|k| k.as_str()).collect();
+        assert_eq!(tokens.len(), kinds.len(), "duplicate refusal token");
+        for t in &tokens {
+            assert!(
+                t.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "not kebab-case: {t}"
+            );
+        }
     }
 
     /// Write a daft.yml with a pre-merge job into the target worktree so
@@ -6431,6 +6593,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("octopus merge refused"), "{msg}");
         assert!(msg.contains("one source at a time"), "{msg}");
+        assert_eq!(refusal_kind(&err), Some(GateRefusalKind::OctopusWithHooks));
     }
 
     /// Counts pre-merge fires and can be told to reject.
@@ -6655,6 +6818,10 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("advanced while the merge gate ran"), "{msg}");
         assert!(msg.contains("re-run the merge"), "{msg}");
+        assert_eq!(
+            refusal_kind(&err),
+            Some(GateRefusalKind::SourceAdvancedDuringGate)
+        );
     }
 
     #[test]
