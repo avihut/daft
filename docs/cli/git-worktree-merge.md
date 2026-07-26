@@ -84,6 +84,9 @@ git worktree-merge [OPTIONS] [SOURCE_OR_TARGET]
 | `--only-tag <TAG>` | Run only hook jobs carrying TAG (repeatable) |  |
 | `--set-default` | Write the resolved style/cleanup choices to `git config --local` after the merge succeeds |  |
 | `-v, --verbose` | Be verbose; show detailed progress |  |
+| `--format <FORMAT>` | Output format. Mutually exclusive with --template |  |
+| `--template <STR>` | Tera template string. Mutually exclusive with --format |  |
+| `--no-headers` | Omit header row (tsv/csv only) |  |
 
 ## Global Options
 

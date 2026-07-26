@@ -17,7 +17,11 @@
 mod dump;
 mod formatting;
 mod install;
-mod jobs;
+// `pub(crate)` so `commands::merge` can reuse the jobs listing's payload
+// builder: merge's `--format` job rows must match `hooks jobs --format`
+// column for column, and the only way to guarantee that is to share the
+// builder rather than mirror it.
+pub(crate) mod jobs;
 mod migrate;
 mod run_cmd;
 mod status;

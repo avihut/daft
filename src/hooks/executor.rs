@@ -55,6 +55,41 @@ fn unparsed_git_fail_mode_warning(
     }
 }
 
+/// A hook that failed under `FailMode::Abort`, carrying the recorded
+/// invocation id out with the failure.
+///
+/// The id is minted before the jobs run, so it exists on the failing path —
+/// but the abort used to `bail!` a plain string and drop it. A failing gate
+/// is exactly when a caller most needs to address the recorded jobs
+/// (`daft merge --format json` reports it as the verdict's join key into
+/// `daft hooks jobs`), so the abort carries it instead. `Display` reproduces
+/// the previous message verbatim; nothing user-visible changed.
+#[derive(Debug)]
+pub struct HookAborted {
+    pub hook_type: HookType,
+    pub exit_code: i32,
+    pub invocation_id: Option<String>,
+}
+
+impl HookAborted {
+    /// Recover the abort from an error chain, if it is one.
+    pub fn from_error(err: &anyhow::Error) -> Option<&HookAborted> {
+        err.chain().find_map(|e| e.downcast_ref::<HookAborted>())
+    }
+}
+
+impl std::fmt::Display for HookAborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} hook failed with exit code {}",
+            self.hook_type, self.exit_code
+        )
+    }
+}
+
+impl std::error::Error for HookAborted {}
+
 /// Result of a hook execution.
 #[derive(Debug, Clone)]
 pub struct HookResult {
@@ -787,7 +822,11 @@ impl HookExecutor {
                 if let Some(inspect) = inspect {
                     output.info(&inspect);
                 }
-                anyhow::bail!("{} hook failed with exit code {}", hook_type, exit_code);
+                Err(anyhow::Error::new(HookAborted {
+                    hook_type,
+                    exit_code,
+                    invocation_id: result.invocation_id.clone(),
+                }))
             }
             FailMode::Warn => {
                 output.warning(&format!(

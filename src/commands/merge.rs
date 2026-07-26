@@ -83,6 +83,9 @@ pub struct Args {
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
             "skip_hooks", "skip_tag", "only_tag",
+            // --abort/--quit reach no verdict, so a format request there
+            // would parse and emit nothing. Reject it at parse time.
+            "format", "template", "no_headers",
         ],
     )]
     pub abort: bool,
@@ -107,6 +110,7 @@ pub struct Args {
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
             "skip_hooks", "skip_tag", "only_tag",
+            "format", "template", "no_headers",
         ],
     )]
     pub continue_merge: bool,
@@ -129,6 +133,7 @@ pub struct Args {
             "remove_branch", "keep_branch", "set_default",
             "ff_only", "no_ff_only", "source_worktree",
             "skip_hooks", "skip_tag", "only_tag",
+            "format", "template", "no_headers",
         ],
     )]
     pub quit: bool,
@@ -319,6 +324,18 @@ pub struct Args {
 
     #[arg(short, long, help = "Be verbose; show detailed progress")]
     pub verbose: bool,
+
+    /// Machine-readable output: the merge verdict plus the gate's job rows.
+    ///
+    /// Start mode only. The finish modes (`--abort`, `--continue`, `--quit`)
+    /// list these flags in their `conflicts_with_all`, so asking for a format
+    /// there fails at parse time rather than parsing and emitting nothing —
+    /// a flag that is silently ignored is worse than one that is rejected.
+    /// `--continue` does re-run the gate and could carry a verdict of its
+    /// own; wiring one is follow-up work, and until then `daft hooks jobs
+    /// --format` reports that run's jobs.
+    #[command(flatten)]
+    pub emit: crate::output::emit::EmitArgs,
 }
 
 /// Translate parsed CLI [`Args`] + [`DaftSettings`] into [`EffectiveFlags`].
@@ -668,6 +685,10 @@ pub fn run() -> Result<()> {
     } else {
         None
     };
+    // Clone the emit args before `args` is partially moved into `params`
+    // below; the verdict is built long after that point.
+    let emit_args = args.emit.clone();
+    let structured = emit_args.is_structured();
     let mut params = crate::core::worktree::merge::StartParams {
         sources: args.sources,
         target: args.into,
@@ -685,13 +706,17 @@ pub fn run() -> Result<()> {
             },
             source_worktree: args.source_worktree,
         },
+        machine_output: structured,
     };
     // Build the MergeHookRunner used to fire pre-merge / post-merge hooks
     // from inside `execute_start`. Holding the executor + output here (in
     // the command layer) keeps core free of presenter/output dependencies.
     let git_dir = get_git_common_dir()?;
     let source_worktree = get_current_worktree_path().unwrap_or_else(|_| project_root.clone());
-    let mut output = CliOutput::new(OutputConfig::new(false, args.verbose));
+    // Under `--format`, stdout belongs to the payload: quiet silences every
+    // `Output` method that writes there (stderr warnings/notices are
+    // unaffected — they are not the document).
+    let mut output = CliOutput::new(OutputConfig::new(structured, args.verbose));
     // Run execute_start inside a nested block so `runner` (which borrows
     // `&mut output`) is dropped before the cleanup phase needs `output` again.
     // `squash_requested` was captured before `flags` was moved into `params`.
@@ -773,7 +798,11 @@ pub fn run() -> Result<()> {
             _ => Vec::new(),
         };
     let mut timeline: Option<Timeline> = None;
-    if !declared_merge_hooks.is_empty() && !params.flags.would_open_editor() {
+    // A live region and a machine payload cannot share stdout: the rail's
+    // repaints would interleave with the document. Skip *planning* it rather
+    // than planning and suppressing — an installed notice sink would
+    // otherwise try to suspend a region that never rendered.
+    if !declared_merge_hooks.is_empty() && !params.flags.would_open_editor() && !structured {
         let mut tl = Timeline::new(
             TimelineMode::auto(false),
             args.verbose,
@@ -913,7 +942,7 @@ pub fn run() -> Result<()> {
     // mode then printed on every otherwise-successful merge.
     let only_tags = args.only_tag.clone();
     let timeline_handle = timeline.as_ref().map(|tl| tl.handle());
-    let outcome_result = {
+    let (outcome_result, gate_invocations) = {
         let mut runner = MergeHookRunner::new(
             &mut output,
             project_root.clone(),
@@ -925,7 +954,7 @@ pub fn run() -> Result<()> {
             hooks_output_config.clone(),
             timeline_handle,
         )?;
-        match (&prop_source, &prop_target) {
+        let result = match (&prop_source, &prop_target) {
             (Some(_), Some(prop_tgt)) if !consolidation.is_empty() => {
                 // Wrap execute_start in write_files_atomic so that:
                 //   1. The target's pre-existing untracked daft files are
@@ -1028,7 +1057,9 @@ pub fn run() -> Result<()> {
                     &mut runner,
                 )
             }
-        }
+        };
+        // Take the ids before `runner` drops with the borrow of `output`.
+        (result, std::mem::take(&mut runner.invocations))
     };
     output.finish_spinner();
     // Close the rail (if one was planned) before any terminal prints — the
@@ -1042,407 +1073,460 @@ pub fn run() -> Result<()> {
         // The region is gone; later notices must not try to suspend it.
         crate::output::notice::clear_sink();
     }
-    // Dump captured git output to stderr after the spinner stops (avoids
-    // carriage-return mangling). On failure, always dump; on success, only
-    // dump when --verbose is set.
-    let outcome = outcome_result?;
-    if !outcome.captured_git_output.is_empty() {
-        let should_dump = outcome.failed || args.verbose;
-        if should_dump {
-            eprint!("{}", String::from_utf8_lossy(&outcome.captured_git_output));
-        }
-    }
+    // Snapshot the outcome for the verdict payload before the rendering
+    // chain below consumes it — the payload reports the same facts the human
+    // lines do, and must not depend on which branch rendered them.
+    let outcome_snapshot = outcome_result.as_ref().ok().cloned();
 
-    if outcome.already_up_to_date {
-        // Core already printed "Already up to date." from the up-to-date
-        // short-circuit (which also sets `emitted_terminal_message`). No
-        // further print here — duplicating the status line would be noise.
-        Ok(())
-    } else if outcome.failed {
-        // Commit-aborted path: squash staged, `git commit` was aborted (editor
-        // empty, pre-commit hook refused, GPG-sign fail, etc.). Changes remain
-        // staged on the target. Cleanup is skipped — there is nothing to clean
-        // up: the branch still has useful staged content the user wants to commit.
-        if outcome.commit_aborted {
-            let target = &outcome.target_branch;
-            eprintln!(
-                "Commit aborted; squash changes are still staged on {target}. Cleanup skipped."
-            );
-            eprintln!("  Commit manually: git commit");
-            eprintln!("  Or reset: git reset --merge");
-            std::process::exit(1);
-        }
-
-        // Ephemeral-promote path: a ref-only target was adopted into a
-        // canonical worktree at its layout-resolved sibling path. Fire
-        // `worktree-post-create` so hook-installed environment setup
-        // (direnv/mise/etc.) is available while the user resolves conflicts.
-        // Best-effort: a hook failure must not replace the conflict report.
-        if outcome.ephemeral_promoted
-            && let Some(branch) = into_branch.as_deref()
-            && let Err(e) = fire_worktree_post_create_hook(
-                &outcome.target_path,
-                branch,
-                &project_root,
-                &settings,
-            )
-        {
-            eprintln!("warning: worktree-post-create hook failed: {e}");
-        }
-
-        // Print a daft-authored conflict report to stderr and exit non-zero.
-        // We bypass the usual `anyhow::bail!` plumbing because anyhow-printed
-        // errors get the "Error:" prefix; for a multi-line report we want the
-        // user to read verbatim, that prefix would be noise. `std::process::exit`
-        // skips the rest of `main` — acceptable here because there's no further
-        // cleanup to run: git left the worktree in a conflicted state that the
-        // user now owns via --continue or --abort.
-        eprintln!("merge conflicted in {}", outcome.target_path.display());
-        if !outcome.conflicted_files.is_empty() {
-            eprintln!("conflicted files:");
-            for f in &outcome.conflicted_files {
-                eprintln!("  {}", f);
+    // Single termination funnel. Every path below yields a MergeTermination
+    // instead of calling `std::process::exit` or bailing on its own, so
+    // `--format` has exactly one place to emit and the exit code is derived
+    // from the same value the payload reports. The human `eprintln!` reports
+    // are untouched — only the *exit mechanism* moved.
+    let termination_result: Result<MergeTermination> = (|| {
+        // Dump captured git output to stderr after the spinner stops (avoids
+        // carriage-return mangling). On failure, always dump; on success, only
+        // dump when --verbose is set.
+        let outcome = outcome_result?;
+        if !outcome.captured_git_output.is_empty() {
+            let should_dump = outcome.failed || args.verbose;
+            if should_dump {
+                eprint!("{}", String::from_utf8_lossy(&outcome.captured_git_output));
             }
         }
-        eprintln!();
-        eprintln!("resolve in the target worktree, then run:");
-        eprintln!("  daft merge --continue  # add <branch> if running from a different worktree");
-        eprintln!("  daft merge --abort     # add <branch> if running from a different worktree");
-        std::process::exit(1);
-    } else {
-        // The merge landed and the consolidated daft files persist in the
-        // target. Announce exactly what was adopted (a cross-worktree write
-        // is never silent), then refresh the SOURCE's seeds: its refinements
-        // now live in the target, so the source copy is pristine relative to
-        // its new seed and the cleanup below can remove the worktree without
-        // re-flagging it.
-        if !consolidation_report.is_empty() {
-            let source_branch = &params.sources[0];
-            for (filename, adopt_keys, whole_file) in &consolidation_report {
-                if *whole_file {
-                    output.info(&format!(
-                        "Consolidated {filename} from {source_branch} (whole file — no seed \
+
+        if outcome.already_up_to_date {
+            // Core already printed "Already up to date." from the up-to-date
+            // short-circuit (which also sets `emitted_terminal_message`). No
+            // further print here — duplicating the status line would be noise.
+            Ok(MergeTermination::UpToDate)
+        } else if outcome.failed {
+            // Commit-aborted path: squash staged, `git commit` was aborted (editor
+            // empty, pre-commit hook refused, GPG-sign fail, etc.). Changes remain
+            // staged on the target. Cleanup is skipped — there is nothing to clean
+            // up: the branch still has useful staged content the user wants to commit.
+            if outcome.commit_aborted {
+                let target = &outcome.target_branch;
+                eprintln!(
+                    "Commit aborted; squash changes are still staged on {target}. Cleanup skipped."
+                );
+                eprintln!("  Commit manually: git commit");
+                eprintln!("  Or reset: git reset --merge");
+                return Ok(MergeTermination::CommitAborted);
+            }
+
+            // Ephemeral-promote path: a ref-only target was adopted into a
+            // canonical worktree at its layout-resolved sibling path. Fire
+            // `worktree-post-create` so hook-installed environment setup
+            // (direnv/mise/etc.) is available while the user resolves conflicts.
+            // Best-effort: a hook failure must not replace the conflict report.
+            if outcome.ephemeral_promoted
+                && let Some(branch) = into_branch.as_deref()
+                && let Err(e) = fire_worktree_post_create_hook(
+                    &outcome.target_path,
+                    branch,
+                    &project_root,
+                    &settings,
+                )
+            {
+                eprintln!("warning: worktree-post-create hook failed: {e}");
+            }
+
+            // Print a daft-authored conflict report to stderr and terminate
+            // non-zero. We bypass the usual `anyhow::bail!` plumbing because
+            // anyhow-printed errors get the "Error:" prefix; for a multi-line
+            // report we want the user to read verbatim, that prefix would be
+            // noise. `finish_merge` turns this into `std::process::exit(1)` —
+            // acceptable because there's no further cleanup to run: git left the
+            // worktree conflicted and the user now owns it via --continue or
+            // --abort.
+            eprintln!("merge conflicted in {}", outcome.target_path.display());
+            if !outcome.conflicted_files.is_empty() {
+                eprintln!("conflicted files:");
+                for f in &outcome.conflicted_files {
+                    eprintln!("  {}", f);
+                }
+            }
+            eprintln!();
+            eprintln!("resolve in the target worktree, then run:");
+            eprintln!(
+                "  daft merge --continue  # add <branch> if running from a different worktree"
+            );
+            eprintln!(
+                "  daft merge --abort     # add <branch> if running from a different worktree"
+            );
+            Ok(MergeTermination::Conflicted)
+        } else {
+            // The merge landed and the consolidated daft files persist in the
+            // target. Announce exactly what was adopted (a cross-worktree write
+            // is never silent), then refresh the SOURCE's seeds: its refinements
+            // now live in the target, so the source copy is pristine relative to
+            // its new seed and the cleanup below can remove the worktree without
+            // re-flagging it.
+            if !consolidation_report.is_empty() {
+                let source_branch = &params.sources[0];
+                for (filename, adopt_keys, whole_file) in &consolidation_report {
+                    if *whole_file {
+                        output.info(&format!(
+                            "Consolidated {filename} from {source_branch} (whole file — no seed \
                          provenance)"
-                    ));
-                } else if adopt_keys.is_empty() {
-                    output.info(&format!(
+                        ));
+                    } else if adopt_keys.is_empty() {
+                        output.info(&format!(
                         "Consolidated {filename} from {source_branch} (conflict resolution only)"
                     ));
-                } else {
-                    output.info(&format!(
-                        "Consolidated {filename} from {source_branch}: adopted {} key(s) ({})",
-                        adopt_keys.len(),
-                        adopt_keys.join(", ")
-                    ));
+                    } else {
+                        output.info(&format!(
+                            "Consolidated {filename} from {source_branch}: adopted {} key(s) ({})",
+                            adopt_keys.len(),
+                            adopt_keys.join(", ")
+                        ));
+                    }
+                }
+                if let (Some(prop_src), Some(seeds)) = (
+                    &prop_source,
+                    crate::hooks::visitor_seeds::SeedsContext::open(&seeds_git_dir),
+                ) {
+                    for (filename, _, _) in &consolidation_report {
+                        seeds.record_seed_file(source_branch, prop_src, filename);
+                    }
                 }
             }
-            if let (Some(prop_src), Some(seeds)) = (
-                &prop_source,
-                crate::hooks::visitor_seeds::SeedsContext::open(&seeds_git_dir),
-            ) {
-                for (filename, _, _) in &consolidation_report {
-                    seeds.record_seed_file(source_branch, prop_src, filename);
-                }
-            }
-        }
 
-        // Squash-cleanup stability check (Slice 4).
-        //
-        // When a daft-driven squash + commit just landed AND cleanup is
-        // requested, re-resolve each source ref and compare to the SHA
-        // captured at merge start (stored in `outcome.source_shas`). If any
-        // source tip moved during the editor/commit session, refuse cleanup
-        // with a clear error — the squash commit stays on the target (the
-        // user has a reviewable commit to recover from), but cleanup is
-        // skipped to avoid force-deleting a branch that has new work.
-        //
-        // This check ONLY fires on the squash-committed + cleanup path.
-        // Regular merges use git's safe `branch -d` reachability check
-        // (already in execute_cleanup Phase 1 when squash_committed=false).
-        let squash_cleanup_stable = if outcome.squash_commit_sha.is_some() && cleanup_requested {
-            let mut moved_sources: Vec<String> = Vec::new();
-            for (src, captured_sha) in params.sources.iter().zip(outcome.source_shas.iter()) {
-                match git.rev_parse(src) {
-                    Ok(current_sha) => {
-                        if current_sha != *captured_sha {
-                            moved_sources.push(format!(
-                                "source '{}' moved during merge \
+            // Squash-cleanup stability check (Slice 4).
+            //
+            // When a daft-driven squash + commit just landed AND cleanup is
+            // requested, re-resolve each source ref and compare to the SHA
+            // captured at merge start (stored in `outcome.source_shas`). If any
+            // source tip moved during the editor/commit session, refuse cleanup
+            // with a clear error — the squash commit stays on the target (the
+            // user has a reviewable commit to recover from), but cleanup is
+            // skipped to avoid force-deleting a branch that has new work.
+            //
+            // This check ONLY fires on the squash-committed + cleanup path.
+            // Regular merges use git's safe `branch -d` reachability check
+            // (already in execute_cleanup Phase 1 when squash_committed=false).
+            let squash_cleanup_stable = if outcome.squash_commit_sha.is_some() && cleanup_requested
+            {
+                let mut moved_sources: Vec<String> = Vec::new();
+                for (src, captured_sha) in params.sources.iter().zip(outcome.source_shas.iter()) {
+                    match git.rev_parse(src) {
+                        Ok(current_sha) => {
+                            if current_sha != *captured_sha {
+                                moved_sources.push(format!(
+                                    "source '{}' moved during merge \
                                  (was {}, now {})",
-                                src,
-                                &captured_sha[..12.min(captured_sha.len())],
-                                &current_sha[..12.min(current_sha.len())]
-                            ));
+                                    src,
+                                    &captured_sha[..12.min(captured_sha.len())],
+                                    &current_sha[..12.min(current_sha.len())]
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            moved_sources
+                                .push(format!("source '{}' could not be re-resolved: {}", src, e));
                         }
                     }
-                    Err(e) => {
-                        moved_sources
-                            .push(format!("source '{}' could not be re-resolved: {}", src, e));
-                    }
                 }
-            }
-            if !moved_sources.is_empty() {
-                // Print the squash commit success before the cleanup refusal —
-                // the commit did land; the user needs to know that.
-                let sources_display = sources_for_message.join(", ");
-                let target = &outcome.target_branch;
-                let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
-                let short = short_sha(sha);
-                println!("Squash merged {sources_display} into {target} as {short}.");
-                anyhow::bail!(
-                    "cleanup refused: {}\n  \
-                     Re-run cleanup manually if you've reconciled \
-                     (e.g. `daft merge -rb` after resolving the branch).",
-                    moved_sources.join("; ")
-                );
-            }
-            true
-        } else {
-            false
-        };
-
-        // Core may have already emitted a terminal status line (e.g.,
-        // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
-        // Suppress the new step emission in that case to avoid double output.
-        if !outcome.emitted_terminal_message {
-            // State-aware step messages per the spec. Dispatched from
-            // StartOutcome flags; replaces git's suppressed stdout with a
-            // single styled line per merge.
-            //
-            // `target_display` falls back to the CLI --into arg when core
-            // omits target_branch (e.g. the ephemeral non-squash success path).
-            let target_display = if outcome.target_branch.is_empty() {
-                into_branch.as_deref().unwrap_or("").to_string()
+                if !moved_sources.is_empty() {
+                    // Print the squash commit success before the cleanup refusal —
+                    // the commit did land; the user needs to know that.
+                    let sources_display = sources_for_message.join(", ");
+                    let target = &outcome.target_branch;
+                    let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
+                    let short = short_sha(sha);
+                    if !structured {
+                        println!("Squash merged {sources_display} into {target} as {short}.");
+                    }
+                    // The merge landed; only cleanup was declined. The payload
+                    // reports both facts (`status: landed`, `cleanup: refused`)
+                    // and `finish_merge` still exits non-zero.
+                    return Ok(MergeTermination::CleanupRefused(moved_sources.join("; ")));
+                }
+                true
             } else {
-                outcome.target_branch.clone()
+                false
             };
-            let sources_display = sources_for_message.join(", ");
-            if outcome.squash_staged_only {
-                // --squash --no-commit: staged but not committed.
-                output.result(&format!("Squash staged on {target_display}"));
-            } else if outcome.squash_commit_sha.is_some() && squash_cleanup_stable {
-                // Squash + commit + cleanup path: defer message until AFTER
-                // cleanup succeeds (emitted below in the cleanup Ok branch).
-            } else if let Some(ref sha) = outcome.squash_commit_sha {
-                // --squash with commit, no cleanup requested:
-                output.result(&format!(
-                    "Squashed {} into {} (commit {})",
-                    sources_display,
-                    target_display,
-                    short_sha(sha)
-                ));
-            } else if outcome.was_fast_forward {
-                if let Some(ref sha) = outcome.merge_commit_sha {
+
+            // Core may have already emitted a terminal status line (e.g.,
+            // "Fast-forwarded X to Y (no worktree)" from the ref-only FF path).
+            // Suppress the new step emission in that case to avoid double output.
+            if !outcome.emitted_terminal_message {
+                // State-aware step messages per the spec. Dispatched from
+                // StartOutcome flags; replaces git's suppressed stdout with a
+                // single styled line per merge.
+                //
+                // `target_display` falls back to the CLI --into arg when core
+                // omits target_branch (e.g. the ephemeral non-squash success path).
+                let target_display = if outcome.target_branch.is_empty() {
+                    into_branch.as_deref().unwrap_or("").to_string()
+                } else {
+                    outcome.target_branch.clone()
+                };
+                let sources_display = sources_for_message.join(", ");
+                if outcome.squash_staged_only {
+                    // --squash --no-commit: staged but not committed.
+                    output.result(&format!("Squash staged on {target_display}"));
+                } else if outcome.squash_commit_sha.is_some() && squash_cleanup_stable {
+                    // Squash + commit + cleanup path: defer message until AFTER
+                    // cleanup succeeds (emitted below in the cleanup Ok branch).
+                } else if let Some(ref sha) = outcome.squash_commit_sha {
+                    // --squash with commit, no cleanup requested:
                     output.result(&format!(
-                        "Fast-forwarded {} to {}",
+                        "Squashed {} into {} (commit {})",
+                        sources_display,
+                        target_display,
+                        short_sha(sha)
+                    ));
+                } else if outcome.was_fast_forward {
+                    if let Some(ref sha) = outcome.merge_commit_sha {
+                        output.result(&format!(
+                            "Fast-forwarded {} to {}",
+                            target_display,
+                            short_sha(sha)
+                        ));
+                    }
+                } else if let Some(ref sha) = outcome.merge_commit_sha {
+                    output.result(&format!(
+                        "Merged {} into {} (commit {})",
+                        sources_display,
                         target_display,
                         short_sha(sha)
                     ));
                 }
-            } else if let Some(ref sha) = outcome.merge_commit_sha {
-                output.result(&format!(
-                    "Merged {} into {} (commit {})",
-                    sources_display,
-                    target_display,
-                    short_sha(sha)
-                ));
+                // else: unreachable in practice; let existing downstream lines render.
             }
-            // else: unreachable in practice; let existing downstream lines render.
-        }
 
-        // --set-default: persist the invocation's style + cleanup as repo defaults.
-        // Best-effort; failure to write surfaces a warning, doesn't fail the merge.
-        //
-        // Persist the values now (so a later cleanup failure doesn't lose them),
-        // but defer the user-facing "Updated repository defaults" notice until
-        // after cleanup — that way it lands as a footnote to the operation
-        // rather than interleaved between the merge step and the cleanup hooks.
-        let defaults_to_announce = if args.set_default {
-            match crate::core::worktree::merge_set_default::write_default_settings(
-                &project_root,
-                merge_style,
-                cleanup_kind,
-            ) {
-                Ok(()) => Some((merge_style, cleanup_kind)),
-                Err(e) => {
-                    output.warning(&format!("failed to update repository defaults: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Post-merge cleanup. Only runs on successful, non-up-to-date merges
-        // — the `already_up_to_date` and `failed` arms above have already
-        // returned or exited.
-        //
-        // `cleanup_kind` was resolved pre-flight above to allow the
-        // no-commit + cleanup guard to fire early. Reuse here.
-        //
-        // `squash_cleanup_stable` is true when the squash-committed path
-        // passed the stability check — in that case we use `branch -D`
-        // (justified by content equivalence proof). Otherwise `squash_committed`
-        // stays false and plan_cleanup uses the standard reachability check
-        // (delegated to branch_delete::execute's keep_local_branch=false path).
-        if cleanup_kind == CleanupKind::RemoveBranch {
-            let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
-                remove_worktree: true,
-                also_branch: true,
-                squash_committed: squash_cleanup_stable,
-            };
-            let cleanup_result: Result<()> = (|| {
-                let plan = crate::core::worktree::merge::plan_cleanup(
-                    &params.sources,
-                    &cleanup_opts,
-                    &git,
+            // --set-default: persist the invocation's style + cleanup as repo defaults.
+            // Best-effort; failure to write surfaces a warning, doesn't fail the merge.
+            //
+            // Persist the values now (so a later cleanup failure doesn't lose them),
+            // but defer the user-facing "Updated repository defaults" notice until
+            // after cleanup — that way it lands as a footnote to the operation
+            // rather than interleaved between the merge step and the cleanup hooks.
+            let defaults_to_announce = if args.set_default {
+                match crate::core::worktree::merge_set_default::write_default_settings(
                     &project_root,
-                    &outcome.target_branch,
-                )?;
+                    merge_style,
+                    cleanup_kind,
+                ) {
+                    Ok(()) => Some((merge_style, cleanup_kind)),
+                    Err(e) => {
+                        output.warning(&format!("failed to update repository defaults: {e}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
-                // Hoist HooksConfig construction above the loop so config is
-                // resolved once, not N times for N sources. HookExecutor is
-                // constructed per-item because CommandBridge takes ownership
-                // and HookExecutor is not Clone.
-                let hooks_config = load_hooks_config()?;
+            // Post-merge cleanup. Only runs on successful, non-up-to-date merges
+            // — the `already_up_to_date` and `failed` arms above have already
+            // returned or exited.
+            //
+            // `cleanup_kind` was resolved pre-flight above to allow the
+            // no-commit + cleanup guard to fire early. Reuse here.
+            //
+            // `squash_cleanup_stable` is true when the squash-committed path
+            // passed the stability check — in that case we use `branch -D`
+            // (justified by content equivalence proof). Otherwise `squash_committed`
+            // stays false and plan_cleanup uses the standard reachability check
+            // (delegated to branch_delete::execute's keep_local_branch=false path).
+            if cleanup_kind == CleanupKind::RemoveBranch {
+                let cleanup_opts = crate::core::worktree::merge::CleanupOptions {
+                    remove_worktree: true,
+                    also_branch: true,
+                    squash_committed: squash_cleanup_stable,
+                };
+                let cleanup_result: Result<()> = (|| {
+                    let plan = crate::core::worktree::merge::plan_cleanup(
+                        &params.sources,
+                        &cleanup_opts,
+                        &git,
+                        &project_root,
+                        &outcome.target_branch,
+                    )?;
 
-                output.start_spinner(if plan.len() == 1 {
-                    "Cleaning up source..."
-                } else {
-                    "Cleaning up sources..."
-                });
+                    // Hoist HooksConfig construction above the loop so config is
+                    // resolved once, not N times for N sources. HookExecutor is
+                    // constructed per-item because CommandBridge takes ownership
+                    // and HookExecutor is not Clone.
+                    let hooks_config = load_hooks_config()?;
 
-                for item in &plan {
-                    if item.worktree_path.is_none() && item.branch_name.is_none() {
-                        continue;
+                    output.start_spinner(if plan.len() == 1 {
+                        "Cleaning up source..."
+                    } else {
+                        "Cleaning up sources..."
+                    });
+
+                    for item in &plan {
+                        if item.worktree_path.is_none() && item.branch_name.is_none() {
+                            continue;
+                        }
+
+                        // Per-source heading so the user reads the worktree-pre-remove
+                        // hook box knowing which worktree it's acting on (the box's
+                        // `on:` segment confirms it; this line announces it).
+                        output.cleanup_target(&item.source);
+
+                        // keep_local_branch=true when -r was given without -b: the
+                        // worktree is removed but the local branch ref is preserved.
+                        let keep_local_branch = item.branch_name.is_none();
+                        // For worktree-only items (keep_local_branch=true) we still
+                        // need a branch name so branch_delete::execute can find the
+                        // worktree via its worktree-map lookup. Use the `source` field
+                        // which equals the resolved branch name.
+                        let branch_for_delete = item
+                            .branch_name
+                            .clone()
+                            .unwrap_or_else(|| item.source.clone());
+
+                        let bd_params = crate::core::worktree::branch_delete::BranchDeleteParams {
+                            branches: vec![branch_for_delete],
+                            // The planner has already validated reachability against
+                            // the actual merge target (which may differ from the
+                            // default branch), so branch_delete's own default-branch
+                            // reachability and remote-sync checks (4+5) are skipped
+                            // via the narrow `skip_merge_validation` flag below —
+                            // they would incorrectly reject cross-target merges
+                            // (e.g. `--into develop --remove-branch` when feature is
+                            // not yet reachable from main). `force` is no longer
+                            // hardwired true: that blanket bypass also disarmed the
+                            // daft-file provenance guard, letting a forced-style
+                            // removal silently propagate stale visitor configs
+                            // (issue #628). Squash-committed items still force
+                            // (content equivalence was proven by the stability
+                            // check).
+                            force: item.force_delete,
+                            use_gitoxide: settings.use_gitoxide,
+                            is_quiet: false,
+                            remote_name: settings.remote.clone(),
+                            delete_remote: settings.branch_delete_remote,
+                            remote_only: false,
+                            keep_local_branch,
+                            no_verify: false,
+                            push_verify: settings.push_verify,
+                            prune_cd_target: settings.prune_cd_target,
+                            // Expose DAFT_COMMAND=merge so hook scripts can
+                            // distinguish merge cleanup from standalone daft remove.
+                            command_label: "merge".to_string(),
+                            skip_merge_validation: true,
+                            force_flag_label: "-f/--force".to_string(),
+                        };
+
+                        let bd_result = {
+                            let executor = HookExecutor::new(hooks_config.clone())?;
+                            let mut bridge = CommandBridge::new(&mut output, executor);
+                            // The merge cleanup sets `skip_merge_validation`, so
+                            // Check 4 never runs and no witness is consulted.
+                            crate::core::worktree::branch_delete::execute(
+                                &bd_params,
+                                None,
+                                &crate::core::worktree::ports::NoopForgeWitness,
+                                &mut bridge,
+                            )?
+                        };
+
+                        if !bd_result.validation_errors.is_empty() {
+                            output.finish_spinner();
+                            for err in &bd_result.validation_errors {
+                                output.error(&format!(
+                                    "cleanup of '{}' failed: {}",
+                                    err.branch, err.message
+                                ));
+                            }
+                            anyhow::bail!(
+                                "cleanup pre-validation failed for {} source(s)",
+                                bd_result.validation_errors.len()
+                            );
+                        }
+
+                        // Emit styled "Deleted X (worktree, local branch)" summary lines.
+                        for deletion in &bd_result.deletions {
+                            let parts = deletion.deleted_parts();
+                            if !parts.is_empty() {
+                                output.result(&format!("Deleted {} ({})", deletion.branch, parts));
+                            }
+                        }
                     }
 
-                    // Per-source heading so the user reads the worktree-pre-remove
-                    // hook box knowing which worktree it's acting on (the box's
-                    // `on:` segment confirms it; this line announces it).
-                    output.cleanup_target(&item.source);
+                    output.finish_spinner();
+                    Ok(())
+                })();
 
-                    // keep_local_branch=true when -r was given without -b: the
-                    // worktree is removed but the local branch ref is preserved.
-                    let keep_local_branch = item.branch_name.is_none();
-                    // For worktree-only items (keep_local_branch=true) we still
-                    // need a branch name so branch_delete::execute can find the
-                    // worktree via its worktree-map lookup. Use the `source` field
-                    // which equals the resolved branch name.
-                    let branch_for_delete = item
-                        .branch_name
-                        .clone()
-                        .unwrap_or_else(|| item.source.clone());
-
-                    let bd_params = crate::core::worktree::branch_delete::BranchDeleteParams {
-                        branches: vec![branch_for_delete],
-                        // The planner has already validated reachability against
-                        // the actual merge target (which may differ from the
-                        // default branch), so branch_delete's own default-branch
-                        // reachability and remote-sync checks (4+5) are skipped
-                        // via the narrow `skip_merge_validation` flag below —
-                        // they would incorrectly reject cross-target merges
-                        // (e.g. `--into develop --remove-branch` when feature is
-                        // not yet reachable from main). `force` is no longer
-                        // hardwired true: that blanket bypass also disarmed the
-                        // daft-file provenance guard, letting a forced-style
-                        // removal silently propagate stale visitor configs
-                        // (issue #628). Squash-committed items still force
-                        // (content equivalence was proven by the stability
-                        // check).
-                        force: item.force_delete,
-                        use_gitoxide: settings.use_gitoxide,
-                        is_quiet: false,
-                        remote_name: settings.remote.clone(),
-                        delete_remote: settings.branch_delete_remote,
-                        remote_only: false,
-                        keep_local_branch,
-                        no_verify: false,
-                        push_verify: settings.push_verify,
-                        prune_cd_target: settings.prune_cd_target,
-                        // Expose DAFT_COMMAND=merge so hook scripts can
-                        // distinguish merge cleanup from standalone daft remove.
-                        command_label: "merge".to_string(),
-                        skip_merge_validation: true,
-                        force_flag_label: "-f/--force".to_string(),
-                    };
-
-                    let bd_result = {
-                        let executor = HookExecutor::new(hooks_config.clone())?;
-                        let mut bridge = CommandBridge::new(&mut output, executor);
-                        // The merge cleanup sets `skip_merge_validation`, so
-                        // Check 4 never runs and no witness is consulted.
-                        crate::core::worktree::branch_delete::execute(
-                            &bd_params,
-                            None,
-                            &crate::core::worktree::ports::NoopForgeWitness,
-                            &mut bridge,
-                        )?
-                    };
-
-                    if !bd_result.validation_errors.is_empty() {
-                        output.finish_spinner();
-                        for err in &bd_result.validation_errors {
-                            output.error(&format!(
-                                "cleanup of '{}' failed: {}",
-                                err.branch, err.message
+                match cleanup_result {
+                    Ok(()) => {
+                        // After successful squash + cleanup, emit the combined message.
+                        if squash_cleanup_stable && !outcome.emitted_terminal_message {
+                            let sources_display = sources_for_message.join(", ");
+                            output.result(&format!(
+                                "Squash merged and cleaned up {sources_display}."
                             ));
                         }
-                        anyhow::bail!(
-                            "cleanup pre-validation failed for {} source(s)",
-                            bd_result.validation_errors.len()
-                        );
                     }
-
-                    // Emit styled "Deleted X (worktree, local branch)" summary lines.
-                    for deletion in &bd_result.deletions {
-                        let parts = deletion.deleted_parts();
-                        if !parts.is_empty() {
-                            output.result(&format!("Deleted {} ({})", deletion.branch, parts));
+                    Err(e) => {
+                        // Squash committed but cleanup failed (e.g. dirty source
+                        // worktree). Inform the user the squash landed before
+                        // surfacing the cleanup error.
+                        if squash_cleanup_stable && !outcome.emitted_terminal_message {
+                            let sources_display = sources_for_message.join(", ");
+                            let target = &outcome.target_branch;
+                            let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
+                            let short = short_sha(sha);
+                            if !structured {
+                                println!(
+                                    "Squash merged {sources_display} into {target} as {short}."
+                                );
+                            }
                         }
+                        // Defaults already persisted in git config; surface the
+                        // notice now so the user knows it took even though
+                        // cleanup is about to fail.
+                        if let Some((style, cleanup)) = defaults_to_announce {
+                            output.defaults_updated(style, cleanup);
+                        }
+                        return Err(e);
                     }
-                }
-
-                output.finish_spinner();
-                Ok(())
-            })();
-
-            match cleanup_result {
-                Ok(()) => {
-                    // After successful squash + cleanup, emit the combined message.
-                    if squash_cleanup_stable && !outcome.emitted_terminal_message {
-                        let sources_display = sources_for_message.join(", ");
-                        output.result(&format!("Squash merged and cleaned up {sources_display}."));
-                    }
-                }
-                Err(e) => {
-                    // Squash committed but cleanup failed (e.g. dirty source
-                    // worktree). Inform the user the squash landed before
-                    // surfacing the cleanup error.
-                    if squash_cleanup_stable && !outcome.emitted_terminal_message {
-                        let sources_display = sources_for_message.join(", ");
-                        let target = &outcome.target_branch;
-                        let sha = outcome.squash_commit_sha.as_deref().unwrap_or("");
-                        let short = short_sha(sha);
-                        println!("Squash merged {sources_display} into {target} as {short}.");
-                    }
-                    // Defaults already persisted in git config; surface the
-                    // notice now so the user knows it took even though
-                    // cleanup is about to fail.
-                    if let Some((style, cleanup)) = defaults_to_announce {
-                        output.defaults_updated(style, cleanup);
-                    }
-                    return Err(e);
                 }
             }
+            // Trailing footnote — fires for both the no-cleanup path and the
+            // cleanup-success path. The cleanup-failure path emits before bailing
+            // (above) since the values were persisted regardless of cleanup.
+            if let Some((style, cleanup)) = defaults_to_announce {
+                output.defaults_updated(style, cleanup);
+            }
+            // `--squash --no-commit` leaves the work staged rather than landed;
+            // both exit 0, but a consumer needs to know a commit is still owed.
+            Ok(if outcome.squash_staged_only {
+                MergeTermination::SquashStaged
+            } else {
+                MergeTermination::Landed
+            })
         }
-        // Trailing footnote — fires for both the no-cleanup path and the
-        // cleanup-success path. The cleanup-failure path emits before bailing
-        // (above) since the values were persisted regardless of cleanup.
-        if let Some((style, cleanup)) = defaults_to_announce {
-            output.defaults_updated(style, cleanup);
-        }
-        Ok(())
+    })();
+
+    if structured {
+        // Without `--into` the target is the branch we are standing on, which
+        // is the name a refusal's payload would otherwise leave blank.
+        let target_fallback = into_branch
+            .clone()
+            .or_else(|| crate::core::repo::get_current_branch().ok());
+        let source_sha_fallback: Vec<Option<String>> = params
+            .sources
+            .iter()
+            .map(|s| git.rev_parse(s).ok())
+            .collect();
+        emit_merge_verdict(
+            &emit_args,
+            &termination_result,
+            outcome_snapshot.as_ref(),
+            &params.sources,
+            target_fallback.as_deref(),
+            &source_sha_fallback,
+            &gate_invocations,
+        )?;
     }
+    finish_merge(termination_result)
 }
 
 /// Fire the `worktree-post-create` hook for a worktree promoted from the
@@ -1514,6 +1598,13 @@ struct MergeHookRunner<'a> {
     /// When the merge planned a rail, hook fires embed under their stage
     /// rows; `None` falls back to the standalone block presenter.
     timeline: Option<TimelineHandle>,
+    /// Log-store invocation ids minted by each fire, in fire order.
+    ///
+    /// The verdict payload's join key into `daft hooks jobs`: merge reports
+    /// *that* the gate ran and how it ended, the log store holds the per-job
+    /// detail, and this id is what ties the two together. A fire that never
+    /// mints one (hooks disabled, hook-level skip) contributes nothing.
+    invocations: Vec<(HookType, String)>,
 }
 
 impl<'a> MergeHookRunner<'a> {
@@ -1542,6 +1633,7 @@ impl<'a> MergeHookRunner<'a> {
             source_worktree,
             output_config,
             timeline,
+            invocations: Vec::new(),
         })
     }
 
@@ -1587,7 +1679,25 @@ impl<'a> MergeHookRunner<'a> {
         // Abort. pre-merge defaults to Abort, post-merge to Warn, so the
         // trait method's "Err aborts" contract is honored by the
         // executor's own fail-mode plumbing.
-        self.executor.execute(&ctx, self.output, presenter)?;
+        //
+        // The id is recorded on the way past. A *failing* gate is exactly
+        // when the consumer most needs to drill into the jobs, and that is
+        // the path where `execute` returns Err — so record before `?`, not
+        // after it.
+        let result = self.executor.execute(&ctx, self.output, presenter);
+        let invocation_id = match &result {
+            Ok(r) => r.invocation_id.clone(),
+            // A red gate aborts, and that is precisely the run whose jobs the
+            // caller needs to address — so the id comes back off the failure
+            // too, not just the success.
+            Err(e) => {
+                crate::hooks::HookAborted::from_error(e).and_then(|a| a.invocation_id.clone())
+            }
+        };
+        if let Some(id) = invocation_id {
+            self.invocations.push((hook_type, id));
+        }
+        result?;
         Ok(())
     }
 }
@@ -1620,5 +1730,465 @@ impl<'a> HookRunner for MergeHookRunner<'a> {
 
     fn resume_spinner(&mut self) {
         self.output.resume_spinner();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Machine-readable verdict (`--format` / `--template`)
+// ─────────────────────────────────────────────────────────────────────────
+
+use crate::core::worktree::merge::{GateRefusal, StartOutcome};
+use crate::output::emit::{self, Cell, EmitArgs, EmitPayload, Section, Table};
+
+/// How a merge ended, after every human-facing line has been printed.
+///
+/// The rendering chain used to end each path with `std::process::exit(1)` or
+/// a `bail!`, which left `--format` nowhere single to emit from — and the one
+/// place it could have emitted would have reported `landed` while exiting 1
+/// on a cleanup refusal. Each path now yields one of these instead, so the
+/// verdict and the exit code are derived from the same value and cannot
+/// disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MergeTermination {
+    /// The merge landed: fast-forward, merge commit, or squash commit.
+    Landed,
+    /// Nothing to do — the target already contained every source.
+    UpToDate,
+    /// `--squash` with `--no-commit`: staged on the target, not committed.
+    SquashStaged,
+    /// git left the target worktree conflicted; the user owns it now.
+    Conflicted,
+    /// The squash-commit step was aborted (empty editor, refusing hook).
+    CommitAborted,
+    /// The merge landed but post-merge cleanup was refused. Carries the
+    /// reason already shown to the user.
+    CleanupRefused(String),
+}
+
+impl MergeTermination {
+    /// The `status` token a consumer branches on.
+    ///
+    /// A cleanup refusal reports `landed`, because it did: the commit is on
+    /// the target and only the branch/worktree teardown was declined. The
+    /// refusal travels in the `cleanup` field instead of hiding a successful
+    /// merge behind it. The exit code is still non-zero — a consumer reading
+    /// only exit codes behaves exactly as before.
+    fn status(&self) -> &'static str {
+        match self {
+            MergeTermination::Landed | MergeTermination::CleanupRefused(_) => "landed",
+            MergeTermination::UpToDate => "up-to-date",
+            MergeTermination::SquashStaged => "squash-staged",
+            MergeTermination::Conflicted => "conflicted",
+            MergeTermination::CommitAborted => "commit-aborted",
+        }
+    }
+}
+
+/// The `status` token for a finished run, error paths included.
+///
+/// The three unhappy tokens are kept apart because they call for different
+/// automation:
+/// * `refused` — gate *policy* stopped the merge before it started; the
+///   repository is untouched. "Rebase the track and retry."
+/// * `gate-failed` — the gate ran and a check came back red. "Fix the code";
+///   the failing jobs are in the `jobs` section.
+/// * `failed` — something else broke mid-flight. "A human should look."
+///
+/// Collapsing these into one token would leave a consumer re-deriving the
+/// distinction from the message text, which is what the typed errors exist
+/// to avoid.
+fn verdict_status(result: &Result<MergeTermination>) -> &'static str {
+    match result {
+        Ok(t) => t.status(),
+        Err(e) if GateRefusal::from_error(e).is_some() => "refused",
+        // Only a *pre*-merge abort is a red gate. A post-merge hook set to
+        // abort fires after the ref moved, so the merge did land — that is a
+        // plain failure, not a gate verdict.
+        Err(e)
+            if crate::hooks::HookAborted::from_error(e)
+                .is_some_and(|a| a.hook_type == HookType::PreMerge) =>
+        {
+            "gate-failed"
+        }
+        Err(_) => "failed",
+    }
+}
+
+/// Read the gate's recorded jobs back out of the log store.
+///
+/// Best-effort by design: a store that cannot be opened or read must not turn
+/// a completed merge into an error. When this yields `None` the verdict still
+/// carries the invocation ids, so ids-present-without-a-jobs-section is
+/// distinguishable from a merge that ran no hooks at all (no ids either).
+fn gate_jobs_payload(gate_invocations: &[(HookType, String)]) -> Option<EmitPayload> {
+    if gate_invocations.is_empty() {
+        return None;
+    }
+    let repo_hash = crate::core::repo_identity::compute_repo_id().ok()?;
+    let store = crate::coordinator::log_store::LogStore::for_repo(&repo_hash).ok()?;
+    let index =
+        crate::commands::hooks::jobs::load_sqlite_job_meta_index(&repo_hash, &store.base_dir);
+    let alive = crate::commands::hooks::jobs::is_coordinator_running(&repo_hash);
+    let metas: Vec<_> = gate_invocations
+        .iter()
+        .filter_map(|(_, id)| store.read_invocation_meta(id).ok())
+        .collect();
+    if metas.is_empty() {
+        return None;
+    }
+    crate::commands::hooks::jobs::build_jobs_payload(&metas, &store, index.as_ref(), alive).ok()
+}
+
+/// Build the merge verdict document.
+///
+/// `Sectioned` rather than a flat table: the verdict is one row of scalars,
+/// but sources, conflicts, and job rows are lists of different shapes, and
+/// flattening them into delimiter-joined strings would hand the consumer a
+/// second parsing problem. The cost is that the row-oriented formats
+/// (tsv/csv/ndjson) do not apply — per-job tabular data is what
+/// `daft hooks jobs --format tsv` is for, and the ids here address it.
+fn merge_verdict_payload(
+    result: &Result<MergeTermination>,
+    outcome: Option<&StartOutcome>,
+    sources: &[String],
+    target_fallback: Option<&str>,
+    source_sha_fallback: &[Option<String>],
+    gate_invocations: &[(HookType, String)],
+) -> EmitPayload {
+    let refusal = result.as_ref().err().and_then(GateRefusal::from_error);
+    let cleanup_reason = match result {
+        Ok(MergeTermination::CleanupRefused(msg)) => Some(msg.clone()),
+        _ => None,
+    };
+    let message = match (result, &cleanup_reason) {
+        (_, Some(msg)) => Some(msg.clone()),
+        (Err(e), _) => Some(format!("{e:#}")),
+        _ => None,
+    };
+    let invocation_for = |ht: HookType| -> Cell {
+        gate_invocations
+            .iter()
+            .find(|(h, _)| *h == ht)
+            .map(|(_, id)| Cell::str(id.clone()))
+            .unwrap_or_else(Cell::null)
+    };
+    let target_branch = outcome
+        .map(|o| o.target_branch.clone())
+        .filter(|b| !b.is_empty())
+        .or_else(|| target_fallback.map(str::to_string))
+        .unwrap_or_default();
+
+    let verdict = Table::new([
+        "status",
+        "refusal",
+        "cleanup",
+        "message",
+        "target_branch",
+        "target_path",
+        "target_sha",
+        "fast_forward",
+        "squash_commit_sha",
+        "pre_merge_invocation",
+        "post_merge_invocation",
+    ])
+    .row([
+        Cell::str(verdict_status(result)),
+        refusal
+            .map(|r| Cell::str(r.kind.as_str()))
+            .unwrap_or_else(Cell::null),
+        cleanup_reason
+            .as_ref()
+            .map(|_| Cell::str("refused"))
+            .unwrap_or_else(Cell::null),
+        message.map(Cell::str).unwrap_or_else(Cell::null),
+        Cell::str(target_branch),
+        Cell::str(
+            outcome
+                .map(|o| o.target_path.display().to_string())
+                .unwrap_or_default(),
+        ),
+        Cell::str(outcome.map(|o| o.target_sha.clone()).unwrap_or_default()),
+        Cell::bool(outcome.is_some_and(|o| o.was_fast_forward)),
+        outcome
+            .and_then(|o| o.squash_commit_sha.clone())
+            .map(Cell::str)
+            .unwrap_or_else(Cell::null),
+        invocation_for(HookType::PreMerge),
+        invocation_for(HookType::PostMerge),
+    ]);
+
+    // One row per source, paired with the SHA the gate pinned. Together with
+    // `target_sha` this is exactly what the rings certified.
+    //
+    // A refusal returns no outcome, so the pinned SHAs die with the error.
+    // The fallback re-resolves them at the command layer, which is accurate
+    // precisely in that case: a refusal stops the merge before anything
+    // moves, so the tip now is the tip that was pinned.
+    let empty: Vec<String> = Vec::new();
+    let shas = outcome.map(|o| &o.source_shas).unwrap_or(&empty);
+    let mut sources_table = Table::new(["source", "sha"]);
+    for (i, source) in sources.iter().enumerate() {
+        let sha = shas
+            .get(i)
+            .cloned()
+            .or_else(|| source_sha_fallback.get(i).cloned().flatten());
+        sources_table = sources_table.row([
+            Cell::str(source.clone()),
+            sha.map(Cell::str).unwrap_or_else(Cell::null),
+        ]);
+    }
+
+    let mut sections = vec![
+        Section::new("verdict", EmitPayload::Tabular(verdict)),
+        Section::new("sources", EmitPayload::Tabular(sources_table)),
+    ];
+
+    if let Some(o) = outcome
+        && !o.conflicted_files.is_empty()
+    {
+        let mut conflicts = Table::new(["path"]);
+        for f in &o.conflicted_files {
+            conflicts = conflicts.row([Cell::str(f.clone())]);
+        }
+        sections.push(Section::new("conflicts", EmitPayload::Tabular(conflicts)));
+    }
+
+    if let Some(jobs) = gate_jobs_payload(gate_invocations) {
+        sections.push(Section::new("jobs", jobs));
+    }
+
+    EmitPayload::Sectioned(sections)
+}
+
+/// Write the verdict to stdout.
+///
+/// Called before the exit code is decided, never instead of it: a
+/// `daft merge --format json` that exited 0 on a refused merge would read as
+/// a successful landing to every `|| exit 1` CI wrapper.
+#[allow(clippy::too_many_arguments)]
+fn emit_merge_verdict(
+    emit_args: &EmitArgs,
+    result: &Result<MergeTermination>,
+    outcome: Option<&StartOutcome>,
+    sources: &[String],
+    target_fallback: Option<&str>,
+    source_sha_fallback: &[Option<String>],
+    gate_invocations: &[(HookType, String)],
+) -> Result<()> {
+    let payload = merge_verdict_payload(
+        result,
+        outcome,
+        sources,
+        target_fallback,
+        source_sha_fallback,
+        gate_invocations,
+    );
+    emit::emit_and_handle("merge", payload, emit_args, &mut std::io::stdout())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Map a termination to the process's exit behavior, preserving the codes the
+/// human paths used before the funnel existed.
+fn finish_merge(result: Result<MergeTermination>) -> Result<()> {
+    match result? {
+        MergeTermination::Landed | MergeTermination::UpToDate | MergeTermination::SquashStaged => {
+            Ok(())
+        }
+        // These printed their own multi-line report to stderr; anyhow's
+        // "Error:" prefix would be noise on top of it.
+        MergeTermination::Conflicted | MergeTermination::CommitAborted => std::process::exit(1),
+        MergeTermination::CleanupRefused(msg) => anyhow::bail!(
+            "cleanup refused: {msg}\n  \
+             Re-run cleanup manually if you've reconciled \
+             (e.g. `daft merge -rb` after resolving the branch)."
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::worktree::merge::GateRefusalKind;
+
+    fn payload_sections(payload: &EmitPayload) -> Vec<String> {
+        match payload {
+            EmitPayload::Sectioned(sections) => sections.iter().map(|s| s.name.clone()).collect(),
+            other => panic!("expected a Sectioned payload, got {:?}", other.shape()),
+        }
+    }
+
+    /// The one row of the named section, as (header, rendered value) pairs.
+    fn row_of(payload: &EmitPayload, section: &str) -> Vec<(String, String)> {
+        let EmitPayload::Sectioned(sections) = payload else {
+            panic!("not sectioned");
+        };
+        let s = sections
+            .iter()
+            .find(|s| s.name == section)
+            .unwrap_or_else(|| panic!("no '{section}' section"));
+        let EmitPayload::Tabular(table) = s.payload.as_ref() else {
+            panic!("'{section}' is not tabular");
+        };
+        let row = table.rows.first().expect("section has no rows");
+        table
+            .headers
+            .iter()
+            .cloned()
+            .zip(row.iter().map(|c| format!("{c:?}")))
+            .collect()
+    }
+
+    fn field(payload: &EmitPayload, section: &str, header: &str) -> String {
+        row_of(payload, section)
+            .into_iter()
+            .find(|(h, _)| h == header)
+            .unwrap_or_else(|| panic!("no '{header}' column"))
+            .1
+    }
+
+    fn verdict_of(result: Result<MergeTermination>, outcome: Option<&StartOutcome>) -> EmitPayload {
+        merge_verdict_payload(
+            &result,
+            outcome,
+            &["feature".to_string()],
+            Some("main"),
+            &[],
+            &[],
+        )
+    }
+
+    #[test]
+    fn every_termination_maps_to_its_own_status_token() {
+        let cases = [
+            (MergeTermination::Landed, "landed"),
+            (MergeTermination::UpToDate, "up-to-date"),
+            (MergeTermination::SquashStaged, "squash-staged"),
+            (MergeTermination::Conflicted, "conflicted"),
+            (MergeTermination::CommitAborted, "commit-aborted"),
+            // A cleanup refusal still landed the merge — the refusal is
+            // reported in its own field, not by denying the landing.
+            (MergeTermination::CleanupRefused("moved".into()), "landed"),
+        ];
+        for (termination, expected) in cases {
+            assert_eq!(verdict_status(&Ok(termination.clone())), expected);
+        }
+    }
+
+    #[test]
+    fn policy_refusals_hook_failures_and_breakage_get_distinct_statuses() {
+        // The distinction a CI consumer branches on: rebase-and-retry vs
+        // fix-the-code vs a-human-should-look.
+        let refusal: Result<MergeTermination> = Err(anyhow::Error::new(
+            crate::core::worktree::merge::GateRefusal::new(
+                GateRefusalKind::NotFastForward,
+                "'stale' does not contain the tip of 'main'",
+            ),
+        ));
+        assert_eq!(verdict_status(&refusal), "refused");
+
+        let red_gate: Result<MergeTermination> =
+            Err(anyhow::Error::new(crate::hooks::HookAborted {
+                hook_type: HookType::PreMerge,
+                exit_code: 3,
+                invocation_id: Some("abcd".into()),
+            }));
+        assert_eq!(verdict_status(&red_gate), "gate-failed");
+
+        // A post-merge abort fires after the ref moved: the merge landed, so
+        // it is a plain failure, not a gate verdict.
+        let post: Result<MergeTermination> = Err(anyhow::Error::new(crate::hooks::HookAborted {
+            hook_type: HookType::PostMerge,
+            exit_code: 1,
+            invocation_id: None,
+        }));
+        assert_eq!(verdict_status(&post), "failed");
+
+        let broke: Result<MergeTermination> = Err(anyhow::anyhow!("git exited 128"));
+        assert_eq!(verdict_status(&broke), "failed");
+    }
+
+    #[test]
+    fn cleanup_refusal_reports_landed_plus_the_refusal_and_still_exits_nonzero() {
+        // The pairing that would otherwise be a lie: exit 1 with a payload
+        // claiming an unqualified success.
+        let payload = verdict_of(
+            Ok(MergeTermination::CleanupRefused(
+                "source 'feature' moved".into(),
+            )),
+            None,
+        );
+        assert!(field(&payload, "verdict", "status").contains("landed"));
+        assert!(field(&payload, "verdict", "cleanup").contains("refused"));
+        assert!(field(&payload, "verdict", "message").contains("moved"));
+
+        let err = finish_merge(Ok(MergeTermination::CleanupRefused("moved".into())))
+            .expect_err("a cleanup refusal must not exit 0");
+        assert!(format!("{err:#}").contains("cleanup refused"));
+    }
+
+    #[test]
+    fn landing_terminations_exit_zero() {
+        for t in [
+            MergeTermination::Landed,
+            MergeTermination::UpToDate,
+            MergeTermination::SquashStaged,
+        ] {
+            assert!(finish_merge(Ok(t)).is_ok());
+        }
+        // Conflicted / CommitAborted call `std::process::exit(1)` and so
+        // cannot be asserted in-process; the merge scenarios cover their
+        // exit codes end to end.
+    }
+
+    #[test]
+    fn refusals_still_carry_a_target_and_sources_without_an_outcome() {
+        // A refusal returns no StartOutcome, so every field would be blank
+        // unless the command layer supplies fallbacks. That payload would be
+        // useless precisely when a consumer needs it most.
+        let refusal: Result<MergeTermination> = Err(anyhow::Error::new(
+            crate::core::worktree::merge::GateRefusal::new(
+                GateRefusalKind::NotFastForward,
+                "'stale' does not contain the tip of 'main'",
+            ),
+        ));
+        let payload = merge_verdict_payload(
+            &refusal,
+            None,
+            &["feature".to_string()],
+            Some("main"),
+            &[Some("deadbeef".to_string())],
+            &[],
+        );
+        assert!(field(&payload, "verdict", "target_branch").contains("main"));
+        assert!(field(&payload, "verdict", "refusal").contains("not-fast-forward"));
+        assert!(field(&payload, "sources", "sha").contains("deadbeef"));
+    }
+
+    #[test]
+    fn conflicts_section_appears_only_when_files_conflicted() {
+        let clean = verdict_of(Ok(MergeTermination::Landed), Some(&StartOutcome::default()));
+        assert_eq!(payload_sections(&clean), ["verdict", "sources"]);
+
+        let conflicted = StartOutcome {
+            failed: true,
+            conflicted_files: vec!["a.txt".into()],
+            ..StartOutcome::default()
+        };
+        let payload = verdict_of(Ok(MergeTermination::Conflicted), Some(&conflicted));
+        assert_eq!(
+            payload_sections(&payload),
+            ["verdict", "sources", "conflicts"]
+        );
+    }
+
+    #[test]
+    fn the_verdict_is_a_document_shape_so_row_formats_are_refused() {
+        // Sectioned deliberately excludes tsv/csv/ndjson: the payload holds
+        // three differently-shaped lists. Per-job tabular data lives in
+        // `daft hooks jobs --format tsv`, which the invocation ids address.
+        let payload = verdict_of(Ok(MergeTermination::Landed), None);
+        let supported = crate::output::emit::dispatch::supported_formats(payload.shape());
+        assert!(!supported.contains(&crate::output::emit::Format::Csv));
+        assert!(supported.contains(&crate::output::emit::Format::Json));
     }
 }

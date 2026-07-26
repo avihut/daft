@@ -726,7 +726,7 @@ fn list_all_repo_hashes() -> Result<Vec<String>> {
     Ok(hashes)
 }
 
-fn is_coordinator_running(repo_hash: &str) -> bool {
+pub(crate) fn is_coordinator_running(repo_hash: &str) -> bool {
     crate::coordinator::coordinator_socket_path(repo_hash)
         .map(|p| p.exists())
         .unwrap_or(false)
@@ -762,7 +762,7 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 /// SQLite + WAL means this open succeeds even while a coordinator is
 /// actively writing to the same DB — readers and writers don't block
 /// each other.
-fn load_sqlite_job_meta_index(
+pub(crate) fn load_sqlite_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
 ) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
@@ -828,7 +828,7 @@ fn lookup_job_meta(
 /// Each row carries its invocation context (id, short id, worktree, hook type,
 /// trigger command, created_at) alongside the job fields — flat so every
 /// emit format including tsv/csv/ndjson works.
-fn build_jobs_payload(
+pub(crate) fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
     sqlite_index: Option<

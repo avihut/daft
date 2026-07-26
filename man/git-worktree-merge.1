@@ -4,7 +4,7 @@
 .SH NAME
 git\-worktree\-merge \- Merge branches across worktrees
 .SH SYNOPSIS
-\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-\-source\-worktree\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-skip\-tag\fR] [\fB\-\-only\-tag\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
+\fBgit\-worktree\-merge\fR [\fB\-\-into\fR] [\fB\-\-abort\fR] [\fB\-\-continue\fR] [\fB\-\-quit\fR] [\fB\-m \fR] [\fB\-F\fR|\fB\-\-file\fR] [\fB\-\-edit\fR] [\fB\-\-no\-edit\fR] [\fB\-\-cleanup\fR] [\fB\-\-merge\fR] [\fB\-\-squash\fR] [\fB\-\-rebase\fR] [\fB\-\-rebase\-merge\fR] [\fB\-\-commit\fR] [\fB\-\-no\-commit\fR] [\fB\-\-signoff\fR] [\fB\-\-no\-signoff\fR] [\fB\-s\fR|\fB\-\-strategy\fR] [\fB\-X\fR|\fB\-\-strategy\-option\fR] [\fB\-S\fR|\fB\-\-gpg\-sign\fR] [\fB\-\-no\-gpg\-sign\fR] [\fB\-\-verify\-signatures\fR] [\fB\-\-no\-verify\-signatures\fR] [\fB\-\-allow\-unrelated\-histories\fR] [\fB\-\-stat\fR] [\fB\-n\fR|\fB\-\-no\-stat\fR] [\fB\-\-adopt\-target\fR] [\fB\-\-no\-adopt\-target\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-r\fR|\fB\-\-remove\-branch\fR] [\fB\-\-keep\-branch\fR] [\fB\-\-ff\-only\fR] [\fB\-\-no\-ff\-only\fR] [\fB\-\-source\-worktree\fR] [\fB\-\-skip\-hooks\fR] [\fB\-\-skip\-tag\fR] [\fB\-\-only\-tag\fR] [\fB\-\-set\-default\fR] [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-format\fR] [\fB\-\-template\fR] [\fB\-\-no\-headers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fISOURCE_OR_TARGET\fR] 
 .SH DESCRIPTION
 .PP
 Merges one or more source branches into a target worktree\*(Aqs branch.
@@ -152,6 +152,35 @@ Write the resolved style/cleanup choices to `git config \-\-local` after the mer
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Be verbose; show detailed progress
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR
+Output format. Mutually exclusive with \-\-template
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+json
+.IP \(bu 2
+ndjson
+.IP \(bu 2
+tsv
+.IP \(bu 2
+csv
+.IP \(bu 2
+yaml
+.IP \(bu 2
+toon
+.IP \(bu 2
+markdown
+.RE
+.TP
+\fB\-\-template\fR \fI<STR>\fR
+Tera template string. Mutually exclusive with \-\-format
+.TP
+\fB\-\-no\-headers\fR
+Omit header row (tsv/csv only)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

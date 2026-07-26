@@ -75,6 +75,17 @@ pub struct StartParams {
     /// `merge:` config lacks it and overrides the config when present; see
     /// [`resolve_gate_policy`].
     pub gate_overrides: GateOverrides,
+    /// The command layer is writing a machine payload to stdout (`--format` /
+    /// `--template`), so core must not print its own status lines there.
+    ///
+    /// Core still owns two stdout prints on the start path ("Already up to
+    /// date.", "Fast-forwarded … (no worktree)") — a known debt noted at
+    /// those sites, since core has no `&mut dyn Output`. Under structured
+    /// emit they would land *inside* the JSON document and make it
+    /// unparseable, so they are suppressed rather than redirected: the same
+    /// facts reach the consumer as the verdict's `status` field. Stderr
+    /// warnings are unaffected — they are not the payload.
+    pub machine_output: bool,
 }
 
 /// Per-invocation gate-policy flag state, threaded from the CLI.
@@ -182,6 +193,19 @@ pub struct GateRefusal {
 }
 
 impl GateRefusal {
+    /// Construct a refusal directly.
+    ///
+    /// [`refuse`] is the normal entry point; this exists so tests in other
+    /// modules (the command layer's verdict classification) can build one
+    /// without reaching through a whole merge.
+    #[cfg(test)]
+    pub(crate) fn new(kind: GateRefusalKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
     /// Recover the refusal from an error chain, if it is one.
     ///
     /// Walks the chain rather than downcasting the head so a refusal that
@@ -230,6 +254,7 @@ impl Default for StartParams {
             require_clean_target: true,
             cleanup_intent: None,
             gate_overrides: GateOverrides::default(),
+            machine_output: false,
         }
     }
 }
@@ -1310,6 +1335,14 @@ pub struct StartOutcome {
     /// detect if any source ref moved during the editor session. Empty on
     /// already-up-to-date and other short-circuit paths that don't capture.
     pub source_shas: Vec<String>,
+    /// The target branch's tip as of merge start, before any ref moved.
+    ///
+    /// Together with [`StartOutcome::source_shas`] this is the pair the gate
+    /// certified: the tree the rings tested was `source_shas` merged onto
+    /// this. `--format` reports both so a CI consumer can record exactly what
+    /// was verified. Empty on the already-up-to-date short-circuit, which
+    /// resolves the target but pins nothing.
+    pub target_sha: String,
 
     /// Combined stdout+stderr captured from `git merge` /
     /// `git merge --squash` / `git commit` invocations during the merge
@@ -1822,7 +1855,9 @@ pub fn execute_start(
         // TODO(future): emit via Output for styling consistency — doing so
         // requires threading `&mut dyn Output` into core, which is out of scope
         // for this branch.
-        println!("Already up to date.");
+        if !params.machine_output {
+            println!("Already up to date.");
+        }
         return Ok(StartOutcome {
             already_up_to_date: true,
             failed: false,
@@ -1888,10 +1923,17 @@ pub fn execute_start(
         cross_worktree,
         gate,
     };
-    match resolved.path.clone() {
+    let mut outcome = match resolved.path.clone() {
         Some(path) => execute_start_in_worktree(params, &resolved, path, &ctx, hooks),
         None => execute_start_ref_only(params, git, project_root, &resolved, &ctx, hooks),
-    }
+    }?;
+    // Stamp the certified pair centrally rather than at each path's several
+    // `StartOutcome` literals: this is the one place both values are in
+    // scope on every path that reaches a merge, so it cannot be forgotten by
+    // a future path that returns its own outcome.
+    outcome.source_shas = source_shas;
+    outcome.target_sha = target_sha;
+    Ok(outcome)
 }
 
 /// Run `git rebase <target> <source>` in `target_path`. The source branch's
@@ -2383,7 +2425,9 @@ fn execute_start_ref_only(
 
         advance_ref_via_plumbing(git, target_branch, &source_sha)?;
         let short = &source_sha[..12.min(source_sha.len())];
-        println!("Fast-forwarded {target_branch} to {short} (no worktree)");
+        if !params.machine_output {
+            println!("Fast-forwarded {target_branch} to {short} (no worktree)");
+        }
 
         let post_ctx = pre_ctx.extend_for_post(PostOutcome::Success {
             commit_sha: source_sha.clone(),
@@ -5647,6 +5691,7 @@ mod tests {
             require_clean_target: false,
             cleanup_intent: None,
             gate_overrides: GateOverrides::default(),
+            machine_output: false,
         };
         let outcome =
             execute_start(&params, &git, tmp.path(), &mut runner).expect("merge succeeds");
@@ -5740,6 +5785,7 @@ mod tests {
             require_clean_target: false,
             cleanup_intent: None,
             gate_overrides: GateOverrides::default(),
+            machine_output: false,
         };
         let _ = execute_start(&params, &git, tmp.path(), &mut runner);
 
