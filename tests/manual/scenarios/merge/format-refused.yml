@@ -1,0 +1,90 @@
+name: A refused merge emits its verdict AND still exits non-zero
+description:
+  "The regression that matters most for machine output: emitting a payload must
+  not swallow the failure. A gate refusal under --format json reports the typed
+  refusal kind and exits 1 — a wrapper reading only the exit code behaves
+  exactly as it did before the flag existed, and one reading the payload learns
+  which policy refused without parsing English. A red gate is reported
+  separately from a policy refusal."
+
+repos:
+  - name: test-merge-fmt-refused
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# refused verdict"
+        commits:
+          - message: "Initial commit"
+      - name: stale-track
+        from: main
+        files:
+          - path: stale.txt
+            content: "stale work"
+        commits:
+          - message: "Stale track work"
+      - name: red-track
+        from: main
+        files:
+          - path: red.txt
+            content: "red work"
+        commits:
+          - message: "Red track work"
+    daft_yml: |
+      merge:
+        ff: only
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_MERGE_FMT_REFUSED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-merge-fmt-refused/main"
+
+  - name: Advance main so both tracks fall behind it
+    run: git commit --allow-empty -q -m "main moves on" && git log --oneline -1
+    cwd: "$WORK_DIR/test-merge-fmt-refused/main"
+    expect:
+      exit_code: 0
+
+  - name: A policy refusal is typed in the payload and still exits 1
+    run: daft merge stale-track --no-edit --format json
+    cwd: "$WORK_DIR/test-merge-fmt-refused/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - '"status": "refused"'
+        - '"refusal": "not-fast-forward"'
+        # Fallbacks fill the fields a refusal would otherwise leave blank:
+        # no StartOutcome comes back, but the target and the pinned source
+        # are exactly what the consumer needs to act.
+        - '"target_branch": "main"'
+        - '"source": "stale-track"'
+
+  - name: The human error is still on stderr, unchanged
+    run: daft merge stale-track --no-edit --format json 2>&1 >/dev/null
+    cwd: "$WORK_DIR/test-merge-fmt-refused/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "requires fast-forward"
+        - "rebase the track onto 'main'"
+
+  - name: A format the document shape cannot represent is refused, not mangled
+    run: daft merge stale-track --no-edit --format csv 2>&1
+    cwd: "$WORK_DIR/test-merge-fmt-refused/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "does not support --format csv"
+        - "supported formats: json, yaml, toon, markdown"
+
+  - name: Finish modes reject the flag at parse time rather than ignoring it
+    run: daft merge --abort --format json 2>&1
+    cwd: "$WORK_DIR/test-merge-fmt-refused/main"
+    expect:
+      exit_code: 2
+      output_contains:
+        - "cannot be used with"

@@ -1,0 +1,82 @@
+name: daft merge --format json emits the verdict and the gate's jobs
+description:
+  "A landed merge under --format json writes one JSON document to stdout: the
+  verdict row, the sources it certified, and the gate's per-job rows read back
+  out of the log store. The human status lines are suppressed — stdout belongs
+  to the payload."
+
+repos:
+  - name: test-merge-fmt-json
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# merge format json"
+        commits:
+          - message: "Initial commit"
+      - name: track-fmt
+        from: main
+        files:
+          - path: track.txt
+            content: "track work"
+        commits:
+          - message: "Track work"
+      - name: track-yaml
+        from: main
+        files:
+          - path: yaml.txt
+            content: "yaml track"
+        commits:
+          - message: "Track work for the yaml pass"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: gate-check
+              run: "true"
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_MERGE_FMT_JSON
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-merge-fmt-json/main"
+
+  - name: Trust the repository so the gate actually runs
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-merge-fmt-json/main"
+    expect:
+      exit_code: 0
+
+  - name: The verdict reports a landing, with the certified source
+    run: daft merge track-fmt --no-edit --format json
+    cwd: "$WORK_DIR/test-merge-fmt-json/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - '"verdict"'
+        - '"status": "landed"'
+        - '"target_branch": "main"'
+        - '"sources"'
+        - '"source": "track-fmt"'
+        # The gate ran, so its jobs come back with it — and the invocation id
+        # is the join key into `daft hooks jobs`.
+        - '"jobs"'
+        - '"name": "gate-check"'
+        - '"hook_type": "pre-merge"'
+      output_not_contains:
+        # The human status line must not land inside the document.
+        - "Merged track-fmt into main"
+
+  - name: yaml renders the same document
+    run: daft merge track-yaml --no-edit --format yaml
+    cwd: "$WORK_DIR/test-merge-fmt-json/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "verdict:"
+        - "status: landed"
+        - "sources:"
+        - "source: track-yaml"
