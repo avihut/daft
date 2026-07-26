@@ -376,6 +376,11 @@ jobs:
           echo "Committed CLI docs are up-to-date!"
 
       - name: Run xtask unit tests
+        # Deliberately raw cargo, matching the rest of this job: installing
+        # mise here would export RUSTUP_TOOLCHAIN from mise.toml and silently
+        # move the job off `stable` onto the pinned MSRV. `mise run test:xtask`
+        # is the local mirror that daft.yml's xtask-tests ring invokes — keep
+        # the two commands in step by hand.
         run: cargo test --package xtask
 
   # Build release binary once, share across integration test matrix

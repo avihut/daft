@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Run xtask unit tests"
+set -euo pipefail
+
+# Split out from test:unit, which is root-package only, so the xtask-test CI
+# job is reachable through a mise task and daft.yml's xtask-tests pre-merge
+# ring can mirror it.
+#
+# The workflow deliberately keeps its own `cargo test --package xtask` rather
+# than calling this task: that job has no mise step, and adding one would
+# export RUSTUP_TOOLCHAIN from mise.toml and move it off `stable` onto the
+# pinned MSRV. Keep this command identical to the workflow's by hand.
+echo "Running xtask unit tests..."
+cargo test --package xtask

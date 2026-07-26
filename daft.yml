@@ -1,3 +1,13 @@
+# Merge policy — what makes a green pre-merge ring mean anything. `ff: only`
+# refuses to land a track that does not already contain the trunk tip, so the
+# tree the rings tested is the tree that lands; `source_worktree: clean` closes
+# the gap between the working tree the rings see and the committed tree that
+# merges. Relax either per-invocation with `--no-ff-only` / `--source-worktree
+# any` when you know what you are doing; both refusals name what to fix.
+merge:
+  ff: only
+  source_worktree: clean
+
 hooks:
   post-clone:
     jobs:
@@ -56,6 +66,151 @@ hooks:
       - name: sandbox-clean
         description: Remove the sandbox for this worktree
         run: mise run sandbox:clean
+
+  # The quality gate. One ring per .github/workflows/test.yml job, each
+  # invoking the same `mise run` task as the CI job it mirrors, so a local
+  # refusal names the check that would have failed on GitHub. See CLAUDE.md
+  # "Quality Gates: CI <-> Merge-Gate Parity" — add, remove, or rename a check
+  # in CI, in `mise run ci`, or here, and change all three in the same PR.
+  #
+  # Rings run in the *source* worktree (`root: "{merge_source_path}"`): that is
+  # where the contained code lives and where the caches are warm. The `merge:`
+  # policy above is what makes that safe — ff-only means the tested tree is the
+  # landed tree.
+  #
+  # Parallel (the default mode), deliberately: a gate's job is to surface every
+  # problem in one pass. Stopping at the first red (`piped`) hides every check
+  # behind it and turns one bad merge into a fix-rerun-fix loop, which is also
+  # not what a forge does with its required checks. Failure cascades only to a
+  # job's *dependents*, so `needs:` carries the one real ordering (mirroring
+  # CI's `integration-tests: needs: build`) and every independent ring still
+  # reports. Runtime is not this file's problem: the resource governor
+  # (`daft.governor.mode`, Auto by default) caps concurrency and throttles under
+  # memory pressure, and cargo's build-directory lock serializes the
+  # compile-heavy rings on its own. Order below is cheapest-first only so the
+  # quick verdicts land on the rail first.
+  #
+  # `tags: [deep]` marks the slow rings. Drop them for a quick iteration with
+  # `daft merge --skip-tag deep` — never by trimming them from the gate.
+  #
+  # Deliberately NOT replicated locally:
+  #   windows-check        msvc cross-check is blocked by bundled rusqlite's C
+  #                        toolchain; the cfg(not(unix)) stub-drift class stays
+  #                        CI-only
+  #   release-env-guard    packaging/release concern, not a correctness gate
+  #   homebrew-simulation  same
+  #   bench.yml            benchmarks measure, they do not gate
+  #
+  # CI's `changes` path filters are mirrored only where the saving is large and
+  # the pattern has a single upstream source (docs-build, dep-age-check).
+  # Everything else runs on every merge: locally the safe direction is to run
+  # more checks, not fewer.
+  pre-merge:
+    jobs:
+      - name: fmt-check
+        description: "CI: lint — cargo fmt --check + prettier over md/yml"
+        root: "{merge_source_path}"
+        run: mise run fmt:check
+
+      - name: dep-age-check
+        description: "CI: dep-age-check — no dep entries younger than 7 days"
+        root: "{merge_source_path}"
+        # Mirrors the `lockfile` class of the workflow's `changes` filter.
+        glob:
+          - Cargo.lock
+          - bun.lock
+          - .dep-age-allowlist
+          - cooldown.toml
+          - bunfig.toml
+          - deny.toml
+        # CI compares against the PR base; the local equivalent is the branch
+        # being merged into. An empty BASE_REF falls back to origin/master
+        # inside the task — fine here (that is the trunk), but it means a green
+        # result would not prove the var resolved, so change the two together.
+        run: BASE_REF="$DAFT_MERGE_TARGET_BRANCH" mise run deps:check-age
+
+      - name: clippy
+        description: "CI: lint — clippy must pass with zero warnings"
+        root: "{merge_source_path}"
+        run: mise run clippy
+
+      - name: xtask-tests
+        description: "CI: xtask-test — xtask unit tests"
+        root: "{merge_source_path}"
+        run: mise run test:xtask
+
+      - name: man-verify
+        description: "CI: xtask-test — committed man pages match source"
+        root: "{merge_source_path}"
+        run: mise run man:verify
+
+      - name: cli-docs-verify
+        description: "CI: xtask-test — committed CLI docs match source"
+        root: "{merge_source_path}"
+        run: mise run docs:cli:verify
+
+      - name: unit-tests
+        description: "CI: unit-tests — the Rust unit suite"
+        root: "{merge_source_path}"
+        run: mise run test:unit
+
+      - name: build
+        description: "CI: build — the release binaries actually link"
+        root: "{merge_source_path}"
+        run: mise run build
+
+      - name: dep-license-check
+        description:
+          "CI: dep-license-check — cargo-deny licence/advisory policy"
+        root: "{merge_source_path}"
+        tags: [deep]
+        run: mise run deny
+
+      - name: completions-test
+        description: "CI: integration-tests — shell completion suite"
+        root: "{merge_source_path}"
+        tags: [deep]
+        # Execs the release binary, so a red build tells the whole story and
+        # this adds nothing. CI expresses the same edge as `needs: build`.
+        needs: [build]
+        run: mise run completions:test
+
+      - name: docs-build
+        description: "CI: docs.yml — the VitePress site builds"
+        root: "{merge_source_path}"
+        tags: [deep]
+        # Mirrors docs.yml's own `paths:` trigger.
+        glob:
+          - docs/**
+          - Cargo.toml
+          - .github/workflows/docs.yml
+        run: mise run docs:site:build
+
+      - name: msrv-check
+        description: "CI: msrv-check — cargo check at the declared MSRV"
+        root: "{merge_source_path}"
+        tags: [deep]
+        run: mise run validate:msrv
+
+      - name: integration-tests
+        description: "CI: integration-tests — the full bash + YAML matrix"
+        root: "{merge_source_path}"
+        tags: [deep]
+        needs: [build]
+        run: mise run test:integration
+
+  # A tripwire, not a second suite. test.yml has no `push: master` trigger, so
+  # GitHub never re-validates the trunk after a merge; this is the one check
+  # that the tree the rings gated is the tree that actually landed. Warn rather
+  # than abort (also the default for post-merge): the ref has already moved, so
+  # failing the command here would report a verdict on work that is done — the
+  # useful outcome is a loud notice, not an error exit.
+  post-merge:
+    fail_mode: warn
+    jobs:
+      - name: landed-matches-gated
+        description: The landed tree is the tree the rings tested
+        run: mise run merge:landed-check
 
 tasks:
   run:

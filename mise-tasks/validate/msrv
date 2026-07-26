@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#MISE description="Cargo check at the declared MSRV (Cargo.toml rust-version)"
+set -euo pipefail
+
+# The MSRV is read from Cargo.toml rather than pinned here, so this task tracks
+# a `rust-version` bump on its own. .github/workflows/test.yml cannot do that —
+# its dtolnay/rust-toolchain step pins the version literally — which is exactly
+# why CLAUDE.md's MSRV policy lists the workflow among the files to update by
+# hand after a bump.
+msrv="$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+if [ -z "$msrv" ]; then
+    echo "could not read rust-version from Cargo.toml" >&2
+    exit 1
+fi
+
+# `1.95` may be installed as either `1.95-<host>` or `1.95.0-<host>` depending
+# on how it was requested, so allow an optional patch component. Dots are
+# escaped so they cannot match arbitrary characters.
+msrv_re="$(printf '%s' "$msrv" | sed 's/\./\\./g')"
+if ! rustup toolchain list | grep -qE "^${msrv_re}(\.[0-9]+)?-"; then
+    echo "MSRV toolchain ${msrv} is not installed. Install it with:" >&2
+    echo "    rustup toolchain install ${msrv}" >&2
+    exit 1
+fi
+
+echo "Checking at MSRV ${msrv}..."
+rustup run "$msrv" cargo check --all-targets --locked
+echo "MSRV check passed (${msrv})"

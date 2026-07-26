@@ -89,13 +89,17 @@ Rings invoke the same `mise run` task as the CI job they mirror, so a local
 refusal names the check that would have failed on GitHub;
 `merge: { ff: only, source_worktree: clean }` is what makes that mean anything —
 the tree the rings tested is the tree that lands. Slow rings (integration
-matrix, MSRV, Windows) get `tags: [deep]` and are dropped per invocation with
-`--skip-tag deep`, never trimmed from the gate to make it feel fast;
-`--skip-hooks` / `--skip-tag` skip _rings_, never _policy_. Never weaken a gate
-to make a merge pass — fix the check or the code.
+matrix, MSRV, licence audit, completions, docs build) get `tags: [deep]` and are
+dropped per invocation with `--skip-tag deep`, never trimmed from the gate to
+make it feel fast; `--skip-hooks` / `--skip-tag` skip _rings_, never _policy_.
+Never weaken a gate to make a merge pass — fix the check or the code.
 
-This repo's own rings land with #387 (`docs/hooks/yaml-reference.md` for ring
-config) — until then, still add the `mise run` task when you add a CI job.
+This repo's own rings live in `daft.yml` under `hooks: pre-merge:`
+(`docs/hooks/yaml-reference.md` for ring config). A CI job that exists only as
+inline `run:` steps in the workflow cannot be mirrored, which is why every job
+needs its `mise run` task — add the task in the same PR as the job. Four checks
+are deliberately CI-only and say so in `daft.yml`: `windows-check`,
+`release-env-guard`, `homebrew-simulation`, and `bench.yml`.
 `claude-pr-review.yml` is out of the parity set: Critical Rule #3 governs it.
 
 ## Profiling
