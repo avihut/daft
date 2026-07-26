@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#MISE description="Post-merge tripwire: the landed tree is the tree the gate tested"
+set -euo pipefail
+
+# Run from daft.yml's post-merge hook, whose cwd is the target worktree.
+#
+# .github/workflows/test.yml has no `push: master` trigger, so GitHub never
+# re-validates the trunk after a merge. This is the one check that what the
+# pre-merge rings gated is what actually landed.
+
+# daft can be invoked from inside a git hook, where an inherited GIT_DIR would
+# silently retarget the commands below at the *parent* repo (the same trap
+# CLAUDE.md's Test Hygiene section documents for git subprocesses). Clear the
+# discovery vars so the working directory is authoritative.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+sources="${DAFT_MERGE_SOURCE_SHAS:-}"
+if [ -z "$sources" ]; then
+    echo "merge:landed-check: DAFT_MERGE_SOURCE_SHAS is empty" >&2
+    echo "  (this task only makes sense from a post-merge hook)" >&2
+    exit 1
+fi
+
+# Newline-joined, one entry per source. `merge: ff: only` plus a configured
+# pre-merge hook restrict a gated merge to a single source, so the first entry
+# is the whole story; a multi-source merge would have been refused upstream.
+source_sha="$(printf '%s\n' "$sources" | head -n1)"
+
+landed="$(git rev-parse --verify "HEAD^{tree}")"
+gated="$(git rev-parse --verify "${source_sha}^{tree}")"
+
+if [ "$landed" != "$gated" ]; then
+    echo "the landed tree is NOT the tree the rings gated:" >&2
+    echo "  gated   ${source_sha} -> ${gated}" >&2
+    echo "  landed  $(git rev-parse --short HEAD) -> ${landed}" >&2
+    echo "A fast-forward lands the source commit verbatim, so this means the" >&2
+    echo "merge was not one (--no-ff-only?) or the trunk moved underneath it." >&2
+    echo "The gate's verdict does not cover what is on the trunk now." >&2
+    exit 1
+fi
+
+echo "landed tree matches the gated tree (${landed})"
