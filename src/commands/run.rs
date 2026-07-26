@@ -82,8 +82,12 @@ pub struct Args {
     job: Option<String>,
 
     /// Run only jobs carrying this tag (repeatable).
-    #[arg(long, value_name = "TAG")]
+    #[arg(long, visible_alias = "only-tag", value_name = "TAG")]
     tag: Vec<String>,
+
+    /// Skip jobs carrying this tag, plus their dependents (repeatable).
+    #[arg(long = "skip-tag", value_name = "TAG")]
+    skip_tag: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -226,7 +230,11 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
     let filter = JobFilter {
         only_job_name: args.job.clone(),
         only_tags: args.tag.clone(),
-        ..Default::default()
+        skip: crate::hooks::job_adapter::SkipSelectors {
+            tags: args.skip_tag.clone(),
+            raw: args.skip_tag.iter().map(|t| format!("tag:{t}")).collect(),
+            ..Default::default()
+        },
     };
 
     // An invocation resolving to a single foreground job passes the terminal
@@ -236,7 +244,14 @@ fn cmd_run(args: &Args, forced_args: bool, output: &mut dyn Output) -> Result<()
     // rail on a TTY, the classic hook block elsewhere. Forwarded arguments
     // are appended to the passthrough job's command (and are an error on any
     // other resolution — they'd have no single command to attach to).
-    let passthrough_def = passthrough_def(task_def, task_name, &args.job, &args.tag, task_args)?;
+    let passthrough_def = passthrough_def(
+        task_def,
+        task_name,
+        &args.job,
+        &args.tag,
+        &args.skip_tag,
+        task_args,
+    )?;
 
     let task_key = StepKey::new(StageId::Task);
     let (def_to_run, presenter, mut timeline): (&HookDef, Arc<dyn JobPresenter>, Option<Timeline>) =
@@ -366,6 +381,7 @@ fn passthrough_def(
     task_name: &str,
     only_job: &Option<String>,
     only_tags: &[String],
+    skip_tags: &[String],
     task_args: &[String],
 ) -> Result<Option<HookDef>> {
     let jobs = get_effective_jobs(task_def);
@@ -381,6 +397,11 @@ fn passthrough_def(
                 || j.tags
                     .as_ref()
                     .is_some_and(|tags| tags.iter().any(|t| only_tags.contains(t)))
+        })
+        .filter(|j| {
+            j.tags
+                .as_ref()
+                .is_none_or(|tags| !tags.iter().any(|t| skip_tags.contains(t)))
         })
         .collect();
     let [job] = selected.as_slice() else {
@@ -726,7 +747,7 @@ mod tests {
     }
 
     fn gate(def: &HookDef, only_job: &Option<String>, only_tags: &[String]) -> Option<HookDef> {
-        passthrough_def(def, "task", only_job, only_tags, &[]).unwrap()
+        passthrough_def(def, "task", only_job, only_tags, &[], &[]).unwrap()
     }
 
     #[test]
@@ -805,6 +826,7 @@ mod tests {
             "task",
             &None,
             &[],
+            &[],
             &words(&["a b", "c"]),
         )
         .unwrap()
@@ -821,7 +843,7 @@ mod tests {
     #[test]
     fn args_on_a_multi_job_task_error_with_the_narrowing_hint() {
         let def = task(vec![job("api"), job("web")]);
-        let err = passthrough_def(&def, "stack", &None, &[], &words(&["x"]))
+        let err = passthrough_def(&def, "stack", &None, &[], &[], &words(&["x"]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("resolves to 2 jobs"), "got: {err}");
@@ -831,7 +853,7 @@ mod tests {
     #[test]
     fn args_with_job_narrowing_rewrite_only_that_job() {
         let def = task(vec![job("api"), job("web")]);
-        let out = passthrough_def(&def, "stack", &Some("web".into()), &[], &words(&["x"]))
+        let out = passthrough_def(&def, "stack", &Some("web".into()), &[], &[], &words(&["x"]))
             .unwrap()
             .expect("narrowed passthrough");
         assert_eq!(simple(&out, 0), "echo api", "api untouched");
@@ -842,7 +864,7 @@ mod tests {
     fn args_on_a_background_job_error() {
         let mut bg = job("indexer");
         bg.background = Some(true);
-        let err = passthrough_def(&task(vec![bg]), "task", &None, &[], &words(&["x"]))
+        let err = passthrough_def(&task(vec![bg]), "task", &None, &[], &[], &words(&["x"]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("background"), "got: {err}");
@@ -851,7 +873,8 @@ mod tests {
     #[test]
     fn args_with_no_filter_match_defer_to_the_executor() {
         let def = task(vec![job("api"), job("web")]);
-        let out = passthrough_def(&def, "task", &None, &["nope".into()], &words(&["x"])).unwrap();
+        let out =
+            passthrough_def(&def, "task", &None, &["nope".into()], &[], &words(&["x"])).unwrap();
         assert!(out.is_none(), "the executor owns the no-match error");
     }
 
@@ -922,7 +945,7 @@ mod tests {
             name: Some("ghost".into()),
             ..Default::default()
         };
-        let err = passthrough_def(&task(vec![bare]), "task", &None, &[], &words(&["x"]))
+        let err = passthrough_def(&task(vec![bare]), "task", &None, &[], &[], &words(&["x"]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("no run command"), "got: {err}");

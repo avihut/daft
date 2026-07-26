@@ -1,0 +1,53 @@
+name: A conflicted merge emits its payload before exiting non-zero
+description:
+  "The conflict path terminates through std::process::exit, which runs no
+  destructors — so the payload has to be on stdout before it fires, and the
+  conflicted paths have to reach the document. Covers the one terminal path the
+  other format scenarios cannot: exit-by-process rather than exit-by-Err."
+
+repos:
+  - name: test-merge-fmt-conflict
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_MERGE_FMT_CONFLICT
+    expect:
+      exit_code: 0
+
+  - name: Author two branches that touch the same line
+    run: |
+      git checkout -b conflict-src
+      echo "theirs" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "theirs"
+      git checkout main
+      echo "ours" > c.txt
+      git add c.txt
+      GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        git commit -m "ours"
+    cwd: "$WORK_DIR/test-merge-fmt-conflict/main"
+    expect:
+      exit_code: 0
+
+  - name: The verdict names the conflict and lists the paths
+    run: daft merge conflict-src --no-edit --format json
+    cwd: "$WORK_DIR/test-merge-fmt-conflict/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - '"status": "conflicted"'
+        - '"conflicts"'
+        - '"path": "c.txt"'
+
+  - name: The human conflict report is still on stderr, unchanged
+    run:
+      daft merge --abort 2>&1 && daft merge conflict-src --no-edit --format json
+      2>&1 >/dev/null
+    cwd: "$WORK_DIR/test-merge-fmt-conflict/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "merge conflicted in"
+        - "resolve in the target worktree"

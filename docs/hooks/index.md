@@ -32,6 +32,15 @@ one trust model, one job orchestrator.
 | Letting a change escape isolation | Merge hooks (`pre-merge`, `post-merge`)        | PR-check parity — full tests, integration, security gates before code leaves the branch        | Shipped                                                     |
 | Reclaiming an isolated env        | Worktree teardown (`worktree-pre/post-remove`) | Teardown, persist artifacts, sync state                                                        | Shipped                                                     |
 
+"PR-check parity" on the merge row is meant literally, and it is a thing you
+maintain rather than a thing you get: the jobs in a `pre-merge` gate should be
+the same checks your forge requires on a pull request, changed in the same
+commit whenever that list changes. A check that lives only in the forge makes a
+local merge a false green; one that lives only in the gate blocks the people who
+merge through daft and no one else. See
+[Merge gate parity](/recipes/merge-gate-parity) for the mapping and the rules
+that keep it honest.
+
 ## How daft hooks differ from lefthook
 
 Two distinctions:

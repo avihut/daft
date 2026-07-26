@@ -98,8 +98,16 @@ pub struct JobsArgs {
     worktree: Option<String>,
 
     /// Filter to invocations containing jobs with this status.
-    #[arg(long)]
-    status: Option<String>,
+    #[arg(long, value_enum)]
+    status: Option<StatusFilter>,
+
+    /// Only invocations containing failed jobs (same as --status failed).
+    #[arg(long, conflicts_with = "status")]
+    failed: bool,
+
+    /// Show only the N most recent invocations (after other filters).
+    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1")]
+    last: Option<usize>,
 
     /// Filter to invocations of this hook type.
     #[arg(long = "hook")]
@@ -112,6 +120,30 @@ pub struct JobsArgs {
 
     #[command(flatten)]
     emit: EmitArgs,
+}
+
+/// `--status` values, typed at the parser so a typo fails at parse time
+/// (previously a free string validated after the store was opened).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum StatusFilter {
+    Failed,
+    Completed,
+    Running,
+    Cancelled,
+    Skipped,
+}
+
+impl StatusFilter {
+    fn as_job_status(self) -> JobStatus {
+        match self {
+            StatusFilter::Failed => JobStatus::Failed,
+            StatusFilter::Completed => JobStatus::Completed,
+            StatusFilter::Running => JobStatus::Running,
+            StatusFilter::Cancelled => JobStatus::Cancelled,
+            StatusFilter::Skipped => JobStatus::Skipped,
+        }
+    }
 }
 
 /// Repo identity for this invocation: `--repo` resolves through the
@@ -141,7 +173,7 @@ fn resolve_repo_hash(repo: Option<&str>) -> Result<String> {
 
 #[derive(Subcommand, Debug)]
 enum JobsCommand {
-    /// View output log for a background job.
+    /// View a recorded job's output log (foreground and background alike).
     Logs {
         /// Job address: name, inv:name, worktree:name, or worktree:inv:name.
         job: String,
@@ -261,7 +293,13 @@ fn resolve_job_address(
     let worktree = addr.worktree.as_deref().unwrap_or(current_worktree);
     let invocations = store.list_invocations_for_worktree(worktree)?;
 
-    if invocations.is_empty() {
+    // An empty worktree-scoped list is NOT the end of the search when the
+    // user named no worktree: merge hooks record under the TARGET branch, so
+    // the worktree the user is standing in legitimately has no invocations
+    // of its own while the job they are asking about exists elsewhere. The
+    // bare-name fallback below is exactly for that case — bailing here made
+    // it unreachable in the situation it was added for.
+    if invocations.is_empty() && (addr.worktree.is_some() || addr.invocation_prefix.is_some()) {
         anyhow::bail!("No invocations found for worktree '{worktree}'.");
     }
 
@@ -311,6 +349,24 @@ fn resolve_job_address(
                         job_name: addr.job_name.clone(),
                         job_dir,
                     });
+                }
+            }
+            // Not recorded in this worktree: fall back to the newest
+            // invocation ANYWHERE containing the job, so a bare name works
+            // after cross-worktree operations (worktree-scoped hits above
+            // still win when both exist).
+            if addr.worktree.is_none() {
+                let mut all = store.list_invocations()?;
+                all.sort_by_key(|inv| inv.created_at);
+                for inv in all.iter().rev() {
+                    let job_dir = store.base_dir.join(&inv.invocation_id).join(&addr.job_name);
+                    if job_dir.exists() {
+                        return Ok(ResolvedAddress {
+                            invocation_id: inv.invocation_id.clone(),
+                            job_name: addr.job_name.clone(),
+                            job_dir,
+                        });
+                    }
                 }
             }
             let all_job_names = collect_all_job_names(store, &invocations)?;
@@ -670,7 +726,7 @@ fn list_all_repo_hashes() -> Result<Vec<String>> {
     Ok(hashes)
 }
 
-fn is_coordinator_running(repo_hash: &str) -> bool {
+pub(crate) fn is_coordinator_running(repo_hash: &str) -> bool {
     crate::coordinator::coordinator_socket_path(repo_hash)
         .map(|p| p.exists())
         .unwrap_or(false)
@@ -706,7 +762,7 @@ fn format_status_inline(status: &JobStatus, coordinator_alive: bool) -> String {
 /// SQLite + WAL means this open succeeds even while a coordinator is
 /// actively writing to the same DB — readers and writers don't block
 /// each other.
-fn load_sqlite_job_meta_index(
+pub(crate) fn load_sqlite_job_meta_index(
     repo_hash: &str,
     log_store_base: &Path,
 ) -> Option<std::collections::HashMap<(String, String), crate::coordinator::log_store::JobMeta>> {
@@ -772,7 +828,7 @@ fn lookup_job_meta(
 /// Each row carries its invocation context (id, short id, worktree, hook type,
 /// trigger command, created_at) alongside the job fields — flat so every
 /// emit format including tsv/csv/ndjson works.
-fn build_jobs_payload(
+pub(crate) fn build_jobs_payload(
     invocations: &[InvocationMeta],
     store: &LogStore,
     sqlite_index: Option<
@@ -876,6 +932,29 @@ struct JobRow {
 struct InvocationSection<'a> {
     inv: &'a InvocationMeta,
     rows: Vec<JobRow>,
+    /// Failed jobs' last output lines, rendered under the table.
+    tails: Vec<(String, Vec<String>)>,
+}
+
+/// The last `n` stdout/stderr lines of a job's recorded output — the inline
+/// tail shown for failed jobs. Best-effort: unreadable or empty logs yield
+/// nothing.
+fn failed_tail(job_dir: &Path, n: usize) -> Vec<String> {
+    use crate::coordinator::log_record::{LogRecord, LogRecordKind};
+    let Ok(text) = std::fs::read_to_string(LogStore::jsonl_path(job_dir)) else {
+        return Vec::new();
+    };
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<LogRecord>(l).ok())
+        .filter_map(|r| match r.kind {
+            LogRecordKind::Stdout(line) | LogRecordKind::Stderr(line) => Some(line),
+            LogRecordKind::Status(_) => None,
+        })
+        .collect();
+    let skip = lines.len().saturating_sub(n);
+    lines.drain(..skip);
+    lines
 }
 
 /// Column headers for the per-invocation jobs table.
@@ -924,7 +1003,13 @@ fn build_invocation_node(
         }
         let mut table = builder.build();
         table.with(Style::blank());
-        Body::Lines(table.to_string().lines().map(String::from).collect())
+        let mut lines: Vec<String> = table.to_string().lines().map(String::from).collect();
+        for (job, tail) in &sec.tails {
+            for line in tail {
+                lines.push(dim(&format!("  {job} \u{2502} {line}")).to_string());
+            }
+        }
+        Body::Lines(lines)
     };
 
     Node { label, body }
@@ -955,7 +1040,19 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
     } else if let Some(ref wt) = args.worktree {
         store.list_invocations_for_worktree(wt)?
     } else {
-        store.list_invocations_for_worktree(&current_worktree)?
+        // Default scope is this worktree — but merge hooks record under the
+        // TARGET branch, so the worktree a user runs `daft merge --into main`
+        // from has no invocations of its own. Falling back to the whole repo
+        // is what makes the failure breadcrumb
+        // (`daft hooks jobs --last --hook pre-merge`) resolve to the gate run
+        // it points at instead of "No background job history found."
+        // Worktree-scoped results still win whenever they exist.
+        let scoped = store.list_invocations_for_worktree(&current_worktree)?;
+        if scoped.is_empty() {
+            store.list_invocations()?
+        } else {
+            scoped
+        }
     };
 
     // Apply --hook filter.
@@ -968,19 +1065,11 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         invocations
     };
 
-    // Apply --status filter (invocation-level: keep if any job matches).
-    let invocations: Vec<_> = if let Some(ref status_str) = args.status {
-        let target_status = match status_str.as_str() {
-            "failed" => JobStatus::Failed,
-            "completed" => JobStatus::Completed,
-            "running" => JobStatus::Running,
-            "cancelled" => JobStatus::Cancelled,
-            "skipped" => JobStatus::Skipped,
-            other => anyhow::bail!(
-                "Unknown status '{}'. Valid values: failed, completed, running, cancelled, skipped.",
-                other
-            ),
-        };
+    // Apply --status / --failed filter (invocation-level: keep if any job
+    // matches).
+    let status_filter = args.status.or(args.failed.then_some(StatusFilter::Failed));
+    let invocations: Vec<_> = if let Some(filter) = status_filter {
+        let target_status = filter.as_job_status();
         invocations
             .into_iter()
             .filter(|inv| {
@@ -995,6 +1084,17 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     })
             })
             .collect()
+    } else {
+        invocations
+    };
+
+    // Apply --last N: keep only the most recent invocations that survived
+    // the filters above (display order stays chronological).
+    let invocations: Vec<_> = if let Some(n) = args.last {
+        let mut sorted = invocations;
+        sorted.sort_by_key(|inv| inv.created_at);
+        let skip = sorted.len().saturating_sub(n.max(1));
+        sorted.into_iter().skip(skip).collect()
     } else {
         invocations
     };
@@ -1039,6 +1139,7 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
         for inv in inv_list {
             let job_dirs = store.list_jobs_in_invocation(&inv.invocation_id)?;
             let mut rows: Vec<JobRow> = Vec::with_capacity(job_dirs.len());
+            let mut tails: Vec<(String, Vec<String>)> = Vec::new();
             for dir in &job_dirs {
                 let Some(meta) = lookup_job_meta(sqlite_index.as_ref(), &inv.invocation_id, dir)
                 else {
@@ -1093,8 +1194,18 @@ fn list_jobs(args: &JobsArgs, _path: &Path, output: &mut dyn Output) -> Result<(
                     duration,
                     size: size_str,
                 });
+
+                // Inline tail for failed jobs: the last few output lines,
+                // so the listing answers "what broke" without a logs
+                // round-trip.
+                if meta.status == JobStatus::Failed {
+                    let lines = failed_tail(dir, 3);
+                    if !lines.is_empty() {
+                        tails.push((meta.name.clone(), lines));
+                    }
+                }
             }
-            secs.push(InvocationSection { inv, rows });
+            secs.push(InvocationSection { inv, rows, tails });
         }
         sections_by_worktree.push((worktree.clone(), secs));
     }

@@ -1,0 +1,79 @@
+name: Committed merge.source_worktree=clean gates dirty and missing sources
+description:
+  "A committed `merge: source_worktree: clean` policy refuses a source with
+  uncommitted changes and a source with no checked-out worktree — the gate
+  certifies the committed tree, not a dirty working tree. --source-worktree any
+  relaxes it per invocation, loudly."
+
+repos:
+  - name: test-clean-gate
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# clean gate"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+      - name: loose
+        from: main
+        files:
+          - path: l.txt
+            content: "l"
+        commits:
+          - message: "Loose work"
+    daft_yml: |
+      merge:
+        source_worktree: clean
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_CLEAN_GATE
+    expect:
+      exit_code: 0
+
+  - name: A source with no worktree is refused
+    run: daft merge loose --no-edit 2>&1
+    cwd: "$WORK_DIR/test-clean-gate/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no checked-out worktree"
+
+  - name: Materialize the feature worktree
+    run: daft go feature
+    cwd: "$WORK_DIR/test-clean-gate/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-clean-gate/feature"
+
+  - name: Dirty the feature worktree
+    run: echo dirty > "$WORK_DIR/test-clean-gate/feature/uncommitted.txt"
+    expect:
+      exit_code: 0
+
+  - name: A dirty source is refused
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-clean-gate/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "uncommitted changes"
+        - "--source-worktree any"
+
+  - name: --source-worktree any relaxes the committed policy loudly
+    run: daft merge feature --source-worktree any --no-edit 2>&1
+    cwd: "$WORK_DIR/test-clean-gate/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "gate: --source-worktree any overrides committed
+          merge.source_worktree=clean"

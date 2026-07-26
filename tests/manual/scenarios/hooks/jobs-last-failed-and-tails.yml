@@ -1,0 +1,65 @@
+name: hooks jobs --last/--failed selection, inline failed tails, breadcrumb
+description:
+  "The post-hoc gate navigation loop: a failing merge prints an inspect
+  breadcrumb pointing at the listing; `daft hooks jobs --last --failed` narrows
+  to the newest failing invocation; failed jobs show their last output lines
+  inline under the table; a bad --status value fails at parse time."
+
+repos:
+  - name: test-jobs-nav
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# jobs nav"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: red-ring
+              run: |
+                echo probing the tree
+                echo "the gate found a problem" >&2
+                exit 1
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_JOBS_NAV
+    expect:
+      exit_code: 0
+
+  - name: A failing gate aborts the merge and prints the inspect breadcrumb
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-jobs-nav/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "pre-merge hook failed"
+        - "hooks jobs --last --hook pre-merge"
+
+  - name: --last --failed narrows to the failing invocation, tail inline
+    run: daft hooks jobs --last --failed 2>&1
+    cwd: "$WORK_DIR/test-jobs-nav/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "red-ring"
+        - "failed"
+        - "the gate found a problem"
+
+  - name: An unknown --status value fails at parse time
+    run: daft hooks jobs --status bogus 2>&1
+    expect:
+      exit_code: 2
+      output_contains:
+        - "invalid value"

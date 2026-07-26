@@ -85,25 +85,28 @@ YAML jobs and shell script hooks.
 
 ### Merge (both merge hooks)
 
-| Variable                    | Value                                                                |
-| --------------------------- | -------------------------------------------------------------------- |
-| `DAFT_MERGE_SOURCES`        | Space-separated list of source refs (branches/commits being merged)  |
-| `DAFT_MERGE_TARGET_BRANCH`  | Name of the branch being merged into                                 |
-| `DAFT_MERGE_TARGET_PATH`    | Filesystem path of the target worktree (empty on ref-only FF)        |
-| `DAFT_MERGE_MODE`           | `merge` / `ff` / `squash` / `rebase` / `rebase-merge` / `octopus`    |
-| `DAFT_MERGE_STRATEGY`       | Value of `-s`/`--strategy` (empty when not set)                      |
-| `DAFT_MERGE_EPHEMERAL`      | `true` if the merge runs in an ephemeral worktree; otherwise `false` |
-| `DAFT_MERGE_CROSS_WORKTREE` | `true` if the target worktree is not the current worktree            |
+| Variable                    | Value                                                                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `DAFT_MERGE_SOURCES`        | Space-separated list of source refs (branches/commits being merged)                                                                 |
+| `DAFT_MERGE_SOURCE_SHAS`    | Newline-separated commit SHA per source, captured before any merge work began (an annotated tag is peeled to its commit)            |
+| `DAFT_MERGE_SOURCE_PATHS`   | Newline-separated worktree path per source, aligned with `DAFT_MERGE_SOURCE_SHAS`; a worktree-less source contributes an empty line |
+| `DAFT_MERGE_SOURCE_PATH`    | The single source's worktree path when there is exactly one source and it has a worktree; empty otherwise                           |
+| `DAFT_MERGE_TARGET_BRANCH`  | Name of the branch being merged into                                                                                                |
+| `DAFT_MERGE_TARGET_PATH`    | Filesystem path of the target worktree (empty on ref-only FF)                                                                       |
+| `DAFT_MERGE_TARGET_SHA`     | The target branch's tip as of gate start (pinned; post-merge hooks inherit the pre-merge value)                                     |
+| `DAFT_MERGE_MODE`           | `merge` / `ff` / `squash` / `rebase` / `rebase-merge` / `octopus`                                                                   |
+| `DAFT_MERGE_STRATEGY`       | Value of `-s`/`--strategy` (empty when not set)                                                                                     |
+| `DAFT_MERGE_EPHEMERAL`      | `true` if the merge runs in an ephemeral worktree; otherwise `false`                                                                |
+| `DAFT_MERGE_CROSS_WORKTREE` | `true` if the target worktree is not the current worktree                                                                           |
 
 ### Merge result (post-merge only)
 
-| Variable                             | Value                                                                                                                |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `DAFT_MERGE_RESULT`                  | `success` / `conflict` / `already-up-to-date` / `aborted`                                                            |
-| `DAFT_MERGE_COMMIT_SHA`              | SHA of the new tip on success (empty otherwise, including when `aborted`)                                            |
-| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files (empty when not conflicted)                                               |
-| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` when a ref-only ephemeral merge was promoted to a sibling path                                                |
-| `DAFT_MERGE_SOURCE_SHAS`             | Space-separated SHA list of source branch tips captured before the merge ran (one per source; empty for ref-only FF) |
+| Variable                             | Value                                                                     |
+| ------------------------------------ | ------------------------------------------------------------------------- |
+| `DAFT_MERGE_RESULT`                  | `success` / `conflict` / `already-up-to-date` / `aborted`                 |
+| `DAFT_MERGE_COMMIT_SHA`              | SHA of the new tip on success (empty otherwise, including when `aborted`) |
+| `DAFT_MERGE_CONFLICTED_FILES`        | Newline-separated list of conflicted files (empty when not conflicted)    |
+| `DAFT_MERGE_PROMOTED_FROM_EPHEMERAL` | `true` when a ref-only ephemeral merge was promoted to a sibling path     |
 
 ### Move (move hooks only)
 

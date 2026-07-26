@@ -1,0 +1,56 @@
+name: --ff-only supplies the gate on an unconfigured repo
+description:
+  "On a repo with no `merge:` config, --ff-only supplies the fast-forward
+  requirement for one invocation: a stale source is refused with the flag, and
+  merges normally without it."
+
+repos:
+  - name: test-ff-flag
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# ff flag"
+        commits:
+          - message: "Initial commit"
+      - name: track-a
+        from: main
+        files:
+          - path: a.txt
+            content: "a"
+        commits:
+          - message: "Track A work"
+      - name: track-b
+        from: main
+        files:
+          - path: b.txt
+            content: "b"
+        commits:
+          - message: "Track B work"
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_FF_FLAG
+    expect:
+      exit_code: 0
+
+  - name: Land track A to advance main
+    run: daft merge track-a --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-flag/main"
+    expect:
+      exit_code: 0
+
+  - name: --ff-only refuses the now-stale track B
+    run: daft merge track-b --ff-only --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-flag/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "requires fast-forward"
+
+  - name: Without the flag the same merge is allowed
+    run: daft merge track-b --no-edit 2>&1
+    cwd: "$WORK_DIR/test-ff-flag/main"
+    expect:
+      exit_code: 0

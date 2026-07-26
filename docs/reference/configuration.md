@@ -177,8 +177,18 @@ concurrent hook-bearing pushes, admits new ones only while memory headroom
 allows, learns each hook's peak memory and duration across runs (so light hooks
 get full parallelism and heavy ones start capped), and under sustained pressure
 freezes — then kills and retries — the newest push rather than letting the
-machine swap. It only exists while a `sync --push` with a pre-push hook runs; a
-hook-less push pays nothing.
+machine swap.
+
+The same governor also covers **parallel hook and task job phases** (a
+`worktree-post-create` fan-out, a pre-merge gate's parallel rings): admission
+caps the fan-out to the memory budget and the jobserver bounds each job's
+internal build parallelism. Foreground jobs the user is waiting on are subject
+to admission but are never frozen or killed. The governor only exists while a
+governed phase runs — a hook-less push or a single-job phase pays nothing.
+
+Additionally, **gated merges** (repos with pre-merge hooks) serialize through a
+per-repository cross-process lane: a second `daft merge` started while one is
+mid-gate waits — announcing who holds the lane — instead of racing it.
 
 | Key                           | Default  | Description                                                                                                                                                                                                                           |
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -212,6 +222,13 @@ canonical reference for these keys is the
 `--set-default` writes `daft.merge.style` and `daft.merge.cleanup` after a
 successful merge, so a failed or conflicted merge never silently changes your
 defaults.
+
+These git-config keys are the **personal** layer — style preferences on your
+machine. Team merge _policy_ (fast-forward requirement, clean-source
+requirement) is committed in `daft.yml` under a top-level `merge:` block and is
+deliberately not relaxable from git config — only explicit per-invocation flags
+(`--no-ff-only`, `--source-worktree any`) can override it. See
+[Merge gate policy](/reference/cli/daft-merge#merge-gate-policy).
 
 ### Default squash + cleanup recipe
 

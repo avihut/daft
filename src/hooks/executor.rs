@@ -55,6 +55,41 @@ fn unparsed_git_fail_mode_warning(
     }
 }
 
+/// A hook that failed under `FailMode::Abort`, carrying the recorded
+/// invocation id out with the failure.
+///
+/// The id is minted before the jobs run, so it exists on the failing path —
+/// but the abort used to `bail!` a plain string and drop it. A failing gate
+/// is exactly when a caller most needs to address the recorded jobs
+/// (`daft merge --format json` reports it as the verdict's join key into
+/// `daft hooks jobs`), so the abort carries it instead. `Display` reproduces
+/// the previous message verbatim; nothing user-visible changed.
+#[derive(Debug)]
+pub struct HookAborted {
+    pub hook_type: HookType,
+    pub exit_code: i32,
+    pub invocation_id: Option<String>,
+}
+
+impl HookAborted {
+    /// Recover the abort from an error chain, if it is one.
+    pub fn from_error(err: &anyhow::Error) -> Option<&HookAborted> {
+        err.chain().find_map(|e| e.downcast_ref::<HookAborted>())
+    }
+}
+
+impl std::fmt::Display for HookAborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} hook failed with exit code {}",
+            self.hook_type, self.exit_code
+        )
+    }
+}
+
+impl std::error::Error for HookAborted {}
+
 /// Result of a hook execution.
 #[derive(Debug, Clone)]
 pub struct HookResult {
@@ -72,6 +107,10 @@ pub struct HookResult {
     pub skip_reason: Option<String>,
     /// Whether the skip evaluation involved running a command check.
     pub skip_ran_command: bool,
+    /// The log-store invocation id this fire was recorded under, when one
+    /// was minted (yaml hooks past the hook-level skip gate). Lets failure
+    /// paths print an inspect breadcrumb pointing at the exact invocation.
+    pub invocation_id: Option<String>,
     /// Whether the skip was due to a platform mismatch (OS-keyed run with no matching variant).
     /// Platform skips are completely silent — no output, not even a skip message.
     pub platform_skip: bool,
@@ -88,6 +127,7 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -102,6 +142,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -116,6 +157,30 @@ impl HookResult {
             skipped: true,
             skip_reason: Some(reason.into()),
             skip_ran_command: true,
+            invocation_id: None,
+            platform_skip: false,
+        }
+    }
+
+    /// Create a failed result for an execution-preparation error — the config
+    /// parsed and named this hook, but the fire could not be set up (invalid
+    /// glob pattern, unresolvable `root:` template, failing `files:` command,
+    /// broken changed-file source, …).
+    ///
+    /// Distinct from a config *load* error on purpose: a load error falls
+    /// back to legacy script hooks, while a preparation error is a hook
+    /// failure routed through the hook's fail mode — a configured gate must
+    /// never silently degrade to "no hooks ran".
+    pub fn config_error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: message.into(),
+            skipped: false,
+            skip_reason: None,
+            skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
     }
@@ -133,6 +198,7 @@ impl HookResult {
             skipped: true,
             skip_reason: Some("platform skip".to_string()),
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: true,
         }
     }
@@ -147,8 +213,15 @@ impl HookResult {
             skipped: false,
             skip_reason: None,
             skip_ran_command: false,
+            invocation_id: None,
             platform_skip: false,
         }
+    }
+
+    /// Stamp the log-store invocation id this result was recorded under.
+    pub fn with_invocation(mut self, invocation_id: &str) -> Self {
+        self.invocation_id = Some(invocation_id.to_string());
+        self
     }
 }
 
@@ -252,6 +325,15 @@ impl HookExecutor {
     pub fn with_job_filter(mut self, filter: JobFilter) -> Self {
         self.job_filter = filter;
         self
+    }
+
+    /// Replace the job filter between fires.
+    ///
+    /// `daft merge` needs this: `--only-tag` narrows *the gate*, so it must
+    /// apply to `pre-merge` and not to `post-merge`, whose jobs the user
+    /// never tagged.
+    pub fn set_job_filter(&mut self, filter: JobFilter) {
+        self.job_filter = filter;
     }
 
     /// Plan-time mirror of [`Self::execute`]'s discovery: whether this hook
@@ -498,8 +580,19 @@ impl HookExecutor {
             cancel: None,
             trigger_label: None,
         };
-        let result =
-            yaml_executor::execute_yaml_hook_with_rc(hook_name, hook_def, ctx, output, &cfg)?;
+        // An Err from the yaml executor here is an execution-preparation
+        // failure (invalid glob, unresolvable root: template, failing files:
+        // command, …), NOT a config-load error: the config parsed and named
+        // this hook. Propagating it as Err would hit the outer dispatch's
+        // load-error arm and silently fall back to legacy scripts — skipping
+        // a configured gate. Fold it into a failed HookResult instead so it
+        // flows through the same fail-mode translation as a failing job.
+        let result = match yaml_executor::execute_yaml_hook_with_rc(
+            hook_name, hook_def, ctx, output, &cfg,
+        ) {
+            Ok(result) => result,
+            Err(e) => HookResult::config_error(format!("{e:#}")),
+        };
 
         // Return the raw result plus the resolved fail mode — failure
         // translation (Abort → Err, Warn → logged-and-continue) is the caller's
@@ -705,6 +798,18 @@ impl HookExecutor {
     ) -> Result<HookResult> {
         let exit_code = result.exit_code.unwrap_or(-1);
 
+        // Breadcrumb into the recorded invocation: the listing (newest
+        // first, hook-filtered) plus the per-job log drill-down.
+        let inspect = result.invocation_id.as_ref().map(|_| {
+            format!(
+                "inspect: {}",
+                crate::daft_cmd(&format!(
+                    "hooks jobs --last --hook {}",
+                    hook_type.yaml_name()
+                ))
+            )
+        });
+
         match fail_mode {
             FailMode::Abort => {
                 output.error(&format!(
@@ -714,7 +819,14 @@ impl HookExecutor {
                 if !result.stderr.is_empty() {
                     output.error(&format!("Hook stderr: {}", result.stderr.trim()));
                 }
-                anyhow::bail!("{} hook failed with exit code {}", hook_type, exit_code);
+                if let Some(inspect) = inspect {
+                    output.info(&inspect);
+                }
+                Err(anyhow::Error::new(HookAborted {
+                    hook_type,
+                    exit_code,
+                    invocation_id: result.invocation_id.clone(),
+                }))
             }
             FailMode::Warn => {
                 output.warning(&format!(
@@ -723,6 +835,9 @@ impl HookExecutor {
                 ));
                 if !result.stderr.is_empty() {
                     output.warning(&format!("Hook stderr: {}", result.stderr.trim()));
+                }
+                if let Some(inspect) = inspect {
+                    output.info(&inspect);
                 }
                 Ok(result)
             }

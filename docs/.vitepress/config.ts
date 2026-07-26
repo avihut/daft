@@ -377,6 +377,10 @@ export default defineConfig({
               { text: "Declarative envs", link: "/recipes/declarative-envs" },
               { text: "CI parity", link: "/recipes/ci-parity" },
               {
+                text: "Merge gate parity",
+                link: "/recipes/merge-gate-parity",
+              },
+              {
                 text: "Coordinating service & client",
                 link: "/recipes/coordinating-service-and-client",
               },

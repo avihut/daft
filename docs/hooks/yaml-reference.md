@@ -32,20 +32,21 @@ Additionally:
 
 ## Top-level keys
 
-| Field              | Type        | Description                                                              |
-| ------------------ | ----------- | ------------------------------------------------------------------------ |
-| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                          |
-| `colors`           | bool        | Enable/disable colored output                                            |
-| `no_tty`           | bool        | Disable TTY detection                                                    |
-| `rc`               | string      | Shell RC file to source before running hooks                             |
-| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for |
-| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                |
-| `source_dir`       | string      | Directory for script files (default: `".daft"`)                          |
-| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`) |
-| `hooks`            | map         | Hook definitions, keyed by hook name                                     |
-| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))               |
-| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))          |
-| `relations`        | list        | Related repositories (see [Relations](#relations))                       |
+| Field              | Type        | Description                                                               |
+| ------------------ | ----------- | ------------------------------------------------------------------------- |
+| `min_version`      | string      | Minimum daft version required (e.g., `"1.5.0"`)                           |
+| `colors`           | bool        | Enable/disable colored output                                             |
+| `no_tty`           | bool        | Disable TTY detection                                                     |
+| `rc`               | string      | Shell RC file to source before running hooks                              |
+| `output`           | bool / list | `false` to suppress all output, or list of hook names to show output for  |
+| `extends`          | list        | Additional config files to merge (e.g., `["shared.yml"]`)                 |
+| `source_dir`       | string      | Directory for script files (default: `".daft"`)                           |
+| `source_dir_local` | string      | Directory for local (gitignored) script files (default: `".daft-local"`)  |
+| `hooks`            | map         | Hook definitions, keyed by hook name                                      |
+| `tasks`            | map         | Named, user-invoked task definitions (see [Tasks](#tasks))                |
+| `log`              | object      | Log configuration (see [Log configuration](#log-configuration))           |
+| `relations`        | list        | Related repositories (see [Relations](#relations))                        |
+| `merge`            | object      | Committed merge gate policy (see [Merge gate policy](#merge-gate-policy)) |
 
 ## Relations
 
@@ -72,6 +73,29 @@ hand — they resolve names, paths, or URLs to the portable remote URL and edit
 only the `relations:` block. Consumed by `daft exec --related`,
 `daft start --with-related`, and `daft repo info`. Older daft versions ignore
 the key.
+
+## Merge gate policy
+
+A top-level `merge:` block commits team policy on what `daft merge` may land —
+the local equivalent of a branch protection rule, in git's own vocabulary:
+
+```yaml
+merge:
+  ff: only # refuse merges that cannot fast-forward
+  source_worktree: clean # source worktree must exist and be clean
+```
+
+| Field             | Values  | Description                                                     |
+| ----------------- | ------- | --------------------------------------------------------------- |
+| `ff`              | `only`  | Refuse any merge whose source does not contain the target's tip |
+| `source_worktree` | `clean` | Refuse a source with a missing or dirty worktree                |
+
+Enforced natively by `daft merge` (before pre-merge hooks fire, re-verified when
+the ref moves) and relaxed only by explicit per-invocation flags
+(`--no-ff-only`, `--source-worktree any`) — the YAML deliberately has no relax
+spellings, so an overlay config can tighten policy but never loosen it. See
+[Merge gate policy](/reference/cli/daft-merge#merge-gate-policy) for the full
+semantics, including the single-source rule pre-merge hooks activate.
 
 ## Tasks
 
@@ -152,7 +176,7 @@ hooks:
 | `follow`       | bool                 |         | Run jobs sequentially, continue on failure                                 |
 | `background`   | bool                 |         | Default background execution for all jobs in this hook                     |
 | `exclude_tags` | list                 |         | Tags to exclude at hook level                                              |
-| `exclude`      | list                 |         | Glob patterns to exclude                                                   |
+| `exclude`      | list                 |         | Glob patterns appended to every file-aware job's `exclude` list            |
 | `skip`         | bool / string / list |         | Skip condition (see [Skip and only conditions](#skip-and-only-conditions)) |
 | `only`         | bool / string / list |         | Only condition (see [Skip and only conditions](#skip-and-only-conditions)) |
 | `jobs`         | list                 |         | Jobs to execute                                                            |
@@ -191,30 +215,33 @@ job regardless.
 
 Each job in the `jobs` list supports:
 
-| Field               | Type                 | Description                                                                                           |
-| ------------------- | -------------------- | ----------------------------------------------------------------------------------------------------- |
-| `name`              | string               | Job name (used for display, merging, and dependency references)                                       |
-| `description`       | string               | Human-readable description (shown in dry-run and completions)                                         |
-| `run`               | string               | Inline shell command to execute                                                                       |
-| `script`            | string               | Script file to run (relative to `source_dir`)                                                         |
-| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                             |
-| `args`              | string               | Arguments to pass to the script                                                                       |
-| `root`              | string               | Working directory / cwd, relative to worktree root (see [Working directory](#working-directory-root)) |
-| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                                |
-| `skip`              | bool / string / list | Skip condition                                                                                        |
-| `only`              | bool / string / list | Only condition                                                                                        |
-| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                            |
-| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                          |
-| `env`               | map                  | Extra environment variables                                                                           |
-| `fail_text`         | string               | Custom failure message                                                                                |
-| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                                     |
-| `priority`          | int                  | Execution ordering (lower runs first)                                                                 |
-| `needs`             | list                 | Names of jobs that must complete before this job runs                                                 |
-| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                                             |
-| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                                          |
-| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                              |
-| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                  |
-| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                          |
+| Field               | Type                 | Description                                                                                                  |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `name`              | string               | Job name (used for display, merging, and dependency references)                                              |
+| `description`       | string               | Human-readable description (shown in dry-run and completions)                                                |
+| `run`               | string               | Inline shell command to execute                                                                              |
+| `script`            | string               | Script file to run (relative to `source_dir`)                                                                |
+| `runner`            | string               | Interpreter for script files (e.g., `"bash"`, `"python"`)                                                    |
+| `args`              | string               | Arguments to pass to the script                                                                              |
+| `root`              | string               | Working directory / cwd, relative to worktree root (see [Working directory](#working-directory-root))        |
+| `tags`              | list                 | Tags for filtering with `exclude_tags`                                                                       |
+| `glob`              | string / list        | Changed-file patterns gating this job (see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
+| `exclude`           | list                 | Changed-file patterns removed from this job's list                                                           |
+| `files`             | string               | Shell command producing this job's file list (one path per line)                                             |
+| `skip`              | bool / string / list | Skip condition                                                                                               |
+| `only`              | bool / string / list | Only condition                                                                                               |
+| `os`                | string / list        | Target OS (`macos`, `linux`, `windows`); skips if no match                                                   |
+| `arch`              | string / list        | Target architecture (`x86_64`, `aarch64`); skips if no match                                                 |
+| `env`               | map                  | Extra environment variables                                                                                  |
+| `fail_text`         | string               | Custom failure message                                                                                       |
+| `interactive`       | bool                 | Job needs TTY/stdin (forces sequential execution)                                                            |
+| `priority`          | int                  | Execution ordering (lower runs first)                                                                        |
+| `needs`             | list                 | Names of jobs that must complete before this job runs                                                        |
+| `tracks`            | list                 | Worktree attributes this job depends on: `path`, `branch`                                                    |
+| `group`             | object               | Nested group of jobs (see [Groups](#groups))                                                                 |
+| `background`        | bool                 | Run this job in the background (see [Background jobs](#background-jobs))                                     |
+| `background_output` | `log` / `silent`     | Output behavior for background jobs (default: `log`)                                                         |
+| `log`               | object               | Log configuration (`retention`, `max_log_size`) for this job                                                 |
 
 A job must have exactly one of `run`, `script`, or `group`.
 
@@ -234,27 +261,82 @@ hooks:
         root: apps/web
 ```
 
+### Changed-file filters (`glob`, `exclude`, `files`)
+
+A job can scope itself to the files the operation actually changed. For merge
+hooks (`pre-merge`, `post-merge`) the changed set is what the merge sources
+changed relative to the target — the three-dot `target...source` diff, unioned
+across sources. Other hook types have no built-in changed set; a job there may
+supply its own with `files:`.
+
+```yaml
+hooks:
+  pre-merge:
+    exclude:
+      - "**/*.lock" # hook-level: appended to every file-aware job below
+    jobs:
+      - name: build-check
+        glob: ["src/**", "Cargo.*"]
+        run: cargo check --all-targets
+      - name: lint-changed
+        glob: "*.{js,ts}"
+        exclude: ["web/generated/**"]
+        run: eslint {changed_files}
+      - name: docs-build
+        glob: "docs/**"
+        run: mise run docs:site:build
+```
+
+Semantics:
+
+- `glob` selects files (string or list); `exclude` removes files and wins over
+  `glob`. Hook-level `exclude` is appended to every file-aware job's list.
+- Patterns match **repository-root-relative** paths — `root:` moves the job's
+  cwd, never what its patterns see. Matching uses standard doublestar rules: `*`
+  and `?` stop at `/`, `**` spans zero or more directories (`**/*.js` matches
+  `app.js` and `src/app.js` alike), braces expand (`*.{js,ts}`), and matching is
+  case-sensitive.
+- **Empty means skip.** When no changed file survives the filter, the job is
+  skipped as a first-class outcome with the reason recorded (even when the
+  command references no file template). A docs-only merge skips the
+  `src/**`-gated build ring instead of running it against nothing.
+- `{changed_files}` in the `run` command expands to the filtered list,
+  shell-quoted and space-joined.
+- `files:` replaces the operation's changed set with the output of a shell
+  command (run via `sh -c` in the hook's working directory, one
+  repository-root-relative path per line). An empty result skips the job; a
+  non-zero exit fails the hook.
+- A job that declares `glob`/`exclude` (or uses `{changed_files}`) on a hook
+  type with no changed set and no `files:` command is a **configuration error**
+  — the hook fails loudly rather than guessing.
+- `exclude` alone (no `glob`) selects every changed file outside the excluded
+  paths: the job runs unless _only_ excluded paths changed, which makes it the
+  natural "skip on docs-only changes" spelling.
+
 ### Template variables
 
 Job `run`/`script` commands **and** job `env:` values support template variables
 that are replaced with values from the execution context (this applies to both
 lifecycle hooks and `daft run` tasks):
 
-| Variable            | Description                                             |
-| ------------------- | ------------------------------------------------------- |
-| `{branch}`          | Target branch name (alias for `{worktree_branch}`)      |
-| `{worktree_path}`   | Path to the target worktree                             |
-| `{worktree_root}`   | Project root directory                                  |
-| `{worktree_slug}`   | Sanitized worktree name — `[a-z0-9-]`, capped at 63     |
-| `{worktree_branch}` | Target branch name                                      |
-| `{source_worktree}` | Path to the source worktree (where command was invoked) |
-| `{git_dir}`         | Path to the `.git` directory                            |
-| `{remote}`          | Remote name (usually `"origin"`)                        |
-| `{job_name}`        | Name of the current job                                 |
-| `{base_branch}`     | Base branch name (for `checkout -b` commands)           |
-| `{commit}`          | Pinned commit OID (anonymous sandbox worktrees only)    |
-| `{repository_url}`  | Repository URL (for `post-clone`)                       |
-| `{default_branch}`  | Default branch name (for `post-clone`)                  |
+| Variable              | Description                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{branch}`            | Target branch name (alias for `{worktree_branch}`)                                                                                              |
+| `{worktree_path}`     | Path to the target worktree                                                                                                                     |
+| `{worktree_root}`     | Project root directory                                                                                                                          |
+| `{worktree_slug}`     | Sanitized worktree name — `[a-z0-9-]`, capped at 63                                                                                             |
+| `{worktree_branch}`   | Target branch name                                                                                                                              |
+| `{source_worktree}`   | Path to the source worktree (where command was invoked)                                                                                         |
+| `{git_dir}`           | Path to the `.git` directory                                                                                                                    |
+| `{remote}`            | Remote name (usually `"origin"`)                                                                                                                |
+| `{job_name}`          | Name of the current job                                                                                                                         |
+| `{base_branch}`       | Base branch name (for `checkout -b` commands)                                                                                                   |
+| `{commit}`            | Pinned commit OID (anonymous sandbox worktrees only)                                                                                            |
+| `{repository_url}`    | Repository URL (for `post-clone`)                                                                                                               |
+| `{default_branch}`    | Default branch name (for `post-clone`)                                                                                                          |
+| `{changed_files}`     | The job's filtered changed-file list, shell-quoted (file-aware jobs only; see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
+| `{merge_source_path}` | Merge hooks: the source's worktree path (single worktree-backed source only)                                                                    |
+| `{merge_target_path}` | Merge hooks: the target's worktree path                                                                                                         |
 
 `{worktree_slug}` is the worktree's path relative to the project root (falling
 back to the directory name), lowercased with every run of non-`[a-z0-9]`
@@ -270,6 +352,23 @@ means no branch" — and `{commit}` (env: `DAFT_COMMIT`) carries the commit the
 sandbox is pinned at. `{worktree_slug}` works unchanged, which makes it the
 right handle for per-worktree resources in hooks that must serve both branch and
 sandbox worktrees.
+
+The merge-path templates resolve only when the corresponding worktree exists
+(`{merge_source_path}` additionally requires exactly one source). They are legal
+in `root:` — the canonical gate shape runs each ring in the source worktree:
+
+```yaml
+hooks:
+  pre-merge:
+    jobs:
+      - name: build-check
+        root: "{merge_source_path}"
+        run: cargo check --all-targets
+```
+
+`root:` resolution is fail-closed: a `{merge_…}` template that cannot resolve
+(worktree-less source, multiple sources, non-merge hook) aborts the hook rather
+than running the job in the hook's own directory.
 
 **Move hooks only** (available when `DAFT_IS_MOVE` is `true`):
 
@@ -311,6 +410,7 @@ skip:
   - ref: "release/*" # Ref: skip if branch matches glob
   - env: SKIP_HOOKS # Env: skip if env var is truthy
   - run: "test -f .skip-hooks" # Run: skip if command exits 0
+  - changed: "docs/**" # Changed: skip if a changed file matches
 ```
 
 Named conditions:
@@ -322,12 +422,19 @@ Named conditions:
 
 Structured condition fields:
 
-| Field  | Description                                                    |
-| ------ | -------------------------------------------------------------- |
-| `ref`  | Glob pattern matched against the current branch name           |
-| `env`  | Environment variable name; truthy = condition met              |
-| `run`  | Shell command; exit code 0 = condition met                     |
-| `desc` | Human-readable reason shown when the condition triggers a skip |
+| Field     | Description                                                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ref`     | Glob pattern matched against the current branch name                                                                              |
+| `env`     | Environment variable name; truthy = condition met                                                                                 |
+| `run`     | Shell command; exit code 0 = condition met                                                                                        |
+| `changed` | Glob pattern(s); any changed file matching = condition met (see [Changed-file filters](#changed-file-filters-glob-exclude-files)) |
+| `desc`    | Human-readable reason shown when the condition triggers a skip                                                                    |
+
+A `changed:` rule reads the same changed-file set as the job-level `glob:`
+field, so `skip: [{changed: "docs/**", desc: docs-only change}]` skips a job
+when the merge touches docs, and `only: [{changed: "docs/**"}]` runs it only
+then. Using `changed:` on a hook type with no changed-file source is a
+configuration error.
 
 ### Groups
 

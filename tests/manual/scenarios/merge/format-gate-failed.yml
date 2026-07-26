@@ -1,0 +1,67 @@
+name: A red gate reports gate-failed with the failing job attached
+description:
+  "A check coming back red is neither a policy refusal nor a broken merge, and
+  the payload says so: status `gate-failed`, the pre-merge invocation id, and
+  the failing job's own row. Recovering the id on the failing path is the whole
+  point — that is exactly the run whose jobs the caller needs to read."
+
+repos:
+  - name: test-merge-fmt-red
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# red gate verdict"
+        commits:
+          - message: "Initial commit"
+      - name: red-track
+        from: main
+        files:
+          - path: red.txt
+            content: "red work"
+        commits:
+          - message: "Red track work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: gate-fails
+              run: "echo boom >&2; exit 3"
+
+steps:
+  - name: Clone
+    run: daft clone --layout contained $REMOTE_TEST_MERGE_FMT_RED
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-merge-fmt-red/main"
+
+  - name: Trust the repository so the gate actually runs
+    run: daft hooks trust --force 2>&1
+    cwd: "$WORK_DIR/test-merge-fmt-red/main"
+    expect:
+      exit_code: 0
+
+  - name: The red gate is its own status, with the failing job in the payload
+    run: daft merge red-track --no-edit --format json
+    cwd: "$WORK_DIR/test-merge-fmt-red/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - '"status": "gate-failed"'
+        - '"name": "gate-fails"'
+        - '"status": "failed"'
+        - '"exit_code": 3'
+      output_not_contains:
+        # A red check is not a policy refusal; conflating them would send a
+        # consumer to rebase when it should be fixing code.
+        - '"status": "refused"'
+
+  - name: Nothing landed — main is untouched
+    run: git log --oneline -1
+    cwd: "$WORK_DIR/test-merge-fmt-red/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "Red track work"

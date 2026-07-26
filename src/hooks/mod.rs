@@ -41,6 +41,7 @@
 //!
 //! User-global hooks can be placed at `~/.config/daft/hooks/`.
 
+pub mod changed_files;
 pub mod conditions;
 pub mod config_merge;
 mod environment;
@@ -61,7 +62,7 @@ pub mod yaml_config_validate;
 pub mod yaml_executor;
 
 pub use environment::{HookContext, HookEnvironment, RemovalReason};
-pub use executor::{HookExecutor, HookResult};
+pub use executor::{HookAborted, HookExecutor, HookResult};
 pub use trust::{TrustDatabase, TrustEntry, TrustLevel, get_remote_url_for_git_dir};
 
 use crate::settings::HookOutputConfig;

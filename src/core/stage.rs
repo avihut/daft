@@ -91,6 +91,12 @@ pub enum StageId {
     /// a timeline). Always carries the task name as a fixed label override;
     /// the tense table is a fallback only.
     Task,
+    // ── Merge (gate rings) ───────────────────────────────────────────────
+    /// `pre-merge` hooks — the merge gate's rings.
+    PreMergeHooks,
+    /// `post-merge` hooks.
+    PostMergeHooks,
+
     // ── Push (worktree-correct pre-push) ─────────────────────────────────
     /// Resolve the pushed branch to its owning worktree (`daft push`) — the
     /// cwd the shared `pre-push` hook will run in, which is the command's
@@ -111,12 +117,13 @@ impl StageId {
                 | Self::PreRemoveHooks
                 | Self::PostRemoveHooks
                 | Self::PostCloneHooks
+                | Self::PreMergeHooks
+                | Self::PostMergeHooks
                 | Self::Task
         )
     }
 
-    /// The plan stage a lifecycle hook renders as. `None` for hook types the
-    /// timeline never plans (merge hooks — merge keeps its own output).
+    /// The plan stage a lifecycle hook renders as.
     pub fn for_hook_type(hook_type: crate::hooks::HookType) -> Option<Self> {
         use crate::hooks::HookType;
         match hook_type {
@@ -125,7 +132,8 @@ impl StageId {
             HookType::PreRemove => Some(Self::PreRemoveHooks),
             HookType::PostRemove => Some(Self::PostRemoveHooks),
             HookType::PostClone => Some(Self::PostCloneHooks),
-            HookType::PreMerge | HookType::PostMerge => None,
+            HookType::PreMerge => Some(Self::PreMergeHooks),
+            HookType::PostMerge => Some(Self::PostMergeHooks),
         }
     }
 }

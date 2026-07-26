@@ -1,0 +1,93 @@
+name: changed rules gate jobs on the merge's change set
+description:
+  "skip:/only: rules with a changed: pattern consult the merge's changed-file
+  set. A docs-only track runs the docs-gated job (only: changed docs/**
+  satisfied) and skips the heavy job (skip: changed docs/*.md matched, with the
+  rule's desc as the reason). A code track flips both: the docs job skips with
+  the only-reason, the heavy job runs."
+
+repos:
+  - name: test-changed-rules
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# changed rules"
+          - path: src/lib.rs
+            content: "pub fn base() {}"
+        commits:
+          - message: "Initial commit"
+      - name: docs-only
+        from: main
+        files:
+          - path: docs/guide.md
+            content: "docs change"
+        commits:
+          - message: "Docs-only change"
+      - name: code-change
+        from: main
+        files:
+          - path: src/feature.rs
+            content: "pub fn feature() {}"
+        commits:
+          - message: "Code change"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: docs-gate
+              run: touch "$DAFT_MERGE_TARGET_PATH/.docs-gate-ran"
+              only:
+                - changed: "docs/**"
+            - name: heavy
+              run: touch "$DAFT_MERGE_TARGET_PATH/.heavy-ran"
+              skip:
+                - changed:
+                    - "docs/**"
+                    - "*.md"
+                  desc: docs-only change
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_CHANGED_RULES
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-changed-rules/main"
+
+  - name: Docs-only merge — docs job runs, heavy job is skipped by its rule
+    run: daft merge docs-only --no-edit 2>&1
+    cwd: "$WORK_DIR/test-changed-rules/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-changed-rules/main/.docs-gate-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-changed-rules/main/.heavy-ran"
+
+  - name: The heavy skip carries the rule's desc as its reason
+    run: daft hooks jobs logs heavy 2>&1
+    cwd: "$WORK_DIR/test-changed-rules/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "heavy"
+        - "docs-only change"
+        - "SKIPPED"
+
+  - name: Reset sentinels between merges
+    run: rm -f .docs-gate-ran .heavy-ran
+    cwd: "$WORK_DIR/test-changed-rules/main"
+    expect:
+      exit_code: 0
+
+  - name: Code merge — the gates flip
+    run: daft merge code-change --no-edit 2>&1
+    cwd: "$WORK_DIR/test-changed-rules/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-changed-rules/main/.heavy-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-changed-rules/main/.docs-gate-ran"

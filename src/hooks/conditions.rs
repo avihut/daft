@@ -4,11 +4,13 @@
 //! - `skip`: If any rule matches, the hook/job is skipped.
 //! - `only`: If any rule does NOT match, the hook/job is skipped.
 
+use super::changed_files::{ChangedFilesProvider, FileFilter};
 use super::yaml_config::{
     JobDef, OnlyCondition, OnlyRule, OnlyRuleStructured, SkipCondition, SkipRule,
-    SkipRuleStructured, TargetOs,
+    SkipRuleStructured, StringOrList, TargetOs,
 };
 use crate::git::op_state::{OpKind, probe_op_state};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 /// Information about why a job was skipped.
@@ -32,22 +34,29 @@ fn resolve_current_target_os() -> Option<TargetOs> {
 
 /// Check whether a hook/job should be skipped based on `skip` condition.
 ///
-/// Returns `Some(SkipInfo)` if it should be skipped, `None` if it should run.
-pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<SkipInfo> {
+/// Returns `Ok(Some(SkipInfo))` if it should be skipped, `Ok(None)` if it
+/// should run. `changed` is the operation's changed-file source, consulted by
+/// `changed:` rules; a `changed:` rule with no source is a configuration
+/// error (`Err`), never a silent skip or pass.
+pub fn should_skip(
+    condition: &SkipCondition,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     match condition {
-        SkipCondition::Bool(true) => Some(SkipInfo {
+        SkipCondition::Bool(true) => Ok(Some(SkipInfo {
             reason: "skip: true".to_string(),
             ran_command: false,
-        }),
-        SkipCondition::Bool(false) => None,
+        })),
+        SkipCondition::Bool(false) => Ok(None),
         SkipCondition::EnvVar(var) => {
             if is_env_truthy(var) {
-                Some(SkipInfo {
+                Ok(Some(SkipInfo {
                     reason: format!("skip: env ${var} is set"),
                     ran_command: false,
-                })
+                }))
             } else {
-                None
+                Ok(None)
             }
         }
         SkipCondition::Platform(map) => {
@@ -56,43 +65,49 @@ pub fn should_skip(condition: &SkipCondition, worktree: &Path) -> Option<SkipInf
                 && let Some(rules) = map.get(&os)
             {
                 for rule in rules {
-                    if let Some(info) = eval_skip_rule(rule, worktree) {
-                        return Some(info);
+                    if let Some(info) = eval_skip_rule(rule, worktree, changed)? {
+                        return Ok(Some(info));
                     }
                 }
             }
-            None
+            Ok(None)
         }
         SkipCondition::Rules(rules) => {
             // Any rule match → skip
             for rule in rules {
-                if let Some(info) = eval_skip_rule(rule, worktree) {
-                    return Some(info);
+                if let Some(info) = eval_skip_rule(rule, worktree, changed)? {
+                    return Ok(Some(info));
                 }
             }
-            None
+            Ok(None)
         }
     }
 }
 
 /// Check whether a hook/job should run based on `only` condition.
 ///
-/// Returns `Some(SkipInfo)` if it should be skipped (condition NOT met), `None` if it should run.
-pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<SkipInfo> {
+/// Returns `Ok(Some(SkipInfo))` if it should be skipped (condition NOT met),
+/// `Ok(None)` if it should run. See [`should_skip`] for the `changed`
+/// parameter's contract.
+pub fn should_only_skip(
+    condition: &OnlyCondition,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     match condition {
-        OnlyCondition::Bool(true) => None,
-        OnlyCondition::Bool(false) => Some(SkipInfo {
+        OnlyCondition::Bool(true) => Ok(None),
+        OnlyCondition::Bool(false) => Ok(Some(SkipInfo {
             reason: "only: false".to_string(),
             ran_command: false,
-        }),
+        })),
         OnlyCondition::EnvVar(var) => {
             if is_env_truthy(var) {
-                None
+                Ok(None)
             } else {
-                Some(SkipInfo {
+                Ok(Some(SkipInfo {
                     reason: format!("only: env ${var} is not set"),
                     ran_command: false,
-                })
+                }))
             }
         }
         OnlyCondition::Platform(map) => {
@@ -101,55 +116,63 @@ pub fn should_only_skip(condition: &OnlyCondition, worktree: &Path) -> Option<Sk
                 && let Some(rules) = map.get(&os)
             {
                 for rule in rules {
-                    if let Some(info) = eval_only_rule(rule, worktree) {
-                        return Some(info);
+                    if let Some(info) = eval_only_rule(rule, worktree, changed)? {
+                        return Ok(Some(info));
                     }
                 }
             }
-            None
+            Ok(None)
         }
         OnlyCondition::Rules(rules) => {
             // All rules must match for the job to run; if any fails → skip
             for rule in rules {
-                if let Some(info) = eval_only_rule(rule, worktree) {
-                    return Some(info);
+                if let Some(info) = eval_only_rule(rule, worktree, changed)? {
+                    return Ok(Some(info));
                 }
             }
-            None
+            Ok(None)
         }
     }
 }
 
 /// Evaluate a single skip rule.
-fn eval_skip_rule(rule: &SkipRule, worktree: &Path) -> Option<SkipInfo> {
+fn eval_skip_rule(
+    rule: &SkipRule,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     match rule {
-        SkipRule::Named(name) => eval_named_condition(name, worktree).map(|reason| SkipInfo {
+        SkipRule::Named(name) => Ok(eval_named_condition(name, worktree).map(|reason| SkipInfo {
             reason,
             ran_command: false,
-        }),
-        SkipRule::Structured(s) => eval_structured_skip(s, worktree),
+        })),
+        SkipRule::Structured(s) => eval_structured_skip(s, worktree, changed),
     }
 }
 
 /// Evaluate a single only rule.
 ///
-/// Returns `Some(SkipInfo)` if the condition is NOT met (i.e., should skip).
-fn eval_only_rule(rule: &OnlyRule, worktree: &Path) -> Option<SkipInfo> {
+/// Returns `Ok(Some(SkipInfo))` if the condition is NOT met (i.e., should skip).
+fn eval_only_rule(
+    rule: &OnlyRule,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     match rule {
         OnlyRule::Named(name) => {
             // For "only", the condition must be met. If it is NOT met → skip.
             if eval_named_condition(name, worktree).is_some() {
                 // Named condition triggered (e.g., "merge" is true) → condition IS met → run
-                None
+                Ok(None)
             } else {
                 // Named condition NOT triggered → condition NOT met → skip
-                Some(SkipInfo {
+                Ok(Some(SkipInfo {
                     reason: format!("only: not in {name} state"),
                     ran_command: false,
-                })
+                }))
             }
         }
-        OnlyRule::Structured(s) => eval_structured_only(s, worktree),
+        OnlyRule::Structured(s) => eval_structured_only(s, worktree, changed),
     }
 }
 
@@ -174,90 +197,146 @@ fn eval_named_condition(name: &str, worktree: &Path) -> Option<String> {
     }
 }
 
-/// Evaluate structured skip rule (ref, env, run).
-fn eval_structured_skip(rule: &SkipRuleStructured, worktree: &Path) -> Option<SkipInfo> {
+/// Evaluate structured skip rule (ref, env, run, changed).
+fn eval_structured_skip(
+    rule: &SkipRuleStructured,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     if let Some(ref pattern) = rule.ref_pattern
         && let Some(branch) = current_ref(worktree)
         && branch_matches_pattern(&branch, pattern)
     {
-        return Some(SkipInfo {
+        return Ok(Some(SkipInfo {
             reason: rule
                 .desc
                 .clone()
                 .unwrap_or_else(|| format!("skip: ref matches '{pattern}'")),
             ran_command: false,
-        });
+        }));
     }
 
     if let Some(ref var) = rule.env
         && is_env_truthy(var)
     {
-        return Some(SkipInfo {
+        return Ok(Some(SkipInfo {
             reason: rule
                 .desc
                 .clone()
                 .unwrap_or_else(|| format!("skip: env ${var} is set")),
             ran_command: false,
-        });
+        }));
     }
 
     if let Some(ref cmd) = rule.run
         && run_check_command(cmd, worktree)
     {
-        return Some(SkipInfo {
+        return Ok(Some(SkipInfo {
             reason: rule
                 .desc
                 .clone()
                 .unwrap_or_else(|| format!("skip: command succeeded: {cmd}")),
             ran_command: true,
-        });
+        }));
     }
 
-    None
+    if let Some(ref patterns) = rule.changed
+        && any_changed_file_matches(patterns, changed, "skip")?
+    {
+        return Ok(Some(SkipInfo {
+            reason: rule.desc.clone().unwrap_or_else(|| {
+                format!(
+                    "skip: changed files match {}",
+                    patterns.as_slice().join(", ")
+                )
+            }),
+            ran_command: false,
+        }));
+    }
+
+    Ok(None)
 }
 
 /// Evaluate structured only rule.
 ///
-/// Returns `Some(SkipInfo)` if any sub-condition is NOT met.
-fn eval_structured_only(rule: &OnlyRuleStructured, worktree: &Path) -> Option<SkipInfo> {
+/// Returns `Ok(Some(SkipInfo))` if any sub-condition is NOT met.
+fn eval_structured_only(
+    rule: &OnlyRuleStructured,
+    worktree: &Path,
+    changed: Option<&ChangedFilesProvider>,
+) -> Result<Option<SkipInfo>> {
     if let Some(ref pattern) = rule.ref_pattern {
         let branch = current_ref(worktree).unwrap_or_default();
         if !branch_matches_pattern(&branch, pattern) {
-            return Some(SkipInfo {
+            return Ok(Some(SkipInfo {
                 reason: rule
                     .desc
                     .clone()
                     .unwrap_or_else(|| format!("only: ref does not match '{pattern}'")),
                 ran_command: false,
-            });
+            }));
         }
     }
 
     if let Some(ref var) = rule.env
         && !is_env_truthy(var)
     {
-        return Some(SkipInfo {
+        return Ok(Some(SkipInfo {
             reason: rule
                 .desc
                 .clone()
                 .unwrap_or_else(|| format!("only: env ${var} is not set")),
             ran_command: false,
-        });
+        }));
     }
 
     if let Some(ref cmd) = rule.run
         && !run_check_command(cmd, worktree)
     {
-        return Some(SkipInfo {
+        return Ok(Some(SkipInfo {
             reason: rule
                 .desc
                 .clone()
                 .unwrap_or_else(|| format!("only: command failed: {cmd}")),
             ran_command: true,
-        });
+        }));
     }
 
-    None
+    if let Some(ref patterns) = rule.changed
+        && !any_changed_file_matches(patterns, changed, "only")?
+    {
+        return Ok(Some(SkipInfo {
+            reason: rule.desc.clone().unwrap_or_else(|| {
+                format!(
+                    "only: no changed files match {}",
+                    patterns.as_slice().join(", ")
+                )
+            }),
+            ran_command: false,
+        }));
+    }
+
+    Ok(None)
+}
+
+/// Whether any of the operation's changed files matches `patterns`. A
+/// `changed:` rule on a hook with no changed-file source, and a source that
+/// fails to resolve, are both loud errors — a gate condition must never
+/// silently degrade.
+fn any_changed_file_matches(
+    patterns: &StringOrList,
+    changed: Option<&ChangedFilesProvider>,
+    rule_kind: &str,
+) -> Result<bool> {
+    let Some(provider) = changed else {
+        bail!(
+            "`{rule_kind}:` rule uses `changed:`, but this hook type has no \
+             changed-file source"
+        );
+    };
+    let filter = FileFilter::new(patterns.as_slice(), &[])
+        .with_context(|| format!("`{rule_kind}:` rule `changed:`"))?;
+    Ok(provider.files()?.iter().any(|f| filter.matches(f)))
 }
 
 /// Check if an environment variable is set and truthy.
@@ -359,13 +438,13 @@ mod tests {
     #[test]
     fn test_skip_bool_true() {
         let cond = SkipCondition::Bool(true);
-        assert!(should_skip(&cond, Path::new(".")).is_some());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_some());
     }
 
     #[test]
     fn test_skip_bool_false() {
         let cond = SkipCondition::Bool(false);
-        assert!(should_skip(&cond, Path::new(".")).is_none());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_none());
     }
 
     #[test]
@@ -374,7 +453,7 @@ mod tests {
             std::env::set_var("DAFT_TEST_SKIP_VAR", "1");
         }
         let cond = SkipCondition::EnvVar("DAFT_TEST_SKIP_VAR".to_string());
-        assert!(should_skip(&cond, Path::new(".")).is_some());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_some());
         unsafe {
             std::env::remove_var("DAFT_TEST_SKIP_VAR");
         }
@@ -386,19 +465,27 @@ mod tests {
             std::env::remove_var("DAFT_TEST_SKIP_NONEXIST");
         }
         let cond = SkipCondition::EnvVar("DAFT_TEST_SKIP_NONEXIST".to_string());
-        assert!(should_skip(&cond, Path::new(".")).is_none());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_none());
     }
 
     #[test]
     fn test_only_bool_true() {
         let cond = OnlyCondition::Bool(true);
-        assert!(should_only_skip(&cond, Path::new(".")).is_none());
+        assert!(
+            should_only_skip(&cond, Path::new("."), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn test_only_bool_false() {
         let cond = OnlyCondition::Bool(false);
-        assert!(should_only_skip(&cond, Path::new(".")).is_some());
+        assert!(
+            should_only_skip(&cond, Path::new("."), None)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -406,10 +493,11 @@ mod tests {
         let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
             ref_pattern: None,
             env: None,
+            changed: None,
             run: Some("true".to_string()),
             desc: None,
         })]);
-        assert!(should_skip(&cond, Path::new(".")).is_some());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_some());
     }
 
     #[test]
@@ -417,10 +505,11 @@ mod tests {
         let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
             ref_pattern: None,
             env: None,
+            changed: None,
             run: Some("false".to_string()),
             desc: None,
         })]);
-        assert!(should_skip(&cond, Path::new(".")).is_none());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_none());
     }
 
     #[test]
@@ -469,10 +558,11 @@ mod tests {
         let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
             ref_pattern: None,
             env: None,
+            changed: None,
             run: Some("true".to_string()),
             desc: Some("Brew is already installed".to_string()),
         })]);
-        let info = should_skip(&cond, Path::new(".")).unwrap();
+        let info = should_skip(&cond, Path::new("."), None).unwrap().unwrap();
         assert_eq!(info.reason, "Brew is already installed");
         assert!(info.ran_command);
     }
@@ -482,10 +572,11 @@ mod tests {
         let cond = SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
             ref_pattern: None,
             env: None,
+            changed: None,
             run: Some("true".to_string()),
             desc: None,
         })]);
-        let info = should_skip(&cond, Path::new(".")).unwrap();
+        let info = should_skip(&cond, Path::new("."), None).unwrap().unwrap();
         assert!(info.reason.starts_with("skip: command succeeded:"));
         assert!(info.ran_command);
     }
@@ -495,10 +586,13 @@ mod tests {
         let cond = OnlyCondition::Rules(vec![OnlyRule::Structured(OnlyRuleStructured {
             ref_pattern: None,
             env: None,
+            changed: None,
             run: Some("false".to_string()),
             desc: Some("Only when package.json exists".to_string()),
         })]);
-        let info = should_only_skip(&cond, Path::new(".")).unwrap();
+        let info = should_only_skip(&cond, Path::new("."), None)
+            .unwrap()
+            .unwrap();
         assert_eq!(info.reason, "Only when package.json exists");
         assert!(info.ran_command);
     }
@@ -517,12 +611,13 @@ mod tests {
             vec![SkipRule::Structured(SkipRuleStructured {
                 ref_pattern: None,
                 env: None,
+                changed: None,
                 run: Some("true".to_string()),
                 desc: Some("already installed".to_string()),
             })],
         );
         let cond = SkipCondition::Platform(map);
-        let info = should_skip(&cond, Path::new(".")).unwrap();
+        let info = should_skip(&cond, Path::new("."), None).unwrap().unwrap();
         assert_eq!(info.reason, "already installed");
     }
 
@@ -540,12 +635,13 @@ mod tests {
             vec![SkipRule::Structured(SkipRuleStructured {
                 ref_pattern: None,
                 env: None,
+                changed: None,
                 run: Some("true".to_string()),
                 desc: Some("already installed".to_string()),
             })],
         );
         let cond = SkipCondition::Platform(map);
-        assert!(should_skip(&cond, Path::new(".")).is_none());
+        assert!(should_skip(&cond, Path::new("."), None).unwrap().is_none());
     }
 
     /// Build a linked worktree — `.git` is a *file* pointing at the private
@@ -576,7 +672,7 @@ mod tests {
 
         let cond = SkipCondition::Rules(vec![SkipRule::Named("merge".to_string())]);
         assert!(
-            should_skip(&cond, &worktree).is_some(),
+            should_skip(&cond, &worktree, None).unwrap().is_some(),
             "a paused merge in a linked worktree must satisfy `skip: [merge]`"
         );
     }
@@ -588,7 +684,7 @@ mod tests {
 
         let cond = SkipCondition::Rules(vec![SkipRule::Named("rebase".to_string())]);
         assert!(
-            should_skip(&cond, &worktree).is_some(),
+            should_skip(&cond, &worktree, None).unwrap().is_some(),
             "a paused rebase in a linked worktree must satisfy `skip: [rebase]`"
         );
     }
@@ -600,9 +696,94 @@ mod tests {
         for name in ["merge", "rebase"] {
             let cond = SkipCondition::Rules(vec![SkipRule::Named(name.to_string())]);
             assert!(
-                should_skip(&cond, &worktree).is_none(),
+                should_skip(&cond, &worktree, None).unwrap().is_none(),
                 "an idle worktree must not satisfy `skip: [{name}]`"
             );
         }
+    }
+
+    // ── changed: rules ──────────────────────────────────────────────────
+
+    fn changed_provider(files: &[&str]) -> ChangedFilesProvider {
+        ChangedFilesProvider::preresolved(files.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn skip_changed(patterns: StringOrList) -> SkipCondition {
+        SkipCondition::Rules(vec![SkipRule::Structured(SkipRuleStructured {
+            ref_pattern: None,
+            env: None,
+            run: None,
+            changed: Some(patterns),
+            desc: None,
+        })])
+    }
+
+    fn only_changed(patterns: StringOrList) -> OnlyCondition {
+        OnlyCondition::Rules(vec![OnlyRule::Structured(OnlyRuleStructured {
+            ref_pattern: None,
+            env: None,
+            run: None,
+            changed: Some(patterns),
+            desc: None,
+        })])
+    }
+
+    #[test]
+    fn skip_changed_rule_matches_changed_file() {
+        let provider = changed_provider(&["migrations/001.sql", "src/lib.rs"]);
+        let cond = skip_changed(StringOrList::Single("migrations/**".into()));
+        let info = should_skip(&cond, Path::new("."), Some(&provider))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.reason, "skip: changed files match migrations/**");
+    }
+
+    #[test]
+    fn skip_changed_rule_passes_when_nothing_matches() {
+        let provider = changed_provider(&["src/lib.rs"]);
+        let cond = skip_changed(StringOrList::Single("migrations/**".into()));
+        assert!(
+            should_skip(&cond, Path::new("."), Some(&provider))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn only_changed_rule_skips_when_nothing_matches() {
+        let provider = changed_provider(&["src/lib.rs"]);
+        let cond = only_changed(StringOrList::List(vec!["docs/**".into(), "*.md".into()]));
+        let info = should_only_skip(&cond, Path::new("."), Some(&provider))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.reason, "only: no changed files match docs/**, *.md");
+    }
+
+    #[test]
+    fn only_changed_rule_runs_when_a_file_matches() {
+        let provider = changed_provider(&["docs/index.md"]);
+        let cond = only_changed(StringOrList::Single("docs/**".into()));
+        assert!(
+            should_only_skip(&cond, Path::new("."), Some(&provider))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn changed_rule_without_a_source_is_a_loud_error() {
+        let cond = skip_changed(StringOrList::Single("docs/**".into()));
+        let err = should_skip(&cond, Path::new("."), None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no changed-file source"),
+            "{err:#}"
+        );
+
+        let cond = only_changed(StringOrList::Single("docs/**".into()));
+        let err = should_only_skip(&cond, Path::new("."), None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no changed-file source"),
+            "{err:#}"
+        );
     }
 }

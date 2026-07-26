@@ -88,6 +88,10 @@ pub struct YamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations: Option<Vec<crate::catalog::relations::RelationEntry>>,
 
+    /// Committed merge gate policy (see [`MergeConfig`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge: Option<MergeConfig>,
+
     /// Hook definitions, keyed by hook name.
     pub hooks: HashMap<String, HookDef>,
 
@@ -101,6 +105,63 @@ pub struct YamlConfig {
     /// stays strict. See #708.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tasks: HashMap<String, HookDef>,
+}
+
+/// Committed merge gate policy — the top-level `merge:` block.
+///
+/// The local equivalent of a branch-protection rule: team policy on what
+/// `daft merge` may land, named in git's own vocabulary (the section mirrors
+/// gitconfig's `[merge]`). Enforced natively by the merge command — before
+/// the pre-merge hooks fire AND re-verified at the moment the ref moves — so
+/// the tree the gate tested is the tree that lands. Policy is relaxed only
+/// by explicit per-invocation flags (`--no-ff-only`,
+/// `--source-worktree any`), never by ambient configuration; the YAML
+/// deliberately has no relax spellings, so overlays can add strictness but
+/// cannot remove it.
+/// Unknown keys are REFUSED here, deliberately diverging from the tolerant
+/// parsing the rest of this schema uses. Everywhere else an unrecognized key
+/// is forward-compatibility slack: an old binary meets a new key and ignores
+/// it. Here the same slack is a silent policy hole — `source-worktree: clean`
+/// (kebab instead of snake) or `ffOnly: only` deserializes to an all-`None`
+/// block, `gate_from_config_and_overrides` computes "no policy", and every
+/// merge lands ungated while the repo believes a boundary is enforced. A
+/// typo must be louder than the thing it disables, so the config fails to
+/// load instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MergeConfig {
+    /// Fast-forward condition (git's `merge.ff`): `only` refuses any merge
+    /// whose source does not already contain the target tip. Combined with
+    /// pre-merge hooks running in the source worktree, this is what makes
+    /// the tested tree equal the landed tree regardless of merge style.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ff: Option<FfPolicy>,
+
+    /// Requirement on the source branch's worktree: `clean` refuses to merge
+    /// a source whose worktree is missing or has uncommitted changes, so the
+    /// gate certifies the committed tree — not a dirty working tree the
+    /// merge would not include.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_worktree: Option<SourceWorktreePolicy>,
+}
+
+/// `merge.ff` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FfPolicy {
+    /// Refuse merges that cannot fast-forward.
+    Only,
+}
+
+/// `merge.source_worktree` values. Intentionally has no `any` spelling —
+/// relaxing a committed `clean` is a per-invocation decision
+/// (`--source-worktree any`), never something an overlay config can do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceWorktreePolicy {
+    /// The source must have a checked-out worktree with no uncommitted
+    /// changes.
+    Clean,
 }
 
 /// Output setting: either a list of hook names or false to suppress.
@@ -140,7 +201,10 @@ pub struct HookDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_tags: Option<Vec<String>>,
 
-    /// Glob patterns to exclude at hook level.
+    /// Glob patterns excluded from every file-aware job in this hook —
+    /// appended to each job's own `exclude:` list. Does not by itself make a
+    /// job file-aware (a job with no `glob:`/`exclude:`/`files:` and no
+    /// `{changed_files}` template ignores it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
 
@@ -278,6 +342,27 @@ impl PlatformRunCommand {
     }
 }
 
+/// A value that can be a single string or a list of strings.
+///
+/// Used by glob-pattern fields (`glob:`, `changed:`) so the one-pattern case
+/// reads without list syntax.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrList {
+    Single(String),
+    List(Vec<String>),
+}
+
+impl StringOrList {
+    /// Return the values as a slice.
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            StringOrList::Single(v) => std::slice::from_ref(v),
+            StringOrList::List(v) => v,
+        }
+    }
+}
+
 /// A single job definition within a hook.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -307,12 +392,48 @@ pub struct JobDef {
     pub args: Option<String>,
 
     /// Working directory (relative to worktree root).
+    ///
+    /// Supports template variables; an absolute result (e.g. from
+    /// `{merge_source_path}`) replaces the base entirely. A `{merge_…}`
+    /// template that cannot resolve fails the hook rather than silently
+    /// running the job in the hook's own cwd.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
 
     /// Tags for this job (for filtering).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+
+    /// Glob patterns selecting the changed files this job cares about.
+    ///
+    /// A single pattern or a list. Patterns match repository-root-relative
+    /// paths with standard doublestar semantics (`**` spans zero or more
+    /// directories, `*` never crosses `/`, braces expand) and ignore
+    /// `root:`. The file list comes from the hook's operation (for merge
+    /// hooks: the files the sources changed relative to the target) or the
+    /// job's own `files:` command. When no changed file matches, the job is
+    /// skipped. Declaring `glob:` on a hook type with no changed-file
+    /// source and no `files:` is a configuration error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glob: Option<StringOrList>,
+
+    /// Glob patterns removed from this job's changed-file list (see `glob`).
+    ///
+    /// Applied after `glob:` selection; hook-level `exclude:` patterns are
+    /// appended. `exclude:` alone (no `glob:`) selects every changed file
+    /// outside the excluded paths — the job is skipped when nothing else
+    /// changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
+
+    /// Shell command producing this job's file list, replacing the hook's
+    /// own changed-file source.
+    ///
+    /// Runs via `sh -c` in the hook's working directory and must emit one
+    /// repository-root-relative path per line. An empty result skips the
+    /// job; a non-zero exit fails the hook.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
 
     /// Skip condition.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,6 +559,10 @@ pub struct SkipRuleStructured {
     /// Skip if this command exits 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Skip if any changed file matches these glob patterns (same matching
+    /// semantics and changed-file source as the job-level `glob:` field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<StringOrList>,
     /// Human-readable description of why this skip rule exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
@@ -479,6 +604,11 @@ pub struct OnlyRuleStructured {
     /// Only run if this command exits 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Only run if at least one changed file matches these glob patterns
+    /// (same matching semantics and changed-file source as the job-level
+    /// `glob:` field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<StringOrList>,
     /// Human-readable description of why this only rule exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
@@ -746,6 +876,154 @@ hooks:
                 }
             }
             other => panic!("Expected Rules, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_job_glob_string_and_list_forms() {
+        let yaml = r#"
+hooks:
+  pre-merge:
+    exclude:
+      - "**/*.lock"
+    jobs:
+      - name: single
+        run: cargo check
+        glob: "src/**"
+      - name: many
+        run: lint {changed_files}
+        glob:
+          - "*.{js,ts}"
+          - "web/**"
+        exclude:
+          - "web/generated/**"
+      - name: custom
+        run: verify
+        files: "git ls-files src"
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let hook = &config.hooks["pre-merge"];
+        assert_eq!(
+            hook.exclude.as_deref(),
+            Some(&["**/*.lock".to_string()][..])
+        );
+
+        let jobs = hook.jobs.as_ref().unwrap();
+        match jobs[0].glob.as_ref().unwrap() {
+            StringOrList::Single(s) => assert_eq!(s, "src/**"),
+            other => panic!("expected Single, got {other:?}"),
+        }
+        match jobs[1].glob.as_ref().unwrap() {
+            StringOrList::List(l) => assert_eq!(l, &["*.{js,ts}", "web/**"]),
+            other => panic!("expected List, got {other:?}"),
+        }
+        assert_eq!(
+            jobs[1].exclude.as_deref(),
+            Some(&["web/generated/**".to_string()][..])
+        );
+        assert_eq!(jobs[2].files.as_deref(), Some("git ls-files src"));
+    }
+
+    #[test]
+    fn test_merge_gate_policy_parses() {
+        let yaml = r#"
+merge:
+  ff: only
+  source_worktree: clean
+hooks: {}
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let merge = config.merge.unwrap();
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, Some(SourceWorktreePolicy::Clean));
+
+        // Partial blocks parse; absent keys stay None.
+        let config: YamlConfig = serde_yaml::from_str("merge:\n  ff: only\n").unwrap();
+        let merge = config.merge.unwrap();
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, None);
+    }
+
+    #[test]
+    fn test_merge_gate_policy_rejects_unknown_values_loudly() {
+        // `any` is deliberately NOT a YAML spelling — relaxing policy is a
+        // per-invocation flag decision, so an overlay config cannot do it.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  source_worktree: any\n")
+            .expect_err("'any' must not be accepted in config");
+        assert!(err.to_string().contains("any"), "{err}");
+
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  ff: never\n")
+            .expect_err("unknown ff value must fail to parse");
+        assert!(err.to_string().contains("never"), "{err}");
+    }
+
+    /// A mistyped policy KEY must fail to load, not deserialize to "no
+    /// policy". Unknown keys are tolerated everywhere else in this schema;
+    /// inside `merge:` they would silently disable the gate the repo thinks
+    /// it committed.
+    #[test]
+    fn test_merge_gate_policy_rejects_unknown_keys_loudly() {
+        // Kebab-case instead of the snake_case field name.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  source-worktree: clean\n")
+            .expect_err("a mistyped policy key must not parse to an empty policy");
+        assert!(err.to_string().contains("source-worktree"), "{err}");
+
+        // camelCase instead of snake_case.
+        let err = serde_yaml::from_str::<YamlConfig>("merge:\n  ffOnly: only\n")
+            .expect_err("a mistyped policy key must not parse to an empty policy");
+        assert!(err.to_string().contains("ffOnly"), "{err}");
+
+        // The correct spellings still load.
+        let cfg: YamlConfig =
+            serde_yaml::from_str("merge:\n  ff: only\n  source_worktree: clean\n").unwrap();
+        let merge = cfg.merge.expect("merge block should parse");
+        assert_eq!(merge.ff, Some(FfPolicy::Only));
+        assert_eq!(merge.source_worktree, Some(SourceWorktreePolicy::Clean));
+    }
+
+    #[test]
+    fn test_changed_rule_parses_in_skip_and_only() {
+        let yaml = r#"
+hooks:
+  pre-merge:
+    jobs:
+      - name: docs-gate
+        run: build-docs
+        only:
+          - changed: "docs/**"
+      - name: heavy
+        run: heavy-check
+        skip:
+          - changed:
+              - "*.md"
+              - "docs/**"
+            desc: docs-only change
+"#;
+        let config: YamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let jobs = config.hooks["pre-merge"].jobs.as_ref().unwrap();
+
+        match jobs[0].only.as_ref().unwrap() {
+            OnlyCondition::Rules(rules) => match &rules[0] {
+                OnlyRule::Structured(s) => match s.changed.as_ref().unwrap() {
+                    StringOrList::Single(p) => assert_eq!(p, "docs/**"),
+                    other => panic!("expected Single, got {other:?}"),
+                },
+                other => panic!("expected Structured, got {other:?}"),
+            },
+            other => panic!("expected Rules, got {other:?}"),
+        }
+        match jobs[1].skip.as_ref().unwrap() {
+            SkipCondition::Rules(rules) => match &rules[0] {
+                SkipRule::Structured(s) => {
+                    match s.changed.as_ref().unwrap() {
+                        StringOrList::List(l) => assert_eq!(l, &["*.md", "docs/**"]),
+                        other => panic!("expected List, got {other:?}"),
+                    }
+                    assert_eq!(s.desc.as_deref(), Some("docs-only change"));
+                }
+                other => panic!("expected Structured, got {other:?}"),
+            },
+            other => panic!("expected Rules, got {other:?}"),
         }
     }
 

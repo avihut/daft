@@ -1,0 +1,68 @@
+name: Landing re-verification refuses a source that advanced mid-gate
+description:
+  "The gate re-verifies at the moment of landing: a pre-merge hook that itself
+  commits to the source worktree (standing in for any track movement while the
+  rings run) trips the source pin — the merge refuses because the tree the gate
+  certified is no longer the track's tip. This is the TOCTOU window hooks alone
+  structurally cannot close."
+
+repos:
+  - name: test-landing
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# landing"
+        commits:
+          - message: "Initial commit"
+      - name: feature
+        from: main
+        files:
+          - path: f.txt
+            content: "f"
+        commits:
+          - message: "Feature work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: sneak
+              # One-shot: move the source mid-gate on the first fire only, so
+              # the re-run (the remediation this scenario asserts) lands. The
+              # sentinel lives in the contained-layout root, outside any
+              # worktree, so it never dirties the clean-target check.
+              run: |
+                if [ ! -f "$DAFT_MERGE_TARGET_PATH/../.sneaked" ]; then
+                  git -C "$DAFT_MERGE_TARGET_PATH/../feature" commit --allow-empty -q -m mid-gate-move
+                  touch "$DAFT_MERGE_TARGET_PATH/../.sneaked"
+                fi
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_LANDING
+    expect:
+      exit_code: 0
+
+  - name: Materialize the feature worktree (the track being gated)
+    run: daft go feature
+    cwd: "$WORK_DIR/test-landing/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-landing/feature"
+
+  - name: The merge is refused at landing, after the hook ran
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-landing/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "advanced while the merge gate ran"
+        - "re-run the merge"
+
+  - name: Re-running (with the track now stable) lands cleanly
+    run: daft merge feature --no-edit 2>&1
+    cwd: "$WORK_DIR/test-landing/main"
+    expect:
+      exit_code: 0

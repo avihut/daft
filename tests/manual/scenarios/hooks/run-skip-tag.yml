@@ -1,0 +1,66 @@
+name: hooks run supports --skip-tag and the --only-tag alias
+description:
+  "daft hooks run gains the exclude side of tag selection: --skip-tag drops
+  tagged jobs (and their dependents) with attribution, and --only-tag is the
+  canonical alias of --tag for the include side."
+
+repos:
+  - name: test-run-tags
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# run tags"
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      hooks:
+        worktree-post-create:
+          jobs:
+            - name: fast
+              run: touch .fast-ran
+            - name: heavy
+              tags: [heavy]
+              run: touch .heavy-ran
+
+steps:
+  - name: Clone with trusted hooks
+    run: daft clone --layout contained --trust-hooks $REMOTE_TEST_RUN_TAGS
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-run-tags/main/.fast-ran"
+        - "$WORK_DIR/test-run-tags/main/.heavy-ran"
+
+  - name: Reset sentinels
+    run: rm -f .fast-ran .heavy-ran
+    cwd: "$WORK_DIR/test-run-tags/main"
+    expect:
+      exit_code: 0
+
+  - name: --skip-tag heavy runs only the untagged job
+    run: daft hooks run worktree-post-create --skip-tag heavy 2>&1
+    cwd: "$WORK_DIR/test-run-tags/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-run-tags/main/.fast-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-run-tags/main/.heavy-ran"
+
+  - name: Reset sentinels again
+    run: rm -f .fast-ran .heavy-ran
+    cwd: "$WORK_DIR/test-run-tags/main"
+    expect:
+      exit_code: 0
+
+  - name: --only-tag (alias of --tag) selects only the tagged job
+    run: daft hooks run worktree-post-create --only-tag heavy 2>&1
+    cwd: "$WORK_DIR/test-run-tags/main"
+    expect:
+      exit_code: 0
+      files_exist:
+        - "$WORK_DIR/test-run-tags/main/.heavy-ran"
+      files_not_exist:
+        - "$WORK_DIR/test-run-tags/main/.fast-ran"

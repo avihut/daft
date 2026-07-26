@@ -6,7 +6,7 @@
 //! `daft file merge` command, and cross-worktree visitor propagation can all
 //! share one definition of "what merging two configs means".
 
-use crate::hooks::yaml_config::{HookDef, JobDef, LogConfig, YamlConfig};
+use crate::hooks::yaml_config::{HookDef, JobDef, LogConfig, MergeConfig, YamlConfig};
 
 /// Merge two configs, with `overlay` taking precedence over `base`.
 pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
@@ -30,6 +30,7 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
         shared,
         log,
         relations,
+        merge,
         hooks,
         tasks,
     } = overlay;
@@ -74,6 +75,17 @@ pub fn merge_configs(base: YamlConfig, overlay: YamlConfig) -> YamlConfig {
     // Merge log config (field-level merge)
     merged.log = match (merged.log, log) {
         (Some(b), Some(o)) => Some(merge_log_configs(o, b)),
+        (b, o) => o.or(b),
+    };
+
+    // Merge gate policy: field-level, overlay wins per field. Every policy
+    // value adds strictness (the schema has no relax spellings), so an
+    // overlay can tighten the base policy but never loosen it.
+    merged.merge = match (merged.merge, merge) {
+        (Some(b), Some(o)) => Some(MergeConfig {
+            ff: o.ff.or(b.ff),
+            source_worktree: o.source_worktree.or(b.source_worktree),
+        }),
         (b, o) => o.or(b),
     };
 
@@ -272,6 +284,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         shared: b_shared,
         log: b_log,
         relations: b_relations,
+        merge: b_merge,
         hooks: b_hooks,
         tasks: b_tasks,
     } = base;
@@ -288,6 +301,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         shared: o_shared,
         log: o_log,
         relations: o_relations,
+        merge: o_merge,
         hooks: o_hooks,
         tasks: o_tasks,
     } = ours;
@@ -304,6 +318,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
         shared: t_shared,
         log: t_log,
         relations: t_relations,
+        merge: t_merge,
         hooks: t_hooks,
         tasks: t_tasks,
     } = theirs;
@@ -345,6 +360,7 @@ pub fn merge3(base: &YamlConfig, ours: &YamlConfig, theirs: &YamlConfig) -> Merg
             t_relations,
             &mut tally,
         ),
+        merge: pick3("merge", b_merge, o_merge, t_merge, &mut tally),
         hooks: merge3_hook_maps("hooks", b_hooks, o_hooks, t_hooks, &mut tally),
         tasks: merge3_hook_maps("tasks", b_tasks, o_tasks, t_tasks, &mut tally),
     };
@@ -870,6 +886,10 @@ mod tests {
                 name: Some("client".to_string()),
                 kind: Some("consumer".to_string()),
             }]),
+            merge: Some(crate::hooks::yaml_config::MergeConfig {
+                ff: Some(crate::hooks::yaml_config::FfPolicy::Only),
+                source_worktree: Some(crate::hooks::yaml_config::SourceWorktreePolicy::Clean),
+            }),
             hooks,
             tasks,
         };
@@ -878,6 +898,50 @@ mod tests {
         assert_eq!(
             merged, full,
             "merging a full overlay onto an empty base must preserve every field"
+        );
+    }
+
+    #[test]
+    fn merge_configs_merge_policy_is_field_level_and_tightening_only() {
+        use crate::hooks::yaml_config::{FfPolicy, MergeConfig, SourceWorktreePolicy};
+
+        // Base sets ff; overlay sets source_worktree — the merged policy
+        // carries both (field-level, not whole-block replacement).
+        let base = YamlConfig {
+            merge: Some(MergeConfig {
+                ff: Some(FfPolicy::Only),
+                source_worktree: None,
+            }),
+            ..Default::default()
+        };
+        let overlay = YamlConfig {
+            merge: Some(MergeConfig {
+                ff: None,
+                source_worktree: Some(SourceWorktreePolicy::Clean),
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(base, overlay);
+        let policy = merged.merge.unwrap();
+        assert_eq!(policy.ff, Some(FfPolicy::Only));
+        assert_eq!(policy.source_worktree, Some(SourceWorktreePolicy::Clean));
+
+        // An overlay without a merge: block leaves the base policy intact —
+        // there is no spelling that unsets a committed policy.
+        let base = YamlConfig {
+            merge: Some(MergeConfig {
+                ff: Some(FfPolicy::Only),
+                source_worktree: Some(SourceWorktreePolicy::Clean),
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(base, YamlConfig::default());
+        assert_eq!(
+            merged.merge.unwrap(),
+            MergeConfig {
+                ff: Some(FfPolicy::Only),
+                source_worktree: Some(SourceWorktreePolicy::Clean),
+            }
         );
     }
 
@@ -1328,6 +1392,10 @@ mod tests {
                 name: Some("client".to_string()),
                 kind: Some("consumer".to_string()),
             }]),
+            merge: Some(crate::hooks::yaml_config::MergeConfig {
+                ff: Some(crate::hooks::yaml_config::FfPolicy::Only),
+                source_worktree: Some(crate::hooks::yaml_config::SourceWorktreePolicy::Clean),
+            }),
             hooks,
             tasks,
         };

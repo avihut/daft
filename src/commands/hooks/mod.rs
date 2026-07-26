@@ -17,7 +17,11 @@
 mod dump;
 mod formatting;
 mod install;
-mod jobs;
+// `pub(crate)` so `commands::merge` can reuse the jobs listing's payload
+// builder: merge's `--format` job rows must match `hooks jobs --format`
+// column for column, and the only way to guarantee that is to share the
+// builder rather than mirror it.
+pub(crate) mod jobs;
 mod migrate;
 mod run_cmd;
 mod status;
@@ -408,8 +412,20 @@ pub(super) struct HooksRunArgs {
     pub job: Option<String>,
 
     /// Run only jobs with this tag (repeatable, matches any)
-    #[arg(long, help = "Run only jobs with this tag (repeatable)")]
+    #[arg(
+        long,
+        visible_alias = "only-tag",
+        help = "Run only jobs with this tag (repeatable)"
+    )]
     pub tag: Vec<String>,
+
+    /// Skip jobs carrying this tag, plus their dependents (repeatable)
+    #[arg(
+        long = "skip-tag",
+        value_name = "TAG",
+        help = "Skip jobs with this tag, plus their dependents (repeatable)"
+    )]
+    pub skip_tag: Vec<String>,
 
     /// Preview what would run without executing
     #[arg(long, help = "Preview what would run without executing")]

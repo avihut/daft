@@ -36,6 +36,7 @@ daft run [OPTIONS] [TASK]
 | `--list` | List the tasks defined in daft.yml and exit |  |
 | `--job <NAME>` | Run only the named job within the task |  |
 | `--tag <TAG>` | Run only jobs carrying this tag (repeatable) |  |
+| `--skip-tag <TAG>` | Skip jobs carrying this tag, plus their dependents (repeatable) |  |
 
 ## Global Options
 

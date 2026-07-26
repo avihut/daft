@@ -53,6 +53,26 @@ pub fn run_jobs_with_cancel(
     sink: Option<&Arc<dyn LogSink>>,
     cancel: Option<&CancelFlag>,
 ) -> Result<Vec<JobResult>> {
+    run_jobs_governed(jobs, mode, presenter, sink, cancel, None)
+}
+
+/// Like [`run_jobs_with_cancel`], but optionally governed (#775): parallel
+/// jobs pass memory-aware admission before starting, register as
+/// foreground-interactive units (pid-supervised for RSS profiling, never
+/// frozen or killed), and inherit the run's jobserver env. `governed: None`
+/// is behaviorally identical to [`run_jobs_with_cancel`].
+///
+/// Sequential and piped runs have nothing to admit — one job runs at a
+/// time by construction — so the governor only engages on the parallel
+/// paths.
+pub fn run_jobs_governed(
+    jobs: &[JobSpec],
+    mode: ExecutionMode,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
+    governed: Option<&crate::governor::GovernedRun>,
+) -> Result<Vec<JobResult>> {
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -60,10 +80,10 @@ pub fn run_jobs_with_cancel(
     let has_deps = jobs.iter().any(|j| !j.needs.is_empty());
 
     if has_deps {
-        run_with_dag(jobs, mode, presenter, sink, cancel)
+        run_with_dag(jobs, mode, presenter, sink, cancel, governed)
     } else {
         match mode {
-            ExecutionMode::Parallel => run_parallel_flat(jobs, presenter, sink, cancel),
+            ExecutionMode::Parallel => run_parallel_flat(jobs, presenter, sink, cancel, governed),
             ExecutionMode::Sequential => run_sequential(jobs, presenter, false, sink, cancel),
             ExecutionMode::Piped => run_sequential(jobs, presenter, true, sink, cancel),
         }
@@ -194,10 +214,11 @@ fn run_parallel_flat(
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
     cancel: Option<&CancelFlag>,
+    governed: Option<&crate::governor::GovernedRun>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs.iter().map(|j| (j.name.clone(), vec![])).collect();
     let graph = DagGraph::new(nodes)?;
-    run_dag_execution(jobs, &graph, presenter, sink, cancel)
+    run_dag_execution(jobs, &graph, presenter, sink, cancel, governed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -211,6 +232,7 @@ fn run_with_dag(
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
     cancel: Option<&CancelFlag>,
+    governed: Option<&crate::governor::GovernedRun>,
 ) -> Result<Vec<JobResult>> {
     let nodes: Vec<(String, Vec<String>)> = jobs
         .iter()
@@ -219,7 +241,9 @@ fn run_with_dag(
     let graph = DagGraph::new(nodes)?;
 
     match mode {
-        ExecutionMode::Parallel => run_dag_execution(jobs, &graph, presenter, sink, cancel),
+        ExecutionMode::Parallel => {
+            run_dag_execution(jobs, &graph, presenter, sink, cancel, governed)
+        }
         _ => run_dag_sequential_exec(
             jobs,
             &graph,
@@ -231,6 +255,62 @@ fn run_with_dag(
     }
 }
 
+/// Wait for the governor to admit `label`, polling until admitted or the
+/// run is cancelled. Returns the unit's registration guard (`None` = the
+/// wait was cancelled). Admission mirrors the sync DAG's re-check loop:
+/// pressure can clear without any job completing, so a deferred job polls
+/// on a short interval rather than waiting on a completion signal.
+fn wait_for_admission(
+    run: &crate::governor::GovernedRun,
+    label: &str,
+    cancel: Option<&CancelFlag>,
+) -> Option<AdmissionTicket> {
+    use crate::governor::ports::{AdmitDecision, UnitClass, WorkAdmission, WorkUnit};
+
+    const ADMISSION_RECHECK: Duration = Duration::from_millis(200);
+    let unit = WorkUnit {
+        label,
+        class: UnitClass::ForegroundInteractive,
+    };
+    loop {
+        match run.governor.try_admit(&unit) {
+            AdmitDecision::Admit => break,
+            AdmitDecision::Defer(_) => {
+                if is_cancelled(cancel) {
+                    return None;
+                }
+                std::thread::sleep(ADMISSION_RECHECK);
+            }
+        }
+    }
+    Some(AdmissionTicket {
+        governor: Arc::clone(&run.governor),
+        guard: Arc::new(
+            run.governor
+                .begin_unit(label, UnitClass::ForegroundInteractive),
+        ),
+        label: label.to_string(),
+    })
+}
+
+/// One admitted, registered job unit. Dropping releases the admission slot
+/// and deregisters the unit (folding its observed peak into the profile).
+struct AdmissionTicket {
+    governor: Arc<crate::governor::Governor>,
+    guard: Arc<crate::governor::UnitGuard>,
+    label: String,
+}
+
+impl Drop for AdmissionTicket {
+    fn drop(&mut self) {
+        use crate::governor::ports::{UnitClass, WorkAdmission, WorkUnit};
+        self.governor.release(&WorkUnit {
+            label: &self.label,
+            class: UnitClass::ForegroundInteractive,
+        });
+    }
+}
+
 /// Parallel DAG execution using the thread-pool scheduler.
 fn run_dag_execution(
     jobs: &[JobSpec],
@@ -238,6 +318,7 @@ fn run_dag_execution(
     presenter: &Arc<dyn JobPresenter>,
     sink: Option<&Arc<dyn LogSink>>,
     cancel: Option<&CancelFlag>,
+    governed: Option<&crate::governor::GovernedRun>,
 ) -> Result<Vec<JobResult>> {
     let job_map = build_job_map(jobs);
     let max_workers = std::thread::available_parallelism()
@@ -251,6 +332,7 @@ fn run_dag_execution(
         std::sync::Mutex::new(HashMap::new());
 
     let sink_for_closure = sink.cloned();
+    let jobserver_env = governed.and_then(|g| g.jobserver_env());
 
     let statuses = graph.run_parallel(
         |idx, name| {
@@ -270,13 +352,38 @@ fn run_dag_execution(
                 return NodeStatus::Cancelled;
             }
 
+            // Governed runs pass admission before starting; a cancellation
+            // raised while waiting short-circuits like the check above. The
+            // ticket lives until the job completes (slot + unit lifetime).
+            let ticket = match governed {
+                Some(run) => match wait_for_admission(run, name, cancel) {
+                    Some(ticket) => Some(ticket),
+                    None => {
+                        presenter.on_job_skipped(name, "cancelled", Duration::ZERO, false, None);
+                        if let Some(ref s) = sink_for_closure {
+                            s.on_job_runner_skipped(job, "cancelled");
+                        }
+                        return NodeStatus::Cancelled;
+                    }
+                },
+                None => None,
+            };
+
             presenter.on_job_start(name, job.description.as_deref(), Some(&job.command));
             if let Some(ref s) = sink_for_closure {
                 s.on_job_start(job);
             }
             let start = Instant::now();
 
-            let cr = execute_single_job(job, presenter, sink_for_closure.as_ref(), cancel);
+            let cr = execute_single_job_supervised(
+                job,
+                presenter,
+                sink_for_closure.as_ref(),
+                cancel,
+                ticket.as_ref().map(|t| &t.guard),
+                jobserver_env.as_ref(),
+            );
+            drop(ticket);
             let duration = start.elapsed();
 
             match cr {
@@ -442,6 +549,23 @@ fn execute_single_job(
     sink: Option<&Arc<dyn LogSink>>,
     cancel: Option<&CancelFlag>,
 ) -> Result<CommandResult> {
+    execute_single_job_supervised(job, presenter, sink, cancel, None, None)
+}
+
+/// [`execute_single_job`] plus the governed-run extras: the unit guard gets
+/// the spawned child's pid attached (for the governor's RSS sampler), and
+/// the run's jobserver env pair is merged into the job's environment.
+///
+/// Interactive jobs are exempt from supervision entirely — they run in the
+/// caller's foreground process group and expose no pid.
+fn execute_single_job_supervised(
+    job: &JobSpec,
+    presenter: &Arc<dyn JobPresenter>,
+    sink: Option<&Arc<dyn LogSink>>,
+    cancel: Option<&CancelFlag>,
+    guard: Option<&Arc<crate::governor::UnitGuard>>,
+    jobserver_env: Option<&(String, String)>,
+) -> Result<CommandResult> {
     if job.interactive {
         run_command_interactive(&job.command, &job.env, &job.working_dir, cancel)
     } else {
@@ -464,18 +588,57 @@ fn execute_single_job(
             }
         });
 
+        // Merge the jobserver pair only when present — the common ungoverned
+        // path must not pay a per-job env clone.
+        //
+        // The job's own declaration wins. A job that pins
+        // `env: {MAKEFLAGS: "-j1"}` did so to keep a memory-hungry native
+        // build serial; overriding it with the governor's `-jN` reproduces
+        // exactly the OOM the pin was added to prevent. The jobserver is a
+        // default for jobs that expressed no opinion.
+        let merged_env;
+        let env = match jobserver_env {
+            Some((key, value)) => {
+                let mut e = job.env.clone();
+                e.entry(key.clone()).or_insert_with(|| value.clone());
+                merged_env = e;
+                &merged_env
+            }
+            None => &job.env,
+        };
+
+        // The pid fires through `run_command`'s post-spawn sender; a tiny
+        // relay thread attaches it to the unit guard so the governor's
+        // sampler can walk the job's process tree.
+        let (pid_sender, pid_relay) = match guard {
+            Some(guard) => {
+                let (tx, rx) = mpsc::channel::<u32>();
+                let guard = Arc::clone(guard);
+                let relay = std::thread::spawn(move || {
+                    if let Ok(pid) = rx.recv() {
+                        guard.attach_pid(pid);
+                    }
+                });
+                (Some(tx), Some(relay))
+            }
+            None => (None, None),
+        };
+
         let result = run_command(
             &job.command,
-            &job.env,
+            env,
             &job.working_dir,
             job.timeout,
             Some(tx),
-            None,
+            pid_sender,
             cancel,
         );
 
         // Wait for the reader to drain all output before returning.
         reader_handle.join().ok();
+        if let Some(relay) = pid_relay {
+            relay.join().ok();
+        }
 
         result
     }
@@ -1375,6 +1538,170 @@ mod tests {
         let results = run_jobs(&jobs, ExecutionMode::Sequential, &presenter, None).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.status == NodeStatus::Succeeded));
+    }
+
+    // ── Governed runs (#775) ───────────────────────────────────────────
+
+    /// A probe returning a fixed green sample — keeps the wiring test off
+    /// sysinfo and deterministic.
+    struct GreenProbe;
+
+    impl crate::governor::ports::ResourceProbe for GreenProbe {
+        fn sample(&self) -> crate::governor::domain::ResourceSample {
+            crate::governor::domain::ResourceSample {
+                mem_total: 32 << 30,
+                mem_available: 24 << 30,
+                swap_used: 0,
+                psi_some_avg10: None,
+            }
+        }
+        fn tree_rss(&self, roots: &[u32]) -> Vec<Option<u64>> {
+            vec![None; roots.len()]
+        }
+    }
+
+    #[test]
+    fn governed_parallel_run_admits_and_completes_all_jobs() {
+        use crate::git::cancel::CancelFlag;
+        use crate::governor::domain::GovernorParams;
+
+        let governor = crate::governor::Governor::spawn(
+            Box::new(GreenProbe),
+            None,
+            None,
+            Arc::new(CancelFlag::new()),
+            |first| GovernorParams::new(4, first.mem_total / 10),
+        );
+        let run = crate::governor::GovernedRun {
+            governor,
+            #[cfg(unix)]
+            jobserver: None,
+        };
+
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let jobs = vec![
+            make_job("a", "echo a"),
+            make_job("b", "echo b"),
+            make_job("c", "echo c"),
+        ];
+        let results = run_jobs_governed(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            None,
+            Some(&run),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|r| r.status == NodeStatus::Succeeded),
+            "all governed jobs must be admitted and complete: {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+        run.governor.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn governed_run_injects_jobserver_env() {
+        use crate::git::cancel::CancelFlag;
+        use crate::governor::domain::GovernorParams;
+
+        let governor = crate::governor::Governor::spawn(
+            Box::new(GreenProbe),
+            None,
+            None,
+            Arc::new(CancelFlag::new()),
+            |first| GovernorParams::new(4, first.mem_total / 10),
+        );
+        let run = crate::governor::GovernedRun {
+            governor,
+            jobserver: crate::governor::jobserver::Jobserver::create(4),
+        };
+        assert!(run.jobserver.is_some(), "jobserver must construct in tests");
+
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let jobs = vec![
+            make_job("env-a", "echo MF=$MAKEFLAGS"),
+            make_job("env-b", "echo MF=$MAKEFLAGS"),
+        ];
+        let results = run_jobs_governed(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            None,
+            Some(&run),
+        )
+        .unwrap();
+
+        for r in &results {
+            assert_eq!(r.status, NodeStatus::Succeeded);
+            assert!(
+                r.stdout.contains("--jobserver-auth=fifo:"),
+                "job '{}' must see the jobserver MAKEFLAGS: {}",
+                r.name,
+                r.stdout
+            );
+        }
+        run.governor.shutdown();
+    }
+
+    /// A job that declares its own `MAKEFLAGS` keeps it.
+    ///
+    /// `env: {MAKEFLAGS: "-j1"}` is how a job says "this native build must
+    /// stay serial or it OOMs". The jobserver is a default for jobs with no
+    /// opinion, not an override of one.
+    #[cfg(unix)]
+    #[test]
+    fn jobserver_does_not_override_a_job_declared_makeflags() {
+        use crate::git::cancel::CancelFlag;
+        use crate::governor::domain::GovernorParams;
+
+        let governor = crate::governor::Governor::spawn(
+            Box::new(GreenProbe),
+            None,
+            None,
+            Arc::new(CancelFlag::new()),
+            |first| GovernorParams::new(4, first.mem_total / 10),
+        );
+        let run = crate::governor::GovernedRun {
+            governor,
+            jobserver: crate::governor::jobserver::Jobserver::create(4),
+        };
+        assert!(run.jobserver.is_some(), "jobserver must construct in tests");
+
+        let presenter: Arc<dyn JobPresenter> = NullPresenter::arc();
+        let mut pinned = make_job("pinned", "echo MF=$MAKEFLAGS");
+        pinned.env.insert("MAKEFLAGS".into(), "-j1".into());
+        let jobs = vec![pinned, make_job("free", "echo MF=$MAKEFLAGS")];
+
+        let results = run_jobs_governed(
+            &jobs,
+            ExecutionMode::Parallel,
+            &presenter,
+            None,
+            None,
+            Some(&run),
+        )
+        .unwrap();
+
+        let pinned = results.iter().find(|r| r.name == "pinned").unwrap();
+        assert!(
+            pinned.stdout.contains("MF=-j1") && !pinned.stdout.contains("jobserver-auth"),
+            "a job's own MAKEFLAGS must win over the jobserver: {}",
+            pinned.stdout
+        );
+
+        let free = results.iter().find(|r| r.name == "free").unwrap();
+        assert!(
+            free.stdout.contains("--jobserver-auth=fifo:"),
+            "a job with no opinion still gets the jobserver: {}",
+            free.stdout
+        );
+        run.governor.shutdown();
     }
 
     // ── LogSink ────────────────────────────────────────────────────────

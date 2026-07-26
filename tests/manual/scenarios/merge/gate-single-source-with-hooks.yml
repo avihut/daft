@@ -1,0 +1,58 @@
+name: Pre-merge hooks activate the single-source rule
+description:
+  "When pre-merge hooks are configured, an octopus merge is refused before
+  anything runs: a gate certifies one track at a time. The rule is
+  presence-based (it reads the committed config), so it holds even before the
+  repo's hooks are trusted."
+
+repos:
+  - name: test-single-source
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# single source"
+        commits:
+          - message: "Initial commit"
+      - name: track-a
+        from: main
+        files:
+          - path: a.txt
+            content: "a"
+        commits:
+          - message: "Track A work"
+      - name: track-b
+        from: main
+        files:
+          - path: b.txt
+            content: "b"
+        commits:
+          - message: "Track B work"
+    daft_yml: |
+      hooks:
+        pre-merge:
+          jobs:
+            - name: ring
+              run: "true"
+
+steps:
+  - name: Clone (hooks deliberately untrusted)
+    run: daft clone --layout contained $REMOTE_TEST_SINGLE_SOURCE
+    expect:
+      exit_code: 0
+
+  - name: Octopus merge is refused while hooks gate the repo
+    run: daft merge track-a track-b --no-edit 2>&1
+    cwd: "$WORK_DIR/test-single-source/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "octopus merge refused"
+        - "one source at a time"
+
+  - name: Single-source merges still pass
+    run: daft merge track-a --no-edit 2>&1
+    cwd: "$WORK_DIR/test-single-source/main"
+    expect:
+      exit_code: 0

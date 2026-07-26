@@ -5,6 +5,8 @@
 //! clocks, no syscalls, no I/O. The shell ([`crate::governor::SyncGovernor`])
 //! probes the system, stamps monotonic time, and applies the decisions.
 
+use crate::governor::ports::UnitClass;
+
 /// A point-in-time reading of system memory, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResourceSample {
@@ -171,9 +173,12 @@ impl HookProfile {
 /// One admitted unit as the containment policy sees it (#678 stage 3).
 #[derive(Debug, Clone)]
 pub struct UnitView {
-    /// Opaque unit identity (the push's branch name).
-    pub branch: String,
-    /// The unit's `git push` root pid is known — freeze/kill can reach it.
+    /// Opaque unit identity (a push's branch name, a hook job's label).
+    pub label: String,
+    /// What kind of work this is — [`UnitClass::ForegroundInteractive`]
+    /// units are never freeze or kill candidates.
+    pub class: crate::governor::ports::UnitClass,
+    /// The unit's root pid is known — freeze/kill can reach it.
     pub has_pid: bool,
     /// Admission timestamp (same origin as `now_ms`); larger = newer.
     pub started_ms: u64,
@@ -184,12 +189,12 @@ pub struct UnitView {
 /// A containment action for the shell to apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainAction {
-    /// SIGSTOP the unit's descendants (never its git-push leader).
-    Freeze { branch: String },
+    /// SIGSTOP the unit's descendants (never its group leader).
+    Freeze { label: String },
     /// SIGCONT what a freeze stopped.
-    Thaw { branch: String },
+    Thaw { label: String },
     /// SIGKILL the unit's tree; the executor requeues its task.
-    Kill { branch: String },
+    Kill { label: String },
 }
 
 /// Deterministic admission state machine: slow-start + AIMD over a
@@ -293,18 +298,24 @@ impl Controller {
 
     /// Containment decision for this tick (#678 stage 3) — at most one
     /// action, applied by the shell. Policy: after sustained red, freeze
-    /// the newest unfrozen unit that has a pid, but never the last
-    /// unfrozen runner; a unit still frozen once red has outlasted
-    /// [`FREEZE_GRACE_MS`] is killed (the executor requeues it); green
-    /// thaws the most recently frozen unit, one per tick.
+    /// the newest unfrozen [`UnitClass::Background`] unit that has a pid,
+    /// but never the last unfrozen runner; a unit still frozen once red has
+    /// outlasted [`FREEZE_GRACE_MS`] is killed (the executor requeues it);
+    /// green thaws the most recently frozen unit, one per tick.
+    ///
+    /// [`UnitClass::ForegroundInteractive`] units are exempt from the whole
+    /// ladder — the user is waiting on them, so stopping one is a hung
+    /// terminal, and the flat job runner has no requeue for a kill. They
+    /// still count toward the min-one-runner check (they ARE runners).
     pub fn contain(&self, units: &[UnitView]) -> Option<ContainAction> {
+        use crate::governor::ports::UnitClass;
         match self.pressure {
             Pressure::Green => units
                 .iter()
                 .filter(|u| u.frozen_for_ms.is_some())
                 .min_by_key(|u| u.frozen_for_ms)
                 .map(|u| ContainAction::Thaw {
-                    branch: u.branch.clone(),
+                    label: u.label.clone(),
                 }),
             Pressure::Yellow => None,
             Pressure::Red => {
@@ -312,14 +323,15 @@ impl Controller {
                 // grace becomes a kill — even for the last unit: killed
                 // work is requeued and re-admitted, while a unit left
                 // frozen under red would hold its slot (and possibly
-                // locks and an open ssh session) forever.
+                // locks and an open ssh session) forever. Only Background
+                // units can be frozen, so only Background units can expire.
                 if let Some(expired) = units
                     .iter()
-                    .filter(|u| u.has_pid)
+                    .filter(|u| u.has_pid && u.class == UnitClass::Background)
                     .find(|u| u.frozen_for_ms.is_some_and(|ms| ms >= FREEZE_GRACE_MS))
                 {
                     return Some(ContainAction::Kill {
-                        branch: expired.branch.clone(),
+                        label: expired.label.clone(),
                     });
                 }
                 if self.red_streak < FREEZE_RED_TICKS {
@@ -334,10 +346,10 @@ impl Controller {
                 }
                 unfrozen
                     .into_iter()
-                    .filter(|u| u.has_pid)
+                    .filter(|u| u.has_pid && u.class == UnitClass::Background)
                     .max_by_key(|u| u.started_ms)
                     .map(|u| ContainAction::Freeze {
-                        branch: u.branch.clone(),
+                        label: u.label.clone(),
                     })
             }
         }
@@ -375,6 +387,7 @@ impl Controller {
         running: usize,
         sample: &ResourceSample,
         predicted_peak: Option<u64>,
+        class: UnitClass,
     ) -> Result<(), HoldReason> {
         // Liveness: something must always run. This outranks even the
         // post-kill cooldown — a single huge push cycles through the
@@ -391,7 +404,25 @@ impl Controller {
         if running >= self.params.cap {
             return Err(HoldReason::AtCap);
         }
-        if running >= self.target {
+
+        // The AIMD ramp is a *learning* device: start narrow, widen while the
+        // machine stays green. That is right for a background fan-out
+        // measured in minutes and wrong for a foreground phase a person is
+        // sitting in front of — there it is pure latency, paid on every
+        // invocation and never amortized. An eight-job parallel hook would
+        // ramp up from two, spending seconds in admission before any work
+        // starts, to protect a machine the memory checks below already
+        // protect.
+        //
+        // Foreground units are therefore bounded by cap and live memory
+        // only — still strictly more protection than the
+        // `available_parallelism()` bound those phases had before the
+        // governor existed. Background units keep the full ramp, and sync's
+        // units are Background, so its behavior is unchanged by
+        // construction.
+        let ramped = matches!(class, UnitClass::Background);
+
+        if ramped && running >= self.target {
             return Err(HoldReason::AtTarget);
         }
         if self.pressure != Pressure::Green {
@@ -401,7 +432,8 @@ impl Controller {
         if sample.mem_available.saturating_sub(self.params.reserve) <= peak {
             return Err(HoldReason::Memory);
         }
-        if let Some(last) = self.last_admit_ms
+        if ramped
+            && let Some(last) = self.last_admit_ms
             && now_ms.saturating_sub(last) < self.params.stagger_ms
         {
             return Err(HoldReason::Stagger);
@@ -434,7 +466,7 @@ mod tests {
 
     /// Ticks until green, spaced admissions — the plain happy path.
     fn admit_ok(c: &mut Controller, now_ms: u64, running: usize) -> Result<(), HoldReason> {
-        c.try_admit(now_ms, running, &sample(20), None)
+        c.try_admit(now_ms, running, &sample(20), None, UnitClass::Background)
     }
 
     #[test]
@@ -443,7 +475,10 @@ mod tests {
         // Even under red pressure with no headroom at all.
         c.tick(&sample(1), 4);
         assert_eq!(c.pressure(), Pressure::Red);
-        assert!(c.try_admit(0, 0, &sample(1), Some(64 * GIB)).is_ok());
+        assert!(
+            c.try_admit(0, 0, &sample(1), Some(64 * GIB), UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -483,11 +518,14 @@ mod tests {
         // 4 GiB available − 2 GiB reserve = 2 GiB headroom; a 6 GiB hook
         // must hold even though pressure reads green.
         assert_eq!(
-            c.try_admit(1_000, 1, &tight, Some(6 * GIB)),
+            c.try_admit(1_000, 1, &tight, Some(6 * GIB), UnitClass::Background),
             Err(HoldReason::Memory)
         );
         // A 1 GiB hook fits.
-        assert!(c.try_admit(1_000, 1, &tight, Some(GIB)).is_ok());
+        assert!(
+            c.try_admit(1_000, 1, &tight, Some(GIB), UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -499,7 +537,10 @@ mod tests {
             mem_available: 2 * GIB + 400 * (1 << 20),
             ..sample(20)
         };
-        assert_eq!(c.try_admit(0, 1, &tight, None), Err(HoldReason::Memory));
+        assert_eq!(
+            c.try_admit(0, 1, &tight, None, UnitClass::Background),
+            Err(HoldReason::Memory)
+        );
     }
 
     #[test]
@@ -620,9 +661,10 @@ mod tests {
         assert_eq!(c.target(), 3);
     }
 
-    fn unit(branch: &str, started_ms: u64, frozen_for_ms: Option<u64>) -> UnitView {
+    fn unit(label: &str, started_ms: u64, frozen_for_ms: Option<u64>) -> UnitView {
         UnitView {
-            branch: branch.into(),
+            label: label.into(),
+            class: crate::governor::ports::UnitClass::Background,
             has_pid: true,
             started_ms,
             frozen_for_ms,
@@ -633,6 +675,121 @@ mod tests {
     fn make_red(c: &mut Controller, running: usize) {
         c.tick(&sample(1), running);
         c.tick(&sample(1), running);
+    }
+
+    fn fg_unit(label: &str, started_ms: u64) -> UnitView {
+        UnitView {
+            class: crate::governor::ports::UnitClass::ForegroundInteractive,
+            ..unit(label, started_ms, None)
+        }
+    }
+
+    #[test]
+    fn sustained_red_prefers_background_over_newer_foreground() {
+        let mut c = controller();
+        make_red(&mut c, 3);
+        // The foreground unit is the NEWEST — the usual freeze pick — but
+        // class outranks recency: the background unit freezes instead.
+        let units = [
+            unit("bg-old", 100, None),
+            unit("bg-new", 200, None),
+            fg_unit("fg-ring", 300),
+        ];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Freeze {
+                label: "bg-new".into()
+            })
+        );
+    }
+
+    #[test]
+    fn foreground_units_are_never_frozen_or_killed() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        // Only foreground units running: red produces NO action — a stopped
+        // foreground unit is a hung terminal, and there is no requeue.
+        let units = [fg_unit("ring-a", 100), fg_unit("ring-b", 200)];
+        assert_eq!(c.contain(&units), None);
+
+        // Even a frozen-looking foreground unit past the grace (cannot
+        // happen — FG is never frozen — but the kill arm must not pick it).
+        let impossible = [
+            UnitView {
+                frozen_for_ms: Some(FREEZE_GRACE_MS + 500),
+                ..fg_unit("fg-weird", 100)
+            },
+            unit("runner", 200, None),
+        ];
+        assert_eq!(c.contain(&impossible), None);
+    }
+
+    /// Foreground admission is bounded by cap and memory, never by the AIMD
+    /// ramp.
+    ///
+    /// The ramp starts at 2 and widens over green sampler ticks. For a
+    /// background fan-out that is a feature; for a hook phase someone is
+    /// waiting on it is latency charged on every single invocation — the
+    /// third job of a parallel hook would sit in `AtTarget` for seconds
+    /// before starting, protecting a machine the memory checks already
+    /// protect.
+    #[test]
+    fn foreground_units_skip_the_ramp_but_not_cap_or_memory() {
+        let mut c = controller();
+
+        // Background: the ramp holds the third unit at the initial target.
+        assert!(
+            c.try_admit(0, 2, &sample(20), None, UnitClass::Background)
+                .is_err(),
+            "background admission must respect the AIMD target"
+        );
+
+        // Foreground: same state, admitted — and no stagger hold on the
+        // immediately-following unit either.
+        assert!(
+            c.try_admit(0, 2, &sample(20), None, UnitClass::ForegroundInteractive)
+                .is_ok(),
+            "foreground admission must not wait on the ramp"
+        );
+        assert!(
+            c.try_admit(0, 3, &sample(20), None, UnitClass::ForegroundInteractive)
+                .is_ok(),
+            "foreground admission must not wait on the stagger window"
+        );
+
+        // The bounds that still apply: cap...
+        assert_eq!(
+            c.try_admit(0, 8, &sample(20), None, UnitClass::ForegroundInteractive),
+            Err(HoldReason::AtCap),
+            "foreground admission is still capped"
+        );
+
+        // ...and live memory headroom.
+        let tight = sample(3);
+        assert_eq!(
+            c.try_admit(
+                0,
+                1,
+                &tight,
+                Some(6 * GIB),
+                UnitClass::ForegroundInteractive
+            ),
+            Err(HoldReason::Memory),
+            "foreground admission still refuses when memory is short"
+        );
+    }
+
+    #[test]
+    fn foreground_counts_toward_min_one_runner() {
+        let mut c = controller();
+        make_red(&mut c, 2);
+        // One FG + one BG unfrozen: two runners, so the BG unit may freeze
+        // (the FG one keeps making progress).
+        let units = [fg_unit("fg", 100), unit("bg", 200, None)];
+        assert_eq!(
+            c.contain(&units),
+            Some(ContainAction::Freeze { label: "bg".into() })
+        );
     }
 
     #[test]
@@ -651,7 +808,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Freeze {
-                branch: "new".into()
+                label: "new".into()
             })
         );
         // A pid-less newest is skipped in favor of the next newest.
@@ -660,7 +817,7 @@ mod tests {
         assert_eq!(
             c.contain(&no_pid_new),
             Some(ContainAction::Freeze {
-                branch: "mid".into()
+                label: "mid".into()
             })
         );
     }
@@ -687,7 +844,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Kill {
-                branch: "frozen".into()
+                label: "frozen".into()
             })
         );
         // Under grace: still held frozen, not killed (and "runner" alone
@@ -707,7 +864,7 @@ mod tests {
         assert_eq!(
             c.contain(&units),
             Some(ContainAction::Thaw {
-                branch: "second-frozen".into()
+                label: "second-frozen".into()
             })
         );
         // Yellow holds: no thaw, no freeze.
@@ -727,17 +884,26 @@ mod tests {
         c.tick(&sample(20), 1);
         c.note_kill(1_000);
         assert_eq!(
-            c.try_admit(2_000, 1, &sample(20), None),
+            c.try_admit(2_000, 1, &sample(20), None, UnitClass::Background),
             Err(HoldReason::KillCooldown)
         );
         // Cooldown over.
         assert!(
-            c.try_admit(1_000 + KILL_COOLDOWN_MS, 1, &sample(20), None)
-                .is_ok()
+            c.try_admit(
+                1_000 + KILL_COOLDOWN_MS,
+                1,
+                &sample(20),
+                None,
+                UnitClass::Background
+            )
+            .is_ok()
         );
         // Zero running always admits, even inside a cooldown.
         c.note_kill(10_000);
-        assert!(c.try_admit(10_500, 0, &sample(20), None).is_ok());
+        assert!(
+            c.try_admit(10_500, 0, &sample(20), None, UnitClass::Background)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -792,12 +958,19 @@ mod tests {
         c.tick(&sample(20), 0);
         for running in 0..8 {
             assert!(
-                c.try_admit(0, running, &sample(20), Some(40 << 20)).is_ok(),
+                c.try_admit(
+                    0,
+                    running,
+                    &sample(20),
+                    Some(40 << 20),
+                    UnitClass::Background
+                )
+                .is_ok(),
                 "launch {running} must admit with no stagger"
             );
         }
         assert_eq!(
-            c.try_admit(0, 8, &sample(20), Some(40 << 20)),
+            c.try_admit(0, 8, &sample(20), Some(40 << 20), UnitClass::Background),
             Err(HoldReason::AtCap)
         );
     }

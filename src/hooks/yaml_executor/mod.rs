@@ -176,9 +176,17 @@ pub fn execute_yaml_hook_with_rc(
     let filter = cfg.filter;
     let presenter = cfg.presenter;
     let repo_log = cfg.repo_log;
+
+    // The operation's changed-file source (None for hook types without one).
+    // Constructed up front — it resolves lazily, so fires with no file-aware
+    // jobs or `changed:` rules never pay for a diff.
+    let changed_files_provider =
+        crate::hooks::changed_files::ChangedFilesProvider::for_hook(ctx, working_dir);
+    let changed_files = changed_files_provider.as_ref();
+
     // Check hook-level skip/only conditions
     if let Some(ref skip) = hook_def.skip
-        && let Some(info) = super::conditions::should_skip(skip, working_dir)
+        && let Some(info) = super::conditions::should_skip(skip, working_dir, changed_files)?
     {
         output.debug(&format!("Skipping {hook_name}: {}", info.reason));
         return Ok(if info.ran_command {
@@ -188,7 +196,7 @@ pub fn execute_yaml_hook_with_rc(
         });
     }
     if let Some(ref only) = hook_def.only
-        && let Some(info) = super::conditions::should_only_skip(only, working_dir)
+        && let Some(info) = super::conditions::should_only_skip(only, working_dir, changed_files)?
     {
         output.debug(&format!("Skipping {hook_name}: {}", info.reason));
         return Ok(if info.ran_command {
@@ -298,6 +306,7 @@ pub fn execute_yaml_hook_with_rc(
                     hook_def.background,
                 ),
                 reason: crate::hooks::job_adapter::SkipCause::Requested.reason(),
+                kind: crate::hooks::job_adapter::SkipKind::Tag,
             });
         }
         jobs.clear();
@@ -346,6 +355,14 @@ pub fn execute_yaml_hook_with_rc(
                                     job.background,
                                     hook_def.background,
                                 ),
+                                kind: match cause {
+                                    crate::hooks::job_adapter::SkipCause::Requested => {
+                                        crate::hooks::job_adapter::SkipKind::Tag
+                                    }
+                                    crate::hooks::job_adapter::SkipCause::DependsOn(_) => {
+                                        crate::hooks::job_adapter::SkipKind::NotRun
+                                    }
+                                },
                                 reason: cause.reason(),
                             });
                             false
@@ -407,6 +424,8 @@ pub fn execute_yaml_hook_with_rc(
         hook_background: hook_def.background,
         repo_log,
         default_timeout: cfg.default_job_timeout,
+        changed_files,
+        hook_exclude: hook_def.exclude.as_deref().unwrap_or(&[]),
     };
     let (specs, mut skipped_jobs) = crate::hooks::job_adapter::yaml_jobs_to_specs(
         &jobs,
@@ -415,7 +434,7 @@ pub fn execute_yaml_hook_with_rc(
         source_dir,
         working_dir,
         &adapter,
-    );
+    )?;
 
     // Fold `--skip-hooks` exclusions into the skipped-job set so the
     // persistence loop below records them (visible via `daft hooks jobs`)
@@ -536,7 +555,7 @@ pub fn execute_yaml_hook_with_rc(
             }
             presenter.on_phase_complete(std::time::Duration::ZERO);
         }
-        return Ok(HookResult::skipped("All jobs skipped"));
+        return Ok(HookResult::skipped("All jobs skipped").with_invocation(&invocation_id));
     }
 
     // Partition into foreground and background phases.
@@ -594,18 +613,33 @@ pub fn execute_yaml_hook_with_rc(
 
     // Execute foreground jobs via the generic runner (cancel-aware for tasks;
     // `cfg.cancel` is None for every hook caller, so behavior is unchanged).
-    let fg_results = crate::executor::runner::run_jobs_with_cancel(
+    // Governed foreground fan-out (#775): a parallel phase runs under the
+    // resource governor when `daft.governor.mode` allows — memory-aware
+    // admission caps the fan-out, the jobserver bounds intra-job build
+    // parallelism, and per-job peaks feed the learned profile. Sequential
+    // and piped phases have nothing to admit and stay ungoverned.
+    let governed = if matches!(exec_mode, crate::executor::ExecutionMode::Parallel) {
+        crate::governor::for_job_run(&repo_hash, hook_name, &fg_specs, ctx.state_dir.as_deref())
+    } else {
+        None
+    };
+    let fg_results = crate::executor::runner::run_jobs_governed(
         &fg_specs,
         exec_mode,
         presenter,
         Some(&fg_sink),
         cfg.cancel,
+        governed.as_ref(),
     )?;
+    // Stop the sampler and persist learned profiles before moving on.
+    if let Some(run) = &governed {
+        run.governor.shutdown();
+    }
 
     // If there are no background jobs, print summary and return.
     if bg_specs.is_empty() {
         presenter.on_phase_complete(hook_start.elapsed());
-        return job_results_to_hook_result(&fg_results);
+        return job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // If a cancellation was raised during the foreground phase, never dispatch
@@ -623,7 +657,7 @@ pub fn execute_yaml_hook_with_rc(
             fg_sink.on_job_runner_skipped(spec, "cancelled");
         }
         presenter.on_phase_complete(hook_start.elapsed());
-        return job_results_to_hook_result(&fg_results);
+        return job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Detect BG jobs whose ORIGINAL (pre-partition) `needs:` referenced a
@@ -662,7 +696,7 @@ pub fn execute_yaml_hook_with_rc(
         presenter.on_phase_complete(hook_start.elapsed());
         let mut all_results = fg_results;
         all_results.extend(bg_results);
-        return job_results_to_hook_result(&all_results);
+        return job_results_to_hook_result(&all_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Register background jobs in the presenter (live progress + summary)
@@ -718,13 +752,13 @@ pub fn execute_yaml_hook_with_rc(
         )?;
         let mut all_results = fg_results.clone();
         all_results.extend(bg_results);
-        return job_results_to_hook_result(&all_results);
+        return job_results_to_hook_result(&all_results).map(|r| r.with_invocation(&invocation_id));
     }
 
     // Convert foreground results to HookResult (background jobs are now
     // running in the forked coordinator and do not affect the hook outcome).
     #[cfg(unix)]
-    job_results_to_hook_result(&fg_results)
+    job_results_to_hook_result(&fg_results).map(|r| r.with_invocation(&invocation_id))
 }
 
 /// Run background jobs inline (no coordinator), synthesizing `Skipped`
@@ -1201,6 +1235,60 @@ mod tests {
         assert!(
             !leaked.exists(),
             "must not leak a UUID dir into the real state dir: {}",
+            leaked.display()
+        );
+    }
+
+    /// Same contract, for the governor's profile store.
+    ///
+    /// A parallel phase (two or more foreground jobs — the hook default)
+    /// engages `for_job_run`, which opens the per-repo coordinator DB to
+    /// read and write learned profiles. That open must honor `ctx.state_dir`
+    /// exactly like the LogStore beside it; when it didn't, every unit test
+    /// firing a parallel hook created a `jobs/<repo_hash>/coordinator.db`
+    /// under the developer's real state dir and tripped `xtask
+    /// real-state-guard`.
+    #[test]
+    fn test_governed_parallel_phase_honors_state_dir_override() {
+        let hook_def = HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("one".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("two".to_string()),
+                    run: Some(RunCommand::Simple("true".to_string())),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+
+        execute_yaml_hook(
+            "test-hook",
+            &hook_def,
+            &ctx,
+            &mut output,
+            ".daft",
+            Path::new("/tmp"),
+            &HookOutputConfig::default(),
+        )
+        .unwrap();
+
+        let repo_hash = crate::core::repo_identity::compute_repo_id_from_common_dir(dir.path())
+            .expect("daft-id should have been written into ctx.git_dir");
+        let leaked = crate::daft_state_dir()
+            .expect("daft_state_dir resolves")
+            .join("jobs")
+            .join(&repo_hash)
+            .join("coordinator.db");
+        assert!(
+            !leaked.exists(),
+            "the governor's profile store must not open a DB in the real state dir: {}",
             leaked.display()
         );
     }
@@ -2131,6 +2219,70 @@ mod tests {
                 .iter()
                 .any(|e| e == "start:build" || e == "start:test")
         );
+    }
+
+    #[test]
+    fn skip_tag_beats_only_tag_on_overlap() {
+        // A job matching BOTH the include side (--only-tag) and the exclude
+        // side (--skip-tag) is excluded: the skip cascade runs first, so the
+        // exclude wins and the job renders as an attributed skip.
+        let hook_def = HookDef {
+            jobs: Some(vec![
+                JobDef {
+                    name: Some("fast-ring".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    tags: Some(vec!["gate".into()]),
+                    ..Default::default()
+                },
+                JobDef {
+                    name: Some("deep-ring".into()),
+                    run: Some(RunCommand::Simple("true".into())),
+                    tags: Some(vec!["gate".into(), "deep".into()]),
+                    ..Default::default()
+                },
+            ]),
+            parallel: Some(false),
+            ..Default::default()
+        };
+        let (ctx, dir) = make_ctx_with_dir();
+        let mut output = TestOutput::default();
+        let recorder = Arc::new(RecordingPresenter::default());
+        let presenter: Arc<dyn crate::executor::presenter::JobPresenter> = recorder.clone();
+        let filter = JobFilter {
+            only_tags: vec!["gate".into()],
+            skip: crate::hooks::job_adapter::SkipSelectors {
+                tags: vec!["deep".into()],
+                raw: vec!["tag:deep".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cfg = HookExecutionContext {
+            source_dir: ".daft",
+            working_dir: dir.path(),
+            rc: None,
+            filter: &filter,
+            presenter: &presenter,
+            repo_log: None,
+            default_job_timeout: Some(crate::executor::JobSpec::DEFAULT_TIMEOUT),
+            cancel: None,
+            trigger_label: None,
+        };
+        let result =
+            execute_yaml_hook_with_rc("post-create", &hook_def, &ctx, &mut output, &cfg).unwrap();
+        assert!(!result.skipped, "the fast ring still runs");
+        let events = recorder.events();
+        assert!(
+            events.iter().any(|e| e == "success:fast-ring"),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.starts_with("skipped:deep-ring:") && e.contains("requested")),
+            "the overlapping job must be an attributed requested-skip: {events:?}"
+        );
+        assert!(!events.iter().any(|e| e == "start:deep-ring"), "{events:?}");
     }
 
     #[test]

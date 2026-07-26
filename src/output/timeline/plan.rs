@@ -141,6 +141,18 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "post-clone hooks",
             skipped: "post-clone hooks",
         },
+        StageId::PreMergeHooks => StepLabels {
+            pending: "pre-merge hooks",
+            active: "pre-merge hooks",
+            done: "pre-merge hooks",
+            skipped: "pre-merge hooks",
+        },
+        StageId::PostMergeHooks => StepLabels {
+            pending: "post-merge hooks",
+            active: "post-merge hooks",
+            done: "post-merge hooks",
+            skipped: "post-merge hooks",
+        },
         StageId::Install => StepLabels {
             pending: "Install daft",
             active: "Installing daft",
@@ -231,7 +243,9 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::PostCreateHooks
         | StageId::PreRemoveHooks
         | StageId::PostRemoveHooks
-        | StageId::PostCloneHooks => (SubjectInk::Plain, SubjectInk::Plain),
+        | StageId::PostCloneHooks
+        | StageId::PreMergeHooks
+        | StageId::PostMergeHooks => (SubjectInk::Plain, SubjectInk::Plain),
     };
     SubjectInks { label, annotation }
 }

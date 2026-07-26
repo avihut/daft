@@ -408,6 +408,28 @@ Pitfalls to communicate to the user:
 `pre-merge` and `post-merge` hooks fire around the merge with `DAFT_MERGE_*` env
 vars (see Hook Types below).
 
+### Merge Gate Policy
+
+A repo can commit a merge quality boundary in `daft.yml` — enforced natively by
+`daft merge`, before pre-merge hooks fire and re-verified when the ref moves (so
+the tree the hooks tested is the tree that lands):
+
+```yaml
+merge:
+  ff: only # refuse merges that cannot fast-forward
+  source_worktree: clean # source worktree must exist and be clean
+```
+
+The gated workflow is rebase-first: rebase the track onto the target, let the
+pre-merge rings run, then `daft merge` (now fast-forward-equivalent). With
+pre-merge hooks configured, octopus merges are refused — one track at a time.
+Flags mirror the config: `--ff-only` / `--source-worktree clean` supply the
+policy on unconfigured repos; `--no-ff-only` / `--source-worktree any` relax a
+committed policy for one invocation (announced). If a merge is refused with
+"advanced while the merge gate ran", the track moved mid-gate — re-run the
+merge. These refusals are policy, not errors to work around; do not retry with
+relax flags unless the user explicitly decides to override team policy.
+
 ## Hooks System (daft.yml)
 
 Hooks automate worktree lifecycle events, configured in a `daft.yml` file at the
@@ -571,21 +593,24 @@ A job can contain a nested group with its own execution mode:
 Available in job `run`/`script` commands and in job `env:` values, for lifecycle
 hooks and `daft run` tasks alike:
 
-| Variable              | Description                              |
-| --------------------- | ---------------------------------------- |
-| `{branch}`            | Target branch name                       |
-| `{worktree_path}`     | Path to the target worktree              |
-| `{worktree_root}`     | Project root directory                   |
-| `{worktree_slug}`     | Sanitized worktree name (`[a-z0-9-]`)    |
-| `{source_worktree}`   | Path to the source worktree              |
-| `{git_dir}`           | Path to the `.git` directory             |
-| `{remote}`            | Remote name (usually `origin`)           |
-| `{job_name}`          | Name of the current job                  |
-| `{base_branch}`       | Base branch (branch-creating commands)   |
-| `{repository_url}`    | Repository URL (post-clone)              |
-| `{default_branch}`    | Default branch name (post-clone)         |
-| `{old_worktree_path}` | Previous worktree path (move hooks only) |
-| `{old_branch}`        | Previous branch name (move hooks only)   |
+| Variable              | Description                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `{branch}`            | Target branch name                                                                                                                                     |
+| `{worktree_path}`     | Path to the target worktree                                                                                                                            |
+| `{worktree_root}`     | Project root directory                                                                                                                                 |
+| `{worktree_slug}`     | Sanitized worktree name (`[a-z0-9-]`)                                                                                                                  |
+| `{source_worktree}`   | Path to the source worktree                                                                                                                            |
+| `{git_dir}`           | Path to the `.git` directory                                                                                                                           |
+| `{remote}`            | Remote name (usually `origin`)                                                                                                                         |
+| `{job_name}`          | Name of the current job                                                                                                                                |
+| `{base_branch}`       | Base branch (branch-creating commands)                                                                                                                 |
+| `{repository_url}`    | Repository URL (post-clone)                                                                                                                            |
+| `{default_branch}`    | Default branch name (post-clone)                                                                                                                       |
+| `{old_worktree_path}` | Previous worktree path (move hooks only)                                                                                                               |
+| `{old_branch}`        | Previous branch name (move hooks only)                                                                                                                 |
+| `{merge_source_path}` | Merge hooks: source worktree path (single worktree-backed source); legal in `root:` to run rings in the source worktree, fail-closed when unresolvable |
+| `{merge_target_path}` | Merge hooks: target worktree path                                                                                                                      |
+| `{changed_files}`     | File-aware jobs: the filtered changed-file list, shell-quoted                                                                                          |
 
 `{worktree_slug}` is the worktree's name relative to the project root,
 lowercased and reduced to `[a-z0-9-]` (max 63 chars) — safe for `docker compose`
@@ -605,11 +630,38 @@ skip:
   - env: SKIP_HOOKS # Skip if env var is truthy
   - run: "test -f .skip-hooks" # Skip if command exits 0
     desc: "Skip file exists" # Human-readable reason
+  - changed: "docs/**" # Skip if a changed file matches (merge hooks)
 
 only:
   - env: DEPLOY_ENABLED # Only run when env var is set
   - ref: "main" # Only run on main branch
+  - changed: "src/**" # Only run when a matching file changed
 ```
+
+### Changed-File Job Filters (glob)
+
+A job can gate itself on what the operation changed. For merge hooks the changed
+set is the files the sources changed relative to the target (`target...source`);
+other hook types need a `files:` command.
+
+```yaml
+hooks:
+  pre-merge:
+    jobs:
+      - name: build-check
+        glob: ["src/**", "Cargo.*"] # run only when these changed
+        run: cargo check --all-targets
+      - name: lint-changed
+        glob: "*.{js,ts}"
+        exclude: ["web/generated/**"] # exclude wins over glob
+        run: eslint {changed_files} # expands to the filtered list
+```
+
+Patterns match repository-root-relative paths (doublestar rules: `**` spans zero
+or more directories, `*` stops at `/`; `root:` is ignored). When nothing
+matches, the job is **skipped** with a recorded reason — a docs-only merge skips
+the build ring. `glob:`/`exclude:`/`{changed_files}` on a hook type with no
+changed set and no `files:` command is a loud configuration error.
 
 ### Trust Management
 
@@ -651,17 +703,36 @@ daft hooks run worktree-post-create --verbose    # Show skipped jobs + reasons
 Use cases: re-running after a failure, iterating during hook development,
 bootstrapping worktrees that predate the hooks config.
 
+Post-hoc navigation: a failed hook prints an inspect breadcrumb
+(`daft hooks jobs --last --hook <type>`). `daft hooks jobs --last [N]` shows the
+newest invocation(s), `--failed` narrows to failing ones (sugar for
+`--status failed`; `--status` values are validated at parse time), failed jobs
+show their last output lines inline under the listing, and
+`daft hooks jobs logs <job>` resolves a bare job name to its newest invocation
+anywhere in the repo. On an interactive terminal, a gated `daft merge` renders
+its pre/post-merge hooks as live rail sections (same `v` verbose toggle as
+exec/run) instead of hiding them behind the spinner. Non-interactively, prefer
+`daft merge --format json`: it reports the gate's verdict, why it refused, and
+the job rows in one document instead of prose you would have to parse — see
+Machine-Readable Output.
+
 ### Skipping Hooks Per-Invocation (`--skip-hooks`)
 
 The worktree-creating commands (`daft start`, `daft go`, `daft clone`,
-`daft adopt`) accept `--skip-hooks` to exclude jobs for one run (repeatable or
-comma-separated):
+`daft adopt`) and `daft merge` accept `--skip-hooks` to exclude jobs for one run
+(repeatable or comma-separated):
 
 ```bash
 daft start feat/x --skip-hooks all           # skip every hook
 daft start feat/x --skip-hooks tag:heavy,lint # skip tagged + named jobs
 daft clone <url> --skip-hooks post-clone     # clone, run worktree hooks only
+daft merge feat/x --skip-tag deep --no-edit  # fast gate pass (tag sugar)
 ```
+
+`--skip-tag <TAG>` (on `merge`, `run`, and `hooks run`) is sugar for
+`--skip-hooks tag:<TAG>`; `--only-tag <TAG>` is the include side (alias of
+`--tag` on `run`/`hooks run`). On `daft merge` the selection filters hook JOBS
+only — the committed gate policy checks always run.
 
 Selectors: `all`/`*`, `<hook>` (a whole hook by its canonical `daft.yml` key,
 e.g. `worktree-post-create`), `tag:<tag>`, `<name>` (a job), `job:<name>`
@@ -714,6 +785,14 @@ machine swap. Each push unit also gets a wall-clock budget
 (`daft.sync.pushTimeout`, default 30m) so a hung hook cannot wedge the sync.
 `daft.sync.pushHookStrategy batched` pushes every branch in one `git push` so
 the hook fires once with all refs (one refusal fails the whole batch).
+
+The same governor covers parallel hook/task job phases (post-create fan-outs, a
+merge gate's parallel rings): admission caps the fan-out, a shared jobserver
+bounds intra-job build parallelism, and foreground jobs are never frozen or
+killed. Gated merges additionally serialize per repository through a
+cross-process lane — a second `daft merge` prints
+`waiting for the merge gate lane — held by ...` and proceeds when the first
+finishes; that wait is expected coordination, not a hang.
 
 ### Move Hooks
 
@@ -982,11 +1061,25 @@ non-interactive runs print a copy-pasteable hint. It never touches the tracked
 ## Machine-Readable Output
 
 Commands emitting structured output via `--format`: flat-list (`list`,
-`hooks trust list`, `layout list`), document (`release-notes`), matrix
-(`shared status`), sectioned (`multi-remote status`, `hooks run` listing mode).
-Valid formats: `json`, `ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
+`hooks jobs`, `hooks trust list`, `layout list`, `repo list`), document
+(`release-notes`, `repo info`), matrix (`shared status`), sectioned (`merge`,
+`multi-remote status`, `hooks run` listing mode). Valid formats: `json`,
+`ndjson`, `tsv`, `csv`, `yaml`, `toon`, `markdown`.
 `--template '<tera-template>'` renders custom output (`{{ var }}`, `{% for %}`,
-`{% if %}`).
+`{% if %}`). Document and sectioned payloads support only `json`, `yaml`,
+`toon`, `markdown` — the row formats have no rows to fill.
+
+**`daft merge --format json`** (start mode only; the finish modes reject it)
+returns sections `verdict`, `sources`, `conflicts` (only when conflicted), and
+`jobs` (the gate's per-job rows). Branch on `verdict[0].status`: `landed`,
+`up-to-date`, `squash-staged` exit 0; `refused` (gate policy stopped it, repo
+untouched — `verdict[0].refusal` names which policy), `gate-failed` (a check
+came back red; read the `jobs` section), `conflicted`, `commit-aborted`, and
+`failed` exit 1. A merge that landed but whose cleanup was refused reports
+`landed` with `cleanup: "refused"` and still exits 1. `pre_merge_invocation`
+joins to `daft hooks jobs --last --hook pre-merge --format json` for the full
+job detail and logs. The flag never changes the exit code — checking `$?` alone
+stays valid.
 
 `daft start --fork` has its own fixed stdout contract, no `--format` needed: the
 created worktree path(s), bare, one per line (everything else on stderr).

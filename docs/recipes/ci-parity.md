@@ -64,6 +64,10 @@ The reach for daft: stop maintaining two parallel descriptions of "how this
 project sets up." Make CI run the same hooks the worktree does — same
 `daft.yml`, same job orchestration, same env contract.
 
+This page is about setup parity — one definition of how the project builds. The
+sibling axis, making a local merge run the same checks your forge requires on a
+pull request, is [Merge gate parity](/recipes/merge-gate-parity).
+
 ## What changes
 
 The CI workflow shrinks to four logical steps: install daft, trust the hooks,
