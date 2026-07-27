@@ -13,6 +13,14 @@
 //! Both answers come from the same two probes ([`git_ignore_status`]), plus a
 //! recursive one that only the second needs ([`has_tracked_under`]).
 //!
+//! **These are the per-path reference implementations.** `daft install` calls
+//! them directly — it classifies exactly one file. `copy:` does not: a glob can
+//! expand to thousands of paths on the critical path of every worktree
+//! creation, so `core::copy_paths` inlines the same two git probes **batched**,
+//! and its perf test cross-checks the batched form against these. Keep the two
+//! in step: this module is where the semantics are written down and explained,
+//! and a change here is a change there.
+//!
 //! Every probe runs through [`crate::utils::git_command_at`] — which strips
 //! inherited `GIT_*` so `-C` is authoritative even under a git hook — with both
 //! pipes nulled, so a `fatal: not a git repository` on stderr can never leak

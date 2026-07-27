@@ -31,8 +31,14 @@
 //! force-added file and a directory with tracked content anywhere beneath it,
 //! but only as a behaviour of git's exclude machinery — precisely what
 //! `--no-index` turns off. Asking `ls-files` directly states the invariant
-//! independently of how `check-ignore` chooses to answer. See
-//! [`crate::core::git_ignore`].
+//! independently of how `check-ignore` chooses to answer.
+//!
+//! Both probes are **inlined here, batched per entry** ([`classify_matches`]),
+//! not called through [`crate::core::git_ignore`]: that module answers about
+//! one path at a time, and one path at a time is three git processes per
+//! expanded match on the critical path of every worktree creation. Its
+//! per-path functions remain the readable reference implementation, and the
+//! copy stage's own perf test cross-checks the batched form against them.
 //!
 //! **One row per config ENTRY, not per expanded match.** A glob entry that
 //! matches thirty directories is still one plan row; the fan-out lands in the
@@ -215,15 +221,15 @@ pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
 pub(crate) struct Expansion {
     /// Worktree-relative matches, deduplicated and sorted.
     pub matches: Vec<String>,
-    /// The first place the walk could not read, as `(path, detail)`.
+    /// Places the walk could not read: the first one as `(path, detail)`, and
+    /// how many there were in total.
     ///
     /// Swallowing these — the shape [`expand_entries`] is stuck with — either
     /// under-reports a green `Copied` for a tree half of which was never seen,
     /// or reports `NoMatches` for a glob whose matches were simply unreachable.
     /// Both are silent, and root-owned directories inside a container image are
-    /// the common way they happen, so the copy stage folds this into the
-    /// entry's own outcome.
-    pub unreadable: Option<(String, String)>,
+    /// the common way they happen.
+    pub unreadable: Vec<(String, String)>,
 }
 
 /// [`expand_entries`], keeping the walk errors it has nowhere to put.
@@ -231,7 +237,7 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
     if !is_glob(entry) {
         return Expansion {
             matches: vec![entry.to_string()],
-            unreadable: None,
+            unreadable: Vec::new(),
         };
     }
 
@@ -241,13 +247,13 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
     if builder.add(entry).is_err() {
         return Expansion {
             matches: Vec::new(),
-            unreadable: None,
+            unreadable: Vec::new(),
         };
     }
     let Ok(overrides) = builder.build() else {
         return Expansion {
             matches: Vec::new(),
-            unreadable: None,
+            unreadable: Vec::new(),
         };
     };
     let overrides = Arc::new(overrides);
@@ -269,17 +275,19 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
         .filter_entry(move |found| descend_into(found, &root, &prune));
 
     let mut matches = Vec::new();
-    let mut unreadable = None;
+    let mut unreadable = Vec::new();
     for result in walker.build() {
         let found = match result {
             Ok(found) => found,
             Err(err) => {
-                // `ignore::Error`'s Display already names the path it could
-                // not read, and the entry is what the row is about — so the
-                // pair reads as one clause without a second path lookup.
-                if unreadable.is_none() {
-                    unreadable = Some((entry.to_string(), err.to_string()));
-                }
+                // The offending path, not the entry: "'pkg/locked' could not
+                // be read" tells the user where to look; the entry name is
+                // already the row's label.
+                let path = walk_error_path(&err)
+                    .and_then(|p| p.strip_prefix(source_root).ok())
+                    .and_then(relative_to_slash_string)
+                    .unwrap_or_else(|| entry.to_string());
+                unreadable.push((path, err.to_string()));
                 continue;
             }
         };
@@ -299,6 +307,20 @@ pub(crate) fn expand_reporting(source_root: &Path, entry: &str) -> Expansion {
     Expansion {
         matches,
         unreadable,
+    }
+}
+
+/// The path an `ignore` walk error is about, dug out of its wrapper layers.
+/// The crate boxes errors inside `WithDepth`/`WithLineNumber`, so the path is
+/// rarely at the top.
+fn walk_error_path(err: &ignore::Error) -> Option<&Path> {
+    match err {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            walk_error_path(err)
+        }
+        ignore::Error::Loop { child, .. } => Some(child),
+        _ => None,
     }
 }
 
@@ -407,6 +429,14 @@ pub enum SkipReason {
     /// twice in a row is a no-op, and `copy:` never clobbers work a
     /// post-create hook already did.
     DestinationExists,
+    /// The destination path exists but could not be read at all — permissions
+    /// on a parent, an I/O error. Distinct from a shape conflict, which has
+    /// established what is there; here nothing has.
+    DestinationUnreadable { path: String, detail: String },
+    /// git could not classify the **destination** — a different sentence from
+    /// [`Self::Unclassifiable`], which is about the source. Sending someone to
+    /// inspect the wrong worktree is worse than saying nothing.
+    DestinationUnclassifiable { offender: String, detail: String },
     /// Something is already at the destination path, but not the same *kind*
     /// of thing as the source — a symlink where a directory belongs (what a
     /// path declared in both `shared:` and `copy:` leaves behind), a file
@@ -466,6 +496,12 @@ pub enum CopyOutcome {
         matches: usize,
         bytes: u64,
         elapsed: Duration,
+        /// Places the expansion could not read. A glob whose walk hit an
+        /// unreadable subtree still copies everything it *did* find — refusing
+        /// the lot would trade a partial cache for none at all — but the row
+        /// has to say the expansion was incomplete, or a green tick would
+        /// claim a completeness nobody established.
+        unreadable: usize,
     },
     /// The entry was deliberately left out; see [`SkipReason`].
     Skipped { entry: String, reason: SkipReason },
@@ -634,6 +670,16 @@ pub fn copy_entries(
     }
 
     // Ancestors before descendants, regardless of declaration order.
+    //
+    // Ordering is by declared depth, so it does not catch a glob that expands
+    // SHALLOWER than it is written (`x/y` then `**/**/x`, where the second
+    // reaches `x`). That case is deliberately out of scope: both entries want
+    // the same kind of thing in the same place, so the loser reports
+    // `already present` — a dim, accurate row over a destination that exists
+    // and is of the right shape. What it does not guarantee is that the
+    // destination holds everything the broader entry would have brought, and
+    // content-completeness across overlapping declarations is #201's territory
+    // (delta detection), which composes on top of this rather than inside it.
     // `copy: [web/dist, web]` otherwise has the first entry manufacture an
     // empty `target/web` on its way to `target/web/dist`, and the second then
     // finds its destination "already present" — so everything else under
@@ -729,16 +775,19 @@ fn copy_one_inner(
         matches,
         unreadable,
     } = expand_reporting(source, entry);
-    // An unreadable subtree is entry-attributable and must not be swallowed:
-    // silently walking past it either under-reports a green `Copied` or fakes
-    // a `NoMatches`, and root-owned directories inside a container image are
-    // the common way it happens.
-    if let Some((path, detail)) = unreadable {
-        return skipped(SkipReason::SourceUnreadable { path, detail });
-    }
+    // An unreadable subtree must not be swallowed — silently walking past it
+    // under-reports a green `Copied`, and root-owned directories inside a
+    // container image are the common way it happens. But it must not cost the
+    // matches that WERE found either: refusing the lot trades a partial cache
+    // for none at all. Found matches are copied and the shortfall rides in the
+    // annotation; only a walk that found nothing becomes the entry's outcome.
     if matches.is_empty() {
-        return skipped(SkipReason::NoMatches);
+        return match unreadable.into_iter().next() {
+            Some((path, detail)) => skipped(SkipReason::SourceUnreadable { path, detail }),
+            None => skipped(SkipReason::NoMatches),
+        };
     }
+    let unreadable_count = unreadable.len();
 
     // ── 2. Containment ───────────────────────────────────────────────────
     // Before git, and in its own words: a refusal here is not a diagnosis
@@ -796,7 +845,7 @@ fn copy_one_inner(
             Ok(meta) => Some(meta),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                return skipped(SkipReason::DestinationConflict {
+                return skipped(SkipReason::DestinationUnreadable {
                     path: rel.clone(),
                     detail: err.to_string(),
                 });
@@ -838,7 +887,7 @@ fn copy_one_inner(
                 // Fail closed: a probe that could not run is not permission to
                 // delete. The target of a real run is always a worktree.
                 Err(detail) => {
-                    return skipped(SkipReason::Unclassifiable {
+                    return skipped(SkipReason::DestinationUnclassifiable {
                         offender: rel.clone(),
                         detail,
                     });
@@ -871,10 +920,12 @@ fn copy_one_inner(
     // Per match, not once for the entry: matches can live on different mounts,
     // and one sample answering for all of them is how a 40 GB byte copy ends
     // up labelled `reflinked` with the size gate never consulted.
+    let sources: Vec<PathBuf> = planned.iter().map(|p| source.join(&p.rel)).collect();
+    for (item, bytes) in planned.iter_mut().zip(measure_all(&sources)) {
+        item.bytes = bytes;
+    }
     for item in &mut planned {
-        let src = source.join(&item.rel);
-        item.bytes = measure(&src);
-        item.reflinks = reflinks_into(&src, &target.join(&item.rel))?;
+        item.reflinks = reflinks_into(&source.join(&item.rel), &target.join(&item.rel), target)?;
     }
 
     // ── 7. The gate ──────────────────────────────────────────────────────
@@ -911,7 +962,13 @@ fn copy_one_inner(
         if item.remove_first
             && let Err(err) = remove_tree(&dst)
         {
-            return Err(err.context(format!("clearing {}", dst.display())));
+            // `remove_dir_all` unlinks as it descends, so a failure can leave
+            // a gutted destination — which reads as "already present" from
+            // then on, exactly like a partial copy. Same sentence, same reason.
+            return Err(note_surviving_remains(
+                &dst,
+                err.context(format!("clearing {}", dst.display())),
+            ));
         }
         match replicate(&source.join(&item.rel), &dst) {
             Ok(item_stats) => {
@@ -929,6 +986,7 @@ fn copy_one_inner(
         matches: planned.len(),
         bytes: stats.bytes,
         elapsed: started.elapsed(),
+        unreadable: unreadable_count,
     })
 }
 
@@ -982,25 +1040,28 @@ fn method_of(stats: &crate::cow_copy::CopyStats) -> CopyMethod {
 /// Why an entry may not be copied at all, before git is consulted. `None` when
 /// it is a plain worktree-relative path.
 ///
-/// A config is not a capability to write anywhere. `..` climbing out and an
-/// absolute path are the obvious cases; the worktree root itself is the sharp
-/// one, because `copy: ["."]` under `--force` would remove the whole worktree
-/// before copying it back.
+/// A config is not a capability to write anywhere. Three refusals, kept
+/// distinct because they send the user somewhere different:
+///
+/// * an **absolute** path;
+/// * any `..` component, **wherever it sits**. Counting depth is not enough:
+///   `link/../x` stays at depth 1 lexically — and git normalizes it the same
+///   lexical way, so `check-ignore` would answer about a path that does not
+///   exist — while the kernel resolves `link` as a symlink and lands wherever
+///   it points, outside the worktree. No legitimate cache entry contains `..`,
+///   so the blanket refusal costs nothing;
+/// * a path that resolves to the **worktree root** (`.`, and the empty
+///   string), whose `target.join(...)` is the destination worktree itself and
+///   which `--force` would therefore empty.
 fn containment_violation(relpath: &str) -> Option<String> {
     use std::path::Component;
 
     let path = Path::new(relpath);
-    if path.is_absolute() {
-        return Some("is an absolute path".to_string());
-    }
-    let mut depth = 0i32;
+    let mut depth = 0usize;
     for component in path.components() {
         match component {
             Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return Some("resolves outside the worktree".to_string());
-                }
+                return Some("contains '..' and may resolve outside the worktree".to_string());
             }
             Component::RootDir | Component::Prefix(_) => {
                 return Some("is an absolute path".to_string());
@@ -1033,25 +1094,82 @@ enum Classification {
     Unknown { offender: String, detail: String },
 }
 
+/// How many pathnames, and how many bytes of them, go to git at a time.
+///
+/// Both limits exist to keep a batch small enough that **neither** direction
+/// can block:
+///
+/// * `check-ignore --stdin` echoes the ignored paths back, so the parent is
+///   writing to one pipe while the child writes to another. Handing it the
+///   whole list and only then reading deadlocks the moment either pipe fills —
+///   64 KB on Linux, less on macOS — and a `node_modules` glob reaches that at
+///   a few thousand paths.
+/// * `ls-files` takes its pathspecs as argv, where the ceiling is `ARG_MAX`.
+///   Crossing it fails the entry outright ("Argument list too long"), which on
+///   a big repo means a cache that can never be copied.
+///
+/// A few hundred paths per batch sits orders of magnitude under both, and the
+/// batch count is what the invocation cost is proportional to: two git
+/// processes per batch, not per match.
+const PROBE_BATCH_PATHS: usize = 256;
+const PROBE_BATCH_BYTES: usize = 4096;
+
+/// Split matches into batches neither pipe nor argv can choke on.
+fn probe_batches(matches: &[String]) -> Vec<&[String]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, rel) in matches.iter().enumerate() {
+        // +1 for the NUL separator / argv terminator.
+        let cost = rel.len() + 1;
+        if i > start && (i - start >= PROBE_BATCH_PATHS || bytes + cost > PROBE_BATCH_BYTES) {
+            batches.push(&matches[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += cost;
+    }
+    if start < matches.len() {
+        batches.push(&matches[start..]);
+    }
+    batches
+}
+
 /// Both halves of the gitignored-only invariant for a whole entry, in two git
-/// invocations instead of three per match.
+/// invocations per batch instead of three per match.
 ///
 /// Per-match probing spawned `rev-parse` + `check-ignore` + `ls-files` for
 /// every expanded path — around ninety processes for a thirty-match glob, on
-/// the critical path of every worktree creation. `check-ignore --stdin` and a
-/// single multi-pathspec `ls-files` answer for the whole entry at once.
+/// the critical path of every worktree creation.
 ///
 /// The two probes stay two: `check-ignore` consults the index and so already
 /// refuses tracked content, but only as a behaviour of git's exclude machinery
 /// — exactly what `--no-index` turns off. `ls-files` states the invariant
-/// independently, and the pair fails closed.
+/// independently. Both arms fail **closed**: anything other than a clean answer
+/// is `Unknown`, because a probe that did not run is not consent.
 fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classification> {
+    for batch in probe_batches(matches) {
+        match classify_batch(worktree, batch)? {
+            Classification::Ignored => {}
+            decided => return Ok(decided),
+        }
+    }
+    Ok(Classification::Ignored)
+}
+
+fn classify_batch(worktree: &Path, matches: &[String]) -> Result<Classification> {
     use std::io::Write;
     use std::process::Stdio;
 
     if matches.is_empty() {
         return Ok(Classification::Ignored);
     }
+    let unknown = |detail: String| {
+        Ok(Classification::Unknown {
+            offender: matches[0].clone(),
+            detail,
+        })
+    };
 
     let mut child = crate::utils::git_command_at(worktree)
         .args(["check-ignore", "-z", "--stdin"])
@@ -1061,6 +1179,9 @@ fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classificatio
         .spawn()
         .context("running git check-ignore")?;
     {
+        // Dropped before `wait_with_output`, which closes the pipe and lets
+        // the child finish. The batch is small enough that this write cannot
+        // block on a full stdout pipe — see `PROBE_BATCH_BYTES`.
         let mut stdin = child.stdin.take().context("git check-ignore stdin")?;
         for rel in matches {
             stdin.write_all(rel.as_bytes())?;
@@ -1071,19 +1192,12 @@ fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classificatio
         .wait_with_output()
         .context("running git check-ignore")?;
     // 0 = at least one path is ignored, 1 = none are. Anything else (128 — not
-    // a repository, an unreadable parent) means git could not answer, and a
-    // probe that did not run is not consent.
+    // a repository, an unreadable parent) means git could not answer.
     if !matches!(probe.status.code(), Some(0 | 1)) {
-        return Ok(Classification::Unknown {
-            offender: matches[0].clone(),
-            detail: format!(
-                "git check-ignore exited {}",
-                probe
-                    .status
-                    .code()
-                    .map_or_else(|| "on a signal".to_string(), |c| c.to_string())
-            ),
-        });
+        return unknown(format!(
+            "git check-ignore {}",
+            exit_description(&probe.status)
+        ));
     }
     let ignored: std::collections::HashSet<String> = String::from_utf8_lossy(&probe.stdout)
         .split('\0')
@@ -1102,11 +1216,16 @@ fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classificatio
         .stderr(Stdio::null())
         .output()
         .context("running git ls-files")?;
-    if tracked.status.success()
-        && let Some(first) = String::from_utf8_lossy(&tracked.stdout)
-            .split('\0')
-            .find(|s| !s.is_empty())
-            .map(str::to_string)
+    if !tracked.status.success() {
+        return unknown(format!(
+            "git ls-files {}",
+            exit_description(&tracked.status)
+        ));
+    }
+    if let Some(first) = String::from_utf8_lossy(&tracked.stdout)
+        .split('\0')
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
     {
         // Name the match that covers the tracked path, not the raw file: the
         // row is about a declaration, and `web/dist` is what the user wrote.
@@ -1119,6 +1238,14 @@ fn classify_matches(worktree: &Path, matches: &[String]) -> Result<Classificatio
     }
 
     Ok(Classification::Ignored)
+}
+
+/// How a git probe ended, for a reason string.
+fn exit_description(status: &std::process::ExitStatus) -> String {
+    status.code().map_or_else(
+        || "ended on a signal".to_string(),
+        |c| format!("exited {c}"),
+    )
 }
 
 /// Does the worktree at `worktree` track anything at or under `relpath`?
@@ -1168,11 +1295,25 @@ fn discard_partial(dst: &Path, err: anyhow::Error) -> anyhow::Error {
     }
     match remove_tree(dst) {
         Ok(()) => err,
-        Err(cleanup) => anyhow::anyhow!(
-            "{err:#}; a partial {} could not be removed and will be mistaken for a finished copy: {cleanup:#}",
-            dst.display()
-        ),
+        Err(cleanup) => note_surviving_remains(dst, err.context(format!("{cleanup:#}"))),
     }
+}
+
+/// If anything is still at `dst`, say so — in the same words for both ways it
+/// can happen.
+///
+/// A failed copy and a failed `--force` removal leave the same hazard behind: a
+/// path that exists, is not what anyone asked for, and will be read as
+/// "already present" by every later run. The detail is the only place that can
+/// be said, because warn-never-abort means nothing raises.
+fn note_surviving_remains(dst: &Path, err: anyhow::Error) -> anyhow::Error {
+    if fs::symlink_metadata(dst).is_err() {
+        return err;
+    }
+    anyhow::anyhow!(
+        "{err:#}; what is left at {} will be mistaken for a finished copy",
+        dst.display()
+    )
 }
 
 /// Remove a path and everything under it — the one removal helper, shared by
@@ -1292,23 +1433,36 @@ fn replicate_symlink(src: &Path, _dst: &Path) -> Result<()> {
 /// uses — so measuring a `node_modules` cannot oversubscribe the device. An
 /// unmeasurable root contributes nothing rather than aborting the copy; the
 /// copy itself will fail honestly if the tree is truly unreadable.
-fn measure(src: &Path) -> u64 {
-    match fs::symlink_metadata(src) {
-        Ok(meta) if meta.is_dir() => {
-            let jobs = crate::core::size_walk::resolve_jobs(None);
-            crate::core::size_walk::walk_all_sized(
-                std::slice::from_ref(&src.to_path_buf()),
-                None,
-                jobs,
-                crate::core::size_walk::HardLinks::CountEveryLink,
-            )
-            .into_iter()
-            .flatten()
-            .sum()
+fn measure_all(paths: &[PathBuf]) -> Vec<u64> {
+    let mut sizes = vec![0u64; paths.len()];
+    let mut dirs = Vec::new();
+    let mut dir_slots = Vec::new();
+    for (slot, path) in paths.iter().enumerate() {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                dirs.push(path.clone());
+                dir_slots.push(slot);
+            }
+            Ok(meta) => sizes[slot] = meta.len(),
+            Err(_) => {}
         }
-        Ok(meta) => meta.len(),
-        Err(_) => 0,
     }
+    if !dirs.is_empty() {
+        // ONE walk for the whole entry. The walker's budget is a bounded pool
+        // built per call, so measuring a thirty-way glob one match at a time
+        // spun up (and tore down) thirty pools against the same device.
+        let jobs = crate::core::size_walk::resolve_jobs(None);
+        let walked = crate::core::size_walk::walk_all_sized(
+            &dirs,
+            None,
+            jobs,
+            crate::core::size_walk::HardLinks::CountEveryLink,
+        );
+        for (slot, size) in dir_slots.into_iter().zip(walked) {
+            sizes[slot] = size.unwrap_or(0);
+        }
+    }
+    sizes
 }
 
 /// Can this match's bytes be cloned into its own destination?
@@ -1324,23 +1478,31 @@ fn measure(src: &Path) -> u64 {
 /// clone. It reports `true`, which keeps a free copy from being refused by
 /// `fallback: skip`. A match that could not be *read* is a different answer and
 /// propagates as an error rather than passing for clonable.
-fn reflinks_into(src: &Path, dst: &Path) -> Result<bool> {
+fn reflinks_into(src: &Path, dst: &Path, target_root: &Path) -> Result<bool> {
     let Some(sample) = first_regular_file(src)? else {
         return Ok(true);
     };
-    let Some(probe_dir) = nearest_existing_dir(dst) else {
+    let Some(probe_dir) = nearest_existing_dir(dst, target_root) else {
         return Ok(false);
     };
     Ok(attempt_reflink(&sample, probe_dir))
 }
 
-/// The closest existing ancestor of `path` — where a probe can land without
-/// creating anything. Creating the destination's parents up front would
-/// manufacture exactly the empty ancestor stubs that make a later entry read
-/// "already present".
-fn nearest_existing_dir(path: &Path) -> Option<&Path> {
+/// The closest existing ancestor of `path`, never climbing above `boundary` —
+/// where a probe can land without creating anything.
+///
+/// Creating the destination's parents up front would manufacture exactly the
+/// empty ancestor stubs that make a later entry read "already present". The
+/// boundary is what keeps the search from walking out of the target worktree
+/// entirely when the target itself is missing: a scratch file must never be
+/// written above the tree daft was asked to fill, and answering "cannot clone"
+/// is the correct response to a destination that is not there.
+fn nearest_existing_dir<'a>(path: &'a Path, boundary: &Path) -> Option<&'a Path> {
     let mut candidate = path.parent();
     while let Some(dir) = candidate {
+        if !dir.starts_with(boundary) {
+            return None;
+        }
         if dir.is_dir() {
             return Some(dir);
         }
@@ -1494,9 +1656,16 @@ pub fn report_copy_results(
                 matches,
                 bytes,
                 elapsed,
+                unreadable,
                 ..
             } => StageEvent::Completed {
-                annotation: Some(copied_annotation(*matches, *bytes, *method, *elapsed)),
+                annotation: Some(copied_annotation(
+                    *matches,
+                    *bytes,
+                    *method,
+                    *elapsed,
+                    *unreadable,
+                )),
             },
             CopyOutcome::Skipped { entry, reason } => {
                 let reason = skip_phrase(entry, reason);
@@ -1593,6 +1762,18 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
         SkipReason::DestinationConflict { path, detail } => {
             format!("{}already present as {detail} — not replaced", named(path))
         }
+        // Says nothing about presence, because nothing was established: the
+        // path could not be read at all.
+        SkipReason::DestinationUnreadable { path, detail } => {
+            format!(
+                "{}the destination could not be read — {detail}",
+                named(path)
+            )
+        }
+        SkipReason::DestinationUnclassifiable { offender, detail } => format!(
+            "{}the destination could not be classified by git — {detail}",
+            named(offender)
+        ),
         // Leads with the requirement, not the diagnosis. The one variant covers
         // a tracked entry, an untracked-but-unignored one, and an ignored
         // directory holding force-added content — so a bare "is tracked" would
@@ -1607,8 +1788,13 @@ pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
             "{}is tracked in this worktree — refusing to replace it",
             named(offender)
         ),
+        // Reads as a complete clause with or without a path: a literal entry
+        // leaves no object gap behind "classify".
         SkipReason::Unclassifiable { offender, detail } => {
-            format!("git could not classify {}— {detail}", named(offender))
+            format!(
+                "{}could not be classified by git — {detail}",
+                named(offender)
+            )
         }
         SkipReason::Uncontained { offender, detail } => {
             format!("{}{detail} — not copied", named(offender))
@@ -1653,11 +1839,16 @@ pub fn qualified_phrase(entry: &str, phrase: &str) -> String {
 /// round to `0.0s`, which a reflink of a warm tree usually does. Size and method
 /// always survive, because together they answer the only question the row
 /// raises: did this cost anything?
+///
+/// `unreadable` appends `· N unreadable` when the expansion could not read
+/// everywhere it looked. The row stays green — what was found was copied — but
+/// a bare tick would claim a completeness nobody established.
 pub fn copied_annotation(
     matches: usize,
     bytes: u64,
     method: CopyMethod,
     elapsed: Duration,
+    unreadable: usize,
 ) -> String {
     let mut parts = Vec::new();
     if matches > 1 {
@@ -1668,6 +1859,12 @@ pub fn copied_annotation(
     let seconds = elapsed.as_secs_f64();
     if seconds >= 0.05 {
         parts.push(format!("{seconds:.1}s"));
+    }
+    // The completeness caveat rides here rather than turning the row yellow:
+    // what was found really was copied, and a green tick with `2 unreadable`
+    // beside it claims exactly as much as happened.
+    if unreadable > 0 {
+        parts.push(format!("{unreadable} unreadable"));
     }
     parts.join(" · ")
 }
@@ -2475,6 +2672,7 @@ mod tests {
                     matches: 1,
                     bytes: 1_288_490_189,
                     elapsed: Duration::from_millis(300),
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "node_modules".into(),
@@ -2673,13 +2871,14 @@ mod tests {
                 1,
                 1024 * 1024,
                 CopyMethod::Reflinked,
-                Duration::from_millis(1)
+                Duration::from_millis(1),
+                0
             ),
             "1 MB · reflinked",
             "a duration that would round to 0.0s says nothing"
         );
         assert_eq!(
-            copied_annotation(3, 1024, CopyMethod::Copied, Duration::from_millis(1200)),
+            copied_annotation(3, 1024, CopyMethod::Copied, Duration::from_millis(1200), 0),
             "3 paths · 1 KB · copied · 1.2s",
             "the count is expanded PATHS — an entry can name a file"
         );
@@ -2726,7 +2925,23 @@ mod tests {
                     offender: "cache".into(),
                     detail: "git check-ignore exited 128".into(),
                 },
-                "git could not classify — git check-ignore exited 128",
+                "could not be classified by git — git check-ignore exited 128",
+            ),
+            // The destination's own probes speak about the destination: a
+            // dst-side git failure must not send anyone to inspect the source.
+            (
+                SkipReason::DestinationUnclassifiable {
+                    offender: "cache".into(),
+                    detail: "git ls-files exited 128".into(),
+                },
+                "the destination could not be classified by git — git ls-files exited 128",
+            ),
+            (
+                SkipReason::DestinationUnreadable {
+                    path: "cache".into(),
+                    detail: "Permission denied (os error 13)".into(),
+                },
+                "the destination could not be read — Permission denied (os error 13)",
             ),
             (
                 SkipReason::Uncontained {
@@ -2857,6 +3072,7 @@ mod tests {
                     matches: 1,
                     bytes: 1_024,
                     elapsed: Duration::from_millis(3),
+                    unreadable: 0,
                 },
                 CopyOutcome::Skipped {
                     entry: "node_modules".into(),
@@ -3498,6 +3714,7 @@ mod tests {
                 2048,
                 CopyMethod::Copied,
                 Duration::from_millis(millis),
+                0,
             )
         };
         assert_eq!(annotate(2, 0), "2 paths · 2 KB · copied");
@@ -3547,77 +3764,172 @@ mod tests {
         }
     }
 
-    /// Not an assertion about speed — a guard that the batched probe stays
-    /// batched. Per-match probing spawned three git processes for every
-    /// expanded path; a thirty-match glob meant ninety, on the critical path of
-    /// every worktree creation.
+    /// A count, not a clock. This repo has a long history of timing-flake
+    /// postmortems, and "batched is faster than per-match" is exactly the shape
+    /// that goes red on a loaded CI box while the code is fine. The invariant
+    /// that actually matters is countable: git runs twice per BATCH, and the
+    /// batch count is a pure function of the input.
     #[test]
-    fn the_gitignore_probe_costs_two_git_invocations_per_entry() {
-        let (_tmp, source, target) = repo_fixture("dist\n");
+    fn the_gitignore_probe_costs_two_git_invocations_per_batch() {
+        let (_tmp, source, _target) = repo_fixture("dist\n");
         for i in 0..30 {
             write(&source.join(format!("pkg{i}/dist/app.js")), b"//");
         }
-        let matches: Vec<String> = expand_entries(&source, "**/dist");
+        let matches = expand_entries(&source, "**/dist");
         assert_eq!(matches.len(), 30, "fixture precondition");
 
-        let started = std::time::Instant::now();
-        let classified = classify_matches(&source, &matches).unwrap();
-        let batched = started.elapsed();
-        assert!(matches!(classified, Classification::Ignored));
+        // Thirty short paths fit in one batch: two git processes for the whole
+        // entry, where per-match probing spawned ninety.
+        assert_eq!(probe_batches(&matches).len(), 1);
+        assert!(matches!(
+            classify_matches(&source, &matches).unwrap(),
+            Classification::Ignored
+        ));
 
-        // The old shape, measured the same way, for the report's before/after.
-        let started = std::time::Instant::now();
+        // And the batched verdict agrees with the per-path reference
+        // implementation it replaced — the reason `core::git_ignore` keeps its
+        // readable one-path-at-a-time functions.
         for rel in &matches {
-            let _ = crate::core::git_ignore::git_ignore_status(&source, rel);
-            let _ = crate::core::git_ignore::has_tracked_under(&source, rel);
+            assert_eq!(
+                crate::core::git_ignore::git_ignore_status(&source, rel),
+                IgnoreStatus::Ignored
+            );
+            assert!(!crate::core::git_ignore::has_tracked_under(&source, rel));
         }
-        let per_match = started.elapsed();
+    }
 
-        eprintln!("batched={batched:?} per-match={per_match:?}");
-        assert!(
-            batched < per_match,
-            "two invocations must beat ninety: batched={batched:?} per-match={per_match:?}"
+    #[test]
+    fn probe_batches_stay_under_the_pipe_and_argv_ceilings() {
+        // The two limits that make chunking necessary at all: `check-ignore
+        // --stdin` writes its answers back down a pipe while we are still
+        // writing to it, and `ls-files` takes its pathspecs as argv.
+        let many: Vec<String> = (0..8_000).map(|i| format!("pkg{i:05}/dist")).collect();
+        let batches = probe_batches(&many);
+
+        assert!(batches.len() > 1, "8,000 paths cannot be one batch");
+        assert_eq!(
+            batches.iter().map(|b| b.len()).sum::<usize>(),
+            many.len(),
+            "every path lands in exactly one batch"
         );
-        let _ = target;
-    }
-
-    // ── Reading the source honestly ──────────────────────────────────────
-
-    #[cfg(unix)]
-    #[test]
-    fn an_unreachable_cache_does_not_read_as_one_that_was_never_built() {
-        // `NoSource` is the quiet case — a cache nobody has built yet, dim and
-        // uninteresting. A cache that exists but cannot be read is the
-        // opposite, and collapsing the two hides a broken machine behind a row
-        // that says everything is fine.
-        use std::os::unix::fs::PermissionsExt;
-
-        let (_tmp, source, target) = repo_fixture("/cache\n");
-        fs::create_dir_all(source.join("outer")).unwrap();
-        write(&source.join("outer/cache/a.bin"), b"a");
-        fs::set_permissions(source.join("outer"), fs::Permissions::from_mode(0o000)).unwrap();
-        let premise_holds = fs::symlink_metadata(source.join("outer/cache")).is_err();
-
-        let result = run(&source, &target, &config(&["outer/cache"]));
-
-        fs::set_permissions(source.join("outer"), fs::Permissions::from_mode(0o755)).unwrap();
-        if !premise_holds {
-            return;
+        for batch in &batches {
+            assert!(batch.len() <= PROBE_BATCH_PATHS);
+            let bytes: usize = batch.iter().map(|p| p.len() + 1).sum();
+            assert!(
+                bytes <= PROBE_BATCH_BYTES + PROBE_BATCH_PATHS,
+                "a batch must stay far below any pipe buffer: {bytes} bytes"
+            );
         }
-        assert_sole_skip!(result, SkipReason::SourceUnreadable { .. });
+        // A single path longer than the byte budget still gets its own batch
+        // rather than being dropped.
+        let huge = vec!["x".repeat(PROBE_BATCH_BYTES * 2)];
+        assert_eq!(probe_batches(&huge).len(), 1);
+        assert!(probe_batches(&[]).is_empty());
+    }
+
+    /// The deadlock, reproduced. Writing the whole NUL list to
+    /// `check-ignore --stdin` and only then draining stdout blocks forever once
+    /// either pipe fills — 64 KB on Linux, less on macOS — which a
+    /// `node_modules` glob reaches at a few thousand paths. The old shape hung
+    /// here; the batched one returns.
+    #[test]
+    fn thousands_of_matches_classify_without_deadlocking() {
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        let mut matches = Vec::new();
+        for i in 0..8_000 {
+            let rel = format!("cache/pkg{i:05}");
+            fs::create_dir_all(source.join(&rel)).unwrap();
+            matches.push(rel);
+        }
+        // Well past the 64 KB Linux pipe buffer (macOS's is smaller still), so
+        // the unbatched write blocks with nobody draining the answers.
+        let payload: usize = matches.iter().map(|m| m.len() + 1).sum();
+        assert!(payload > 64 * 1024, "fixture precondition: {payload} bytes");
+
+        assert!(matches!(
+            classify_matches(&source, &matches).unwrap(),
+            Classification::Ignored
+        ));
+
+        // And through the whole stage, where the same list is also handed to
+        // `ls-files` as argv — the ARG_MAX half of the same problem.
+        let result = run(&source, &target, &config(&["cache"]));
+        assert!(
+            matches!(result.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            result.outcomes
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_glob_whose_walk_cannot_finish_says_so_instead_of_matching_nothing() {
-        // Swallowing walk errors either under-reports a green `Copied` for a
-        // tree half of which was never seen, or reports `NoMatches` for a glob
-        // whose matches were simply unreachable. Both are silent, and
-        // root-owned directories in a container image are the common way they
-        // happen.
+    fn a_dotdot_through_a_symlink_is_refused_however_it_is_spelled() {
+        // Depth-counting is not containment. `link/../x` stays at depth 1
+        // lexically, and git normalizes it the same lexical way — so
+        // `check-ignore` answers about a path that does not exist while the
+        // kernel resolves `link` as a symlink and lands wherever it points.
+        // No legitimate cache entry contains `..`, so the refusal is blanket.
+        let (tmp, source, target) = repo_fixture("*\n");
+        write(&tmp.path().join("outside/precious"), b"not yours");
+        std::os::unix::fs::symlink(tmp.path().join("outside"), source.join("link")).unwrap();
+
+        for spelling in ["link/../outside", "../outside", "a/../../outside"] {
+            let result = copy_entries(&source, &target, &config(&[spelling]), true, &mut NullSink);
+            assert_sole_skip!(result, SkipReason::Uncontained { .. });
+        }
+        assert_eq!(
+            fs::read(tmp.path().join("outside/precious")).unwrap(),
+            b"not yours"
+        );
+
+        // The two refusals stay distinct: one is about escaping, the other
+        // about naming the worktree itself.
+        assert!(
+            containment_violation("link/../x")
+                .unwrap()
+                .contains("outside the worktree")
+        );
+        assert!(
+            containment_violation(".")
+                .unwrap()
+                .contains("worktree itself")
+        );
+    }
+
+    #[test]
+    fn the_reflink_probe_never_writes_above_the_target_root() {
+        // The probe lands in the nearest EXISTING ancestor of the match's
+        // destination. Without a boundary that search walks straight out of a
+        // missing target worktree and drops a scratch file in whatever sits
+        // above it — the layout container, or the user's home.
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("worktree");
+        // Target absent entirely: nothing above it is a candidate.
+        assert_eq!(
+            nearest_existing_dir(&target.join("cache/inner"), &target),
+            None
+        );
+        // Target present: its own root is the floor, and is used.
+        fs::create_dir_all(&target).unwrap();
+        assert_eq!(
+            nearest_existing_dir(&target.join("cache/inner"), &target),
+            Some(target.as_path())
+        );
+    }
+
+    // ── Partial expansion: copy what was found, say what was not ─────────
+
+    #[cfg(unix)]
+    #[test]
+    fn a_glob_that_found_matches_copies_them_and_counts_what_it_could_not_read() {
+        // Refusing everything because one subtree was unreadable trades a
+        // partial cache for none at all. The matches that WERE found are
+        // copied; the shortfall rides in the annotation rather than turning
+        // the row yellow, because what was copied really was copied.
         use std::os::unix::fs::PermissionsExt;
 
         let (_tmp, source, target) = repo_fixture("dist\n");
+        write(&source.join("readable/dist/app.js"), b"bundle");
         fs::create_dir_all(source.join("locked/pkg/dist")).unwrap();
         fs::set_permissions(source.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
         let premise_holds = fs::read_dir(source.join("locked")).is_err();
@@ -3628,65 +3940,63 @@ mod tests {
         if !premise_holds {
             return;
         }
-        assert_sole_skip!(result, SkipReason::SourceUnreadable { .. });
+
+        let [
+            CopyOutcome::Copied {
+                matches,
+                unreadable,
+                ..
+            },
+        ] = result.outcomes.as_slice()
+        else {
+            panic!(
+                "expected the found match to copy, got {:?}",
+                result.outcomes
+            );
+        };
+        assert_eq!(*matches, 1);
+        assert!(*unreadable >= 1, "the shortfall has to be counted");
+        assert_eq!(
+            fs::read(target.join("readable/dist/app.js")).unwrap(),
+            b"bundle"
+        );
+
+        // And it reaches the row, on a green face.
+        assert!(
+            copied_annotation(1, 6, CopyMethod::Reflinked, Duration::ZERO, 2)
+                .ends_with("· 2 unreadable")
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn the_size_gate_weighs_what_the_copy_will_write_not_what_du_reports() {
-        // `du` counts a hard-linked file once; the copy writes each link as an
-        // independent file. pnpm and ccache trees differ by an order of
-        // magnitude, which is how a 500 MB measurement lands 5 GB past a cap.
-        let (_tmp, source, _target) = repo_fixture("/cache\n");
-        write(&source.join("cache/real"), &vec![3u8; 1000]);
-        fs::hard_link(source.join("cache/real"), source.join("cache/link")).unwrap();
+    fn a_half_gutted_force_removal_says_what_it_left_behind() {
+        // `remove_dir_all` unlinks as it descends, so a failure partway leaves
+        // a hollowed-out destination that reads as "already present" from then
+        // on — the same hazard as a partial copy, and it gets the same
+        // sentence.
+        use std::os::unix::fs::PermissionsExt;
 
-        assert_eq!(measure(&source.join("cache")), 2000);
-    }
+        let (_tmp, source, target) = repo_fixture("/cache\n");
+        write(&source.join("cache/a.bin"), b"new");
+        write(&target.join("cache/keep/inner.bin"), b"old");
+        // The destination root cannot be written, so `cache` cannot be unlinked.
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
+        let premise_holds = fs::create_dir(target.join("probe")).is_err();
 
-    // ── Method reporting ─────────────────────────────────────────────────
+        let result = copy_entries(&source, &target, &config(&["cache"]), true, &mut NullSink);
 
-    #[test]
-    fn the_method_is_read_off_the_copier_not_guessed_from_the_probe() {
-        use crate::cow_copy::CopyStats;
-
-        let stats = |reflinked, copied| CopyStats {
-            reflinked,
-            copied,
-            bytes: 0,
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+        let [CopyOutcome::Failed { detail, .. }] = result.outcomes.as_slice() else {
+            panic!("expected one failure, got {:?}", result.outcomes);
         };
-        assert_eq!(method_of(&stats(3, 0)), CopyMethod::Reflinked);
-        assert_eq!(method_of(&stats(0, 3)), CopyMethod::Copied);
-        // The case the one-sample probe could never see: a tree straddling a
-        // mount point comes back part-cloned, and "reflinked" on the copied
-        // half is the lie that matters.
-        assert_eq!(method_of(&stats(2, 1)), CopyMethod::Mixed);
-        // Nothing but directories and symlinks: no bytes moved, so nothing was
-        // copied in the expensive sense.
-        assert_eq!(method_of(&stats(0, 0)), CopyMethod::Reflinked);
-
-        assert_eq!(
-            copied_annotation(2, 1024, CopyMethod::Mixed, Duration::ZERO),
-            "2 paths · 1 KB · part reflinked"
+        assert!(
+            detail.contains("mistaken for a finished copy"),
+            "a surviving destination has to be called out: {detail}"
         );
-    }
-
-    // ── Platform-independent path spelling ───────────────────────────────
-
-    #[test]
-    fn expanded_paths_are_slash_separated_and_never_the_walk_root() {
-        // These strings go straight into git pathspecs, `.gitignore`
-        // comparisons and `StepKey` scopes. On Windows a native `web\dist`
-        // would make every glob entry fail as not-gitignored with a warning
-        // naming a path git never heard of, and nothing in CI would catch it —
-        // `windows-check` is a `cargo check`.
-        assert_eq!(
-            relative_to_slash_string(&PathBuf::from("web").join("dist")).as_deref(),
-            Some("web/dist")
-        );
-        // The walk root has no components, and the worktree itself is not
-        // something `copy:` may replicate.
-        assert_eq!(relative_to_slash_string(Path::new("")), None);
     }
 
     // ── Force-path safety: what may be destroyed, and when ───────────────
