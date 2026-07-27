@@ -1611,6 +1611,92 @@ mod timeline_tests {
         );
     }
 
+    /// The `copy:` stage (#387) is inert on the existing-branch journey too,
+    /// for the same reason it is on `daft start`: almost no repo declares the
+    /// key, and `daft go` is the creation path most users walk most often.
+    /// The sibling assertion lives in checkout_branch.rs — the two call sites
+    /// are duplicated verbatim, so a regression that edits only ONE of them
+    /// has to be caught in the file it edits. This one also pins the *splice
+    /// point*: a real neighbouring `shared:` section is present, and the
+    /// post-create row still closes the plan, so a copy section inserted one
+    /// row too early (inside the shared group) or one too late (after the
+    /// hooks) is visible here before it ever reaches a rail.
+    #[test]
+    #[serial]
+    fn no_copy_section_when_the_source_declares_none() {
+        // `execute` records the worktree's identity — without this, the
+        // write lands in the developer's real state dir (#697).
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        // A config that exists and parses, and that declares a NEIGHBOURING
+        // section — so the plan really does carry a `shared:` group the copy
+        // section could be misplaced relative to. It says nothing about
+        // `copy:`, the case a bare `unwrap_or_default()` bug would turn into
+        // an empty section rather than no section at all.
+        std::fs::write(tmp.path().join("daft.yml"), "shared:\n  - .env\n").unwrap();
+        git(tmp.path(), &["add", "daft.yml"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("feat-x", worktree_path.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert!(
+            !plan
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Group { label } if label == "copied paths")),
+            "no `copy:` key, no anchor: {:?}",
+            plan.rows
+        );
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::CopyPath)
+                .count(),
+            0,
+            "no `copy:` key, no rows"
+        );
+        assert!(
+            !sink.events.iter().any(|(k, _)| k.id == StageId::CopyPath),
+            "no `copy:` key, no events: {:?}",
+            sink.events
+        );
+        // The declared shared file still gets its own row — proof the plan
+        // under test is one WITH a neighbouring section, so the ordering
+        // assertion below is not passing vacuously.
+        assert_eq!(
+            plan.steps()
+                .filter(|s| s.key.id == StageId::SharedFile)
+                .count(),
+            1,
+            "the neighbouring shared section is present: {:?}",
+            plan.rows
+        );
+        // The copy section is spliced between the shared section and the
+        // post-create row; an off-by-one that appended it after the hooks
+        // would show up here first.
+        assert!(
+            matches!(
+                plan.rows.last(),
+                Some(Row::Step(spec)) if spec.key.id == StageId::PostCreateHooks
+            ),
+            "post-create still closes the plan: {:?}",
+            plan.rows
+        );
+    }
+
     // ── Forge PR/MR checkout ─────────────────────────────────────────────
 
     /// Read a single git config/plumbing value from `dir`.
