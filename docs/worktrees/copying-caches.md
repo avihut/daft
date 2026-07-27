@@ -221,7 +221,7 @@ gitignored paths to bring into each new worktree — the same idea, one path per
 line. Convert it into a `copy:` block and paste the result into `daft.yml`:
 
 ```bash
-{ echo 'copy:'; grep -v '^[[:space:]]*\(#.*\)\?$' .worktreeinclude | sed 's/^/  - /'; }
+{ echo 'copy:'; grep -Ev '^[[:space:]]*(#|$)' .worktreeinclude | sed 's/^/  - /'; }
 ```
 
 Two behavioral differences to know once you switch: daft reflinks where the
