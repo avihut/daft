@@ -116,8 +116,11 @@ fn complete(
         // purpose — the sole positional (the worktree to warm) and `--from`
         // (the worktree to copy from) name the same kind of thing, and the
         // shells route the flag's value through this arm at `--position 1`.
-        // The current worktree stays in: it is the default target, and
-        // `warm . --from main` is a legitimate way to say so out loud.
+        // The current worktree stays in the candidate set: it is the default
+        // target, and `warm develop --from develop` has to be *offered* so the
+        // same-worktree refusal can explain itself. (`.` is not a candidate —
+        // the target is resolved by path-under-the-root, branch, or directory
+        // name, none of which `.` satisfies.)
         ("git-worktree-warm", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
             &CONFIG_WARM,
