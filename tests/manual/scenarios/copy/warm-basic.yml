@@ -1,0 +1,67 @@
+name: Warm a worktree that predates the copy declaration
+description: >
+  The motivating journey for `daft warm`: a worktree already existed when
+  `copy:` was added to daft.yml, so creation never seeded it. Warming it from
+  the worktree that holds the built cache copies the declared paths in, and the
+  result is an independent copy — a real directory, not a symlink into the
+  source (that distinction is the whole point of `copy:` versus `shared:`).
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  # Created BEFORE any copy: key exists, so the creation-time copy stage has
+  # nothing to do here and this scenario stays independent of it.
+  - name: Create a second worktree while no copy paths are declared
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  - name: Build a gitignored cache in main and declare it
+    run: |
+      printf 'node_modules/\n' > .gitignore
+      printf 'copy:\n  - node_modules/\n' > daft.yml
+      mkdir -p node_modules/pkg
+      printf 'built-in-main\n' > node_modules/pkg/index.js
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Warm develop from main
+    run: daft warm develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "node_modules"
+        - "Copied 1 of 1 declared path"
+      files_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+          content: "built-in-main"
+
+  - name: The copied cache is an independent directory, not a symlink
+    run: test ! -L "$WORK_DIR/test-repo/develop/node_modules"
+    expect:
+      exit_code: 0
+
+  - name: Editing the copy does not reach back into the source
+    run: |
+      printf 'edited-in-develop\n' > "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
+    expect:
+      exit_code: 0
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/node_modules/pkg/index.js"
+          content: "built-in-main"

@@ -117,11 +117,15 @@ pub fn execute<S: ProgressSink>(
 
     let source = resolve_source(params, git, project_root, &current, &target)?;
 
+    // Copying a worktree onto itself is never what was meant, and with
+    // `--force` it would delete the very entries it was about to copy. The
+    // hint offers both readings — wrong source, or forgotten target — because
+    // which one the user meant is not knowable from here.
     if source == target {
         anyhow::bail!(
-            "source and target are the same worktree ({}); run `{}` to choose a different source",
-            display_name(&target, project_root),
-            crate::daft_cmd("warm --from <worktree>")
+            "source and target are the same worktree ('{}'); pass --from naming a different \
+             worktree, or name the target to warm",
+            display_name(&target, project_root)
         );
     }
     if !source.is_dir() {

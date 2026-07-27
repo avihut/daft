@@ -1,0 +1,68 @@
+name: Warm --from chooses the source worktree
+description: >
+  The reverse direction: pull a cache into the worktree you are standing in from
+  a sibling that has it. `--from` also decides whose daft.yml is read — the
+  declaration lives with the cache, not with the destination — and naming your
+  own worktree as the source is refused rather than silently no-oped.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree while no copy paths are declared
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  # Both the cache and the daft.yml that declares it live in develop, so a
+  # run that read the config from the destination would find nothing.
+  - name: Build a gitignored cache in develop and declare it there
+    run: |
+      printf 'target/\n' > .gitignore
+      printf 'copy:\n  - target/\n' > daft.yml
+      mkdir -p target/debug
+      printf 'built-in-develop\n' > target/debug/artifact.bin
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+
+  - name: Warm the current worktree from develop
+    run: daft warm --from develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "target"
+        - "Copied 1 of 1 declared path"
+      files_exist:
+        - "$WORK_DIR/test-repo/main/target/debug/artifact.bin"
+      file_contains:
+        - path: "$WORK_DIR/test-repo/main/target/debug/artifact.bin"
+          content: "built-in-develop"
+
+  - name: Naming your own worktree as the source is an error, not a no-op
+    run: daft warm --from main 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "same worktree"
+
+  - name: An unknown worktree name is an error
+    run: daft warm --from no-such-worktree 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no-such-worktree"
