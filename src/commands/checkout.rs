@@ -2153,13 +2153,15 @@ fn run_checkout(
         },
         layout: Some(layout),
         at_path: args.at.clone(),
-        // The morph (branch missing → run_create_branch) must leave no rail
-        // behind: hold the plan until the branch is known to exist, so the
-        // fetch runs under the planning face and a not-found dissolves the
-        // face tracelessly instead of closing a Failed receipt before
-        // start's rail opens. Forge targets never morph (their misses are
-        // Other, not BranchNotFound), so they don't defer.
-        defer_plan_until_branch_known: !is_forge && (args.start || settings.go_auto_start),
+        // The plan must not commit before the branch is known to exist
+        // (#782): a miss is never this rail's work — it morphs into
+        // run_create_branch (`--start` / autoStart), falls back to the
+        // catalog / a sandbox, or errors — and none of those may leave a
+        // Failed worktree-creation receipt behind. Deferring keeps the
+        // fetch under the planning face; it joins a committed plan as a
+        // pre-completed row. Forge targets don't defer: their misses are
+        // Other, not BranchNotFound, and their fetch is planned work.
+        defer_plan_until_branch_known: !is_forge,
         forge: forge_checkout,
     };
 

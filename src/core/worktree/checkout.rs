@@ -78,13 +78,15 @@ pub struct CheckoutParams {
     /// Explicit path override for worktree placement (`--at` flag).
     /// When `Some`, takes priority over both `layout` and the default path computation.
     pub at_path: Option<PathBuf>,
-    /// The caller morphs a missing branch into branch creation (`daft go
-    /// --start` / `daft.go.autoStart`), and the morph must leave no rail
-    /// behind — so with the fetch on, the fetch runs under the planning
-    /// face and the plan commits only once the branch is known to exist,
-    /// leading with the already-done fetch row. Without this, the morph
-    /// rendered go's `Failed` receipt and then start's rail — two rails on
-    /// an exit-0 invocation.
+    /// The caller resolves a missing branch into something other than this
+    /// rail's work — a morph into branch creation (`daft go --start` /
+    /// `daft.go.autoStart`), the catalog / sandbox fallbacks, or a plain
+    /// error — so the plan must not commit until the branch is known to
+    /// exist: with the fetch on, the fetch runs under the planning face and
+    /// joins the committed plan as a pre-completed row. Without this, a
+    /// miss closed a `Failed` worktree-creation receipt for an invocation
+    /// that went on to succeed (#782) — or rendered two rails on the morph
+    /// path.
     pub defer_plan_until_branch_known: bool,
     /// Set when the checkout target was a forge PR/MR reference (`pr:123`,
     /// `mr:45`, or a PR/MR URL). The command layer resolved it via `gh`/`glab`
@@ -325,13 +327,13 @@ pub fn execute(
     // Without a fetch every branch fact is local: probe now, so an unknown
     // branch errors before any plan commits (no rail renders for resolve
     // errors). With `daft.checkout.fetch` on the probe must follow the
-    // network — it moves below the plan commit, and the fetch becomes
-    // planned work instead of hiding behind the planning face. The
-    // exception is a morph-armed caller (`defer_plan_until_branch_known`):
-    // the fetch runs under the face — its stage events land on no row —
-    // and joins the committed plan as a pre-completed row, so a missing
-    // branch still errors before any plan commits and the morph's own rail
-    // is the only rail.
+    // network; a deferring caller (every non-forge checkout, #782) runs
+    // the fetch under the planning face — its stage events land on no row,
+    // its warnings stay quiet (a probe miss is expected, not alarming) —
+    // and it joins the committed plan as a pre-completed row, so a missing
+    // branch still errors before any plan commits. Only forge targets
+    // fetch as planned work below the commit: their misses are Other
+    // (the fork-ref fallback), never BranchNotFound.
     let mut prefetch: Option<Prefetch> = None;
     let pre_plan_probe = if fork.is_some() {
         // Fork PR/MR: the source branch isn't a normal ref on the base repo —
@@ -349,7 +351,7 @@ pub fn execute(
     } else if params.checkout_fetch {
         if params.defer_plan_until_branch_known {
             let fetch_started = std::time::Instant::now();
-            let failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink);
+            let failed = !fetch_branch(git, &params.remote_name, &params.branch_name, sink, true);
             prefetch = Some(Prefetch {
                 elapsed: fetch_started.elapsed(),
                 failed,
@@ -479,12 +481,15 @@ pub fn execute(
             local_exists
         }
         None => {
-            let fetch_failed = !fetch_branch(git, source_remote, &params.branch_name, sink);
+            let fetch_failed = !fetch_branch(git, source_remote, &params.branch_name, sink, false);
             let (local_exists, remote_exists) =
                 check_branch_existence(git, &params.branch_name, source_remote)?;
             if !local_exists && !remote_exists {
-                // The plan is committed: the command layer aborts the rail
-                // into a Failed receipt, and errors print below it.
+                // The plan is committed: a miss here closes the rail as a
+                // Failed receipt. Non-forge checkouts always defer (#782)
+                // and miss before the commit instead — this return is the
+                // contract for a non-deferring caller, not a path daft
+                // takes today.
                 let Some(fc) = forge else {
                     return Err(CheckoutError::BranchNotFound {
                         branch: params.branch_name.clone(),
@@ -785,11 +790,19 @@ fn find_existing_worktree_for_branch(
 ///
 /// Returns `true` if at least the general fetch succeeded, `false` if both
 /// fetches failed.
+///
+/// `quiet_probe` marks a resolution fetch running under the planning face
+/// (the deferred path): transient fetch warnings stay off stderr — a
+/// refspec miss is the expected outcome of probing a name that may not be
+/// a branch at all (#782) — while the durable signals survive: the yellow
+/// Fetch row when a plan commits, and `fetch_failed` on `BranchNotFound`
+/// for the miss messaging.
 fn fetch_branch(
     git: &GitCommand,
     remote_name: &str,
     branch_name: &str,
     sink: &mut impl ProgressSink,
+    quiet_probe: bool,
 ) -> bool {
     // The fetch is a planned rail row (mirrors checkout_branch's
     // `fetch_remote`): it resolves green on success and yellow — with the
@@ -801,7 +814,9 @@ fn fetch_branch(
     let general_ok = match git.fetch(remote_name, false) {
         Ok(()) => true,
         Err(e) => {
-            sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+            if !quiet_probe {
+                sink.on_warning(&format!("Failed to fetch from remote '{remote_name}': {e}"));
+            }
             false
         }
     };
@@ -813,7 +828,9 @@ fn fetch_branch(
     {
         Ok(()) => true,
         Err(e) => {
-            sink.on_warning(&format!("Failed to fetch specific branch: {e}"));
+            if !quiet_probe {
+                sink.on_warning(&format!("Failed to fetch specific branch: {e}"));
+            }
             false
         }
     };
