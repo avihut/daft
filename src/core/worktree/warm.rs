@@ -30,8 +30,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::core::ProgressSink;
+use crate::core::copy_paths;
 use crate::core::copy_paths::{
-    CopyMethod, CopyOutcome, CopyPathsResult, SkipReason, copy_entries, read_copy_config,
+    CopyOutcome, CopyPathsResult, SkipReason, copy_entries, read_copy_config,
 };
 use crate::git::GitCommand;
 
@@ -462,92 +463,26 @@ fn config_load_error(source: &Path) -> Option<String> {
     }
 }
 
-/// The one-line reason a `copy:` entry was left out, phrased as a complete
-/// standalone clause.
+/// One entry's flat line, for `daft warm`'s per-entry output.
 ///
-/// Deliberately prefix-free (`already present`, not `skipped — already
-/// present`): the rail's timeline exempts `StageId::CopyPath` from the
-/// `skipped — ` prefix, and `warm`'s plain lines carry the entry name in front
-/// instead. One phrasing serves both surfaces so a user who sees
-/// `node_modules is tracked — not copied` on create reads the identical
-/// sentence from `daft warm`.
-pub fn skip_phrase(reason: &SkipReason, entry: &str) -> String {
-    match reason {
-        SkipReason::NoSource => "nothing to copy yet".to_string(),
-        SkipReason::DestinationExists => "already present".to_string(),
-        SkipReason::NotIgnored => format!("'{entry}' is tracked — not copied"),
-        SkipReason::NoReflink => {
-            "this filesystem cannot reflink, and fallback is 'skip'".to_string()
-        }
-        SkipReason::TooLarge {
-            size_bytes,
-            limit_bytes,
-        } => format!(
-            "{} over the {} max_size",
-            format_bytes(size_bytes.saturating_sub(*limit_bytes)),
-            format_bytes(*limit_bytes)
-        ),
-        SkipReason::NoMatches => "matched nothing".to_string(),
-    }
-}
-
-/// One entry's rendered skip line, entry name included exactly once.
+/// Composed from the engine's two halves rather than phrased here:
+/// [`copy_paths::skip_phrase`] is the bare clause the rail prints beside a row
+/// whose label already names the entry, and [`copy_paths::qualified_phrase`]
+/// puts the entry back for a surface with only one column. `warm` is that
+/// surface, so it is the composition — never a second vocabulary — that lives
+/// in this module.
 ///
-/// `warm` prefixes each line with the entry it is about, but some phrases name
-/// the entry themselves (`'target' is tracked — not copied`) because the rail
-/// renders them with no prefix at all. Prefixing those too produced
-/// `target: 'target' is tracked — not copied`. A phrase that opens with a quote
-/// is already self-identifying and is passed through untouched.
-///
-/// This is the interim rule; the engine track is exporting a `qualified_phrase`
-/// classification that replaces the leading-quote sniff with an explicit one at
-/// merge.
+/// This replaces an interim leading-quote heuristic that guessed whether a
+/// phrase had already named its entry. The engine now settles it: no clause
+/// ever names the entry, and the offending path inside a glob expansion is the
+/// only path a phrase quotes.
 pub fn skip_line(entry: &str, reason: &SkipReason) -> String {
-    let phrase = skip_phrase(reason, entry);
-    if phrase.starts_with('\'') {
-        phrase
-    } else {
-        format!("{entry}: {phrase}")
-    }
+    copy_paths::qualified_phrase(entry, &copy_paths::skip_phrase(entry, reason))
 }
 
-/// The success annotation for one copied entry: how many paths it expanded to,
-/// how much they weighed, how they were replicated, and how long it took —
-/// `3 dirs · 1.2 GB · reflinked · 0.3s`.
-pub fn copied_annotation(
-    matches: usize,
-    bytes: u64,
-    method: CopyMethod,
-    elapsed: std::time::Duration,
-) -> String {
-    let unit = if matches == 1 { "path" } else { "paths" };
-    let how = match method {
-        CopyMethod::Reflinked => "reflinked",
-        CopyMethod::Copied => "copied",
-    };
-    format!(
-        "{matches} {unit} · {} · {how} · {:.1}s",
-        format_bytes(bytes),
-        elapsed.as_secs_f64()
-    )
-}
-
-/// Human-readable byte count, binary multiples with decimal-style unit names —
-/// the spelling daft already uses for job-log sizes.
-pub fn format_bytes(n: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let n_f = n as f64;
-    if n_f >= GB {
-        format!("{:.1} GB", n_f / GB)
-    } else if n_f >= MB {
-        format!("{:.1} MB", n_f / MB)
-    } else if n_f >= KB {
-        format!("{:.1} KB", n_f / KB)
-    } else {
-        format!("{n} B")
-    }
+/// One failed entry's flat line, on the same rule as [`skip_line`].
+pub fn failure_line(entry: &str, detail: &str) -> String {
+    copy_paths::qualified_phrase(entry, &copy_paths::failure_phrase(detail))
 }
 
 /// The declared entries that never produced an outcome.
@@ -567,7 +502,6 @@ pub fn unreported<'a>(declared: &'a [String], result: &CopyPathsResult) -> Vec<&
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn display_name_is_relative_to_the_project_root() {
@@ -618,135 +552,117 @@ mod tests {
         assert!(require_directory(tmp.path(), "target").is_ok());
     }
 
+    /// Every skip reason the engine can produce, rendered as `warm` renders
+    /// it. The *wording* is the engine's and is pinned by its own tests; what
+    /// belongs here is the composition — that a flat line is always
+    /// `entry: <clause>`, for every variant, with the entry appearing once.
+    ///
+    /// Exhaustive by construction: a new `SkipReason` fails to compile here
+    /// until it is added, which is what stops a fourteenth variant reaching
+    /// `daft warm` unrendered.
     #[test]
-    fn skip_phrases_read_as_complete_clauses() {
-        // No `skipped — ` prefix anywhere: the rail exempts CopyPath rows and
-        // warm puts the entry name in front, so each phrase must stand alone.
-        for (reason, expected) in [
-            (SkipReason::NoSource, "nothing to copy yet"),
-            (SkipReason::DestinationExists, "already present"),
-            (SkipReason::NoMatches, "matched nothing"),
-        ] {
-            assert_eq!(skip_phrase(&reason, "target"), expected);
-        }
-        assert_eq!(
-            skip_phrase(&SkipReason::NotIgnored, "target"),
-            "'target' is tracked — not copied"
-        );
-        assert!(!skip_phrase(&SkipReason::NoReflink, "target").starts_with("skipped"));
-    }
-
-    #[test]
-    fn too_large_names_the_overage_and_the_cap() {
-        let phrase = skip_phrase(
-            &SkipReason::TooLarge {
-                size_bytes: 3 * 1024 * 1024 * 1024,
-                limit_bytes: 1024 * 1024 * 1024,
-            },
-            "target",
-        );
-        assert_eq!(phrase, "2.0 GB over the 1.0 GB max_size");
-    }
-
-    /// Every skip reason is a phrase a user reads mid-sentence, so each one is
-    /// pinned literally: a reword is a UX decision, not a refactor. Two of
-    /// them are also asserted by the `copy` YAML scenarios and (once the rail
-    /// lands) by the creation timeline, so drift here is drift there.
-    #[test]
-    fn every_skip_reason_has_a_pinned_phrase() {
-        let cases = [
-            (SkipReason::NoSource, "nothing to copy yet"),
-            (SkipReason::DestinationExists, "already present"),
-            (SkipReason::NoMatches, "matched nothing"),
-            (
-                SkipReason::NoReflink,
-                "this filesystem cannot reflink, and fallback is 'skip'",
-            ),
-            (SkipReason::NotIgnored, "'**/dist' is tracked — not copied"),
-            (
-                SkipReason::TooLarge {
-                    size_bytes: 1536,
-                    limit_bytes: 1024,
-                },
-                "512 B over the 1.0 KB max_size",
-            ),
-        ];
-        for (reason, expected) in cases {
-            assert_eq!(skip_phrase(&reason, "**/dist"), expected, "{reason:?}");
-        }
-    }
-
-    /// Only `NotIgnored` names the entry — the others are about the copy, not
-    /// the path, and the rendering surfaces already put the entry in front.
-    /// Pinning this stops a well-meaning "let's mention the entry everywhere"
-    /// change from producing `node_modules: node_modules already present`.
-    #[test]
-    fn only_the_tracked_phrase_repeats_the_entry() {
-        for reason in [
+    fn every_skip_reason_renders_as_the_entry_then_its_clause() {
+        let named = |s: &str| s.to_string();
+        let reasons = [
             SkipReason::NoSource,
+            SkipReason::SourceUnreadable {
+                path: named("**/dist/a"),
+                detail: named("permission denied"),
+            },
             SkipReason::DestinationExists,
-            SkipReason::NoMatches,
+            SkipReason::DestinationUnreadable {
+                path: named("**/dist"),
+                detail: named("permission denied"),
+            },
+            SkipReason::DestinationUnclassifiable {
+                offender: named("**/dist"),
+                detail: named("not a repository"),
+            },
+            SkipReason::DestinationConflict {
+                path: named("**/dist"),
+                detail: named("a symlink"),
+            },
+            SkipReason::NotIgnored {
+                offender: named("**/dist"),
+            },
+            SkipReason::TargetTracked {
+                offender: named("**/dist"),
+            },
+            SkipReason::Unclassifiable {
+                offender: named("**/dist"),
+                detail: named("probe failed"),
+            },
+            SkipReason::Uncontained {
+                offender: named("../../etc"),
+                detail: named("escapes the worktree"),
+            },
+            SkipReason::SameWorktree,
             SkipReason::NoReflink,
-        ] {
-            let phrase = skip_phrase(&reason, "node_modules");
+            SkipReason::TooLarge {
+                size_bytes: 1536,
+                limit_bytes: 1024,
+            },
+            SkipReason::NoMatches,
+        ];
+
+        for reason in reasons {
+            let line = skip_line("**/dist", &reason);
+            let clause = copy_paths::skip_phrase("**/dist", &reason);
+
+            assert_eq!(
+                line,
+                format!("**/dist: {clause}"),
+                "the flat line is the engine's clause with the entry restored: {reason:?}"
+            );
+            // The stutter condition, precisely: the clause quoting the ENTRY.
+            // A clause may quote a distinct offending path — and that path can
+            // legitimately have the entry as a prefix (`**/dist/a` under
+            // `**/dist`), which a naive `contains` would flag.
             assert!(
-                !phrase.contains("node_modules"),
-                "{reason:?} should not repeat the entry: {phrase}"
+                !clause.contains("'**/dist'"),
+                "the clause must not quote the entry — warm's prefix already names it, and \
+                 the pair would stutter: {reason:?} -> {clause}"
+            );
+            assert!(
+                !clause.starts_with("skipped"),
+                "CopyPath is exempt from the `skipped — ` prefix: {clause}"
             );
         }
-        assert!(skip_phrase(&SkipReason::NotIgnored, "node_modules").contains("node_modules"));
     }
 
-    /// A cap the size did not actually exceed cannot underflow into a
-    /// nonsense number — the subtraction saturates, so the worst case reads
-    /// `0 B over …` rather than panicking or printing 16 exabytes.
+    /// The interim rule this replaced: `warm` used to sniff a leading quote to
+    /// guess whether a clause had already named its entry, and prefixed only
+    /// the ones that had not. The engine settled it — no clause ever names the
+    /// entry, and a quoted path inside one is a *glob match*, not the entry —
+    /// so the prefix is now unconditional and the offender still shows.
     #[test]
-    fn an_overage_below_the_cap_saturates_instead_of_wrapping() {
-        assert_eq!(
-            skip_phrase(
-                &SkipReason::TooLarge {
-                    size_bytes: 512,
-                    limit_bytes: 1024,
-                },
-                "target",
-            ),
-            "0 B over the 1.0 KB max_size"
+    fn a_quoted_offender_inside_a_glob_is_still_prefixed_with_the_entry() {
+        let line = skip_line(
+            "**/dist",
+            &SkipReason::NotIgnored {
+                offender: "web/dist".to_string(),
+            },
+        );
+        assert!(
+            line.starts_with("**/dist: "),
+            "the declaration is what the user wrote and must lead: {line}"
+        );
+        assert!(
+            line.contains("'web/dist'"),
+            "the offending match is the only reason one row can explain a \
+             thirty-way expansion: {line}"
         );
     }
 
+    /// Failures compose the same way, through the engine's own clause.
     #[test]
-    fn format_bytes_scales_through_the_binary_units() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
-        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
-    }
-
-    /// The unit boundaries, from both sides. The just-under cases are the
-    /// interesting ones: rounding to one decimal makes a byte count that has
-    /// not reached the next unit render as `1024.0 KB` rather than `1.0 MB`.
-    /// Cosmetic, deliberate, and pinned so it changes on purpose if ever.
-    #[test]
-    fn format_bytes_boundaries_round_predictably() {
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
-        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1024.0 MB");
-        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
-        // No unit above GB: a terabyte cache reads as four figures of GB
-        // rather than silently losing scale.
-        assert_eq!(format_bytes(1024_u64.pow(4)), "1024.0 GB");
-    }
-
-    #[test]
-    fn copied_annotation_singularizes_one_path() {
+    fn a_failure_renders_as_the_entry_then_its_clause() {
         assert_eq!(
-            copied_annotation(1, 1024, CopyMethod::Reflinked, Duration::from_millis(300)),
-            "1 path · 1.0 KB · reflinked · 0.3s"
-        );
-        assert_eq!(
-            copied_annotation(3, 0, CopyMethod::Copied, Duration::from_secs(2)),
-            "3 paths · 0 B · copied · 2.0s"
+            failure_line("node_modules", "permission denied"),
+            format!(
+                "node_modules: {}",
+                copy_paths::failure_phrase("permission denied")
+            )
         );
     }
 
@@ -804,20 +720,6 @@ mod tests {
             }],
         };
         assert_eq!(unreported(&declared, &result), ["a", "b", "d"]);
-    }
-
-    /// Zero matches is a number, not a plural exception — a glob that expanded
-    /// to nothing but still copied would read `0 paths`, never `0 path`.
-    #[test]
-    fn copied_annotation_pluralizes_everything_but_one() {
-        assert_eq!(
-            copied_annotation(0, 0, CopyMethod::Copied, Duration::ZERO),
-            "0 paths · 0 B · copied · 0.0s"
-        );
-        assert_eq!(
-            copied_annotation(2, 1024, CopyMethod::Reflinked, Duration::from_millis(50)),
-            "2 paths · 1.0 KB · reflinked · 0.1s"
-        );
     }
 
     #[test]

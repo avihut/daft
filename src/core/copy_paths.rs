@@ -1701,7 +1701,12 @@ pub fn report_copy_results(
 
 /// Whether a skip is the yellow face (the config asked for something that did
 /// not happen) or the dim one (nothing to do).
-fn reason_needs_attention(outcome: &CopyOutcome) -> bool {
+///
+/// Public because `daft warm` splits its plain lines down the same seam — the
+/// warning channel versus the quiet one — and counts the yellow ones in its
+/// summary. Re-listing the quiet three there would mean a fourteenth
+/// `SkipReason` silently landing in the wrong channel on one surface only.
+pub fn reason_needs_attention(outcome: &CopyOutcome) -> bool {
     let CopyOutcome::Skipped { reason, .. } = outcome else {
         return false;
     };
@@ -1948,7 +1953,11 @@ fn method_word(method: CopyMethod) -> &'static str {
 /// A byte count in the copy stage's voice — `42 B`, `1.5 KB`, `2.1 GB` — with
 /// a whole number left whole (`1 GB`, never `1.0 GB`), because a `max_size` the
 /// user wrote as `1GB` should be quoted back to them the way they wrote it.
-fn format_bytes(bytes: u64) -> String {
+///
+/// Public because `daft warm`'s summary totals the same bytes these phrases
+/// quote, in the same output: a second formatter would print `1.0 GB` two
+/// lines under this one's `1 GB`.
+pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;

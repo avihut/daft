@@ -1,7 +1,7 @@
 use crate::{
     WorktreeConfig,
     core::{
-        OutputSink,
+        OutputSink, copy_paths,
         copy_paths::{CopyOutcome, CopyPathsResult},
         worktree::warm,
     },
@@ -155,23 +155,30 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
                 matches,
                 bytes,
                 elapsed,
+                unreadable,
             } => output.success(&format!(
                 "{entry} \u{2192} {}",
-                warm::copied_annotation(*matches, *bytes, *method, *elapsed)
+                copy_paths::copied_annotation(*matches, *bytes, *method, *elapsed, *unreadable)
             )),
-            CopyOutcome::Skipped { entry, reason } => match reason {
-                // The attention skips: the config asked for something daft
-                // would not or could not do, so they must not read as routine.
-                crate::core::copy_paths::SkipReason::NotIgnored
-                | crate::core::copy_paths::SkipReason::NoReflink
-                | crate::core::copy_paths::SkipReason::TooLarge { .. } => {
-                    output.warning(&warm::skip_line(entry, reason))
+            // The channel split is the engine's, not a second list here: it
+            // owns which skips are the stage working as designed (an unbuilt
+            // cache, an already-warm worktree, a glob that matched nothing)
+            // and which are the config not getting what it asked for. A
+            // fourteenth SkipReason must not be able to land in the yellow
+            // channel on the rail and the quiet one here.
+            CopyOutcome::Skipped { entry, reason } => {
+                let line = warm::skip_line(entry, reason);
+                if copy_paths::reason_needs_attention(outcome) {
+                    output.warning(&line);
+                } else {
+                    output.info(&line);
                 }
-                _ => output.info(&warm::skip_line(entry, reason)),
-            },
+            }
             // Loud but not fatal, matching the rail's yellow attention row:
             // the worktree is fine, one of its caches is not.
-            CopyOutcome::Failed { entry, detail } => output.warning(&format!("{entry}: {detail}")),
+            CopyOutcome::Failed { entry, detail } => {
+                output.warning(&warm::failure_line(entry, detail))
+            }
         }
     }
 
@@ -193,7 +200,7 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
 }
 
 /// The one line a scripted caller greps for:
-/// `Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'; 1 failed.`
+/// `Copied 1 of 2 declared paths (1 KB) into 'develop' from 'main'; 1 failed.`
 ///
 /// Two properties it must never lose:
 ///
@@ -222,7 +229,7 @@ fn summary_line(result: &warm::WarmResult) -> String {
         format!(
             "Copied {copied} of {declared} declared path{} ({}){pair}",
             plural(declared),
-            warm::format_bytes(outcome.copied_bytes())
+            copy_paths::format_bytes(outcome.copied_bytes())
         )
     } else if failed == 0 && attention == 0 {
         return format!(
@@ -263,26 +270,19 @@ fn failure_count(result: &warm::WarmResult) -> usize {
         + warm::unreported(&result.declared, &result.outcome).len()
 }
 
-/// Entries daft deliberately declined — tracked content, an unreflinkable
-/// filesystem under `fallback: skip`, a cache over its `max_size`. Not
-/// failures, but not "no work" either: the config asked for something that did
-/// not happen.
+/// Entries daft deliberately declined — content the target tracks, a path that
+/// escapes the worktree, an unreflinkable filesystem under `fallback: skip`, a
+/// cache over its `max_size`. Not failures, but not "no work" either: the
+/// config asked for something that did not happen.
+///
+/// The set is the engine's, asked one outcome at a time. Ten of the thirteen
+/// skip reasons belong here, and re-listing them would put a fourteenth in the
+/// wrong bucket the day it lands.
 fn attention_count(result: &CopyPathsResult) -> usize {
-    use crate::core::copy_paths::SkipReason;
     result
         .outcomes
         .iter()
-        .filter(|o| {
-            matches!(
-                o,
-                CopyOutcome::Skipped {
-                    reason: SkipReason::NotIgnored
-                        | SkipReason::NoReflink
-                        | SkipReason::TooLarge { .. },
-                    ..
-                }
-            )
-        })
+        .filter(|o| copy_paths::reason_needs_attention(o))
         .count()
 }
 
@@ -303,6 +303,7 @@ mod tests {
             matches: 1,
             bytes,
             elapsed: Duration::from_millis(100),
+            unreadable: 0,
         }
     }
 
@@ -310,6 +311,15 @@ mod tests {
         CopyOutcome::Failed {
             entry: entry.into(),
             detail: "permission denied".into(),
+        }
+    }
+
+    /// The commonest attention skip, as a value: `NotIgnored` grew an
+    /// `offender` field so one row can name which of a glob's matches broke
+    /// the rule.
+    fn not_ignored(entry: &str) -> SkipReason {
+        SkipReason::NotIgnored {
+            offender: entry.to_string(),
         }
     }
 
@@ -331,7 +341,7 @@ mod tests {
         );
         assert_eq!(
             summary_line(&result),
-            "Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'."
+            "Copied 1 of 2 declared paths (1 KB) into 'develop' from 'main'."
         );
     }
 
@@ -381,7 +391,7 @@ mod tests {
             result_of(&["target"], vec![copied("target", 10)]),
             result_of(&["target"], vec![skipped("target", SkipReason::NoSource)]),
             result_of(&["target"], vec![failed("target")]),
-            result_of(&["target"], vec![skipped("target", SkipReason::NotIgnored)]),
+            result_of(&["target"], vec![skipped("target", not_ignored("target"))]),
             result_of(&["target"], vec![]),
         ];
         for shape in &shapes {
@@ -419,7 +429,7 @@ mod tests {
         );
         assert_eq!(
             summary_line(&result),
-            "Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'; 1 failed."
+            "Copied 1 of 2 declared paths (1 KB) into 'develop' from 'main'; 1 failed."
         );
     }
 
@@ -431,7 +441,7 @@ mod tests {
         let result = result_of(
             &["target", "node_modules", ".venv"],
             vec![
-                skipped("target", SkipReason::NotIgnored),
+                skipped("target", not_ignored("target")),
                 skipped(
                     "node_modules",
                     SkipReason::TooLarge {
@@ -458,7 +468,7 @@ mod tests {
         let result = result_of(&["target", "node_modules"], vec![copied("target", 2048)]);
         assert_eq!(
             summary_line(&result),
-            "Copied 1 of 2 declared paths (2.0 KB) into 'develop' from 'main'; 1 failed."
+            "Copied 1 of 2 declared paths (2 KB) into 'develop' from 'main'; 1 failed."
         );
     }
 
@@ -515,8 +525,8 @@ mod tests {
 
         let output = render(&result, false);
         assert!(
-            output.has_warning("target: permission denied"),
-            "a failed entry must be loud: {:?}",
+            output.has_warning("target:") && output.has_warning("permission denied"),
+            "a failed entry must be loud, and name itself: {:?}",
             output.warnings()
         );
         assert!(
@@ -530,64 +540,125 @@ mod tests {
         );
     }
 
-    /// Every skip reason is classified deliberately: the ones the user asked
-    /// for that daft would not or could not do are yellow, the routine ones
-    /// are quiet. A new `SkipReason` landing in the engine has to be added
-    /// here, which is exactly the review this table deserves.
+    /// Warm's two channels follow the engine's classification, reason for
+    /// reason. The list is no longer re-stated here — it is *derived* from
+    /// `reason_needs_attention`, so a fourteenth `SkipReason` cannot land in
+    /// the yellow channel on the rail and the quiet one here.
+    ///
+    /// What this pins is the property, not the membership: whichever way the
+    /// engine classifies a reason, warm renders it on the matching channel,
+    /// and either way the entry leaves a receipt.
     #[test]
-    fn skip_reasons_split_into_attention_and_routine_channels() {
-        let attention = [
-            SkipReason::NotIgnored,
+    fn skip_channels_follow_the_engines_classification() {
+        for reason in every_skip_reason() {
+            let outcome = skipped("target", reason.clone());
+            let attention = copy_paths::reason_needs_attention(&outcome);
+            let output = render(&result_of(&["target"], vec![outcome]), false);
+
+            if attention {
+                assert!(
+                    output.has_warning("target"),
+                    "{reason:?} is an attention skip and must warn: {:?}",
+                    output.entries()
+                );
+            } else {
+                assert!(
+                    !output.has_warnings(),
+                    "{reason:?} is routine, not a warning: {:?}",
+                    output.entries()
+                );
+                assert!(
+                    output.has_info("target"),
+                    "{reason:?} still leaves a receipt: {:?}",
+                    output.infos()
+                );
+            }
+        }
+    }
+
+    /// The three quiet reasons, pinned by name because the *split* is a
+    /// product decision: a re-run over a warm worktree, a cache nobody has
+    /// built yet, and a glob that matched nothing are the stage working as
+    /// designed. If one of them ever starts warning, `daft warm` in a loop
+    /// turns into a wall of yellow.
+    #[test]
+    fn the_quiet_reasons_are_the_three_that_mean_nothing_to_do() {
+        let quiet: Vec<_> = every_skip_reason()
+            .into_iter()
+            .filter(|r| !copy_paths::reason_needs_attention(&skipped("target", r.clone())))
+            .map(|r| format!("{r:?}"))
+            .collect();
+        assert_eq!(
+            quiet,
+            ["NoSource", "DestinationExists", "NoMatches"],
+            "the quiet set is a product decision, not an accident of ordering"
+        );
+    }
+
+    /// One value per `SkipReason` variant. Exhaustive by construction: adding
+    /// a variant to the engine breaks the match below until it is listed, so
+    /// no reason reaches `daft warm` without a rendering decision.
+    fn every_skip_reason() -> Vec<SkipReason> {
+        let s = |v: &str| v.to_string();
+        let all = vec![
+            SkipReason::NoSource,
+            SkipReason::SourceUnreadable {
+                path: s("target/a"),
+                detail: s("permission denied"),
+            },
+            SkipReason::DestinationExists,
+            SkipReason::DestinationUnreadable {
+                path: s("target"),
+                detail: s("permission denied"),
+            },
+            SkipReason::DestinationUnclassifiable {
+                offender: s("target"),
+                detail: s("not a repository"),
+            },
+            SkipReason::DestinationConflict {
+                path: s("target"),
+                detail: s("a symlink"),
+            },
+            not_ignored("target"),
+            SkipReason::TargetTracked {
+                offender: s("target"),
+            },
+            SkipReason::Unclassifiable {
+                offender: s("target"),
+                detail: s("probe failed"),
+            },
+            SkipReason::Uncontained {
+                offender: s("../etc"),
+                detail: s("escapes the worktree"),
+            },
+            SkipReason::SameWorktree,
             SkipReason::NoReflink,
             SkipReason::TooLarge {
                 size_bytes: 4096,
                 limit_bytes: 1024,
             },
-        ];
-        for reason in attention {
-            let result = result_of(
-                &["target"],
-                vec![CopyOutcome::Skipped {
-                    entry: "target".into(),
-                    reason: reason.clone(),
-                }],
-            );
-            let output = render(&result, false);
-            // Matched on the entry name alone, not on a `target: ` prefix:
-            // self-identifying phrases drop the prefix (see
-            // `a_self_identifying_phrase_is_not_prefixed_with_its_own_entry`).
-            assert!(
-                output.has_warning("target"),
-                "{reason:?} must reach the attention channel: {:?}",
-                output.entries()
-            );
-        }
-
-        let routine = [
-            SkipReason::NoSource,
-            SkipReason::DestinationExists,
             SkipReason::NoMatches,
         ];
-        for reason in routine {
-            let result = result_of(
-                &["target"],
-                vec![CopyOutcome::Skipped {
-                    entry: "target".into(),
-                    reason: reason.clone(),
-                }],
-            );
-            let output = render(&result, false);
-            assert!(
-                !output.has_warnings(),
-                "{reason:?} is routine, not a warning: {:?}",
-                output.entries()
-            );
-            assert!(
-                output.has_info("target: "),
-                "{reason:?} still leaves a receipt: {:?}",
-                output.infos()
-            );
+        // The exhaustiveness tripwire: a new variant fails to compile here.
+        for reason in &all {
+            match reason {
+                SkipReason::NoSource
+                | SkipReason::SourceUnreadable { .. }
+                | SkipReason::DestinationExists
+                | SkipReason::DestinationUnreadable { .. }
+                | SkipReason::DestinationUnclassifiable { .. }
+                | SkipReason::DestinationConflict { .. }
+                | SkipReason::NotIgnored { .. }
+                | SkipReason::TargetTracked { .. }
+                | SkipReason::Unclassifiable { .. }
+                | SkipReason::Uncontained { .. }
+                | SkipReason::SameWorktree
+                | SkipReason::NoReflink
+                | SkipReason::TooLarge { .. }
+                | SkipReason::NoMatches => {}
+            }
         }
+        all
     }
 
     /// The lie this branch removes: a `copy:` block that would not parse used
@@ -666,40 +737,36 @@ mod tests {
         );
     }
 
-    /// The rail renders `copy:` skips with no `skipped — ` prefix, so some
-    /// phrases name the entry themselves to stay legible there. `warm` adds a
-    /// prefix of its own, and prefixing a self-identifying phrase produced
-    /// `node_modules: 'node_modules' is tracked — not copied`.
+    /// The entry appears exactly once on a flat line.
     ///
-    /// Interim rule: a phrase opening with a quote is already qualified. The
-    /// engine track is exporting an explicit classification to replace the
-    /// sniff at merge; this test is what will prove the replacement kept the
-    /// same output.
+    /// This used to be a real hazard: `warm` prefixed every line with the
+    /// entry, and some clauses quoted it too, producing
+    /// `node_modules: 'node_modules' must be gitignored…`. `warm` guessed its
+    /// way around that with a leading-quote sniff. The engine settled it
+    /// instead — a clause names the *offending match* of a glob, and suppresses
+    /// the quote entirely when that match is the entry — so the prefix is now
+    /// unconditional. This is the test that proves the stutter stayed dead.
     #[test]
-    fn a_self_identifying_phrase_is_not_prefixed_with_its_own_entry() {
+    fn a_flat_line_names_its_entry_exactly_once() {
         let result = result_of(
             &["node_modules"],
             vec![CopyOutcome::Skipped {
                 entry: "node_modules".into(),
-                reason: SkipReason::NotIgnored,
+                reason: not_ignored("node_modules"),
             }],
         );
         let output = render(&result, false);
+        let line = output
+            .warnings()
+            .into_iter()
+            .find(|w| w.contains("node_modules"))
+            .expect("the entry must be named");
+
         assert!(
-            output
-                .warnings()
-                .contains(&"'node_modules' is tracked — not copied"),
-            "the entry must appear exactly once: {:?}",
-            output.warnings()
+            line.starts_with("node_modules: "),
+            "the entry leads the line: {line}"
         );
-        assert!(
-            !output
-                .warnings()
-                .iter()
-                .any(|w| w.starts_with("node_modules: '")),
-            "stutter: {:?}",
-            output.warnings()
-        );
+        assert_eq!(line.matches("node_modules").count(), 1, "stutter: {line}");
     }
 
     /// The `--force` hint is the whole reason the skip is survivable, so it
@@ -858,6 +925,8 @@ mod tests {
 
     /// The copied line carries the annotation, not just the entry name —
     /// "how much, how, how long" is the answer a cache copy owes the user.
+    /// The annotation's *wording* is the engine's (and pinned by its tests);
+    /// what is pinned here is that warm prints it, whole, behind the entry.
     #[test]
     fn a_copied_line_carries_its_annotation() {
         let result = result_of(
@@ -868,15 +937,56 @@ mod tests {
                 matches: 3,
                 bytes: 1024 * 1024,
                 elapsed: Duration::from_millis(1500),
+                unreadable: 0,
+            }],
+        );
+        let output = render(&result, false);
+        let expected = format!(
+            "node_modules \u{2192} {}",
+            copy_paths::copied_annotation(
+                3,
+                1024 * 1024,
+                CopyMethod::Reflinked,
+                Duration::from_millis(1500),
+                0,
+            )
+        );
+        assert!(
+            output.successes().contains(&expected.as_str()),
+            "{:?}",
+            output.successes()
+        );
+    }
+
+    /// An expansion that could not read everywhere it looked stays a success —
+    /// what was found really was copied — but the annotation says so. A green
+    /// line with no caveat would claim a completeness nobody established.
+    #[test]
+    fn an_unreadable_count_survives_into_the_copied_line() {
+        let result = result_of(
+            &["**/dist"],
+            vec![CopyOutcome::Copied {
+                entry: "**/dist".into(),
+                method: CopyMethod::Mixed,
+                matches: 4,
+                bytes: 2048,
+                elapsed: Duration::from_millis(200),
+                unreadable: 2,
             }],
         );
         let output = render(&result, false);
         assert!(
             output
                 .successes()
-                .contains(&"node_modules \u{2192} 3 paths · 1.0 MB · reflinked · 1.5s"),
-            "{:?}",
+                .iter()
+                .any(|s| s.contains("2 unreadable")),
+            "the caveat must reach the flat line: {:?}",
             output.successes()
+        );
+        assert!(
+            !output.has_warnings(),
+            "an unreadable count annotates a success, it does not demote it: {:?}",
+            output.entries()
         );
     }
 }
