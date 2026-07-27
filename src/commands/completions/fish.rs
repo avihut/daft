@@ -285,7 +285,8 @@ end
     output
 }
 
-/// Generate fish flag completions for verb aliases (go, start, carry, update)
+/// Generate fish flag completions for verb aliases (go, start, carry, update,
+/// warm, ...)
 /// by introspecting the underlying command's clap definition.
 fn generate_verb_alias_flag_completions() -> String {
     let mut output = String::new();
@@ -526,6 +527,7 @@ complete -c daft -n '__fish_use_subcommand' -a 'shared' -d 'Manage shared files 
 complete -c daft -n '__fish_use_subcommand' -a 'repo' -d 'Repository-level operations'
 complete -c daft -n '__fish_use_subcommand' -a 'skill' -d 'Manage the daft agent skill'
 complete -c daft -n '__fish_use_subcommand' -a 'file' -d 'Manage YAML config files'
+complete -c daft -n '__fish_use_subcommand' -a 'warm' -d 'Copy declared build caches into a worktree'
 complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 1' -f -a "(daft __complete daft-go (commandline -ct) --position 1 --fetch-on-miss 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from go; and test (__daft_verb_position) -eq 2' -f -a "(env DAFT_COMPLETE_GO_FIRST=(__daft_verb_first) daft __complete daft-go (commandline -ct) --position 2 2>/dev/null | cut -f1)"
 # --repo flag values complete to catalog repo names
@@ -541,6 +543,10 @@ complete -c daft -n '__fish_seen_subcommand_from start; and test (__daft_verb_po
 complete -c daft -n '__fish_seen_subcommand_from carry' -f -a "(daft __complete git-worktree-carry (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from push' -f -a "(daft __complete git-worktree-push (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
 complete -c daft -n '__fish_seen_subcommand_from exec' -f -a "(daft __complete git-worktree-exec (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+# warm: the positional and --from name the same thing — a worktree — so both
+# slots read from the command's own __complete arm
+complete -c daft -n '__fish_seen_subcommand_from warm' -f -a "(daft __complete git-worktree-warm (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"
+complete -c daft -n '__fish_seen_subcommand_from warm' -l from -x -a "(daft __complete git-worktree-warm (commandline -ct) --position 1 2>/dev/null | cut -f1)"
 # run: task names from daft.yml (plain names, no descriptions)
 complete -c daft -n '__fish_seen_subcommand_from run' -f -a "(daft __complete daft-run (commandline -ct) --position 1 2>/dev/null | cut -f1)"
 complete -c daft -n '__fish_seen_subcommand_from update' -f -a "(daft __complete git-worktree-fetch (commandline -ct) --position 1 2>/dev/null | awk -F'\t' '{c=$1; sub(/[*?]+$/,\"\",c); s=substr($1,length(c)+1); if (NF>=5) printf \"%s\t%s %s · %s · %s\n\",c,s,$3,$4,$5; else if (NF>=4) printf \"%s\t%s %s · %s\n\",c,s,$3,$4; else printf \"%s\t%s\n\",c,$3}')"

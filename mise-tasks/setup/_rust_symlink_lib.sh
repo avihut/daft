@@ -30,6 +30,7 @@ daft_multicall_symlinks=(
   git-worktree-list
   git-worktree-merge
   git-worktree-push
+  git-worktree-warm
   git-daft
   # daft-* form for the noun-first commands.
   daft-remove

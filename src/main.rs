@@ -99,6 +99,7 @@ fn main() -> Result<()> {
         "git-worktree-push" => commands::push::run(),
         "git-worktree-sync" => commands::sync::run(),
         "git-worktree-exec" => commands::exec::run(),
+        "git-worktree-warm" => commands::warm::run(),
 
         // Daft-style commands (via symlinks)
         "daft-go" => commands::checkout::run_go(),
@@ -227,6 +228,7 @@ fn main() -> Result<()> {
                     "eject" => commands::flow_eject::run(),
                     "exec" => commands::exec::run(),
                     "run" => commands::run::run(),
+                    "warm" => commands::warm::run(),
                     "file" => commands::file::run(),
                     // Worktree commands accessible via `daft worktree-<command>`
                     "worktree-clone" => commands::clone::run(),
@@ -245,6 +247,7 @@ fn main() -> Result<()> {
                     "worktree-push" => commands::push::run(),
                     "worktree-sync" => commands::sync::run(),
                     "worktree-exec" => commands::exec::run(),
+                    "worktree-warm" => commands::warm::run(),
                     "worktree-shared" => commands::shared::run(),
                     _ => daft::suggest::handle_unknown_subcommand(
                         label,

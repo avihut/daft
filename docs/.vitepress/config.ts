@@ -457,6 +457,7 @@ export default defineConfig({
                   { text: "prune", link: "/reference/cli/daft-prune" },
                   { text: "update", link: "/reference/cli/daft-update" },
                   { text: "carry", link: "/reference/cli/daft-carry" },
+                  { text: "warm", link: "/reference/cli/daft-warm" },
                   { text: "exec", link: "/reference/cli/daft-exec" },
                   { text: "run", link: "/reference/cli/daft-run" },
                   { text: "eject", link: "/reference/cli/daft-eject" },
@@ -602,6 +603,10 @@ export default defineConfig({
                       {
                         text: "worktree-carry",
                         link: "/reference/cli/git-worktree-carry",
+                      },
+                      {
+                        text: "worktree-warm",
+                        link: "/reference/cli/git-worktree-warm",
                       },
                       {
                         text: "worktree-exec",

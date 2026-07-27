@@ -35,6 +35,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "start",
     "sync",
     "update",
+    "warm",
     "worktree-branch",
     "worktree-branch-delete",
     "worktree-carry",
@@ -50,6 +51,7 @@ pub const DAFT_SUBCOMMANDS: &[&str] = &[
     "worktree-push",
     "worktree-shared",
     "worktree-sync",
+    "worktree-warm",
 ];
 
 /// All subcommands available via `daft repo <verb>`.

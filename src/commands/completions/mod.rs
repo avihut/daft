@@ -40,6 +40,7 @@ pub(super) const VERB_ALIAS_GROUPS: &[(&[&str], &str)] = &[
     (&["exec"], "git-worktree-exec"),
     (&["run"], "daft-run"),
     (&["push"], "git-worktree-push"),
+    (&["warm"], "git-worktree-warm"),
 ];
 
 /// Available daft commands that need completion scripts
@@ -64,6 +65,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "daft-install",
     "daft-file",
     "daft-run",
+    "git-worktree-warm",
 ];
 
 /// Get the clap Command for a given command name by using CommandFactory
@@ -89,6 +91,7 @@ pub(super) fn get_command_for_name(command_name: &str) -> Option<Command> {
         "daft-install" => Some(crate::commands::install::Args::command()),
         "daft-file" => Some(crate::commands::file::merge::Args::command()),
         "daft-run" => Some(crate::commands::run::Args::command()),
+        "git-worktree-warm" => Some(crate::commands::warm::Args::command()),
         _ => None,
     }
 }
@@ -108,6 +111,7 @@ pub(super) fn uses_rich_completions(command_name: &str) -> bool {
             | "git-worktree-branch"
             | "git-worktree-exec"
             | "git-worktree-push"
+            | "git-worktree-warm"
     )
 }
 
@@ -153,6 +157,14 @@ pub(super) fn repo_flag_capture(command_name: &str) -> (&'static str, &'static s
                 fi
 "#,
     )
+}
+
+/// Whether a command carries a `--from <worktree>` flag whose value completes
+/// to worktree names — the same candidate set as its positional, so both slots
+/// answer from the command's own `daft __complete` arm rather than a second
+/// vocabulary. Currently `daft warm` alone (#387).
+pub(super) fn command_has_worktree_from_flag(command_name: &str) -> bool {
+    command_name == "git-worktree-warm"
 }
 
 /// Whether a command's first positional is an optional cataloged-repo name

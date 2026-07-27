@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::commands::{
     carry, checkout, clone, config, doctor, exec, fetch, file, flow_adopt, flow_eject, hooks, init,
     install, layout, list, merge, multi_remote, prune, push, release_notes, repo, run, shared,
-    shell_init, shortcuts, skill, sync, worktree_branch,
+    shell_init, shortcuts, skill, sync, warm, worktree_branch,
 };
 use crate::styles;
 
@@ -194,12 +194,18 @@ fn get_daft_categories() -> Vec<CommandCategory> {
             ],
         },
         CommandCategory {
-            title: "share configuration across worktrees",
+            title: "share configuration and caches across worktrees",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "shared",
-                command: shared::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "shared",
+                    command: shared::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "warm",
+                    command: warm::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "manage daft configuration",
@@ -389,12 +395,18 @@ fn get_git_daft_categories() -> Vec<CommandCategory> {
             ],
         },
         CommandCategory {
-            title: "share configuration across worktrees",
+            title: "share configuration and caches across worktrees",
             layout: CategoryLayout::List,
-            commands: vec![CommandEntry {
-                display_name: "daft shared",
-                command: shared::Args::command(),
-            }],
+            commands: vec![
+                CommandEntry {
+                    display_name: "daft shared",
+                    command: shared::Args::command(),
+                },
+                CommandEntry {
+                    display_name: "worktree-warm",
+                    command: warm::Args::command(),
+                },
+            ],
         },
         CommandCategory {
             title: "manage daft configuration",

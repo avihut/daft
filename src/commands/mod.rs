@@ -40,4 +40,5 @@ pub mod size_cache;
 pub mod skill;
 pub mod sync;
 pub(super) mod sync_shared;
+pub mod warm;
 pub mod worktree_branch;

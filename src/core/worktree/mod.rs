@@ -43,6 +43,7 @@ pub mod rename;
 pub mod sandbox;
 pub mod sync_dag;
 pub mod temp_worktree;
+pub mod warm;
 
 /// Configuration for worktree operations.
 #[derive(Debug, Clone)]

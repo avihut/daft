@@ -112,6 +112,17 @@ fn complete(
             &CONFIG_EXEC,
         )?)),
 
+        // git-worktree-warm: worktree-only completions. Position-blind on
+        // purpose — the sole positional (the worktree to warm) and `--from`
+        // (the worktree to copy from) name the same kind of thing, and the
+        // shells route the flag's value through this arm at `--position 1`.
+        // The current worktree stays in: it is the default target, and
+        // `warm . --from main` is a legitimate way to say so out loud.
+        ("git-worktree-warm", _) => Ok(format_entries_as_strings(&complete_rich_branches(
+            word,
+            &CONFIG_WARM,
+        )?)),
+
         // git-worktree-branch: worktree + local completions for deletion
         ("git-worktree-branch", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
@@ -2330,6 +2341,17 @@ const CONFIG_FETCH: RichCompletionConfig = RichCompletionConfig {
 };
 
 const CONFIG_EXEC: RichCompletionConfig = RichCompletionConfig {
+    include_worktrees: true,
+    include_local: false,
+    include_remote: false,
+    exclude_current: false,
+};
+
+/// `daft warm [<worktree>] [--from <worktree>]`: both slots address an existing
+/// worktree, so only checked-out branches qualify — a bare local branch has no
+/// directory to copy into or out of. The current worktree is included: it is
+/// the default target and a valid `--from` when the target is a sibling.
+const CONFIG_WARM: RichCompletionConfig = RichCompletionConfig {
     include_worktrees: true,
     include_local: false,
     include_remote: false,
