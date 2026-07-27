@@ -60,7 +60,10 @@ steps:
       exit_code: 0
 
   - name: Declare the cache only in an untracked daft.local.yml, and build it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
     run: |
+      set -e
       printf 'copy:\n  - node_modules/\n' > daft.local.yml
       mkdir -p node_modules
       printf '{"name":"cached"}\n' > node_modules/.package-lock.json

@@ -1,0 +1,80 @@
+name: Declared cache paths are copied into a fork
+description: >
+  `daft start --fork` mints an anonymous detached sandbox through
+  `sandbox.rs::create_sandbox` — the third creation path with a real source
+  worktree, alongside the two checkout journeys. It resolves a source, links
+  `shared:`, and runs post-create hooks, so it has exactly as much to gain from
+  a warm cache as a branch worktree does (#387). Before the wiring landed, forks
+  and `daft go <tag>` sandboxes started cold with no row and no warning to say
+  why — silently the slow path. Revisits are deliberately not covered here: both
+  the identity-store lookups and the on-disk fallback return through `navigate`
+  before the plan commits, so a revisited sandbox never reaches the copy stage
+  at all.
+
+repos:
+  - name: copy-fork
+    default_branch: main
+    branches:
+      - name: main
+        files:
+          - path: README.md
+            content: "# copy-fork"
+          - path: .gitignore
+            content: |
+              target/
+        commits:
+          - message: "Initial commit"
+    daft_yml: |
+      copy:
+        - target/
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_COPY_FORK
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-fork/main"
+
+  - name: Build a cache in the source worktree; confirm git ignores it
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
+    run: |
+      set -e
+      mkdir -p target/debug
+      printf 'binary\n' > target/debug/app
+      git check-ignore target
+    cwd: "$WORK_DIR/copy-fork/main"
+    expect:
+      exit_code: 0
+
+  - name: Fork the current worktree — the cache comes along
+    run: daft start --fork 2>&1
+    cwd: "$WORK_DIR/copy-fork/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/copy-fork/main-fork"
+      files_exist:
+        - "$WORK_DIR/copy-fork/main-fork/target/debug/app"
+      file_contains:
+        - path: "$WORK_DIR/copy-fork/main-fork/target/debug/app"
+          content: "binary"
+
+  - name: The fork's replica is a real directory, not a symlink
+    run: |
+      set -e
+      test -d "$WORK_DIR/copy-fork/main-fork/target"
+      test ! -L "$WORK_DIR/copy-fork/main-fork/target"
+      test ! -L "$WORK_DIR/copy-fork/main-fork/target/debug/app"
+    expect:
+      exit_code: 0
+
+  - name: The fork really is a detached sandbox, not a branch worktree
+    run: |
+      set -e
+      test "$(git -C ../main-fork rev-parse HEAD)" = "$(git rev-parse HEAD)"
+      git -C ../main-fork symbolic-ref -q HEAD && exit 1 || exit 0
+    cwd: "$WORK_DIR/copy-fork/main"
+    expect:
+      exit_code: 0

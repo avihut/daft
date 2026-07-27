@@ -52,7 +52,10 @@ steps:
       exit_code: 0
 
   - name: Build a cache in the source worktree
+    # `set -e`: step bodies run under `bash -c` with no errexit, so without it
+    # only the last command's status is reported.
     run: |
+      set -e
       mkdir -p node_modules
       printf '{"name":"cached"}\n' > node_modules/.package-lock.json
       git check-ignore node_modules
