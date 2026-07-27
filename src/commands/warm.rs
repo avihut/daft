@@ -259,4 +259,254 @@ mod tests {
             "Copied 1 of 1 declared path (0 B)."
         );
     }
+
+    // ── Rendering ────────────────────────────────────────────────────────
+    //
+    // `render_warm_result` is where the warn-never-abort contract meets the
+    // user: every per-entry problem has to land on an output channel and
+    // none of them may become a `Result`. The engine can only keep that
+    // promise if the renderer does too, so the whole outcome matrix is
+    // rendered here and asserted channel by channel.
+
+    use crate::core::worktree::warm::WarmResult;
+    use crate::output::TestOutput;
+    use std::path::PathBuf;
+
+    fn result_of(declared: &[&str], outcomes: Vec<CopyOutcome>) -> WarmResult {
+        WarmResult {
+            source: PathBuf::from("/repos/acme/main"),
+            target: PathBuf::from("/repos/acme/develop"),
+            source_name: "main".into(),
+            target_name: "develop".into(),
+            declared: declared.iter().map(|s| s.to_string()).collect(),
+            outcome: CopyPathsResult { outcomes },
+        }
+    }
+
+    fn render(result: &WarmResult, forced: bool) -> TestOutput {
+        let mut output = TestOutput::new();
+        render_warm_result(result, forced, &mut output);
+        output
+    }
+
+    /// The exit-status invariant, at the only place it can be observed from a
+    /// unit test: rendering is infallible by signature, so no skip, no
+    /// failure, and no missing outcome can turn into a non-zero exit. A
+    /// future refactor that gave this function a `Result` would fail to
+    /// compile here — which is the point.
+    #[test]
+    fn rendering_a_failure_is_infallible_and_stays_a_warning() {
+        let result = result_of(
+            &["target", "node_modules"],
+            vec![
+                CopyOutcome::Failed {
+                    entry: "target".into(),
+                    detail: "permission denied".into(),
+                },
+                copied("node_modules", 2048),
+            ],
+        );
+
+        let rendered: () = render_warm_result(&result, false, &mut TestOutput::new());
+        assert_eq!(rendered, (), "rendering never reports a failure upward");
+
+        let output = render(&result, false);
+        assert!(
+            output.has_warning("target: permission denied"),
+            "a failed entry must be loud: {:?}",
+            output.warnings()
+        );
+        assert!(
+            !output.has_errors(),
+            "but never an error — the worktree is fine, one cache is not"
+        );
+        assert!(
+            output.has_result("Copied 1 of 2 declared paths"),
+            "and the summary still lands: {:?}",
+            output.results()
+        );
+    }
+
+    /// Every skip reason is classified deliberately: the ones the user asked
+    /// for that daft would not or could not do are yellow, the routine ones
+    /// are quiet. A new `SkipReason` landing in the engine has to be added
+    /// here, which is exactly the review this table deserves.
+    #[test]
+    fn skip_reasons_split_into_attention_and_routine_channels() {
+        let attention = [
+            SkipReason::NotIgnored,
+            SkipReason::NoReflink,
+            SkipReason::TooLarge {
+                size_bytes: 4096,
+                limit_bytes: 1024,
+            },
+        ];
+        for reason in attention {
+            let result = result_of(
+                &["target"],
+                vec![CopyOutcome::Skipped {
+                    entry: "target".into(),
+                    reason: reason.clone(),
+                }],
+            );
+            let output = render(&result, false);
+            assert!(
+                output.has_warning("target: "),
+                "{reason:?} must reach the attention channel: {:?}",
+                output.entries()
+            );
+        }
+
+        let routine = [
+            SkipReason::NoSource,
+            SkipReason::DestinationExists,
+            SkipReason::NoMatches,
+        ];
+        for reason in routine {
+            let result = result_of(
+                &["target"],
+                vec![CopyOutcome::Skipped {
+                    entry: "target".into(),
+                    reason: reason.clone(),
+                }],
+            );
+            let output = render(&result, false);
+            assert!(
+                !output.has_warnings(),
+                "{reason:?} is routine, not a warning: {:?}",
+                output.entries()
+            );
+            assert!(
+                output.has_info("target: "),
+                "{reason:?} still leaves a receipt: {:?}",
+                output.infos()
+            );
+        }
+    }
+
+    /// Skip lines carry the entry in front and the reason behind, with no
+    /// `skipped — ` prefix — the same phrasing the rail uses, so the two
+    /// surfaces read identically.
+    #[test]
+    fn a_skip_line_is_the_entry_then_a_standalone_phrase() {
+        let result = result_of(
+            &["node_modules"],
+            vec![CopyOutcome::Skipped {
+                entry: "node_modules".into(),
+                reason: SkipReason::DestinationExists,
+            }],
+        );
+        let output = render(&result, false);
+        assert!(
+            output.infos().contains(&"node_modules: already present"),
+            "{:?}",
+            output.infos()
+        );
+    }
+
+    /// The `--force` hint is the whole reason the skip is survivable, so it
+    /// appears exactly when it is actionable: something was left alone, and
+    /// the user did not already pass the flag.
+    #[test]
+    fn the_force_hint_appears_only_when_it_would_change_something() {
+        let skipped = result_of(
+            &["node_modules"],
+            vec![CopyOutcome::Skipped {
+                entry: "node_modules".into(),
+                reason: SkipReason::DestinationExists,
+            }],
+        );
+        assert!(
+            render(&skipped, false).has_info("--force"),
+            "an entry left alone must point at the way to replace it"
+        );
+        assert!(
+            !render(&skipped, true).has_info("--force"),
+            "…but not when --force was already passed"
+        );
+
+        // A skip for any other reason is not a --force case: forcing would
+        // not have copied it either.
+        let elsewhere = result_of(
+            &["node_modules"],
+            vec![CopyOutcome::Skipped {
+                entry: "node_modules".into(),
+                reason: SkipReason::NoSource,
+            }],
+        );
+        assert!(!render(&elsewhere, false).has_info("--force"));
+    }
+
+    /// A declared entry the engine never reported is the silent failure this
+    /// command must not have: the user would read a clean summary while a
+    /// cache they asked for was never attempted.
+    #[test]
+    fn a_declared_entry_with_no_outcome_is_called_out() {
+        let result = result_of(
+            &["target", "node_modules", ".venv"],
+            vec![copied("target", 1024)],
+        );
+        let output = render(&result, false);
+
+        assert!(
+            output.has_warning("node_modules: not reported"),
+            "{:?}",
+            output.warnings()
+        );
+        assert!(output.has_warning(".venv: not reported"));
+        assert!(
+            output.has_result("Copied 1 of 3 declared paths"),
+            "the summary counts declarations, not outcomes: {:?}",
+            output.results()
+        );
+    }
+
+    /// Nothing declared is not a failure and not a copy — it is advice. No
+    /// summary line, because there is nothing to summarize.
+    #[test]
+    fn declaring_nothing_explains_itself_instead_of_summarizing() {
+        let result = result_of(&[], vec![]);
+        let output = render(&result, false);
+
+        assert!(
+            output.has_info("No `copy:` paths declared in 'main'"),
+            "the message must name the worktree whose config was read: {:?}",
+            output.infos()
+        );
+        assert!(
+            output.has_info("daft.yml"),
+            "and say where to declare them: {:?}",
+            output.infos()
+        );
+        assert!(
+            output.results().is_empty(),
+            "no work, no summary: {:?}",
+            output.results()
+        );
+        assert!(!output.has_warnings());
+    }
+
+    /// The copied line carries the annotation, not just the entry name —
+    /// "how much, how, how long" is the answer a cache copy owes the user.
+    #[test]
+    fn a_copied_line_carries_its_annotation() {
+        let result = result_of(
+            &["node_modules"],
+            vec![CopyOutcome::Copied {
+                entry: "node_modules".into(),
+                method: CopyMethod::Reflinked,
+                matches: 3,
+                bytes: 1024 * 1024,
+                elapsed: Duration::from_millis(1500),
+            }],
+        );
+        let output = render(&result, false);
+        assert!(
+            output
+                .successes()
+                .contains(&"node_modules \u{2192} 3 paths · 1.0 MB · reflinked · 1.5s"),
+            "{:?}",
+            output.successes()
+        );
+    }
 }
