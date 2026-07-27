@@ -1,0 +1,62 @@
+name: Warm picks the default branch's worktree as its source
+description: >
+  `daft warm` with no arguments warms the worktree you are standing in, and the
+  only sensible source is the default branch's worktree — every repo has one and
+  its caches are the generic ones. Standing in that worktree there is no such
+  answer, so the same-worktree refusal fires instead of a silent no-op that
+  would look like success.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  # -v surfaces the resolution line, which is the only place the chosen pair is
+  # stated out loud when there is nothing to copy.
+  - name: A bare warm resolves the default branch as the source
+    run: daft warm -v 2>&1
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "from 'main' into 'develop'"
+
+  - name: Naming the current worktree as the target is the same resolution
+    run: daft warm develop -v 2>&1
+    cwd: "$WORK_DIR/test-repo/develop"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "from 'main' into 'develop'"
+
+  - name: Standing in the default branch's worktree there is no source to pick
+    run: daft warm 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "same worktree"
+        - "--from"
+
+  - name: An unknown target worktree is an error, not a guess
+    run: daft warm no-such-worktree 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+      output_contains:
+        - "no-such-worktree"

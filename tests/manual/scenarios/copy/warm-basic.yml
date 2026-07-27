@@ -52,10 +52,15 @@ steps:
         - path: "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
           content: "built-in-main"
 
+  # `test ! -L` alone succeeds on a path that does not exist, which would make
+  # this step a false green for exactly the failure it is here to catch. The
+  # `dirs_exist` assertion beside it is what gives it teeth.
   - name: The copied cache is an independent directory, not a symlink
     run: test ! -L "$WORK_DIR/test-repo/develop/node_modules"
     expect:
       exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop/node_modules"
 
   - name: Editing the copy does not reach back into the source
     run: |
