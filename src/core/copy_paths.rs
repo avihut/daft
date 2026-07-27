@@ -43,7 +43,11 @@
 //! body.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+use ignore::WalkBuilder;
+use ignore::overrides::{Override, OverrideBuilder};
 
 use crate::hooks::yaml_config::CopyFallback;
 
@@ -103,8 +107,32 @@ pub struct ResolvedCopyConfig {
 /// they run on every command; repeating them here would double the noise on
 /// every worktree creation.
 pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
-    let _ = source_root;
-    None
+    let copy = crate::hooks::yaml_config_loader::load_merged_config(source_root)
+        .ok()
+        .flatten()?
+        .copy?;
+
+    let paths: Vec<String> = copy
+        .paths()
+        .iter()
+        .map(|p| p.trim_end_matches('/').to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+
+    Some(ResolvedCopyConfig {
+        paths,
+        fallback: copy.fallback(),
+        // An unparseable cap degrades to uncapped rather than to zero: the
+        // validator has already told the user their `max_size` is wrong, and
+        // silently gating every entry to 0 bytes would turn a typo into a
+        // stage that mysteriously copies nothing.
+        max_size_bytes: copy
+            .max_size()
+            .and_then(|raw| crate::coordinator::clean_policy::parse_size(raw).ok()),
+    })
 }
 
 // ── Entry expansion ───────────────────────────────────────────────────────
@@ -133,8 +161,96 @@ pub fn read_copy_config(source_root: &Path) -> Option<ResolvedCopyConfig> {
 /// reports that as an expected skip, not an error. Never returns `Err`:
 /// walk errors are skipped entries, never a failed creation.
 pub fn expand_entries(source_root: &Path, entry: &str) -> Vec<String> {
-    let _ = (source_root, entry);
-    Vec::new()
+    if !is_glob(entry) {
+        return vec![entry.to_string()];
+    }
+
+    let mut builder = OverrideBuilder::new(source_root);
+    // A pattern the glob compiler rejects expands to nothing; the caller
+    // reports that as an expected skip rather than failing the creation.
+    if builder.add(entry).is_err() {
+        return Vec::new();
+    }
+    let Ok(overrides) = builder.build() else {
+        return Vec::new();
+    };
+    let overrides = Arc::new(overrides);
+
+    let root = source_root.to_path_buf();
+    let prune = Arc::clone(&overrides);
+    let mut walker = WalkBuilder::new(source_root);
+    walker
+        // `copy:` entries are gitignored by definition, so every filter that
+        // exists to hide ignored files would hide exactly what we came for.
+        .hidden(false)
+        .parents(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(move |found| descend_into(found, &root, &prune));
+
+    let mut matches = Vec::new();
+    for result in walker.build() {
+        // A walk error is an unreadable subtree, not a failure: a cache we
+        // cannot read is a cache we cannot copy, and creation never hinges on
+        // one.
+        let Ok(found) = result else { continue };
+        let is_dir = found.file_type().is_some_and(|t| t.is_dir());
+        if !overrides.matched(found.path(), is_dir).is_whitelist() {
+            continue;
+        }
+        let Ok(rel) = found.path().strip_prefix(source_root) else {
+            continue;
+        };
+        // A non-UTF-8 name cannot round-trip through a config `String`, the
+        // rail label, or the `StepKey` scope — skip it rather than lose it.
+        if let Some(rel) = rel.to_str() {
+            matches.push(rel.to_string());
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+/// True when the entry carries glob metacharacters and must be expanded
+/// against the tree. Everything else is a literal path.
+fn is_glob(entry: &str) -> bool {
+    entry.contains(['*', '?', '['])
+}
+
+/// `filter_entry` predicate for [`expand_entries`]: prune git's own directory,
+/// and prune descent below anything the pattern already matched.
+///
+/// Returning `false` for a directory both skips it and stops the walk from
+/// descending into it, which is exactly the "prune below a match" rule — so
+/// only *strict* ancestors are consulted here. The matched directory itself has
+/// no matching ancestor, passes, and is yielded; its children then find it and
+/// stop.
+fn descend_into(found: &ignore::DirEntry, root: &Path, overrides: &Override) -> bool {
+    if found.file_name() == std::ffi::OsStr::new(".git")
+        && found.file_type().is_some_and(|t| t.is_dir())
+    {
+        return false;
+    }
+    let Ok(rel) = found.path().strip_prefix(root) else {
+        return true;
+    };
+    let components: Vec<_> = rel.components().collect();
+    let Some(strict_ancestors) = components.len().checked_sub(1).filter(|n| *n > 0) else {
+        return true;
+    };
+    let mut prefix = root.to_path_buf();
+    for component in &components[..strict_ancestors] {
+        prefix.push(component);
+        if overrides.matched(&prefix, true).is_whitelist() {
+            return false;
+        }
+    }
+    true
 }
 
 // ── Per-entry outcomes ────────────────────────────────────────────────────
@@ -394,6 +510,211 @@ pub fn report_copy_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Write `contents` at `path`, creating parents. Fixtures only.
+    fn write(path: &Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    /// A bare filesystem fixture: no git, no store, no worktrees — just a
+    /// source directory and a target directory. Everything the copy engine
+    /// does apart from the gitignored probe works on paths alone.
+    fn fs_fixture() -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        let target = tmp.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        (tmp, source, target)
+    }
+
+    // ── read_copy_config ─────────────────────────────────────────────────
+
+    #[test]
+    fn read_copy_config_normalizes_both_yaml_forms() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // No config file at all.
+        assert_eq!(read_copy_config(root), None);
+
+        // A config without the key.
+        write(&root.join("daft.yml"), b"hooks: {}\n");
+        assert_eq!(read_copy_config(root), None);
+
+        // Bare list: trailing slashes stripped, knobs defaulted.
+        write(
+            &root.join("daft.yml"),
+            b"copy:\n  - target/\n  - node_modules/\n",
+        );
+        assert_eq!(
+            read_copy_config(root),
+            Some(ResolvedCopyConfig {
+                paths: vec!["target".into(), "node_modules".into()],
+                fallback: CopyFallback::Copy,
+                max_size_bytes: None,
+            })
+        );
+
+        // Full map: knobs honored, `max_size` parsed to bytes.
+        write(
+            &root.join("daft.yml"),
+            b"copy:\n  paths: [target/]\n  fallback: skip\n  max_size: 5GB\n",
+        );
+        assert_eq!(
+            read_copy_config(root),
+            Some(ResolvedCopyConfig {
+                paths: vec!["target".into()],
+                fallback: CopyFallback::Skip,
+                max_size_bytes: Some(5 * 1024 * 1024 * 1024),
+            })
+        );
+    }
+
+    #[test]
+    fn read_copy_config_treats_an_empty_section_as_absent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write(&root.join("daft.yml"), b"copy: []\n");
+        assert_eq!(read_copy_config(root), None);
+
+        // Entries that normalize away are dropped, and an entry list that is
+        // *entirely* slashes is indistinguishable from no section at all.
+        write(&root.join("daft.yml"), b"copy:\n  - \"/\"\n  - target/\n");
+        assert_eq!(
+            read_copy_config(root).unwrap().paths,
+            vec!["target".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_copy_config_degrades_an_unparseable_max_size_to_uncapped() {
+        // The validator already reported this as a config error; capping every
+        // entry at zero would turn one typo into a silently inert stage.
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("daft.yml"),
+            b"copy:\n  paths: [target]\n  max_size: five gigabytes\n",
+        );
+        assert_eq!(read_copy_config(tmp.path()).unwrap().max_size_bytes, None);
+    }
+
+    #[test]
+    fn read_copy_config_reads_through_the_merged_loader() {
+        // The whole reason `copy:` does not reuse `shared:`'s raw single-file
+        // read: a visitor's daft.local.yml must be able to declare the section,
+        // and an overlay restating it replaces paths AND knobs wholesale.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            &root.join("daft.yml"),
+            b"copy:\n  paths: [target]\n  fallback: skip\n",
+        );
+        write(&root.join("daft.local.yml"), b"copy:\n  - node_modules/\n");
+
+        let resolved = read_copy_config(root).unwrap();
+        assert_eq!(resolved.paths, vec!["node_modules".to_string()]);
+        assert_eq!(
+            resolved.fallback,
+            CopyFallback::Copy,
+            "the base's fallback: skip must not leak through a wholesale replace"
+        );
+    }
+
+    #[test]
+    fn read_copy_config_is_none_for_an_unparseable_config() {
+        // Loud config diagnostics are the loader's and validator's job; the
+        // copy stage stays silent and does nothing.
+        let tmp = TempDir::new().unwrap();
+        write(&tmp.path().join("daft.yml"), b"copy: [unterminated\n");
+        assert_eq!(read_copy_config(tmp.path()), None);
+    }
+
+    // ── expand_entries ───────────────────────────────────────────────────
+
+    #[test]
+    fn expand_entries_passes_literals_through_untouched() {
+        let (_tmp, source, _target) = fs_fixture();
+        // Existence is deliberately not consulted — `copy_entries` owns that
+        // decision so a missing cache reports as its own outcome.
+        assert_eq!(
+            expand_entries(&source, "target"),
+            vec!["target".to_string()]
+        );
+        assert_eq!(
+            expand_entries(&source, "crates/core/target"),
+            vec!["crates/core/target".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_entries_matches_globs_against_the_source_tree() {
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join("web/dist/app.js"), b"//");
+        write(&source.join("api/dist/server.js"), b"//");
+        write(&source.join("docs/README.md"), b"#");
+
+        assert_eq!(
+            expand_entries(&source, "**/dist"),
+            vec!["api/dist".to_string(), "web/dist".to_string()],
+            "results are repo-root-relative and deterministically ordered"
+        );
+    }
+
+    #[test]
+    fn expand_entries_prunes_descent_below_a_match() {
+        // `**/dist` must report `web/dist`, never `web/dist/assets` too:
+        // copying the parent already carries the child, and a per-file result
+        // set would make the row's annotation meaningless.
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join("web/dist/assets/dist/deep.js"), b"//");
+
+        assert_eq!(
+            expand_entries(&source, "**/dist"),
+            vec!["web/dist".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_entries_returns_nothing_when_a_glob_matches_nothing() {
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join("src/main.rs"), b"fn main() {}");
+        assert!(expand_entries(&source, "**/dist").is_empty());
+    }
+
+    #[test]
+    fn expand_entries_finds_hidden_and_gitignored_shaped_entries() {
+        // Every ignore filter is off by design: `copy:` entries are gitignored
+        // by definition, and `.venv` is hidden.
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join(".gitignore"), b"*\n");
+        write(&source.join(".venv/bin/python"), b"#!");
+        write(&source.join("svc/.venv/bin/python"), b"#!");
+
+        assert_eq!(
+            expand_entries(&source, "**/.venv"),
+            vec![".venv".to_string(), "svc/.venv".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_entries_never_descends_into_the_git_directory() {
+        let (_tmp, source, _target) = fs_fixture();
+        write(&source.join(".git/objects/dist/pack"), b"x");
+        write(&source.join("web/dist/app.js"), b"//");
+
+        assert_eq!(
+            expand_entries(&source, "**/dist"),
+            vec!["web/dist".to_string()]
+        );
+    }
 
     #[test]
     fn push_copy_section_plans_anchor_and_entry_labeled_rows() {
