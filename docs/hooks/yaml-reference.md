@@ -74,15 +74,20 @@ copy:
   max_size: 5GB # optional per-entry cap on the byte-copy fallback
 ```
 
-| Field      | Type            | Description                                                                                                                              |
-| ---------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                         |
-| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out      |
-| `max_size` | string          | Per-**entry** size cap (`5GB`, `500MB`, `1048576`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
+| Field      | Type            | Description                                                                                                                                |
+| ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `paths`    | list            | Entries to copy, relative to the worktree root. Files or directories; a trailing `/` is cosmetic                                           |
+| `fallback` | `copy` / `skip` | What to do when the filesystem cannot reflink an entry. `copy` (the default) pays for a real byte copy; `skip` leaves the entry out        |
+| `max_size` | string          | Per-**entry** size cap (`5GB`, `500MB`, `"1048576"`). Gates the byte-copy fallback only — a reflink is near-free and is never size-checked |
 
-Sizes are case-insensitive and use binary multiples (`1KB` = 1024 bytes); a bare
-integer is a count of bytes. Both `fallback` spellings are matched
-case-insensitively, but lowercase is canonical.
+Sizes are case-insensitive and use binary multiples (`1KB` = 1024 bytes); a
+plain byte count works too — quote it so YAML keeps it a string. Both `fallback`
+spellings are matched case-insensitively, but lowercase is canonical.
+
+`daft hooks validate` rejects a `max_size` it cannot parse, and a map form that
+declares no `paths:` at all (which is how a misspelled `paths:` key surfaces).
+Both are errors rather than warnings: each would otherwise degrade quietly into
+an uncapped copy or a section that looks configured and does nothing.
 
 An entry containing `*`, `?`, or `[` is a glob, expanded against the source
 worktree at copy time. Expansion ignores git's ignore rules (`copy:` entries are

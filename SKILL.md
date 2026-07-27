@@ -130,6 +130,7 @@ acknowledge their form once ("`gwtco` runs `daft go`").
 | `git worktree-clone`, `gwtclone`, `gclone`           | `daft clone`                        |
 | `git worktree-init`, `gwtinit`                       | `daft init`                         |
 | `git worktree-carry`, `gwtcarry`                     | `daft carry`                        |
+| `git worktree-warm`                                  | `daft warm`                         |
 | `git worktree-exec`                                  | `daft exec`                         |
 | `git worktree-merge`                                 | `daft merge`                        |
 | `git worktree-list`, `gwtls`                         | `daft list`                         |
@@ -220,6 +221,7 @@ root via `git rev-parse --git-common-dir`.
 | `daft remove -f <branch>`                                                                                                                    | Force-delete bypassing safety checks; for the default branch, removes the worktree only (preserves branch ref and remote)                                                                                                                                                                                                                                                                                                                                                                               |
 | `daft prune [-f] [-v\|-vv]`                                                                                                                  | Remove worktrees whose remote branches were deleted AND that are verified merged (ancestor or squash); gone-but-unmerged branches are kept unless forced. `-v` hook details, `-vv` full sequential                                                                                                                                                                                                                                                                                                      |
 | `daft carry <targets>`                                                                                                                       | Transfer uncommitted changes to one or more other worktrees                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `daft warm [<worktree>] [--from <worktree>] [--force]`                                                                                       | Re-run the `copy:` stage on demand: replicate the declared gitignored build caches into `<worktree>` (default: the current one). The source defaults to the current worktree, or the repository's default-branch worktree when the current one is the target. Entries already present at the destination are skipped unless `--force`. Does not change your shell's directory. See Warm Worktrees below.                                                                                                |
 | `daft update [targets]`                                                                                                                      | Update worktree branches from remote; refspec syntax `source:destination` for cross-branch updates                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `daft rename <source> <new-branch>`                                                                                                          | Rename a branch, move its worktree, and rename the remote branch                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `daft sync [-f] [--rebase BRANCH [--autostash]] [--push [--force-with-lease] [--no-verify] [--jobs N] [--no-throttle]] [--include VALUE]...` | Prune stale worktrees + update all + optional rebase + optional push. Rebase and push apply only to branches you own by default; `--include` widens (`unowned`, an email, or a branch name). `-f`/`--prune-dirty` includes dirty worktrees. Parallel hook-bearing pushes are memory-governed (`--jobs N` caps concurrency, `--no-throttle` disables). First Ctrl+C cancels gracefully (partial results print, exit 130); a second force-kills.                                                          |
@@ -833,6 +835,75 @@ contract is "empty means no branch") and `DAFT_COMMIT` carries the pinned commit
 OID; the `{worktree_slug}` template variable works unchanged and is the right
 per-worktree handle for hooks serving both kinds.
 
+## Warm Worktrees (`copy:` and `daft warm`)
+
+A new worktree starts with no `node_modules/`, no `target/`, no build output at
+all. A top-level `copy:` section in `daft.yml` (a sibling of `hooks:`) names the
+gitignored paths daft replicates from the source worktree into each new one, so
+worktrees start warm:
+
+```yaml
+copy:
+  - target/
+  - node_modules/
+  - "**/dist/"
+```
+
+The map form adds knobs:
+
+```yaml
+copy:
+  paths: [target/, node_modules/]
+  fallback: copy # copy | skip — what to do when the filesystem cannot reflink
+  max_size: 5GB # per-ENTRY cap; gates the byte-copy fallback only
+```
+
+- On a copy-on-write filesystem (APFS, btrfs, XFS `reflink=1`, OpenZFS 2.2+,
+  ReFS) the replica is near-free until the copies diverge. Elsewhere `fallback:`
+  decides: `copy` (default) pays for a real byte copy, `skip` leaves the entry
+  out. `max_size` (`5GB`, `500MB`, or a quoted plain byte count) caps that byte
+  copy per entry and never applies to a reflink; `daft hooks validate` rejects
+  one it cannot parse, and rejects a map form that declares no `paths:`.
+- Entries are worktree-root-relative, may be files or directories, and may use
+  glob metacharacters (`*`, `?`, `[`), expanded against the source worktree.
+- **Entries must be gitignored** — `git check-ignore` must pass _and_ nothing
+  under the entry may be tracked. A violation is a per-entry warning, not an
+  error.
+- The stage runs after `shared:` symlinking and before `worktree-post-create`
+  hooks, so a hook-driven `npm install` / `cargo build` hits a warm cache.
+- **It never aborts creation.** Every failure — tracked entry, unreadable
+  source, full disk — is a warning row and the worktree is still created.
+- **It never overwrites.** An entry already present at the destination is
+  skipped, so the stage is idempotent.
+- `daft clone` does not run it: a fresh clone has no source worktree to copy
+  from. The first build belongs in a `post-clone` or `worktree-post-create`
+  hook; worktrees branched off afterwards inherit it.
+- `copy:` is read through the full config merge, so `daft.local.yml` and
+  `extends:` files can declare or override it. An overlay replaces the key
+  **wholesale** — paths and knobs together, never element-wise.
+
+`daft warm` replays the same declarations on demand — for a worktree created
+before the `copy:` key existed, or after building something expensive that other
+worktrees should have:
+
+```bash
+daft warm                 # copy into the current worktree
+daft warm feature-x       # copy into another worktree
+daft warm --from main     # take the caches from a specific worktree
+daft warm --force         # replace entries already present at the destination
+```
+
+What to tell users about expectations: a copied cache is a head start, not a
+guarantee, because toolchains embed absolute paths to differing degrees. Expect
+cargo's registry dependencies to survive the move and workspace-local crates to
+rebuild; expect pnpm's symlink-heavy `node_modules/` to copy far more cheaply
+than a flat npm/yarn tree. Do **not** suggest copying `.venv/` — a virtualenv
+records its own absolute path in `pyvenv.cfg`, `bin/` shebangs, and
+`bin/activate`; share the uv/pip cache and rebuild it instead, or create it with
+`uv venv --relocatable` first. The source tree is read live and is not quiesced,
+so copying while a build writes into the source yields a torn snapshot — re-run
+the build or `daft warm --force`.
+
 ## Tasks (`daft run`)
 
 Tasks are named, user-invoked job groups — the **serve on demand** half of the
@@ -971,6 +1042,11 @@ suggest creating one — a `worktree-post-create` hook that installs dependencie
 is the highest-impact automation. After suggesting a `daft.yml`, remind the user
 to trust the repo: `daft hooks trust`.
 
+The same markers usually imply a `copy:` section too — `Cargo.toml` implies
+`target/`, a lockfile implies `node_modules/`. Suggest both together: the hook
+does the work, and `copy:` makes each new worktree start from a warm cache
+instead of an empty one. See Warm Worktrees above.
+
 ## Workflow Guidance for Agents
 
 When working in a daft-managed repository, apply these translations:
@@ -1047,16 +1123,17 @@ visitor configs before removing a worktree or to promote one to a team baseline.
 ### `daft repo install` — bootstrap a config
 
 `daft repo install` writes a starter `daft.yml` (commented skeleton: `hooks:`,
-`shared:`, `layout:`) at the worktree root. It is repo-aware: from a worktree
-subdir it targets the worktree root; at the bare container root of a contained
-layout it installs across the repo's worktrees (never a stray file at the inert
-container root); it refuses only outside a git repository. If a `daft.yml`
-already exists it reports whether that file is tracked (team baseline) or a
-visitor config and stops cleanly (exit 0). It then offers to add `/daft.yml` to
-`.git/info/exclude` (local, never committed) so a visitor config stays private:
-prompted on a TTY (default No), `--git-exclude` adds it without prompting,
-non-interactive runs print a copy-pasteable hint. It never touches the tracked
-`.gitignore`. `daft install` is a top-level alias for the same command.
+`shared:`, `copy:`, `layout:`) at the worktree root. It is repo-aware: from a
+worktree subdir it targets the worktree root; at the bare container root of a
+contained layout it installs across the repo's worktrees (never a stray file at
+the inert container root); it refuses only outside a git repository. If a
+`daft.yml` already exists it reports whether that file is tracked (team
+baseline) or a visitor config and stops cleanly (exit 0). It then offers to add
+`/daft.yml` to `.git/info/exclude` (local, never committed) so a visitor config
+stays private: prompted on a TTY (default No), `--git-exclude` adds it without
+prompting, non-interactive runs print a copy-pasteable hint. It never touches
+the tracked `.gitignore`. `daft install` is a top-level alias for the same
+command.
 
 ## Machine-Readable Output
 

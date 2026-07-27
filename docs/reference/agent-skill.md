@@ -169,6 +169,11 @@ Dependencies, build artifacts, and environment config are not shared. This means
 `npm install` must run in each worktree, virtual environments must be created
 separately, and so on.
 
+Isolated does not have to mean cold: the skill also covers the `copy:` key and
+`daft warm`, which give each new worktree its own copy-on-write replica of the
+declared build caches — a private copy, never a shared one. See
+[Copying build caches](/worktrees/copying-caches).
+
 ## Manual Integration
 
 If you prefer not to use the skills system, reference the skill content directly
