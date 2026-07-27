@@ -62,7 +62,7 @@ pub enum StageId {
     /// covers, which keeps the plan face walk-free and the reconcile keys
     /// stable. The row's label is the entry itself (set via
     /// [`StepSpec::with_label`]) and the fan-out lands in its annotation
-    /// (`**/dist/ → 3 dirs · 1.2 GB · reflinked`).
+    /// (`**/dist/ → 3 paths · 1.2 GB · reflinked`).
     CopyPath,
     /// `worktree-post-create` hooks.
     PostCreateHooks,

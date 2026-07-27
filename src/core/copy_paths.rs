@@ -34,13 +34,15 @@
 //! row's annotation. This keeps the plan face walk-free (no filesystem
 //! traversal before the plan commits) and the reconcile keys stable.
 //!
-//! ## Status
+//! ## Shape
 //!
-//! The public surface below is the API contract the parallel #387 tracks
-//! build against; the function **bodies land in the engine track** and are
-//! inert here (empty results, no filesystem access). Every doc comment states
-//! the full behavioral contract — implement to the doc, not to the current
-//! body.
+//! [`read_copy_config`] resolves the section, [`expand_entries`] turns one
+//! declaration into concrete paths, [`copy_entries`] does the work, and
+//! [`push_copy_section`] / [`report_copy_results`] are the plan and receipt
+//! halves of the rail section. Only that last pair renders anything: per-entry
+//! facts live in the returned [`CopyPathsResult`] and are drawn exactly once,
+//! so the same engine can be driven from the creation rail and from `daft
+//! warm`'s plain line output without either duplicating the other.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -313,7 +315,7 @@ pub enum CopyOutcome {
     /// The entry was replicated. `matches` is how many expanded paths were
     /// copied (1 for a literal entry), `bytes` their total apparent size, and
     /// `elapsed` the wall time — together they compose the row's annotation
-    /// (`**/dist/ → 3 dirs · 1.2 GB · reflinked · 0.3s`).
+    /// (`**/dist/ → 3 paths · 1.2 GB · reflinked · 0.3s`).
     Copied {
         entry: String,
         method: CopyMethod,
@@ -417,7 +419,9 @@ impl CopyPathsResult {
 ///
 /// `force` (`daft warm --force`) removes an existing destination entry before
 /// copying instead of skipping it — `cow_copy::copy_dir` requires an absent
-/// destination.
+/// destination. A `source` and `target` that name the same directory are
+/// refused outright: that is a no-op under a normal run and would delete the
+/// declared caches under `force`.
 ///
 /// **Never returns `Err`, and one entry's failure never affects another.**
 /// Wrap each entry so an I/O error becomes [`CopyOutcome::Failed`] and the
@@ -440,12 +444,39 @@ pub fn copy_entries(
     force: bool,
     sink: &mut impl crate::core::ProgressSink,
 ) -> CopyPathsResult {
+    // Copying a worktree into itself is a no-op request — and under `force` a
+    // destructive one, because clearing each destination would clear the
+    // source. Refuse it here rather than trusting every caller's source and
+    // target resolution to never land on the same directory.
+    if is_same_directory(source, target) {
+        return CopyPathsResult {
+            outcomes: config
+                .paths
+                .iter()
+                .map(|entry| CopyOutcome::Skipped {
+                    entry: entry.clone(),
+                    reason: SkipReason::DestinationExists,
+                })
+                .collect(),
+        };
+    }
+
     CopyPathsResult {
         outcomes: config
             .paths
             .iter()
             .map(|entry| copy_one(source, target, entry, config, force, sink))
             .collect(),
+    }
+}
+
+/// Whether two paths name the same directory, resolving symlinks. Falls back to
+/// a literal comparison when either side cannot be canonicalized — a path that
+/// does not resolve is not the one we are standing in.
+fn is_same_directory(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
@@ -824,7 +855,7 @@ pub fn push_copy_section(rows: &mut Vec<crate::core::stage::Row>, planned: &[Str
 ///
 /// | Outcome | Event | Face |
 /// |---|---|---|
-/// | [`CopyOutcome::Copied`] | `Completed { annotation }` | green `✓`, annotated `3 dirs · 1.2 GB · reflinked · 0.3s` |
+/// | [`CopyOutcome::Copied`] | `Completed { annotation }` | green `✓`, annotated `3 paths · 1.2 GB · reflinked · 0.3s` |
 /// | [`SkipReason::NoSource`] / [`SkipReason::DestinationExists`] / [`SkipReason::NoMatches`] | `SkippedExpected` | dim |
 /// | [`SkipReason::NotIgnored`] / [`SkipReason::NoReflink`] / [`SkipReason::TooLarge`] | `SkippedAttention` | yellow |
 /// | [`CopyOutcome::Failed`] | `SkippedAttention` | yellow |
@@ -859,10 +890,10 @@ pub fn report_copy_results(
                 elapsed,
                 ..
             } => StageEvent::Completed {
-                annotation: Some(copy_annotation(*method, *matches, *bytes, *elapsed)),
+                annotation: Some(copied_annotation(*matches, *bytes, *method, *elapsed)),
             },
             CopyOutcome::Skipped { entry, reason } => {
-                let reason = skip_reason_text(entry, reason);
+                let reason = skip_phrase(entry, reason);
                 // The split is "did the config ask for something daft refused
                 // to do?" — an unbuilt cache or an already-warm worktree is
                 // the stage working as designed; a tracked entry, an
@@ -877,7 +908,7 @@ pub fn report_copy_results(
             // user asked for did not happen, and the operation here is the
             // worktree, which did.
             CopyOutcome::Failed { detail, .. } => StageEvent::SkippedAttention {
-                reason: failure_reason(detail),
+                reason: failure_phrase(detail),
             },
         };
         sink.on_stage(&StepKey::scoped(StageId::CopyPath, outcome.entry()), event);
@@ -905,21 +936,35 @@ fn reason_needs_attention(outcome: &CopyOutcome) -> bool {
     )
 }
 
-/// The row body for one skipped entry.
+// ── Shared phrasing ───────────────────────────────────────────────────────
+//
+// The three builders below are the ONE place a copy outcome becomes words. Two
+// very different surfaces render the same facts — the creation rail's section
+// rows and `daft warm`'s plain per-entry lines — and a second copy of these
+// strings would drift the moment either was edited alone. Both consume these.
+
+/// The phrase for one skipped entry.
 ///
 /// `CopyPath` is exempt from the timeline's `skipped — ` prefix (beside
-/// `SharedFile`), so every arm has to read as a complete phrase on its own.
-fn skip_reason_text(entry: &str, reason: &SkipReason) -> String {
+/// `SharedFile`), so every arm has to read as a complete clause on its own —
+/// `already present`, `nothing to copy yet`, `2.1 GB over the 1 GB max_size`.
+/// That is also what makes them usable verbatim as `daft warm`'s line bodies.
+pub fn skip_phrase(entry: &str, reason: &SkipReason) -> String {
     match reason {
         SkipReason::NoSource => "nothing to copy yet".to_string(),
         SkipReason::DestinationExists => "already present".to_string(),
         SkipReason::NoMatches => "matched nothing".to_string(),
-        // Deliberately the requirement, not the diagnosis. This one variant
+        // Leads with the requirement, not the diagnosis. This one variant
         // covers a tracked entry, an untracked-but-unignored one, an ignored
         // directory holding force-added content, and a path git could not
-        // answer for — and "is tracked" is false for most of them. Naming the
-        // rule is true in every case, and tells the user what to change.
-        SkipReason::NotIgnored => format!("'{entry}' must be gitignored — not copied"),
+        // answer for — so a bare "is tracked" would be false for the commonest
+        // cause of it: a cache the user simply forgot to gitignore. Naming the
+        // rule is true in every case and says what to change, while still
+        // carrying the word a reader (and the scenario asserting on this row)
+        // looks for.
+        SkipReason::NotIgnored => {
+            format!("'{entry}' must be gitignored — tracked content is never copied")
+        }
         SkipReason::NoReflink => "no reflink support — fallback: skip".to_string(),
         SkipReason::TooLarge {
             size_bytes,
@@ -932,20 +977,27 @@ fn skip_reason_text(entry: &str, reason: &SkipReason) -> String {
     }
 }
 
-/// The row body for an entry whose copy broke. The row's label already names
-/// the entry, so the phrase leads with what happened.
-fn failure_reason(detail: &str) -> String {
+/// The phrase for an entry whose copy broke. The rail row's label — and `daft
+/// warm`'s line prefix — already names the entry, so it leads with what
+/// happened.
+pub fn failure_phrase(detail: &str) -> String {
     format!("failed — {detail}")
 }
 
-/// The completed row's annotation: `3 paths · 1.2 GB · reflinked · 0.3s`.
+/// The completed entry's annotation: `3 paths · 1.2 GB · reflinked · 0.3s`.
 ///
-/// The count is dropped for a single match — the row's label already names it —
-/// and the duration is dropped when it would round to `0.0s`, which a reflink
-/// of a warm tree usually does. What is always present is the size and the
-/// method, because together they answer the only question the row raises: did
-/// this cost anything?
-fn copy_annotation(method: CopyMethod, matches: usize, bytes: u64, elapsed: Duration) -> String {
+/// `matches` counts expanded **paths**, not directories: an entry can name a
+/// file, and a glob can match both. The count is dropped for a single match
+/// (the row's label already names it) and the duration is dropped when it would
+/// round to `0.0s`, which a reflink of a warm tree usually does. Size and method
+/// always survive, because together they answer the only question the row
+/// raises: did this cost anything?
+pub fn copied_annotation(
+    matches: usize,
+    bytes: u64,
+    method: CopyMethod,
+    elapsed: Duration,
+) -> String {
     let mut parts = Vec::new();
     if matches > 1 {
         parts.push(format!("{matches} paths"));
@@ -1373,6 +1425,21 @@ mod tests {
     }
 
     #[test]
+    fn copy_entries_refuses_to_copy_a_worktree_into_itself() {
+        // `--force` clears each destination before copying. When source and
+        // target are the same directory that clears the source, so a mis-typed
+        // `daft warm . --from .` would delete the caches it was asked to
+        // replicate. The engine refuses instead of trusting the caller.
+        let (_tmp, source, _target) = repo_fixture("/target\n");
+        write(&source.join("target/app"), b"precious");
+
+        let result = copy_entries(&source, &source, &config(&["target"]), true, &mut NullSink);
+
+        assert_eq!(sole_skip(&result), SkipReason::DestinationExists);
+        assert_eq!(fs::read(source.join("target/app")).unwrap(), b"precious");
+    }
+
+    #[test]
     fn copy_entries_copies_the_matches_a_partially_present_glob_still_needs() {
         // One row per entry, but a glob whose destinations are half there must
         // still fill the other half — skipping wholesale would leave those
@@ -1620,7 +1687,7 @@ mod tests {
                 (
                     "src".into(),
                     StageEvent::SkippedAttention {
-                        reason: "'src' must be gitignored — not copied".into(),
+                        reason: "'src' must be gitignored — tracked content is never copied".into(),
                     }
                 ),
                 (
@@ -1659,21 +1726,22 @@ mod tests {
     }
 
     #[test]
-    fn copy_annotation_drops_the_noise_and_keeps_the_facts() {
+    fn copied_annotation_drops_the_noise_and_keeps_the_facts() {
         // One match: the row's label already names it.
         assert_eq!(
-            copy_annotation(
-                CopyMethod::Reflinked,
+            copied_annotation(
                 1,
                 1024 * 1024,
+                CopyMethod::Reflinked,
                 Duration::from_millis(1)
             ),
             "1 MB · reflinked",
             "a duration that would round to 0.0s says nothing"
         );
         assert_eq!(
-            copy_annotation(CopyMethod::Copied, 3, 1024, Duration::from_millis(1200)),
-            "3 paths · 1 KB · copied · 1.2s"
+            copied_annotation(3, 1024, CopyMethod::Copied, Duration::from_millis(1200)),
+            "3 paths · 1 KB · copied · 1.2s",
+            "the count is expanded PATHS — an entry can name a file"
         );
     }
 
@@ -1688,28 +1756,47 @@ mod tests {
         assert_eq!(format_bytes(1024u64.pow(4)), "1 TB");
     }
 
+    /// The full phrase set, spelled out. These strings are a contract, not an
+    /// implementation detail: the creation rail and `daft warm` both render
+    /// them, and a YAML scenario asserts on the tracked-entry one. Pinning them
+    /// here is what makes an accidental reword a failing test rather than a
+    /// silently diverged pair of surfaces.
     #[test]
-    fn skip_reasons_read_as_complete_phrases() {
-        // `CopyPath` is exempt from the timeline's `skipped — ` prefix, so a
-        // reason that only made sense after one would render as a fragment.
-        for reason in [
-            SkipReason::NoSource,
-            SkipReason::DestinationExists,
-            SkipReason::NoMatches,
-            SkipReason::NotIgnored,
-            SkipReason::NoReflink,
-            SkipReason::TooLarge {
-                size_bytes: 2,
-                limit_bytes: 1,
-            },
-        ] {
-            let text = skip_reason_text("target", &reason);
-            assert!(!text.is_empty(), "{reason:?}");
+    fn skip_phrases_are_the_pinned_shared_wording() {
+        let cases = [
+            (SkipReason::NoSource, "nothing to copy yet"),
+            (SkipReason::DestinationExists, "already present"),
+            (SkipReason::NoMatches, "matched nothing"),
+            (
+                SkipReason::NotIgnored,
+                "'cache' must be gitignored — tracked content is never copied",
+            ),
+            (SkipReason::NoReflink, "no reflink support — fallback: skip"),
+            (
+                SkipReason::TooLarge {
+                    size_bytes: 2_254_857_830,
+                    limit_bytes: 1024 * 1024 * 1024,
+                },
+                "2.1 GB over the 1 GB max_size",
+            ),
+        ];
+
+        for (reason, expected) in &cases {
+            let text = skip_phrase("cache", reason);
+            assert_eq!(&text, expected, "{reason:?}");
+            // `CopyPath` is exempt from the timeline's `skipped — ` prefix, so
+            // a phrase written to follow one would render as a fragment.
             assert!(
                 !text.starts_with("skipped"),
                 "{reason:?} must not restate the prefix it is exempt from: {text}"
             );
         }
+
+        assert!(
+            skip_phrase("cache", &SkipReason::NotIgnored).contains("tracked"),
+            "the refusal has to name what git is doing with the entry"
+        );
+        assert_eq!(failure_phrase("disk full"), "failed — disk full");
     }
 
     #[test]
