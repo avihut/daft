@@ -455,6 +455,17 @@ pub fn execute(
     let planned_shared =
         crate::core::shared::read_shared_paths(&source_worktree).unwrap_or_default();
     crate::core::shared::push_shared_section(&mut plan_rows, &planned_shared);
+    // Cache paths declared with `copy:` get their own section (#387). Read
+    // ONCE, here, from the source worktree — the tree being copied *from* —
+    // and reused verbatim at execution below, so the plan and the receipt
+    // cannot disagree. One row per declared ENTRY, planned unexpanded: the
+    // plan face never walks the filesystem.
+    let copy_config = crate::core::copy_paths::read_copy_config(&source_worktree);
+    let planned_copy = copy_config
+        .as_ref()
+        .map(|c| c.paths.clone())
+        .unwrap_or_default();
+    crate::core::copy_paths::push_copy_section(&mut plan_rows, &planned_copy);
     plan_rows.push(Row::Step(StepSpec::new(StepKey::new(
         StageId::PostCreateHooks,
     ))));
@@ -739,10 +750,30 @@ pub fn execute(
     // propagation finds no config and silently links nothing. (A tracked daft.yml
     // arrives via the git checkout regardless of order, which is why this bug was
     // invisible until visitor configs existed — do not move this back above
-    // propagation.) Linking before hooks lets hooks depend on .env etc.
+    // propagation.) Linking before hooks lets hooks depend on .env etc., and
+    // the `copy:` stage below closes the same window for build caches.
     let link_result =
         crate::core::shared::link_shared_files_on_create(&worktree_path, &git_dir, project_root);
     crate::core::shared::report_link_results(&link_result, &planned_shared, sink);
+
+    // Copy declared caches (#387) AFTER shared linking and BEFORE the
+    // post-create hooks — the ordering IS the feature: a post-create
+    // `cargo build` / `npm install` has to find `target/` and `node_modules/`
+    // already in place, or the stage bought nothing. Warn, never abort: the
+    // engine returns receipts rather than errors, so a cache that failed to
+    // copy costs a yellow row, never the worktree. `force = false` — an entry
+    // that already exists at the destination is left alone here; only
+    // `daft warm --force` clobbers.
+    if let Some(config) = &copy_config {
+        let copy_result = crate::core::copy_paths::copy_entries(
+            &source_worktree,
+            &worktree_path,
+            config,
+            false,
+            sink,
+        );
+        crate::core::copy_paths::report_copy_results(&copy_result, &planned_copy, sink);
+    }
 
     // Run post-create hook
     let post_hook_ctx = HookContext::new(
