@@ -580,7 +580,10 @@ fn copy_one_inner(
     ));
 
     for rel in &todo {
-        replicate(&source.join(rel), &target.join(rel))?;
+        let dst = target.join(rel);
+        if let Err(err) = replicate(&source.join(rel), &dst) {
+            return Err(discard_partial(&dst, err));
+        }
     }
 
     Ok(CopyOutcome::Copied {
@@ -653,6 +656,73 @@ fn stays_inside_worktree(relpath: &str) -> bool {
             )
         })
 }
+
+/// Throw away whatever a failed copy managed to land, and return the error the
+/// caller should report.
+///
+/// `cow_copy::copy_dir` creates the destination first and populates it as it
+/// walks, so a mid-walk failure (an unreadable subtree, a full disk, a symlink
+/// it cannot recreate) leaves a **partial tree** behind. Left there, that tree
+/// is indistinguishable from a finished one: the next creation and every `daft
+/// warm` would see the destination exist, report `already present`, and skip —
+/// masking a half-copied cache forever, silently, because warn-never-abort
+/// means nothing ever raises. Clearing it is what makes the next run a retry.
+///
+/// Best-effort by nature: if the cleanup fails too, both facts go into the same
+/// `Failed` detail, because a surviving partial tree is the more dangerous half
+/// and has to be said out loud.
+fn discard_partial(dst: &Path, err: anyhow::Error) -> anyhow::Error {
+    if fs::symlink_metadata(dst).is_err() {
+        return err; // nothing landed
+    }
+    if remove_existing(dst).is_ok() {
+        return err;
+    }
+    // A tree daft copied can lock daft out of it: `cow_copy` reproduces source
+    // modes faithfully, so a mode-000 directory in the cache becomes a mode-000
+    // directory in the partial copy — and `remove_dir_all` has to read each
+    // directory to recurse. Restore owner traversal and try once more.
+    unlock_tree(dst);
+    match remove_existing(dst) {
+        Ok(()) => err,
+        Err(cleanup) => anyhow::anyhow!(
+            "{err:#}; a partial {} could not be removed and will be mistaken for a finished copy: {cleanup:#}",
+            dst.display()
+        ),
+    }
+}
+
+/// Restore owner read/write/execute on every directory in a doomed tree,
+/// top-down so each level can be read to reach the next.
+///
+/// Only ever runs on a partial destination daft itself created and is about to
+/// delete, and never follows symlinks out of it (`symlink_metadata` reports a
+/// link as a non-directory), so it cannot widen permissions anywhere the copy
+/// did not already write.
+#[cfg(unix)]
+fn unlock_tree(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700));
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        unlock_tree(&entry.path());
+    }
+}
+
+#[cfg(not(unix))]
+fn unlock_tree(_path: &Path) {}
 
 /// Remove an existing destination so a copy can take its place (`--force`).
 /// `cow_copy::copy_dir` requires an absent destination, so this is what makes
@@ -984,6 +1054,22 @@ pub fn failure_phrase(detail: &str) -> String {
     format!("failed — {detail}")
 }
 
+/// Name the entry in a phrase that does not already name itself.
+///
+/// On the rail the row's label carries the entry, so most phrases leave it out
+/// and read as clauses about "this row". A flat stderr line has no label to
+/// lean on — `warning: no reflink support — fallback: skip` never says *which*
+/// cache. Only the `NotIgnored` phrase quotes the entry itself, and prefixing
+/// that one again would stutter, so a leading quote is the signal to leave it
+/// alone.
+fn qualified_phrase(entry: &str, phrase: &str) -> String {
+    if phrase.starts_with('\'') {
+        phrase.to_string()
+    } else {
+        format!("'{entry}': {phrase}")
+    }
+}
+
 /// The completed entry's annotation: `3 paths · 1.2 GB · reflinked · 0.3s`.
 ///
 /// `matches` counts expanded **paths**, not directories: an entry can name a
@@ -1009,6 +1095,73 @@ pub fn copied_annotation(
         parts.push(format!("{seconds:.1}s"));
     }
     parts.join(" · ")
+}
+
+// ── Rendering with no live region ─────────────────────────────────────────
+
+/// The plain stderr line for one `CopyPath` stage event — `Copied <entry>` for
+/// a completion, `warning: <reason>` for an attention skip, `None` for
+/// everything else.
+///
+/// The rail is not always there. Under `--quiet`, in a pipe, in CI, and in the
+/// YAML runner's non-TTY sandbox, no live region owns the terminal — and those
+/// are precisely the places where nobody is watching a screen to notice a
+/// missing row. Without this line the copy stage's warn-never-abort contract
+/// would be *warn-invisible* exactly where it matters most: a tracked entry, an
+/// oversized one, or a failed copy would leave no trace anywhere.
+///
+/// Mirrors [`crate::core::shared::legacy_shared_stage_line`], including which
+/// events stay quiet: completions and attention skips speak, expected skips and
+/// silent resolutions do not. A receipt for every declared entry is the rail's
+/// job — a log only carries what changed or went wrong.
+pub fn legacy_copy_stage_line(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+    use_color: bool,
+) -> Option<String> {
+    use crate::core::stage::{StageEvent, StageId};
+    use crate::styles;
+
+    if key.id != StageId::CopyPath {
+        return None;
+    }
+    let entry = key.scope.as_deref()?;
+    match event {
+        StageEvent::Completed { annotation } => {
+            let summary = annotation
+                .as_deref()
+                .map(|a| format!(" ({a})"))
+                .unwrap_or_default();
+            Some(if use_color {
+                format!("{}Copied{} {entry}{summary}", styles::GREEN, styles::RESET)
+            } else {
+                format!("Copied {entry}{summary}")
+            })
+        }
+        StageEvent::SkippedAttention { reason } => {
+            let body = qualified_phrase(entry, reason);
+            Some(if use_color {
+                format!("{}warning:{} {body}", styles::YELLOW, styles::RESET)
+            } else {
+                format!("warning: {body}")
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Legacy stderr rendering for one `CopyPath` stage event, byte-identical to
+/// [`legacy_copy_stage_line`]. Sinks that route stage events call this when no
+/// live region owns the terminal (Plain mode, quiet, tests); expected skips and
+/// silent resolutions print nothing.
+pub fn render_copy_stage_fallback(
+    key: &crate::core::stage::StepKey,
+    event: &crate::core::stage::StageEvent,
+) {
+    let use_color = crate::styles::colors_enabled_stderr();
+    if let Some(line) = legacy_copy_stage_line(key, event, use_color) {
+        eprintln!("{line}");
+    }
 }
 
 /// How a copy happened, in one word, for annotations and `-v` narration.
@@ -1524,6 +1677,69 @@ mod tests {
         assert_eq!(fs::read(target.join("target/app")).unwrap(), b"binary");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_entries_clears_a_partial_destination_when_an_entry_fails() {
+        // `copy_dir` creates the destination and fills it as it walks, so a
+        // mid-walk failure leaves a partial tree. Left there it is
+        // indistinguishable from a finished copy: every later run would report
+        // `already present` and skip, masking a half-copied cache forever —
+        // and warn-never-abort means nothing would ever raise about it.
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, source, target) = repo_fixture("/target\n");
+        write(&source.join("target/keep.txt"), b"ok");
+        let locked = source.join("target/locked");
+        fs::create_dir_all(&locked).unwrap();
+        write(&locked.join("inner.txt"), b"unreadable");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // chmod 000 does not stop a root euid, and some filesystems ignore
+        // perms. If this process can still read the directory the premise is
+        // void — skip rather than assert falsely.
+        let premise_holds = fs::read_dir(&locked).is_err();
+
+        let first = run(&source, &target, &config(&["target"]));
+        let destination_survived = target.join("target").exists();
+        // A rerun while the cause persists: it must retry and fail again, not
+        // find leftovers and call them warm.
+        let second = run(&source, &target, &config(&["target"]));
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if !premise_holds {
+            return;
+        }
+
+        assert!(
+            matches!(first.outcomes.as_slice(), [CopyOutcome::Failed { .. }]),
+            "{:?}",
+            first.outcomes
+        );
+        assert!(
+            !destination_survived,
+            "a failed copy must not leave a partial tree behind"
+        );
+        assert!(
+            matches!(second.outcomes.as_slice(), [CopyOutcome::Failed { .. }]),
+            "the rerun retried instead of reporting `already present`: {:?}",
+            second.outcomes
+        );
+
+        // With the cause gone, the retry that the cleanup made possible
+        // actually completes — which is the whole point of clearing it.
+        let third = run(&source, &target, &config(&["target"]));
+        assert!(
+            matches!(third.outcomes.as_slice(), [CopyOutcome::Copied { .. }]),
+            "{:?}",
+            third.outcomes
+        );
+        assert_eq!(fs::read(target.join("target/keep.txt")).unwrap(), b"ok");
+        assert_eq!(
+            fs::read(target.join("target/locked/inner.txt")).unwrap(),
+            b"unreadable"
+        );
+    }
+
     #[test]
     fn copy_entries_produces_exactly_one_outcome_per_declared_entry() {
         // The join back to the plan: the rail planned one row per declaration,
@@ -1713,6 +1929,76 @@ mod tests {
                 // Planned but no outcome at all: the row is removed.
                 ("dropped".into(), StageEvent::SkippedSilent),
             ]
+        );
+    }
+
+    /// The no-live-region path. Quiet runs, pipes, CI, and the YAML runner's
+    /// non-TTY sandbox never build a rail, so without these lines a tracked
+    /// entry or a failed copy would leave no trace at all — warn-never-abort
+    /// turning into warn-invisible exactly where nobody is watching a screen.
+    #[test]
+    fn legacy_copy_stage_line_speaks_for_completions_and_attention_skips() {
+        use crate::core::stage::{StageEvent, StageId, StepKey};
+
+        let key = StepKey::scoped(StageId::CopyPath, "cache");
+        let line = |event| legacy_copy_stage_line(&key, &event, false);
+
+        assert_eq!(
+            line(StageEvent::Completed {
+                annotation: Some("1.2 GB · reflinked".into()),
+            }),
+            Some("Copied cache (1.2 GB · reflinked)".to_string())
+        );
+        assert_eq!(
+            line(StageEvent::Completed { annotation: None }),
+            Some("Copied cache".to_string())
+        );
+
+        // The phrase already quotes the entry: prefixing it again would stutter.
+        assert_eq!(
+            line(StageEvent::SkippedAttention {
+                reason: skip_phrase("cache", &SkipReason::NotIgnored),
+            }),
+            Some(
+                "warning: 'cache' must be gitignored — tracked content is never copied".to_string()
+            )
+        );
+        // The phrase does not name itself, and a flat line has no row label to
+        // lean on — so it gets one.
+        assert_eq!(
+            line(StageEvent::SkippedAttention {
+                reason: skip_phrase("cache", &SkipReason::NoReflink),
+            }),
+            Some("warning: 'cache': no reflink support — fallback: skip".to_string())
+        );
+        assert_eq!(
+            line(StageEvent::SkippedAttention {
+                reason: failure_phrase("disk full"),
+            }),
+            Some("warning: 'cache': failed — disk full".to_string())
+        );
+
+        // Expected skips and silent resolutions stay quiet, exactly as the
+        // shared-file fallback does: a receipt per declared entry is the rail's
+        // job, and a log carries only what changed or went wrong.
+        for event in [
+            StageEvent::SkippedExpected {
+                reason: skip_phrase("cache", &SkipReason::DestinationExists),
+            },
+            StageEvent::SkippedSilent,
+            StageEvent::Started,
+        ] {
+            assert_eq!(line(event.clone()), None, "{event:?}");
+        }
+
+        // Another stage's rows are not this renderer's business.
+        assert_eq!(
+            legacy_copy_stage_line(
+                &StepKey::scoped(StageId::SharedFile, ".env"),
+                &StageEvent::Completed { annotation: None },
+                false,
+            ),
+            None
         );
     }
 

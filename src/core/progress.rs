@@ -338,10 +338,12 @@ fn route_stage(
     key: &crate::core::stage::StepKey,
     event: crate::core::stage::StageEvent,
 ) {
-    // No live region (Plain mode, quiet, tests): shared-file events
-    // fall back to their legacy stderr lines, as pre-#651.
+    // No live region (Plain mode, quiet, tests): shared-file and copied-path
+    // events fall back to their plain stderr lines, as pre-#651. Each renderer
+    // returns early for keys that are not its own, so exactly one can speak.
     if !timeline.region_live() {
         crate::core::shared::render_shared_stage_fallback(key, &event);
+        crate::core::copy_paths::render_copy_stage_fallback(key, &event);
     }
     timeline.on_stage(key, event);
 }

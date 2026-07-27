@@ -78,14 +78,16 @@ pub trait ProgressSink {
 
     /// Report a lifecycle event for one committed plan step.
     ///
-    /// The default renders the legacy stderr lines for `SharedFile` events
-    /// (`Linked <path>`, conflict warnings) and ignores everything else:
-    /// pre-#651 those lines printed unconditionally from
+    /// The default renders the plain stderr lines for `SharedFile` events
+    /// (`Linked <path>`, conflict warnings) and `CopyPath` ones (`Copied
+    /// <entry>`, warn-never-abort warnings), and ignores everything else:
+    /// pre-#651 the shared lines printed unconditionally from
     /// `link_shared_files_on_create`, so every non-rail sink keeps that
     /// output byte-identical. Rail sinks override and route to the region,
-    /// falling back to the same renderer while no region is live.
+    /// falling back to the same renderers while no region is live.
     fn on_stage(&mut self, key: &stage::StepKey, event: stage::StageEvent) {
         crate::core::shared::render_shared_stage_fallback(key, &event);
+        crate::core::copy_paths::render_copy_stage_fallback(key, &event);
     }
 
     /// Suspend any running command-level spinner so a nested progress UI
