@@ -87,6 +87,14 @@ pub fn labels_for(id: StageId) -> StepLabels {
             done: "Linked shared file",
             skipped: "not linked",
         },
+        // Rendered only as a fallback: copy rows carry the config entry as a
+        // fixed label override in every phase.
+        StageId::CopyPath => StepLabels {
+            pending: "Copy path",
+            active: "Copying path",
+            done: "Copied path",
+            skipped: "not copied",
+        },
         StageId::PostCreateHooks => StepLabels {
             pending: "post-create hooks",
             active: "post-create hooks",
@@ -228,6 +236,12 @@ pub fn subject_inks_for(id: StageId) -> SubjectInks {
         | StageId::ResolveWorktree => (SubjectInk::Plain, SubjectInk::Path),
         // Shared files: the row's label IS the path, violet.
         StageId::SharedFile => (SubjectInk::Shared, SubjectInk::Plain),
+        // Copied paths: the row's label is likewise the entry, but manila —
+        // a `copy:` entry is an ordinary path that ends up privately owned by
+        // the worktree, not a daft-managed link shared across them. Its
+        // annotation is a composed summary (`3 dirs · 1.2 GB · reflinked`),
+        // so it stays plain.
+        StageId::CopyPath => (SubjectInk::Path, SubjectInk::Plain),
         // The resolve row's label IS the PR/MR identity ("PR #123"); its
         // annotation is the free-text title. Both plain.
         StageId::ResolveRef => (SubjectInk::Plain, SubjectInk::Plain),

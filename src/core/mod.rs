@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod columns;
 pub mod config;
+pub mod copy_paths;
 pub mod global_config;
 pub mod install;
 pub mod layout;
