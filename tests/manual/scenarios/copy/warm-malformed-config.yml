@@ -1,0 +1,67 @@
+name: Warm reports a config it cannot read
+description: >
+  `daft warm` is the command a user reaches for when `copy:` is not copying, so
+  it is the last place that may describe a mistyped section as an absent one.
+  `read_copy_config` answers None for "no key" and "would not parse" alike; warm
+  attempts the load separately so the two get opposite advice — fix your YAML
+  versus declare some paths.
+
+repos:
+  - name: test-repo
+    use_fixture: standard-remote
+
+steps:
+  - name: Clone the repository
+    run: daft clone --layout contained $REMOTE_TEST_REPO
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/main"
+
+  - name: Create a second worktree
+    run: daft go develop
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      dirs_exist:
+        - "$WORK_DIR/test-repo/develop"
+
+  # `fallback:` takes copy|skip. `symlink` fails the untagged CopyConfig enum,
+  # which fails the whole file — the realistic typo, and the one whose error
+  # message is generic enough that the user needs to be pointed at a validator.
+  - name: Declare a copy section with an invalid fallback
+    run: |
+      printf 'copy:\n  paths: [node_modules]\n  fallback: symlink\n' > daft.yml
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+
+  - name: Warm says the config could not be read, not that it is empty
+    run: daft warm develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_contains:
+        - "could not read the configuration in 'main'"
+        - "hooks validate"
+      output_not_contains:
+        # The lie this scenario exists to prevent: telling someone whose
+        # `copy:` block is right there to go and write one.
+        - "No `copy:` paths declared"
+        - "Declare the caches"
+
+  - name: The pointed-at validator agrees something is wrong
+    run: daft hooks validate 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 1
+
+  - name: Fixing the typo returns warm to ordinary behavior
+    run: |
+      printf 'copy:\n  paths: [node_modules]\n  fallback: skip\n' > daft.yml
+      daft warm develop 2>&1
+    cwd: "$WORK_DIR/test-repo/main"
+    expect:
+      exit_code: 0
+      output_not_contains:
+        - "could not read the configuration"

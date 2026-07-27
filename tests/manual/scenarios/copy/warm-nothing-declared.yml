@@ -33,17 +33,27 @@ steps:
     expect:
       exit_code: 0
       output_contains:
+        # Both ends named even here: the user asked to warm something, and
+        # "nothing happened" is only useful if it says nothing happened *where*.
         - "No `copy:` paths declared in 'main'"
+        - "'develop'"
         - "daft.yml"
       output_not_contains:
         - "Copied"
 
+  # A VALID config that simply has no `copy:` key. The distinction matters:
+  # a config that would not parse is a different message entirely
+  # (warm-malformed-config.yml), and this scenario's earlier fixture was
+  # accidentally the malformed case — hidden precisely because both used to
+  # print "No `copy:` paths declared".
   - name: A daft.yml without a copy section is the same case
     run: |
-      printf 'hooks:\n  worktree-post-create: []\n' > daft.yml
+      printf 'shared:\n  - .env\n' > daft.yml
       daft warm develop 2>&1
     cwd: "$WORK_DIR/test-repo/main"
     expect:
       exit_code: 0
       output_contains:
         - "No `copy:` paths declared in 'main'"
+      output_not_contains:
+        - "could not read the configuration"

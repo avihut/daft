@@ -47,9 +47,16 @@ pub struct WarmParams {
     /// Replace destination entries that already exist instead of skipping
     /// them.
     pub force: bool,
+    /// The remote whose `HEAD` names the default branch when the catalog has
+    /// no record — `daft.remote`, not a hardcoded `origin`. A fork whose
+    /// `daft.remote` is `upstream` would otherwise fall back to the wrong
+    /// remote's idea of "default" and warm from a worktree the user never
+    /// pointed at.
+    pub remote: String,
 }
 
 /// Result of a warm operation.
+#[derive(Debug)]
 pub struct WarmResult {
     /// Absolute path of the worktree that was copied from.
     pub source: PathBuf,
@@ -65,6 +72,15 @@ pub struct WarmResult {
     pub declared: Vec<String>,
     /// One outcome per declared entry.
     pub outcome: CopyPathsResult,
+    /// Why the source's config could not be read, when it could not be.
+    ///
+    /// [`read_copy_config`] answers `None` for "no `copy:` key" and for "the
+    /// config would not load" alike, and the two demand opposite advice:
+    /// *declare some paths* versus *fix your YAML*. `daft warm` is the command
+    /// a user reaches for to debug `copy:`, so it is the last place that may
+    /// tell them their perfectly-present config is absent. Populated by a
+    /// separate load attempt whose only job is to tell the two apart.
+    pub config_error: Option<String>,
 }
 
 impl WarmResult {
@@ -104,18 +120,19 @@ pub fn execute<S: ProgressSink>(
     project_root: &Path,
     progress: &mut S,
 ) -> Result<WarmResult> {
-    let current = git
-        .get_current_worktree_path()
-        .context("Could not determine the current worktree")?;
+    // Resolved on demand, never eagerly: `daft warm <target> --from <source>`
+    // names both ends, and must work from the container root of a contained
+    // layout — a directory that is inside the repository but is not a worktree
+    // at all. Probing "where am I?" up front failed that run on a value it
+    // then never read.
+    let mut current: Option<PathBuf> = None;
 
     let target = match &params.target {
-        Some(name) => git
-            .resolve_worktree_path(name, project_root)
-            .with_context(|| format!("Could not resolve worktree '{name}'"))?,
-        None => current.clone(),
+        Some(name) => resolve_named(git, name, project_root)?,
+        None => current_worktree(&mut current)?,
     };
 
-    let source = resolve_source(params, git, project_root, &current, &target)?;
+    let source = resolve_source(params, git, project_root, &mut current, &target)?;
 
     // Copying a worktree onto itself is never what was meant, and with
     // `--force` it would delete the very entries it was about to copy. The
@@ -128,21 +145,22 @@ pub fn execute<S: ProgressSink>(
             display_name(&target, project_root)
         );
     }
-    if !source.is_dir() {
-        anyhow::bail!("source worktree does not exist: {}", source.display());
-    }
-    if !target.is_dir() {
-        anyhow::bail!("target worktree does not exist: {}", target.display());
-    }
+    require_directory(&source, "source")?;
+    require_directory(&target, "target")?;
 
     let source_name = display_name(&source, project_root);
     let target_name = display_name(&target, project_root);
 
-    progress.on_step(&format!(
-        "Copying declared paths from '{source_name}' into '{target_name}'"
-    ));
+    progress.on_step(&format!("Warming '{target_name}' from '{source_name}'"));
 
-    let Some(config) = read_copy_config(&source) else {
+    let config_error = config_load_error(&source);
+    let config = if config_error.is_none() {
+        read_copy_config(&source)
+    } else {
+        None
+    };
+
+    let Some(config) = config else {
         return Ok(WarmResult {
             source,
             target,
@@ -150,6 +168,7 @@ pub fn execute<S: ProgressSink>(
             target_name,
             declared: Vec::new(),
             outcome: CopyPathsResult::default(),
+            config_error,
         });
     };
 
@@ -163,7 +182,97 @@ pub fn execute<S: ProgressSink>(
         target_name,
         declared,
         outcome,
+        config_error: None,
     })
+}
+
+/// Resolve a worktree the user named, in any of its three spellings.
+fn resolve_named(git: &GitCommand, name: &str, project_root: &Path) -> Result<PathBuf> {
+    git.resolve_worktree_path(name, project_root)
+        .with_context(|| format!("Could not resolve worktree '{name}'"))
+}
+
+/// Assert `path` is a directory, naming *why* it is not when the answer is
+/// something other than absence.
+///
+/// `Path::is_dir` folds EACCES, ENOTDIR and ELOOP into `false`, so an
+/// unreadable-but-present worktree used to be reported as "does not exist" —
+/// advice that sends the user looking for the wrong problem.
+fn require_directory(path: &Path, role: &str) -> Result<()> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => anyhow::bail!("{role} worktree is not a directory: {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("{role} worktree does not exist: {}", path.display())
+        }
+        Err(e) => anyhow::bail!("{role} worktree is unreadable ({e}): {}", path.display()),
+    }
+}
+
+/// The worktree the command was run from, memoized in `cache`.
+///
+/// Deliberately a fresh env-cleared `git` invocation rather than
+/// `GitCommand::get_current_worktree_path`: that helper shells out to a bare
+/// `git rev-parse`, which honors an inherited `GIT_DIR`, while
+/// `resolve_worktree_path` enumerates through [`crate::utils::git_command_at`],
+/// which clears it. Inside a git-driven hook (pre-push, post-checkout) the two
+/// therefore describe *different repositories*, and the self-copy refusal below
+/// would compare a path from one against a path from the other — a comparison
+/// that cannot fail, letting `warm` copy across repos. Every operand here comes
+/// from the same, env-cleared authority.
+fn current_worktree(cache: &mut Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = cache {
+        return Ok(path.clone());
+    }
+    let cwd = std::env::current_dir().context("Could not determine the current directory")?;
+    let path = toplevel_at(&cwd).context("Could not determine the current worktree")?;
+    cache.replace(path.clone());
+    Ok(path)
+}
+
+/// `git -C <dir> rev-parse --show-toplevel`, env-cleared and canonicalized.
+fn toplevel_at(dir: &Path) -> Result<PathBuf> {
+    let out = crate::utils::git_command_at(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .context("Failed to execute git rev-parse")?;
+    if !out.status.success() {
+        anyhow::bail!("not inside a worktree: {}", dir.display());
+    }
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if top.is_empty() {
+        anyhow::bail!("not inside a worktree: {}", dir.display());
+    }
+    let path = PathBuf::from(top);
+    Ok(path.canonicalize().unwrap_or(path))
+}
+
+/// The project root — the parent of the git common dir — resolved through the
+/// same env-cleared authority as every other operand (see
+/// [`current_worktree`]). Used by the command layer in place of
+/// `core::repo::get_project_root`, whose bare `git rev-parse` an inherited
+/// `GIT_DIR` retargets.
+pub fn locate_project_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("Could not determine the current directory")?;
+    let out = crate::utils::git_command_at(&cwd)
+        .args(["rev-parse", "--git-common-dir"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .context("Failed to execute git rev-parse")?;
+    if !out.status.success() {
+        anyhow::bail!("not inside a Git repository: {}", cwd.display());
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // `--git-common-dir` answers relatively (`.git`) from a worktree root and
+    // absolutely from elsewhere; join before canonicalizing so both land in the
+    // same place.
+    let common = cwd.join(raw);
+    let common = common.canonicalize().unwrap_or(common);
+    common
+        .parent()
+        .map(Path::to_path_buf)
+        .context("Could not determine the project root")
 }
 
 /// Resolve the worktree to copy *from*.
@@ -178,20 +287,19 @@ fn resolve_source(
     params: &WarmParams,
     git: &GitCommand,
     project_root: &Path,
-    current: &Path,
+    current: &mut Option<PathBuf>,
     target: &Path,
 ) -> Result<PathBuf> {
     if let Some(name) = &params.from {
-        return git
-            .resolve_worktree_path(name, project_root)
-            .with_context(|| format!("Could not resolve worktree '{name}'"));
+        return resolve_named(git, name, project_root);
     }
 
-    if current != target {
-        return Ok(current.to_path_buf());
+    let here = current_worktree(current)?;
+    if here != target {
+        return Ok(here);
     }
 
-    let branch = default_branch(project_root).ok_or_else(|| {
+    let branch = default_branch(project_root, &params.remote)?.ok_or_else(|| {
         anyhow::anyhow!(
             "could not determine this repository's default branch; run `{}` to choose a source",
             crate::daft_cmd("warm --from <worktree>")
@@ -209,29 +317,60 @@ fn resolve_source(
 }
 
 /// This repository's default branch: the catalog's record first (it survives a
-/// missing `origin/HEAD`), then the local symref. Both probes are best-effort —
-/// a machine with no catalog, or a repo cloned before daft knew it, still gets
-/// an answer from git alone.
-fn default_branch(project_root: &Path) -> Option<String> {
-    crate::core::repo::git_common_dir_at(project_root)
-        .and_then(|dir| crate::catalog::live_catalog_row_for(&dir))
-        .and_then(|row| crate::catalog::effective_default_branch(&row))
-        .or_else(|| crate::core::remote::local_default_branch(project_root, "origin"))
+/// missing `<remote>/HEAD`), then the local symref.
+///
+/// **The catalog probe fails closed.** `Ok(None)` — no catalog file, no row, a
+/// tombstoned row — is genuine absence and falls through to git, exactly as for
+/// a repo daft never cataloged. A store *outage* is not: a sibling worktree
+/// running a newer daft build migrates the shared catalog, and this binary then
+/// reads `SchemaTooNew`. Collapsing that to `None` would silently retarget the
+/// source to whatever stale `<remote>/HEAD` happens to say, and the user would
+/// never learn the catalog was unreadable — the repo-aware grammar's rule that
+/// a probe gating an action must report the outage, never reinterpret it.
+fn default_branch(project_root: &Path, remote: &str) -> Result<Option<String>> {
+    let from_catalog = match crate::core::repo::git_common_dir_at(project_root) {
+        Some(dir) => crate::catalog::try_live_catalog_row_for(&dir)
+            .with_context(|| {
+                format!(
+                    "could not read the repo catalog to find {}'s default branch",
+                    project_root.display()
+                )
+            })?
+            .as_ref()
+            .and_then(crate::catalog::effective_default_branch),
+        None => None,
+    };
+
+    Ok(from_catalog.or_else(|| crate::core::remote::local_default_branch(project_root, remote)))
 }
 
-/// A worktree's name as the user thinks of it: its path relative to the
-/// project root, falling back to the final component for anything outside.
+/// A worktree's name as the user thinks of it: its path relative to the project
+/// root.
+///
+/// Anything the project root does not contain renders as its **full path**. The
+/// bare final component would read exactly like a sibling worktree's name, so a
+/// resolution that escaped the repository — the very case worth noticing —
+/// would be indistinguishable from an ordinary local one in the announce line.
 fn display_name(path: &Path, project_root: &Path) -> String {
     path.strip_prefix(project_root)
         .ok()
         .and_then(|p| p.to_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.display().to_string())
-        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Why the source's config would not load, if it would not.
+///
+/// [`read_copy_config`]'s `None` is deliberately silent about the difference
+/// between "no `copy:` key" and "this YAML is broken"; the loader is the only
+/// thing that knows, so ask it directly. Absence stays `None` here — a repo
+/// with no config file at all is not an error.
+fn config_load_error(source: &Path) -> Option<String> {
+    match crate::hooks::yaml_config_loader::load_merged_config(source) {
+        Ok(_) => None,
+        Err(e) => Some(format!("{e:#}")),
+    }
 }
 
 /// The one-line reason a `copy:` entry was left out, phrased as a complete
@@ -260,6 +399,26 @@ pub fn skip_phrase(reason: &SkipReason, entry: &str) -> String {
             format_bytes(*limit_bytes)
         ),
         SkipReason::NoMatches => "matched nothing".to_string(),
+    }
+}
+
+/// One entry's rendered skip line, entry name included exactly once.
+///
+/// `warm` prefixes each line with the entry it is about, but some phrases name
+/// the entry themselves (`'target' is tracked — not copied`) because the rail
+/// renders them with no prefix at all. Prefixing those too produced
+/// `target: 'target' is tracked — not copied`. A phrase that opens with a quote
+/// is already self-identifying and is passed through untouched.
+///
+/// This is the interim rule; the engine track is exporting a `qualified_phrase`
+/// classification that replaces the leading-quote sniff with an explicit one at
+/// merge.
+pub fn skip_line(entry: &str, reason: &SkipReason) -> String {
+    let phrase = skip_phrase(reason, entry);
+    if phrase.starts_with('\'') {
+        phrase
+    } else {
+        format!("{entry}: {phrase}")
     }
 }
 
@@ -329,12 +488,44 @@ mod tests {
             display_name(Path::new("/repos/acme/feature/login"), root),
             "feature/login"
         );
-        // Outside the project root there is no relative name; the final
-        // component still identifies the worktree for a human.
-        assert_eq!(display_name(Path::new("/elsewhere/wt"), root), "wt");
-        // The project root itself has no relative name — fall back rather
-        // than render an empty string.
-        assert_eq!(display_name(root, root), "acme");
+        // Outside the project root, the FULL path — the bare final component
+        // (`wt`) would read exactly like a sibling worktree's name, so the one
+        // resolution worth noticing in the announce line would be the one
+        // rendered indistinguishably from an ordinary local one.
+        assert_eq!(
+            display_name(Path::new("/elsewhere/wt"), root),
+            "/elsewhere/wt"
+        );
+        // The project root itself has no relative name; it is not a worktree,
+        // and saying so plainly beats rendering an empty string or a bare
+        // `acme` that looks like one.
+        assert_eq!(display_name(root, root), "/repos/acme");
+    }
+
+    /// `Path::is_dir` folds every failure into `false`, so a worktree that is
+    /// present but unreadable used to be reported as missing — advice that
+    /// sends the user hunting for a directory that is right there. Each
+    /// non-directory answer names itself instead.
+    #[test]
+    fn a_non_directory_is_reported_by_what_is_actually_wrong() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let missing = tmp.path().join("nope");
+        let err = require_directory(&missing, "target").unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
+
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, "not a worktree").unwrap();
+        let err = require_directory(&file, "source").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not a directory"), "{msg}");
+        assert!(
+            !msg.contains("does not exist"),
+            "a present file is not an absent directory: {msg}"
+        );
+        assert!(msg.contains("source"), "the role must be named: {msg}");
+
+        assert!(require_directory(tmp.path(), "target").is_ok());
     }
 
     #[test]
@@ -548,6 +739,7 @@ mod tests {
             target_name: "dev".into(),
             declared: vec!["target".to_string()],
             outcome: CopyPathsResult { outcomes },
+            config_error: None,
         };
 
         let existing = base(vec![CopyOutcome::Skipped {
@@ -677,9 +869,20 @@ mod resolution_tests {
         /// Plant `origin/HEAD` so `local_default_branch` resolves without a
         /// catalog entry — the catalog-free fallback path.
         fn with_origin_head(self) -> Self {
-            let remotes = self.root.join(".git/refs/remotes/origin");
+            self.with_remote_head("origin", "main")
+        }
+
+        /// Plant `<remote>/HEAD`. The remote is a parameter because the
+        /// fallback follows `daft.remote`, and a fork configured against
+        /// `upstream` has no `origin` refs at all.
+        fn with_remote_head(self, remote: &str, branch: &str) -> Self {
+            let remotes = self.root.join(".git/refs/remotes").join(remote);
             std::fs::create_dir_all(&remotes).unwrap();
-            std::fs::write(remotes.join("HEAD"), "ref: refs/remotes/origin/main\n").unwrap();
+            std::fs::write(
+                remotes.join("HEAD"),
+                format!("ref: refs/remotes/{remote}/{branch}\n"),
+            )
+            .unwrap();
             self
         }
 
@@ -748,12 +951,66 @@ mod resolution_tests {
         )
     }
 
-    /// Run `execute` from `cwd`. The daft state and data dirs must already be
-    /// isolated by the caller (see [`isolate`]) — the default-branch probe
-    /// reads the repo catalog.
+    /// Which git backend `GitCommand` runs on.
+    ///
+    /// `daft.gitoxide` defaults to **on** in production (#733) while
+    /// `GitCommand::new` leaves it off, so a fixture that only ever built the
+    /// default would test the configuration almost nobody runs. The probes
+    /// under resolution diverge between the two — `gix` answers from
+    /// `repo.workdir()`, the subprocess from `rev-parse --show-toplevel` — and
+    /// that single value pivots the implicit target, the default source, and
+    /// the self-copy refusal at once. Every resolution test therefore runs
+    /// twice.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Backend {
+        Subprocess,
+        Gitoxide,
+    }
+
+    impl Backend {
+        const ALL: [Backend; 2] = [Backend::Subprocess, Backend::Gitoxide];
+
+        fn git(self) -> GitCommand {
+            GitCommand::new(true).with_gitoxide(self == Backend::Gitoxide)
+        }
+    }
+
+    thread_local! {
+        /// The backend the current [`each_backend`] pass is exercising.
+        ///
+        /// Carried out-of-band rather than threaded through every call: the
+        /// backend is a property of the *environment* a test runs in, like the
+        /// isolated state dir beside it, and every one of these tests asserts
+        /// the same expectations under both. Making it an explicit argument
+        /// would put a value no assertion mentions into every signature.
+        static BACKEND: std::cell::Cell<Backend> = const { std::cell::Cell::new(Backend::Subprocess) };
+    }
+
+    /// Run one test body once per backend, with a fresh layout and fresh
+    /// isolation each time.
+    ///
+    /// A fresh fixture per pass rather than one layout run twice: `execute`
+    /// mutates the target once the copy engine lands, and a second pass over a
+    /// warmed worktree would silently start testing the idempotence path
+    /// instead of resolution.
+    ///
+    /// Callers must be `#[serial]` — the cwd, the daft dirs, and the backend
+    /// cell are all process- or thread-global.
+    fn each_backend(mut body: impl FnMut()) {
+        for backend in Backend::ALL {
+            let _cwd = CwdGuard::new();
+            let _iso = isolate();
+            BACKEND.with(|b| b.set(backend));
+            body();
+        }
+    }
+
+    /// Run `execute` from `cwd` on the backend the current [`each_backend`]
+    /// pass selected. The daft state and data dirs must already be isolated by
+    /// that caller — the default-branch probe reads the repo catalog.
     fn run(layout: &Layout, cwd: &Path, params: WarmParams) -> Result<WarmResult> {
         std::env::set_current_dir(cwd).unwrap();
-        let git = GitCommand::new(true);
+        let git = BACKEND.with(|b| b.get()).git();
         execute(&params, &git, &layout.root, &mut NullSink)
     }
 
@@ -762,12 +1019,13 @@ mod resolution_tests {
             target: target.map(str::to_string),
             from: from.map(str::to_string),
             force: false,
+            remote: "origin".to_string(),
         }
     }
 
-    /// `Result::expect_err` needs `Debug` on the Ok type and `WarmResult` has
-    /// none; this keeps the failure message just as loud without asking the
-    /// production type to grow a derive for the tests' convenience.
+    /// Unwraps the error half with a message that names what the run resolved
+    /// instead — `expect_err`'s `Debug` dump of the whole `WarmResult` buries
+    /// the two paths that actually explain the failure.
     fn err_of(outcome: Result<WarmResult>, why: &str) -> anyhow::Error {
         match outcome {
             Ok(ok) => panic!(
@@ -782,17 +1040,17 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_named_target_is_warmed_from_where_you_stand() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
-            .expect("naming a sibling target must resolve");
+            let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
+                .expect("naming a sibling target must resolve");
 
-        assert_eq!(result.target, layout.wt("develop"));
-        assert_eq!(result.source, layout.wt("main"));
-        assert_eq!(result.target_name, "develop");
-        assert_eq!(result.source_name, "main");
+            assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(result.source, layout.wt("main"));
+            assert_eq!(result.target_name, "develop");
+            assert_eq!(result.source_name, "main");
+        });
     }
 
     /// Path, branch name, and directory name are three spellings of one
@@ -805,28 +1063,28 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_target_resolves_by_path_branch_or_directory_name() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&[])
-            .with_worktree("wt-feature", "feature/login")
-            .with_origin_head();
-        let from = layout.wt("main");
-        let expected = layout.wt("wt-feature");
+        each_backend(|| {
+            let layout = Layout::new(&[])
+                .with_worktree("wt-feature", "feature/login")
+                .with_origin_head();
+            let from = layout.wt("main");
+            let expected = layout.wt("wt-feature");
 
-        let spellings = [
-            ("directory name", "wt-feature".to_string()),
-            ("branch name", "feature/login".to_string()),
-            ("relative path", "./wt-feature".to_string()),
-            ("absolute path", expected.display().to_string()),
-        ];
-        for (tier, spelling) in spellings {
-            let result = run(&layout, &from, params(Some(&spelling), None))
-                .unwrap_or_else(|e| panic!("{tier} '{spelling}' should resolve: {e:#}"));
-            assert_eq!(result.target, expected, "{tier}: {spelling}");
-            // The display name follows the directory, never the branch — it is
-            // where the user would `cd`.
-            assert_eq!(result.target_name, "wt-feature", "{tier}: {spelling}");
-        }
+            let spellings = [
+                ("directory name", "wt-feature".to_string()),
+                ("branch name", "feature/login".to_string()),
+                ("relative path", "./wt-feature".to_string()),
+                ("absolute path", expected.display().to_string()),
+            ];
+            for (tier, spelling) in spellings {
+                let result = run(&layout, &from, params(Some(&spelling), None))
+                    .unwrap_or_else(|e| panic!("{tier} '{spelling}' should resolve: {e:#}"));
+                assert_eq!(result.target, expected, "{tier}: {spelling}");
+                // The display name follows the directory, never the branch — it is
+                // where the user would `cd`.
+                assert_eq!(result.target_name, "wt-feature", "{tier}: {spelling}");
+            }
+        });
     }
 
     /// `--from` goes through the same resolver as the positional, so it has to
@@ -835,27 +1093,27 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn from_resolves_by_the_same_spellings_as_the_target() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"])
-            .with_worktree("wt-feature", "feature/login")
-            .with_origin_head();
-        let expected = layout.wt("wt-feature");
+        each_backend(|| {
+            let layout = Layout::new(&["develop"])
+                .with_worktree("wt-feature", "feature/login")
+                .with_origin_head();
+            let expected = layout.wt("wt-feature");
 
-        for spelling in [
-            "wt-feature".to_string(),
-            "feature/login".to_string(),
-            expected.display().to_string(),
-        ] {
-            let result = run(
-                &layout,
-                &layout.wt("main"),
-                params(Some("develop"), Some(&spelling)),
-            )
-            .unwrap_or_else(|e| panic!("--from '{spelling}' should resolve: {e:#}"));
-            assert_eq!(result.source, expected, "--from {spelling}");
-            assert_eq!(result.source_name, "wt-feature", "--from {spelling}");
-        }
+            for spelling in [
+                "wt-feature".to_string(),
+                "feature/login".to_string(),
+                expected.display().to_string(),
+            ] {
+                let result = run(
+                    &layout,
+                    &layout.wt("main"),
+                    params(Some("develop"), Some(&spelling)),
+                )
+                .unwrap_or_else(|e| panic!("--from '{spelling}' should resolve: {e:#}"));
+                assert_eq!(result.source, expected, "--from {spelling}");
+                assert_eq!(result.source_name, "wt-feature", "--from {spelling}");
+            }
+        });
     }
 
     /// Standing in the target is the "warm me from the default branch" shape:
@@ -863,15 +1121,15 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn standing_in_the_target_falls_back_to_the_default_branch_worktree() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let result = run(&layout, &layout.wt("develop"), params(None, None))
-            .expect("the default branch's worktree is the implicit source");
+            let result = run(&layout, &layout.wt("develop"), params(None, None))
+                .expect("the default branch's worktree is the implicit source");
 
-        assert_eq!(result.target, layout.wt("develop"));
-        assert_eq!(result.source, layout.wt("main"));
+            assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(result.source, layout.wt("main"));
+        });
     }
 
     /// Same fallback, reached the long way: the target is named rather than
@@ -879,18 +1137,18 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn naming_your_own_worktree_as_the_target_still_falls_back() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let result = run(
-            &layout,
-            &layout.wt("develop"),
-            params(Some("develop"), None),
-        )
-        .expect("naming the current worktree is the same case as omitting it");
+            let result = run(
+                &layout,
+                &layout.wt("develop"),
+                params(Some("develop"), None),
+            )
+            .expect("naming the current worktree is the same case as omitting it");
 
-        assert_eq!(result.source, layout.wt("main"));
+            assert_eq!(result.source, layout.wt("main"));
+        });
     }
 
     /// `--from` beats the current worktree even when the current worktree
@@ -898,19 +1156,19 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn from_wins_over_the_current_worktree() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop", "release"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop", "release"]).with_origin_head();
 
-        let result = run(
-            &layout,
-            &layout.wt("main"),
-            params(Some("develop"), Some("release")),
-        )
-        .expect("--from names the source outright");
+            let result = run(
+                &layout,
+                &layout.wt("main"),
+                params(Some("develop"), Some("release")),
+            )
+            .expect("--from names the source outright");
 
-        assert_eq!(result.source, layout.wt("release"));
-        assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(result.source, layout.wt("release"));
+            assert_eq!(result.target, layout.wt("develop"));
+        });
     }
 
     /// The refusal that keeps `--force` from deleting the entries it was about
@@ -919,25 +1177,25 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_equal_to_the_target_is_refused() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let err = err_of(
-            run(
-                &layout,
-                &layout.wt("develop"),
-                params(None, Some("develop")),
-            ),
-            "copying a worktree onto itself must not be attempted",
-        );
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("same worktree"),
-            "the refusal must name the condition: {msg}"
-        );
-        assert!(msg.contains("--from"), "and offer the way out of it: {msg}");
-        assert!(msg.contains("develop"), "and name the worktree: {msg}");
+            let err = err_of(
+                run(
+                    &layout,
+                    &layout.wt("develop"),
+                    params(None, Some("develop")),
+                ),
+                "copying a worktree onto itself must not be attempted",
+            );
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("same worktree"),
+                "the refusal must name the condition: {msg}"
+            );
+            assert!(msg.contains("--from"), "and offer the way out of it: {msg}");
+            assert!(msg.contains("develop"), "and name the worktree: {msg}");
+        });
     }
 
     /// The same refusal reached without `--from`: the repo's only worktree is
@@ -945,51 +1203,51 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn warming_the_default_branch_worktree_from_itself_is_refused() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&[]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&[]).with_origin_head();
 
-        let err = err_of(
-            run(&layout, &layout.wt("main"), params(None, None)),
-            "the default branch cannot be its own source",
-        );
-        assert!(format!("{err:#}").contains("same worktree"));
+            let err = err_of(
+                run(&layout, &layout.wt("main"), params(None, None)),
+                "the default branch cannot be its own source",
+            );
+            assert!(format!("{err:#}").contains("same worktree"));
+        });
     }
 
     #[test]
     #[serial]
     fn an_unknown_target_names_the_word_that_failed() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let err = err_of(
-            run(
-                &layout,
-                &layout.wt("main"),
-                params(Some("no-such-worktree"), None),
-            ),
-            "an unresolvable target is a hard error, never a guess",
-        );
-        assert!(format!("{err:#}").contains("no-such-worktree"));
+            let err = err_of(
+                run(
+                    &layout,
+                    &layout.wt("main"),
+                    params(Some("no-such-worktree"), None),
+                ),
+                "an unresolvable target is a hard error, never a guess",
+            );
+            assert!(format!("{err:#}").contains("no-such-worktree"));
+        });
     }
 
     #[test]
     #[serial]
     fn an_unknown_from_names_the_word_that_failed() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let err = err_of(
-            run(
-                &layout,
-                &layout.wt("main"),
-                params(Some("develop"), Some("no-such-source")),
-            ),
-            "an unresolvable --from is a hard error",
-        );
-        assert!(format!("{err:#}").contains("no-such-source"));
+            let err = err_of(
+                run(
+                    &layout,
+                    &layout.wt("main"),
+                    params(Some("develop"), Some("no-such-source")),
+                ),
+                "an unresolvable --from is a hard error",
+            );
+            assert!(format!("{err:#}").contains("no-such-source"));
+        });
     }
 
     /// A repo with no `origin/HEAD` and no catalog entry cannot name a default
@@ -998,22 +1256,22 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn an_undeterminable_default_branch_asks_for_from() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        // No `with_origin_head()`: nothing on disk says which branch is
-        // default, and the isolated state dir has no catalog row either.
-        let layout = Layout::new(&["develop"]);
+        each_backend(|| {
+            // No `with_origin_head()`: nothing on disk says which branch is
+            // default, and the isolated state dir has no catalog row either.
+            let layout = Layout::new(&["develop"]);
 
-        let err = err_of(
-            run(&layout, &layout.wt("develop"), params(None, None)),
-            "with no default branch there is no implicit source",
-        );
-        let msg = format!("{err:#}");
-        assert!(msg.contains("default branch"), "{msg}");
-        assert!(
-            msg.contains("--from"),
-            "the hint must offer a way out: {msg}"
-        );
+            let err = err_of(
+                run(&layout, &layout.wt("develop"), params(None, None)),
+                "with no default branch there is no implicit source",
+            );
+            let msg = format!("{err:#}");
+            assert!(msg.contains("default branch"), "{msg}");
+            assert!(
+                msg.contains("--from"),
+                "the hint must offer a way out: {msg}"
+            );
+        });
     }
 
     /// `origin/HEAD` names a branch nobody has checked out: the answer is
@@ -1021,20 +1279,20 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_default_branch_without_a_worktree_asks_for_from() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]);
-        let remotes = layout.root.join(".git/refs/remotes/origin");
-        std::fs::create_dir_all(&remotes).unwrap();
-        std::fs::write(remotes.join("HEAD"), "ref: refs/remotes/origin/trunk\n").unwrap();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]);
+            let remotes = layout.root.join(".git/refs/remotes/origin");
+            std::fs::create_dir_all(&remotes).unwrap();
+            std::fs::write(remotes.join("HEAD"), "ref: refs/remotes/origin/trunk\n").unwrap();
 
-        let err = err_of(
-            run(&layout, &layout.wt("develop"), params(None, None)),
-            "a default branch with no worktree is not a source",
-        );
-        let msg = format!("{err:#}");
-        assert!(msg.contains("trunk"), "name the branch that failed: {msg}");
-        assert!(msg.contains("--from"), "{msg}");
+            let err = err_of(
+                run(&layout, &layout.wt("develop"), params(None, None)),
+                "a default branch with no worktree is not a source",
+            );
+            let msg = format!("{err:#}");
+            assert!(msg.contains("trunk"), "name the branch that failed: {msg}");
+            assert!(msg.contains("--from"), "{msg}");
+        });
     }
 
     /// The catalog is asked first, and its answer wins over `origin/HEAD`.
@@ -1044,37 +1302,243 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn the_catalog_default_branch_beats_origin_head() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        // origin/HEAD says `main`; the catalog says `feature/login`.
-        let layout = Layout::new(&["develop"])
-            .with_worktree("wt-feature", "feature/login")
-            .with_origin_head();
+        each_backend(|| {
+            // origin/HEAD says `main`; the catalog says `feature/login`.
+            let layout = Layout::new(&["develop"])
+                .with_worktree("wt-feature", "feature/login")
+                .with_origin_head();
 
-        let bare = layout.root.join(".git");
-        let uuid = uuid::Uuid::new_v4().to_string();
-        std::fs::write(bare.join("daft-id"), format!("{uuid}\n")).unwrap();
-        let canonical_bare = bare.canonicalize().unwrap();
-        crate::catalog::Catalog::open_rw()
-            .expect("the sandboxed data dir must accept a catalog")
-            .register(&crate::catalog::RegistrationFacts {
-                uuid,
-                default_name: "acme".to_string(),
-                path: layout.root.display().to_string(),
-                git_common_dir: canonical_bare.display().to_string(),
-                remote_url: None,
-                default_branch: Some("feature/login".to_string()),
-            })
-            .expect("seeding the catalog row must succeed");
+            let bare = layout.root.join(".git");
+            let uuid = uuid::Uuid::new_v4().to_string();
+            std::fs::write(bare.join("daft-id"), format!("{uuid}\n")).unwrap();
+            let canonical_bare = bare.canonicalize().unwrap();
+            crate::catalog::Catalog::open_rw()
+                .expect("the sandboxed data dir must accept a catalog")
+                .register(&crate::catalog::RegistrationFacts {
+                    uuid,
+                    default_name: "acme".to_string(),
+                    path: layout.root.display().to_string(),
+                    git_common_dir: canonical_bare.display().to_string(),
+                    remote_url: None,
+                    default_branch: Some("feature/login".to_string()),
+                })
+                .expect("seeding the catalog row must succeed");
 
-        let result = run(&layout, &layout.wt("develop"), params(None, None))
-            .expect("the catalog's default branch has a worktree to copy from");
+            let result = run(&layout, &layout.wt("develop"), params(None, None))
+                .expect("the catalog's default branch has a worktree to copy from");
 
-        assert_eq!(
-            result.source,
-            layout.wt("wt-feature"),
-            "the catalog row must beat the origin/HEAD symref"
-        );
+            assert_eq!(
+                result.source,
+                layout.wt("wt-feature"),
+                "the catalog row must beat the origin/HEAD symref"
+            );
+        });
+    }
+
+    /// A catalog that cannot be *asked* is not a catalog that says "no".
+    ///
+    /// The reachable shape: a sibling worktree running a newer daft build
+    /// migrates the shared catalog, and this binary then finds a `user_version`
+    /// it does not understand. Collapsing that to `None` would fall through to
+    /// whatever `origin/HEAD` says and silently warm from a worktree the user
+    /// never chose — an outage quietly reinterpreted as an answer, which the
+    /// repo-aware command grammar forbids for a probe that gates an action.
+    #[test]
+    #[serial]
+    fn an_unreadable_catalog_aborts_instead_of_falling_back() {
+        each_backend(|| {
+            // origin/HEAD resolves perfectly well — the fallback the broken
+            // catalog must NOT be allowed to silently reach.
+            let layout = Layout::new(&["develop"]).with_origin_head();
+
+            let db = crate::store::paths::catalog_db().expect("sandboxed data dir");
+            crate::catalog::Catalog::open_rw().expect("create the catalog file");
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .pragma_update(None, "user_version", 9_999_i64)
+                .unwrap();
+
+            let err = err_of(
+                run(&layout, &layout.wt("main"), params(Some("main"), None)),
+                "an unreadable catalog must abort the run",
+            );
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("catalog"),
+                "the message must name the outage: {msg}"
+            );
+        });
+    }
+
+    /// A tombstoned row is *absence*, not an outage: `daft repo remove
+    /// --keep-files` leaves the worktrees exactly where they are, and warming
+    /// them must keep working the way it does for a repo daft never cataloged.
+    #[test]
+    #[serial]
+    fn a_removed_catalog_row_falls_back_to_the_remote_head() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+
+            let bare = layout.root.join(".git");
+            let uuid = uuid::Uuid::new_v4().to_string();
+            std::fs::write(bare.join("daft-id"), format!("{uuid}\n")).unwrap();
+            let catalog = crate::catalog::Catalog::open_rw().expect("sandboxed data dir");
+            catalog
+                .register(&crate::catalog::RegistrationFacts {
+                    uuid: uuid.clone(),
+                    default_name: "acme".to_string(),
+                    path: layout.root.display().to_string(),
+                    git_common_dir: bare.canonicalize().unwrap().display().to_string(),
+                    remote_url: None,
+                    default_branch: Some("develop".to_string()),
+                })
+                .expect("seeding the catalog row must succeed");
+            catalog.mark_removed(&uuid).expect("tombstone the row");
+
+            let result = run(&layout, &layout.wt("develop"), params(None, None))
+                .expect("a tombstoned row must not break warming");
+
+            assert_eq!(
+                result.source,
+                layout.wt("main"),
+                "the tombstoned row's 'develop' must not win; origin/HEAD says main"
+            );
+        });
+    }
+
+    /// The default-branch fallback reads `<daft.remote>/HEAD`, not a hardcoded
+    /// `origin/HEAD`. A fork configured against `upstream` has no `origin` at
+    /// all, and hardcoding it left the source unresolvable in exactly the
+    /// layout the setting exists for.
+    #[test]
+    #[serial]
+    fn the_default_branch_fallback_follows_the_configured_remote() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_remote_head("upstream", "main");
+
+            let result = run(
+                &layout,
+                &layout.wt("develop"),
+                WarmParams {
+                    remote: "upstream".to_string(),
+                    ..params(None, None)
+                },
+            )
+            .expect("upstream/HEAD names the default branch");
+            assert_eq!(result.source, layout.wt("main"));
+
+            // The same layout under the default remote has nothing to read.
+            let err = err_of(
+                run(&layout, &layout.wt("develop"), params(None, None)),
+                "there is no origin/HEAD in this layout",
+            );
+            assert!(format!("{err:#}").contains("--from"), "{err:#}");
+        });
+    }
+
+    /// An inherited `GIT_DIR` — every command daft runs from inside a git hook
+    /// has one — must not be able to make the two operands describe different
+    /// repositories.
+    ///
+    /// `rev-parse` honors `GIT_DIR`; the worktree enumeration behind
+    /// `resolve_worktree_path` clears it. While "where am I?" came from the
+    /// former and "which worktrees exist?" from the latter, the self-copy
+    /// refusal compared a path from one repo against paths from another — a
+    /// comparison that can never fire, so `daft warm` would happily copy across
+    /// repository boundaries.
+    #[test]
+    #[serial]
+    fn an_inherited_git_dir_does_not_retarget_resolution() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            // A second, unrelated repo for GIT_DIR to point at.
+            let other = Layout::new(&[]).with_origin_head();
+
+            struct GitDirGuard;
+            impl Drop for GitDirGuard {
+                fn drop(&mut self) {
+                    // SAFETY: `remove_var` is `unsafe fn` in edition 2024;
+                    // every caller of this fixture is `#[serial]`.
+                    unsafe { std::env::remove_var("GIT_DIR") };
+                }
+            }
+            // SAFETY: as above — serialized by `#[serial]`.
+            unsafe { std::env::set_var("GIT_DIR", other.root.join(".git")) };
+            let _restore = GitDirGuard;
+
+            // Standing in this repo's `main`, warming its `develop`.
+            let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
+                .expect("resolution must stay inside the repo the user is standing in");
+
+            assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(
+                result.source,
+                layout.wt("main"),
+                "the source must come from this repo, not the one GIT_DIR names"
+            );
+
+            // And the self-copy refusal still fires, which it cannot do if the
+            // two operands come from different repositories.
+            let err = err_of(
+                run(
+                    &layout,
+                    &layout.wt("main"),
+                    params(Some("main"), Some("main")),
+                ),
+                "the same worktree named twice is still a refusal under GIT_DIR",
+            );
+            assert!(format!("{err:#}").contains("same worktree"), "{err:#}");
+        });
+    }
+
+    /// `daft warm` is the command a user runs to work out why `copy:` is not
+    /// copying, so it is the last place that may report a mistyped config as an
+    /// absent one. `read_copy_config` cannot tell them apart — it answers
+    /// `None` for both — so the load is attempted separately.
+    #[test]
+    #[serial]
+    fn a_source_whose_config_will_not_load_reports_the_error() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            std::fs::write(
+                layout.wt("main").join("daft.yml"),
+                "copy:\n  paths: [target]\n  fallback: symlink\n",
+            )
+            .unwrap();
+
+            let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
+                .expect("a broken config is reported, not fatal");
+
+            let detail = result
+                .config_error
+                .as_deref()
+                .expect("a config that will not load must be reported as such");
+            assert!(
+                detail.to_lowercase().contains("copy") || detail.contains("daft.yml"),
+                "the message must point at what failed: {detail}"
+            );
+            assert!(
+                result.declared.is_empty() && result.outcome.is_empty(),
+                "nothing may be attempted from a config that would not load"
+            );
+        });
+    }
+
+    /// The other half of the same distinction: a genuinely absent `copy:` key
+    /// is not an error, and must not be reported as one.
+    #[test]
+    #[serial]
+    fn a_source_with_a_valid_config_and_no_copy_key_reports_no_error() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            std::fs::write(layout.wt("main").join("daft.yml"), "shared:\n  - .env\n").unwrap();
+
+            let result = run(&layout, &layout.wt("main"), params(Some("develop"), None))
+                .expect("a config without copy: is ordinary");
+
+            assert!(result.config_error.is_none(), "{:?}", result.config_error);
+            assert!(result.nothing_declared());
+        });
     }
 
     /// A worktree git still lists but whose directory was deleted out from
@@ -1083,17 +1547,17 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_resolvable_target_whose_directory_is_gone_is_reported_as_missing() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
-        std::fs::remove_dir_all(layout.wt("develop")).unwrap();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            std::fs::remove_dir_all(layout.wt("develop")).unwrap();
 
-        let err = err_of(
-            run(&layout, &layout.wt("main"), params(Some("develop"), None)),
-            "a vanished target directory cannot be warmed",
-        );
-        let msg = format!("{err:#}");
-        assert!(msg.contains("does not exist"), "{msg}");
+            let err = err_of(
+                run(&layout, &layout.wt("main"), params(Some("develop"), None)),
+                "a vanished target directory cannot be warmed",
+            );
+            let msg = format!("{err:#}");
+            assert!(msg.contains("does not exist"), "{msg}");
+        });
     }
 
     /// Run from the container root — the directory that holds the bare `.git`
@@ -1102,34 +1566,37 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn running_from_the_container_root_reports_no_current_worktree() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let err = err_of(
-            run(&layout, &layout.root, params(None, None)),
-            "the container root is not a worktree",
-        );
-        assert!(format!("{err:#}").contains("current worktree"), "{err:#}");
+            let err = err_of(
+                run(&layout, &layout.root, params(None, None)),
+                "the container root is not a worktree",
+            );
+            assert!(format!("{err:#}").contains("current worktree"), "{err:#}");
+        });
     }
 
     /// The same standing point, but with both ends named explicitly: nothing
-    /// about the request depends on where the user is standing.
+    /// about the request depends on where the user is standing, so nothing
+    /// about where the user is standing may make it fail.
     ///
-    /// This documents current behavior — the current worktree is resolved
-    /// eagerly, so a fully-specified invocation still fails outside a worktree.
+    /// The container root is a real place to stand — it holds the shared
+    /// `.git` and every worktree — and `daft warm develop --from main` is
+    /// completely specified there. An eager "where am I?" probe used to fail
+    /// this run on a value it then never read.
     #[test]
     #[serial]
-    fn a_fully_specified_run_from_the_container_root_still_needs_a_current_worktree() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+    fn a_fully_specified_run_from_the_container_root_needs_no_current_worktree() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let outcome = run(&layout, &layout.root, params(Some("develop"), Some("main")));
-        assert!(
-            outcome.is_err(),
-            "current behavior: the cwd probe runs before the named pair is used"
-        );
+            let result = run(&layout, &layout.root, params(Some("develop"), Some("main")))
+                .expect("both ends are named; the cwd is irrelevant");
+
+            assert_eq!(result.target, layout.wt("develop"));
+            assert_eq!(result.source, layout.wt("main"));
+        });
     }
 
     /// Outside any repository at all — the `is_git_repository` guard in the
@@ -1138,17 +1605,17 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn running_outside_any_repository_is_an_error() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
-        let outside = layout.base().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            let outside = layout.base().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
 
-        let err = err_of(
-            run(&layout, &outside, params(Some("develop"), None)),
-            "no repository, no worktrees to resolve",
-        );
-        assert!(!format!("{err:#}").is_empty());
+            let err = err_of(
+                run(&layout, &outside, params(Some("develop"), None)),
+                "no repository, no worktrees to resolve",
+            );
+            assert!(!format!("{err:#}").is_empty());
+        });
     }
 
     /// `--force` is a licence to replace *declared* entries, and nothing more.
@@ -1159,31 +1626,30 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn force_with_nothing_declared_removes_nothing() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let victim = layout.wt("develop").join("node_modules");
-        std::fs::create_dir_all(victim.join("pkg")).unwrap();
-        std::fs::write(victim.join("pkg/index.js"), "built-in-develop\n").unwrap();
+            let victim = layout.wt("develop").join("node_modules");
+            std::fs::create_dir_all(victim.join("pkg")).unwrap();
+            std::fs::write(victim.join("pkg/index.js"), "built-in-develop\n").unwrap();
 
-        let result = run(
-            &layout,
-            &layout.wt("main"),
-            WarmParams {
-                target: Some("develop".to_string()),
-                from: None,
-                force: true,
-            },
-        )
-        .expect("a --force run with no declarations is a no-op, not an error");
+            let result = run(
+                &layout,
+                &layout.wt("main"),
+                WarmParams {
+                    force: true,
+                    ..params(Some("develop"), None)
+                },
+            )
+            .expect("a --force run with no declarations is a no-op, not an error");
 
-        assert!(result.nothing_declared());
-        assert_eq!(
-            std::fs::read_to_string(victim.join("pkg/index.js")).unwrap(),
-            "built-in-develop\n",
-            "--force must not delete anything the config never named"
-        );
+            assert!(result.nothing_declared());
+            assert_eq!(
+                std::fs::read_to_string(victim.join("pkg/index.js")).unwrap(),
+                "built-in-develop\n",
+                "--force must not delete anything the config never named"
+            );
+        });
     }
 
     /// A source that declares nothing is the "no work to do" case, and it must
@@ -1192,14 +1658,14 @@ mod resolution_tests {
     #[test]
     #[serial]
     fn a_source_with_no_copy_section_declares_nothing() {
-        let _cwd = CwdGuard::new();
-        let _iso = isolate();
-        let layout = Layout::new(&["develop"]).with_origin_head();
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
 
-        let result = run(&layout, &layout.wt("main"), params(Some("develop"), None)).unwrap();
+            let result = run(&layout, &layout.wt("main"), params(Some("develop"), None)).unwrap();
 
-        assert!(result.nothing_declared());
-        assert!(result.outcome.is_empty());
-        assert!(!result.has_existing_skips());
+            assert!(result.nothing_declared());
+            assert!(result.outcome.is_empty());
+            assert!(!result.has_existing_skips());
+        });
     }
 }

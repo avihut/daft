@@ -5,7 +5,6 @@ use crate::{
         copy_paths::{CopyOutcome, CopyPathsResult},
         worktree::warm,
     },
-    get_project_root,
     git::GitCommand,
     is_git_repository,
     logging::init_logging,
@@ -84,12 +83,17 @@ pub fn run() -> Result<()> {
         quiet: false,
     };
     let git = GitCommand::new(wt_config.quiet).with_gitoxide(settings.use_gitoxide);
-    let project_root = get_project_root()?;
+    // Not `core::repo::get_project_root`: that runs a bare `git rev-parse`,
+    // which an inherited GIT_DIR retargets, while every worktree lookup below
+    // goes through `git_command_at`, which clears it. Inside a git-driven hook
+    // the two answer for different repositories. See `warm::current_worktree`.
+    let project_root = warm::locate_project_root()?;
 
     let params = warm::WarmParams {
         target: args.target,
         from: args.from,
         force: args.force,
+        remote: settings.remote.clone(),
     };
 
     let result = {
@@ -112,10 +116,29 @@ pub fn run() -> Result<()> {
 /// contract reaches all the way to the process status, so a cache that could
 /// not be copied never breaks a script that warms a worktree before building.
 fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn Output) {
-    if result.nothing_declared() {
-        output.info(&format!(
-            "No `copy:` paths declared in '{}'.",
+    // A config that would not load is not a config that declares nothing, and
+    // only one of the two is the user's fault to fix. Saying "declare some
+    // paths" to someone whose `copy:` block is right there — but mistyped —
+    // sends them to add a key that already exists.
+    if let Some(detail) = &result.config_error {
+        output.warning(&format!(
+            "could not read the configuration in '{}': {detail}",
             result.source_name
+        ));
+        output.warning(&format!(
+            "nothing was copied into '{}'; run `{}` to see what is wrong",
+            result.target_name,
+            crate::daft_cmd("hooks validate")
+        ));
+        return;
+    }
+
+    // `nothing_declared` alone would swallow outcomes the engine reported for
+    // entries no longer in `declared` — a mismatch worth seeing, not hiding.
+    if result.nothing_declared() && result.outcome.is_empty() {
+        output.info(&format!(
+            "No `copy:` paths declared in '{}' — nothing to copy into '{}'.",
+            result.source_name, result.target_name
         ));
         output.info(&format!(
             "Declare the caches worth replicating in daft.yml, then run `{}`.",
@@ -123,11 +146,6 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
         ));
         return;
     }
-
-    output.step(&format!(
-        "Warming '{}' from '{}'",
-        result.target_name, result.source_name
-    ));
 
     for outcome in &result.outcome.outcomes {
         match outcome {
@@ -147,9 +165,9 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
                 crate::core::copy_paths::SkipReason::NotIgnored
                 | crate::core::copy_paths::SkipReason::NoReflink
                 | crate::core::copy_paths::SkipReason::TooLarge { .. } => {
-                    output.warning(&format!("{entry}: {}", warm::skip_phrase(reason, entry)))
+                    output.warning(&warm::skip_line(entry, reason))
                 }
-                _ => output.info(&format!("{entry}: {}", warm::skip_phrase(reason, entry))),
+                _ => output.info(&warm::skip_line(entry, reason)),
             },
             // Loud but not fatal, matching the rail's yellow attention row:
             // the worktree is fine, one of its caches is not.
@@ -164,7 +182,7 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
         output.warning(&format!("{entry}: not reported by the copy stage"));
     }
 
-    output.result(&summary_line(&result.outcome, result.declared.len()));
+    output.result(&summary_line(result));
 
     if result.has_existing_skips() && !forced {
         output.info(&format!(
@@ -174,21 +192,98 @@ fn render_warm_result(result: &warm::WarmResult, forced: bool, output: &mut dyn 
     }
 }
 
-/// `Copied 2 of 3 declared paths (1.2 GB).` — the one line a scripted caller
-/// greps for.
-fn summary_line(result: &CopyPathsResult, declared: usize) -> String {
-    let copied = result.copied_count();
-    if copied == 0 {
+/// The one line a scripted caller greps for:
+/// `Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'; 1 failed.`
+///
+/// Two properties it must never lose:
+///
+/// **It names both worktrees.** Every other mention of the resolved pair is
+/// verbose-only, so at default verbosity — including a destructive `--force`
+/// run — this is the user's only chance to notice that `wt-main` resolved by
+/// directory name when they meant the worktree on branch `main`.
+///
+/// **It counts what went wrong.** Branching on "copied nothing" alone let a run
+/// where every entry *failed* print `needed no work` on stdout while the
+/// failures went to stderr — and under `--force`, "no work" would be describing
+/// deleted caches. The no-work phrasing is reserved for the genuinely quiet
+/// case; anything else is counted out loud.
+fn summary_line(result: &warm::WarmResult) -> String {
+    let outcome = &result.outcome;
+    let declared = result.declared.len();
+    let copied = outcome.copied_count();
+    let failed = failure_count(result);
+    let attention = attention_count(outcome);
+    let pair = format!(
+        " into '{}' from '{}'",
+        result.target_name, result.source_name
+    );
+
+    let head = if copied > 0 {
+        format!(
+            "Copied {copied} of {declared} declared path{} ({}){pair}",
+            plural(declared),
+            warm::format_bytes(outcome.copied_bytes())
+        )
+    } else if failed == 0 && attention == 0 {
         return format!(
-            "Copied nothing; {declared} declared path{} needed no work.",
+            "Copied nothing{pair}; {declared} declared path{} needed no work.",
             plural(declared)
         );
+    } else {
+        format!(
+            "Copied 0 of {declared} declared path{}{pair}",
+            plural(declared)
+        )
+    };
+
+    let mut notes = Vec::new();
+    if failed > 0 {
+        notes.push(format!("{failed} failed"));
     }
-    format!(
-        "Copied {copied} of {declared} declared path{} ({}).",
-        plural(declared),
-        warm::format_bytes(result.copied_bytes())
-    )
+    if attention > 0 {
+        notes.push(format!("{attention} needed attention"));
+    }
+    if notes.is_empty() {
+        format!("{head}.")
+    } else {
+        format!("{head}; {}.", notes.join(", "))
+    }
+}
+
+/// Entries that were meant to be copied and were not, through no choice of
+/// daft's: an engine error, or a declaration the engine never answered for at
+/// all (which is a broken promise, and counts the same to the user).
+fn failure_count(result: &warm::WarmResult) -> usize {
+    result
+        .outcome
+        .outcomes
+        .iter()
+        .filter(|o| matches!(o, CopyOutcome::Failed { .. }))
+        .count()
+        + warm::unreported(&result.declared, &result.outcome).len()
+}
+
+/// Entries daft deliberately declined — tracked content, an unreflinkable
+/// filesystem under `fallback: skip`, a cache over its `max_size`. Not
+/// failures, but not "no work" either: the config asked for something that did
+/// not happen.
+fn attention_count(result: &CopyPathsResult) -> usize {
+    use crate::core::copy_paths::SkipReason;
+    result
+        .outcomes
+        .iter()
+        .filter(|o| {
+            matches!(
+                o,
+                CopyOutcome::Skipped {
+                    reason: SkipReason::NotIgnored
+                        | SkipReason::NoReflink
+                        | SkipReason::TooLarge { .. },
+                    ..
+                }
+            )
+        })
+        .count()
 }
 
 fn plural(n: usize) -> &'static str {
@@ -211,20 +306,32 @@ mod tests {
         }
     }
 
+    fn failed(entry: &str) -> CopyOutcome {
+        CopyOutcome::Failed {
+            entry: entry.into(),
+            detail: "permission denied".into(),
+        }
+    }
+
+    fn skipped(entry: &str, reason: SkipReason) -> CopyOutcome {
+        CopyOutcome::Skipped {
+            entry: entry.into(),
+            reason,
+        }
+    }
+
     #[test]
     fn summary_counts_copies_against_declarations() {
-        let result = CopyPathsResult {
-            outcomes: vec![
+        let result = result_of(
+            &["target", "node_modules"],
+            vec![
                 copied("target", 1024),
-                CopyOutcome::Skipped {
-                    entry: "node_modules".into(),
-                    reason: SkipReason::DestinationExists,
-                },
+                skipped("node_modules", SkipReason::DestinationExists),
             ],
-        };
+        );
         assert_eq!(
-            summary_line(&result, 2),
-            "Copied 1 of 2 declared paths (1.0 KB)."
+            summary_line(&result),
+            "Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'."
         );
     }
 
@@ -232,31 +339,126 @@ mod tests {
     fn summary_stays_honest_when_nothing_was_copied() {
         // "Copied 0 of 3" reads like a failure; every one of those three may
         // simply have been already present. The no-work phrasing keeps a
-        // clean re-run from looking broken.
-        let result = CopyPathsResult {
-            outcomes: vec![CopyOutcome::Skipped {
-                entry: "target".into(),
-                reason: SkipReason::NoSource,
-            }],
-        };
-        assert_eq!(
-            summary_line(&result, 3),
-            "Copied nothing; 3 declared paths needed no work."
+        // clean re-run from looking broken — but it is reserved for runs where
+        // nothing actually went wrong (see the failure tests below).
+        let result = result_of(
+            &["target", "node_modules", ".venv"],
+            vec![
+                skipped("target", SkipReason::NoSource),
+                skipped("node_modules", SkipReason::DestinationExists),
+                skipped(".venv", SkipReason::NoMatches),
+            ],
         );
         assert_eq!(
-            summary_line(&result, 1),
-            "Copied nothing; 1 declared path needed no work."
+            summary_line(&result),
+            "Copied nothing into 'develop' from 'main'; 3 declared paths needed no work."
+        );
+
+        let lone = result_of(&["target"], vec![skipped("target", SkipReason::NoSource)]);
+        assert_eq!(
+            summary_line(&lone),
+            "Copied nothing into 'develop' from 'main'; 1 declared path needed no work."
         );
     }
 
     #[test]
     fn summary_singularizes_a_lone_declaration() {
-        let result = CopyPathsResult {
-            outcomes: vec![copied("target", 0)],
-        };
+        let result = result_of(&["target"], vec![copied("target", 0)]);
         assert_eq!(
-            summary_line(&result, 1),
-            "Copied 1 of 1 declared path (0 B)."
+            summary_line(&result),
+            "Copied 1 of 1 declared path (0 B) into 'develop' from 'main'."
+        );
+    }
+
+    /// The pair is the whole point of this line at default verbosity: with
+    /// path > branch > directory-name tiering, `warm wt-main` can resolve to a
+    /// worktree the user did not mean, and under `--force` that is a wipe. The
+    /// summary is the only unconditional mention of which two worktrees were
+    /// involved, so it is asserted in every shape the line can take.
+    #[test]
+    fn every_summary_shape_names_both_worktrees() {
+        let shapes = [
+            result_of(&["target"], vec![copied("target", 10)]),
+            result_of(&["target"], vec![skipped("target", SkipReason::NoSource)]),
+            result_of(&["target"], vec![failed("target")]),
+            result_of(&["target"], vec![skipped("target", SkipReason::NotIgnored)]),
+            result_of(&["target"], vec![]),
+        ];
+        for shape in &shapes {
+            let line = summary_line(shape);
+            assert!(
+                line.contains("'develop'") && line.contains("'main'"),
+                "summary must name target and source: {line}"
+            );
+        }
+    }
+
+    /// The regression this whole branch exists for: every entry failed, so the
+    /// per-entry warnings went to stderr and the summary — on stdout, where a
+    /// script looks — said the run "needed no work". Under `--force` that
+    /// sentence would be describing caches daft had just deleted.
+    #[test]
+    fn an_all_failed_run_is_never_reported_as_no_work() {
+        let result = result_of(
+            &["target", "node_modules", ".venv"],
+            vec![failed("target"), failed("node_modules"), failed(".venv")],
+        );
+        let line = summary_line(&result);
+        assert_eq!(
+            line,
+            "Copied 0 of 3 declared paths into 'develop' from 'main'; 3 failed."
+        );
+        assert!(!line.contains("needed no work"));
+    }
+
+    #[test]
+    fn a_partial_run_counts_both_halves() {
+        let result = result_of(
+            &["target", "node_modules"],
+            vec![copied("target", 1024), failed("node_modules")],
+        );
+        assert_eq!(
+            summary_line(&result),
+            "Copied 1 of 2 declared paths (1.0 KB) into 'develop' from 'main'; 1 failed."
+        );
+    }
+
+    /// A deliberate refusal is not a failure and not "no work" either — the
+    /// config asked for something that did not happen, and the summary has to
+    /// keep those three states apart.
+    #[test]
+    fn attention_skips_are_counted_separately_from_failures() {
+        let result = result_of(
+            &["target", "node_modules", ".venv"],
+            vec![
+                skipped("target", SkipReason::NotIgnored),
+                skipped(
+                    "node_modules",
+                    SkipReason::TooLarge {
+                        size_bytes: 4096,
+                        limit_bytes: 1024,
+                    },
+                ),
+                failed(".venv"),
+            ],
+        );
+        assert_eq!(
+            summary_line(&result),
+            "Copied 0 of 3 declared paths into 'develop' from 'main'; \
+             1 failed, 2 needed attention."
+        );
+    }
+
+    /// A declaration the engine never answered for is indistinguishable from a
+    /// failure to the user — the cache they asked for is not there — so it is
+    /// counted in the same column rather than silently dropping out of the
+    /// arithmetic.
+    #[test]
+    fn an_unreported_declaration_counts_as_a_failure() {
+        let result = result_of(&["target", "node_modules"], vec![copied("target", 2048)]);
+        assert_eq!(
+            summary_line(&result),
+            "Copied 1 of 2 declared paths (2.0 KB) into 'develop' from 'main'; 1 failed."
         );
     }
 
@@ -280,6 +482,7 @@ mod tests {
             target_name: "develop".into(),
             declared: declared.iter().map(|s| s.to_string()).collect(),
             outcome: CopyPathsResult { outcomes },
+            config_error: None,
         }
     }
 
@@ -350,8 +553,11 @@ mod tests {
                 }],
             );
             let output = render(&result, false);
+            // Matched on the entry name alone, not on a `target: ` prefix:
+            // self-identifying phrases drop the prefix (see
+            // `a_self_identifying_phrase_is_not_prefixed_with_its_own_entry`).
             assert!(
-                output.has_warning("target: "),
+                output.has_warning("target"),
                 "{reason:?} must reach the attention channel: {:?}",
                 output.entries()
             );
@@ -384,6 +590,62 @@ mod tests {
         }
     }
 
+    /// The lie this branch removes: a `copy:` block that would not parse used
+    /// to render as "No `copy:` paths declared … Declare the caches worth
+    /// replicating", telling a user whose block is right in front of them to
+    /// go and write it. `daft warm` is the command reached for to debug
+    /// exactly this, so it must say what failed and where to look.
+    #[test]
+    fn a_config_that_will_not_load_is_reported_instead_of_called_absent() {
+        let mut result = result_of(&[], vec![]);
+        result.config_error = Some("invalid type: string \"symlink\"".into());
+
+        let output = render(&result, false);
+        assert!(
+            output.has_warning("could not read the configuration in 'main'"),
+            "{:?}",
+            output.entries()
+        );
+        assert!(
+            output.has_warning("hooks validate"),
+            "point at the command that explains it: {:?}",
+            output.warnings()
+        );
+        assert!(
+            !output.infos().iter().any(|i| i.contains("Declare the")),
+            "a broken config must not be described as an empty one: {:?}",
+            output.infos()
+        );
+        assert!(
+            output.results().is_empty(),
+            "nothing ran, so nothing is summarized: {:?}",
+            output.results()
+        );
+    }
+
+    /// The other half: a genuinely empty config still gets the hint that tells
+    /// a new user what to do next.
+    #[test]
+    fn a_genuinely_absent_section_still_gets_the_declare_hint() {
+        let output = render(&result_of(&[], vec![]), false);
+        assert!(
+            output.has_info("No `copy:` paths declared in 'main'"),
+            "{:?}",
+            output.infos()
+        );
+        assert!(
+            output.infos().iter().any(|i| i.contains("Declare the")),
+            "{:?}",
+            output.infos()
+        );
+        // Even here, both ends are named — the user asked to warm something.
+        assert!(
+            output.infos().iter().any(|i| i.contains("'develop'")),
+            "the target must be named even when nothing happened: {:?}",
+            output.infos()
+        );
+    }
+
     /// Skip lines carry the entry in front and the reason behind, with no
     /// `skipped — ` prefix — the same phrasing the rail uses, so the two
     /// surfaces read identically.
@@ -401,6 +663,42 @@ mod tests {
             output.infos().contains(&"node_modules: already present"),
             "{:?}",
             output.infos()
+        );
+    }
+
+    /// The rail renders `copy:` skips with no `skipped — ` prefix, so some
+    /// phrases name the entry themselves to stay legible there. `warm` adds a
+    /// prefix of its own, and prefixing a self-identifying phrase produced
+    /// `node_modules: 'node_modules' is tracked — not copied`.
+    ///
+    /// Interim rule: a phrase opening with a quote is already qualified. The
+    /// engine track is exporting an explicit classification to replace the
+    /// sniff at merge; this test is what will prove the replacement kept the
+    /// same output.
+    #[test]
+    fn a_self_identifying_phrase_is_not_prefixed_with_its_own_entry() {
+        let result = result_of(
+            &["node_modules"],
+            vec![CopyOutcome::Skipped {
+                entry: "node_modules".into(),
+                reason: SkipReason::NotIgnored,
+            }],
+        );
+        let output = render(&result, false);
+        assert!(
+            output
+                .warnings()
+                .contains(&"'node_modules' is tracked — not copied"),
+            "the entry must appear exactly once: {:?}",
+            output.warnings()
+        );
+        assert!(
+            !output
+                .warnings()
+                .iter()
+                .any(|w| w.starts_with("node_modules: '")),
+            "stutter: {:?}",
+            output.warnings()
         );
     }
 
