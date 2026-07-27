@@ -150,14 +150,11 @@ struct ValidatedBranch {
     /// When true, only the worktree is removed — local branch ref and remote
     /// branch are preserved. Used for the default branch.
     worktree_only: bool,
-    /// The default branch this branch was verified merged into (Check 4),
-    /// surfaced as a timeline annotation. `None` when the check was skipped
-    /// (--force, keep_local_branch, merge's own validation).
-    merged_into: Option<String>,
-    /// The PR/MR that proved the merge, when the forge is what proved it
-    /// (#737). `None` when git found the work itself — the ordinary case,
-    /// where naming a PR would add noise rather than explain anything.
-    merged_via: Option<crate::core::worktree::forge_ref::ForgeBranchRef>,
+    /// Why Check 4 concluded this deletion loses nothing, surfaced as a
+    /// timeline annotation. `None` when the check was skipped (--force,
+    /// keep_local_branch, merge's own validation) — then nothing was proven
+    /// and the rail must not claim otherwise.
+    safe_because: Option<SafeBecause>,
     /// What to do with the worktree's untracked daft files before removal.
     daft_files: DaftFilePlan,
     /// A daft-created sandbox (#53): `name` is the directory name, there is
@@ -168,6 +165,28 @@ struct ValidatedBranch {
     /// The sandbox's pinned commit, threaded through for the removal hooks'
     /// `DAFT_COMMIT`. `None` for branch targets.
     pinned_commit: Option<String>,
+}
+
+/// The proof Check 4 accepted that deleting this branch destroys no work.
+///
+/// Two independent sufficient conditions, not one and a fallback. "Merged
+/// into the default branch" is the historical proof; "still whole on a remote
+/// this run will not touch" (#783) is equally sufficient and far more common
+/// day to day — work pushed, PR open, worktree no longer needed. Keeping both
+/// as named variants is what lets the rail say *which* one held, rather than
+/// silently dropping a refusal.
+enum SafeBecause {
+    /// Contained in the default branch. `via` names the PR/MR when the forge
+    /// is what proved it (#737) — git found nothing in the branch's own
+    /// history, so an unexplained deletion would look wrong.
+    Merged {
+        into: String,
+        via: Option<crate::core::worktree::forge_ref::ForgeBranchRef>,
+    },
+    /// Identical to a remote branch that survives this run, verified on the
+    /// wire rather than from the local tracking cache. `remote_ref` is the
+    /// `<remote>/<branch>` the commits remain reachable at.
+    FullyPushed { remote_ref: String },
 }
 
 /// Resolved-at-validation decision for the worktree's untracked daft files.
@@ -426,13 +445,19 @@ fn build_plan(
         }
         if !params.remote_only && !params.keep_local_branch && !branch.worktree_only {
             let mut spec = StepSpec::new(key(StageId::DeleteLocalBranch));
-            if let Some(ref target) = branch.merged_into {
-                // Name the PR when the forge is what proved the merge: the
-                // branch's own history shows nothing, so the annotation is
-                // the only account of why deleting it is safe.
-                spec = spec.with_annotation(match branch.merged_via {
-                    Some(via) => format!("was merged into {target} via {}", via.short()),
-                    None => format!("was merged into {target}"),
+            if let Some(ref reason) = branch.safe_because {
+                // The annotation is the only account of why deleting this is
+                // safe, so it names the specific proof: the PR when the forge
+                // is what found the merge (the branch's own history shows
+                // nothing), or the remote the commits stay reachable at.
+                spec = spec.with_annotation(match reason {
+                    SafeBecause::Merged { into, via: Some(v) } => {
+                        format!("was merged into {into} via {}", v.short())
+                    }
+                    SafeBecause::Merged { into, via: None } => format!("was merged into {into}"),
+                    SafeBecause::FullyPushed { remote_ref } => {
+                        format!("fully pushed to {remote_ref}")
+                    }
                 });
             }
             rows.push(Row::Step(spec));
@@ -876,8 +901,7 @@ fn validate_sandbox_target(
         // No branch to delete: reuse the worktree-only skips of the remote
         // and local-branch steps.
         worktree_only: true,
-        merged_into: None,
-        merged_via: None,
+        safe_because: None,
         daft_files: DaftFilePlan::Nothing,
         is_sandbox: true,
         pinned_commit: sandbox.pinned_commit.clone(),
@@ -1194,8 +1218,7 @@ fn validate_branches(
                 is_current_worktree: false,
                 worktree_only: false,
                 // Remote-only deletion skips the local merge checks entirely.
-                merged_into: None,
-                merged_via: None,
+                safe_because: None,
                 daft_files: DaftFilePlan::Nothing,
                 is_sandbox: false,
                 pinned_commit: None,
@@ -1272,8 +1295,7 @@ fn validate_branches(
                     // consolidation target, so there is nothing to preserve
                     // elsewhere.
                     worktree_only: true,
-                    merged_into: None,
-                    merged_via: None,
+                    safe_because: None,
                     daft_files: DaftFilePlan::Nothing,
                     is_sandbox: false,
                     pinned_commit: None,
@@ -1306,46 +1328,103 @@ fn validate_branches(
             }
         }
 
-        // Check 4: Merged into default branch (skip with --force,
-        // keep_local_branch, or the merge cleanup's own validation)
-        let mut merged_into = None;
-        let mut merged_via = None;
+        // Determine remote tracking info for this branch. Resolved before
+        // Check 4 rather than after it: the second proof Check 4 accepts is
+        // built out of exactly this, and it is the same cheap config lookup
+        // wherever it sits.
+        let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
+
+        // Check 4: nothing this deletion removes is lost (skip with --force,
+        // keep_local_branch, or the merge cleanup's own validation).
+        //
+        // Two independent sufficient proofs, tried cheapest-first. Merge goes
+        // first so a merged branch is never asked about on the wire: every
+        // removal that passes today keeps costing exactly what it costs
+        // today. Only a branch the merge check turns down reaches the #783
+        // pushed proof, and that one bails on free local evidence before it
+        // opens a connection — so the round trip is confined to the case it
+        // exists to rescue (work pushed, PR open, worktree done).
+        let mut safe_because = None;
         if !force && !keep_local_branch && !skip_merge_validation {
-            match is_branch_merged(ctx, branch, witness) {
-                Ok(verdict) if verdict.is_merged() => {
-                    merged_via = verdict.via();
-                    let how =
-                        merged_via.map_or_else(String::new, |r| format!(" (via {})", r.short()));
-                    sink.on_step(&format!(
-                        "Branch '{branch}' is merged into default branch{how}"
-                    ));
-                    merged_into = Some(ctx.default_branch.clone());
-                }
-                Ok(_) => {
-                    errors.push(ValidationError {
-                        branch: branch.clone(),
-                        message: format!(
-                            "not merged into '{}' (use {} to force)",
-                            ctx.default_branch, params.force_flag_label
-                        ),
-                    });
-                    continue;
-                }
-                Err(e) => {
-                    errors.push(ValidationError {
-                        branch: branch.clone(),
-                        message: format!(
-                            "failed to check merge status: {e} (use {} to force)",
-                            params.force_flag_label
-                        ),
-                    });
-                    continue;
+            let merge_check = is_branch_merged(ctx, branch, witness);
+            if let Ok(ref verdict) = merge_check
+                && verdict.is_merged()
+            {
+                let via = verdict.via();
+                let how = via.map_or_else(String::new, |r| format!(" (via {})", r.short()));
+                sink.on_step(&format!(
+                    "Branch '{branch}' is merged into default branch{how}"
+                ));
+                safe_because = Some(SafeBecause::Merged {
+                    into: ctx.default_branch.clone(),
+                    via,
+                });
+            }
+
+            // The pushed proof holds only while the remote copy outlives the
+            // run. Deleting local *and* remote together destroys the commits
+            // as surely as an unmerged local-only delete, so a run that takes
+            // the remote with it gets no relaxation — mirroring the
+            // `deletes_remote` predicate execution builds later.
+            let remote_outlives_run = !params.delete_remote && !params.remote_only;
+            let mut probe_failure = None;
+            if safe_because.is_none()
+                && remote_outlives_run
+                && let Some(ref remote) = remote_name
+                && let Some(ref remote_branch) = remote_branch_name
+            {
+                match is_branch_fully_pushed(ctx, branch, remote, remote_branch) {
+                    Ok(PushedProof::Confirmed) => {
+                        let remote_ref = format!("{remote}/{remote_branch}");
+                        sink.on_step(&format!(
+                            "Branch '{branch}' is fully pushed to {remote_ref} \
+                             (remote branch preserved)"
+                        ));
+                        safe_because = Some(SafeBecause::FullyPushed { remote_ref });
+                    }
+                    // Never pushed, or pushed and since moved on: the local
+                    // ref is the only copy of something, so Check 4 stands.
+                    Ok(PushedProof::NotPushedLocally) => {}
+                    Ok(PushedProof::RemoteDisagrees) => {
+                        probe_failure = Some(format!(
+                            "{remote}/{remote_branch} is stale — {remote} no longer has that \
+                             commit; run `git fetch --prune`"
+                        ));
+                    }
+                    Err(e) => {
+                        probe_failure = Some(format!(
+                            "could not reach {remote} to verify '{branch}' is still pushed: {e}"
+                        ));
+                    }
                 }
             }
-        }
 
-        // Determine remote tracking info for this branch
-        let (remote_name, remote_branch_name) = resolve_remote_tracking(ctx, branch);
+            if safe_because.is_none() {
+                // Neither proof held. Name what was actually learned: an
+                // unreachable remote and a genuinely unmerged, unpushed
+                // branch both refuse here, and telling the user the wrong
+                // one sends them to fix the wrong thing.
+                let message = match (&merge_check, probe_failure) {
+                    (Err(e), _) => format!(
+                        "failed to check merge status: {e} (use {} to force)",
+                        params.force_flag_label
+                    ),
+                    (Ok(_), Some(why)) => format!(
+                        "not merged into '{}', and {why} (use {} to force)",
+                        ctx.default_branch, params.force_flag_label
+                    ),
+                    (Ok(_), None) => format!(
+                        "not merged into '{}' (use {} to force)",
+                        ctx.default_branch, params.force_flag_label
+                    ),
+                };
+                errors.push(ValidationError {
+                    branch: branch.clone(),
+                    message,
+                });
+                continue;
+            }
+        }
 
         // Check 5: Local/remote in sync (skip with --force, keep_local_branch,
         // or the merge cleanup's own validation)
@@ -1461,8 +1540,7 @@ fn validate_branches(
             remote_branch_name,
             is_current_worktree: is_current,
             worktree_only: false,
-            merged_into,
-            merged_via,
+            safe_because,
             daft_files,
             is_sandbox: false,
             pinned_commit: None,
@@ -1593,6 +1671,71 @@ fn is_branch_merged(
         &ctx.remote_name,
         witness,
     )
+}
+
+/// What [`is_branch_fully_pushed`] could establish about the remote copy.
+enum PushedProof {
+    /// The remote itself confirmed it holds this exact commit.
+    Confirmed,
+    /// Local evidence never claimed it was pushed, so nothing was asked on
+    /// the wire: no tracking ref, or a tracking ref naming another commit.
+    NotPushedLocally,
+    /// The tracking ref claimed it and the remote said otherwise — the cache
+    /// outlived a server-side delete or a backwards force-push.
+    RemoteDisagrees,
+}
+
+/// Whether `branch` is provably still whole on `remote` — the #783 proof
+/// that deleting it locally destroys no work, independent of merge status.
+///
+/// Deliberately not [`check_local_remote_sync`]'s boolean. That one answers
+/// `Ok(true)` when the tracking ref does not exist, which is the correct
+/// answer to *its* question ("out of sync with what?") and a catastrophic one
+/// to this one: it would wave through a never-pushed branch whose commits
+/// exist nowhere but the ref about to be deleted. Existence is required here,
+/// separately and first.
+///
+/// The free local evidence is checked before the wire so that only a branch
+/// that already looks fully pushed costs a round trip. It is then confirmed
+/// on the wire because it is only a cache: `refs/remotes/<remote>/<branch>`
+/// goes on naming commits the remote dropped, and a proof that a stale ref
+/// can satisfy is not a proof.
+fn is_branch_fully_pushed(
+    ctx: &BranchDeleteContext,
+    branch: &str,
+    remote: &str,
+    remote_branch: &str,
+) -> Result<PushedProof> {
+    let remote_ref = format!("refs/remotes/{remote}/{remote_branch}");
+    if !ctx
+        .git
+        .show_ref_exists(&remote_ref)
+        .context("failed to check remote ref existence")?
+    {
+        return Ok(PushedProof::NotPushedLocally);
+    }
+
+    let local_sha = ctx
+        .git
+        .rev_parse(&format!("refs/heads/{branch}"))
+        .context("failed to resolve local branch SHA")?;
+    let cached_sha = ctx
+        .git
+        .rev_parse(&remote_ref)
+        .context("failed to resolve remote tracking SHA")?;
+    if local_sha != cached_sha {
+        return Ok(PushedProof::NotPushedLocally);
+    }
+
+    // Strict equality, not ancestry: a local ref that is merely an ancestor
+    // of the remote is equally lossless, but Check 5 refuses anything where
+    // the two SHAs differ, so relaxing only here would change nothing.
+    let wire_sha = ctx.git.ls_remote_branch_oid(remote, remote_branch)?;
+    if wire_sha.as_deref() == Some(local_sha.as_str()) {
+        Ok(PushedProof::Confirmed)
+    } else {
+        Ok(PushedProof::RemoteDisagrees)
+    }
 }
 
 /// Compare local and remote SHAs to determine if the branch is in sync.
@@ -2290,8 +2433,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: false,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,
@@ -2332,8 +2474,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,
@@ -2401,8 +2542,7 @@ mod tests {
             remote_branch_name: Some("feature/test".to_string()),
             is_current_worktree: false,
             worktree_only: false,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,
@@ -2422,8 +2562,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: false,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,
@@ -2442,8 +2581,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: true,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,
@@ -2572,6 +2710,104 @@ mod tests {
             .stderr(Stdio::null())
             .status()
             .unwrap()
+    }
+
+    /// Commit an empty change on whatever branch `dir` has checked out.
+    fn commit_empty(dir: &std::path::Path, message: &str) {
+        ShellCommand::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", message])
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    /// Wire `root` to a real bare repo at `bare` under `remote_name` and push
+    /// `branch` to it, with upstream tracking set.
+    ///
+    /// The #783 proof is verified on the wire, so these tests need a remote
+    /// that genuinely answers `ls-remote` — a hand-written tracking ref is
+    /// exactly the stale cache the probe exists to catch. A local bare repo
+    /// answers over the filesystem, so this stays offline and fast.
+    fn setup_remote(
+        root: &std::path::Path,
+        bare: &std::path::Path,
+        remote_name: &str,
+        branch: &str,
+    ) {
+        ShellCommand::new("git")
+            .args([
+                "init",
+                "--bare",
+                "-q",
+                "-b",
+                "main",
+                &bare.display().to_string(),
+            ])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        git_quiet(
+            root,
+            &["remote", "add", remote_name, &bare.display().to_string()],
+        );
+        assert!(
+            git_quiet(root, &["push", "-q", "-u", remote_name, branch]).success(),
+            "failed to push {branch} to the test remote"
+        );
+    }
+
+    /// Params for a plain `daft remove <branch>`, no force.
+    fn remove_params(branch: &str) -> BranchDeleteParams {
+        BranchDeleteParams {
+            branches: vec![branch.to_string()],
+            force: false,
+            use_gitoxide: false,
+            is_quiet: true,
+            remote_name: "origin".to_string(),
+            delete_remote: false,
+            remote_only: false,
+            keep_local_branch: false,
+            no_verify: false,
+            push_verify: crate::settings::PushVerify::Auto,
+            prune_cd_target: crate::settings::PruneCdTarget::Root,
+            command_label: "branch-delete".to_string(),
+            skip_merge_validation: false,
+            force_flag_label: "-f/--force".to_string(),
+        }
+    }
+
+    /// Run validation-through-execution the way `daft remove` does.
+    fn run_remove(params: &BranchDeleteParams) -> BranchDeleteResult {
+        use crate::core::CommandBridge;
+        use crate::hooks::{HookExecutor, HooksConfig};
+        use crate::output::TestOutput;
+
+        let mut output = TestOutput::new();
+        let executor = HookExecutor::new(HooksConfig::default()).unwrap();
+        let mut bridge = CommandBridge::new(&mut output, executor);
+        execute(params, None, &NoopForgeWitness, &mut bridge).unwrap()
+    }
+
+    /// An unmerged `feature` branch in its own worktree, pushed whole to a
+    /// real bare `origin`. The #783 shape: nothing to lose, no force needed.
+    fn pushed_unmerged_repo() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        commit_empty(&feat_wt, "feature work");
+        let bare = tmp.path().join("origin.git");
+        setup_remote(tmp.path(), &bare, "origin", "feature");
+        (tmp, feat_wt, bare)
     }
 
     /// RAII helper: saves cwd on construction and restores on drop.
@@ -2741,6 +2977,183 @@ mod tests {
         );
     }
 
+    /// #783's core: a stale `refs/remotes/origin/feature` must not stand in
+    /// for the remote. Written first deliberately — it is the one test that
+    /// passes trivially if the wire probe is never wired in, so it is the
+    /// only proof the `ls-remote` round trip is really happening.
+    #[test]
+    #[serial]
+    fn a_stale_tracking_ref_does_not_prove_the_branch_is_pushed() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, bare) = pushed_unmerged_repo();
+
+        // Server-side delete, behind the tracking ref's back: origin drops
+        // the branch while the local cache goes on naming its commit.
+        assert!(git_quiet(&bare, &["update-ref", "-d", "refs/heads/feature"]).success());
+        assert!(
+            tmp.path().join(".git/refs/remotes/origin/feature").exists()
+                || git_quiet(
+                    tmp.path(),
+                    &["show-ref", "--verify", "refs/remotes/origin/feature"]
+                )
+                .success(),
+            "test precondition: the tracking ref must survive the server-side delete"
+        );
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert_eq!(
+            result.validation_errors.len(),
+            1,
+            "a branch whose remote copy is gone must still be refused"
+        );
+        let message = &result.validation_errors[0].message;
+        assert!(
+            message.contains("stale"),
+            "refusal must name the stale cache rather than blaming the merge \
+             state alone; got: {message}"
+        );
+        assert!(result.deletions.is_empty(), "nothing may be deleted");
+    }
+
+    /// The trap the ticket leads with: `check_local_remote_sync` answers
+    /// `Ok(true)` when there is no tracking ref at all. Reusing that boolean
+    /// would let a never-pushed branch skip the merge check and destroy the
+    /// only copy of its commits.
+    #[test]
+    #[serial]
+    fn a_never_pushed_branch_is_still_refused() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        commit_empty(&feat_wt, "feature work");
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert_eq!(
+            result.validation_errors.len(),
+            1,
+            "an unmerged branch that exists nowhere else must be refused"
+        );
+        assert!(
+            result.validation_errors[0].message.contains("not merged"),
+            "got: {}",
+            result.validation_errors[0].message
+        );
+        assert!(result.deletions.is_empty());
+    }
+
+    /// Local ahead of the remote: the extra commits exist only here.
+    #[test]
+    #[serial]
+    fn a_branch_ahead_of_its_remote_is_still_refused() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, feat_wt, _bare) = pushed_unmerged_repo();
+        commit_empty(&feat_wt, "unpushed work");
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert_eq!(
+            result.validation_errors.len(),
+            1,
+            "commits that never left this machine must still be protected"
+        );
+        assert!(result.deletions.is_empty());
+    }
+
+    /// The relaxation is premised on the remote copy outliving the run, so a
+    /// run configured to delete the remote too gets none of it.
+    #[test]
+    #[serial]
+    fn a_run_that_deletes_the_remote_gets_no_relaxation() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, _bare) = pushed_unmerged_repo();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let mut params = remove_params("feature");
+        params.delete_remote = true;
+        let result = run_remove(&params);
+
+        assert_eq!(
+            result.validation_errors.len(),
+            1,
+            "deleting local and remote together destroys the commits, so the \
+             merge check must still apply"
+        );
+        assert!(result.deletions.is_empty());
+    }
+
+    /// The reported case: clean worktree, unmerged, identical to a remote
+    /// that survives. No force, no refusal.
+    #[test]
+    #[serial]
+    fn a_fully_pushed_branch_is_removed_without_force() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let (tmp, _feat_wt, bare) = pushed_unmerged_repo();
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "a branch whole on a surviving remote loses nothing: {:?}",
+            result
+                .validation_errors
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.deletions.len(), 1);
+        assert!(result.deletions[0].branch_deleted);
+        assert!(result.deletions[0].worktree_removed);
+        assert!(
+            git_quiet(&bare, &["show-ref", "--verify", "refs/heads/feature"]).success(),
+            "the remote branch must survive — it is the whole basis for allowing this"
+        );
+    }
+
+    /// The relaxation must key off the branch's own tracking remote, not the
+    /// repo's default one. Reaching for `ctx.remote_name` would refuse a
+    /// branch that is perfectly well pushed to `upstream`.
+    #[test]
+    #[serial]
+    fn a_branch_tracking_a_non_default_remote_is_removed_without_force() {
+        let _cwd = CwdGuard::new();
+        let _state = IsolatedStateDir::new();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let feat_wt = tmp.path().join("feat");
+        setup_worktree(tmp.path(), "feature", &feat_wt);
+        commit_empty(&feat_wt, "feature work");
+        let bare = tmp.path().join("upstream.git");
+        setup_remote(tmp.path(), &bare, "upstream", "feature");
+
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove(&remove_params("feature"));
+
+        assert!(
+            result.validation_errors.is_empty(),
+            "pushed to 'upstream' is just as lossless as pushed to 'origin': {:?}",
+            result
+                .validation_errors
+                .iter()
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.deletions.len(), 1);
+        assert!(result.deletions[0].branch_deleted);
+    }
+
     #[test]
     #[serial]
     fn keep_local_branch_skips_merged_into_default_check() {
@@ -2895,8 +3308,7 @@ mod tests {
             remote_branch_name: None,
             is_current_worktree: false,
             worktree_only: false,
-            merged_into: None,
-            merged_via: None,
+            safe_because: None,
             daft_files: DaftFilePlan::Nothing,
             is_sandbox: false,
             pinned_commit: None,

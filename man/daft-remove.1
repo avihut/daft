@@ -49,7 +49,9 @@ Safety checks prevent accidental data loss. The command refuses to delete a
 branch that:
 .PP
   \- has uncommitted changes in its worktree
-  \- has not been merged (or squash\-merged) into the default branch
+  \- has not been merged (or squash\-merged) into the default branch, unless it
+    is identical to a remote branch the removal preserves — checked against
+    the remote itself, so an unreachable remote refuses rather than assumes
   \- is out of sync with its remote tracking branch
   \- has refined untracked daft files (daft.yml / daft.local.yml edited since
     daft seeded them) that the default branch\*(Aqs worktree does not cover —

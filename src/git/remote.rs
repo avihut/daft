@@ -602,6 +602,54 @@ impl GitCommand {
         Ok(!stdout.trim().is_empty())
     }
 
+    /// The OID a remote currently holds for one specific branch.
+    ///
+    /// The wire-truth counterpart to `refs/remotes/<remote>/<branch>`, which
+    /// is only a local cache — it keeps naming commits the remote dropped in
+    /// a server-side delete or a force-push backwards. Callers that must
+    /// prove the remote *still* holds a commit, rather than that it held it
+    /// at the last fetch, ask here and pay a round trip for the answer.
+    ///
+    /// `Ok(None)` means the remote answered and does not have the branch;
+    /// `Err` means the question could not be asked at all. Those are
+    /// different facts and callers must not collapse them — one is evidence,
+    /// the other is the absence of evidence.
+    ///
+    /// Deliberately a sibling of [`Self::ls_remote_branch_exists`] rather
+    /// than its implementation: that one reports mere non-emptiness, so
+    /// routing it through OID parsing would turn an unparseable body into a
+    /// different answer for the prune and sync loops that call it.
+    ///
+    /// `GIT_TERMINAL_PROMPT=0` because this runs inside validation for
+    /// commands that are otherwise fully offline. A remote demanding
+    /// credentials must fail fast and let the caller refuse, not park the
+    /// process on a prompt the caller never expected to render.
+    pub fn ls_remote_branch_oid(&self, remote_name: &str, branch: &str) -> Result<Option<String>> {
+        let mut cmd = Command::new("git");
+        cmd.args([
+            "ls-remote",
+            "--heads",
+            remote_name,
+            &format!("refs/heads/{branch}"),
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0");
+        let output = cancel::output_with_cancel(&mut cmd, self.cancel_flag())
+            .context("Failed to execute git ls-remote command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Git ls-remote failed: {}", stderr.trim());
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("Failed to parse git ls-remote output")?;
+        Ok(stdout
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .map(str::to_string))
+    }
+
     pub fn remote_set_head_auto(&self, remote: &str) -> Result<()> {
         let output = Command::new("git")
             .args(["remote", "set-head", remote, "--auto"])
