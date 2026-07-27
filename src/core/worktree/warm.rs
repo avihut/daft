@@ -134,11 +134,22 @@ pub fn execute<S: ProgressSink>(
 
     let source = resolve_source(params, git, project_root, &mut current, &target)?;
 
+    // Checked before the same-worktree refusal: when both ends land on the
+    // container root, "these are the same worktree" is the less useful of the
+    // two true statements.
+    reject_bare(&target, Role::Target, project_root)?;
+    reject_bare(&source, Role::Source, project_root)?;
+
     // Copying a worktree onto itself is never what was meant, and with
     // `--force` it would delete the very entries it was about to copy. The
     // hint offers both readings — wrong source, or forgotten target — because
     // which one the user meant is not knowable from here.
-    if source == target {
+    //
+    // Compared canonically: the two operands can arrive spelled differently
+    // (git's porcelain listing vs. a resolved cwd), and a refusal that misses
+    // because of a `/var` → `/private/var` symlink would, under `--force`,
+    // delete a worktree's caches and re-copy them from themselves.
+    if same_path(&source, &target) {
         anyhow::bail!(
             "source and target are the same worktree ('{}'); pass --from naming a different \
              worktree, or name the target to warm",
@@ -190,6 +201,69 @@ pub fn execute<S: ProgressSink>(
 fn resolve_named(git: &GitCommand, name: &str, project_root: &Path) -> Result<PathBuf> {
     git.resolve_worktree_path(name, project_root)
         .with_context(|| format!("Could not resolve worktree '{name}'"))
+}
+
+/// Which end of the copy a rejected path was standing in for.
+#[derive(Debug, Clone, Copy)]
+enum Role {
+    Target,
+    Source,
+}
+
+/// Refuse a path git reports as a **bare** checkout.
+///
+/// In a contained layout the container root is a genuine row in
+/// `git worktree list --porcelain` (`worktree <root>` followed by `bare`), so
+/// `resolve_worktree_path` hands it back for `.`, for its directory name, and
+/// for its path — and `require_directory` is perfectly happy with it, because
+/// it is a real directory. It just has no working tree.
+///
+/// Every other daft verb that can resolve it either reads or refuses. `warm` is
+/// the first that **writes and deletes** at the resolved path: with the engine
+/// in place, `--force` removes a declared entry before re-copying it. A
+/// mistyped target would scatter `node_modules/` beside the bare repository and
+/// then delete it again on the next run — so the guard sits in resolution,
+/// before anything is read, and covers both ends.
+fn reject_bare(path: &Path, role: Role, project_root: &Path) -> Result<()> {
+    if !is_bare_checkout(path) {
+        return Ok(());
+    }
+    let (end, fix) = match role {
+        Role::Target => ("copy into", "name a worktree to warm"),
+        Role::Source => ("copy from", "pass --from naming a worktree"),
+    };
+    anyhow::bail!(
+        "'{}' is this repository's bare container, not a worktree — it has no working tree to \
+         {end}; {fix}",
+        display_name(path, project_root)
+    )
+}
+
+/// Whether `path` is a bare checkout, asked of git through the same env-cleared
+/// authority as every other operand (see [`current_worktree`]).
+///
+/// A probe rather than a `path == project_root` test: in a flat
+/// (progressive-adoption) layout the project root *is* the main worktree, and
+/// refusing it there would break the most ordinary run there is.
+fn is_bare_checkout(path: &Path) -> bool {
+    crate::utils::git_command_at(path)
+        .args(["rev-parse", "--is-bare-repository"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| {
+            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
+        })
+}
+
+/// Path equality that survives spelling differences — `/var` vs
+/// `/private/var`, a trailing `.`, a symlinked checkout. Falls back to a plain
+/// comparison for paths that do not exist, which is what the vanished-worktree
+/// case needs.
+fn same_path(a: &Path, b: &Path) -> bool {
+    fn canonical(p: &Path) -> PathBuf {
+        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    }
+    canonical(a) == canonical(b)
 }
 
 /// Assert `path` is a directory, naming *why* it is not when the answer is
@@ -347,17 +421,32 @@ fn default_branch(project_root: &Path, remote: &str) -> Result<Option<String>> {
 /// A worktree's name as the user thinks of it: its path relative to the project
 /// root.
 ///
-/// Anything the project root does not contain renders as its **full path**. The
-/// bare final component would read exactly like a sibling worktree's name, so a
-/// resolution that escaped the repository — the very case worth noticing —
-/// would be indistinguishable from an ordinary local one in the announce line.
+/// Two fallbacks, for two different situations:
+///
+/// - **The path *is* the project root** — a flat (progressive-adoption) layout,
+///   where the root and the main worktree are the same directory. The relative
+///   suffix is empty, so the directory's own name is the answer; rendering the
+///   absolute path would make the most ordinary worktree in that layout the
+///   ugliest line in the output.
+/// - **The project root does not contain the path at all** — the full path.
+///   A bare final component would read exactly like a sibling worktree's name,
+///   so a resolution that escaped the repository, the one case worth noticing,
+///   would be indistinguishable from an ordinary local one.
 fn display_name(path: &Path, project_root: &Path) -> String {
-    path.strip_prefix(project_root)
-        .ok()
-        .and_then(|p| p.to_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| path.display().to_string())
+    let full = || path.display().to_string();
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return full();
+    };
+    match relative.to_str() {
+        Some("") => path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(full),
+        Some(rel) => rel.to_string(),
+        // Non-UTF-8 suffix: the lossy full path at least round-trips to
+        // something a user can paste back.
+        None => full(),
+    }
 }
 
 /// Why the source's config would not load, if it would not.
@@ -496,10 +585,11 @@ mod tests {
             display_name(Path::new("/elsewhere/wt"), root),
             "/elsewhere/wt"
         );
-        // The project root itself has no relative name; it is not a worktree,
-        // and saying so plainly beats rendering an empty string or a bare
-        // `acme` that looks like one.
-        assert_eq!(display_name(root, root), "/repos/acme");
+        // A flat (progressive-adoption) layout: the project root IS the main
+        // worktree, so the relative suffix is empty. Its own directory name is
+        // what the user calls it — the absolute path would make the most
+        // ordinary worktree in that layout the ugliest line in the output.
+        assert_eq!(display_name(root, root), "acme");
     }
 
     /// `Path::is_dir` folds every failure into `false`, so a worktree that is
@@ -864,6 +954,29 @@ mod resolution_tests {
                 );
             }
             Self { tmp, root }
+        }
+
+        /// A **flat** (progressive-adoption) layout: an ordinary non-bare repo
+        /// whose root *is* the main worktree, with linked worktrees nested
+        /// under it. `project_root` and a real worktree are the same directory
+        /// here, which is what separates the bare-checkout guard from a
+        /// `path == project_root` test.
+        fn flat(worktrees: &[&str]) -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            let root = base.join("flat");
+            std::fs::create_dir_all(&root).unwrap();
+            git_at(&root, &["init", "-q", "-b", "main"]);
+            git_at(&root, &["commit", "--allow-empty", "-q", "-m", "init"]);
+            for wt in worktrees {
+                git_at(&root, &["worktree", "add", "-q", wt, "-b", wt]);
+            }
+            Self { tmp, root }
+        }
+
+        /// The project root's own directory name — how a user names it.
+        fn root_name(&self) -> String {
+            self.root.file_name().unwrap().to_string_lossy().to_string()
         }
 
         /// Plant `origin/HEAD` so `local_default_branch` resolves without a
@@ -1332,6 +1445,105 @@ mod resolution_tests {
                 layout.wt("wt-feature"),
                 "the catalog row must beat the origin/HEAD symref"
             );
+        });
+    }
+
+    /// The container root of a contained layout is a real row in
+    /// `git worktree list --porcelain` — `worktree <root>` followed by `bare` —
+    /// so every resolution tier finds it: its directory name, its path, and
+    /// `.` from inside it. `require_directory` waves it through too, because it
+    /// genuinely is a directory.
+    ///
+    /// `warm` is the first daft verb that *writes and deletes* at the resolved
+    /// path: with the engine in place, `--force` removes each declared entry
+    /// before re-copying it. Warming the container would scatter
+    /// `node_modules/` beside the bare repository and delete it again on the
+    /// next run, so it is refused during resolution — before anything is read.
+    #[test]
+    #[serial]
+    fn the_bare_container_is_refused_as_a_target() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            let container = layout
+                .root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+
+            for spelling in [container.as_str(), &layout.root.display().to_string()] {
+                let err = err_of(
+                    run(
+                        &layout,
+                        &layout.wt("main"),
+                        params(Some(spelling), Some("main")),
+                    ),
+                    "the bare container is not a warmable target",
+                );
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("bare container"),
+                    "spelled '{spelling}': {msg}"
+                );
+                assert!(msg.contains("copy into"), "{msg}");
+            }
+        });
+    }
+
+    /// The same refusal for the other end. A bare checkout has no working tree
+    /// to read declared caches out of, so it can no more be a source than a
+    /// target — and the message has to say which end went wrong.
+    #[test]
+    #[serial]
+    fn the_bare_container_is_refused_as_a_source() {
+        each_backend(|| {
+            let layout = Layout::new(&["develop"]).with_origin_head();
+            let container = layout
+                .root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+
+            let err = err_of(
+                run(
+                    &layout,
+                    &layout.wt("main"),
+                    params(Some("develop"), Some(&container)),
+                ),
+                "the bare container is not a warmable source",
+            );
+            let msg = format!("{err:#}");
+            assert!(msg.contains("bare container"), "{msg}");
+            assert!(msg.contains("copy from"), "{msg}");
+            assert!(msg.contains("--from"), "name the flag to fix: {msg}");
+        });
+    }
+
+    /// The guard is a bare-checkout probe, not a `path == project_root` test.
+    /// In a flat (progressive-adoption) layout the project root *is* the main
+    /// worktree, and refusing it there would break the most ordinary run in
+    /// that layout.
+    #[test]
+    #[serial]
+    fn a_flat_layout_root_is_a_worktree_and_is_not_refused() {
+        each_backend(|| {
+            let flat = Layout::flat(&["feature"]);
+
+            let result = run(
+                &flat,
+                &flat.wt("feature"),
+                params(None, Some(&flat.root_name())),
+            )
+            .expect("the root of a flat layout is an ordinary worktree");
+
+            assert_eq!(result.source, flat.root);
+            assert_eq!(
+                result.source_name,
+                flat.root_name(),
+                "a flat layout's root renders as its directory name, not an absolute path"
+            );
+            assert_eq!(result.target_name, "feature");
         });
     }
 

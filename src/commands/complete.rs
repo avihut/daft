@@ -118,9 +118,13 @@ fn complete(
         // shells route the flag's value through this arm at `--position 1`.
         // The current worktree stays in the candidate set: it is the default
         // target, and `warm develop --from develop` has to be *offered* so the
-        // same-worktree refusal can explain itself. (`.` is not a candidate —
-        // the target is resolved by path-under-the-root, branch, or directory
-        // name, none of which `.` satisfies.)
+        // same-worktree refusal can explain itself.
+        //
+        // `.` is deliberately not offered. It does satisfy the path tier —
+        // `project_root.join(".")` is the project root — but that is the bare
+        // container in a contained layout, which warm now refuses, and the
+        // *root* worktree rather than the current one in a flat layout.
+        // Neither is what someone typing `.` means.
         ("git-worktree-warm", _) => Ok(format_entries_as_strings(&complete_rich_branches(
             word,
             &CONFIG_WARM,

@@ -29,10 +29,13 @@ steps:
   # The tracked daft.yml declares nothing to copy; only the untracked local
   # overlay does. A raw single-file read of daft.yml would find an empty
   # section and silently do nothing.
+  # The base daft.yml must be VALID and simply lack a `copy:` key — a config
+  # that fails to parse takes the config-error branch and never reaches the
+  # merge at all, which is a different scenario (warm-malformed-config.yml).
   - name: Declare the cache only in the source's untracked local overlay
     run: |
       printf 'node_modules/\n' > .gitignore
-      printf 'hooks:\n  worktree-post-create: []\n' > daft.yml
+      printf 'shared:\n  - .env\n' > daft.yml
       printf 'copy:\n  - node_modules/\n' > daft.local.yml
       mkdir -p node_modules/pkg
       printf 'built-in-main\n' > node_modules/pkg/index.js
@@ -50,6 +53,7 @@ steps:
         - "Copied 1 of 1 declared path"
       output_not_contains:
         - "No `copy:` paths declared"
+        - "could not read the configuration"
       files_exist:
         - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"
       file_contains:
@@ -68,6 +72,11 @@ steps:
     expect:
       exit_code: 0
       output_contains:
+        # main's daft.yml is still the valid, copy-free base from step 3, so
+        # this is the ordinary "nothing declared" message — not a parse
+        # failure wearing its clothes.
         - "No `copy:` paths declared in 'main'"
+      output_not_contains:
+        - "could not read the configuration"
       files_not_exist:
         - "$WORK_DIR/test-repo/develop/node_modules/pkg/index.js"

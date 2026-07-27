@@ -30,14 +30,18 @@ steps:
   # Which two worktrees a run picked is not a debugging detail — with
   # path > branch > directory-name tiering the answer can surprise, and under
   # --force it names what got overwritten.
+  #
+  # The fragments pin the DIRECTION, not just the two names: asserting
+  # "'main'" and "'develop'" separately would pass just as happily on a run
+  # that had the pair backwards, which is the one mistake worth catching here.
   - name: A bare warm resolves the default branch as the source
     run: daft warm 2>&1
     cwd: "$WORK_DIR/test-repo/develop"
     expect:
       exit_code: 0
       output_contains:
-        - "'main'"
-        - "'develop'"
+        - "declared in 'main'"
+        - "into 'develop'"
 
   - name: Naming the current worktree as the target is the same resolution
     run: daft warm develop 2>&1
@@ -45,8 +49,8 @@ steps:
     expect:
       exit_code: 0
       output_contains:
-        - "'main'"
-        - "'develop'"
+        - "declared in 'main'"
+        - "into 'develop'"
 
   - name: Standing in the default branch's worktree there is no source to pick
     run: daft warm 2>&1
