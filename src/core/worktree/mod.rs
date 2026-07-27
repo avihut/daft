@@ -191,6 +191,40 @@ pub(crate) fn normalize_worktree_path(
     Ok(crate::core::layout::template::normalize_path(&absolute))
 }
 
+/// The plan's row shape from the `shared:` anchor onward, as compact tokens.
+///
+/// Row identity alone cannot express "the `copy:` anchor sits after the
+/// shared section's `EndGroup` and before the post-create step" — a
+/// positional claim needs positions. Rendering the tail as strings puts the
+/// expected order in the test as one readable list, and makes a mis-splice
+/// print as a diff of two short vectors rather than a wall of `Debug`.
+///
+/// Slicing from the shared anchor deliberately ignores everything before it
+/// (fetch, tracking, branch, worktree, carry, push), which differs per
+/// creation core and is not what these tests are about. Shared by all three
+/// cores' splice tests.
+#[cfg(test)]
+pub(crate) fn plan_shape_from_shared(rows: &[crate::core::stage::Row]) -> Vec<String> {
+    use crate::core::stage::Row;
+    let start = rows
+        .iter()
+        .position(|r| matches!(r, Row::Group { label } if label == "shared files"))
+        .expect("the fixture declares `shared:`, so its anchor must be planned");
+    rows[start..]
+        .iter()
+        // Exhaustive on purpose — no wildcard arm. A new `Row` variant
+        // appearing in this span is exactly the kind of change these tests
+        // exist to notice, and a `_ =>` would render it as something bland
+        // and let it slip through.
+        .map(|r| match r {
+            Row::Group { label } => format!("group:{label}"),
+            Row::EndGroup => "endgroup".to_string(),
+            Row::Step(spec) => format!("step:{:?}", spec.key.id),
+            Row::Note { text } => format!("note:{text}"),
+        })
+        .collect()
+}
+
 /// Resolve the planned Carry row (#651): a clean tree resolves silently —
 /// the row vanishes — an applied stash completes, and a conflicted one
 /// fails with the recovery hint. Shared by the two creation cores, whose

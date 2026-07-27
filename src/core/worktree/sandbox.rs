@@ -882,6 +882,60 @@ mod tests {
         );
     }
 
+    /// The `copy:` section's POSITION in the sandbox plan (#387) — the same
+    /// splice the two checkout journeys make, on the path `daft go <tag>` and
+    /// `daft start --fork` take. See the checkout.rs twin for why the
+    /// declares-nothing sibling above cannot make this claim.
+    #[test]
+    #[serial]
+    fn copy_section_splices_between_shared_and_post_create() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let (tmp, repo, oid) = repo_with_tag();
+        std::fs::write(
+            repo.join("daft.yml"),
+            "shared:\n  - .env\ncopy:\n  - cache\n  - node_modules\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let wt = tmp.path().join("v1");
+        let mut sink = crate::core::RecordingStageSink::default();
+        execute_visit(
+            &params("v1", &oid, WorktreeKind::Canonical, wt.clone()),
+            &GitCommand::new(true),
+            &repo,
+            &mut sink,
+        )
+        .expect("visit materializes");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            crate::core::worktree::plan_shape_from_shared(&plan.rows),
+            [
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
+                "group:copied paths",
+                "step:CopyPath",
+                "step:CopyPath",
+                "endgroup",
+                "step:PostCreateHooks",
+            ],
+            "copy section sits between the shared section and post-create: {:?}",
+            plan.rows
+        );
+        let scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::CopyPath)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![Some("cache".to_string()), Some("node_modules".to_string())],
+        );
+    }
+
     #[test]
     #[serial]
     fn a_visit_materializes_a_detached_worktree_and_records_provenance() {

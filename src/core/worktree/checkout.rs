@@ -1695,8 +1695,9 @@ mod timeline_tests {
             plan.rows
         );
         // The plan still ends with the post-create row — the shape the copy
-        // section splices into. (This is a plan-shape guard, not a splice-
-        // point guard: see the doc comment.)
+        // section splices into. (A plan-shape guard, not a splice-point
+        // guard: `copy_section_splices_between_shared_and_post_create` below
+        // is the positional one.)
         assert!(
             matches!(
                 plan.rows.last(),
@@ -1704,6 +1705,77 @@ mod timeline_tests {
             ),
             "post-create still closes the plan: {:?}",
             plan.rows
+        );
+    }
+
+    /// The `copy:` section's POSITION in the plan (#387): after the shared
+    /// section closes, before the post-create step, one row per declared
+    /// entry, and closed with its own `EndGroup` so the post-create row that
+    /// follows never adopts the anchor (#651).
+    ///
+    /// This is the assertion the inert-wiring sibling above cannot make: with
+    /// nothing declared, `push_copy_section` is a no-op and the call could sit
+    /// anywhere in `execute`. Both #387 reviews found that hole by mutation,
+    /// and it stayed open until the engine landed and a declaring fixture
+    /// became possible. Moving the call below the post-create push, or inside
+    /// the shared group, fails here.
+    #[test]
+    #[serial]
+    fn copy_section_splices_between_shared_and_post_create() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        // One shared path and TWO copy entries: a neighbouring section to
+        // splice after, and enough copy rows that "one row per declared
+        // entry" is visible rather than inferred.
+        std::fs::write(
+            tmp.path().join("daft.yml"),
+            "shared:\n  - .env\ncopy:\n  - cache\n  - node_modules\n",
+        )
+        .unwrap();
+        git(tmp.path(), &["add", "daft.yml"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x-wt");
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(
+            &params("feat-x", worktree_path.clone(), false),
+            &git_cmd,
+            tmp.path(),
+            &mut sink,
+        )
+        .expect("checkout succeeds");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            crate::core::worktree::plan_shape_from_shared(&plan.rows),
+            [
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
+                "group:copied paths",
+                "step:CopyPath",
+                "step:CopyPath",
+                "endgroup",
+                "step:PostCreateHooks",
+            ],
+            "copy section sits between the shared section and post-create: {:?}",
+            plan.rows
+        );
+        // The rows carry the DECLARED entries in config order — the plan face
+        // never walks the filesystem, so a glob would be planned as itself.
+        let scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::CopyPath)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![Some("cache".to_string()), Some("node_modules".to_string())],
         );
     }
 

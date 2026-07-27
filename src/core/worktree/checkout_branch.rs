@@ -1655,6 +1655,78 @@ mod timeline_tests {
         );
     }
 
+    /// The `copy:` section's POSITION in the `daft start` plan (#387): after
+    /// the shared section closes, before the post-create step, one row per
+    /// declared entry, closed with its own `EndGroup`. The sibling that
+    /// declares nothing cannot make this claim — `push_copy_section` is a
+    /// no-op there, so the call could sit anywhere. See the checkout.rs twin.
+    #[test]
+    #[serial]
+    fn copy_section_splices_between_shared_and_post_create() {
+        let _state = crate::store::paths::IsolatedStateDir::new();
+        let _cwd = CwdGuard::new();
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(
+            tmp.path().join("daft.yml"),
+            "shared:\n  - .env\ncopy:\n  - cache\n  - node_modules\n",
+        )
+        .unwrap();
+        git(tmp.path(), &["add", "daft.yml"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let worktree_path = tmp.path().join("feat-x");
+        let params = CheckoutBranchParams {
+            new_branch_name: "feat-x".to_string(),
+            base_branch_name: Some("main".to_string()),
+            carry: false,
+            no_carry: true,
+            remote: None,
+            remote_name: "origin".to_string(),
+            multi_remote_enabled: false,
+            multi_remote_default: "origin".to_string(),
+            checkout_branch_carry: false,
+            checkout_push: false,
+            no_verify: false,
+            push_verify: PushVerify::Auto,
+            push_verify_key: crate::settings::keys::PUSH_VERIFY,
+            checkout_fetch: false,
+            layout: None,
+            at_path: Some(worktree_path.clone()),
+        };
+
+        let git_cmd = GitCommand::new(true);
+        let mut sink = RecordingStageSink::default();
+        execute(&params, &git_cmd, tmp.path(), None, &mut sink).expect("checkout-branch succeeds");
+
+        let plan = sink.plan.as_ref().expect("plan committed");
+        assert_eq!(
+            crate::core::worktree::plan_shape_from_shared(&plan.rows),
+            [
+                "group:shared files",
+                "step:SharedFile",
+                "endgroup",
+                "group:copied paths",
+                "step:CopyPath",
+                "step:CopyPath",
+                "endgroup",
+                "step:PostCreateHooks",
+            ],
+            "copy section sits between the shared section and post-create: {:?}",
+            plan.rows
+        );
+        let scopes: Vec<_> = plan
+            .steps()
+            .filter(|s| s.key.id == StageId::CopyPath)
+            .map(|s| s.key.scope.clone())
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![Some("cache".to_string()), Some("node_modules".to_string())],
+        );
+    }
+
     /// A worktree paused mid-operation must never be a carry source: `git
     /// stash push` on a half-done rebase can *succeed* — emptying a resolved
     /// conflict back to the upstream content — after which `git rebase
